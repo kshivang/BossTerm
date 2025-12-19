@@ -207,6 +207,14 @@ compose.desktop {
                 "-Dsun.java2d.xrender=true"
             )
         }
+
+        // ProGuard configuration for release builds
+        buildTypes.release {
+            proguard {
+                version.set("7.7.0")
+                configurationFiles.from(project.file("proguard-rules.pro"))
+            }
+        }
     }
 }
 

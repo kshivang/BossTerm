@@ -24,6 +24,7 @@ import ai.rever.bossterm.compose.typeahead.ComposeTypeAheadModel
 import ai.rever.bossterm.compose.typeahead.CoroutineDebouncer
 import ai.rever.bossterm.compose.notification.CommandNotificationHandler
 import ai.rever.bossterm.compose.clipboard.ClipboardHandler
+import ai.rever.bossterm.terminal.model.CommandStateListener
 import ai.rever.bossterm.compose.TerminalSession
 import ai.rever.bossterm.core.typeahead.TerminalTypeAheadManager
 import ai.rever.bossterm.core.typeahead.TypeAheadTerminalModel
@@ -142,13 +143,15 @@ class TabController(
      * @param command Shell command to execute (default: $SHELL or /bin/bash)
      * @param arguments Command-line arguments for the shell (default: empty)
      * @param onProcessExit Callback invoked when shell process exits (before auto-closing tab)
+     * @param initialCommand Optional command to execute after terminal is ready (sent as input with newline)
      * @return The newly created TerminalTab
      */
     fun createTab(
         workingDir: String? = null,
         command: String? = null,
         arguments: List<String> = emptyList(),
-        onProcessExit: (() -> Unit)? = null
+        onProcessExit: (() -> Unit)? = null,
+        initialCommand: String? = null
     ): TerminalTab {
         tabCounter++
 
@@ -329,7 +332,7 @@ class TabController(
         }
 
         // Initialize the terminal session (spawn PTY, start coroutines)
-        initializeTerminalSession(tab, workingDir, effectiveCommand, effectiveArguments)
+        initializeTerminalSession(tab, workingDir, effectiveCommand, effectiveArguments, initialCommand)
 
         // Add to tabs list
         tabs.add(tab)
@@ -921,12 +924,14 @@ class TabController(
      * @param workingDir Working directory for the shell
      * @param command Shell command to execute
      * @param arguments Command-line arguments
+     * @param initialCommand Optional command to execute after terminal is ready
      */
     private fun initializeTerminalSession(
         tab: TerminalTab,
         workingDir: String?,
         command: String,
-        arguments: List<String>
+        arguments: List<String>,
+        initialCommand: String? = null
     ) {
         tab.coroutineScope.launch(Dispatchers.IO) {
             try {
@@ -1027,6 +1032,45 @@ class TabController(
                             }
                         } catch (e: Exception) {
                             println("DEBUG: State capture coroutine stopped: ${e.message}")
+                        }
+                    }
+                }
+
+                // Send initial command if provided (after terminal is ready)
+                // Uses OSC 133;A (prompt started) signal for proper synchronization,
+                // with configurable fallback delay for shells without OSC 133 support
+                if (initialCommand != null) {
+                    launch(Dispatchers.IO) {
+                        // Create a deferred that will be completed when first prompt appears
+                        val promptReady = CompletableDeferred<Unit>()
+
+                        // Add a temporary listener to detect OSC 133;A (prompt started)
+                        val promptListener = object : CommandStateListener {
+                            override fun onPromptStarted() {
+                                promptReady.complete(Unit)
+                            }
+                        }
+                        tab.terminal.addCommandStateListener(promptListener)
+
+                        try {
+                            // Wait for either OSC 133;A signal OR fallback timeout
+                            val result = withTimeoutOrNull(settings.initialCommandDelayMs.toLong()) {
+                                promptReady.await()
+                            }
+
+                            if (result != null) {
+                                // OSC 133;A received - shell is ready
+                                // Small delay to ensure prompt is fully rendered
+                                delay(50)
+                            }
+                            // If result is null, timeout occurred - proceed with fallback delay
+                            // (already waited initialCommandDelayMs)
+
+                            // Send the command followed by newline
+                            handle.write(initialCommand + "\n")
+                        } finally {
+                            // Clean up the temporary listener
+                            tab.terminal.removeCommandStateListener(promptListener)
                         }
                     }
                 }

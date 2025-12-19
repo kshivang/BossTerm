@@ -155,6 +155,23 @@ data class TerminalSettings(
     val useLoginSession: Boolean = true,
 
     /**
+     * Initial command to run when a new terminal tab is created.
+     * This command is automatically sent to the shell after it starts.
+     * Empty string means no initial command.
+     * Example: "neofetch", "cd ~/projects", "source ~/.profile && clear"
+     */
+    val initialCommand: String = "",
+
+    /**
+     * Fallback delay (in milliseconds) before sending initial command.
+     * Used when OSC 133 shell integration is not configured.
+     * With OSC 133, the command is sent immediately when the prompt appears.
+     * Without OSC 133, waits this long for the shell to be ready.
+     * Range: 100-5000ms. Default: 500ms.
+     */
+    val initialCommandDelayMs: Int = 500,
+
+    /**
      * Automatically copy selected text to clipboard
      */
     val copyOnSelect: Boolean = false,

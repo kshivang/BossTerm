@@ -27,6 +27,25 @@ fun BehaviorSettingsSection(
                 onCheckedChange = { onSettingsChange(settings.copy(useLoginSession = it)) },
                 description = "Show 'Last login' message and register in utmp/wtmp"
             )
+
+            SettingsTextField(
+                label = "Initial Command",
+                value = settings.initialCommand,
+                onValueChange = { onSettingsChange(settings.copy(initialCommand = it)) },
+                placeholder = "e.g., neofetch, cd ~/projects",
+                description = "Command to run when a new tab is created (applies to new tabs only)"
+            )
+
+            SettingsSlider(
+                label = "Initial Command Delay",
+                value = settings.initialCommandDelayMs.toFloat(),
+                onValueChange = { onSettingsChange(settings.copy(initialCommandDelayMs = it.toInt())) },
+                valueRange = 100f..2000f,
+                steps = 18,
+                valueDisplay = { "${it.toInt()} ms" },
+                description = "Fallback delay without OSC 133 shell integration (applies to new tabs)",
+                enabled = settings.initialCommand.isNotEmpty()
+            )
         }
 
         Spacer(modifier = Modifier.height(24.dp))

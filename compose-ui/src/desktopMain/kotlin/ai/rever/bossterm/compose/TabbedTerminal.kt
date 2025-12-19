@@ -52,6 +52,7 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  * @param onNewWindow Called when user requests a new window (Cmd/Ctrl+N)
  * @param menuActions Optional menu action callbacks for wiring up menu bar
  * @param isWindowFocused Lambda returning whether this window is currently focused (for notifications)
+ * @param initialCommand Optional command to run in the first terminal tab after startup
  * @param modifier Compose modifier for the terminal container
  */
 @Composable
@@ -62,6 +63,7 @@ fun TabbedTerminal(
     onShowSettings: () -> Unit = {},
     menuActions: MenuActions? = null,
     isWindowFocused: () -> Boolean = { true },
+    initialCommand: String? = null,
     modifier: Modifier = Modifier
 ) {
     // Settings integration
@@ -112,7 +114,8 @@ fun TabbedTerminal(
         menuActions?.apply {
             onNewTab = {
                 // New tabs always start in home directory (no working dir inheritance)
-                tabController.createTab()
+                // Use initial command from settings if configured
+                tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
             }
             onCloseTab = {
                 tabController.closeTab(tabController.activeTabIndex)
@@ -126,8 +129,8 @@ fun TabbedTerminal(
         }
     }
 
-    // Wire up split menu actions (updates when active tab changes)
-    LaunchedEffect(menuActions, tabController.activeTabIndex) {
+    // Wire up split menu actions (updates when active tab changes or tabs are added)
+    LaunchedEffect(menuActions, tabController.activeTabIndex, tabController.tabs.size) {
         if (tabController.tabs.isEmpty()) return@LaunchedEffect
         val activeTab = tabController.tabs.getOrNull(tabController.activeTabIndex) ?: return@LaunchedEffect
         val splitState = splitStates.getOrPut(activeTab.id) { SplitViewState(initialSession = activeTab) }
@@ -192,8 +195,10 @@ fun TabbedTerminal(
                     splitStates[pendingTab.id] = pendingSplitState
                 }
             } else {
-                // No pending tab, create fresh terminal
-                tabController.createTab()
+                // No pending tab, create fresh terminal with optional initial command
+                // Priority: parameter > settings > none
+                val effectiveInitialCommand = initialCommand ?: settings.initialCommand.ifEmpty { null }
+                tabController.createTab(initialCommand = effectiveInitialCommand)
             }
         }
     }
@@ -226,7 +231,8 @@ fun TabbedTerminal(
                 onTabClosed = { index -> tabController.closeTab(index) },
                 onNewTab = {
                     // New tabs always start in home directory (no working dir inheritance)
-                    tabController.createTab()
+                    // Use initial command from settings if configured
+                    tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
                 },
                 onTabMoveToNewWindow = { index ->
                     // Get tab first to access its ID for split state lookup
@@ -327,7 +333,8 @@ fun TabbedTerminal(
                 },
                 onNewTab = {
                     // New tabs always start in home directory (no working dir inheritance)
-                    tabController.createTab()
+                    // Use initial command from settings if configured
+                    tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
                 },
                 onCloseTab = {
                     tabController.closeTab(tabController.activeTabIndex)

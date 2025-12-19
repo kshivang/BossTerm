@@ -60,7 +60,7 @@ class BossTerminal(
 
     private var myStoredCursor: StoredCursor? = null
 
-    private val myModes: EnumSet<TerminalMode> = EnumSet.noneOf(TerminalMode::class.java)
+    private val myModes: MutableSet<TerminalMode> = mutableSetOf()
 
     private val myTerminalKeyEncoder: TerminalKeyEncoder = TerminalKeyEncoder(current())
 

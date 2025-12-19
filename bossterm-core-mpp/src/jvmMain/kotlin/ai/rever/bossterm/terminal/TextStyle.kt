@@ -5,12 +5,12 @@ import java.util.*
 open class TextStyle @JvmOverloads constructor(
     val foreground: TerminalColor? = null,
     val background: TerminalColor? = null,
-    options: EnumSet<Option> = NO_OPTIONS
+    options: Set<Option> = NO_OPTIONS
 ) {
-    private val myOptions: EnumSet<Option>
+    private val myOptions: MutableSet<Option>
 
     init {
-        myOptions = options.clone()
+        myOptions = options.toMutableSet()
     }
 
     fun createEmptyWithColors(): TextStyle {
@@ -49,7 +49,7 @@ open class TextStyle @JvmOverloads constructor(
         HIDDEN,
         PROTECTED;
 
-        fun set(options: EnumSet<Option>, `val`: Boolean) {
+        fun set(options: MutableSet<Option>, `val`: Boolean) {
             if (`val`) {
                 options.add(this)
             } else {
@@ -61,18 +61,18 @@ open class TextStyle @JvmOverloads constructor(
     open class Builder {
         private var myForeground: TerminalColor?
         private var myBackground: TerminalColor?
-        private val myOptions: EnumSet<Option>
+        private val myOptions: MutableSet<Option>
 
         constructor(textStyle: TextStyle) {
             myForeground = textStyle.foreground
             myBackground = textStyle.background
-            myOptions = textStyle.myOptions.clone()
+            myOptions = textStyle.myOptions.toMutableSet()
         }
 
         constructor() {
             myForeground = null
             myBackground = null
-            myOptions = EnumSet.noneOf(Option::class.java)
+            myOptions = mutableSetOf()
         }
 
         fun setForeground(foreground: TerminalColor?): Builder {
@@ -96,7 +96,7 @@ open class TextStyle @JvmOverloads constructor(
     }
 
     companion object {
-        private val NO_OPTIONS: EnumSet<Option> = EnumSet.noneOf(Option::class.java)
+        private val NO_OPTIONS: Set<Option> = emptySet()
 
         val EMPTY: TextStyle = TextStyle()
     }

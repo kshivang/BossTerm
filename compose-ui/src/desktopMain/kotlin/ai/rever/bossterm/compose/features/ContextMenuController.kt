@@ -14,6 +14,8 @@ import javax.swing.JMenuItem
 import javax.swing.JPopupMenu
 import javax.swing.JSeparator
 import javax.swing.UIManager
+import javax.swing.event.PopupMenuEvent
+import javax.swing.event.PopupMenuListener
 import javax.swing.plaf.ColorUIResource
 
 /**
@@ -125,6 +127,27 @@ class ContextMenuController {
             targetWindow?.toFront()
             targetWindow?.requestFocus()
         }
+
+        // Add popup menu listener to restore focus when menu closes
+        val windowToFocus = targetWindow
+        popup.addPopupMenuListener(object : PopupMenuListener {
+            override fun popupMenuWillBecomeVisible(e: PopupMenuEvent?) {}
+            override fun popupMenuWillBecomeInvisible(e: PopupMenuEvent?) {
+                // Restore focus to the window when popup closes
+                // Use invokeLater to ensure this happens after the popup is fully dismissed
+                javax.swing.SwingUtilities.invokeLater {
+                    windowToFocus?.toFront()
+                    windowToFocus?.requestFocus()
+                }
+            }
+            override fun popupMenuCanceled(e: PopupMenuEvent?) {
+                // Also restore focus when menu is canceled (e.g., clicking outside)
+                javax.swing.SwingUtilities.invokeLater {
+                    windowToFocus?.toFront()
+                    windowToFocus?.requestFocus()
+                }
+            }
+        })
 
         if (targetWindow != null) {
             // Convert screen coordinates to window-relative coordinates

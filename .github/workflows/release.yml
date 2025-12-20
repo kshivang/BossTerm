@@ -135,7 +135,7 @@ jobs:
       - name: Build macOS App Bundle
         run: |
           chmod +x ./gradlew
-          ./gradlew :compose-ui:createDistributable
+          ./gradlew :bossterm-app:createDistributable
         env:
           RELEASE_BUILD: true
           APP_VERSION: ${{ needs.prepare-version.outputs.version }}
@@ -144,7 +144,7 @@ jobs:
         if: env.DISABLE_MACOS_SIGNING != 'true'
         run: |
           # Convert to absolute path to avoid issues when changing directories
-          APP_PATH=$(find "$(pwd)/.gradleBuild/compose-ui/compose/binaries/main/app" -name "*.app" -type d | head -1)
+          APP_PATH=$(find "$(pwd)/.gradleBuild/bossterm-app/compose/binaries/main/app" -name "*.app" -type d | head -1)
           echo "App bundle: $APP_PATH"
 
           if [[ -n "$APP_PATH" && -d "$APP_PATH" ]]; then
@@ -199,7 +199,7 @@ jobs:
 
       - name: Package macOS DMG
         run: |
-          ./gradlew :compose-ui:packageDmg
+          ./gradlew :bossterm-app:packageDmg
         env:
           RELEASE_BUILD: true
           APP_VERSION: ${{ needs.prepare-version.outputs.version }}
@@ -207,7 +207,7 @@ jobs:
       - name: Notarize macOS DMG
         if: env.DISABLE_MACOS_SIGNING != 'true'
         run: |
-          DMG_PATH=$(find .gradleBuild/compose-ui/compose/binaries/main/dmg -name "*.dmg" | head -1)
+          DMG_PATH=$(find .gradleBuild/bossterm-app/compose/binaries/main/dmg -name "*.dmg" | head -1)
 
           if [[ -n "$DMG_PATH" && -f "$DMG_PATH" ]]; then
             echo "Notarizing: $DMG_PATH"
@@ -252,7 +252,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bossterm-macos-${{ needs.prepare-version.outputs.version }}
-          path: .gradleBuild/compose-ui/compose/binaries/main/dmg/*.dmg
+          path: .gradleBuild/bossterm-app/compose/binaries/main/dmg/*.dmg
           retention-days: 30
 
   build-linux-amd64:
@@ -294,14 +294,14 @@ jobs:
       - name: Build Linux Packages (Deb & RPM)
         run: |
           chmod +x ./gradlew
-          ./gradlew :compose-ui:packageDeb :compose-ui:packageRpm
+          ./gradlew :bossterm-app:packageDeb :bossterm-app:packageRpm
         env:
           RELEASE_BUILD: true
           APP_VERSION: ${{ needs.prepare-version.outputs.version }}
 
       - name: Build Uber JAR
         run: |
-          ./gradlew :compose-ui:packageUberJarForCurrentOS
+          ./gradlew :bossterm-app:packageUberJarForCurrentOS
         env:
           RELEASE_BUILD: true
           APP_VERSION: ${{ needs.prepare-version.outputs.version }}
@@ -310,21 +310,21 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bossterm-linux-amd64-deb-${{ needs.prepare-version.outputs.version }}
-          path: .gradleBuild/compose-ui/compose/binaries/main/deb/*.deb
+          path: .gradleBuild/bossterm-app/compose/binaries/main/deb/*.deb
           retention-days: 30
 
       - name: Upload RPM Package
         uses: actions/upload-artifact@v4
         with:
           name: bossterm-linux-amd64-rpm-${{ needs.prepare-version.outputs.version }}
-          path: .gradleBuild/compose-ui/compose/binaries/main/rpm/*.rpm
+          path: .gradleBuild/bossterm-app/compose/binaries/main/rpm/*.rpm
           retention-days: 30
 
       - name: Upload Uber JAR
         uses: actions/upload-artifact@v4
         with:
           name: bossterm-jar-${{ needs.prepare-version.outputs.version }}
-          path: .gradleBuild/compose-ui/compose/jars/*.jar
+          path: .gradleBuild/bossterm-app/compose/jars/*.jar
           retention-days: 30
 
   build-linux-arm64:
@@ -367,7 +367,7 @@ jobs:
       - name: Build Linux Packages (Deb & RPM)
         run: |
           chmod +x ./gradlew
-          ./gradlew :compose-ui:packageDeb :compose-ui:packageRpm
+          ./gradlew :bossterm-app:packageDeb :bossterm-app:packageRpm
         env:
           RELEASE_BUILD: true
           APP_VERSION: ${{ needs.prepare-version.outputs.version }}
@@ -376,14 +376,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bossterm-linux-arm64-deb-${{ needs.prepare-version.outputs.version }}
-          path: .gradleBuild/compose-ui/compose/binaries/main/deb/*.deb
+          path: .gradleBuild/bossterm-app/compose/binaries/main/deb/*.deb
           retention-days: 30
 
       - name: Upload RPM Package (ARM64)
         uses: actions/upload-artifact@v4
         with:
           name: bossterm-linux-arm64-rpm-${{ needs.prepare-version.outputs.version }}
-          path: .gradleBuild/compose-ui/compose/binaries/main/rpm/*.rpm
+          path: .gradleBuild/bossterm-app/compose/binaries/main/rpm/*.rpm
           retention-days: 30
 
   build-snap:

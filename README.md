@@ -27,7 +27,7 @@ Download the latest DMG from [GitHub Releases](https://github.com/kshivang/BossT
 ```bash
 git clone https://github.com/kshivang/BossTerm.git
 cd BossTerm
-./gradlew :compose-ui:run
+./gradlew :bossterm-app:run
 ```
 
 ## Features
@@ -120,17 +120,22 @@ BossTerm/
 │   └── src/jvmMain/kotlin/ai/rever/bossterm/
 │       ├── core/          # Core utilities and types
 │       └── terminal/      # Terminal emulator implementation
-├── compose-ui/            # Compose Desktop UI
+├── compose-ui/            # Compose Desktop UI library (embeddable)
 │   └── src/desktopMain/kotlin/ai/rever/bossterm/compose/
 │       ├── ui/            # Main terminal composable (ProperTerminal)
 │       ├── terminal/      # Terminal data stream handling
 │       ├── input/         # Mouse/keyboard input handling
 │       ├── rendering/     # Canvas rendering engine
 │       ├── tabs/          # Tab management
+│       ├── window/        # Window management (WindowManager)
 │       ├── search/        # Search functionality
 │       ├── debug/         # Debug tools
-│       ├── settings/      # Settings management
-│       └── demo/          # Demo application entry point
+│       └── settings/      # Settings management
+├── bossterm-app/          # Main BossTerm application
+│   └── src/desktopMain/kotlin/ai/rever/bossterm/app/
+│       └── Main.kt        # Application entry point
+├── embedded-example/      # Example: single terminal embedding
+├── tabbed-example/        # Example: tabbed terminal embedding
 └── .github/workflows/     # CI configuration
 ```
 

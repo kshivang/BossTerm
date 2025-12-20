@@ -247,14 +247,21 @@ preexec() {
 ## Build & Run Commands
 
 ```bash
+# Run main BossTerm app
+./gradlew :bossterm-app:run --no-daemon
+
 # Clean build
-./gradlew clean && ./gradlew :compose-ui:run --no-daemon
+./gradlew clean && ./gradlew :bossterm-app:run --no-daemon
+
+# Run example modules
+./gradlew :embedded-example:run --no-daemon
+./gradlew :tabbed-example:run --no-daemon
 
 # Kill gradle processes (when stuck)
 pkill -9 -f "gradle"
 
 # Check running instance
-ps aux | grep "ai.rever.bossterm.compose.demo.MainKt"
+ps aux | grep "ai.rever.bossterm.app.MainKt"
 ```
 
 ## Git Workflow
@@ -281,7 +288,7 @@ gh pr create --base master --head dev --title "Your PR title" --body "Descriptio
 ## Key Files
 
 ### Terminal Rendering
-- `compose-ui/src/desktopMain/kotlin/org/jetbrains/bossterm/compose/demo/ProperTerminal.kt`
+- `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/ui/ProperTerminal.kt`
   - Lines 97-125: Font loading
   - Lines 585-597, 670-684, 725-767: Emoji + variation selector handling
   - Lines 215-264: Dual-coroutine output processing

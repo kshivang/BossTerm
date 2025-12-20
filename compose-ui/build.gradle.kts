@@ -19,9 +19,6 @@ val localProperties = Properties().apply {
         localPropsFile.inputStream().use { load(it) }
     }
 }
-val macosSigningIdentity: String = System.getenv("MACOS_DEVELOPER_ID")
-    ?: localProperties.getProperty("macos.signing.identity")
-    ?: "-"  // Ad-hoc signing fallback
 
 plugins {
     kotlin("multiplatform")
@@ -120,106 +117,8 @@ kotlin {
 // Note: Android configuration removed - compose-ui is Desktop-only
 // See bossterm-core-mpp for Android support
 
-compose.desktop {
-    application {
-        mainClass = "ai.rever.bossterm.compose.demo.MainKt"
-
-        // JVM args for platform-specific features (access to internal AWT classes)
-        jvmArgs += listOf(
-            // macOS blur effect
-            "--add-opens", "java.desktop/sun.lwawt=ALL-UNNAMED",
-            "--add-opens", "java.desktop/sun.lwawt.macosx=ALL-UNNAMED",
-            "--add-opens", "java.desktop/java.awt=ALL-UNNAMED",
-            "--add-opens", "java.desktop/java.awt.peer=ALL-UNNAMED",
-            // Linux X11 WM_CLASS for proper taskbar icon/name
-            "--add-opens", "java.desktop/sun.awt.X11=ALL-UNNAMED"
-        )
-
-        nativeDistributions {
-            targetFormats(
-                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Dmg,
-                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Deb,
-                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Rpm
-            )
-
-            packageName = "BossTerm"
-            packageVersion = project.version.toString().removeSuffix("-SNAPSHOT")
-            description = "Modern terminal emulator built with Kotlin/Compose Desktop"
-            vendor = "risalabs.ai"
-            copyright = "© 2025 risalabs.ai. All rights reserved."
-
-            // Include CLI script in app resources
-            appResourcesRootDir.set(rootProject.file("cli-resources"))
-
-            macOS {
-                iconFile.set(rootProject.file("BossTerm.icns"))
-                bundleID = "ai.rever.bossterm"
-                dockName = "BossTerm"
-                // Allow access to all files for terminal operations
-                entitlementsFile.set(project.file("src/desktopMain/resources/entitlements.plist"))
-                // JVM runtime also needs entitlements for notarization
-                runtimeEntitlementsFile.set(project.file("src/desktopMain/resources/runtime-entitlements.plist"))
-
-                // Code signing configuration for distribution
-                signing {
-                    val skipSigning = System.getenv("DISABLE_MACOS_SIGNING") == "true"
-                    sign.set(!skipSigning)
-                    identity.set(macosSigningIdentity)
-
-                    println("🔐 macOS Code Signing: ${if (skipSigning) "DISABLED" else macosSigningIdentity}")
-                }
-
-                infoPlist {
-                    extraKeysRawXml = """
-                        <key>NSHighResolutionCapable</key>
-                        <true/>
-                        <key>LSMinimumSystemVersion</key>
-                        <string>11.0</string>
-                    """.trimIndent()
-                }
-            }
-
-            linux {
-                iconFile.set(rootProject.file("BossTerm.png"))
-                debMaintainer = "shivang.risa@gmail.com"
-                menuGroup = "System;TerminalEmulator"
-                appCategory = "Utility"
-                shortcut = true
-                // RPM-specific options
-                rpmLicenseType = "LGPL-3.0"
-                // Set app name for desktop integration
-                appRelease = "1"
-                debPackageVersion = project.version.toString().removeSuffix("-SNAPSHOT")
-            }
-
-            // Include required JVM modules
-            modules("java.sql", "jdk.unsupported", "jdk.management.agent")
-
-            // JVM args for better performance and desktop integration
-            val packageVer = project.version.toString().removeSuffix("-SNAPSHOT")
-            jvmArgs += listOf(
-                "-Xmx2G",
-                "-Dapple.awt.application.appearance=system",
-                // Version for runtime detection (especially on Linux where there's no Info.plist)
-                "-Dbossterm.version=$packageVer",
-                // Linux: Set WM_CLASS for proper desktop integration
-                "-Dawt.useSystemAAFontSettings=on",
-                "-Dsun.java2d.xrender=true"
-            )
-        }
-
-        // ProGuard configuration for release builds
-        buildTypes.release {
-            proguard {
-                version.set("7.7.0")
-                configurationFiles.from(project.file("proguard-rules.pro"))
-            }
-        }
-    }
-}
-
-// Note: macOS code signing is now handled by Compose Desktop's built-in signing configuration
-// See macOS { signing { ... } } block above
+// Note: Application configuration moved to :bossterm-app module
+// Use ./gradlew :bossterm-app:run to run the main application
 
 // Maven Central + GitHub Packages publishing
 mavenPublishing {

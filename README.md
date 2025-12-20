@@ -281,7 +281,8 @@ fun MyApp() {
 
 ## Documentation
 
-- [Embedding Guide](docs/embedding.md) - Embed BossTerm in your Compose Desktop app
+- [Embedding Guide](docs/embedding.md) - Embed a single terminal with custom context menus
+- [Tabbed Terminal Guide](docs/tabbed-terminal.md) - Full-featured tabbed terminal with splits
 
 ## Contributing
 

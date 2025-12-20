@@ -10,6 +10,7 @@ rootProject.name = "bossterm"
 include(
     ":bossterm-core-mpp",
     ":compose-ui",
-    ":embedded-example"
+    ":embedded-example",
+    ":tabbed-example"
 )
 

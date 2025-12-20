@@ -13,6 +13,16 @@ on:
           - patch
           - minor
           - major
+      skip_snap:
+        description: 'Skip Snap build'
+        required: false
+        default: false
+        type: boolean
+      publish_only:
+        description: 'Only publish libraries (skip all platform builds)'
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - 'v*.*.*'
@@ -92,6 +102,7 @@ jobs:
 
   build-macos:
     needs: prepare-version
+    if: ${{ github.event.inputs.publish_only != 'true' }}
     runs-on: macos-latest
 
     steps:
@@ -195,6 +206,7 @@ jobs:
 
   build-linux-amd64:
     needs: prepare-version
+    if: ${{ github.event.inputs.publish_only != 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -267,6 +279,7 @@ jobs:
 
   build-linux-arm64:
     needs: prepare-version
+    if: ${{ github.event.inputs.publish_only != 'true' }}
     runs-on: ubuntu-24.04-arm
     # ARM64 runners may not be available in all GitHub plans
     # This job will be skipped if the runner is not available
@@ -326,6 +339,7 @@ jobs:
 
   build-snap:
     needs: prepare-version
+    if: ${{ github.event.inputs.publish_only != 'true' && github.event.inputs.skip_snap != 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -374,8 +388,14 @@ jobs:
 
   create-release:
     needs: [prepare-version, build-macos, build-linux-amd64, build-linux-arm64, build-snap]
-    # Continue even if ARM64 build fails (may not be available)
-    if: always() && needs.build-macos.result == 'success' && needs.build-linux-amd64.result == 'success'
+    # Continue even if ARM64/snap builds fail or are skipped
+    # Skip entirely if publish_only is true
+    if: |
+      always() &&
+      github.event.inputs.publish_only != 'true' &&
+      (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped') &&
+      (needs.build-linux-amd64.result == 'success' || needs.build-linux-amd64.result == 'skipped') &&
+      !(needs.build-macos.result == 'skipped' && needs.build-linux-amd64.result == 'skipped')
     runs-on: ubuntu-latest
 
     steps:
@@ -484,6 +504,7 @@ jobs:
 
   update-homebrew:
     needs: [prepare-version, create-release]
+    if: ${{ github.event.inputs.publish_only != 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -546,6 +567,10 @@ jobs:
 
   publish-libraries:
     needs: [prepare-version, create-release]
+    # Run if: publish_only mode OR create-release succeeded
+    if: |
+      always() &&
+      (github.event.inputs.publish_only == 'true' || needs.create-release.result == 'success')
     runs-on: macos-latest
     # No environment needed - build-macos already requires 'release' environment approval
 

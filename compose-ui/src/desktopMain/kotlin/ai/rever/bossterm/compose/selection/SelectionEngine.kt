@@ -152,8 +152,10 @@ object SelectionEngine {
                 }
             }
 
-            // Add newline between rows (except after last row)
-            if (row < lastRow) {
+            // Add newline only for hard line breaks (non-wrapped lines)
+            // isWrapped=true means content continues on next line (soft wrap, no newline)
+            // isWrapped=false means hard line break (actual newline in content)
+            if (!line.isWrapped && row < lastRow) {
                 result.append('\n')
             }
         }

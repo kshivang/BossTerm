@@ -45,7 +45,7 @@ parts:
       - libx11-6
     override-build: |
       # Build the uber JAR using Gradle (from build-snap, no network download)
-      gradle :compose-ui:packageUberJarForCurrentOS --no-daemon
+      gradle :bossterm-app:packageUberJarForCurrentOS --no-daemon
 
       # Find and copy the JAR (path varies based on build location)
       mkdir -p $CRAFT_PART_INSTALL/lib

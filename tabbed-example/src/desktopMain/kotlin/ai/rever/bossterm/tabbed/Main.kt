@@ -2,6 +2,7 @@ package ai.rever.bossterm.tabbed
 
 import ai.rever.bossterm.compose.TabbedTerminal
 import ai.rever.bossterm.compose.menu.MenuActions
+import ai.rever.bossterm.compose.settings.SettingsManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -66,6 +67,10 @@ private fun ApplicationScope.TabbedTerminalWindow(
     onCloseRequest: () -> Unit,
     onNewWindow: () -> Unit
 ) {
+    // Settings integration
+    val settingsManager = remember { SettingsManager.instance }
+    val settings by settingsManager.settings.collectAsState()
+
     // Track window title from terminal
     var windowTitle by remember { mutableStateOf("BossTerm Tabbed Example") }
 
@@ -127,7 +132,7 @@ private fun ApplicationScope.TabbedTerminalWindow(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black)
+                    .background(settings.defaultBackgroundColorWithOpacity)
             ) {
                 // Main terminal
                 TabbedTerminal(

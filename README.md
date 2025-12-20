@@ -158,6 +158,8 @@ Settings are stored in `~/.bossterm/settings.json`:
 
 BossTerm provides embeddable terminal libraries for Kotlin Multiplatform projects.
 
+> **Full Documentation**: See [docs/embedding.md](docs/embedding.md) for the complete embedding guide, including custom context menus, focus management, and session persistence.
+
 ### Gradle Setup
 
 **Maven Central** (recommended):
@@ -276,6 +278,10 @@ fun MyApp() {
 - **Compose Desktop** - Declarative UI framework
 - **Pty4J** - PTY support for local terminal sessions
 - **ICU4J** - Unicode/grapheme cluster support
+
+## Documentation
+
+- [Embedding Guide](docs/embedding.md) - Embed BossTerm in your Compose Desktop app
 
 ## Contributing
 

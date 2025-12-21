@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   generate-release-notes:
@@ -47,7 +48,6 @@ jobs:
           echo "Release date: $RELEASE_DATE"
 
       - name: Get commits since last release
-        id: commits
         run: |
           TAG="${{ steps.release_info.outputs.tag }}"
           PREV_TAG="${{ steps.release_info.outputs.prev_tag }}"
@@ -58,116 +58,58 @@ jobs:
             git log "$TAG" --pretty=format:"- %s" --no-merges -20 > /tmp/commits.txt
           fi
 
-          # Escape for JSON
-          COMMITS=$(cat /tmp/commits.txt | jq -Rs .)
-          echo "commits=$COMMITS" >> $GITHUB_OUTPUT
+          echo "Commits in this release:"
+          cat /tmp/commits.txt
 
-      - name: Generate release notes with Claude API
-        id: generate
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          TAG="${{ steps.release_info.outputs.tag }}"
-          VERSION="${{ steps.release_info.outputs.version }}"
-          PREV_TAG="${{ steps.release_info.outputs.prev_tag }}"
-          RELEASE_DATE="${{ steps.release_info.outputs.release_date }}"
-          COMMITS=$(cat /tmp/commits.txt)
+      - name: Create release notes directory
+        run: mkdir -p docs/release-notes
 
-          # Create prompt
-          PROMPT="Generate concise release notes for BossTerm ${TAG}.
+      - name: Generate release notes with Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Generate release notes for BossTerm ${{ steps.release_info.outputs.tag }}.
 
-          Release date: ${RELEASE_DATE}
-          Previous version: ${PREV_TAG}
+            Release date: ${{ steps.release_info.outputs.release_date }}
+            Previous version: ${{ steps.release_info.outputs.prev_tag }}
 
-          Commits:
-          ${COMMITS}
+            Read the commits from /tmp/commits.txt and create:
 
-          Output ONLY the markdown content (no code blocks), using this exact format:
+            1. File: docs/release-notes/${{ steps.release_info.outputs.tag }}.md
+               Format:
+               # Release Notes - ${{ steps.release_info.outputs.tag }}
+               **Release Date:** ${{ steps.release_info.outputs.release_date }}
+               ## Highlights
+               [1-2 sentence summary]
+               ## New Features (if any)
+               ## Bug Fixes (if any)
+               ## Improvements (if any)
+               ## Breaking Changes
+               None (or list)
+               ## Full Changelog
+               https://github.com/kshivang/BossTerm/compare/${{ steps.release_info.outputs.prev_tag }}...${{ steps.release_info.outputs.tag }}
 
-          # Release Notes - ${TAG}
+            2. Update docs/release-notes/README.md - add link to new release at top of list
 
-          **Release Date:** ${RELEASE_DATE}
+            3. Run: git add docs/release-notes/ && git commit -m "docs: Add release notes for ${{ steps.release_info.outputs.tag }}" && git push
 
-          ## Highlights
-          Brief 1-2 sentence summary of the most important changes.
-
-          ## New Features
-          - Feature: Description (only if there are new features, otherwise omit section)
-
-          ## Bug Fixes
-          - Fix: Description (only if there are bug fixes, otherwise omit section)
-
-          ## Improvements
-          - Improvement: Description (only if there are improvements, otherwise omit section)
-
-          ## Breaking Changes
-          None (or list them if any)
-
-          ## Full Changelog
-          https://github.com/kshivang/BossTerm/compare/${PREV_TAG}...${TAG}"
-
-          # Call Claude API
-          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
-            -H "Content-Type: application/json" \
-            -H "x-api-key: $ANTHROPIC_API_KEY" \
-            -H "anthropic-version: 2023-06-01" \
-            -d "$(jq -n \
-              --arg prompt "$PROMPT" \
-              '{
-                model: "claude-sonnet-4-20250514",
-                max_tokens: 2000,
-                messages: [{role: "user", content: $prompt}]
-              }')")
-
-          # Extract content
-          CONTENT=$(echo "$RESPONSE" | jq -r '.content[0].text // empty')
-
-          if [[ -z "$CONTENT" ]]; then
-            echo "Error: Failed to generate release notes"
-            echo "$RESPONSE"
-            exit 1
-          fi
-
-          # Save to file
-          mkdir -p docs/release-notes
-          echo "$CONTENT" > "docs/release-notes/${TAG}.md"
-
-          echo "Generated release notes for ${TAG}"
-
-      - name: Update release notes index
-        run: |
-          TAG="${{ steps.release_info.outputs.tag }}"
-          RELEASE_DATE="${{ steps.release_info.outputs.release_date }}"
-
-          # Create or update README
-          INDEX_FILE="docs/release-notes/README.md"
-
-          if [[ ! -f "$INDEX_FILE" ]]; then
-            echo "# BossTerm Release Notes" > "$INDEX_FILE"
-            echo "" >> "$INDEX_FILE"
-            echo "## Releases" >> "$INDEX_FILE"
-            echo "" >> "$INDEX_FILE"
-          fi
-
-          # Check if this version already exists
-          if ! grep -q "\[${TAG}\]" "$INDEX_FILE"; then
-            # Add new release after "## Releases" line
-            sed -i "/^## Releases/a\\
-          - [${TAG}](${TAG}.md) - ${RELEASE_DATE}" "$INDEX_FILE"
-          fi
-
-      - name: Commit and push
+      - name: Verify and push if needed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           TAG="${{ steps.release_info.outputs.tag }}"
 
-          if [[ -n $(git status --porcelain docs/release-notes/) ]]; then
+          # Check if Claude already pushed
+          git fetch origin master
+          if git log origin/master --oneline -1 | grep -q "release notes for ${TAG}"; then
+            echo "✅ Release notes already pushed by Claude"
+          elif [[ -n $(git status --porcelain docs/release-notes/) ]]; then
             git add docs/release-notes/
             git commit -m "docs: Add release notes for ${TAG}"
             git push
-            echo "✅ Release notes pushed for ${TAG}"
+            echo "✅ Release notes pushed"
           else
-            echo "No changes to push"
+            echo "⚠️ No release notes changes found"
           fi

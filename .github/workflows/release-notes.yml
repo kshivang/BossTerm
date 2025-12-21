@@ -22,6 +22,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Get release info
         id: release_info
@@ -35,31 +41,22 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "version=${TAG#v}" >> $GITHUB_OUTPUT
 
-          # Get previous tag
           PREV_TAG=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || echo "")
           echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
 
-          # Get release date
           RELEASE_DATE=$(git log -1 --format=%cs "$TAG" 2>/dev/null || date +%Y-%m-%d)
           echo "release_date=$RELEASE_DATE" >> $GITHUB_OUTPUT
 
-          echo "Current tag: $TAG"
-          echo "Previous tag: $PREV_TAG"
-          echo "Release date: $RELEASE_DATE"
-
-      - name: Get commits since last release
-        run: |
-          TAG="${{ steps.release_info.outputs.tag }}"
-          PREV_TAG="${{ steps.release_info.outputs.prev_tag }}"
-
+          # Get commits
           if [[ -n "$PREV_TAG" ]]; then
-            git log "$PREV_TAG..$TAG" --pretty=format:"- %s" --no-merges > /tmp/commits.txt
+            git log "$PREV_TAG..$TAG" --pretty=format:"- %s" --no-merges > commits.txt
           else
-            git log "$TAG" --pretty=format:"- %s" --no-merges -20 > /tmp/commits.txt
+            git log "$TAG" --pretty=format:"- %s" --no-merges -20 > commits.txt
           fi
 
-          echo "Commits in this release:"
-          cat /tmp/commits.txt
+          echo "Tag: $TAG, Previous: $PREV_TAG, Date: $RELEASE_DATE"
+          echo "Commits:"
+          cat commits.txt
 
       - name: Create release notes directory
         run: mkdir -p docs/release-notes
@@ -69,47 +66,45 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
-            Generate release notes for BossTerm ${{ steps.release_info.outputs.tag }}.
+            You need to generate release notes for BossTerm ${{ steps.release_info.outputs.tag }} and commit them.
 
-            Release date: ${{ steps.release_info.outputs.release_date }}
-            Previous version: ${{ steps.release_info.outputs.prev_tag }}
+            Info:
+            - Tag: ${{ steps.release_info.outputs.tag }}
+            - Previous: ${{ steps.release_info.outputs.prev_tag }}
+            - Date: ${{ steps.release_info.outputs.release_date }}
+            - Commits are in: commits.txt
 
-            Read the commits from /tmp/commits.txt and create:
+            INSTRUCTIONS:
+            1. Read commits.txt to see what changed
+            2. Create docs/release-notes/${{ steps.release_info.outputs.tag }}.md with this format:
 
-            1. File: docs/release-notes/${{ steps.release_info.outputs.tag }}.md
-               Format:
                # Release Notes - ${{ steps.release_info.outputs.tag }}
+
                **Release Date:** ${{ steps.release_info.outputs.release_date }}
+
                ## Highlights
-               [1-2 sentence summary]
-               ## New Features (if any)
-               ## Bug Fixes (if any)
-               ## Improvements (if any)
+               [Brief 1-2 sentence summary]
+
+               ## New Features
+               [List or omit if none]
+
+               ## Bug Fixes
+               [List or omit if none]
+
+               ## Improvements
+               [List or omit if none]
+
                ## Breaking Changes
-               None (or list)
+               None
+
                ## Full Changelog
                https://github.com/kshivang/BossTerm/compare/${{ steps.release_info.outputs.prev_tag }}...${{ steps.release_info.outputs.tag }}
 
-            2. Update docs/release-notes/README.md - add link to new release at top of list
+            3. Read docs/release-notes/README.md and add a link to this new release at the top of the releases list
 
-            3. Run: git add docs/release-notes/ && git commit -m "docs: Add release notes for ${{ steps.release_info.outputs.tag }}" && git push
+            4. IMPORTANT: After creating the files, run these git commands:
+               git add docs/release-notes/
+               git commit -m "docs: Add release notes for ${{ steps.release_info.outputs.tag }}"
+               git push
 
-      - name: Verify and push if needed
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          TAG="${{ steps.release_info.outputs.tag }}"
-
-          # Check if Claude already pushed
-          git fetch origin master
-          if git log origin/master --oneline -1 | grep -q "release notes for ${TAG}"; then
-            echo "✅ Release notes already pushed by Claude"
-          elif [[ -n $(git status --porcelain docs/release-notes/) ]]; then
-            git add docs/release-notes/
-            git commit -m "docs: Add release notes for ${TAG}"
-            git push
-            echo "✅ Release notes pushed"
-          else
-            echo "⚠️ No release notes changes found"
-          fi
+            Git is already configured. Just run the commands.

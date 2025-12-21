@@ -80,6 +80,9 @@ fun EmbeddedExampleApp() {
                     ) {
                         EmbeddableTerminal(
                             state = terminalState,
+                            // Run a command automatically when terminal is ready
+                            // Uses OSC 133 shell integration for proper timing if available
+                            initialCommand = "echo 'Welcome to BossTerm Embedded Example!'",
                             onExit = { exitCode ->
                                 statusMessage = "Terminal exited with code: $exitCode"
                             },

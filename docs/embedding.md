@@ -47,6 +47,10 @@ fun EmbeddableTerminal(
     state: EmbeddableTerminalState = rememberEmbeddableTerminalState(),
     settings: TerminalSettings? = null,
     settingsPath: String? = null,
+    command: String? = null,
+    workingDirectory: String? = null,
+    environment: Map<String, String>? = null,
+    initialCommand: String? = null,
     onOutput: ((String) -> Unit)? = null,
     onTitleChange: ((String) -> Unit)? = null,
     onExit: ((Int) -> Unit)? = null,
@@ -61,6 +65,10 @@ fun EmbeddableTerminal(
 | `state` | `EmbeddableTerminalState` | Terminal state for programmatic control |
 | `settings` | `TerminalSettings?` | Custom terminal settings (overrides settingsPath) |
 | `settingsPath` | `String?` | Path to settings JSON file |
+| `command` | `String?` | Shell command to run (defaults to `$SHELL` or `/bin/zsh`) |
+| `workingDirectory` | `String?` | Initial working directory (defaults to user home) |
+| `environment` | `Map<String, String>?` | Additional environment variables |
+| `initialCommand` | `String?` | Command to run after terminal is ready (see [Initial Command](#initial-command)) |
 | `onOutput` | `(String) -> Unit` | Callback for terminal output |
 | `onTitleChange` | `(String) -> Unit` | Callback when terminal title changes |
 | `onExit` | `(Int) -> Unit` | Callback when shell process exits |
@@ -102,6 +110,47 @@ DisposableEffect(Unit) {
     onDispose { persistentState.dispose() }
 }
 ```
+
+## Initial Command
+
+The `initialCommand` parameter lets you run a command automatically when the terminal is ready. This is useful for:
+- Setting up the environment
+- Running a welcome message or status check
+- Starting an application or script
+
+```kotlin
+EmbeddableTerminal(
+    initialCommand = "echo 'Welcome!' && ls -la"
+)
+```
+
+### Timing and Shell Integration
+
+BossTerm uses OSC 133 shell integration for proper command timing:
+
+1. **With OSC 133**: If your shell has OSC 133 configured, BossTerm waits for the prompt-ready signal (OSC 133;A) before sending the command. This ensures the shell is fully ready.
+
+2. **Without OSC 133**: Falls back to a configurable delay (default 500ms, adjustable via `settings.initialCommandDelayMs`).
+
+For best results, configure OSC 133 in your shell. See the main [README](../README.md#shell-integration) for setup instructions.
+
+### Alternative: Using onReady Callback
+
+For more control over timing, you can use the `onReady` callback with `state.write()`:
+
+```kotlin
+val state = rememberEmbeddableTerminalState()
+
+EmbeddableTerminal(
+    state = state,
+    onReady = {
+        // Runs when terminal is connected
+        state.write("echo 'Terminal ready!'\n")
+    }
+)
+```
+
+The `initialCommand` parameter is preferred because it handles shell readiness timing automatically.
 
 ## Custom Context Menu
 

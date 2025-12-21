@@ -1,0 +1,185 @@
+name: Generate Release Notes
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to generate notes for (e.g., v1.0.45)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  generate-release-notes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get release info
+        id: release_info
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ github.event.inputs.release_tag }}"
+          else
+            TAG="${{ github.event.release.tag_name }}"
+          fi
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || echo "")
+          echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
+
+          echo "Current tag: $TAG"
+          echo "Previous tag: $PREV_TAG"
+
+      - name: Get commits since last release
+        id: commits
+        run: |
+          TAG="${{ steps.release_info.outputs.tag }}"
+          PREV_TAG="${{ steps.release_info.outputs.prev_tag }}"
+
+          if [[ -n "$PREV_TAG" ]]; then
+            COMMITS=$(git log "$PREV_TAG..$TAG" --pretty=format:"- %s (%h)" --no-merges)
+            COMMIT_RANGE="$PREV_TAG..$TAG"
+          else
+            COMMITS=$(git log "$TAG" --pretty=format:"- %s (%h)" --no-merges -20)
+            COMMIT_RANGE="(first 20 commits)"
+          fi
+
+          # Save to file to avoid escaping issues
+          echo "$COMMITS" > /tmp/commits.txt
+          echo "commit_range=$COMMIT_RANGE" >> $GITHUB_OUTPUT
+
+      - name: Get changed files
+        id: changed_files
+        run: |
+          TAG="${{ steps.release_info.outputs.tag }}"
+          PREV_TAG="${{ steps.release_info.outputs.prev_tag }}"
+
+          if [[ -n "$PREV_TAG" ]]; then
+            git diff --stat "$PREV_TAG..$TAG" > /tmp/changed_files.txt
+          else
+            git diff --stat HEAD~20..HEAD > /tmp/changed_files.txt
+          fi
+
+      - name: Create docs/release-notes directory
+        run: mkdir -p docs/release-notes
+
+      - name: Run Claude Code to generate release notes
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are generating release notes for BossTerm v${{ steps.release_info.outputs.version }}.
+
+            ## Context
+            - Tag: ${{ steps.release_info.outputs.tag }}
+            - Previous tag: ${{ steps.release_info.outputs.prev_tag }}
+            - Commit range: ${{ steps.commits.outputs.commit_range }}
+
+            ## Commits in this release:
+            $(cat /tmp/commits.txt)
+
+            ## Changed files summary:
+            $(cat /tmp/changed_files.txt)
+
+            ## Your Tasks:
+
+            1. **Create Release Notes File**
+               Create `docs/release-notes/v${{ steps.release_info.outputs.version }}.md` with:
+               - Summary of major changes (user-facing)
+               - New features (with brief descriptions)
+               - Bug fixes
+               - Breaking changes (if any)
+               - Technical improvements
+               - Contributors (if identifiable from commits)
+
+               Use this format:
+               ```markdown
+               # Release Notes - v${{ steps.release_info.outputs.version }}
+
+               **Release Date:** $(date +%Y-%m-%d)
+
+               ## Highlights
+               [Brief summary of the most important changes]
+
+               ## New Features
+               - Feature 1: Description
+
+               ## Bug Fixes
+               - Fix 1: Description
+
+               ## Improvements
+               - Improvement 1: Description
+
+               ## Breaking Changes
+               [List any breaking changes, or "None" if there are none]
+
+               ## Full Changelog
+               [Link to compare: https://github.com/kshivang/BossTerm/compare/${{ steps.release_info.outputs.prev_tag }}...${{ steps.release_info.outputs.tag }}]
+               ```
+
+            2. **Update docs/release-notes/README.md** (create if doesn't exist)
+               Add a link to the new release notes file at the top of the list.
+               Format:
+               ```markdown
+               # BossTerm Release Notes
+
+               - [v${{ steps.release_info.outputs.version }}](v${{ steps.release_info.outputs.version }}.md) - $(date +%Y-%m-%d)
+               [previous entries...]
+               ```
+
+            3. **Review and Update CLAUDE.md if needed**
+               - Check the "Last Updated" section
+               - Add any significant new features to the "Major Features" section
+               - Update "Completed (Recent)" section if there are notable completions
+               - Only make changes if there are significant updates worth documenting
+
+            4. **Review README.md**
+               - Only update if there are new user-facing features that should be highlighted
+               - Don't update for minor fixes or internal changes
+
+            Be concise and focus on user-facing changes. Don't include internal refactoring details unless they affect users.
+
+            After creating/updating files, commit the changes with message:
+            "docs: Add release notes for v${{ steps.release_info.outputs.version }}"
+
+          allowed_tools: |
+            Read
+            Write
+            Edit
+            Glob
+            Grep
+            Bash(git add:*)
+            Bash(git commit:*)
+            Bash(git status)
+            Bash(cat:*)
+            Bash(ls:*)
+            Bash(date)
+
+      - name: Push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Check if there are changes to push
+          if [[ -n $(git status --porcelain) ]]; then
+            git add docs/release-notes/ README.md CLAUDE.md
+            git commit -m "docs: Add release notes for ${{ steps.release_info.outputs.tag }}" || true
+            git push
+            echo "Release notes pushed successfully"
+          else
+            echo "No changes to push"
+          fi

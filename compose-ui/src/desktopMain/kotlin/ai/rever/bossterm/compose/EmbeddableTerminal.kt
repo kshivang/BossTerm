@@ -2,11 +2,14 @@ package ai.rever.bossterm.compose
 
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.ui.ProperTerminal
 import ai.rever.bossterm.compose.util.loadTerminalFont
@@ -17,6 +20,7 @@ import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import ai.rever.bossterm.terminal.emulator.BossEmulator
 import ai.rever.bossterm.terminal.model.BossTerminal
+import ai.rever.bossterm.terminal.model.CommandStateListener
 import ai.rever.bossterm.terminal.model.StyleState
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 
@@ -118,6 +122,8 @@ data class ContextMenuSubmenu(
  * @param command Shell command to run. Defaults to $SHELL or /bin/zsh
  * @param workingDirectory Initial working directory. Defaults to user home
  * @param environment Additional environment variables to set
+ * @param initialCommand Optional command to execute after terminal is ready. Uses OSC 133 shell
+ *                       integration for proper timing if available, with fallback delay.
  * @param onOutput Callback invoked when terminal produces output
  * @param onTitleChange Callback invoked when terminal title changes (OSC 0/1/2)
  * @param onExit Callback invoked when shell process exits with exit code
@@ -133,6 +139,7 @@ fun EmbeddableTerminal(
     command: String? = null,
     workingDirectory: String? = null,
     environment: Map<String, String>? = null,
+    initialCommand: String? = null,
     onOutput: ((String) -> Unit)? = null,
     onTitleChange: ((String) -> Unit)? = null,
     onExit: ((Int) -> Unit)? = null,
@@ -165,6 +172,7 @@ fun EmbeddableTerminal(
                 command = effectiveCommand,
                 workingDirectory = workingDirectory,
                 environment = environment,
+                initialCommand = initialCommand,
                 onOutput = onOutput,
                 onExit = onExit
             )
@@ -276,6 +284,7 @@ class EmbeddableTerminalState {
         command: String,
         workingDirectory: String?,
         environment: Map<String, String>?,
+        initialCommand: String?,
         onOutput: ((String) -> Unit)?,
         onExit: ((Int) -> Unit)?
     ) {
@@ -289,9 +298,11 @@ class EmbeddableTerminalState {
         session?.coroutineScope?.launch {
             initializeProcess(
                 session = session!!,
+                settings = settings,
                 command = command,
                 workingDirectory = workingDirectory,
                 environment = environment,
+                initialCommand = initialCommand,
                 onExit = onExit
             )
         }
@@ -481,9 +492,11 @@ private fun createTerminalSession(
  */
 private suspend fun initializeProcess(
     session: TerminalTab,
+    settings: TerminalSettings,
     command: String,
     workingDirectory: String?,
     environment: Map<String, String>?,
+    initialCommand: String?,
     onExit: ((Int) -> Unit)?
 ) {
     try {
@@ -554,6 +567,45 @@ private suspend fun initializeProcess(
                 }
             }
             session.dataStream.close()
+        }
+
+        // Send initial command if provided (after terminal is ready)
+        // Uses OSC 133;A (prompt started) signal for proper synchronization,
+        // with configurable fallback delay for shells without OSC 133 support
+        if (initialCommand != null) {
+            session.coroutineScope.launch(Dispatchers.IO) {
+                // Create a deferred that will be completed when first prompt appears
+                val promptReady = CompletableDeferred<Unit>()
+
+                // Add a temporary listener to detect OSC 133;A (prompt started)
+                val promptListener = object : CommandStateListener {
+                    override fun onPromptStarted() {
+                        promptReady.complete(Unit)
+                    }
+                }
+                session.terminal.addCommandStateListener(promptListener)
+
+                try {
+                    // Wait for either OSC 133;A signal OR fallback timeout
+                    val result = withTimeoutOrNull(settings.initialCommandDelayMs.toLong()) {
+                        promptReady.await()
+                    }
+
+                    if (result != null) {
+                        // OSC 133;A received - shell is ready
+                        // Small delay to ensure prompt is fully rendered
+                        delay(50)
+                    }
+                    // If result is null, timeout occurred - proceed with fallback delay
+                    // (already waited initialCommandDelayMs)
+
+                    // Send the command followed by newline
+                    processHandle.write(initialCommand + "\n")
+                } finally {
+                    // Clean up the temporary listener
+                    session.terminal.removeCommandStateListener(promptListener)
+                }
+            }
         }
 
         // Monitor process exit

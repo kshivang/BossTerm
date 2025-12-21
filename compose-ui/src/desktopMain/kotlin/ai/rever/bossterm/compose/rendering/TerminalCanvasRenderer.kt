@@ -127,27 +127,79 @@ object TerminalCanvasRenderer {
             val line = snapshot.getLine(lineIndex)
 
             var col = 0
+            var visualCol = 0  // Track visual position separately from buffer position
             while (col < ctx.visibleCols) {
                 val char = line.charAt(col)
                 val style = line.getStyleAt(col)
 
-                // Skip DWC markers
+                // Skip DWC markers (they don't occupy visual space)
                 if (char == CharUtils.DWC) {
                     col++
                     continue
                 }
 
+                // Skip standalone variation selectors (they don't occupy visual space)
+                if (char.code == 0xFE0F || char.code == 0xFE0E) {
+                    col++
+                    continue
+                }
+
                 // Round to pixel boundaries to avoid anti-aliasing artifacts
-                val x = kotlin.math.floor(col * ctx.cellWidth)
+                // Use visualCol for x position to match renderText
+                val x = kotlin.math.floor(visualCol * ctx.cellWidth)
                 val y = kotlin.math.floor(row * ctx.cellHeight)
 
-                // Check if double-width
-                val isWcwidthDoubleWidth = char != ' ' && char != '\u0000' &&
-                    CharUtils.isDoubleWidthCharacter(char.code, ctx.ambiguousCharsAreDoubleWidth)
+                // Handle surrogate pairs (must match renderText logic lines 384-398)
+                val charAtCol1 = if (col + 1 < ctx.visibleCols) line.charAt(col + 1) else null
+                val charAtCol2 = if (col + 2 < ctx.visibleCols) line.charAt(col + 2) else null
+
+                val lowSurrogate = if (Character.isHighSurrogate(char)) {
+                    when {
+                        charAtCol1 != null && Character.isLowSurrogate(charAtCol1) -> charAtCol1
+                        charAtCol1 == CharUtils.DWC && charAtCol2 != null && Character.isLowSurrogate(charAtCol2) -> charAtCol2
+                        else -> null
+                    }
+                } else null
+
+                val actualCodePoint = if (lowSurrogate != null && Character.isLowSurrogate(lowSurrogate)) {
+                    Character.toCodePoint(char, lowSurrogate)
+                } else char.code
+
+                // Check if double-width (must match renderText logic lines 400-402)
+                val wcwidthResult = char != ' ' && char != '\u0000' &&
+                    CharUtils.isDoubleWidthCharacter(actualCodePoint, ctx.ambiguousCharsAreDoubleWidth)
+                val isWcwidthDoubleWidth = charAtCol1 == CharUtils.DWC || wcwidthResult
+
+                // Force double-width for high codepoints (must match renderText line 422)
+                val isDoubleWidth = if (actualCodePoint >= 0x1F100) true else isWcwidthDoubleWidth
+
+                // Check for emoji with variation selector
+                // Extended ranges to cover all common emoji that render as 2 cells
+                val isEmojiOrWideSymbol = when (actualCodePoint) {
+                    in 0x2600..0x26FF -> true  // Misc symbols (includes ⚠ U+26A0, ☀ U+2600, ☁ U+2601)
+                    in 0x2700..0x27BF -> true  // Dingbats (includes ✅ U+2705, ❌ U+274C, ❤ U+2764)
+                    in 0x2B00..0x2BFF -> true  // Misc Symbols and Arrows (includes ⭐ U+2B50)
+                    in 0x1F100..0x1F1FF -> true
+                    in 0x1F300..0x1F9FF -> true
+                    in 0x1F600..0x1F64F -> true
+                    in 0x1F680..0x1F6FF -> true
+                    else -> false
+                }
+                // Look for variation selector after the character (accounting for DWC if present)
+                val vsOffset = if (isWcwidthDoubleWidth) 2 else 1
+                val vsChar = if (col + vsOffset < ctx.visibleCols) line.charAt(col + vsOffset) else null
+                val isEmojiWithVariationSelector = isEmojiOrWideSymbol &&
+                    vsChar != null && (vsChar.code == 0xFE0F || vsChar.code == 0xFE0E)
+
+                // Determine visual width: all emoji render as 2 cells visually
+                val visualWidth = when {
+                    isEmojiOrWideSymbol -> 2  // All emoji are 2 cells (with or without VS)
+                    isDoubleWidth -> 2
+                    else -> 1
+                }
 
                 // Get attributes
                 val isInverse = style?.hasOption(BossTextStyle.Option.INVERSE) ?: false
-                val isDim = style?.hasOption(BossTextStyle.Option.DIM) ?: false
 
                 // Apply defaults FIRST, then swap if INVERSE
                 val baseFg = style?.foreground?.let { ColorUtils.convertTerminalColor(it) }
@@ -159,12 +211,10 @@ object TerminalCanvasRenderer {
                 val bgColor = if (isInverse) baseFg else baseBg
 
                 // Skip drawing if background matches default (canvas already has default bg)
-                // This avoids anti-aliasing artifacts from drawing same color on top
                 if (bgColor != ctx.settings.defaultBackgroundColor) {
-                    // Draw background (single or double width)
-                    // Calculate end positions and round to pixel boundaries
-                    val nextCol = if (isWcwidthDoubleWidth) col + 2 else col + 1
-                    val nextX = kotlin.math.ceil(nextCol * ctx.cellWidth)
+                    // Calculate background dimensions using visual positions
+                    val nextVisualCol = visualCol + visualWidth
+                    val nextX = kotlin.math.ceil(nextVisualCol * ctx.cellWidth)
                     val bgWidth = nextX - x
                     val nextRow = row + 1
                     val nextY = kotlin.math.ceil(nextRow * ctx.cellHeight)
@@ -180,12 +230,14 @@ object TerminalCanvasRenderer {
                     )
                 }
 
-                // Skip next column if double-width
-                if (isWcwidthDoubleWidth) {
-                    col++
-                }
-
+                // Advance buffer position (must match renderText col advancement)
                 col++
+                if (isWcwidthDoubleWidth) col++  // Skip DWC marker
+                if (isEmojiWithVariationSelector) col++  // Skip variation selector
+                if (lowSurrogate != null) col++  // Skip low surrogate
+
+                // Advance visual position
+                visualCol += visualWidth
             }
         }
     }

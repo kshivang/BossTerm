@@ -198,7 +198,31 @@ object UnicodeConstants {
         codePoint in SYMBOLS_PICTOGRAPHS_EXTENDED_A_RANGE ||
         codePoint in CHESS_SYMBOLS_RANGE
 
-    /** Check if code point is a BMP emoji (unambiguous, not text symbols) */
+    /**
+     * Check if code point is a BMP emoji (Basic Multilingual Plane, U+0000 to U+FFFF).
+     *
+     * ## Selection Criteria
+     * This list includes ONLY characters that:
+     * 1. Have `Emoji_Presentation=Yes` in Unicode data (default emoji rendering)
+     * 2. Are UNAMBIGUOUS emoji - not commonly used as 1-cell text symbols in TUIs
+     *
+     * ## Intentionally EXCLUDED
+     * Many BMP symbols are NOT included even though they can render as emoji:
+     * - Play/pause/stop controls (U+23F8-U+23FA): Used as 1-cell TUI buttons
+     * - Geometric shapes (U+25A0-U+25FF): Used in progress bars, menus
+     * - Arrows (U+2190-U+21FF): Common text navigation symbols
+     * - Box drawing (U+2500-U+257F): TUI borders
+     *
+     * These characters render as 2-cell emoji ONLY when followed by VS16 (U+FE0F).
+     * Without VS16, they default to 1-cell text presentation.
+     *
+     * ## Reference
+     * Based on Unicode 15.1 emoji-data.txt `Emoji_Presentation=Yes` entries for BMP,
+     * filtered to exclude common TUI text symbols. See:
+     * https://unicode.org/Public/emoji/15.1/emoji-data.txt
+     *
+     * @return True if this character should render as 2 cells by default (without VS16)
+     */
     fun isBmpEmoji(codePoint: Int): Boolean = when (codePoint) {
         WATCH, HOURGLASS -> true
         UMBRELLA_RAIN, HOT_BEVERAGE -> true

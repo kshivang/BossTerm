@@ -90,6 +90,25 @@ data class RenderingContext(
 /**
  * Result of analyzing a character for rendering purposes.
  * Encapsulates surrogate pair handling, double-width detection, and variation selector info.
+ *
+ * ## Width Properties (evaluated in order)
+ *
+ * @property isWcwidthDoubleWidth True if the character is double-width by any of:
+ *   - `wcwidth()` returns 2 (CJK, fullwidth forms)
+ *   - A DWC marker exists at col+1 (buffer-level marking)
+ *   - A variation selector at col+1 has DWC at col+2 (emoji+VS layout)
+ *
+ * @property isBaseDoubleWidth True if:
+ *   - Code point >= U+1F100 (supplementary plane, always 2-cell), OR
+ *   - [isWcwidthDoubleWidth] is true
+ *   This captures characters that are inherently double-width regardless of modifiers.
+ *
+ * @property isDoubleWidth True if:
+ *   - [isBaseDoubleWidth] is true, OR
+ *   - Character has a variation selector (emoji presentation)
+ *   This is the final width determination used for rendering and cursor movement.
+ *
+ * @property visualWidth The actual cell count (1 or 2), derived from [isDoubleWidth].
  */
 data class CharacterAnalysis(
     val actualCodePoint: Int,
@@ -111,6 +130,16 @@ data class CharacterAnalysis(
  * Analyze a character at the given column position for rendering.
  * Handles surrogate pairs, double-width detection, and variation selectors.
  * This is shared between renderBackgrounds() and renderText() to avoid duplication.
+ *
+ * ## Edge Cases
+ * - **Orphaned high surrogate**: If a high surrogate appears without a matching low surrogate
+ *   (e.g., at line boundary), it renders as-is. The font will typically display U+FFFD
+ *   (replacement character) or a placeholder glyph. This is intentional - the terminal
+ *   buffer may legitimately contain orphaned surrogates from incomplete writes.
+ *
+ * - **DWC marker between surrogates**: Some buffer layouts place a DWC marker between
+ *   high and low surrogates: [High][DWC][Low]. This is handled by checking col+2 when
+ *   col+1 contains a DWC marker.
  */
 fun analyzeCharacter(
     char: Char,

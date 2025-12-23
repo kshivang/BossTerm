@@ -314,23 +314,6 @@ object GraphemeUtils {
     }
 
     /**
-     * Checks if a code point is a grapheme extender.
-     * More accurate than the Char version for supplementary plane characters.
-     */
-    fun isGraphemeExtender(codePoint: Int): Boolean {
-        return when (codePoint) {
-            UnicodeConstants.ZWJ -> true // ZWJ
-            UnicodeConstants.VARIATION_SELECTOR_TEXT, UnicodeConstants.VARIATION_SELECTOR_EMOJI -> true // Variation selectors
-            in UnicodeConstants.COMBINING_DIACRITICS_RANGE -> true // Combining diacritics
-            in UnicodeConstants.SKIN_TONE_RANGE -> true // Skin tone modifiers
-            in UnicodeConstants.COMBINING_MARKS_FOR_SYMBOLS_RANGE -> true // Combining marks for symbols
-            in UnicodeConstants.HEBREW_COMBINING_MARKS_RANGE -> true // Hebrew combining marks
-            in UnicodeConstants.ARABIC_COMBINING_MARKS_RANGE -> true // Arabic combining marks
-            else -> false
-        }
-    }
-
-    /**
      * Simple LRU cache implementation for grapheme width caching.
      */
     private class LRUCache<K, V>(private val capacity: Int) {

@@ -178,7 +178,7 @@ object GraphemeUtils {
             // Emoji are typically width 2
             return when {
                 baseWidth == 2 -> 2
-                baseWidth == 1 && (hasVariationSelector || hasSkinTone) -> 2 // Emoji presentation
+                baseWidth == 1 -> 2 // Emoji presentation
                 baseWidth <= 0 -> 0
                 else -> baseWidth
             }
@@ -304,11 +304,11 @@ object GraphemeUtils {
         return when (c.code) {
             UnicodeConstants.ZWJ -> true // Zero-Width Joiner
             UnicodeConstants.VARIATION_SELECTOR_TEXT, UnicodeConstants.VARIATION_SELECTOR_EMOJI -> true // Variation selectors
-            in 0x0300..0x036F -> true // Combining diacritics
+            in UnicodeConstants.COMBINING_DIACRITICS_RANGE -> true // Combining diacritics
             in UnicodeConstants.SKIN_TONE_RANGE -> true // Skin tone modifiers (requires surrogate pair check)
-            in 0x20D0..0x20FF -> true // Combining marks for symbols
-            in 0x0591..0x05BD -> true // Hebrew combining marks
-            in 0x0610..0x061A -> true // Arabic combining marks
+            in UnicodeConstants.COMBINING_MARKS_FOR_SYMBOLS_RANGE -> true // Combining marks for symbols
+            in UnicodeConstants.HEBREW_COMBINING_MARKS_RANGE -> true // Hebrew combining marks
+            in UnicodeConstants.ARABIC_COMBINING_MARKS_RANGE -> true // Arabic combining marks
             else -> false
         }
     }
@@ -321,11 +321,11 @@ object GraphemeUtils {
         return when (codePoint) {
             UnicodeConstants.ZWJ -> true // ZWJ
             UnicodeConstants.VARIATION_SELECTOR_TEXT, UnicodeConstants.VARIATION_SELECTOR_EMOJI -> true // Variation selectors
-            in 0x0300..0x036F -> true // Combining diacritics
+            in UnicodeConstants.COMBINING_DIACRITICS_RANGE -> true // Combining diacritics
             in UnicodeConstants.SKIN_TONE_RANGE -> true // Skin tone modifiers
-            in 0x20D0..0x20FF -> true // Combining marks for symbols
-            in 0x0591..0x05BD -> true // Hebrew combining marks
-            in 0x0610..0x061A -> true // Arabic combining marks
+            in UnicodeConstants.COMBINING_MARKS_FOR_SYMBOLS_RANGE -> true // Combining marks for symbols
+            in UnicodeConstants.HEBREW_COMBINING_MARKS_RANGE -> true // Hebrew combining marks
+            in UnicodeConstants.ARABIC_COMBINING_MARKS_RANGE -> true // Arabic combining marks
             else -> false
         }
     }

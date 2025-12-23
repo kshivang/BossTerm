@@ -39,6 +39,16 @@ object UnicodeConstants {
     /** Low surrogate range for Regional Indicators */
     val REGIONAL_INDICATOR_LOW_SURROGATE_RANGE = 0xDDE6..0xDDFF
 
+    // === Combining Characters ===
+    /** Combining Diacritical Marks (U+0300 to U+036F) - e.g., accents, umlauts */
+    val COMBINING_DIACRITICS_RANGE = 0x0300..0x036F
+    /** Combining Diacritical Marks for Symbols (U+20D0 to U+20FF) */
+    val COMBINING_MARKS_FOR_SYMBOLS_RANGE = 0x20D0..0x20FF
+    /** Hebrew combining marks (U+0591 to U+05BD) */
+    val HEBREW_COMBINING_MARKS_RANGE = 0x0591..0x05BD
+    /** Arabic combining marks (U+0610 to U+061A) */
+    val ARABIC_COMBINING_MARKS_RANGE = 0x0610..0x061A
+
     // === Helper Functions ===
 
     /** Check if code point is a variation selector (VS15 or VS16) */
@@ -65,4 +75,14 @@ object UnicodeConstants {
     /** Check if char code is a Regional Indicator low surrogate */
     fun isRegionalIndicatorLowSurrogate(charCode: Int): Boolean =
         charCode in REGIONAL_INDICATOR_LOW_SURROGATE_RANGE
+
+    /** Check if code point is a combining diacritical mark */
+    fun isCombiningDiacritic(codePoint: Int): Boolean = codePoint in COMBINING_DIACRITICS_RANGE
+
+    /** Check if code point is any combining character (diacritics, symbols, Hebrew, Arabic) */
+    fun isCombiningCharacter(codePoint: Int): Boolean =
+        codePoint in COMBINING_DIACRITICS_RANGE ||
+        codePoint in COMBINING_MARKS_FOR_SYMBOLS_RANGE ||
+        codePoint in HEBREW_COMBINING_MARKS_RANGE ||
+        codePoint in ARABIC_COMBINING_MARKS_RANGE
 }

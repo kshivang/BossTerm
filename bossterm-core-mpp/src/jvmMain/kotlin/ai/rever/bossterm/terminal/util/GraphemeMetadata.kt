@@ -129,7 +129,7 @@ class GraphemeMetadata private constructor(
                 val c = text[i]
                 // Check for surrogates, emoji, combining characters
                 if (c.isHighSurrogate() || c.isLowSurrogate() ||
-                    c.code in 0x0300..0x036F || // Combining diacritics
+                    UnicodeConstants.isCombiningDiacritic(c.code) ||
                     c.code == UnicodeConstants.ZWJ ||
                     UnicodeConstants.isVariationSelector(c)
                 ) {

@@ -112,7 +112,12 @@ object GraphemeUtils {
 
         // Fast path: single BMP character
         if (grapheme.length == 1) {
-            return CharUtils.mk_wcwidth(grapheme[0].code, ambiguousIsDWC).coerceAtLeast(0)
+            val codePoint = grapheme[0].code
+            // Check for emoji with Emoji_Presentation=Yes (should be 2 cells by default)
+            if (isEmojiPresentation(codePoint)) {
+                return 2
+            }
+            return CharUtils.mk_wcwidth(codePoint, ambiguousIsDWC).coerceAtLeast(0)
         }
 
         // Check cache
@@ -147,16 +152,22 @@ object GraphemeUtils {
         }
 
         // Check for ZWJ sequence (multiple emoji joined)
-        if (codePoints.contains(0x200D)) {
+        if (codePoints.contains(UnicodeConstants.ZWJ)) {
             // ZWJ sequence: treat as single emoji (width 2)
             return 2
         }
 
+        // Check for Regional Indicator sequence (flag emoji)
+        // Two consecutive Regional Indicators form a flag (e.g., 🇺🇸 = U+1F1FA + U+1F1F8)
+        if (codePoints.size >= 2 && codePoints.all { UnicodeConstants.isRegionalIndicator(it) }) {
+            return 2  // Flag emoji
+        }
+
         // Check for variation selector
-        val hasVariationSelector = codePoints.contains(0xFE0E) || codePoints.contains(0xFE0F)
+        val hasVariationSelector = codePoints.any { UnicodeConstants.isVariationSelector(it) }
 
         // Check for skin tone modifier
-        val hasSkinTone = codePoints.any { it in 0x1F3FB..0x1F3FF }
+        val hasSkinTone = codePoints.any { UnicodeConstants.isSkinToneModifier(it) }
 
         // For emoji with variation selector or skin tone, calculate base emoji width only
         if (hasVariationSelector || hasSkinTone) {
@@ -167,10 +178,16 @@ object GraphemeUtils {
             // Emoji are typically width 2
             return when {
                 baseWidth == 2 -> 2
-                baseWidth == 1 && (hasVariationSelector || hasSkinTone) -> 2 // Emoji presentation
+                baseWidth == 1 -> 2 // Emoji presentation
                 baseWidth <= 0 -> 0
                 else -> baseWidth
             }
+        }
+
+        // Check for single emoji with Emoji_Presentation=Yes (e.g., ✅, ⭐)
+        // These should be 2 cells even without variation selector
+        if (codePoints.size == 1 && isEmojiPresentation(codePoints.first())) {
+            return 2
         }
 
         // For combining character sequences, only count base character
@@ -198,6 +215,27 @@ object GraphemeUtils {
     }
 
     /**
+     * Checks if a code point should render as emoji (2 cells width) by default.
+     *
+     * This covers:
+     * - Supplementary plane emoji (U+1F000+) which are always 2-cell wide
+     * - BMP characters that are UNAMBIGUOUSLY emoji (not commonly used as text symbols)
+     *
+     * NOTE: Many BMP symbols (▶◀⏹⏺ etc.) are intentionally NOT included here because
+     * they are often used as 1-cell text symbols in TUI applications. They will render
+     * as 2-cell emoji ONLY when followed by variation selector FE0F.
+     *
+     * Used by both buffer (for DWC markers) and renderer (for font selection).
+     *
+     * @param codePoint The Unicode code point to check
+     * @return True if this character should render as 2 cells by default
+     */
+    fun isEmojiPresentation(codePoint: Int): Boolean {
+        return UnicodeConstants.isSupplementaryPlaneEmoji(codePoint) ||
+               UnicodeConstants.isBmpEmoji(codePoint)
+    }
+
+    /**
      * Checks if a character is a grapheme extender (ZWJ, variation selector, skin tone, combining).
      * Used for incremental grapheme boundary detection in streaming scenarios.
      *
@@ -206,30 +244,13 @@ object GraphemeUtils {
      */
     fun isGraphemeExtender(c: Char): Boolean {
         return when (c.code) {
-            0x200D -> true // Zero-Width Joiner
-            0xFE0E, 0xFE0F -> true // Variation selectors
-            in 0x0300..0x036F -> true // Combining diacritics
-            in 0x1F3FB..0x1F3FF -> true // Skin tone modifiers (requires surrogate pair check)
-            in 0x20D0..0x20FF -> true // Combining marks for symbols
-            in 0x0591..0x05BD -> true // Hebrew combining marks
-            in 0x0610..0x061A -> true // Arabic combining marks
-            else -> false
-        }
-    }
-
-    /**
-     * Checks if a code point is a grapheme extender.
-     * More accurate than the Char version for supplementary plane characters.
-     */
-    fun isGraphemeExtender(codePoint: Int): Boolean {
-        return when (codePoint) {
-            0x200D -> true // ZWJ
-            0xFE0E, 0xFE0F -> true // Variation selectors
-            in 0x0300..0x036F -> true // Combining diacritics
-            in 0x1F3FB..0x1F3FF -> true // Skin tone modifiers
-            in 0x20D0..0x20FF -> true // Combining marks for symbols
-            in 0x0591..0x05BD -> true // Hebrew combining marks
-            in 0x0610..0x061A -> true // Arabic combining marks
+            UnicodeConstants.ZWJ -> true // Zero-Width Joiner
+            UnicodeConstants.VARIATION_SELECTOR_TEXT, UnicodeConstants.VARIATION_SELECTOR_EMOJI -> true // Variation selectors
+            in UnicodeConstants.COMBINING_DIACRITICS_RANGE -> true // Combining diacritics
+            in UnicodeConstants.SKIN_TONE_RANGE -> true // Skin tone modifiers (requires surrogate pair check)
+            in UnicodeConstants.COMBINING_MARKS_FOR_SYMBOLS_RANGE -> true // Combining marks for symbols
+            in UnicodeConstants.HEBREW_COMBINING_MARKS_RANGE -> true // Hebrew combining marks
+            in UnicodeConstants.ARABIC_COMBINING_MARKS_RANGE -> true // Arabic combining marks
             else -> false
         }
     }

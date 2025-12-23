@@ -49,6 +49,7 @@ import ai.rever.bossterm.terminal.TerminalDisplay
 import ai.rever.bossterm.terminal.TerminalKeyEncoder
 import ai.rever.bossterm.terminal.emulator.mouse.MouseButtonCodes
 import ai.rever.bossterm.terminal.emulator.mouse.MouseMode
+import ai.rever.bossterm.terminal.model.BufferSnapshot
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import ai.rever.bossterm.terminal.util.CharUtils
 import kotlinx.coroutines.Job
@@ -274,6 +275,7 @@ fun ProperTerminal(
   // Drag state for text selection
   var isDragging by remember { mutableStateOf(false) }
   var dragStartPos by remember { mutableStateOf<Offset?>(null) }  // Track initial mouse position for drag detection
+  var cachedDragSnapshot by remember { mutableStateOf<BufferSnapshot?>(null) }  // Cached snapshot for drag performance
 
   // Auto-scroll state for drag selection beyond bounds
   var autoScrollJob by remember { mutableStateOf<Job?>(null) }
@@ -356,14 +358,25 @@ fun ProperTerminal(
 
         // Update selection end to track scroll position (using buffer-relative coordinates)
         lastDragPosition?.let { pos ->
-          val col = (pos.x / cellWidthParam).toInt().coerceIn(0, textBuffer.width - 1)
+          val visualCol = (pos.x / cellWidthParam).toInt().coerceIn(0, textBuffer.width - 1)
           val screenRow = when {
             pos.y < 0 -> 0  // Top of visible area
             pos.y > height -> ((height / cellHeightParam).toInt()).coerceAtMost(textBuffer.height - 1)
             else -> (pos.y / cellHeightParam).toInt()
           }
           val bufferRow = screenRow - scrollOffset  // Convert screen to buffer-relative row
-          selectionEnd = Pair(col, bufferRow)
+
+          // Convert visual column to buffer column for grapheme-aware selection
+          // Use cached snapshot for performance (created at drag start)
+          val snapshot = cachedDragSnapshot ?: textBuffer.createSnapshot()
+          val lineIndex = bufferRow + snapshot.historyLinesCount
+          val bufferCol = if (lineIndex >= 0 && lineIndex < snapshot.height + snapshot.historyLinesCount) {
+              val line = snapshot.getLine(lineIndex)
+              if (line != null) {
+                  TerminalCanvasRenderer.visualColToBufferCol(line, visualCol, snapshot.width)
+              } else visualCol
+          } else visualCol
+          selectionEnd = Pair(bufferCol, bufferRow)
         }
 
         display.requestImmediateRedraw()
@@ -924,6 +937,7 @@ fun ProperTerminal(
                   selectionEnd = null
                 }
                 isDragging = false
+                cachedDragSnapshot = null  // Clear cached snapshot
                 // Ensure focus is on terminal canvas after click
                 focusRequester.requestFocus()
               }
@@ -936,6 +950,7 @@ fun ProperTerminal(
                 selectionStart = start
                 selectionEnd = end
                 isDragging = false
+                cachedDragSnapshot = null  // Clear cached snapshot
 
                 // Clear search when user manually selects text
                 if (searchVisible) {
@@ -955,6 +970,7 @@ fun ProperTerminal(
                 selectionStart = start
                 selectionEnd = end
                 isDragging = false
+                cachedDragSnapshot = null  // Clear cached snapshot
 
                 // Clear search when user manually selects text
                 if (searchVisible) {
@@ -1054,23 +1070,46 @@ fun ProperTerminal(
                 // Detect Alt+Drag for block selection mode
                 selectionMode = if (event.isAltPressed()) SelectionMode.BLOCK else SelectionMode.NORMAL
 
-                val startCol = (startPos.x / cellWidth).toInt()
+                val visualCol = (startPos.x / cellWidth).toInt()
                 val screenRow = (startPos.y / cellHeight).toInt()
                 val bufferRow = screenRow - scrollOffset  // Convert screen to buffer-relative row
-                selectionStart = Pair(startCol, bufferRow)
+
+                // Convert visual column to buffer column for grapheme-aware selection
+                // Cache snapshot at drag start for performance - reused during entire drag
+                cachedDragSnapshot = textBuffer.createSnapshot()
+                val snapshot = cachedDragSnapshot!!
+                val lineIndex = bufferRow + snapshot.historyLinesCount
+                val bufferCol = if (lineIndex >= 0 && lineIndex < snapshot.height + snapshot.historyLinesCount) {
+                    val line = snapshot.getLine(lineIndex)
+                    if (line != null) {
+                        TerminalCanvasRenderer.visualColToBufferCol(line, visualCol, snapshot.width)
+                    } else visualCol
+                } else visualCol
+                selectionStart = Pair(bufferCol, bufferRow)
               }
 
               // Update selection end point as mouse moves
               // Handle out-of-bounds coordinates for auto-scroll
               // Convert to buffer-relative coordinates for consistent selection model
-              val col = (pos.x / cellWidth).toInt().coerceIn(0, textBuffer.width - 1)
+              val visualEndCol = (pos.x / cellWidth).toInt().coerceIn(0, textBuffer.width - 1)
               val screenRow = when {
                 pos.y < 0 -> 0  // Above canvas: first visible row
                 pos.y > canvasSize.height -> ((canvasSize.height / cellHeight).toInt()).coerceAtMost(textBuffer.height - 1)
                 else -> (pos.y / cellHeight).toInt()
               }
-              val bufferRow = screenRow - scrollOffset  // Convert screen to buffer-relative row
-              selectionEnd = Pair(col, bufferRow)
+              val bufferEndRow = screenRow - scrollOffset  // Convert screen to buffer-relative row
+
+              // Convert visual column to buffer column for grapheme-aware selection
+              // Use cached snapshot for performance (created at drag start)
+              val endSnapshot = cachedDragSnapshot ?: textBuffer.createSnapshot()
+              val endLineIndex = bufferEndRow + endSnapshot.historyLinesCount
+              val bufferEndCol = if (endLineIndex >= 0 && endLineIndex < endSnapshot.height + endSnapshot.historyLinesCount) {
+                  val line = endSnapshot.getLine(endLineIndex)
+                  if (line != null) {
+                      TerminalCanvasRenderer.visualColToBufferCol(line, visualEndCol, endSnapshot.width)
+                  } else visualEndCol
+              } else visualEndCol
+              selectionEnd = Pair(bufferEndCol, bufferEndRow)
 
               // Track position for auto-scroll updates
               lastDragPosition = pos
@@ -1145,6 +1184,7 @@ fun ProperTerminal(
           // Reset drag state and cancel auto-scroll
           isDragging = false
           dragStartPos = null
+          cachedDragSnapshot = null  // Clear cached snapshot
           autoScrollJob?.cancel()
           autoScrollJob = null
           lastDragPosition = null

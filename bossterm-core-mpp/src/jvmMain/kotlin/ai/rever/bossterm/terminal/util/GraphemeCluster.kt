@@ -35,20 +35,8 @@ data class GraphemeCluster(
     val isEmoji: Boolean
         get() {
             if (codePoints.isEmpty()) return false
-            val first = codePoints[0]
-            return when {
-                // Emoji & Pictographs (U+1F300-U+1F9FF)
-                first in 0x1F300..0x1F9FF -> true
-                // Emoticons (U+1F600-U+1F64F)
-                first in 0x1F600..0x1F64F -> true
-                // Transport & Map Symbols (U+1F680-U+1F6FF)
-                first in 0x1F680..0x1F6FF -> true
-                // Supplemental Symbols (U+1F900-U+1F9FF)
-                first in 0x1F900..0x1F9FF -> true
-                // Misc Symbols with emoji presentation
-                hasVariationSelector(0xFE0F) -> true
-                else -> false
-            }
+            return GraphemeUtils.isEmojiPresentation(codePoints[0]) ||
+                   hasVariationSelector(UnicodeConstants.VARIATION_SELECTOR_EMOJI)
         }
 
     /**
@@ -58,7 +46,7 @@ data class GraphemeCluster(
         return if (selector != null) {
             codePoints.contains(selector)
         } else {
-            codePoints.contains(0xFE0E) || codePoints.contains(0xFE0F)
+            codePoints.any { UnicodeConstants.isVariationSelector(it) }
         }
     }
 
@@ -66,14 +54,14 @@ data class GraphemeCluster(
      * Checks if this grapheme contains a skin tone modifier (U+1F3FB-U+1F3FF).
      */
     val hasSkinTone: Boolean
-        get() = codePoints.any { it in 0x1F3FB..0x1F3FF }
+        get() = codePoints.any { UnicodeConstants.isSkinToneModifier(it) }
 
     /**
      * Checks if this grapheme contains a Zero-Width Joiner (U+200D).
      * ZWJ is used to join multiple emoji into a single visual unit.
      */
     val hasZWJ: Boolean
-        get() = codePoints.contains(0x200D)
+        get() = codePoints.contains(UnicodeConstants.ZWJ)
 
     /**
      * Checks if this grapheme is a surrogate pair (outside BMP, U+10000+).

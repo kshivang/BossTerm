@@ -22,6 +22,8 @@ import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
 import ai.rever.bossterm.terminal.model.image.ImageCell
 import ai.rever.bossterm.terminal.model.image.ImageDataCache
 import ai.rever.bossterm.terminal.util.CharUtils
+import ai.rever.bossterm.terminal.util.ColumnConversionUtils
+import ai.rever.bossterm.terminal.util.UnicodeConstants
 import ai.rever.bossterm.terminal.TextStyle as BossTextStyle
 import org.jetbrains.skia.FontMgr
 
@@ -86,6 +88,140 @@ data class RenderingContext(
 )
 
 /**
+ * Result of analyzing a character for rendering purposes.
+ * Encapsulates surrogate pair handling, double-width detection, and variation selector info.
+ *
+ * ## Width Properties (evaluated in order)
+ *
+ * @property isWcwidthDoubleWidth True if the character is double-width by any of:
+ *   - `wcwidth()` returns 2 (CJK, fullwidth forms)
+ *   - A DWC marker exists at col+1 (buffer-level marking)
+ *   - A variation selector at col+1 has DWC at col+2 (emoji+VS layout)
+ *
+ * @property isBaseDoubleWidth True if:
+ *   - Code point >= U+1F100 (supplementary plane, always 2-cell), OR
+ *   - [isWcwidthDoubleWidth] is true
+ *   This captures characters that are inherently double-width regardless of modifiers.
+ *
+ * @property isDoubleWidth True if:
+ *   - [isBaseDoubleWidth] is true, OR
+ *   - Character has a variation selector (emoji presentation)
+ *   This is the final width determination used for rendering and cursor movement.
+ *
+ * @property visualWidth The actual cell count (1 or 2), derived from [isDoubleWidth].
+ */
+data class CharacterAnalysis(
+    val actualCodePoint: Int,
+    val lowSurrogate: Char?,
+    val charTextToRender: String,
+    val isWcwidthDoubleWidth: Boolean,
+    val isBaseDoubleWidth: Boolean,
+    val hasVariationSelector: Boolean,
+    val isEmojiWithVariationSelector: Boolean,
+    val isDoubleWidth: Boolean,
+    val visualWidth: Int,
+    // Character classification for font selection
+    val isCursiveOrMath: Boolean,
+    val isTechnicalSymbol: Boolean,
+    val isEmojiOrWideSymbol: Boolean
+)
+
+/**
+ * Analyze a character at the given column position for rendering.
+ * Handles surrogate pairs, double-width detection, and variation selectors.
+ * This is shared between renderBackgrounds() and renderText() to avoid duplication.
+ *
+ * ## Edge Cases
+ * - **Orphaned high surrogate**: If a high surrogate appears without a matching low surrogate
+ *   (e.g., at line boundary), it renders as-is. The font will typically display U+FFFD
+ *   (replacement character) or a placeholder glyph. This is intentional - the terminal
+ *   buffer may legitimately contain orphaned surrogates from incomplete writes.
+ *
+ * - **DWC marker between surrogates**: Some buffer layouts place a DWC marker between
+ *   high and low surrogates: [High][DWC][Low]. This is handled by checking col+2 when
+ *   col+1 contains a DWC marker.
+ */
+fun analyzeCharacter(
+    char: Char,
+    line: TerminalLine,
+    col: Int,
+    width: Int,
+    ambiguousCharsAreDoubleWidth: Boolean
+): CharacterAnalysis {
+    val charAtCol1 = if (col + 1 < width) line.charAt(col + 1) else null
+    val charAtCol2 = if (col + 2 < width) line.charAt(col + 2) else null
+
+    // Handle surrogate pairs
+    val lowSurrogate = if (Character.isHighSurrogate(char)) {
+        when {
+            charAtCol1 != null && Character.isLowSurrogate(charAtCol1) -> charAtCol1
+            charAtCol1 == CharUtils.DWC && charAtCol2 != null && Character.isLowSurrogate(charAtCol2) -> charAtCol2
+            else -> null
+        }
+    } else null
+
+    val actualCodePoint = if (lowSurrogate != null && Character.isLowSurrogate(lowSurrogate)) {
+        Character.toCodePoint(char, lowSurrogate)
+    } else char.code
+
+    val charTextToRender = if (lowSurrogate != null && Character.isLowSurrogate(lowSurrogate)) {
+        "$char$lowSurrogate"
+    } else {
+        char.toString()
+    }
+
+    // Double-width detection
+    val wcwidthResult = char != ' ' && char != '\u0000' &&
+        CharUtils.isDoubleWidthCharacter(actualCodePoint, ambiguousCharsAreDoubleWidth)
+
+    // Check for DWC at col+1, OR DWC at col+2 when col+1 is variation selector
+    // For emoji+VS like ⚠️: Buffer = [⚠][FE0F][DWC] - DWC is at col+2
+    val hasVariationSelectorAtCol1 = charAtCol1 != null && UnicodeConstants.isVariationSelector(charAtCol1)
+    val isWcwidthDoubleWidth = charAtCol1 == CharUtils.DWC ||
+        (hasVariationSelectorAtCol1 && charAtCol2 == CharUtils.DWC) ||
+        wcwidthResult
+
+    val isBaseDoubleWidth = if (actualCodePoint >= UnicodeConstants.ENCLOSED_ALPHANUMERIC_SUPPLEMENT_RANGE.first) true else isWcwidthDoubleWidth
+
+    // Check for variation selector - handle both DWC and non-DWC cases
+    val nextCharOffset = if (isWcwidthDoubleWidth) 2 else 1
+    val nextChar = if (col + nextCharOffset < width) line.charAt(col + nextCharOffset) else null
+    val hasVariationSelector = (nextChar != null && UnicodeConstants.isVariationSelector(nextChar)) ||
+        hasVariationSelectorAtCol1
+    val isEmojiWithVariationSelector = hasVariationSelector
+
+    val isDoubleWidth = isBaseDoubleWidth || isEmojiWithVariationSelector
+    val visualWidth = if (isDoubleWidth) 2 else 1
+
+    // Character classification for font selection
+    val isCursiveOrMath = actualCodePoint in 0x1D400..0x1D7FF
+    val isTechnicalSymbol = actualCodePoint in 0x23E9..0x23FF
+    // Use shared emoji detection to ensure renderer is consistent with buffer DWC markers
+    val isEmojiOrWideSymbol = ai.rever.bossterm.terminal.util.GraphemeUtils.isEmojiPresentation(actualCodePoint)
+
+    return CharacterAnalysis(
+        actualCodePoint = actualCodePoint,
+        lowSurrogate = lowSurrogate,
+        charTextToRender = charTextToRender,
+        isWcwidthDoubleWidth = isWcwidthDoubleWidth,
+        isBaseDoubleWidth = isBaseDoubleWidth,
+        hasVariationSelector = hasVariationSelector,
+        isEmojiWithVariationSelector = isEmojiWithVariationSelector,
+        isDoubleWidth = isDoubleWidth,
+        visualWidth = visualWidth,
+        isCursiveOrMath = isCursiveOrMath,
+        isTechnicalSymbol = isTechnicalSymbol,
+        isEmojiOrWideSymbol = isEmojiOrWideSymbol
+    )
+}
+
+/**
+ * Cache for CharacterAnalysis results to avoid redundant analysis between render passes.
+ * Key: (row, col) pair, Value: CharacterAnalysis result
+ */
+private typealias AnalysisCache = MutableMap<Pair<Int, Int>, CharacterAnalysis>
+
+/**
  * Terminal canvas renderer that handles all drawing operations.
  * Separates rendering logic from the composable for better maintainability.
  */
@@ -94,20 +230,22 @@ object TerminalCanvasRenderer {
     /**
      * Main rendering entry point. Renders the entire terminal buffer.
      * Uses a 3-pass system:
-     * - Pass 1: Draw all backgrounds
-     * - Pass 2: Draw all text
+     * - Pass 1: Draw all backgrounds (and cache character analysis)
+     * - Pass 2: Draw all text (reuse cached analysis)
      * - Pass 3: Draw overlays (hyperlinks, search, selection, cursor)
      *
      * @return Map of row to detected hyperlinks for mouse hover detection
      */
     fun DrawScope.renderTerminal(ctx: RenderingContext): Map<Int, List<Hyperlink>> {
         val hyperlinksCache = mutableMapOf<Int, List<Hyperlink>>()
+        // Cache character analysis to avoid redundant computation between passes
+        val analysisCache: AnalysisCache = mutableMapOf()
 
-        // Pass 1: Draw backgrounds
-        renderBackgrounds(ctx)
+        // Pass 1: Draw backgrounds and populate analysis cache
+        renderBackgrounds(ctx, analysisCache)
 
-        // Pass 2: Draw text and collect hyperlinks
-        val detectedHyperlinks = renderText(ctx)
+        // Pass 2: Draw text and collect hyperlinks (reuse cached analysis)
+        val detectedHyperlinks = renderText(ctx, analysisCache)
         hyperlinksCache.putAll(detectedHyperlinks)
 
         // Pass 3: Draw overlays
@@ -118,8 +256,9 @@ object TerminalCanvasRenderer {
 
     /**
      * Pass 1: Render all cell backgrounds.
+     * Populates the analysis cache for reuse in renderText().
      */
-    private fun DrawScope.renderBackgrounds(ctx: RenderingContext) {
+    private fun DrawScope.renderBackgrounds(ctx: RenderingContext, analysisCache: AnalysisCache) {
         val snapshot = ctx.bufferSnapshot
 
         for (row in 0 until ctx.visibleRows) {
@@ -127,27 +266,81 @@ object TerminalCanvasRenderer {
             val line = snapshot.getLine(lineIndex)
 
             var col = 0
+            var visualCol = 0  // Track visual position separately from buffer position
             while (col < ctx.visibleCols) {
                 val char = line.charAt(col)
                 val style = line.getStyleAt(col)
 
-                // Skip DWC markers
-                if (char == CharUtils.DWC) {
+                // Special handling for ZWJ: skip all characters until DWC
+                // ZWJ sequences like 👨‍💻 are: [emoji1][ZWJ][emoji2][DWC]
+                // We already rendered emoji1, now skip ZWJ and everything after until DWC
+                if (char.code == UnicodeConstants.ZWJ) {
                     col++
+                    while (col < ctx.visibleCols && line.charAt(col) != CharUtils.DWC) {
+                        col++
+                    }
+                    continue
+                }
+
+                // Use shared skip logic for simple cases (DWC, variation selectors,
+                // low surrogates, skin tones, gender symbols after ZWJ)
+                val skipResult = ColumnConversionUtils.shouldSkipChar(line, col, ctx.visibleCols)
+                if (skipResult.shouldSkip) {
+                    col += skipResult.colsToAdvance
+                    continue
+                }
+
+                // Handle Regional Indicator sequences (flag emoji) as a single unit
+                // Flags like 🇺🇸 are two Regional Indicators that should render as one 2-cell glyph
+                val flagColCount = checkRegionalIndicatorSequence(line, col, ctx.visibleCols)
+                if (flagColCount > 0) {
+                    val x = kotlin.math.floor(visualCol * ctx.cellWidth)
+                    val y = kotlin.math.floor(row * ctx.cellHeight)
+
+                    // Get attributes for background
+                    val isInverse = style?.hasOption(BossTextStyle.Option.INVERSE) ?: false
+                    val baseFg = style?.foreground?.let { ColorUtils.convertTerminalColor(it) }
+                        ?: ctx.settings.defaultForegroundColor
+                    val baseBg = style?.background?.let { ColorUtils.convertTerminalColor(it) }
+                        ?: ctx.settings.defaultBackgroundColor
+                    val bgColor = if (isInverse) baseFg else baseBg
+
+                    // Draw 2-cell background for the flag
+                    if (bgColor != ctx.settings.defaultBackgroundColor) {
+                        val nextVisualCol = visualCol + 2
+                        val nextX = kotlin.math.ceil(nextVisualCol * ctx.cellWidth)
+                        val bgWidth = nextX - x
+                        val nextRow = row + 1
+                        val nextY = kotlin.math.ceil(nextRow * ctx.cellHeight)
+                        val bgHeight = if (ctx.settings.fillBackgroundInLineSpacing) {
+                            nextY - y
+                        } else {
+                            ctx.baseCellHeight
+                        }
+                        drawRect(
+                            color = bgColor,
+                            topLeft = Offset(x.toFloat(), y.toFloat()),
+                            size = Size(bgWidth.toFloat(), bgHeight.toFloat())
+                        )
+                    }
+
+                    // Skip all chars in the flag sequence using the exact count returned
+                    col += flagColCount
+                    visualCol += 2
                     continue
                 }
 
                 // Round to pixel boundaries to avoid anti-aliasing artifacts
-                val x = kotlin.math.floor(col * ctx.cellWidth)
+                // Use visualCol for x position to match renderText
+                val x = kotlin.math.floor(visualCol * ctx.cellWidth)
                 val y = kotlin.math.floor(row * ctx.cellHeight)
 
-                // Check if double-width
-                val isWcwidthDoubleWidth = char != ' ' && char != '\u0000' &&
-                    CharUtils.isDoubleWidthCharacter(char.code, ctx.ambiguousCharsAreDoubleWidth)
+                // Use shared character analysis helper and cache the result
+                val analysis = analyzeCharacter(char, line, col, ctx.visibleCols, ctx.ambiguousCharsAreDoubleWidth)
+                analysisCache[lineIndex to col] = analysis
 
                 // Get attributes
                 val isInverse = style?.hasOption(BossTextStyle.Option.INVERSE) ?: false
-                val isDim = style?.hasOption(BossTextStyle.Option.DIM) ?: false
 
                 // Apply defaults FIRST, then swap if INVERSE
                 val baseFg = style?.foreground?.let { ColorUtils.convertTerminalColor(it) }
@@ -159,12 +352,10 @@ object TerminalCanvasRenderer {
                 val bgColor = if (isInverse) baseFg else baseBg
 
                 // Skip drawing if background matches default (canvas already has default bg)
-                // This avoids anti-aliasing artifacts from drawing same color on top
                 if (bgColor != ctx.settings.defaultBackgroundColor) {
-                    // Draw background (single or double width)
-                    // Calculate end positions and round to pixel boundaries
-                    val nextCol = if (isWcwidthDoubleWidth) col + 2 else col + 1
-                    val nextX = kotlin.math.ceil(nextCol * ctx.cellWidth)
+                    // Calculate background dimensions using visual positions
+                    val nextVisualCol = visualCol + analysis.visualWidth
+                    val nextX = kotlin.math.ceil(nextVisualCol * ctx.cellWidth)
                     val bgWidth = nextX - x
                     val nextRow = row + 1
                     val nextY = kotlin.math.ceil(nextRow * ctx.cellHeight)
@@ -180,21 +371,24 @@ object TerminalCanvasRenderer {
                     )
                 }
 
-                // Skip next column if double-width
-                if (isWcwidthDoubleWidth) {
-                    col++
-                }
-
+                // Advance buffer position (must match renderText col advancement)
                 col++
+                if (analysis.isWcwidthDoubleWidth) col++  // Skip DWC marker
+                if (analysis.isEmojiWithVariationSelector) col++  // Skip variation selector
+                if (analysis.lowSurrogate != null) col++  // Skip low surrogate
+
+                // Advance visual position
+                visualCol += analysis.visualWidth
             }
         }
     }
 
     /**
      * Pass 2: Render all text with proper font handling.
+     * Reuses character analysis from the cache populated by renderBackgrounds().
      * Returns map of row to detected hyperlinks.
      */
-    private fun DrawScope.renderText(ctx: RenderingContext): Map<Int, List<Hyperlink>> {
+    private fun DrawScope.renderText(ctx: RenderingContext, analysisCache: AnalysisCache): Map<Int, List<Hyperlink>> {
         val snapshot = ctx.bufferSnapshot
         val hyperlinksCache = mutableMapOf<Int, List<Hyperlink>>()
 
@@ -330,12 +524,13 @@ object TerminalCanvasRenderer {
 
                 val hasZWJ = cleanText.contains('\u200D')
                 val hasSkinTone = checkFollowingSkinTone(line, col, snapshot.width)
+                val hasRegionalIndicator = checkRegionalIndicatorSequence(line, col, snapshot.width) > 0
 
-                if (hasZWJ || hasSkinTone) {
+                if (hasZWJ || hasSkinTone || hasRegionalIndicator) {
                     val graphemes = ai.rever.bossterm.terminal.util.GraphemeUtils.segmentIntoGraphemes(cleanText)
                     if (graphemes.isNotEmpty()) {
                         val grapheme = graphemes[0]
-                        if (grapheme.hasZWJ || hasSkinTone) {
+                        if (grapheme.hasZWJ || hasSkinTone || hasRegionalIndicator) {
                             flushBatch()
                             val (colsSkipped, visualWidth) = renderZWJSequence(
                                 ctx, row, visualCol, col, grapheme, line, snapshot.width, style
@@ -349,55 +544,18 @@ object TerminalCanvasRenderer {
 
                 val x = visualCol * ctx.cellWidth
                 val y = row * ctx.cellHeight
+                val lineIndex = row - ctx.scrollOffset
 
-                // Handle surrogate pairs
-                val charAtCol1 = if (col + 1 < snapshot.width) line.charAt(col + 1) else null
-                val charAtCol2 = if (col + 2 < snapshot.width) line.charAt(col + 2) else null
+                // Use cached analysis from renderBackgrounds, or compute if not found
+                val analysis = analysisCache[lineIndex to col]
+                    ?: analyzeCharacter(char, line, col, snapshot.width, ctx.ambiguousCharsAreDoubleWidth)
 
-                val lowSurrogate = if (Character.isHighSurrogate(char)) {
-                    when {
-                        charAtCol1 != null && Character.isLowSurrogate(charAtCol1) -> charAtCol1
-                        charAtCol1 == CharUtils.DWC && charAtCol2 != null && Character.isLowSurrogate(charAtCol2) -> charAtCol2
-                        else -> null
-                    }
-                } else null
-
-                val actualCodePoint = if (lowSurrogate != null && Character.isLowSurrogate(lowSurrogate)) {
-                    Character.toCodePoint(char, lowSurrogate)
-                } else char.code
-
-                val wcwidthResult = char != ' ' && char != '\u0000' &&
-                    CharUtils.isDoubleWidthCharacter(actualCodePoint, ctx.ambiguousCharsAreDoubleWidth)
-                val isWcwidthDoubleWidth = charAtCol1 == CharUtils.DWC || wcwidthResult
-
-                val charTextToRender = if (lowSurrogate != null && Character.isLowSurrogate(lowSurrogate)) {
-                    "$char$lowSurrogate"
-                } else {
-                    char.toString()
-                }
-
-                // Character classification
-                val isCursiveOrMath = actualCodePoint in 0x1D400..0x1D7FF
-                val isTechnicalSymbol = actualCodePoint in 0x23E9..0x23FF
-                val isEmojiOrWideSymbol = when (actualCodePoint) {
-                    in 0x2600..0x26FF -> true
-                    in 0x1F100..0x1F1FF -> true
-                    in 0x1F300..0x1F9FF -> true
-                    in 0x1F600..0x1F64F -> true
-                    in 0x1F680..0x1F6FF -> true
-                    else -> false
-                }
-
-                val isDoubleWidth = if (actualCodePoint >= 0x1F100) true else isWcwidthDoubleWidth
-
-                // Check for variation selector
-                val nextCharOffset = if (isWcwidthDoubleWidth) 2 else 1
+                // Get nextChar for rendering emoji with variation selectors
+                val nextCharOffset = if (analysis.isWcwidthDoubleWidth) 2 else 1
                 val nextChar = if (col + nextCharOffset < snapshot.width) line.charAt(col + nextCharOffset) else null
-                val isEmojiWithVariationSelector = isEmojiOrWideSymbol &&
-                    nextChar != null && (nextChar.code == 0xFE0F || nextChar.code == 0xFE0E)
 
                 // Skip standalone variation selectors
-                if ((char.code == 0xFE0F || char.code == 0xFE0E) && !isEmojiOrWideSymbol) {
+                if (UnicodeConstants.isVariationSelector(char) && !analysis.isEmojiOrWideSymbol) {
                     col++
                     continue
                 }
@@ -426,7 +584,7 @@ object TerminalCanvasRenderer {
                     else -> true
                 }
 
-                val canBatch = !isDoubleWidth && !isEmojiOrWideSymbol && !isCursiveOrMath && !isTechnicalSymbol &&
+                val canBatch = !analysis.isDoubleWidth && !analysis.isEmojiOrWideSymbol && !analysis.isCursiveOrMath && !analysis.isTechnicalSymbol &&
                     !isHidden && isBlinkVisible && char != ' ' && char != '\u0000'
 
                 val styleMatches = batchText.isNotEmpty() &&
@@ -449,23 +607,23 @@ object TerminalCanvasRenderer {
 
                     if (char != ' ' && char != '\u0000' && !isHidden && isBlinkVisible) {
                         renderCharacter(
-                            ctx, x, y, charTextToRender, actualCodePoint,
-                            isDoubleWidth, isEmojiOrWideSymbol, isEmojiWithVariationSelector,
-                            isCursiveOrMath, isTechnicalSymbol, nextChar,
+                            ctx, x, y, analysis.charTextToRender, analysis.actualCodePoint,
+                            analysis.isDoubleWidth, analysis.isEmojiOrWideSymbol, analysis.isEmojiWithVariationSelector,
+                            analysis.isCursiveOrMath, analysis.isTechnicalSymbol, nextChar,
                             fgColor, isBold, isItalic, isUnderline
                         )
 
-                        if (isEmojiWithVariationSelector) {
+                        if (analysis.isEmojiWithVariationSelector) {
                             col++
                         }
                     }
                 }
 
-                if (isWcwidthDoubleWidth) col++
+                if (analysis.isWcwidthDoubleWidth) col++
                 col++
-                if (lowSurrogate != null) col++
+                if (analysis.lowSurrogate != null) col++
                 visualCol++
-                if (isDoubleWidth) visualCol++
+                if (analysis.isDoubleWidth) visualCol++
             }
 
             flushBatch()
@@ -542,6 +700,12 @@ object TerminalCanvasRenderer {
 
     /**
      * Render selection highlight rectangles.
+     * Selection coordinates are in buffer columns but we render using visual columns.
+     *
+     * Note: Selection automatically snaps to grapheme boundaries - partial grapheme
+     * selection expands to include the entire grapheme. This is intentional behavior
+     * to ensure emoji, ZWJ sequences, and other multi-codepoint graphemes are
+     * always selected as complete units.
      */
     private fun DrawScope.renderSelectionHighlight(ctx: RenderingContext) {
         val start = ctx.selectionStart ?: return
@@ -562,7 +726,13 @@ object TerminalCanvasRenderer {
         for (bufferRow in firstRow..lastRow) {
             val screenRow = bufferRow + ctx.scrollOffset
             if (screenRow in 0 until ctx.visibleRows) {
-                val (colStart, colEnd) = when (ctx.selectionMode) {
+                // Get the line for this row to convert buffer columns to visual columns
+                val lineIndex = bufferRow + snapshot.historyLinesCount
+                val line = if (lineIndex >= 0 && lineIndex < snapshot.height + snapshot.historyLinesCount) {
+                    snapshot.getLine(lineIndex)
+                } else null
+
+                val (bufColStart, bufColEnd) = when (ctx.selectionMode) {
                     SelectionMode.BLOCK -> {
                         minOf(firstCol, lastCol) to maxOf(firstCol, lastCol)
                     }
@@ -579,22 +749,112 @@ object TerminalCanvasRenderer {
                     }
                 }
 
-                for (col in colStart..colEnd) {
-                    if (col in 0 until snapshot.width) {
-                        val x = col * ctx.cellWidth
-                        val y = screenRow * ctx.cellHeight
-                        // Calculate size as difference to next cell to avoid floating-point gaps
-                        val w = (col + 1) * ctx.cellWidth - x
-                        val h = (screenRow + 1) * ctx.cellHeight - y
-                        drawRect(
-                            color = highlightColor,
-                            topLeft = Offset(x, y),
-                            size = Size(w, h)
-                        )
-                    }
+                // Convert buffer columns to visual columns for proper rendering
+                val visualColStart = if (line != null) {
+                    bufferColToVisualCol(line, bufColStart, snapshot.width)
+                } else bufColStart
+                val visualColEnd = if (line != null) {
+                    bufferColToVisualCol(line, bufColEnd + 1, snapshot.width)
+                } else bufColEnd + 1
+
+                // Draw a single rectangle for the entire selection range on this row
+                if (visualColStart < visualColEnd) {
+                    val x = visualColStart * ctx.cellWidth
+                    val y = screenRow * ctx.cellHeight
+                    val w = visualColEnd * ctx.cellWidth - x
+                    val h = (screenRow + 1) * ctx.cellHeight - y
+                    drawRect(
+                        color = highlightColor,
+                        topLeft = Offset(x, y),
+                        size = Size(w, h)
+                    )
                 }
             }
         }
+    }
+
+    /**
+     * Convert buffer column to visual column.
+     * Delegates to shared ColumnConversionUtils.
+     */
+    fun bufferColToVisualCol(line: TerminalLine, bufferCol: Int, width: Int): Int =
+        ColumnConversionUtils.bufferColToVisualCol(line, bufferCol, width)
+
+    /**
+     * Convert visual column to buffer column.
+     * Delegates to shared ColumnConversionUtils.
+     */
+    fun visualColToBufferCol(line: TerminalLine, visualCol: Int, width: Int): Int =
+        ColumnConversionUtils.visualColToBufferCol(line, visualCol, width)
+
+    /**
+     * Find the buffer column range for a grapheme at the given buffer column.
+     * Returns (startCol, endCol) where endCol is inclusive.
+     */
+    fun findGraphemeBounds(line: TerminalLine, bufferCol: Int, width: Int): Pair<Int, Int> {
+        // Find the start of the grapheme (scan backwards for non-extender)
+        var startCol = bufferCol
+        while (startCol > 0) {
+            val char = line.charAt(startCol)
+            // If this is a base character (not DWC, not extender), we found the start
+            if (char != CharUtils.DWC &&
+                !UnicodeConstants.isVariationSelector(char) &&
+                char.code != UnicodeConstants.ZWJ &&
+                !Character.isLowSurrogate(char)) {
+                // Check if it's a skin tone modifier
+                if (Character.isHighSurrogate(char) && startCol + 1 < width) {
+                    val next = line.charAt(startCol + 1)
+                    if (Character.isLowSurrogate(next)) {
+                        val cp = Character.toCodePoint(char, next)
+                        if (UnicodeConstants.isSkinToneModifier(cp)) {
+                            startCol--
+                            continue
+                        }
+                    }
+                }
+                // Check if preceded by ZWJ (part of sequence)
+                if (startCol > 0 && line.charAt(startCol - 1).code == UnicodeConstants.ZWJ) {
+                    startCol--
+                    continue
+                }
+                break
+            }
+            startCol--
+        }
+
+        // Find the end of the grapheme (scan forward for extenders and DWC)
+        var endCol = startCol
+        while (endCol + 1 < width) {
+            val nextChar = line.charAt(endCol + 1)
+            // Continue if next is DWC, variation selector, ZWJ, low surrogate, or skin tone
+            if (nextChar == CharUtils.DWC ||
+                UnicodeConstants.isVariationSelector(nextChar) ||
+                nextChar.code == UnicodeConstants.ZWJ ||
+                Character.isLowSurrogate(nextChar)) {
+                endCol++
+                continue
+            }
+            // Check for skin tone modifier (surrogate pair)
+            if (Character.isHighSurrogate(nextChar) && endCol + 2 < width) {
+                val afterNext = line.charAt(endCol + 2)
+                if (Character.isLowSurrogate(afterNext)) {
+                    val cp = Character.toCodePoint(nextChar, afterNext)
+                    if (UnicodeConstants.isSkinToneModifier(cp)) {
+                        endCol += 2
+                        continue
+                    }
+                }
+            }
+            // Check for gender symbol after ZWJ
+            if (line.charAt(endCol).code == UnicodeConstants.ZWJ &&
+                UnicodeConstants.isGenderSymbol(nextChar.code)) {
+                endCol++
+                continue
+            }
+            break
+        }
+
+        return Pair(startCol, endCol)
     }
 
     /**
@@ -675,8 +935,10 @@ object TerminalCanvasRenderer {
 
         if (checkCol < width - 1) {
             val c1 = line.charAt(checkCol)
+            // Skin tones U+1F3FB-U+1F3FF use same high surrogate (0xD83C) as Regional Indicators
             if (c1 == '\uD83C' && checkCol + 1 < width) {
                 val c2 = line.charAt(checkCol + 1)
+                // Skin tone low surrogates: 0xDFFB..0xDFFF
                 if (c2.code in 0xDFFB..0xDFFF) {
                     return true
                 }
@@ -684,6 +946,50 @@ object TerminalCanvasRenderer {
         }
 
         return false
+    }
+
+    /**
+     * Check if current position starts a Regional Indicator sequence (flag emoji).
+     * Regional Indicators are surrogate pairs with high surrogate 0xD83C and low surrogate 0xDDE6-0xDDFF.
+     * Two consecutive Regional Indicators form a flag (e.g., 🇺🇸 = U+1F1FA + U+1F1F8).
+     *
+     * @return Number of buffer columns the flag occupies (0 if not a flag sequence)
+     *         Possible layouts:
+     *         - [High1][Low1][High2][Low2] = 4 chars
+     *         - [High1][Low1][DWC][High2][Low2] = 5 chars (DWC after first indicator)
+     *         - [High1][Low1][DWC][High2][Low2][DWC] = 6 chars (DWC after both)
+     */
+    private fun checkRegionalIndicatorSequence(line: TerminalLine, col: Int, width: Int): Int {
+        if (col + 3 >= width) return 0  // Need at least 4 chars for 2 surrogate pairs
+
+        val c1 = line.charAt(col)
+        val c2 = line.charAt(col + 1)
+
+        // Check if first char is high surrogate for Regional Indicator
+        // and second char is low surrogate in Regional Indicator range
+        if (UnicodeConstants.isRegionalIndicatorHighSurrogate(c1) &&
+            UnicodeConstants.isRegionalIndicatorLowSurrogate(c2.code)) {
+            // Check for second Regional Indicator (may have DWC between them)
+            var nextCol = col + 2
+            if (nextCol < width && line.charAt(nextCol) == CharUtils.DWC) {
+                nextCol++
+            }
+            if (nextCol + 1 < width) {
+                val c3 = line.charAt(nextCol)
+                val c4 = line.charAt(nextCol + 1)
+                if (UnicodeConstants.isRegionalIndicatorHighSurrogate(c3) &&
+                    UnicodeConstants.isRegionalIndicatorLowSurrogate(c4.code)) {
+                    // Calculate total columns: position after second indicator's low surrogate
+                    var endCol = nextCol + 2
+                    // Skip trailing DWC if present
+                    if (endCol < width && line.charAt(endCol) == CharUtils.DWC) {
+                        endCol++
+                    }
+                    return endCol - col
+                }
+            }
+        }
+        return 0
     }
 
     /**
@@ -825,8 +1131,17 @@ object TerminalCanvasRenderer {
             isMacOS  // Default: system font on macOS, bundled on Linux
         }
         val fontForChar = if (isEmojiWithVariationSelector) {
-            // True color emoji (with variation selector) - use system font for color rendering
-            FontFamily.Default
+            // True color emoji (with variation selector) - use explicit emoji font for reliable color rendering
+            if (isMacOS) {
+                val appleColorEmoji = FontMgr.default.matchFamilyStyle("Apple Color Emoji", org.jetbrains.skia.FontStyle.NORMAL)
+                if (appleColorEmoji != null) {
+                    FontFamily(androidx.compose.ui.text.platform.Typeface(appleColorEmoji))
+                } else {
+                    FontFamily.Default
+                }
+            } else {
+                FontFamily.Default
+            }
         } else if (isEmojiOrWideSymbol) {
             // Emoji/symbols without variation selector - platform specific
             if (useSystemFontForEmoji) {
@@ -862,7 +1177,14 @@ object TerminalCanvasRenderer {
         )
 
         if (isDoubleWidth) {
-            val measurement = ctx.textMeasurer.measure(charTextToRender, textStyle)
+            // Include variation selector for emoji presentation (⚠️ needs FE0F to render as color emoji)
+            val textToRender = if (isEmojiWithVariationSelector && nextChar != null &&
+                UnicodeConstants.isVariationSelector(nextChar)) {
+                "$charTextToRender$nextChar"
+            } else {
+                charTextToRender
+            }
+            val measurement = ctx.textMeasurer.measure(textToRender, textStyle)
             val glyphWidth = measurement.size.width.toFloat()
             val allocatedWidth = ctx.cellWidth * 2
 
@@ -871,7 +1193,7 @@ object TerminalCanvasRenderer {
                 scale(scaleX = scaleX, scaleY = 1f, pivot = Offset(x, y + ctx.cellWidth)) {
                     drawText(
                         textMeasurer = ctx.textMeasurer,
-                        text = charTextToRender,
+                        text = textToRender,
                         topLeft = Offset(x, y),
                         style = textStyle
                     )
@@ -881,7 +1203,7 @@ object TerminalCanvasRenderer {
                 val centeringOffset = emptySpace / 2f
                 drawText(
                     textMeasurer = ctx.textMeasurer,
-                    text = charTextToRender,
+                    text = textToRender,
                     topLeft = Offset(x + centeringOffset, y),
                     style = textStyle
                 )
@@ -897,23 +1219,22 @@ object TerminalCanvasRenderer {
             val glyphWidth = measurement.size.width.toFloat()
             val glyphHeight = measurement.size.height.toFloat()
 
-            val targetWidth = ctx.cellWidth * 1.0f
+            // Emoji span 2 cells - use same approach as ZWJ sequences
+            val allocatedWidth = ctx.cellWidth * 2.0f
             val targetHeight = ctx.cellHeight * 1.0f
 
-            val widthScale = if (glyphWidth > 0) targetWidth / glyphWidth else 1.0f
+            val widthScale = if (glyphWidth > 0) allocatedWidth / glyphWidth else 1.0f
             val heightScale = if (glyphHeight > 0) targetHeight / glyphHeight else 1.0f
-            val scaleValue = minOf(widthScale, heightScale).coerceIn(1.0f, 2.5f)
+            val scaleValue = minOf(widthScale, heightScale).coerceIn(0.8f, 2.5f)
 
             val scaledWidth = glyphWidth * scaleValue
-            val scaledHeight = glyphHeight * scaleValue
-            val xOffset = (ctx.cellWidth - scaledWidth) / 2f
-            val yOffset = (ctx.cellHeight - scaledHeight) / 2f
+            val centerX = x + (allocatedWidth - scaledWidth) / 2f
 
-            scale(scaleX = scaleValue, scaleY = scaleValue, pivot = Offset(x + ctx.cellWidth/2, y + ctx.cellHeight/2)) {
+            scale(scaleX = scaleValue, scaleY = scaleValue, pivot = Offset(x, y + ctx.cellHeight / 2f)) {
                 drawText(
                     textMeasurer = ctx.textMeasurer,
                     text = textToRender,
-                    topLeft = Offset(x + xOffset, y + yOffset),
+                    topLeft = Offset(x + (centerX - x) / scaleValue, y),
                     style = textStyle
                 )
             }

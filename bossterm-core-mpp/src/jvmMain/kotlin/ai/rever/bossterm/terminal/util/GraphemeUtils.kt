@@ -112,7 +112,12 @@ object GraphemeUtils {
 
         // Fast path: single BMP character
         if (grapheme.length == 1) {
-            return CharUtils.mk_wcwidth(grapheme[0].code, ambiguousIsDWC).coerceAtLeast(0)
+            val codePoint = grapheme[0].code
+            // Check for emoji with Emoji_Presentation=Yes (should be 2 cells by default)
+            if (isEmojiPresentation(codePoint)) {
+                return 2
+            }
+            return CharUtils.mk_wcwidth(codePoint, ambiguousIsDWC).coerceAtLeast(0)
         }
 
         // Check cache
@@ -173,6 +178,12 @@ object GraphemeUtils {
             }
         }
 
+        // Check for single emoji with Emoji_Presentation=Yes (e.g., ✅, ⭐)
+        // These should be 2 cells even without variation selector
+        if (codePoints.size == 1 && isEmojiPresentation(codePoints.first())) {
+            return 2
+        }
+
         // For combining character sequences, only count base character
         var totalWidth = 0
         var isFirst = true
@@ -195,6 +206,59 @@ object GraphemeUtils {
         }
 
         return totalWidth
+    }
+
+    /**
+     * Checks if a code point has Emoji_Presentation=Yes in Unicode.
+     * These characters should render as emoji (2 cells) by default without needing U+FE0F.
+     *
+     * Note: This is a curated subset of characters that are commonly rendered as emoji.
+     * Characters like ❤ (U+2764) have Emoji_Presentation=No and need U+FE0F to render as emoji.
+     *
+     * @param codePoint The Unicode code point to check
+     * @return True if this character defaults to emoji presentation (2 cells)
+     */
+    private fun isEmojiPresentation(codePoint: Int): Boolean {
+        return when (codePoint) {
+            // Weather and zodiac (selected)
+            0x2614, 0x2615 -> true // Umbrella, coffee
+            in 0x2648..0x2653 -> true // Zodiac
+            0x267F -> true // Wheelchair
+            0x2693 -> true // Anchor
+            0x26A1 -> true // High voltage
+            0x26AA, 0x26AB -> true // Circles
+            0x26BD, 0x26BE -> true // Sports balls
+            0x26C4, 0x26C5 -> true // Snowman, sun/cloud
+            0x26CE -> true // Ophiuchus
+            0x26D4 -> true // No entry
+            0x26EA -> true // Church
+            0x26F2, 0x26F3 -> true // Fountain, golf
+            0x26F5 -> true // Sailboat
+            0x26FA -> true // Tent
+            0x26FD -> true // Fuel pump
+            // Dingbats with Emoji_Presentation=Yes (verified against Unicode spec)
+            0x2705 -> true // ✅ Check mark button
+            0x2728 -> true // ✨ Sparkles
+            0x274C -> true // ❌ Cross mark
+            0x274E -> true // Cross mark button
+            in 0x2753..0x2755 -> true // Question/exclamation marks (❓❔❕)
+            0x2757 -> true // ❗ Exclamation mark
+            in 0x2795..0x2797 -> true // Math operators (➕➖➗)
+            0x27B0 -> true // ➰ Curly loop
+            0x27BF -> true // ➿ Double curly loop
+            // Arrows and shapes
+            0x2934, 0x2935 -> true // Curved arrows
+            in 0x2B05..0x2B07 -> true // Directional arrows
+            0x2B1B, 0x2B1C -> true // Large squares
+            0x2B50 -> true // ⭐ Star
+            0x2B55 -> true // Heavy large circle
+            // Japanese symbols
+            0x3030 -> true // Wavy dash
+            0x303D -> true // Part alternation mark
+            0x3297 -> true // Circled Ideograph Congratulation
+            0x3299 -> true // Circled Ideograph Secret
+            else -> false
+        }
     }
 
     /**

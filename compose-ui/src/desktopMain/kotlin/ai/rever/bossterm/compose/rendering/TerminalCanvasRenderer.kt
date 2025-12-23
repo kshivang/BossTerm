@@ -144,6 +144,42 @@ object TerminalCanvasRenderer {
                     continue
                 }
 
+                // Skip Zero-Width Joiner and all subsequent chars until DWC
+                // ZWJ sequences like 👨‍💻 are: [emoji1][ZWJ][emoji2][DWC]
+                // We already rendered emoji1, now skip ZWJ and everything after until DWC
+                if (char.code == 0x200D) {
+                    col++
+                    // Skip all characters until we hit DWC (end of grapheme)
+                    while (col < ctx.visibleCols) {
+                        val nextChar = line.charAt(col)
+                        if (nextChar == CharUtils.DWC) break
+                        col++
+                    }
+                    continue
+                }
+
+                // Skip skin tone modifiers (U+1F3FB-U+1F3FF) - they extend the previous emoji
+                // These are surrogate pairs: high=0xD83C, low=0xDFFB-0xDFFF
+                if (Character.isHighSurrogate(char)) {
+                    val nextChar = if (col + 1 < ctx.visibleCols) line.charAt(col + 1) else null
+                    if (nextChar != null && Character.isLowSurrogate(nextChar)) {
+                        val codePoint = Character.toCodePoint(char, nextChar)
+                        // Skin tone modifiers
+                        if (codePoint in 0x1F3FB..0x1F3FF) {
+                            col += 2  // Skip both surrogate chars
+                            continue
+                        }
+                        // Male/female signs used in ZWJ sequences (♀️ U+2640, ♂️ U+2642)
+                        // These are BMP so handled below
+                    }
+                }
+
+                // Skip gender symbols that are part of ZWJ sequences (♀ U+2640, ♂ U+2642)
+                if (char.code == 0x2640 || char.code == 0x2642) {
+                    col++
+                    continue
+                }
+
                 // Round to pixel boundaries to avoid anti-aliasing artifacts
                 // Use visualCol for x position to match renderText
                 val x = kotlin.math.floor(visualCol * ctx.cellWidth)
@@ -168,35 +204,26 @@ object TerminalCanvasRenderer {
                 // Check if double-width (must match renderText logic lines 400-402)
                 val wcwidthResult = char != ' ' && char != '\u0000' &&
                     CharUtils.isDoubleWidthCharacter(actualCodePoint, ctx.ambiguousCharsAreDoubleWidth)
-                val isWcwidthDoubleWidth = charAtCol1 == CharUtils.DWC || wcwidthResult
+                // Check for DWC at col+1, OR DWC at col+2 when col+1 is variation selector
+                // For emoji+VS like ⚠️: Buffer = [⚠][FE0F][DWC] - DWC is at col+2
+                val hasVariationSelector = charAtCol1 != null && (charAtCol1.code == 0xFE0F || charAtCol1.code == 0xFE0E)
+                val isWcwidthDoubleWidth = charAtCol1 == CharUtils.DWC ||
+                    (hasVariationSelector && charAtCol2 == CharUtils.DWC) ||
+                    wcwidthResult
 
-                // Force double-width for high codepoints (must match renderText line 422)
-                val isDoubleWidth = if (actualCodePoint >= 0x1F100) true else isWcwidthDoubleWidth
+                // Base double-width check
+                val isBaseDoubleWidth = if (actualCodePoint >= 0x1F100) true else isWcwidthDoubleWidth
 
-                // Check for emoji with variation selector
-                // Extended ranges to cover all common emoji that render as 2 cells
-                val isEmojiOrWideSymbol = when (actualCodePoint) {
-                    in 0x2600..0x26FF -> true  // Misc symbols (includes ⚠ U+26A0, ☀ U+2600, ☁ U+2601)
-                    in 0x2700..0x27BF -> true  // Dingbats (includes ✅ U+2705, ❌ U+274C, ❤ U+2764)
-                    in 0x2B00..0x2BFF -> true  // Misc Symbols and Arrows (includes ⭐ U+2B50)
-                    in 0x1F100..0x1F1FF -> true
-                    in 0x1F300..0x1F9FF -> true
-                    in 0x1F600..0x1F64F -> true
-                    in 0x1F680..0x1F6FF -> true
-                    else -> false
-                }
-                // Look for variation selector after the character (accounting for DWC if present)
-                val vsOffset = if (isWcwidthDoubleWidth) 2 else 1
-                val vsChar = if (col + vsOffset < ctx.visibleCols) line.charAt(col + vsOffset) else null
-                val isEmojiWithVariationSelector = isEmojiOrWideSymbol &&
-                    vsChar != null && (vsChar.code == 0xFE0F || vsChar.code == 0xFE0E)
+                // Any character followed by variation selector (FE0F/FE0E) should be 2-cell
+                // This handles cases like ❤️ (U+2764 + FE0F) which is in Dingbats range
+                // hasVariationSelector already checks charAtCol1 for FE0F/FE0E
+                val isEmojiWithVariationSelector = hasVariationSelector
 
-                // Determine visual width: all emoji render as 2 cells visually
-                val visualWidth = when {
-                    isEmojiOrWideSymbol -> 2  // All emoji are 2 cells (with or without VS)
-                    isDoubleWidth -> 2
-                    else -> 1
-                }
+                // Emoji with variation selector should be double-width (must match renderText)
+                val isDoubleWidth = isBaseDoubleWidth || isEmojiWithVariationSelector
+
+                // Determine visual width
+                val visualWidth = if (isDoubleWidth) 2 else 1
 
                 // Get attributes
                 val isInverse = style?.hasOption(BossTextStyle.Option.INVERSE) ?: false
@@ -432,7 +459,14 @@ object TerminalCanvasRenderer {
                 val isCursiveOrMath = actualCodePoint in 0x1D400..0x1D7FF
                 val isTechnicalSymbol = actualCodePoint in 0x23E9..0x23FF
                 val isEmojiOrWideSymbol = when (actualCodePoint) {
-                    in 0x2600..0x26FF -> true
+                    // Misc symbols - but exclude text presentation symbols
+                    in 0x2600..0x26FF -> when (actualCodePoint) {
+                        // Exclude stars (text symbols)
+                        0x2605, 0x2606 -> false  // ★ ☆
+                        // Exclude card suits (text symbols)
+                        in 0x2660..0x2667 -> false  // ♠ ♡ ♢ ♣ ♤ ♥ ♦ ♧
+                        else -> true
+                    }
                     in 0x1F100..0x1F1FF -> true
                     in 0x1F300..0x1F9FF -> true
                     in 0x1F600..0x1F64F -> true
@@ -440,13 +474,16 @@ object TerminalCanvasRenderer {
                     else -> false
                 }
 
-                val isDoubleWidth = if (actualCodePoint >= 0x1F100) true else isWcwidthDoubleWidth
+                val isBaseDoubleWidth = if (actualCodePoint >= 0x1F100) true else isWcwidthDoubleWidth
 
-                // Check for variation selector
+                // Check for variation selector - any character followed by FE0F/FE0E is emoji presentation
                 val nextCharOffset = if (isWcwidthDoubleWidth) 2 else 1
                 val nextChar = if (col + nextCharOffset < snapshot.width) line.charAt(col + nextCharOffset) else null
-                val isEmojiWithVariationSelector = isEmojiOrWideSymbol &&
-                    nextChar != null && (nextChar.code == 0xFE0F || nextChar.code == 0xFE0E)
+                val hasVariationSelector = nextChar != null && (nextChar.code == 0xFE0F || nextChar.code == 0xFE0E)
+                val isEmojiWithVariationSelector = hasVariationSelector
+
+                // Emoji with variation selector should be double-width
+                val isDoubleWidth = isBaseDoubleWidth || isEmojiWithVariationSelector
 
                 // Skip standalone variation selectors
                 if ((char.code == 0xFE0F || char.code == 0xFE0E) && !isEmojiOrWideSymbol) {
@@ -877,8 +914,17 @@ object TerminalCanvasRenderer {
             isMacOS  // Default: system font on macOS, bundled on Linux
         }
         val fontForChar = if (isEmojiWithVariationSelector) {
-            // True color emoji (with variation selector) - use system font for color rendering
-            FontFamily.Default
+            // True color emoji (with variation selector) - use explicit emoji font for reliable color rendering
+            if (isMacOS) {
+                val appleColorEmoji = FontMgr.default.matchFamilyStyle("Apple Color Emoji", org.jetbrains.skia.FontStyle.NORMAL)
+                if (appleColorEmoji != null) {
+                    FontFamily(androidx.compose.ui.text.platform.Typeface(appleColorEmoji))
+                } else {
+                    FontFamily.Default
+                }
+            } else {
+                FontFamily.Default
+            }
         } else if (isEmojiOrWideSymbol) {
             // Emoji/symbols without variation selector - platform specific
             if (useSystemFontForEmoji) {
@@ -914,7 +960,14 @@ object TerminalCanvasRenderer {
         )
 
         if (isDoubleWidth) {
-            val measurement = ctx.textMeasurer.measure(charTextToRender, textStyle)
+            // Include variation selector for emoji presentation (⚠️ needs FE0F to render as color emoji)
+            val textToRender = if (isEmojiWithVariationSelector && nextChar != null &&
+                (nextChar.code == 0xFE0F || nextChar.code == 0xFE0E)) {
+                "$charTextToRender$nextChar"
+            } else {
+                charTextToRender
+            }
+            val measurement = ctx.textMeasurer.measure(textToRender, textStyle)
             val glyphWidth = measurement.size.width.toFloat()
             val allocatedWidth = ctx.cellWidth * 2
 
@@ -923,7 +976,7 @@ object TerminalCanvasRenderer {
                 scale(scaleX = scaleX, scaleY = 1f, pivot = Offset(x, y + ctx.cellWidth)) {
                     drawText(
                         textMeasurer = ctx.textMeasurer,
-                        text = charTextToRender,
+                        text = textToRender,
                         topLeft = Offset(x, y),
                         style = textStyle
                     )
@@ -933,7 +986,7 @@ object TerminalCanvasRenderer {
                 val centeringOffset = emptySpace / 2f
                 drawText(
                     textMeasurer = ctx.textMeasurer,
-                    text = charTextToRender,
+                    text = textToRender,
                     topLeft = Offset(x + centeringOffset, y),
                     style = textStyle
                 )
@@ -949,23 +1002,22 @@ object TerminalCanvasRenderer {
             val glyphWidth = measurement.size.width.toFloat()
             val glyphHeight = measurement.size.height.toFloat()
 
-            val targetWidth = ctx.cellWidth * 1.0f
+            // Emoji span 2 cells - use same approach as ZWJ sequences
+            val allocatedWidth = ctx.cellWidth * 2.0f
             val targetHeight = ctx.cellHeight * 1.0f
 
-            val widthScale = if (glyphWidth > 0) targetWidth / glyphWidth else 1.0f
+            val widthScale = if (glyphWidth > 0) allocatedWidth / glyphWidth else 1.0f
             val heightScale = if (glyphHeight > 0) targetHeight / glyphHeight else 1.0f
-            val scaleValue = minOf(widthScale, heightScale).coerceIn(1.0f, 2.5f)
+            val scaleValue = minOf(widthScale, heightScale).coerceIn(0.8f, 2.5f)
 
             val scaledWidth = glyphWidth * scaleValue
-            val scaledHeight = glyphHeight * scaleValue
-            val xOffset = (ctx.cellWidth - scaledWidth) / 2f
-            val yOffset = (ctx.cellHeight - scaledHeight) / 2f
+            val centerX = x + (allocatedWidth - scaledWidth) / 2f
 
-            scale(scaleX = scaleValue, scaleY = scaleValue, pivot = Offset(x + ctx.cellWidth/2, y + ctx.cellHeight/2)) {
+            scale(scaleX = scaleValue, scaleY = scaleValue, pivot = Offset(x, y + ctx.cellHeight / 2f)) {
                 drawText(
                     textMeasurer = ctx.textMeasurer,
                     text = textToRender,
-                    topLeft = Offset(x + xOffset, y + yOffset),
+                    topLeft = Offset(x + (centerX - x) / scaleValue, y),
                     style = textStyle
                 )
             }

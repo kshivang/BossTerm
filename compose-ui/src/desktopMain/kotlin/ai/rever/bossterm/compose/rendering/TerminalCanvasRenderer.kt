@@ -212,6 +212,12 @@ fun analyzeCharacter(
 }
 
 /**
+ * Cache for CharacterAnalysis results to avoid redundant analysis between render passes.
+ * Key: (row, col) pair, Value: CharacterAnalysis result
+ */
+private typealias AnalysisCache = MutableMap<Pair<Int, Int>, CharacterAnalysis>
+
+/**
  * Terminal canvas renderer that handles all drawing operations.
  * Separates rendering logic from the composable for better maintainability.
  */
@@ -220,20 +226,22 @@ object TerminalCanvasRenderer {
     /**
      * Main rendering entry point. Renders the entire terminal buffer.
      * Uses a 3-pass system:
-     * - Pass 1: Draw all backgrounds
-     * - Pass 2: Draw all text
+     * - Pass 1: Draw all backgrounds (and cache character analysis)
+     * - Pass 2: Draw all text (reuse cached analysis)
      * - Pass 3: Draw overlays (hyperlinks, search, selection, cursor)
      *
      * @return Map of row to detected hyperlinks for mouse hover detection
      */
     fun DrawScope.renderTerminal(ctx: RenderingContext): Map<Int, List<Hyperlink>> {
         val hyperlinksCache = mutableMapOf<Int, List<Hyperlink>>()
+        // Cache character analysis to avoid redundant computation between passes
+        val analysisCache: AnalysisCache = mutableMapOf()
 
-        // Pass 1: Draw backgrounds
-        renderBackgrounds(ctx)
+        // Pass 1: Draw backgrounds and populate analysis cache
+        renderBackgrounds(ctx, analysisCache)
 
-        // Pass 2: Draw text and collect hyperlinks
-        val detectedHyperlinks = renderText(ctx)
+        // Pass 2: Draw text and collect hyperlinks (reuse cached analysis)
+        val detectedHyperlinks = renderText(ctx, analysisCache)
         hyperlinksCache.putAll(detectedHyperlinks)
 
         // Pass 3: Draw overlays
@@ -244,8 +252,9 @@ object TerminalCanvasRenderer {
 
     /**
      * Pass 1: Render all cell backgrounds.
+     * Populates the analysis cache for reuse in renderText().
      */
-    private fun DrawScope.renderBackgrounds(ctx: RenderingContext) {
+    private fun DrawScope.renderBackgrounds(ctx: RenderingContext, analysisCache: AnalysisCache) {
         val snapshot = ctx.bufferSnapshot
 
         for (row in 0 until ctx.visibleRows) {
@@ -313,8 +322,9 @@ object TerminalCanvasRenderer {
                 val x = kotlin.math.floor(visualCol * ctx.cellWidth)
                 val y = kotlin.math.floor(row * ctx.cellHeight)
 
-                // Use shared character analysis helper
+                // Use shared character analysis helper and cache the result
                 val analysis = analyzeCharacter(char, line, col, ctx.visibleCols, ctx.ambiguousCharsAreDoubleWidth)
+                analysisCache[lineIndex to col] = analysis
 
                 // Get attributes
                 val isInverse = style?.hasOption(BossTextStyle.Option.INVERSE) ?: false
@@ -362,9 +372,10 @@ object TerminalCanvasRenderer {
 
     /**
      * Pass 2: Render all text with proper font handling.
+     * Reuses character analysis from the cache populated by renderBackgrounds().
      * Returns map of row to detected hyperlinks.
      */
-    private fun DrawScope.renderText(ctx: RenderingContext): Map<Int, List<Hyperlink>> {
+    private fun DrawScope.renderText(ctx: RenderingContext, analysisCache: AnalysisCache): Map<Int, List<Hyperlink>> {
         val snapshot = ctx.bufferSnapshot
         val hyperlinksCache = mutableMapOf<Int, List<Hyperlink>>()
 
@@ -519,9 +530,11 @@ object TerminalCanvasRenderer {
 
                 val x = visualCol * ctx.cellWidth
                 val y = row * ctx.cellHeight
+                val lineIndex = row - ctx.scrollOffset
 
-                // Use shared character analysis helper
-                val analysis = analyzeCharacter(char, line, col, snapshot.width, ctx.ambiguousCharsAreDoubleWidth)
+                // Use cached analysis from renderBackgrounds, or compute if not found
+                val analysis = analysisCache[lineIndex to col]
+                    ?: analyzeCharacter(char, line, col, snapshot.width, ctx.ambiguousCharsAreDoubleWidth)
 
                 // Get nextChar for rendering emoji with variation selectors
                 val nextCharOffset = if (analysis.isWcwidthDoubleWidth) 2 else 1

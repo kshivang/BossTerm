@@ -325,7 +325,8 @@ object TerminalCanvasRenderer {
                     }
 
                     // Skip all chars in the flag sequence (2 surrogate pairs + possible DWC markers)
-                    col += 4  // Skip both Regional Indicators (2 surrogate pairs = 4 chars)
+                    // Use minOf to prevent index out of bounds if flag is at end of line
+                    col += minOf(4, ctx.visibleCols - col)
                     while (col < ctx.visibleCols && line.charAt(col) == CharUtils.DWC) {
                         col++  // Skip any trailing DWC markers
                     }

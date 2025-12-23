@@ -209,15 +209,18 @@ object GraphemeUtils {
     }
 
     /**
-     * Checks if a code point should render as emoji (2 cells width).
+     * Checks if a code point should render as emoji (2 cells width) by default.
      *
      * This covers:
-     * - Characters with Emoji_Presentation=Yes in Unicode
      * - Supplementary plane emoji (U+1F000+) which are always 2-cell wide
-     * - Common BMP emoji that typically render as 2 cells
+     * - BMP characters that are UNAMBIGUOUSLY emoji (not commonly used as text symbols)
+     *
+     * NOTE: Many BMP symbols (▶◀⏹⏺ etc.) are intentionally NOT included here because
+     * they are often used as 1-cell text symbols in TUI applications. They will render
+     * as 2-cell emoji ONLY when followed by variation selector FE0F.
      *
      * @param codePoint The Unicode code point to check
-     * @return True if this character should render as 2 cells
+     * @return True if this character should render as 2 cells by default
      */
     private fun isEmojiPresentation(codePoint: Int): Boolean {
         return when {
@@ -237,53 +240,46 @@ object GraphemeUtils {
             // Chess Symbols (U+1FA00-U+1FA6F)
             codePoint in 0x1FA00..0x1FA6F -> true
 
-            // === BMP EMOJI with Emoji_Presentation=Yes ===
-            // Watch and hourglass
+            // === BMP EMOJI that are unambiguously emoji (not used as text symbols) ===
+            // Watch and hourglass - commonly rendered as emoji
             codePoint == 0x231A || codePoint == 0x231B -> true
-            // Media control symbols
-            codePoint in 0x23E9..0x23F3 -> true
-            codePoint in 0x23F8..0x23FA -> true
-            // Squares
-            codePoint == 0x25AA || codePoint == 0x25AB -> true
-            codePoint == 0x25B6 || codePoint == 0x25C0 -> true
-            codePoint in 0x25FB..0x25FE -> true
-            // Miscellaneous Symbols (U+2600-U+26FF) - weather, zodiac, misc
-            codePoint == 0x2614 || codePoint == 0x2615 -> true // Umbrella, coffee
-            codePoint in 0x2648..0x2653 -> true // Zodiac
-            codePoint == 0x267F -> true // Wheelchair
-            codePoint == 0x2693 -> true // Anchor
-            codePoint == 0x26A1 -> true // High voltage
-            codePoint == 0x26AA || codePoint == 0x26AB -> true // Circles
-            codePoint == 0x26BD || codePoint == 0x26BE -> true // Sports balls
-            codePoint == 0x26C4 || codePoint == 0x26C5 -> true // Snowman, sun/cloud
-            codePoint == 0x26CE -> true // Ophiuchus
-            codePoint == 0x26D4 -> true // No entry
-            codePoint == 0x26EA -> true // Church
-            codePoint == 0x26F2 || codePoint == 0x26F3 -> true // Fountain, golf
-            codePoint == 0x26F5 -> true // Sailboat
-            codePoint == 0x26FA -> true // Tent
-            codePoint == 0x26FD -> true // Fuel pump
-            // Dingbats with Emoji_Presentation=Yes
+            // Miscellaneous Symbols - only include clearly emoji ones
+            codePoint == 0x2614 || codePoint == 0x2615 -> true // ☔☕ Umbrella, coffee
+            codePoint in 0x2648..0x2653 -> true // Zodiac signs
+            codePoint == 0x267F -> true // ♿ Wheelchair
+            codePoint == 0x2693 -> true // ⚓ Anchor
+            codePoint == 0x26A1 -> true // ⚡ High voltage
+            codePoint == 0x26AA || codePoint == 0x26AB -> true // ⚪⚫ Circles
+            codePoint == 0x26BD || codePoint == 0x26BE -> true // ⚽⚾ Sports balls
+            codePoint == 0x26C4 || codePoint == 0x26C5 -> true // ⛄⛅ Snowman, sun/cloud
+            codePoint == 0x26CE -> true // ⛎ Ophiuchus
+            codePoint == 0x26D4 -> true // ⛔ No entry
+            codePoint == 0x26EA -> true // ⛪ Church
+            codePoint == 0x26F2 || codePoint == 0x26F3 -> true // ⛲⛳ Fountain, golf
+            codePoint == 0x26F5 -> true // ⛵ Sailboat
+            codePoint == 0x26FA -> true // ⛺ Tent
+            codePoint == 0x26FD -> true // ⛽ Fuel pump
+            // Dingbats - only clearly emoji ones
             codePoint == 0x2705 -> true // ✅ Check mark button
             codePoint == 0x2728 -> true // ✨ Sparkles
             codePoint == 0x274C -> true // ❌ Cross mark
-            codePoint == 0x274E -> true // Cross mark button
-            codePoint in 0x2753..0x2755 -> true // Question/exclamation marks (❓❔❕)
+            codePoint == 0x274E -> true // ❎ Cross mark button
+            codePoint in 0x2753..0x2755 -> true // ❓❔❕ Question/exclamation marks
             codePoint == 0x2757 -> true // ❗ Exclamation mark
-            codePoint in 0x2795..0x2797 -> true // Math operators (➕➖➗)
+            codePoint in 0x2795..0x2797 -> true // ➕➖➗ Math operators
             codePoint == 0x27B0 -> true // ➰ Curly loop
             codePoint == 0x27BF -> true // ➿ Double curly loop
-            // Arrows and shapes
-            codePoint == 0x2934 || codePoint == 0x2935 -> true // Curved arrows
-            codePoint in 0x2B05..0x2B07 -> true // Directional arrows
-            codePoint == 0x2B1B || codePoint == 0x2B1C -> true // Large squares
+            // Arrows - only the clearly emoji ones
+            codePoint == 0x2934 || codePoint == 0x2935 -> true // ⤴⤵ Curved arrows
+            codePoint in 0x2B05..0x2B07 -> true // ⬅⬆⬇ Directional arrows
+            codePoint == 0x2B1B || codePoint == 0x2B1C -> true // ⬛⬜ Large squares
             codePoint == 0x2B50 -> true // ⭐ Star
-            codePoint == 0x2B55 -> true // Heavy large circle
+            codePoint == 0x2B55 -> true // ⭕ Heavy large circle
             // Japanese symbols
-            codePoint == 0x3030 -> true // Wavy dash
-            codePoint == 0x303D -> true // Part alternation mark
-            codePoint == 0x3297 -> true // Circled Ideograph Congratulation
-            codePoint == 0x3299 -> true // Circled Ideograph Secret
+            codePoint == 0x3030 -> true // 〰 Wavy dash
+            codePoint == 0x303D -> true // 〽 Part alternation mark
+            codePoint == 0x3297 -> true // ㊗ Circled Ideograph Congratulation
+            codePoint == 0x3299 -> true // ㊙ Circled Ideograph Secret
 
             else -> false
         }

@@ -166,16 +166,32 @@ fun analyzeCharacter(
     // Character classification for font selection
     val isCursiveOrMath = actualCodePoint in 0x1D400..0x1D7FF
     val isTechnicalSymbol = actualCodePoint in 0x23E9..0x23FF
+    // Only treat as emoji if it matches isEmojiPresentation() in GraphemeUtils
+    // to ensure renderer is consistent with buffer DWC markers
     val isEmojiOrWideSymbol = when (actualCodePoint) {
-        in 0x2600..0x26FF -> when (actualCodePoint) {
-            0x2605, 0x2606 -> false  // ★ ☆ (text symbols)
-            in 0x2660..0x2667 -> false  // ♠ ♡ ♢ ♣ ♤ ♥ ♦ ♧ (card suits)
-            else -> true
-        }
+        // Miscellaneous Symbols - only specific emoji ones (must match GraphemeUtils.isEmojiPresentation)
+        0x2614, 0x2615 -> true // ☔☕ Umbrella, coffee
+        in 0x2648..0x2653 -> true // Zodiac signs
+        0x267F -> true // ♿ Wheelchair
+        0x2693 -> true // ⚓ Anchor
+        0x26A1 -> true // ⚡ High voltage
+        0x26AA, 0x26AB -> true // ⚪⚫ Circles
+        0x26BD, 0x26BE -> true // ⚽⚾ Sports balls
+        0x26C4, 0x26C5 -> true // ⛄⛅ Snowman, sun/cloud
+        0x26CE -> true // ⛎ Ophiuchus
+        0x26D4 -> true // ⛔ No entry
+        0x26EA -> true // ⛪ Church
+        0x26F2, 0x26F3 -> true // ⛲⛳ Fountain, golf
+        0x26F5 -> true // ⛵ Sailboat
+        0x26FA -> true // ⛺ Tent
+        0x26FD -> true // ⛽ Fuel pump
+        // Supplementary plane emoji (always 2-cell)
         in 0x1F100..0x1F1FF -> true
-        in 0x1F300..0x1F9FF -> true
+        in 0x1F300..0x1F5FF -> true
         in 0x1F600..0x1F64F -> true
         in 0x1F680..0x1F6FF -> true
+        in 0x1F900..0x1F9FF -> true
+        in 0x1FA00..0x1FAFF -> true
         else -> false
     }
 

@@ -130,8 +130,8 @@ class GraphemeMetadata private constructor(
                 // Check for surrogates, emoji, combining characters
                 if (c.isHighSurrogate() || c.isLowSurrogate() ||
                     c.code in 0x0300..0x036F || // Combining diacritics
-                    c.code == 0x200D || // ZWJ
-                    c.code == 0xFE0E || c.code == 0xFE0F // Variation selectors
+                    c.code == UnicodeConstants.ZWJ ||
+                    UnicodeConstants.isVariationSelector(c)
                 ) {
                     needsMetadata = true
                     break

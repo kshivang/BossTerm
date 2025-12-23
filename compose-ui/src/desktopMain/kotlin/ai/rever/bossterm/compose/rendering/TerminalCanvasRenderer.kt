@@ -23,6 +23,7 @@ import ai.rever.bossterm.terminal.model.image.ImageCell
 import ai.rever.bossterm.terminal.model.image.ImageDataCache
 import ai.rever.bossterm.terminal.util.CharUtils
 import ai.rever.bossterm.terminal.util.ColumnConversionUtils
+import ai.rever.bossterm.terminal.util.UnicodeConstants
 import ai.rever.bossterm.terminal.TextStyle as BossTextStyle
 import org.jetbrains.skia.FontMgr
 
@@ -146,7 +147,7 @@ fun analyzeCharacter(
 
     // Check for DWC at col+1, OR DWC at col+2 when col+1 is variation selector
     // For emoji+VS like ⚠️: Buffer = [⚠][FE0F][DWC] - DWC is at col+2
-    val hasVariationSelectorAtCol1 = charAtCol1 != null && (charAtCol1.code == 0xFE0F || charAtCol1.code == 0xFE0E)
+    val hasVariationSelectorAtCol1 = charAtCol1 != null && UnicodeConstants.isVariationSelector(charAtCol1)
     val isWcwidthDoubleWidth = charAtCol1 == CharUtils.DWC ||
         (hasVariationSelectorAtCol1 && charAtCol2 == CharUtils.DWC) ||
         wcwidthResult
@@ -156,7 +157,7 @@ fun analyzeCharacter(
     // Check for variation selector - handle both DWC and non-DWC cases
     val nextCharOffset = if (isWcwidthDoubleWidth) 2 else 1
     val nextChar = if (col + nextCharOffset < width) line.charAt(col + nextCharOffset) else null
-    val hasVariationSelector = (nextChar != null && (nextChar.code == 0xFE0F || nextChar.code == 0xFE0E)) ||
+    val hasVariationSelector = (nextChar != null && UnicodeConstants.isVariationSelector(nextChar)) ||
         hasVariationSelectorAtCol1
     val isEmojiWithVariationSelector = hasVariationSelector
 
@@ -244,7 +245,7 @@ object TerminalCanvasRenderer {
                 // Special handling for ZWJ: skip all characters until DWC
                 // ZWJ sequences like 👨‍💻 are: [emoji1][ZWJ][emoji2][DWC]
                 // We already rendered emoji1, now skip ZWJ and everything after until DWC
-                if (char.code == 0x200D) {
+                if (char.code == UnicodeConstants.ZWJ) {
                     col++
                     while (col < ctx.visibleCols && line.charAt(col) != CharUtils.DWC) {
                         col++
@@ -528,7 +529,7 @@ object TerminalCanvasRenderer {
                 val nextChar = if (col + nextCharOffset < snapshot.width) line.charAt(col + nextCharOffset) else null
 
                 // Skip standalone variation selectors
-                if ((char.code == 0xFE0F || char.code == 0xFE0E) && !analysis.isEmojiOrWideSymbol) {
+                if (UnicodeConstants.isVariationSelector(char) && !analysis.isEmojiOrWideSymbol) {
                     col++
                     continue
                 }
@@ -771,22 +772,22 @@ object TerminalCanvasRenderer {
             val char = line.charAt(startCol)
             // If this is a base character (not DWC, not extender), we found the start
             if (char != CharUtils.DWC &&
-                char.code != 0xFE0E && char.code != 0xFE0F &&
-                char.code != 0x200D &&
+                !UnicodeConstants.isVariationSelector(char) &&
+                char.code != UnicodeConstants.ZWJ &&
                 !Character.isLowSurrogate(char)) {
                 // Check if it's a skin tone modifier
                 if (Character.isHighSurrogate(char) && startCol + 1 < width) {
                     val next = line.charAt(startCol + 1)
                     if (Character.isLowSurrogate(next)) {
                         val cp = Character.toCodePoint(char, next)
-                        if (cp in 0x1F3FB..0x1F3FF) {
+                        if (UnicodeConstants.isSkinToneModifier(cp)) {
                             startCol--
                             continue
                         }
                     }
                 }
                 // Check if preceded by ZWJ (part of sequence)
-                if (startCol > 0 && line.charAt(startCol - 1).code == 0x200D) {
+                if (startCol > 0 && line.charAt(startCol - 1).code == UnicodeConstants.ZWJ) {
                     startCol--
                     continue
                 }
@@ -801,8 +802,8 @@ object TerminalCanvasRenderer {
             val nextChar = line.charAt(endCol + 1)
             // Continue if next is DWC, variation selector, ZWJ, low surrogate, or skin tone
             if (nextChar == CharUtils.DWC ||
-                nextChar.code == 0xFE0E || nextChar.code == 0xFE0F ||
-                nextChar.code == 0x200D ||
+                UnicodeConstants.isVariationSelector(nextChar) ||
+                nextChar.code == UnicodeConstants.ZWJ ||
                 Character.isLowSurrogate(nextChar)) {
                 endCol++
                 continue
@@ -812,15 +813,15 @@ object TerminalCanvasRenderer {
                 val afterNext = line.charAt(endCol + 2)
                 if (Character.isLowSurrogate(afterNext)) {
                     val cp = Character.toCodePoint(nextChar, afterNext)
-                    if (cp in 0x1F3FB..0x1F3FF) {
+                    if (UnicodeConstants.isSkinToneModifier(cp)) {
                         endCol += 2
                         continue
                     }
                 }
             }
             // Check for gender symbol after ZWJ
-            if (line.charAt(endCol).code == 0x200D &&
-                (nextChar.code == 0x2640 || nextChar.code == 0x2642)) {
+            if (line.charAt(endCol).code == UnicodeConstants.ZWJ &&
+                UnicodeConstants.isGenderSymbol(nextChar.code)) {
                 endCol++
                 continue
             }
@@ -908,8 +909,10 @@ object TerminalCanvasRenderer {
 
         if (checkCol < width - 1) {
             val c1 = line.charAt(checkCol)
+            // Skin tones U+1F3FB-U+1F3FF use same high surrogate (0xD83C) as Regional Indicators
             if (c1 == '\uD83C' && checkCol + 1 < width) {
                 val c2 = line.charAt(checkCol + 1)
+                // Skin tone low surrogates: 0xDFFB..0xDFFF
                 if (c2.code in 0xDFFB..0xDFFF) {
                     return true
                 }
@@ -930,9 +933,10 @@ object TerminalCanvasRenderer {
         val c1 = line.charAt(col)
         val c2 = line.charAt(col + 1)
 
-        // Check if first char is high surrogate for Regional Indicator (0xD83C)
-        // and second char is low surrogate in Regional Indicator range (0xDDE6-0xDDFF)
-        if (c1 == '\uD83C' && c2.code in 0xDDE6..0xDDFF) {
+        // Check if first char is high surrogate for Regional Indicator
+        // and second char is low surrogate in Regional Indicator range
+        if (UnicodeConstants.isRegionalIndicatorHighSurrogate(c1) &&
+            UnicodeConstants.isRegionalIndicatorLowSurrogate(c2.code)) {
             // Check for second Regional Indicator (may have DWC between them)
             var nextCol = col + 2
             if (nextCol < width && line.charAt(nextCol) == CharUtils.DWC) {
@@ -941,7 +945,8 @@ object TerminalCanvasRenderer {
             if (nextCol + 1 < width) {
                 val c3 = line.charAt(nextCol)
                 val c4 = line.charAt(nextCol + 1)
-                if (c3 == '\uD83C' && c4.code in 0xDDE6..0xDDFF) {
+                if (UnicodeConstants.isRegionalIndicatorHighSurrogate(c3) &&
+                    UnicodeConstants.isRegionalIndicatorLowSurrogate(c4.code)) {
                     return true
                 }
             }
@@ -1136,7 +1141,7 @@ object TerminalCanvasRenderer {
         if (isDoubleWidth) {
             // Include variation selector for emoji presentation (⚠️ needs FE0F to render as color emoji)
             val textToRender = if (isEmojiWithVariationSelector && nextChar != null &&
-                (nextChar.code == 0xFE0F || nextChar.code == 0xFE0E)) {
+                UnicodeConstants.isVariationSelector(nextChar)) {
                 "$charTextToRender$nextChar"
             } else {
                 charTextToRender

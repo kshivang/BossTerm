@@ -152,23 +152,22 @@ object GraphemeUtils {
         }
 
         // Check for ZWJ sequence (multiple emoji joined)
-        if (codePoints.contains(0x200D)) {
+        if (codePoints.contains(UnicodeConstants.ZWJ)) {
             // ZWJ sequence: treat as single emoji (width 2)
             return 2
         }
 
         // Check for Regional Indicator sequence (flag emoji)
-        // Regional Indicators are in range U+1F1E6 to U+1F1FF
         // Two consecutive Regional Indicators form a flag (e.g., 🇺🇸 = U+1F1FA + U+1F1F8)
-        if (codePoints.size >= 2 && codePoints.all { it in 0x1F1E6..0x1F1FF }) {
+        if (codePoints.size >= 2 && codePoints.all { UnicodeConstants.isRegionalIndicator(it) }) {
             return 2  // Flag emoji
         }
 
         // Check for variation selector
-        val hasVariationSelector = codePoints.contains(0xFE0E) || codePoints.contains(0xFE0F)
+        val hasVariationSelector = codePoints.any { UnicodeConstants.isVariationSelector(it) }
 
         // Check for skin tone modifier
-        val hasSkinTone = codePoints.any { it in 0x1F3FB..0x1F3FF }
+        val hasSkinTone = codePoints.any { UnicodeConstants.isSkinToneModifier(it) }
 
         // For emoji with variation selector or skin tone, calculate base emoji width only
         if (hasVariationSelector || hasSkinTone) {
@@ -303,10 +302,10 @@ object GraphemeUtils {
      */
     fun isGraphemeExtender(c: Char): Boolean {
         return when (c.code) {
-            0x200D -> true // Zero-Width Joiner
-            0xFE0E, 0xFE0F -> true // Variation selectors
+            UnicodeConstants.ZWJ -> true // Zero-Width Joiner
+            UnicodeConstants.VARIATION_SELECTOR_TEXT, UnicodeConstants.VARIATION_SELECTOR_EMOJI -> true // Variation selectors
             in 0x0300..0x036F -> true // Combining diacritics
-            in 0x1F3FB..0x1F3FF -> true // Skin tone modifiers (requires surrogate pair check)
+            in UnicodeConstants.SKIN_TONE_RANGE -> true // Skin tone modifiers (requires surrogate pair check)
             in 0x20D0..0x20FF -> true // Combining marks for symbols
             in 0x0591..0x05BD -> true // Hebrew combining marks
             in 0x0610..0x061A -> true // Arabic combining marks
@@ -320,10 +319,10 @@ object GraphemeUtils {
      */
     fun isGraphemeExtender(codePoint: Int): Boolean {
         return when (codePoint) {
-            0x200D -> true // ZWJ
-            0xFE0E, 0xFE0F -> true // Variation selectors
+            UnicodeConstants.ZWJ -> true // ZWJ
+            UnicodeConstants.VARIATION_SELECTOR_TEXT, UnicodeConstants.VARIATION_SELECTOR_EMOJI -> true // Variation selectors
             in 0x0300..0x036F -> true // Combining diacritics
-            in 0x1F3FB..0x1F3FF -> true // Skin tone modifiers
+            in UnicodeConstants.SKIN_TONE_RANGE -> true // Skin tone modifiers
             in 0x20D0..0x20FF -> true // Combining marks for symbols
             in 0x0591..0x05BD -> true // Hebrew combining marks
             in 0x0610..0x061A -> true // Arabic combining marks

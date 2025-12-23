@@ -78,8 +78,8 @@ object GraphemeBoundaryUtils {
     private fun needsGraphemeAnalysis(c: Char): Boolean {
         return c.isHighSurrogate() ||
                c.isLowSurrogate() ||
-               c.code == 0x200D || // ZWJ
-               c.code == 0xFE0E || c.code == 0xFE0F || // Variation selectors
+               c.code == UnicodeConstants.ZWJ ||
+               UnicodeConstants.isVariationSelector(c) ||
                c.code in 0x0300..0x036F || // Combining diacritics
                GraphemeUtils.isGraphemeExtender(c)
     }

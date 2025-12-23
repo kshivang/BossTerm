@@ -38,12 +38,12 @@ object ColumnConversionUtils {
         }
 
         // Skip variation selectors (FE0E, FE0F)
-        if (char.code == 0xFE0E || char.code == 0xFE0F) {
+        if (UnicodeConstants.isVariationSelector(char)) {
             return SkipResult(true, 1)
         }
 
         // Skip ZWJ (U+200D)
-        if (char.code == 0x200D) {
+        if (char.code == UnicodeConstants.ZWJ) {
             return SkipResult(true, 1)
         }
 
@@ -57,15 +57,15 @@ object ColumnConversionUtils {
             val nextChar = line.charAt(col + 1)
             if (Character.isLowSurrogate(nextChar)) {
                 val codePoint = Character.toCodePoint(char, nextChar)
-                if (codePoint in 0x1F3FB..0x1F3FF) {
+                if (UnicodeConstants.isSkinToneModifier(codePoint)) {
                     return SkipResult(true, 2)
                 }
             }
         }
 
         // Skip gender symbols only when preceded by ZWJ (part of ZWJ sequences)
-        if (char.code == 0x2640 || char.code == 0x2642) {
-            if (col > 0 && line.charAt(col - 1).code == 0x200D) {
+        if (UnicodeConstants.isGenderSymbol(char.code)) {
+            if (col > 0 && line.charAt(col - 1).code == UnicodeConstants.ZWJ) {
                 return SkipResult(true, 1)
             }
         }
@@ -170,9 +170,9 @@ object ColumnConversionUtils {
                 if (nextChar == CharUtils.DWC) return 2
                 // Continue through grapheme extenders
                 if (Character.isLowSurrogate(nextChar) ||
-                    nextChar.code == 0xFE0E || nextChar.code == 0xFE0F ||
-                    nextChar.code == 0x200D ||
-                    nextChar.code == 0x2640 || nextChar.code == 0x2642) {
+                    UnicodeConstants.isVariationSelector(nextChar) ||
+                    nextChar.code == UnicodeConstants.ZWJ ||
+                    UnicodeConstants.isGenderSymbol(nextChar.code)) {
                     nextCol++
                     continue
                 }
@@ -181,7 +181,7 @@ object ColumnConversionUtils {
                     val afterNext = line.charAt(nextCol + 1)
                     if (Character.isLowSurrogate(afterNext)) {
                         val cp = Character.toCodePoint(nextChar, afterNext)
-                        if (cp in 0x1F3FB..0x1F3FF) {
+                        if (UnicodeConstants.isSkinToneModifier(cp)) {
                             nextCol += 2
                             continue
                         }

@@ -11,6 +11,69 @@ import ai.rever.bossterm.terminal.model.TerminalLine
 object ColumnConversionUtils {
 
     /**
+     * Result of checking if a character should be skipped during column iteration.
+     * @param shouldSkip True if the character should be skipped
+     * @param colsToAdvance Number of columns to advance (1 for single char, 2 for surrogate pair)
+     */
+    private data class SkipResult(val shouldSkip: Boolean, val colsToAdvance: Int = 1)
+
+    /**
+     * Check if character at given column should be skipped (doesn't consume visual space).
+     * This encapsulates the common skip logic used by both bufferColToVisualCol and visualColToBufferCol.
+     *
+     * Characters that don't consume visual space:
+     * - DWC markers (placeholder for second cell of double-width char)
+     * - Variation selectors (FE0E, FE0F)
+     * - Zero-Width Joiner (ZWJ)
+     * - Low surrogates (part of previous high surrogate)
+     * - Skin tone modifiers (when part of emoji sequence)
+     * - Gender symbols (when preceded by ZWJ)
+     */
+    private fun shouldSkipChar(line: TerminalLine, col: Int, width: Int): SkipResult {
+        val char = line.charAt(col)
+
+        // Skip DWC markers (they don't add visual width)
+        if (char == CharUtils.DWC) {
+            return SkipResult(true, 1)
+        }
+
+        // Skip variation selectors (FE0E, FE0F)
+        if (char.code == 0xFE0E || char.code == 0xFE0F) {
+            return SkipResult(true, 1)
+        }
+
+        // Skip ZWJ (U+200D)
+        if (char.code == 0x200D) {
+            return SkipResult(true, 1)
+        }
+
+        // Skip low surrogates (they're part of previous high surrogate)
+        if (Character.isLowSurrogate(char)) {
+            return SkipResult(true, 1)
+        }
+
+        // Skip skin tone modifiers (U+1F3FB-U+1F3FF, encoded as surrogate pairs)
+        if (Character.isHighSurrogate(char) && col + 1 < width) {
+            val nextChar = line.charAt(col + 1)
+            if (Character.isLowSurrogate(nextChar)) {
+                val codePoint = Character.toCodePoint(char, nextChar)
+                if (codePoint in 0x1F3FB..0x1F3FF) {
+                    return SkipResult(true, 2)
+                }
+            }
+        }
+
+        // Skip gender symbols only when preceded by ZWJ (part of ZWJ sequences)
+        if (char.code == 0x2640 || char.code == 0x2642) {
+            if (col > 0 && line.charAt(col - 1).code == 0x200D) {
+                return SkipResult(true, 1)
+            }
+        }
+
+        return SkipResult(false, 0)
+    }
+
+    /**
      * Convert buffer column to visual column.
      * Accounts for DWC markers, surrogate pairs, ZWJ sequences, and other grapheme extenders
      * that don't consume visual space.
@@ -27,50 +90,10 @@ object ColumnConversionUtils {
         var col = 0
 
         while (col < bufferCol && col < width) {
-            val char = line.charAt(col)
-
-            // Skip DWC markers (they don't add visual width)
-            if (char == CharUtils.DWC) {
-                col++
+            val skipResult = shouldSkipChar(line, col, width)
+            if (skipResult.shouldSkip) {
+                col += skipResult.colsToAdvance
                 continue
-            }
-
-            // Skip variation selectors (FE0E, FE0F)
-            if (char.code == 0xFE0E || char.code == 0xFE0F) {
-                col++
-                continue
-            }
-
-            // Skip ZWJ (U+200D)
-            if (char.code == 0x200D) {
-                col++
-                continue
-            }
-
-            // Skip low surrogates (they're part of previous high surrogate)
-            if (Character.isLowSurrogate(char)) {
-                col++
-                continue
-            }
-
-            // Skip skin tone modifiers (U+1F3FB-U+1F3FF, encoded as surrogate pairs)
-            if (Character.isHighSurrogate(char) && col + 1 < width) {
-                val nextChar = line.charAt(col + 1)
-                if (Character.isLowSurrogate(nextChar)) {
-                    val codePoint = Character.toCodePoint(char, nextChar)
-                    if (codePoint in 0x1F3FB..0x1F3FF) {
-                        col += 2
-                        continue
-                    }
-                }
-            }
-
-            // Skip gender symbols only when preceded by ZWJ (part of ZWJ sequences)
-            if (char.code == 0x2640 || char.code == 0x2642) {
-                if (col > 0 && line.charAt(col - 1).code == 0x200D) {
-                    col++
-                    continue
-                }
             }
 
             // Regular character - count visual width (1 or 2 for double-width)
@@ -97,50 +120,10 @@ object ColumnConversionUtils {
         var col = 0
 
         while (col < width && currentVisualCol < visualCol) {
-            val char = line.charAt(col)
-
-            // Skip DWC markers
-            if (char == CharUtils.DWC) {
-                col++
+            val skipResult = shouldSkipChar(line, col, width)
+            if (skipResult.shouldSkip) {
+                col += skipResult.colsToAdvance
                 continue
-            }
-
-            // Skip variation selectors
-            if (char.code == 0xFE0E || char.code == 0xFE0F) {
-                col++
-                continue
-            }
-
-            // Skip ZWJ
-            if (char.code == 0x200D) {
-                col++
-                continue
-            }
-
-            // Skip low surrogates
-            if (Character.isLowSurrogate(char)) {
-                col++
-                continue
-            }
-
-            // Skip skin tone modifiers
-            if (Character.isHighSurrogate(char) && col + 1 < width) {
-                val nextChar = line.charAt(col + 1)
-                if (Character.isLowSurrogate(nextChar)) {
-                    val codePoint = Character.toCodePoint(char, nextChar)
-                    if (codePoint in 0x1F3FB..0x1F3FF) {
-                        col += 2
-                        continue
-                    }
-                }
-            }
-
-            // Skip gender symbols only when preceded by ZWJ
-            if (char.code == 0x2640 || char.code == 0x2642) {
-                if (col > 0 && line.charAt(col - 1).code == 0x200D) {
-                    col++
-                    continue
-                }
             }
 
             // Regular character - count visual width

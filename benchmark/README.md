@@ -103,10 +103,16 @@ BossTerm   ███████████████████████
 #### ANSI Color Processing (sequences/sec) - Higher is Better
 ```
 256 Colors:
-iTerm2     ████████████████████████████████████████████████████  3.38M ✓
-BossTerm   █████████████████████████████████████████████         3.01M
-Terminal   ██████████████████████████████████████████            2.86M
-Alacritty  ████████████████████████████████████████              2.55M
+BossTerm   ████████████████████████████████████████████████████  4.86M ✓
+iTerm2     ██████████████████████████████████                    3.38M
+Terminal   █████████████████████████████                         2.86M
+Alacritty  ██████████████████████████                            2.55M
+
+16 Colors:
+BossTerm   ████████████████████████████████████████████████████  2.23M ✓
+iTerm2     █████████████████████████████████████████             1.76M
+Terminal   ████████████████████████████████████████              1.60M
+Alacritty  █████████████████████████████████                     1.29M
 ```
 
 #### Special Characters (ms) - Lower is Better
@@ -184,8 +190,8 @@ python3 benchmark_comprehensive.py -b simulation -r 3
 | Real-World Simulations | **BossTerm** | +23-46% |
 | **Command Latency** | **BossTerm** | +34-47% |
 | **Special Characters** | **BossTerm** | +25-36% |
+| **ANSI Colors** | **BossTerm** | +27-44% |
 | Unicode/Emoji | iTerm2 | +7-27% |
-| ANSI Colors | iTerm2 | +8-20% |
 
 > **Detailed analysis with charts and methodology:** [BENCHMARK_SUMMARY.md](benchmark_results/BENCHMARK_SUMMARY.md)
 

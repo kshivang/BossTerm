@@ -53,11 +53,26 @@ class TerminalColor private constructor(colorIndex: Int, color: Color?, colorSup
     }
 
     companion object {
-        val BLACK: TerminalColor = index(0)
-        val WHITE: TerminalColor = index(15)
+        /**
+         * Pre-allocated cache for indexed colors 0-255.
+         * Eliminates object allocation for every color lookup (issue #144).
+         * Memory: ~8KB (256 * 32 bytes), one-time allocation at class load.
+         */
+        private val INDEXED_COLOR_CACHE: Array<TerminalColor> = Array(256) { TerminalColor(it) }
 
+        val BLACK: TerminalColor = INDEXED_COLOR_CACHE[0]
+        val WHITE: TerminalColor = INDEXED_COLOR_CACHE[15]
+
+        /**
+         * Get a cached TerminalColor for indexed colors 0-255.
+         * Returns cached instance for valid indices, creates new object for out-of-range.
+         */
         fun index(colorIndex: Int): TerminalColor {
-            return TerminalColor(colorIndex)
+            return if (colorIndex in 0..255) {
+                INDEXED_COLOR_CACHE[colorIndex]
+            } else {
+                TerminalColor(colorIndex)
+            }
         }
 
         fun rgb(r: Int, g: Int, b: Int): TerminalColor {

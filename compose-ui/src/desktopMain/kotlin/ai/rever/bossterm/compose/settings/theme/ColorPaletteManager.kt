@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.settings.theme
 
 import ai.rever.bossterm.compose.settings.SettingsManager
+import ai.rever.bossterm.compose.util.ColorUtils
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -103,6 +104,8 @@ class ColorPaletteManager private constructor(
         settingsManager.updateSetting {
             copy(colorPaletteId = palette.id)
         }
+        // Invalidate color cache when palette changes (issue #144)
+        ColorUtils.invalidateColorCache()
     }
 
     /**
@@ -113,6 +116,8 @@ class ColorPaletteManager private constructor(
         settingsManager.updateSetting {
             copy(colorPaletteId = ColorPalette.USE_THEME_PALETTE_ID)
         }
+        // Invalidate color cache when switching to theme palette (issue #144)
+        ColorUtils.invalidateColorCache()
     }
 
     /**
@@ -166,6 +171,8 @@ class ColorPaletteManager private constructor(
         // If this is the current palette, update it
         if (_currentPalette.value?.id == palette.id) {
             _currentPalette.value = palette
+            // Invalidate color cache when current palette is modified (issue #144)
+            ColorUtils.invalidateColorCache()
         }
     }
 

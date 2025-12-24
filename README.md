@@ -9,6 +9,49 @@ A modern terminal emulator built with **Kotlin** and **Compose Desktop**.
 
 BossTerm is a high-performance terminal emulator designed for developers who want a fast, customizable, and feature-rich terminal experience on macOS, Linux, and Windows.
 
+## Performance
+
+BossTerm delivers **industry-leading throughput** for developer workflows. Benchmarked against iTerm2, Terminal.app, and Alacritty (December 2025):
+
+### Throughput @ 10MB (MB/s) - Higher is Better
+```
+BossTerm   ████████████████████████████████████████████████████ 1,308 MB/s
+Terminal   ████████████████████████████████████████████         1,092 MB/s
+Alacritty  ███████████████████████████                            676 MB/s
+iTerm2     ██████████████████████████                             665 MB/s
+```
+
+### Real-World Developer Workflows (ms) - Lower is Better
+```
+Vim-like Editor:
+BossTerm   ██████████████                                         2.82 ms ✓
+Terminal   █████████████████                                      3.52 ms
+Alacritty  ███████████████████                                    3.89 ms
+iTerm2     ████████████████████                                   4.11 ms
+
+Compiler Output:
+BossTerm   ███████████████                                        3.16 ms ✓
+Terminal   █████████████████                                      3.44 ms
+iTerm2     ███████████████████                                    3.90 ms
+Alacritty  ██████████████████████                                 4.40 ms
+
+Git Diff:
+BossTerm   ███████████████                                        3.09 ms ✓
+Terminal   ██████████████████                                     3.62 ms
+Alacritty  ███████████████████                                    3.87 ms
+iTerm2     ████████████████████                                   4.15 ms
+```
+
+| Benchmark | BossTerm vs iTerm2 |
+|-----------|-------------------|
+| Raw Throughput (10MB) | **2x faster** |
+| Vim-like Rendering | **46% faster** |
+| Compiler Output | **23% faster** |
+| Git Diff | **34% faster** |
+| Log Output | **34% faster** |
+
+> **Full benchmark details:** [benchmark/README.md](benchmark/README.md) | [Detailed Results](benchmark/benchmark_results/BENCHMARK_SUMMARY.md)
+
 ## Installation
 
 ### macOS (Homebrew)

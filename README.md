@@ -29,6 +29,12 @@ Alacritty  ███████████████████████
 Terminal   ████████████████████████████████                      2.48M
 ```
 
+### Command Latency - 10 Sequential Commands (ms) - Lower is Better
+```
+BossTerm   █████████████████████                                  18.2 ms ✓
+iTerm2     ███████████████████████████████████                    34.0 ms
+```
+
 ### Real-World Developer Workflows (ms) - Lower is Better
 ```
 Vim-like Editor:
@@ -52,6 +58,7 @@ iTerm2     ████████████████████         
 
 | Benchmark | BossTerm vs iTerm2 |
 |-----------|-------------------|
+| Command Latency (10 seq) | **47% faster** |
 | Raw Throughput (10MB) | **2x faster** |
 | Line Throughput (10K) | **47% faster** |
 | Vim-like Rendering | **46% faster** |
@@ -240,10 +247,21 @@ Settings are stored in `~/.bossterm/settings.json`:
   "scrollbackLines": 10000,
   "cursorBlinkRate": 500,
   "enableMouseReporting": true,
+  "performanceMode": "balanced",
   "notifyOnCommandComplete": true,
   "notifyMinDurationSeconds": 5
 }
 ```
+
+### Performance Modes
+
+BossTerm offers configurable performance optimization via Settings > Performance:
+
+| Mode | Best For |
+|------|----------|
+| **Balanced** (default) | General use - good balance of responsiveness and throughput |
+| **Latency** | SSH, vim, interactive commands - fastest response time |
+| **Throughput** | Build logs, large files - maximum data processing speed |
 
 > **Note:** For `fontName`, use a monospace font name installed on your system (e.g., "SF Mono", "Menlo", "JetBrains Mono"). If not set, BossTerm uses the bundled MesloLGS Nerd Font which includes powerline symbols.
 

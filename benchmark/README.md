@@ -10,6 +10,7 @@ Based on comprehensive benchmarks (December 2025), BossTerm demonstrates signifi
 
 | Benchmark | BossTerm Advantage | Use Case |
 |-----------|-------------------|----------|
+| **Command Latency** | **+34% to +47% faster** than iTerm2 | Interactive commands, SSH |
 | **Raw Throughput (1-10MB)** | **+66% to +97% faster** than iTerm2 | Large file outputs, build logs |
 | **Line Throughput (1K-100K)** | **+7% to +65% faster** than iTerm2 | find, grep, ls, rapid line output |
 | **Compiler Output** | **+23% faster** | Development workflows |
@@ -39,6 +40,21 @@ Alacritty  ███████████████████████
 Terminal   ████████████████████████████████                      2.48M
            └─────────────────────────────────────────────────────────────────┘
            0                   1.5M                  3.0M                 4.5M
+```
+
+#### Command Latency (ms) - Lower is Better
+```
+10 Sequential Commands:
+BossTerm   █████████████████████                                  18.2 ms ✓
+iTerm2     ███████████████████████████████████                    34.0 ms
+           └─────────────────────────────────────────────────────────────────┘
+           0                     15                    30                   45
+
+Single Command (80 chars):
+BossTerm   ████████████████████████████                           2.40 ms ✓
+iTerm2     ████████████████████████████████████████████           3.61 ms
+           └─────────────────────────────────────────────────────────────────┘
+           0                      1.5                   3.0                 4.5
 ```
 
 #### Real-World Simulations (ms) - Lower is Better
@@ -150,9 +166,9 @@ python3 benchmark_comprehensive.py -b simulation -r 3
 | Raw Throughput | **BossTerm** | +14-97% |
 | Line Throughput | **BossTerm** | +7-65% |
 | Real-World Simulations | **BossTerm** | +23-46% |
+| **Command Latency** | **BossTerm** | +34-47% |
 | Unicode/Emoji | iTerm2 | +7-27% |
 | ANSI Colors | iTerm2 | +8-20% |
-| Latency | iTerm2 | +2-20% |
 
 > **Detailed analysis with charts and methodology:** [BENCHMARK_SUMMARY.md](benchmark_results/BENCHMARK_SUMMARY.md)
 
@@ -182,6 +198,20 @@ chmod +x terminal_benchmark.sh
 - Close other applications to reduce interference
 - Multiple runs (`-r`) improve statistical accuracy
 - BossTerm memory includes JVM overhead (~1.5GB vs ~200MB for native apps)
+
+---
+
+## Performance Modes
+
+BossTerm offers configurable performance optimization in Settings > Performance:
+
+| Mode | Behavior | Best For |
+|------|----------|----------|
+| **Balanced** (default) | Middle ground between latency and throughput | General use |
+| **Latency** | Instant wake on data arrival | SSH, vim, interactive commands |
+| **Throughput** | Batched data processing | Build logs, large file output |
+
+Latency mode achieved the benchmark results shown above. Users can switch modes based on their primary use case.
 
 ---
 

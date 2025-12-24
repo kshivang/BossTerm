@@ -280,6 +280,13 @@ object UpdateScriptGenerator {
 
             echo "Installation complete!"
 
+            # Fix StartupWMClass in .desktop file for proper icon/taskbar integration
+            DESKTOP_FILE="/usr/share/applications/bossterm-BossTerm.desktop"
+            if [ -f "${'$'}DESKTOP_FILE" ] && ! grep -q "StartupWMClass" "${'$'}DESKTOP_FILE"; then
+                echo "StartupWMClass=bossterm" >> "${'$'}DESKTOP_FILE"
+                echo "Added StartupWMClass to desktop file"
+            fi
+
             # Launch the updated app
             echo "Launching BossTerm..."
             if [ -x /opt/bossterm/bin/BossTerm ]; then

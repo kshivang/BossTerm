@@ -8,6 +8,6 @@ Terminal=false
 Type=Application
 Categories=System;TerminalEmulator;Utility;
 Keywords=terminal;shell;console;command;prompt;
-StartupWMClass=BossTerm
+StartupWMClass=bossterm
 StartupNotify=true
 MimeType=application/x-terminal-emulator;

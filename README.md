@@ -21,6 +21,14 @@ Alacritty  ███████████████████████
 iTerm2     ██████████████████████████                             665 MB/s
 ```
 
+### Line Throughput @ 10K lines (lines/sec) - Higher is Better
+```
+BossTerm   ████████████████████████████████████████████████████  4.19M ✓
+iTerm2     ███████████████████████████████████                   2.85M
+Alacritty  ██████████████████████████████████                    2.78M
+Terminal   ████████████████████████████████                      2.48M
+```
+
 ### Real-World Developer Workflows (ms) - Lower is Better
 ```
 Vim-like Editor:
@@ -45,6 +53,7 @@ iTerm2     ████████████████████         
 | Benchmark | BossTerm vs iTerm2 |
 |-----------|-------------------|
 | Raw Throughput (10MB) | **2x faster** |
+| Line Throughput (10K) | **47% faster** |
 | Vim-like Rendering | **46% faster** |
 | Compiler Output | **23% faster** |
 | Git Diff | **34% faster** |

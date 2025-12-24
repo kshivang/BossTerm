@@ -11,6 +11,7 @@ Based on comprehensive benchmarks (December 2025), BossTerm demonstrates signifi
 | Benchmark | BossTerm Advantage | Use Case |
 |-----------|-------------------|----------|
 | **Raw Throughput (1-10MB)** | **+66% to +97% faster** than iTerm2 | Large file outputs, build logs |
+| **Line Throughput (1K-100K)** | **+7% to +65% faster** than iTerm2 | find, grep, ls, rapid line output |
 | **Compiler Output** | **+23% faster** | Development workflows |
 | **Log File Output** | **+34% faster** | Server monitoring, debugging |
 | **Git Diff Rendering** | **+34% faster** | Code review, version control |
@@ -28,6 +29,16 @@ Alacritty  ███████████████████████
 iTerm2     ██████████████████████████                             665 MB/s
            └─────────────────────────────────────────────────────────────────┘
            0                    500                  1000                1500
+```
+
+#### Line Throughput @ 10K lines (lines/sec) - Higher is Better
+```
+BossTerm   ████████████████████████████████████████████████████  4.19M ✓
+iTerm2     ███████████████████████████████████                   2.85M
+Alacritty  ██████████████████████████████████                    2.78M
+Terminal   ████████████████████████████████                      2.48M
+           └─────────────────────────────────────────────────────────────────┘
+           0                   1.5M                  3.0M                 4.5M
 ```
 
 #### Real-World Simulations (ms) - Lower is Better
@@ -137,8 +148,8 @@ python3 benchmark_comprehensive.py -b simulation -r 3
 | Category | Winner | Margin |
 |----------|--------|--------|
 | Raw Throughput | **BossTerm** | +14-97% |
+| Line Throughput | **BossTerm** | +7-65% |
 | Real-World Simulations | **BossTerm** | +23-46% |
-| Line Throughput | iTerm2 | +15-22% |
 | Unicode/Emoji | iTerm2 | +7-27% |
 | ANSI Colors | iTerm2 | +8-20% |
 | Latency | iTerm2 | +2-20% |

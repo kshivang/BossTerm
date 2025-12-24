@@ -21,7 +21,7 @@
 
 | Rank | Terminal | Strengths | Weaknesses |
 |------|----------|-----------|------------|
-| **1** | **BossTerm** | Raw throughput, real-world simulations | Special characters |
+| **1** | **BossTerm** | Raw throughput, line throughput, real-world simulations | Special characters |
 | **2** | iTerm2 | Unicode, ANSI colors, latency | Lower throughput |
 | **3** | Terminal.app | Balanced performance | No standout areas |
 | **4** | Alacritty | Consistent (but slower) | Slowest in most tests |
@@ -29,9 +29,10 @@
 ### Key Findings
 
 1. **BossTerm delivers 2x throughput** for small-medium data sizes (1-10MB)
-2. **BossTerm 30-45% faster** in real-world scenarios (compiler, logs, git diff)
-3. **iTerm2 leads Unicode rendering** by 15-20%
-4. **Alacritty underperforms on macOS** despite GPU acceleration reputation
+2. **BossTerm leads line throughput** by 17-65% (after December 2025 optimizations)
+3. **BossTerm 30-45% faster** in real-world scenarios (compiler, logs, git diff)
+4. **iTerm2 leads Unicode rendering** by 15-20%
+5. **Alacritty underperforms on macOS** despite GPU acceleration reputation
 
 ---
 
@@ -59,13 +60,13 @@ Higher is better. Tests line-based output speed.
 
 | Lines | BossTerm | iTerm2 | Terminal | Alacritty | Winner |
 |-------|----------|--------|----------|-----------|--------|
-| 1K | 239K | **291K** | 240K | 239K | iTerm2 |
-| 5K | 1.23M | **1.49M** | 1.41M | 1.43M | iTerm2 |
-| 10K | 2.34M | **2.85M** | 2.48M | 2.78M | iTerm2 |
-| 50K | 9.30M | **11.3M** | 10.1M | 9.56M | iTerm2 |
-| 100K | 13.4M | **15.7M** | 12.4M | 13.1M | iTerm2 |
+| 1K | **480K** | 291K | 240K | 239K | BossTerm (+65%) |
+| 5K | **2.20M** | 1.49M | 1.41M | 1.43M | BossTerm (+48%) |
+| 10K | **4.19M** | 2.85M | 2.48M | 2.78M | BossTerm (+47%) |
+| 50K | **13.27M** | 11.3M | 10.1M | 9.56M | BossTerm (+17%) |
+| 100K | 14.40M | **15.7M** | 12.4M | 13.1M | iTerm2 (+9%) |
 
-**Insight:** iTerm2 handles line-based output more efficiently.
+**Insight:** BossTerm now leads in line throughput at most sizes after optimizations to cyclic shift operations and grapheme handling.
 
 ---
 
@@ -168,7 +169,7 @@ Lower is better. Tests box drawing, powerline, etc.
 | Category | Tests | Winner | Margin |
 |----------|-------|--------|--------|
 | **Raw Throughput** | 5 | BossTerm | +14-84% |
-| **Line Throughput** | 5 | iTerm2 | +15-22% |
+| **Line Throughput** | 5 | BossTerm | +17-65% |
 | **Latency** | 5 | iTerm2 | +2-20% |
 | **ANSI Colors** | 3 | iTerm2 | +8-20% |
 | **Unicode/Emoji** | 9 | iTerm2 | +7-27% |
@@ -181,7 +182,7 @@ Lower is better. Tests box drawing, powerline, etc.
 
 ### Choose BossTerm if you:
 - Work with large file outputs (cat, builds, logs)
-- Use compiler-heavy workflows
+- Use compiler-heavy workflows (rapid line output from find, grep, ls)
 - Want fastest real-world simulation performance
 - Don't mind higher memory usage
 

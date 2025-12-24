@@ -252,22 +252,28 @@ object TerminalCanvasRenderer {
      * LRU cache for text measurements (issue #147 - special character rendering optimization).
      * Caches TextMeasurer results to avoid expensive measure() calls for repeated characters.
      * 256-entry capacity is sized for typical terminal usage (special chars + common glyphs).
+     * Thread-safe: synchronized access for multi-window scenarios.
      */
     private val measurementCache = object : LinkedHashMap<MeasurementCacheKey, CachedMeasurement>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: Map.Entry<MeasurementCacheKey, CachedMeasurement>): Boolean {
             return size > 256
         }
     }
+    private val measurementCacheLock = Any()
 
     /**
      * Clear the measurement cache. Should be called when font size or font family changes.
+     * Thread-safe.
      */
     fun invalidateMeasurementCache() {
-        measurementCache.clear()
+        synchronized(measurementCacheLock) {
+            measurementCache.clear()
+        }
     }
 
     /**
      * Get a cached measurement or compute and cache it.
+     * Thread-safe for multi-window scenarios where multiple canvases may render concurrently.
      */
     private fun getCachedMeasurement(
         ctx: RenderingContext,
@@ -283,13 +289,15 @@ object TerminalCanvasRenderer {
             isItalic = style.fontStyle == androidx.compose.ui.text.font.FontStyle.Italic
         )
 
-        return measurementCache.getOrPut(key) {
-            val measurement = ctx.textMeasurer.measure(text, style)
-            CachedMeasurement(
-                width = measurement.size.width.toFloat(),
-                height = measurement.size.height.toFloat(),
-                firstBaseline = measurement.firstBaseline
-            )
+        synchronized(measurementCacheLock) {
+            return measurementCache.getOrPut(key) {
+                val measurement = ctx.textMeasurer.measure(text, style)
+                CachedMeasurement(
+                    width = measurement.size.width.toFloat(),
+                    height = measurement.size.height.toFloat(),
+                    firstBaseline = measurement.firstBaseline
+                )
+            }
         }
     }
 

@@ -192,6 +192,18 @@ class TabbedTerminalState {
         tabController?.previousTab()
     }
 
+    /**
+     * Get the working directory of the currently active tab.
+     *
+     * Returns the directory tracked via OSC 7 shell integration, or null if
+     * no working directory has been reported yet.
+     *
+     * @return The active tab's working directory, or null
+     */
+    fun getActiveWorkingDirectory(): String? {
+        return tabController?.getActiveWorkingDirectory()
+    }
+
     // ========== Session Listeners ==========
 
     /**

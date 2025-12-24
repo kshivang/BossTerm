@@ -1,15 +1,19 @@
 package ai.rever.bossterm.tabbed
 
 import ai.rever.bossterm.compose.TabbedTerminal
+import ai.rever.bossterm.compose.TabbedTerminalState
+import ai.rever.bossterm.compose.rememberTabbedTerminalState
 import ai.rever.bossterm.compose.menu.MenuActions
 import ai.rever.bossterm.compose.settings.SettingsManager
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.*
@@ -26,6 +30,7 @@ import java.awt.event.WindowFocusListener
  * - Multiple windows support
  * - Window focus tracking for command notifications
  * - Menu bar integration
+ * - **State persistence across view switches** (TabbedTerminalState demo)
  *
  * Run with: ./gradlew :tabbed-example:run
  */
@@ -59,6 +64,16 @@ fun main() = application {
     }
 }
 
+/**
+ * Available views in the application.
+ * Demonstrates switching between views while preserving terminal state.
+ */
+private enum class AppView(val label: String) {
+    TERMINAL("Terminal"),
+    EDITOR("Editor"),
+    SETTINGS("Settings")
+}
+
 @Composable
 private fun ApplicationScope.TabbedTerminalWindow(
     windowState: WindowState,
@@ -77,11 +92,26 @@ private fun ApplicationScope.TabbedTerminalWindow(
     // Track window focus state for notifications
     var isWindowFocused by remember { mutableStateOf(true) }
 
+    // Track current view (for demonstrating state persistence)
+    var currentView by remember { mutableStateOf(AppView.TERMINAL) }
+
     // Track settings panel visibility
     var showSettings by remember { mutableStateOf(false) }
 
     // Menu actions for wiring up menu bar
     val menuActions = remember { MenuActions() }
+
+    // === KEY FEATURE: TabbedTerminalState for state persistence ===
+    // This state survives when switching to Editor/Settings views and back!
+    // Without this, terminal sessions would be lost when unmounting TabbedTerminal.
+    val terminalState = rememberTabbedTerminalState(autoDispose = false)
+
+    // Manual cleanup when window closes
+    DisposableEffect(Unit) {
+        onDispose {
+            terminalState.dispose()
+        }
+    }
 
     Window(
         onCloseRequest = onCloseRequest,
@@ -117,6 +147,9 @@ private fun ApplicationScope.TabbedTerminalWindow(
                 Item("Paste", onClick = { /* Handled by terminal */ })
             }
             Menu("View") {
+                Item("Terminal", onClick = { currentView = AppView.TERMINAL })
+                Item("Editor (Demo)", onClick = { currentView = AppView.EDITOR })
+                Separator()
                 Item("Split Vertically", onClick = { menuActions.onSplitVertical?.invoke() })
                 Item("Split Horizontally", onClick = { menuActions.onSplitHorizontal?.invoke() })
                 Separator()
@@ -133,25 +166,170 @@ private fun ApplicationScope.TabbedTerminalWindow(
                 modifier = Modifier.fillMaxSize(),
                 color = settings.defaultBackgroundColor
             ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    // Main terminal
-                    TabbedTerminal(
-                        onExit = onCloseRequest,
-                        onWindowTitleChange = { title -> windowTitle = title },
-                        onNewWindow = onNewWindow,
-                        onShowSettings = { showSettings = true },
-                        menuActions = menuActions,
-                        isWindowFocused = { isWindowFocused },
-                        modifier = Modifier.fillMaxSize()
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // View switcher bar (demonstrates state persistence)
+                    ViewSwitcherBar(
+                        currentView = currentView,
+                        onViewChange = { currentView = it },
+                        terminalTabCount = terminalState.tabCount
                     )
 
-                    // Settings panel overlay (simplified)
-                    if (showSettings) {
-                        SettingsPanel(
-                            onDismiss = { showSettings = false }
-                        )
+                    // Main content area
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        when (currentView) {
+                            AppView.TERMINAL -> {
+                                // Terminal with external state - sessions persist across view switches!
+                                TabbedTerminal(
+                                    state = terminalState,
+                                    onExit = onCloseRequest,
+                                    onWindowTitleChange = { title -> windowTitle = title },
+                                    onNewWindow = onNewWindow,
+                                    onShowSettings = { showSettings = true },
+                                    menuActions = menuActions,
+                                    isWindowFocused = { isWindowFocused },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                            AppView.EDITOR -> {
+                                // Placeholder editor view
+                                EditorPlaceholder(
+                                    onSwitchToTerminal = { currentView = AppView.TERMINAL }
+                                )
+                            }
+                            AppView.SETTINGS -> {
+                                // Settings view
+                                SettingsPanel(
+                                    onDismiss = { currentView = AppView.TERMINAL }
+                                )
+                            }
+                        }
+
+                        // Settings panel overlay
+                        if (showSettings && currentView != AppView.SETTINGS) {
+                            SettingsPanel(
+                                onDismiss = { showSettings = false }
+                            )
+                        }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * View switcher bar showing current view and tab count.
+ * Demonstrates that terminal state persists when switching views.
+ */
+@Composable
+private fun ViewSwitcherBar(
+    currentView: AppView,
+    onViewChange: (AppView) -> Unit,
+    terminalTabCount: Int
+) {
+    Surface(
+        color = Color(0xFF2D2D2D),
+        tonalElevation = 2.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // View tabs
+            AppView.entries.filter { it != AppView.SETTINGS }.forEach { view ->
+                val isSelected = currentView == view
+                Surface(
+                    modifier = Modifier.clickable { onViewChange(view) },
+                    color = if (isSelected) Color(0xFF404040) else Color.Transparent,
+                    shape = MaterialTheme.shapes.small
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = view.label,
+                            color = if (isSelected) Color.White else Color.Gray,
+                            fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal
+                        )
+                        // Show tab count for terminal
+                        if (view == AppView.TERMINAL && terminalTabCount > 0) {
+                            Surface(
+                                color = Color(0xFF606060),
+                                shape = MaterialTheme.shapes.extraSmall
+                            ) {
+                                Text(
+                                    text = "$terminalTabCount",
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    color = Color.White,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            // Info text
+            Text(
+                text = "Switch views - terminal state persists!",
+                color = Color.Gray,
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+    }
+}
+
+/**
+ * Placeholder editor view to demonstrate view switching.
+ */
+@Composable
+private fun EditorPlaceholder(onSwitchToTerminal: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF1E1E1E)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                text = "Editor View (Placeholder)",
+                style = MaterialTheme.typography.headlineMedium,
+                color = Color.White
+            )
+            Text(
+                text = "This demonstrates TabbedTerminalState:",
+                style = MaterialTheme.typography.bodyLarge,
+                color = Color.Gray
+            )
+            Text(
+                text = "1. Open some terminal tabs",
+                color = Color.Gray
+            )
+            Text(
+                text = "2. Switch to this Editor view",
+                color = Color.Gray
+            )
+            Text(
+                text = "3. Switch back to Terminal",
+                color = Color.Gray
+            )
+            Text(
+                text = "4. All your terminal sessions are still there!",
+                color = Color.Green
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(onClick = onSwitchToTerminal) {
+                Text("Switch to Terminal")
             }
         }
     }

@@ -34,6 +34,7 @@ TabbedTerminal provides a complete terminal experience:
 - **Multiple Tabs** - Create, switch, and close tabs
 - **Tab Bar** - Visual tab bar (auto-hides with single tab)
 - **Split Panes** - Horizontal and vertical splits
+- **State Persistence** - Preserve sessions across recomposition with `TabbedTerminalState`
 - **Working Directory Inheritance** - New tabs/splits inherit CWD
 - **Command Notifications** - System notifications for long commands
 - **Window Focus Tracking** - Overlay when window unfocused
@@ -47,6 +48,7 @@ TabbedTerminal provides a complete terminal experience:
 ```kotlin
 @Composable
 fun TabbedTerminal(
+    state: TabbedTerminalState? = null,
     onExit: () -> Unit,
     onWindowTitleChange: (String) -> Unit = {},
     onNewWindow: () -> Unit = {},
@@ -60,6 +62,7 @@ fun TabbedTerminal(
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
+| `state` | `TabbedTerminalState?` | External state holder for persistence across recomposition |
 | `onExit` | `() -> Unit` | **Required.** Called when last tab closes |
 | `onWindowTitleChange` | `(String) -> Unit` | Called when active tab's title changes |
 | `onNewWindow` | `() -> Unit` | Called when user requests new window (Cmd/Ctrl+N) |
@@ -87,6 +90,53 @@ val menuActions = remember { MenuActions() }
 // - onSplitHorizontal: () -> Unit
 // - onClosePane: () -> Unit
 ```
+
+### TabbedTerminalState
+
+External state holder that enables terminal sessions to survive recomposition. Use this when embedding `TabbedTerminal` within another tab system or navigation framework.
+
+```kotlin
+import ai.rever.bossterm.compose.TabbedTerminalState
+import ai.rever.bossterm.compose.rememberTabbedTerminalState
+
+// Create state that survives navigation
+val terminalState = rememberTabbedTerminalState(autoDispose = false)
+
+// Use in composable that may unmount
+when (selectedView) {
+    "terminal" -> TabbedTerminal(state = terminalState, onExit = { ... })
+    "editor" -> EditorPane()  // Terminal sessions preserved!
+}
+
+// Manual cleanup when truly done
+DisposableEffect(Unit) { onDispose { terminalState.dispose() } }
+```
+
+**Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `tabs` | `List<TerminalTab>` | All open terminal tabs |
+| `tabCount` | `Int` | Number of open tabs |
+| `activeTabIndex` | `Int` | Index of active tab (0-based) |
+| `activeTab` | `TerminalTab?` | Currently active tab |
+| `isInitialized` | `Boolean` | Whether state has been initialized |
+| `isDisposed` | `Boolean` | Whether state has been disposed |
+
+**Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `createTab(workingDir?, initialCommand?)` | Create a new terminal tab |
+| `closeTab(index)` | Close tab at index |
+| `closeActiveTab()` | Close the active tab |
+| `switchToTab(index)` | Switch to tab at index |
+| `nextTab()` | Switch to next tab (wraps) |
+| `previousTab()` | Switch to previous tab (wraps) |
+| `getActiveWorkingDirectory()` | Get active tab's working directory (OSC 7) |
+| `addSessionListener(listener)` | Add session lifecycle listener |
+| `removeSessionListener(listener)` | Remove session listener |
+| `dispose()` | Dispose all sessions and cleanup |
 
 ## Keyboard Shortcuts
 
@@ -250,6 +300,48 @@ TabbedTerminal(
 )
 ```
 
+## State Persistence
+
+When embedding `TabbedTerminal` within another navigation or tab system, terminal sessions are normally lost when the composable unmounts. Use `TabbedTerminalState` to preserve sessions:
+
+```kotlin
+@Composable
+fun MyApp() {
+    var currentView by remember { mutableStateOf("terminal") }
+
+    // State survives when TabbedTerminal unmounts
+    val terminalState = rememberTabbedTerminalState(autoDispose = false)
+
+    // Manual cleanup
+    DisposableEffect(Unit) {
+        onDispose { terminalState.dispose() }
+    }
+
+    Column {
+        // View switcher
+        Row {
+            Button(onClick = { currentView = "terminal" }) { Text("Terminal") }
+            Button(onClick = { currentView = "editor" }) { Text("Editor") }
+        }
+
+        // Content - terminal state persists across view switches
+        when (currentView) {
+            "terminal" -> TabbedTerminal(
+                state = terminalState,
+                onExit = { /* ... */ }
+            )
+            "editor" -> Text("Editor view - switch back to see your terminals!")
+        }
+    }
+}
+```
+
+**Key points:**
+- Use `autoDispose = false` when state should survive navigation
+- Call `terminalState.dispose()` manually when truly done
+- State is automatically initialized on first composition
+- All tabs, sessions, and split states are preserved
+
 ## Complete Example
 
 See the [tabbed-example](../tabbed-example) module for a full working example with:
@@ -257,6 +349,7 @@ See the [tabbed-example](../tabbed-example) module for a full working example wi
 - Menu bar integration
 - Window focus tracking
 - Settings panel overlay
+- **State persistence demo** (view switching)
 
 Run the example:
 
@@ -272,10 +365,12 @@ Run the example:
 | Multiple tabs | No | Yes |
 | Tab bar | No | Yes (auto-hide) |
 | Split panes | No | Yes |
+| External state holder | `EmbeddableTerminalState` | `TabbedTerminalState` |
+| State persistence | Yes | Yes |
 | Custom context menu | Yes | Built-in |
 | Menu bar integration | No | Yes |
 | Window management | No | Yes |
 | Command notifications | No | Yes |
 | Use case | Simple embedding | Full terminal app |
 
-Choose `EmbeddableTerminal` for simple use cases where you need a single terminal instance with custom context menus. Choose `TabbedTerminal` when building a full-featured terminal application with tabs, splits, and window management.
+Choose `EmbeddableTerminal` for simple use cases where you need a single terminal instance with custom context menus. Choose `TabbedTerminal` when building a full-featured terminal application with tabs, splits, and window management. Both support external state holders for persistence across recomposition.

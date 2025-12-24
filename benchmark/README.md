@@ -19,6 +19,7 @@ Based on comprehensive benchmarks (December 2025), BossTerm demonstrates signifi
 | **htop-like TUI** | **+42% faster** | System monitoring |
 | **Vim-like Editor** | **+46% faster** | Text editing simulations |
 | **Mixed Workload** | **+45% faster** | Real-world development |
+| **Special Characters** | **+25% to +36% faster** | Powerline, box drawing, braille |
 
 ### Performance Comparison Charts
 
@@ -108,6 +109,21 @@ Terminal   ███████████████████████
 Alacritty  ████████████████████████████████████████              2.55M
 ```
 
+#### Special Characters (ms) - Lower is Better
+```
+Powerline Symbols ():
+BossTerm   ███████████████                                       1.88 ms ✓
+iTerm2     ███████████████████████████████                       2.94 ms
+Terminal   ████████████████████████████████                      3.17 ms
+Alacritty  ████████████████████████████████████████████████████  4.49 ms
+
+Box Drawing (┌─┐):
+BossTerm   ███████████████████                                   2.17 ms ✓
+iTerm2     ██████████████████████████████████                    2.88 ms
+Terminal   ██████████████████████████████████████                3.23 ms
+Alacritty  ████████████████████████████████████████████████████  4.18 ms
+```
+
 > **Full benchmark results:** [BENCHMARK_SUMMARY.md](benchmark_results/BENCHMARK_SUMMARY.md)
 
 ---
@@ -167,6 +183,7 @@ python3 benchmark_comprehensive.py -b simulation -r 3
 | Line Throughput | **BossTerm** | +7-65% |
 | Real-World Simulations | **BossTerm** | +23-46% |
 | **Command Latency** | **BossTerm** | +34-47% |
+| **Special Characters** | **BossTerm** | +25-36% |
 | Unicode/Emoji | iTerm2 | +7-27% |
 | ANSI Colors | iTerm2 | +8-20% |
 

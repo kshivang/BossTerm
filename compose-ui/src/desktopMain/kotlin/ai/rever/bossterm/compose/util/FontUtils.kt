@@ -120,6 +120,34 @@ val bundledSymbolFont: FontFamily by lazy {
 }
 
 /**
+ * Cached Apple Color Emoji font for macOS.
+ * Lazy-loaded once on first access, null if not available (non-macOS or font missing).
+ * Used for emoji with variation selectors (U+FE0F) to ensure color rendering.
+ */
+val cachedAppleColorEmojiFont: FontFamily? by lazy {
+    if (System.getProperty("os.name")?.lowercase()?.contains("mac") != true) {
+        null
+    } else {
+        runCatching {
+            FontMgr.default.matchFamilyStyle("Apple Color Emoji", FontStyle.NORMAL)
+                ?.let { FontFamily(Typeface(it)) }
+        }.getOrNull()
+    }
+}
+
+/**
+ * Cached STIX Two Math font for technical symbols and math characters.
+ * Lazy-loaded once on first access, null if not available.
+ * Used for mathematical alphanumeric symbols (U+1D400-U+1D7FF) and technical symbols (U+23E9-U+23FF).
+ */
+val cachedSTIXMathFont: FontFamily? by lazy {
+    runCatching {
+        FontMgr.default.matchFamilyStyle("STIX Two Math", FontStyle.NORMAL)
+            ?.let { FontFamily(Typeface(it)) }
+    }.getOrNull()
+}
+
+/**
  * Load the bundled Noto Sans Symbols 2 font for symbol fallback.
  */
 private fun loadBundledSymbolFont(): FontFamily {

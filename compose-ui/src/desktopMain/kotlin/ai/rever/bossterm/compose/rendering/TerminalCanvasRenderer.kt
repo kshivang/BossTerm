@@ -222,10 +222,84 @@ fun analyzeCharacter(
 private typealias AnalysisCache = MutableMap<Pair<Int, Int>, CharacterAnalysis>
 
 /**
+ * Cache key for text measurements (issue #147 - special character rendering optimization).
+ * Includes all factors that affect measurement: text content, font family, size, and style.
+ */
+data class MeasurementCacheKey(
+    val text: String,
+    val fontFamilyHash: Int,
+    val fontSize: Float,
+    val isBold: Boolean,
+    val isItalic: Boolean
+)
+
+/**
+ * Cached measurement result with dimensions needed for character rendering.
+ */
+data class CachedMeasurement(
+    val width: Float,
+    val height: Float,
+    val firstBaseline: Float
+)
+
+/**
  * Terminal canvas renderer that handles all drawing operations.
  * Separates rendering logic from the composable for better maintainability.
  */
 object TerminalCanvasRenderer {
+
+    /**
+     * LRU cache for text measurements (issue #147 - special character rendering optimization).
+     * Caches TextMeasurer results to avoid expensive measure() calls for repeated characters.
+     * 256-entry capacity is sized for typical terminal usage (special chars + common glyphs).
+     * Thread-safe: synchronized access for multi-window scenarios.
+     */
+    private val measurementCache = object : LinkedHashMap<MeasurementCacheKey, CachedMeasurement>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<MeasurementCacheKey, CachedMeasurement>): Boolean {
+            return size > 256
+        }
+    }
+    private val measurementCacheLock = Any()
+
+    /**
+     * Clear the measurement cache. Should be called when font size or font family changes.
+     * Thread-safe.
+     */
+    fun invalidateMeasurementCache() {
+        synchronized(measurementCacheLock) {
+            measurementCache.clear()
+        }
+    }
+
+    /**
+     * Get a cached measurement or compute and cache it.
+     * Thread-safe for multi-window scenarios where multiple canvases may render concurrently.
+     */
+    private fun getCachedMeasurement(
+        ctx: RenderingContext,
+        text: String,
+        fontFamily: FontFamily,
+        style: TextStyle
+    ): CachedMeasurement {
+        val key = MeasurementCacheKey(
+            text = text,
+            fontFamilyHash = fontFamily.hashCode(),
+            fontSize = ctx.fontSize,
+            isBold = style.fontWeight == FontWeight.Bold,
+            isItalic = style.fontStyle == androidx.compose.ui.text.font.FontStyle.Italic
+        )
+
+        synchronized(measurementCacheLock) {
+            return measurementCache.getOrPut(key) {
+                val measurement = ctx.textMeasurer.measure(text, style)
+                CachedMeasurement(
+                    width = measurement.size.width.toFloat(),
+                    height = measurement.size.height.toFloat(),
+                    firstBaseline = measurement.firstBaseline
+                )
+            }
+        }
+    }
 
     /**
      * Main rendering entry point. Renders the entire terminal buffer.
@@ -1132,13 +1206,9 @@ object TerminalCanvasRenderer {
         }
         val fontForChar = if (isEmojiWithVariationSelector) {
             // True color emoji (with variation selector) - use explicit emoji font for reliable color rendering
+            // Use cached font to avoid expensive FontMgr lookup per character (issue #147)
             if (isMacOS) {
-                val appleColorEmoji = FontMgr.default.matchFamilyStyle("Apple Color Emoji", org.jetbrains.skia.FontStyle.NORMAL)
-                if (appleColorEmoji != null) {
-                    FontFamily(androidx.compose.ui.text.platform.Typeface(appleColorEmoji))
-                } else {
-                    FontFamily.Default
-                }
+                ai.rever.bossterm.compose.util.cachedAppleColorEmojiFont ?: FontFamily.Default
             } else {
                 FontFamily.Default
             }
@@ -1151,14 +1221,10 @@ object TerminalCanvasRenderer {
             }
         } else if (isTechnicalSymbol || isCursiveOrMath) {
             // Technical symbols (⏸ ⏵) and math - platform specific like other symbols
+            // Use cached font to avoid expensive FontMgr lookup per character (issue #147)
             if (useSystemFontForEmoji) {
                 // macOS default or user chose system: use STIX Two Math → terminal font
-                val skiaTypeface = FontMgr.default.matchFamilyStyle("STIX Two Math", org.jetbrains.skia.FontStyle.NORMAL)
-                if (skiaTypeface != null) {
-                    FontFamily(androidx.compose.ui.text.platform.Typeface(skiaTypeface))
-                } else {
-                    ctx.measurementFontFamily
-                }
+                ai.rever.bossterm.compose.util.cachedSTIXMathFont ?: ctx.measurementFontFamily
             } else {
                 // Linux default or user chose bundled: use bundled symbol font
                 ai.rever.bossterm.compose.util.bundledSymbolFont
@@ -1184,8 +1250,9 @@ object TerminalCanvasRenderer {
             } else {
                 charTextToRender
             }
-            val measurement = ctx.textMeasurer.measure(textToRender, textStyle)
-            val glyphWidth = measurement.size.width.toFloat()
+            // Use cached measurement to avoid expensive measure() calls (issue #147)
+            val cached = getCachedMeasurement(ctx, textToRender, fontForChar, textStyle)
+            val glyphWidth = cached.width
             val allocatedWidth = ctx.cellWidth * 2
 
             if (glyphWidth < ctx.cellWidth * 1.5f) {
@@ -1215,9 +1282,10 @@ object TerminalCanvasRenderer {
                 charTextToRender
             }
 
-            val measurement = ctx.textMeasurer.measure(textToRender, textStyle)
-            val glyphWidth = measurement.size.width.toFloat()
-            val glyphHeight = measurement.size.height.toFloat()
+            // Use cached measurement to avoid expensive measure() calls (issue #147)
+            val cached = getCachedMeasurement(ctx, textToRender, fontForChar, textStyle)
+            val glyphWidth = cached.width
+            val glyphHeight = cached.height
 
             // Emoji span 2 cells - use same approach as ZWJ sequences
             val allocatedWidth = ctx.cellWidth * 2.0f
@@ -1239,8 +1307,9 @@ object TerminalCanvasRenderer {
                 )
             }
         } else if (isCursiveOrMath) {
-            val measurement = ctx.textMeasurer.measure(charTextToRender, textStyle)
-            val glyphWidth = measurement.size.width.toFloat()
+            // Use cached measurement to avoid expensive measure() calls (issue #147)
+            val cached = getCachedMeasurement(ctx, charTextToRender, fontForChar, textStyle)
+            val glyphWidth = cached.width
             val centeringOffset = ((ctx.cellWidth - glyphWidth) / 2f).coerceAtLeast(0f)
             drawText(
                 textMeasurer = ctx.textMeasurer,
@@ -1249,9 +1318,10 @@ object TerminalCanvasRenderer {
                 style = textStyle
             )
         } else if (isTechnicalSymbol) {
-            val measurement = ctx.textMeasurer.measure(charTextToRender, textStyle)
-            val glyphWidth = measurement.size.width.toFloat()
-            val glyphBaseline = measurement.firstBaseline
+            // Use cached measurement to avoid expensive measure() calls (issue #147)
+            val cached = getCachedMeasurement(ctx, charTextToRender, fontForChar, textStyle)
+            val glyphWidth = cached.width
+            val glyphBaseline = cached.firstBaseline
             val baselineAlignmentOffset = ctx.cellBaseline - glyphBaseline
             val centeringOffset = ((ctx.cellWidth - glyphWidth) / 2f).coerceAtLeast(0f)
 

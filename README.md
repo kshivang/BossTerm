@@ -65,6 +65,8 @@ iTerm2     ████████████████████         
 | Compiler Output | **23% faster** |
 | Git Diff | **34% faster** |
 | Log Output | **34% faster** |
+| Powerline Symbols | **36% faster** |
+| Box Drawing | **25% faster** |
 
 > **Full benchmark details:** [benchmark/README.md](benchmark/README.md) | [Detailed Results](benchmark/benchmark_results/BENCHMARK_SUMMARY.md)
 

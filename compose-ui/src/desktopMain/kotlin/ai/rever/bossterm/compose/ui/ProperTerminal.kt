@@ -501,6 +501,11 @@ fun ProperTerminal(
     )
   }
 
+  // Invalidate measurement cache when font or size changes (issue #147)
+  LaunchedEffect(sharedFont, settings.fontSize) {
+    ai.rever.bossterm.compose.rendering.TerminalCanvasRenderer.invalidateMeasurementCache()
+  }
+
   // Cache cell dimensions and baseline offset (calculated once, reused for all rendering)
   // Measure a string of 100 characters to get accurate average advance width
   // This prevents cumulative rounding errors when rendering long lines

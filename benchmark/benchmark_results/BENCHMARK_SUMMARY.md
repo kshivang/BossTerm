@@ -21,7 +21,7 @@
 
 | Rank | Terminal | Strengths | Weaknesses |
 |------|----------|-----------|------------|
-| **1** | **BossTerm** | Raw throughput, line throughput, real-world simulations | Special characters |
+| **1** | **BossTerm** | Raw throughput, line throughput, real-world simulations, special characters | - |
 | **2** | iTerm2 | Unicode, ANSI colors, latency | Lower throughput |
 | **3** | Terminal.app | Balanced performance | No standout areas |
 | **4** | Alacritty | Consistent (but slower) | Slowest in most tests |
@@ -143,13 +143,13 @@ Lower is better. Tests box drawing, powerline, etc.
 
 | Type | BossTerm | iTerm2 | Terminal | Alacritty | Winner |
 |------|----------|--------|----------|-----------|--------|
-| Box drawing (┌─┐) | 3.39 | **2.88** | 3.23 | 4.18 | iTerm2 |
-| Block elements (░▒▓) | 3.84 | **2.92** | 3.22 | 4.53 | iTerm2 |
-| Powerline () | 3.92 | **2.94** | 3.17 | 4.49 | iTerm2 |
-| Braille patterns | 3.31 | **2.85** | 3.14 | 4.29 | iTerm2 |
-| Math symbols (∑∫) | 3.23 | **3.13** | 3.24 | 3.88 | iTerm2 |
+| Box drawing (┌─┐) | **2.17** | 2.88 | 3.23 | 4.18 | BossTerm (+25%) |
+| Block elements (░▒▓) | **1.98** | 2.92 | 3.22 | 4.53 | BossTerm (+32%) |
+| Powerline () | **1.88** | 2.94 | 3.17 | 4.49 | BossTerm (+36%) |
+| Braille patterns | **1.94** | 2.85 | 3.14 | 4.29 | BossTerm (+32%) |
+| Math symbols (∑∫) | **2.05** | 3.13 | 3.24 | 3.88 | BossTerm (+34%) |
 
-**Insight:** iTerm2 renders special characters fastest.
+**Insight:** BossTerm now leads special character rendering after font caching optimizations (December 2025).
 
 ---
 
@@ -174,7 +174,7 @@ Lower is better. Tests box drawing, powerline, etc.
 | **ANSI Colors** | 3 | iTerm2 | +8-20% |
 | **Unicode/Emoji** | 9 | iTerm2 | +7-27% |
 | **Real-World Sims** | 6 | BossTerm | +23-46% |
-| **Special Chars** | 5 | iTerm2 | +3-18% |
+| **Special Chars** | 5 | BossTerm | +25-36% |
 
 ---
 

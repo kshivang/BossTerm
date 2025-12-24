@@ -280,6 +280,17 @@ object UpdateScriptGenerator {
 
             echo "Installation complete!"
 
+            # Fix StartupWMClass in .desktop file for proper icon/taskbar integration
+            DESKTOP_FILE="/usr/share/applications/bossterm-BossTerm.desktop"
+            if [ -f "${'$'}DESKTOP_FILE" ] && ! grep -q "StartupWMClass" "${'$'}DESKTOP_FILE"; then
+                if command -v pkexec &> /dev/null; then
+                    echo "StartupWMClass=bossterm" | pkexec tee -a "${'$'}DESKTOP_FILE" > /dev/null
+                elif command -v sudo &> /dev/null; then
+                    echo "StartupWMClass=bossterm" | sudo tee -a "${'$'}DESKTOP_FILE" > /dev/null
+                fi
+                echo "Added StartupWMClass to desktop file"
+            fi
+
             # Launch the updated app
             echo "Launching BossTerm..."
             if [ -x /opt/bossterm/bin/BossTerm ]; then

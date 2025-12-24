@@ -1,6 +1,9 @@
 name: Generate Release Notes
 
 on:
+  workflow_run:
+    workflows: ["Release Build"]
+    types: [completed]
   release:
     types: [published]
   workflow_dispatch:
@@ -17,6 +20,7 @@ permissions:
 jobs:
   generate-release-notes:
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -34,6 +38,9 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             TAG="${{ github.event.inputs.release_tag }}"
+          elif [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            # Get latest tag from git (triggered after Release Build completes)
+            TAG=$(git describe --tags --abbrev=0)
           else
             TAG="${{ github.event.release.tag_name }}"
           fi

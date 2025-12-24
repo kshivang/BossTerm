@@ -92,11 +92,11 @@ Higher is better. Tests escape sequence handling.
 
 | Type | BossTerm | iTerm2 | Terminal | Alacritty | Winner |
 |------|----------|--------|----------|-----------|--------|
-| 16 colors | 1.47M | **1.76M** | 1.60M | 1.29M | iTerm2 (+20%) |
-| 256 colors | 3.01M | **3.38M** | 2.86M | 2.55M | iTerm2 (+12%) |
-| 24-bit truecolor | 1.90M | **2.06M** | 1.76M | 1.35M | iTerm2 (+8%) |
+| 16 colors | **2.23M** | 1.76M | 1.60M | 1.29M | BossTerm (+27%) |
+| 256 colors | **4.86M** | 3.38M | 2.86M | 2.55M | BossTerm (+44%) |
+| 24-bit truecolor | **2.78M** | 2.06M | 1.76M | 1.35M | BossTerm (+35%) |
 
-**Insight:** iTerm2 processes ANSI escape sequences fastest.
+**Insight:** BossTerm now leads ANSI color processing after object allocation optimizations (December 2025).
 
 ---
 
@@ -171,7 +171,7 @@ Lower is better. Tests box drawing, powerline, etc.
 | **Raw Throughput** | 5 | BossTerm | +14-84% |
 | **Line Throughput** | 5 | BossTerm | +17-65% |
 | **Latency** | 5 | iTerm2 | +2-20% |
-| **ANSI Colors** | 3 | iTerm2 | +8-20% |
+| **ANSI Colors** | 3 | BossTerm | +27-44% |
 | **Unicode/Emoji** | 9 | iTerm2 | +7-27% |
 | **Real-World Sims** | 6 | BossTerm | +23-46% |
 | **Special Chars** | 5 | BossTerm | +25-36% |

@@ -67,6 +67,8 @@ iTerm2     ████████████████████         
 | Log Output | **34% faster** |
 | Powerline Symbols | **36% faster** |
 | Box Drawing | **25% faster** |
+| ANSI 256 Colors | **44% faster** |
+| ANSI 16 Colors | **27% faster** |
 
 > **Full benchmark details:** [benchmark/README.md](benchmark/README.md) | [Detailed Results](benchmark/benchmark_results/BENCHMARK_SUMMARY.md)
 

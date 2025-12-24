@@ -18,11 +18,48 @@ import java.util.concurrent.TimeUnit
  * Also handles incomplete grapheme clusters at chunk boundaries (e.g., surrogate
  * pairs, emoji ZWJ sequences) by buffering incomplete graphemes until the next chunk.
  */
-class BlockingTerminalDataStream : TerminalDataStream {
+/**
+ * Performance mode for terminal data stream.
+ */
+enum class PerformanceMode {
+    /** Optimized for interactive responsiveness - instant wake on data arrival */
+    LATENCY,
+    /** Optimized for bulk output - batches data for higher throughput */
+    THROUGHPUT,
+    /** Balance between latency and throughput */
+    BALANCED;
+
+    companion object {
+        fun fromString(value: String): PerformanceMode = when (value.lowercase()) {
+            "latency" -> LATENCY
+            "throughput" -> THROUGHPUT
+            "balanced" -> BALANCED
+            else -> LATENCY // Default to latency for unknown values
+        }
+    }
+}
+
+class BlockingTerminalDataStream(
+    /**
+     * Performance mode controlling latency vs throughput tradeoff.
+     * - LATENCY: Uses blocking take() for instant wake on data (best for interactive use)
+     * - THROUGHPUT: Uses poll(100ms) for better batching (best for bulk output)
+     * - BALANCED: Uses poll(10ms) as middle ground
+     */
+    val performanceMode: PerformanceMode = PerformanceMode.LATENCY
+) : TerminalDataStream {
+    companion object {
+        /**
+         * Sentinel value used to wake up blocking take() on close.
+         * Uses a unique string that cannot appear in normal terminal output.
+         */
+        private const val CLOSE_SENTINEL = "\u0000CLOSE_SENTINEL\u0000"
+    }
+
     private val buffer = StringBuilder()
     private var position = 0
     private val dataQueue: BlockingQueue<String> = LinkedBlockingQueue()
-    private var closed = false
+    @Volatile private var closed = false
     private val pushBackStack = mutableListOf<Char>()
 
     /**
@@ -106,10 +143,13 @@ class BlockingTerminalDataStream : TerminalDataStream {
     }
 
     /**
-     * Signal that no more data will be appended
+     * Signal that no more data will be appended.
+     * Offers a sentinel value to wake any blocking take() call.
      */
     fun close() {
         closed = true
+        // Wake up any blocking take() call immediately
+        dataQueue.offer(CLOSE_SENTINEL)
     }
 
     override val char: Char
@@ -133,11 +173,25 @@ class BlockingTerminalDataStream : TerminalDataStream {
                 // against the current terminal state before we wait for more data
                 onTerminalStateChanged?.invoke()
 
-                // Need more data - block until available
+                // Need more data - behavior depends on performance mode (issue #146)
                 val chunk = if (closed) {
                     dataQueue.poll() // Non-blocking if closed
                 } else {
-                    dataQueue.poll(100, TimeUnit.MILLISECONDS) // Wait for data
+                    when (performanceMode) {
+                        // LATENCY: Blocking take() for instant wake on data arrival
+                        // Best for interactive use - eliminates 100ms poll timeout latency
+                        PerformanceMode.LATENCY -> dataQueue.take()
+                        // THROUGHPUT: Poll with 100ms timeout for better batching
+                        // Best for bulk output - allows more data to accumulate
+                        PerformanceMode.THROUGHPUT -> dataQueue.poll(100, TimeUnit.MILLISECONDS)
+                        // BALANCED: Poll with 10ms timeout as middle ground
+                        PerformanceMode.BALANCED -> dataQueue.poll(10, TimeUnit.MILLISECONDS)
+                    }
+                }
+
+                // Check for close sentinel
+                if (chunk == CLOSE_SENTINEL) {
+                    throw TerminalDataStream.EOF()
                 }
 
                 if (chunk != null) {
@@ -151,7 +205,6 @@ class BlockingTerminalDataStream : TerminalDataStream {
                     // Stream is closed and no more data
                     throw TerminalDataStream.EOF()
                 }
-                // If chunk is null and not closed, loop again to wait
             }
 
             return buffer[position++]
@@ -179,13 +232,20 @@ class BlockingTerminalDataStream : TerminalDataStream {
                 continue
             }
 
-            // Check if we need more data
+            // Check if we need more data - timeout depends on performance mode
             if (position >= buffer.length) {
-                val chunk = dataQueue.poll(10, TimeUnit.MILLISECONDS)
-                if (chunk != null) {
+                val chunk = when (performanceMode) {
+                    // LATENCY: Non-blocking - return immediately with what we have
+                    PerformanceMode.LATENCY -> dataQueue.poll()
+                    // THROUGHPUT: Wait longer for better batching
+                    PerformanceMode.THROUGHPUT -> dataQueue.poll(10, TimeUnit.MILLISECONDS)
+                    // BALANCED: Short wait for moderate batching
+                    PerformanceMode.BALANCED -> dataQueue.poll(5, TimeUnit.MILLISECONDS)
+                }
+                if (chunk != null && chunk != CLOSE_SENTINEL) {
                     buffer.append(chunk)
                 } else {
-                    break // No data available
+                    break // No data available or stream closed
                 }
             }
 

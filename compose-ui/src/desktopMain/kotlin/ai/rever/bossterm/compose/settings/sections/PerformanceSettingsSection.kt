@@ -10,7 +10,7 @@ import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.*
 
 /**
- * Performance settings section: refresh rate, buffer, and blink settings.
+ * Performance settings section: performance mode, refresh rate, buffer, and blink settings.
  */
 @Composable
 fun PerformanceSettingsSection(
@@ -19,6 +19,25 @@ fun PerformanceSettingsSection(
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier) {
+        // Performance Mode
+        SettingsSection(title = "Performance Mode") {
+            SettingsDropdown(
+                label = "Optimization Mode",
+                options = listOf("Balanced", "Latency", "Throughput"),
+                selectedOption = settings.performanceMode.replaceFirstChar { it.uppercase() },
+                onOptionSelected = { selected ->
+                    onSettingsChange(settings.copy(performanceMode = selected.lowercase()))
+                },
+                description = when (settings.performanceMode) {
+                    "latency" -> "Fastest response time for typing and commands. Best for SSH sessions, vim, and interactive tools."
+                    "throughput" -> "Maximum speed for large outputs. Best for build logs, cat large files, and data processing."
+                    else -> "Good for most users. Balances quick response with efficient bulk output handling."
+                }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
         // Rendering Settings
         SettingsSection(title = "Rendering") {
             SettingsSlider(

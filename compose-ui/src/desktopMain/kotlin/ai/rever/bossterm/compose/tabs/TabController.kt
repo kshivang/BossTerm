@@ -15,6 +15,7 @@ import ai.rever.bossterm.compose.ConnectionState
 import ai.rever.bossterm.compose.PlatformServices
 import ai.rever.bossterm.compose.debug.ChunkSource
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
+import ai.rever.bossterm.compose.terminal.PerformanceMode
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.getPlatformServices
 import ai.rever.bossterm.compose.ime.IMEState
@@ -197,7 +198,9 @@ class TabController(
         // Configure character encoding mode (ISO-8859-1 enables GR mapping, UTF-8 disables it)
         terminal.setCharacterEncoding(settings.characterEncoding)
 
-        val dataStream = BlockingTerminalDataStream()
+        val dataStream = BlockingTerminalDataStream(
+            performanceMode = PerformanceMode.fromString(settings.performanceMode)
+        )
 
         // Create working directory state
         val workingDirectoryState = mutableStateOf<String?>(workingDir)
@@ -411,7 +414,9 @@ class TabController(
         // Configure character encoding mode
         terminal.setCharacterEncoding(settings.characterEncoding)
 
-        val dataStream = BlockingTerminalDataStream()
+        val dataStream = BlockingTerminalDataStream(
+            performanceMode = PerformanceMode.fromString(settings.performanceMode)
+        )
 
         // Create working directory state
         val workingDirectoryState = mutableStateOf<String?>(workingDir)
@@ -618,7 +623,9 @@ class TabController(
 
         terminal.setCharacterEncoding(settings.characterEncoding)
 
-        val dataStream = BlockingTerminalDataStream()
+        val dataStream = BlockingTerminalDataStream(
+            performanceMode = PerformanceMode.fromString(settings.performanceMode)
+        )
         val workingDirectoryState = mutableStateOf<String?>(null)
 
         val oscListener = WorkingDirectoryOSCListener(workingDirectoryState)

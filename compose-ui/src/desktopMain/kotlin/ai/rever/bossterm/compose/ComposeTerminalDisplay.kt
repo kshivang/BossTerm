@@ -31,7 +31,7 @@ class ComposeTerminalDisplay : TerminalDisplay {
      * Rendering modes that adapt to output rate.
      */
     enum class RedrawMode(val debounceMs: Long, val description: String) {
-        INTERACTIVE(16L, "60fps for typing, vim, small files"),
+        INTERACTIVE(8L, "120fps equivalent for responsive typing"),
         HIGH_VOLUME(50L, "20fps for bulk output, triggered at >100 redraws/sec"),
         IMMEDIATE(0L, "Instant for keyboard/mouse input")
     }

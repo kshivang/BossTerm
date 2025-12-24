@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
+import ai.rever.bossterm.compose.terminal.PerformanceMode
 import ai.rever.bossterm.compose.ui.ProperTerminal
 import ai.rever.bossterm.compose.util.loadTerminalFont
 import ai.rever.bossterm.compose.features.ContextMenuController
@@ -438,7 +439,9 @@ private fun createTerminalSession(
     // Configure encoding
     terminal.setCharacterEncoding(settings.characterEncoding)
 
-    val dataStream = BlockingTerminalDataStream()
+    val dataStream = BlockingTerminalDataStream(
+        performanceMode = PerformanceMode.fromString(settings.performanceMode)
+    )
 
     // Hook output callback
     if (onOutput != null) {

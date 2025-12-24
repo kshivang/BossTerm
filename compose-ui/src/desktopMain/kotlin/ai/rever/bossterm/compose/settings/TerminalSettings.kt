@@ -311,6 +311,17 @@ data class TerminalSettings(
     // ===== Performance Settings =====
 
     /**
+     * Performance optimization mode.
+     * - "latency": Optimized for interactive responsiveness (faster command response, lower throughput)
+     * - "throughput": Optimized for bulk output (higher throughput, slightly higher latency)
+     * - "balanced": Balance between latency and throughput (default)
+     *
+     * Use "latency" for: SSH sessions, interactive commands, shell usage
+     * Use "throughput" for: Large file operations, build logs, data processing
+     */
+    val performanceMode: String = "balanced",
+
+    /**
      * Maximum refresh rate in FPS (0 = unlimited)
      */
     val maxRefreshRate: Int = 60,

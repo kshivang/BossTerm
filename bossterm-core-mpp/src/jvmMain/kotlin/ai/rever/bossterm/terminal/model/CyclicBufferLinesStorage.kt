@@ -67,14 +67,14 @@ internal class CyclicBufferLinesStorage(private val maxCapacity: Int) : LinesSto
 
   /**
    * O(min(index, size-index)) using ArrayDeque's efficient index operations.
-   * If at capacity, removes from end first to make room.
+   *
+   * Note: This method is only used by insertLines() on the screen buffer,
+   * which has unlimited capacity (-1). The caller (insertLines) explicitly
+   * removes lines before calling insertAt, so capacity handling is not needed here.
    */
   override fun insertAt(index: Int, line: TerminalLine) {
     if (index < 0 || index > lines.size) {
       throw IndexOutOfBoundsException("Index: $index, Size: ${lines.size}")
-    }
-    if (isCapacityLimited && lines.size == maxCapacity) {
-      lines.removeLast()  // Make room by removing from end
     }
     // ArrayDeque implements MutableList, so add(index, element) is available
     (lines as MutableList<TerminalLine>).add(index, line)

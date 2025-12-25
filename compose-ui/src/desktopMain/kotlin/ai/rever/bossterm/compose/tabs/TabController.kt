@@ -1333,6 +1333,38 @@ class TabController(
     }
 
     /**
+     * Replace a tab at the given index with a different session.
+     *
+     * This is used when extracting the original tab from a split - the remaining
+     * session needs to take the original tab's position in the list.
+     *
+     * @param index The tab index to replace
+     * @param newSession The session to put in that position
+     * @return The old tab that was replaced, or null if index is invalid
+     */
+    fun replaceTabAtIndex(index: Int, newSession: TerminalSession): TerminalTab? {
+        if (index !in tabs.indices) return null
+
+        val oldTab = tabs[index]
+        val newTab = newSession as TerminalTab
+
+        // Update the session title if needed
+        val existingTitle = newTab.title.value
+        if (existingTitle == "Split" || existingTitle.isEmpty()) {
+            tabCounter++
+            newTab.title.value = "Shell $tabCounter"
+        }
+
+        // Replace in the list
+        tabs[index] = newTab
+
+        // Notify listeners
+        notifySessionCreated(newTab)
+
+        return oldTab
+    }
+
+    /**
      * Filter environment variables to remove potentially problematic ones.
      * (e.g., parent terminal's TERM variables that shouldn't be inherited)
      */

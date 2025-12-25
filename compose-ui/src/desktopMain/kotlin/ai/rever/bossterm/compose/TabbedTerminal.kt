@@ -395,9 +395,28 @@ fun TabbedTerminal(
                 onMoveToNewTab = if (!splitState.isSinglePane) {
                     {
                         // Extract the session from the split and move it to a new tab
-                        val session = splitState.extractFocusedPaneSession()
-                        if (session != null) {
-                            tabController.createTabFromExistingSession(session)
+                        val extractedSession = splitState.extractFocusedPaneSession()
+                        if (extractedSession != null) {
+                            // Check if we extracted the original tab's session
+                            // This happens when the user moves the first pane (which is the tab itself)
+                            if (extractedSession.id == activeTab.id) {
+                                // The remaining session should take the original tab's position
+                                // and the extracted original tab goes to a new tab
+                                val remainingSession = splitState.getFocusedSession()
+                                if (remainingSession != null) {
+                                    // Remove the old split state (it's now invalid)
+                                    splitStates.remove(activeTab.id)
+
+                                    // Replace the tab at current position with the remaining session
+                                    tabController.replaceTabAtIndex(tabController.activeTabIndex, remainingSession)
+
+                                    // Add the extracted original tab as a new tab
+                                    tabController.createTabFromExistingSession(extractedSession)
+                                }
+                            } else {
+                                // Normal case: extracted a split session (not the original tab)
+                                tabController.createTabFromExistingSession(extractedSession)
+                            }
                         }
                     }
                 } else null,  // Don't show option if only one pane (nothing to move)

@@ -21,7 +21,7 @@ data class Version(
         /**
          * Current application version.
          * This is loaded from the app bundle (Info.plist) on macOS,
-         * or from system properties/environment variables as fallback.
+         * or from system properties/environment variables/JAR manifest as fallback.
          */
         val CURRENT: Version by lazy {
             // Try to load from macOS app bundle Info.plist
@@ -29,9 +29,14 @@ data class Version(
             if (bundleVersion != null) {
                 parse(bundleVersion) ?: Version(1, 0, 0)
             } else {
-                // Fallback to system property or environment variable
+                // Fallback chain:
+                // 1. System property (set by bossterm-app run config)
+                // 2. Environment variable
+                // 3. JAR manifest (for Maven dependency usage)
+                // 4. Hardcoded fallback
                 val versionString = System.getProperty("bossterm.version")
                     ?: System.getenv("BOSSTERM_VERSION")
+                    ?: tryGetJarManifestVersion()
                     ?: "1.0.0"
                 parse(versionString) ?: Version(1, 0, 0)
             }
@@ -67,6 +72,19 @@ data class Version(
                     }
                 }
                 null
+            } catch (e: Exception) {
+                null
+            }
+        }
+
+        /**
+         * Try to read version from JAR manifest.
+         * This works when BossTerm is used as a Maven dependency.
+         * Returns null if manifest doesn't contain Implementation-Version.
+         */
+        private fun tryGetJarManifestVersion(): String? {
+            return try {
+                Version::class.java.`package`?.implementationVersion
             } catch (e: Exception) {
                 null
             }

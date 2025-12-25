@@ -114,6 +114,18 @@ kotlin {
     }
 }
 
+// Configure JAR manifest with version information for library consumers
+// This enables Version.CURRENT to read the version when used as a Maven dependency
+tasks.withType<Jar> {
+    manifest {
+        attributes(
+            "Implementation-Title" to "BossTerm Compose",
+            "Implementation-Version" to version.toString(),
+            "Implementation-Vendor" to "risalabs.ai"
+        )
+    }
+}
+
 // Note: Android configuration removed - compose-ui is Desktop-only
 // See bossterm-core-mpp for Android support
 

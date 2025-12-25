@@ -57,6 +57,7 @@ fun SplitContainer(
     splitFocusBorderEnabled: Boolean = true,
     splitFocusBorderColor: Color = Color(0xFF4A90E2),
     splitMinimumSize: Float = 0.1f,
+    onLinkClick: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Box(modifier = modifier.fillMaxSize()) {
@@ -84,6 +85,7 @@ fun SplitContainer(
             splitFocusBorderEnabled = splitFocusBorderEnabled,
             splitFocusBorderColor = splitFocusBorderColor,
             splitMinimumSize = splitMinimumSize,
+            onLinkClick = onLinkClick,
             modifier = Modifier.fillMaxSize()
         )
     }
@@ -117,6 +119,7 @@ private fun RenderSplitNode(
     splitFocusBorderEnabled: Boolean,
     splitFocusBorderColor: Color,
     splitMinimumSize: Float,
+    onLinkClick: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     when (node) {
@@ -145,6 +148,7 @@ private fun RenderSplitNode(
                 menuActions = menuActions,
                 splitFocusBorderEnabled = splitFocusBorderEnabled,
                 splitFocusBorderColor = splitFocusBorderColor,
+                onLinkClick = onLinkClick,
                 modifier = modifier
             )
         }
@@ -174,6 +178,7 @@ private fun RenderSplitNode(
                 splitFocusBorderEnabled = splitFocusBorderEnabled,
                 splitFocusBorderColor = splitFocusBorderColor,
                 splitMinimumSize = splitMinimumSize,
+                onLinkClick = onLinkClick,
                 modifier = modifier
             )
         }
@@ -203,6 +208,7 @@ private fun RenderSplitNode(
                 splitFocusBorderEnabled = splitFocusBorderEnabled,
                 splitFocusBorderColor = splitFocusBorderColor,
                 splitMinimumSize = splitMinimumSize,
+                onLinkClick = onLinkClick,
                 modifier = modifier
             )
         }
@@ -237,6 +243,7 @@ private fun RenderPane(
     menuActions: MenuActions?,
     splitFocusBorderEnabled: Boolean,
     splitFocusBorderColor: Color,
+    onLinkClick: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     // Focus border for active pane (only show when there are multiple panes and enabled)
@@ -290,6 +297,7 @@ private fun RenderPane(
             onMoveToNewTab = onMoveToNewTab,
             onPaneFocus = { splitState.setFocusedPane(pane.id) },
             menuActions = menuActions,
+            onLinkClick = onLinkClick,
             modifier = Modifier.fillMaxSize()
         )
     }
@@ -323,6 +331,7 @@ private fun RenderVerticalSplit(
     splitFocusBorderEnabled: Boolean,
     splitFocusBorderColor: Color,
     splitMinimumSize: Float,
+    onLinkClick: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(modifier = modifier) {
@@ -361,6 +370,7 @@ private fun RenderVerticalSplit(
                     splitFocusBorderEnabled = splitFocusBorderEnabled,
                     splitFocusBorderColor = splitFocusBorderColor,
                     splitMinimumSize = splitMinimumSize,
+                    onLinkClick = onLinkClick,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -394,6 +404,7 @@ private fun RenderVerticalSplit(
                     splitFocusBorderEnabled = splitFocusBorderEnabled,
                     splitFocusBorderColor = splitFocusBorderColor,
                     splitMinimumSize = splitMinimumSize,
+                    onLinkClick = onLinkClick,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -443,6 +454,7 @@ private fun RenderHorizontalSplit(
     splitFocusBorderEnabled: Boolean,
     splitFocusBorderColor: Color,
     splitMinimumSize: Float,
+    onLinkClick: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(modifier = modifier) {
@@ -481,6 +493,7 @@ private fun RenderHorizontalSplit(
                     splitFocusBorderEnabled = splitFocusBorderEnabled,
                     splitFocusBorderColor = splitFocusBorderColor,
                     splitMinimumSize = splitMinimumSize,
+                    onLinkClick = onLinkClick,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -514,6 +527,7 @@ private fun RenderHorizontalSplit(
                     splitFocusBorderEnabled = splitFocusBorderEnabled,
                     splitFocusBorderColor = splitFocusBorderColor,
                     splitMinimumSize = splitMinimumSize,
+                    onLinkClick = onLinkClick,
                     modifier = Modifier.fillMaxSize()
                 )
             }

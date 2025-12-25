@@ -503,29 +503,41 @@ class TerminalTextBuffer internal constructor(
   /**
    * Negative indexes are for history buffer. Non-negative for screen buffer.
    *
+   * Thread-safety note: This method acquires the buffer lock to ensure consistent
+   * reads during concurrent resize operations. Callers should NOT hold the lock
+   * when calling this method to avoid deadlocks.
+   *
    * @param index index of line
    * @return history lines for index<0, screen line for index>=0
    */
   fun getLine(index: Int): TerminalLine {
-    if (index >= 0) {
-      if (index >= height) {
-        LOG.error("Attempt to get line out of bounds: $index >= $height")
-        return TerminalLine.createEmpty()
+    myLock.lock()
+    try {
+      if (index >= 0) {
+        if (index >= height) {
+          // This can happen transiently during resize when caller cached old cursorY.
+          // Return empty line gracefully - not an error, just a race condition.
+          LOG.debug("Line index out of bounds during resize: $index >= $height")
+          return TerminalLine.createEmpty()
+        }
+        val sizeBefore = screenLinesStorage.size
+        val line = screenLinesStorage[index]
+        if (index >= sizeBefore) {
+          // Lines Storage creates lines up to the requested index if there were no lines.
+          // So we need to report it in this case.
+          changesMulticaster.linesChanged(index)
+        }
+        return line
+      } else {
+        if (index < -historyLinesCount) {
+          // This can happen transiently during resize. Return empty line gracefully.
+          LOG.debug("History line index out of bounds during resize: $index < ${-historyLinesCount}")
+          return TerminalLine.createEmpty()
+        }
+        return historyLinesStorage[historyLinesCount + index]
       }
-      val sizeBefore = screenLinesStorage.size
-      val line = screenLinesStorage[index]
-      if (index >= sizeBefore) {
-        // Lines Storage creates lines up to the requested index if there were no lines.
-        // So we need to report it in this case.
-        changesMulticaster.linesChanged(index)
-      }
-      return line
-    } else {
-      if (index < -historyLinesCount) {
-        LOG.error("Attempt to get line out of bounds: $index < ${-historyLinesCount}")
-        return TerminalLine.createEmpty()
-      }
-      return historyLinesStorage[historyLinesCount + index]
+    } finally {
+      myLock.unlock()
     }
   }
 

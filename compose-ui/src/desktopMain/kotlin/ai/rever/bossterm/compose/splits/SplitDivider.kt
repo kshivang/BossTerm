@@ -12,11 +12,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.awt.awtEventOrNull
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.PointerIcon
-import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -31,6 +33,36 @@ val DIVIDER_THICKNESS = 1.dp
  * Drag hit area size (invisible overlay for easier grabbing).
  */
 private val DRAG_AREA_SIZE = 16.dp
+
+/**
+ * Modifier extension for horizontal resize cursor (↔️).
+ * Uses direct AWT cursor manipulation for reliable cross-platform support.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+private fun Modifier.cursorForHorizontalResize(): Modifier {
+    return this
+        .onPointerEvent(PointerEventType.Enter) { pointerEvent ->
+            pointerEvent.awtEventOrNull?.component?.cursor = Cursor.getPredefinedCursor(Cursor.E_RESIZE_CURSOR)
+        }
+        .onPointerEvent(PointerEventType.Exit) { pointerEvent ->
+            pointerEvent.awtEventOrNull?.component?.cursor = Cursor.getDefaultCursor()
+        }
+}
+
+/**
+ * Modifier extension for vertical resize cursor (↕️).
+ * Uses direct AWT cursor manipulation for reliable cross-platform support.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+private fun Modifier.cursorForVerticalResize(): Modifier {
+    return this
+        .onPointerEvent(PointerEventType.Enter) { pointerEvent ->
+            pointerEvent.awtEventOrNull?.component?.cursor = Cursor.getPredefinedCursor(Cursor.N_RESIZE_CURSOR)
+        }
+        .onPointerEvent(PointerEventType.Exit) { pointerEvent ->
+            pointerEvent.awtEventOrNull?.component?.cursor = Cursor.getDefaultCursor()
+        }
+}
 
 /**
  * The thin visible divider line between split panes.
@@ -76,17 +108,18 @@ fun SplitDragHandle(
     minRatio: Float = 0.1f,
     size: Dp = DRAG_AREA_SIZE
 ) {
-    val cursor = when (orientation) {
-        SplitOrientation.HORIZONTAL -> PointerIcon(Cursor(Cursor.N_RESIZE_CURSOR))
-        SplitOrientation.VERTICAL -> PointerIcon(Cursor(Cursor.E_RESIZE_CURSOR))
-    }
-
     // Track the starting ratio when drag begins
     var startRatio by remember { mutableFloatStateOf(currentRatio) }
     var cumulativeDelta by remember { mutableFloatStateOf(0f) }
 
     // Calculate max ratio based on min (ensures both panes respect minimum)
     val maxRatio = 1f - minRatio
+
+    // Apply resize cursor based on orientation using direct AWT manipulation
+    val cursorModifier = when (orientation) {
+        SplitOrientation.HORIZONTAL -> Modifier.cursorForVerticalResize()
+        SplitOrientation.VERTICAL -> Modifier.cursorForHorizontalResize()
+    }
 
     Box(
         modifier = modifier
@@ -97,7 +130,7 @@ fun SplitDragHandle(
                 }
             )
             .alpha(0f) // Invisible
-            .pointerHoverIcon(cursor)
+            .then(cursorModifier)
             .pointerInput(orientation) {
                 detectDragGestures(
                     onDragStart = {
@@ -138,9 +171,10 @@ fun SplitDivider(
     onDrag: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val cursor = when (orientation) {
-        SplitOrientation.HORIZONTAL -> PointerIcon(Cursor(Cursor.N_RESIZE_CURSOR))
-        SplitOrientation.VERTICAL -> PointerIcon(Cursor(Cursor.E_RESIZE_CURSOR))
+    // Apply resize cursor based on orientation using direct AWT manipulation
+    val cursorModifier = when (orientation) {
+        SplitOrientation.HORIZONTAL -> Modifier.cursorForVerticalResize()
+        SplitOrientation.VERTICAL -> Modifier.cursorForHorizontalResize()
     }
 
     Box(
@@ -152,7 +186,7 @@ fun SplitDivider(
                 }
             )
             .background(Color(0xFF2D2D2D))
-            .pointerHoverIcon(cursor)
+            .then(cursorModifier)
             .pointerInput(orientation) {
                 detectDragGestures { change, dragAmount ->
                     change.consume()

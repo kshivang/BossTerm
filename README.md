@@ -404,6 +404,8 @@ You may select either license at your option.
 
 BossTerm is a fork of [JediTerm](https://github.com/JetBrains/jediterm) by JetBrains, completely rewritten with Kotlin and Compose Desktop.
 
+Inspired by [iTerm2](https://github.com/gnachman/iTerm2), the beloved macOS terminal.
+
 ---
 
-**Built by [Risa AI](https://risalabs.ai)**
+**Built by [Risa Labs Inc](https://risalabs.ai)**

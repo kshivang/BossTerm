@@ -8,6 +8,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import ai.rever.bossterm.compose.ContextMenuElement
 import ai.rever.bossterm.compose.menu.MenuActions
 import ai.rever.bossterm.compose.util.loadTerminalFont
 import ai.rever.bossterm.compose.settings.SettingsManager
@@ -67,6 +68,8 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  * @param initialCommand Optional command to run in the first terminal tab after startup
  * @param onLinkClick Optional callback for custom link handling. When provided, intercepts Ctrl/Cmd+Click
  *                    on links and context menu "Open Link" action. When null, links open in system browser.
+ * @param contextMenuItems Custom context menu items to add below the built-in items (Copy, Paste, Clear, Select All).
+ *                         Applies to all tabs and split panes within the terminal.
  * @param modifier Compose modifier for the terminal container
  */
 @Composable
@@ -80,6 +83,7 @@ fun TabbedTerminal(
     isWindowFocused: () -> Boolean = { true },
     initialCommand: String? = null,
     onLinkClick: ((String) -> Unit)? = null,
+    contextMenuItems: List<ContextMenuElement> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     // Settings integration
@@ -403,6 +407,7 @@ fun TabbedTerminal(
                 splitFocusBorderColor = settings.splitFocusBorderColorValue,
                 splitMinimumSize = settings.splitMinimumSize,
                 onLinkClick = onLinkClick,
+                customContextMenuItems = contextMenuItems,
                 modifier = Modifier.fillMaxSize()
             )
         }

@@ -72,6 +72,7 @@ fun TabbedTerminal(
 | `isWindowFocused` | `() -> Boolean` | Returns window focus state (for notifications) |
 | `initialCommand` | `String?` | Command to run in first tab after startup |
 | `onLinkClick` | `(String) -> Unit` | Custom link click handler (see [Custom Link Handling](#custom-link-handling)) |
+| `contextMenuItems` | `List<ContextMenuElement>` | Custom context menu items (see [Custom Context Menu](#custom-context-menu)) |
 | `modifier` | `Modifier` | Compose modifier |
 
 ### MenuActions
@@ -389,6 +390,40 @@ TabbedTerminal(
 
 The callback is invoked for all tabs and split panes within the terminal.
 
+## Custom Context Menu
+
+Add custom items to the right-click context menu using the `contextMenuItems` parameter.
+
+```kotlin
+import ai.rever.bossterm.compose.ContextMenuItem
+import ai.rever.bossterm.compose.ContextMenuSection
+import ai.rever.bossterm.compose.ContextMenuSubmenu
+
+TabbedTerminal(
+    onExit = { exitApplication() },
+    contextMenuItems = listOf(
+        ContextMenuSection(id = "custom_section", label = "Quick Commands"),
+        ContextMenuItem(
+            id = "run_build",
+            label = "Run Build",
+            action = { /* your action */ }
+        ),
+        ContextMenuSubmenu(
+            id = "git_menu",
+            label = "Git Commands",
+            items = listOf(
+                ContextMenuItem(id = "git_status", label = "Status", action = { /* ... */ }),
+                ContextMenuItem(id = "git_log", label = "Log", action = { /* ... */ })
+            )
+        )
+    )
+)
+```
+
+Custom items appear below the built-in items (Copy, Paste, Clear, Select All) and apply to all tabs and split panes within the terminal.
+
+For detailed context menu element types and examples, see [Custom Context Menu in EmbeddableTerminal](embedding.md#custom-context-menu).
+
 ## Comparison: EmbeddableTerminal vs TabbedTerminal
 
 | Feature | EmbeddableTerminal | TabbedTerminal |
@@ -399,7 +434,7 @@ The callback is invoked for all tabs and split panes within the terminal.
 | Split panes | No | Yes |
 | External state holder | `EmbeddableTerminalState` | `TabbedTerminalState` |
 | State persistence | Yes | Yes |
-| Custom context menu | Yes | Built-in |
+| Custom context menu | Yes | Yes |
 | Custom link handling | Yes | Yes |
 | Menu bar integration | No | Yes |
 | Window management | No | Yes |

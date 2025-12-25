@@ -320,6 +320,7 @@ tasks.register("signPty4jBinaries") {
 // Configure task dependencies for PTY4J signing
 afterEvaluate {
     val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
+    val isLinux = System.getProperty("os.name").lowercase().contains("linux")
     val signingDisabled = System.getenv("DISABLE_MACOS_SIGNING") == "true"
 
     // Make signPty4jBinaries run AFTER createDistributable
@@ -342,5 +343,85 @@ afterEvaluate {
             mustRunAfter("signPty4jBinaries")
             println("📝 packageDmg will run after PTY4J signing")
         }
+    }
+
+    // Linux: Fix .desktop file after packaging
+    if (isLinux) {
+        tasks.findByName("fixLinuxDesktopFile")?.apply {
+            mustRunAfter("packageDeb", "packageRpm")
+        }
+        tasks.findByName("packageDeb")?.apply {
+            finalizedBy("fixLinuxDesktopFile")
+            println("📝 packageDeb will be finalized by fixLinuxDesktopFile")
+        }
+        tasks.findByName("packageRpm")?.apply {
+            finalizedBy("fixLinuxDesktopFile")
+            println("📝 packageRpm will be finalized by fixLinuxDesktopFile")
+        }
+    }
+}
+
+// Fix Linux .desktop file to add StartupWMClass for proper desktop integration
+// This task post-processes the .deb file after jpackage creates it
+tasks.register("fixLinuxDesktopFile") {
+    description = "Adds StartupWMClass to Linux .desktop file for proper taskbar integration"
+    group = "build"
+
+    val isLinux = System.getProperty("os.name").lowercase().contains("linux")
+    onlyIf { isLinux }
+
+    val injected = project.objects.newInstance<InjectedExecOps>()
+
+    doLast {
+        // Fix .deb package
+        val debDir = project.layout.buildDirectory.dir("compose/binaries/main/deb").get().asFile
+        if (debDir.exists()) {
+            fixDesktopFileInDebPackage(debDir, injected)
+        }
+
+        // Note: RPM repacking requires rpmbuild which is complex; rely on update script for RPM
+    }
+}
+
+fun fixDesktopFileInDebPackage(packageDir: File, injected: InjectedExecOps) {
+    val debFile = packageDir.listFiles()?.find { it.name.endsWith(".deb") }
+    if (debFile == null) {
+        println("No .deb file found in $packageDir")
+        return
+    }
+
+    println("Fixing .desktop file in ${debFile.name}...")
+    val workDir = File(packageDir, "fix-temp-${System.currentTimeMillis()}")
+    workDir.mkdirs()
+
+    try {
+        // Extract deb contents
+        injected.execOps.exec {
+            commandLine("dpkg-deb", "-R", debFile.absolutePath, workDir.absolutePath)
+        }
+
+        // Find and modify .desktop file
+        var modified = false
+        workDir.walkTopDown()
+            .filter { it.isFile && it.name.endsWith(".desktop") }
+            .forEach { desktopFile ->
+                var content = desktopFile.readText()
+                if (!content.contains("StartupWMClass")) {
+                    content = content.trimEnd() + "\nStartupWMClass=bossterm\n"
+                    desktopFile.writeText(content)
+                    println("Added StartupWMClass to ${desktopFile.name}")
+                    modified = true
+                }
+            }
+
+        if (modified) {
+            // Repack deb using dpkg-deb --build
+            injected.execOps.exec {
+                commandLine("dpkg-deb", "--build", "--root-owner-group", workDir.absolutePath, debFile.absolutePath)
+            }
+            println("Repacked ${debFile.name}")
+        }
+    } finally {
+        workDir.deleteRecursively()
     }
 }

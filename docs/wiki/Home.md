@@ -56,4 +56,4 @@ BossTerm is dual-licensed under [LGPLv3](https://github.com/kshivang/BossTerm/bl
 
 ---
 
-**Built by [Risa AI](https://risalabs.ai)**
+**Built by [Risa Labs Inc](https://risalabs.ai)**

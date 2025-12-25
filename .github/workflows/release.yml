@@ -300,8 +300,8 @@ jobs:
         with:
           cache-read-only: false
 
-      - name: Install RPM Tools
-        run: sudo apt-get update && sudo apt-get install -y rpm
+      - name: Install Package Build Dependencies
+        run: sudo apt-get update && sudo apt-get install -y rpm fakeroot
 
       - name: Generate Linux Icons
         run: |

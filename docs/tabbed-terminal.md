@@ -56,6 +56,7 @@ fun TabbedTerminal(
     menuActions: MenuActions? = null,
     isWindowFocused: () -> Boolean = { true },
     initialCommand: String? = null,
+    onLinkClick: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 )
 ```
@@ -70,6 +71,7 @@ fun TabbedTerminal(
 | `menuActions` | `MenuActions?` | Callbacks for menu bar integration |
 | `isWindowFocused` | `() -> Boolean` | Returns window focus state (for notifications) |
 | `initialCommand` | `String?` | Command to run in first tab after startup |
+| `onLinkClick` | `(String) -> Unit` | Custom link click handler (see [Custom Link Handling](#custom-link-handling)) |
 | `modifier` | `Modifier` | Compose modifier |
 
 ### MenuActions
@@ -357,6 +359,36 @@ Run the example:
 ./gradlew :tabbed-example:run
 ```
 
+## Custom Link Handling
+
+By default, clicking links in the terminal (with Ctrl/Cmd+Click or via the context menu "Open Link") opens them in the system's default browser. You can intercept these clicks with the `onLinkClick` callback:
+
+```kotlin
+TabbedTerminal(
+    onExit = { exitApplication() },
+    onLinkClick = { url ->
+        // Custom handling - e.g., open in an in-app browser
+        myInAppBrowser.openUrl(url)
+    }
+)
+```
+
+### Use Cases
+
+- **In-app browser**: Open URLs in a browser tab within your application
+- **URL filtering**: Validate or sanitize URLs before opening
+- **Custom protocols**: Handle custom URL schemes (e.g., `myapp://...`)
+- **Logging**: Track which links users click
+
+### Behavior
+
+| `onLinkClick` | Ctrl/Cmd+Click | Context Menu "Open Link" |
+|---------------|----------------|--------------------------|
+| `null` (default) | Opens in system browser | Opens in system browser |
+| Provided | Calls your callback | Calls your callback |
+
+The callback is invoked for all tabs and split panes within the terminal.
+
 ## Comparison: EmbeddableTerminal vs TabbedTerminal
 
 | Feature | EmbeddableTerminal | TabbedTerminal |
@@ -368,6 +400,7 @@ Run the example:
 | External state holder | `EmbeddableTerminalState` | `TabbedTerminalState` |
 | State persistence | Yes | Yes |
 | Custom context menu | Yes | Built-in |
+| Custom link handling | Yes | Yes |
 | Menu bar integration | No | Yes |
 | Window management | No | Yes |
 | Command notifications | No | Yes |

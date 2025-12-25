@@ -134,6 +134,7 @@ fun ProperTerminal(
   menuActions: MenuActions? = null,
   enableDebugPanel: Boolean = true,  // Whether to show debug panel option in context menu
   customContextMenuItems: List<ai.rever.bossterm.compose.ContextMenuElement> = emptyList(),
+  onLinkClick: ((String) -> Unit)? = null,  // Custom link handler (null = open in system browser)
   modifier: Modifier = Modifier
 ) {
   // Extract session state (no more remember {} blocks - state lives in TerminalSession)
@@ -804,7 +805,13 @@ fun ProperTerminal(
                   x = pos.x,
                   y = pos.y,
                   url = link.url,
-                  onOpenLink = { HyperlinkDetector.openUrl(link.url) },
+                  onOpenLink = {
+                    if (onLinkClick != null) {
+                      onLinkClick(link.url)
+                    } else {
+                      HyperlinkDetector.openUrl(link.url)
+                    }
+                  },
                   onCopyLinkAddress = { clipboardManager.setText(AnnotatedString(link.url)) },
                   hasSelection = selectionStart != null && selectionEnd != null,
                   onCopy = {
@@ -904,7 +911,12 @@ fun ProperTerminal(
             // Check for hyperlink click with Ctrl/Cmd modifier
             // Standard terminal behavior: Ctrl+Click (Windows/Linux) or Cmd+Click (macOS)
             if (hoveredHyperlink != null && isModifierPressed) {
-              HyperlinkDetector.openUrl(hoveredHyperlink!!.url)
+              val url = hoveredHyperlink!!.url
+              if (onLinkClick != null) {
+                onLinkClick(url)
+              } else {
+                HyperlinkDetector.openUrl(url)
+              }
               change.consume()
               return@onPointerEvent
             }

@@ -56,6 +56,7 @@ fun EmbeddableTerminal(
     onExit: ((Int) -> Unit)? = null,
     onReady: (() -> Unit)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
+    onLinkClick: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 )
 ```
@@ -74,6 +75,7 @@ fun EmbeddableTerminal(
 | `onExit` | `(Int) -> Unit` | Callback when shell process exits |
 | `onReady` | `() -> Unit` | Callback when terminal is ready |
 | `contextMenuItems` | `List<ContextMenuElement>` | Custom context menu items |
+| `onLinkClick` | `(String) -> Unit` | Custom link click handler (see [Custom Link Handling](#custom-link-handling)) |
 | `modifier` | `Modifier` | Compose modifier |
 
 ### EmbeddableTerminalState
@@ -337,3 +339,58 @@ EmbeddableTerminal(
 ```
 
 See the main [README](../README.md#configuration) for available settings.
+
+## Custom Link Handling
+
+By default, clicking links in the terminal (with Ctrl/Cmd+Click or via the context menu "Open Link") opens them in the system's default browser. You can intercept these clicks with the `onLinkClick` callback:
+
+```kotlin
+EmbeddableTerminal(
+    onLinkClick = { url ->
+        // Custom handling - e.g., open in an in-app browser
+        myInAppBrowser.openUrl(url)
+    }
+)
+```
+
+### Use Cases
+
+- **In-app browser**: Open URLs in a browser tab within your application
+- **URL filtering**: Validate or sanitize URLs before opening
+- **Custom protocols**: Handle custom URL schemes (e.g., `myapp://...`)
+- **Logging**: Track which links users click
+
+### Behavior
+
+| `onLinkClick` | Ctrl/Cmd+Click | Context Menu "Open Link" |
+|---------------|----------------|--------------------------|
+| `null` (default) | Opens in system browser | Opens in system browser |
+| Provided | Calls your callback | Calls your callback |
+
+### Example: In-App Browser Integration
+
+```kotlin
+@Composable
+fun TerminalWithInAppBrowser() {
+    var browserUrl by remember { mutableStateOf<String?>(null) }
+
+    Column {
+        // Terminal with custom link handling
+        EmbeddableTerminal(
+            onLinkClick = { url ->
+                browserUrl = url  // Open in our browser component
+            },
+            modifier = Modifier.weight(1f)
+        )
+
+        // In-app browser (shown when URL is set)
+        browserUrl?.let { url ->
+            InAppBrowser(
+                url = url,
+                onClose = { browserUrl = null },
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+```

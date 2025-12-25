@@ -65,6 +65,8 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  * @param menuActions Optional menu action callbacks for wiring up menu bar
  * @param isWindowFocused Lambda returning whether this window is currently focused (for notifications)
  * @param initialCommand Optional command to run in the first terminal tab after startup
+ * @param onLinkClick Optional callback for custom link handling. When provided, intercepts Ctrl/Cmd+Click
+ *                    on links and context menu "Open Link" action. When null, links open in system browser.
  * @param modifier Compose modifier for the terminal container
  */
 @Composable
@@ -77,6 +79,7 @@ fun TabbedTerminal(
     menuActions: MenuActions? = null,
     isWindowFocused: () -> Boolean = { true },
     initialCommand: String? = null,
+    onLinkClick: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     // Settings integration
@@ -399,6 +402,7 @@ fun TabbedTerminal(
                 splitFocusBorderEnabled = settings.splitFocusBorderEnabled,
                 splitFocusBorderColor = settings.splitFocusBorderColorValue,
                 splitMinimumSize = settings.splitMinimumSize,
+                onLinkClick = onLinkClick,
                 modifier = Modifier.fillMaxSize()
             )
         }

@@ -130,6 +130,8 @@ data class ContextMenuSubmenu(
  * @param onExit Callback invoked when shell process exits with exit code
  * @param onReady Callback invoked when terminal is ready (process started)
  * @param contextMenuItems Custom context menu elements (items, sections, submenus) to add after the default items
+ * @param onLinkClick Optional callback for custom link handling. When provided, intercepts Ctrl/Cmd+Click
+ *                    on links and context menu "Open Link" action. When null, links open in system browser.
  * @param modifier Compose modifier for the terminal container
  */
 @Composable
@@ -147,6 +149,7 @@ fun EmbeddableTerminal(
     onReady: (() -> Unit)? = null,
     onNewWindow: (() -> Unit)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
+    onLinkClick: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     // Use provided state or create auto-disposing one
@@ -212,6 +215,7 @@ fun EmbeddableTerminal(
             onNewWindow = onNewWindow,
             enableDebugPanel = false,  // Hide debug panel in embedded mode
             customContextMenuItems = contextMenuItems,
+            onLinkClick = onLinkClick,
             modifier = modifier
         )
     }

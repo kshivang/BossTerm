@@ -50,6 +50,18 @@ fun BehaviorSettingsSection(
 
         Spacer(modifier = Modifier.height(24.dp))
 
+        // Tab Bar Settings
+        SettingsSection(title = "Tab Bar") {
+            SettingsToggle(
+                label = "Always Show Tab Bar",
+                checked = settings.alwaysShowTabBar,
+                onCheckedChange = { onSettingsChange(settings.copy(alwaysShowTabBar = it)) },
+                description = "Show tab bar even with a single tab (provides access to + button)"
+            )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
         // Clipboard Settings
         SettingsSection(title = "Clipboard") {
             SettingsToggle(

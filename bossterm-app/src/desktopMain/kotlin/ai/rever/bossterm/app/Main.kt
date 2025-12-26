@@ -600,13 +600,6 @@ private fun configureGpuRendering() {
         println("GPU: VSync disabled")
     }
 
-    // Configure GPU resource cache limit (convert MB to bytes)
-    val cacheSizeBytes = settings.gpuCacheSizeMb.coerceIn(64, 1024) * 1024L * 1024L
-    System.setProperty("skiko.hardwareInfo.enabled", "true")
-    // Note: Actual cache limit is set via SkiaLayerProperties at window creation time
-    // We store it for later use
-    System.setProperty("bossterm.gpu.cacheSizeBytes", cacheSizeBytes.toString())
-
     // Log GPU configuration summary
     println("GPU: Acceleration=${settings.gpuAcceleration}, API=${settings.gpuRenderApi}, " +
             "Priority=${settings.gpuPriority}, VSync=${settings.gpuVsyncEnabled}, Cache=${settings.gpuCacheSizeMb}MB")

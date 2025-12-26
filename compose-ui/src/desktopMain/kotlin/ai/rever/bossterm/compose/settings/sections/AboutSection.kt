@@ -86,9 +86,6 @@ fun AboutSection(modifier: Modifier = Modifier) {
             val gpuInfo = remember { getGpuRenderingInfo() }
             InfoRow("Render API", gpuInfo.renderApi)
             InfoRow("GPU Backend", gpuInfo.backend)
-            if (gpuInfo.gpuName.isNotEmpty()) {
-                InfoRow("GPU", gpuInfo.gpuName)
-            }
             InfoRow("VSync", if (gpuInfo.vsyncEnabled) "Enabled" else "Disabled")
             InfoRow("Hardware Acceleration", if (gpuInfo.hardwareAccelerated) "Active" else "Software")
         }
@@ -331,7 +328,6 @@ private fun AcknowledgmentRow(
 private data class GpuRenderingInfo(
     val renderApi: String,
     val backend: String,
-    val gpuName: String,
     val vsyncEnabled: Boolean,
     val hardwareAccelerated: Boolean
 )
@@ -372,19 +368,9 @@ private fun getGpuRenderingInfo(): GpuRenderingInfo {
     // VSync setting
     val vsyncEnabled = System.getProperty("skiko.vsync.enabled")?.toBoolean() ?: true
 
-    // Try to get GPU name via reflection (Skiko may expose this)
-    val gpuName = try {
-        // Attempt to get GPU info from Skiko's hardware info
-        val hardwareInfo = System.getProperty("skiko.hardwareInfo")
-        hardwareInfo ?: ""
-    } catch (e: Exception) {
-        ""
-    }
-
     return GpuRenderingInfo(
         renderApi = renderApi,
         backend = backend,
-        gpuName = gpuName,
         vsyncEnabled = vsyncEnabled,
         hardwareAccelerated = hardwareAccelerated
     )

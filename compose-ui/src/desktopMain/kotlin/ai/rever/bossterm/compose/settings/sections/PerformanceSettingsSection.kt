@@ -11,6 +11,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SystemInfoUtils
 import ai.rever.bossterm.compose.settings.components.*
 
 /**
@@ -120,8 +121,8 @@ fun PerformanceSettingsSection(
                     onValueChangeFinished = onSettingsSave,
                     valueRange = gpuCacheLimits.min.toFloat()..gpuCacheLimits.max.toFloat(),
                     steps = ((gpuCacheLimits.max - gpuCacheLimits.min) / 64).coerceIn(1, 30),
-                    valueDisplay = { formatMemorySize(it.toInt()) },
-                    description = "GPU memory for caching glyphs/textures (max ${formatMemorySize(gpuCacheLimits.max)})"
+                    valueDisplay = { SystemInfoUtils.formatMemorySize(it.toInt()) },
+                    description = "GPU memory for caching glyphs/textures (max ${SystemInfoUtils.formatMemorySize(gpuCacheLimits.max)})"
                 )
 
                 // Advanced: Max cache percentage (continuous slider, no steps)
@@ -145,7 +146,7 @@ fun PerformanceSettingsSection(
                 )
             }
 
-            // Restart button
+            // Restart button - saves pending settings before restart
             if (onRestartApp != null) {
                 Spacer(modifier = Modifier.height(12.dp))
                 Row(
@@ -153,7 +154,11 @@ fun PerformanceSettingsSection(
                     horizontalArrangement = Arrangement.End
                 ) {
                     Button(
-                        onClick = onRestartApp,
+                        onClick = {
+                            // Save any pending settings before restart
+                            onSettingsSave?.invoke()
+                            onRestartApp()
+                        },
                         colors = ButtonDefaults.buttonColors(
                             backgroundColor = AccentColor
                         )
@@ -270,18 +275,6 @@ fun PerformanceSettingsSection(
 }
 
 /**
- * Format memory size in MB to human-readable string (MB, GB, TB, or PB).
- */
-private fun formatMemorySize(mb: Int): String {
-    return when {
-        mb >= 1024 * 1024 * 1024 -> "%.1f PB".format(mb / (1024f * 1024f * 1024f))
-        mb >= 1024 * 1024 -> "%.1f TB".format(mb / (1024f * 1024f))
-        mb >= 1024 -> "%.1f GB".format(mb / 1024f)
-        else -> "$mb MB"
-    }
-}
-
-/**
  * GPU cache size limits based on system memory.
  */
 private data class GpuCacheLimits(
@@ -294,33 +287,19 @@ private data class GpuCacheLimits(
 /**
  * Calculate GPU cache limits based on available system memory.
  * - Min: 64 MB (enough for basic glyph caching)
- * - Max: User-configurable % of system RAM (default 75%), no upper cap
+ * - Max: User-configurable % of system RAM, capped at 8 GB (no GPU has more VRAM for a terminal)
  * - Default: 10% of system RAM, capped at 512 MB
  *
  * @param maxPercent Maximum cache as percentage of system RAM (10-90)
  */
 private fun calculateGpuCacheLimits(maxPercent: Int = 75): GpuCacheLimits {
-    val runtime = Runtime.getRuntime()
-    // Get max memory available to JVM (approximation of system resources)
-    val maxMemoryMb = (runtime.maxMemory() / (1024 * 1024)).toInt()
+    val systemMemoryMb = SystemInfoUtils.getSystemMemoryMb()
 
-    // Try to get actual system memory via ManagementFactory
-    val systemMemoryMb = try {
-        val osBean = java.lang.management.ManagementFactory.getOperatingSystemMXBean()
-        if (osBean is com.sun.management.OperatingSystemMXBean) {
-            (osBean.totalMemorySize / (1024 * 1024)).toInt()
-        } else {
-            // Fallback: estimate system memory as 4x JVM max (rough heuristic)
-            maxMemoryMb * 4
-        }
-    } catch (e: Exception) {
-        // Fallback if com.sun.management is not available
-        maxMemoryMb * 4
-    }
-
-    // Calculate limits based on user-configurable percentage (no upper cap)
+    // Calculate limits: min 256 MB, max 8 GB (8192 MB)
     val min = 64
-    val maxCacheMb = (systemMemoryMb * (maxPercent / 100.0)).toInt().coerceAtLeast(256)
+    val maxCacheMb = (systemMemoryMb * (maxPercent / 100.0)).toInt()
+        .coerceAtLeast(256)
+        .coerceAtMost(8192)  // Cap at 8 GB - no practical GPU cache needs more
     val default = (systemMemoryMb * 0.10).toInt().coerceIn(128, 512)
 
     return GpuCacheLimits(min = min, max = maxCacheMb, default = default, systemRamMb = systemMemoryMb)

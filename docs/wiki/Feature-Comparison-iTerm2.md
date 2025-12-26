@@ -38,7 +38,7 @@ This document provides a comprehensive feature comparison between BossTerm and [
 | Mouse reporting modes | ✅ | ✅ | NORMAL, BUTTON, ALL_MOTION |
 | Alternate screen buffer | ✅ | ✅ | vim, less, htop support |
 | Bracketed paste mode | ✅ | ✅ | Safe pasting |
-| GPU rendering | ❌ | ✅ | iTerm2 uses Metal |
+| GPU rendering | ✅ | ✅ | BossTerm: Skia (Metal/OpenGL/DirectX), iTerm2: Metal |
 
 ---
 

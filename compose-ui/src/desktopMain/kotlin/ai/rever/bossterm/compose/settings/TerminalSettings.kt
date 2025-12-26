@@ -346,7 +346,7 @@ data class TerminalSettings(
      * Enable vertical sync (VSync) to eliminate screen tearing.
      * When true, synchronizes frame rendering with display refresh rate.
      * When false, allows higher frame rates but may cause tearing.
-     * Default: true (VSync enabled for smooth scrolling)
+     * Default: true
      */
     val gpuVsyncEnabled: Boolean = true,
 

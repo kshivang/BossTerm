@@ -36,7 +36,7 @@ class ThemeManager private constructor(
      */
     val customThemes: StateFlow<List<Theme>> = _customThemes.asStateFlow()
 
-    private val _currentTheme = MutableStateFlow(BuiltinThemes.DEFAULT)
+    private val _currentTheme = MutableStateFlow(BuiltinThemes.MONOKAI)
 
     /**
      * Currently active theme.

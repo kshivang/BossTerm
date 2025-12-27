@@ -60,34 +60,34 @@ data class TerminalSettings(
     /**
      * Default foreground color (serialized as ARGB hex)
      */
-    val defaultForeground: String = "0xFFFFFFFF",
+    val defaultForeground: String = "0xFFF8F8F2",
 
     /**
      * Default background color (serialized as ARGB hex)
      */
-    val defaultBackground: String = "0xFF000000",
+    val defaultBackground: String = "0xFF272822",
 
     /**
      * Selection highlight color (serialized as ARGB hex)
      */
-    val selectionColor: String = "0xFF4A90E2",
+    val selectionColor: String = "0xFF49483E",
 
     /**
      * Search result highlight color (serialized as ARGB hex)
      */
-    val foundPatternColor: String = "0xFFFFFF00",
+    val foundPatternColor: String = "0xFFE6DB74",
 
     /**
      * Hyperlink color (serialized as ARGB hex)
      */
-    val hyperlinkColor: String = "0xFF5C9FFF",
+    val hyperlinkColor: String = "0xFF66D9EF",
 
     /**
      * Active theme ID.
      * References a theme from BuiltinThemes or a custom theme.
      * When a theme is applied, the color settings above are updated to match.
      */
-    val activeThemeId: String = "default",
+    val activeThemeId: String = "monokai",
 
     /**
      * Active color palette ID.

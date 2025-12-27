@@ -371,5 +371,5 @@ object BuiltinThemes {
     /**
      * Default theme ID.
      */
-    const val DEFAULT_THEME_ID = "default"
+    const val DEFAULT_THEME_ID = "monokai"
 }

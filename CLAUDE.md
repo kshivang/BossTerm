@@ -572,9 +572,15 @@ None - feature complete for current phase
 ---
 
 ## Last Updated
-December 7, 2025
+December 27, 2025
 
 ### Recent Changes
+- **December 27, 2025**: Expose workingDirectory parameter in TabbedTerminal (#176)
+  - **Feature**: Added `workingDirectory: String? = null` parameter to `TabbedTerminal` composable
+  - **Purpose**: Allows setting the initial working directory for the first tab (matches `EmbeddableTerminal` API)
+  - **Modified Files**: `TabbedTerminal.kt` (+6 lines)
+  - **Usage**: `TabbedTerminal(workingDirectory = "/path/to/project", onExit = { ... })`
+  - **Status**: Complete, PR #177
 - **December 7, 2025**: Command Completion Notifications (OSC 133 Shell Integration)
   - **Feature**: iTerm2-style system notifications when commands complete while window unfocused
   - **Protocol**: OSC 133 (FinalTerm) - A=prompt, B=command start, C=output end, D=exit code

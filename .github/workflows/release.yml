@@ -614,6 +614,16 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.GPG_SIGNING_KEY_ID }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_SIGNING_PASSPHRASE }}
 
+      - name: Create Git Tag (publish_only mode)
+        if: github.event.inputs.publish_only == 'true'
+        run: |
+          VERSION="${{ needs.prepare-version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "Library release v$VERSION"
+          git push origin "v$VERSION"
+          echo "Created tag v$VERSION"
+
       - name: Trigger JitPack Build
         run: |
           # Trigger JitPack to index the new version

@@ -193,6 +193,18 @@ interface Terminal {
 
     fun setBracketedPasteMode(enabled: Boolean)
 
+    // ===== Synchronized Update Mode (DEC Private Mode 2026) =====
+
+    /**
+     * Enable or disable synchronized update mode (DEC Private Mode 2026).
+     * When enabled, rendering is suspended until mode is disabled.
+     * This reduces flicker for applications that send many escape sequences
+     * in rapid succession (like Claude Code, vim, etc.).
+     *
+     * @param enabled true to suspend rendering, false to resume and flush
+     */
+    fun setSynchronizedUpdate(enabled: Boolean) {}
+
     val windowForeground: Color?
 
     val windowBackground: Color?

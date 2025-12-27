@@ -327,8 +327,8 @@ data class TerminalTab(
         // Record in debug collector
         debugCollector?.recordChunk(text, ai.rever.bossterm.compose.debug.ChunkSource.USER_INPUT)
 
-        // Send to process
-        kotlinx.coroutines.runBlocking {
+        // Send to process (non-blocking to prevent UI freeze)
+        coroutineScope.launch {
             processHandle.value?.write(text)
         }
     }

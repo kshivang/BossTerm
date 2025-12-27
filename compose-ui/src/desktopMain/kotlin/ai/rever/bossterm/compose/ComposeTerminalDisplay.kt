@@ -91,6 +91,12 @@ class ComposeTerminalDisplay : TerminalDisplay {
     @Volatile private var _cursorShapeValue: CursorShape? = null
     private val _bracketedPasteMode = mutableStateOf(false)
     private val _termSize = mutableStateOf(TermSize(80, 24))
+
+    // ===== SYNCHRONIZED UPDATE MODE (DEC Private Mode 2026) =====
+    // When enabled, redraws are suppressed until mode is disabled.
+    // This reduces flicker for applications that send many escape sequences rapidly.
+    @Volatile private var _synchronizedUpdateEnabled = false
+    @Volatile private var _pendingRedrawDuringSync = false
     private val _windowTitle = MutableStateFlow("")
     private val _iconTitle = MutableStateFlow("")
     private val _mouseMode = mutableStateOf(MouseMode.MOUSE_REPORTING_NONE)
@@ -343,10 +349,39 @@ class ComposeTerminalDisplay : TerminalDisplay {
      * Trigger a redraw of the terminal (normal priority, applies debouncing).
      */
     fun requestRedraw() {
+        // Synchronized Update Mode (2026): Suppress redraws while enabled
+        if (_synchronizedUpdateEnabled) {
+            _pendingRedrawDuringSync = true
+            return
+        }
+
         val sent = redrawChannel.trySend(RedrawRequest(priority = RedrawPriority.NORMAL))
         if (!sent.isSuccess) {
             // Channel is full (CONFLATED), request was coalesced
             skippedRedraws.incrementAndGet()
+        }
+    }
+
+    /**
+     * Set synchronized update mode (DEC Private Mode 2026).
+     * When enabled, redraws are suppressed until mode is disabled.
+     * When disabled, if any redraws were pending, one redraw is triggered.
+     *
+     * @param enabled true to suppress rendering, false to resume
+     */
+    override fun setSynchronizedUpdate(enabled: Boolean) {
+        if (enabled) {
+            _synchronizedUpdateEnabled = true
+            _pendingRedrawDuringSync = false
+        } else {
+            val hadPendingRedraw = _pendingRedrawDuringSync
+            _synchronizedUpdateEnabled = false
+            _pendingRedrawDuringSync = false
+
+            // Flush: If there were pending redraws, trigger one now
+            if (hadPendingRedraw) {
+                requestRedraw()
+            }
         }
     }
 

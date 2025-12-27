@@ -66,6 +66,7 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  * @param menuActions Optional menu action callbacks for wiring up menu bar
  * @param isWindowFocused Lambda returning whether this window is currently focused (for notifications)
  * @param initialCommand Optional command to run in the first terminal tab after startup
+ * @param workingDirectory Initial working directory for the first tab (defaults to user home)
  * @param onLinkClick Optional callback for custom link handling. When provided, intercepts Ctrl/Cmd+Click
  *                    on links and context menu "Open Link" action. When null, links open in system browser.
  * @param contextMenuItems Custom context menu items to add below the built-in items (Copy, Paste, Clear, Select All).
@@ -82,6 +83,7 @@ fun TabbedTerminal(
     menuActions: MenuActions? = null,
     isWindowFocused: () -> Boolean = { true },
     initialCommand: String? = null,
+    workingDirectory: String? = null,
     onLinkClick: ((String) -> Unit)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
     modifier: Modifier = Modifier
@@ -228,7 +230,10 @@ fun TabbedTerminal(
                 // No pending tab, create fresh terminal with optional initial command
                 // Priority: parameter > settings > none
                 val effectiveInitialCommand = initialCommand ?: settings.initialCommand.ifEmpty { null }
-                tabController.createTab(initialCommand = effectiveInitialCommand)
+                tabController.createTab(
+                    workingDir = workingDirectory,
+                    initialCommand = effectiveInitialCommand
+                )
             }
         }
     }

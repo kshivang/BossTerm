@@ -88,13 +88,24 @@ fun createBuiltinActions(
         ),
         enabled = { true },
         handler = { _ ->
-            val text = clipboardManager.getText()?.text
-            if (!text.isNullOrEmpty()) {
-                scope.launch {
-                    pasteText(text)
+            try {
+                val text = clipboardManager.getText()?.text
+                if (!text.isNullOrEmpty()) {
+                    scope.launch {
+                        try {
+                            pasteText(text)
+                        } catch (e: Exception) {
+                            // Paste failed (channel closed, PTY error) - log but don't crash
+                            println("ERROR: Failed to paste text: ${e.message}")
+                        }
+                    }
+                    true
+                } else {
+                    false
                 }
-                true
-            } else {
+            } catch (e: Exception) {
+                // Clipboard access failed (locked, unavailable) - log but don't crash
+                println("ERROR: Failed to access clipboard: ${e.message}")
                 false
             }
         }

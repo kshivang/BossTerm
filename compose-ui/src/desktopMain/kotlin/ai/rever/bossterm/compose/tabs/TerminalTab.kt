@@ -3,9 +3,11 @@ package ai.rever.bossterm.compose.tabs
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.compose.ConnectionState
@@ -231,6 +233,35 @@ data class TerminalTab(
      */
     override val isVisible: MutableState<Boolean> = mutableStateOf(false)
 
+    // === User Input Write Channel ===
+    // Uses Channel for sequential write ordering and backpressure handling
+    // This prevents race conditions from concurrent coroutines and ensures
+    // keyboard input is processed in order even under high load.
+
+    /**
+     * Channel for queuing user input writes to the PTY.
+     * Capacity of 256 provides reasonable buffer for burst input (e.g., paste operations).
+     */
+    private val writeChannel = Channel<String>(capacity = 256)
+
+    /**
+     * Background job that consumes from writeChannel and writes to PTY sequentially.
+     * Runs on IO dispatcher to avoid blocking other coroutines.
+     */
+    private val writeConsumerJob: Job = coroutineScope.launch(Dispatchers.IO) {
+        for (text in writeChannel) {
+            try {
+                processHandle.value?.write(text)
+            } catch (e: java.io.IOException) {
+                // PTY might be closed - log but don't crash
+                // This can happen during normal tab close or if shell exits
+                if (debugEnabled.value) {
+                    println("DEBUG: PTY write failed (expected during tab close): ${e.message}")
+                }
+            }
+        }
+    }
+
     // === Hyperlink Hover Consumers ===
 
     /**
@@ -280,6 +311,7 @@ data class TerminalTab(
 
     /**
      * Clean up resources when closing this tab.
+     * - Closes write channel (signals consumer to stop)
      * - Cancels all coroutines
      * - Releases terminal resources
      *
@@ -287,7 +319,10 @@ data class TerminalTab(
      * potential GC issues where the tab might be collected before kill() completes.
      */
     override fun dispose() {
-        // Cancel all coroutines in this scope
+        // Close write channel to signal consumer to stop
+        writeChannel.close()
+
+        // Cancel all coroutines in this scope (including writeConsumerJob)
         coroutineScope.cancel()
 
         // Terminal cleanup (if needed)
@@ -321,15 +356,29 @@ data class TerminalTab(
      * Write user input to the process and record in debug collector.
      * Centralizes input handling to ensure all user input is captured for debugging.
      *
+     * Uses Channel-based queue to ensure:
+     * - Sequential write ordering (no race conditions)
+     * - Backpressure handling (suspends if buffer full, never drops input)
+     * - Non-blocking UI (launches coroutine for send)
+     *
      * @param text The text to send to the shell
      */
     override fun writeUserInput(text: String) {
         // Record in debug collector
         debugCollector?.recordChunk(text, ai.rever.bossterm.compose.debug.ChunkSource.USER_INPUT)
 
-        // Send to process
-        kotlinx.coroutines.runBlocking {
-            processHandle.value?.write(text)
+        // Queue for sequential processing by writeConsumerJob
+        // Uses coroutine with send() to suspend if buffer full (never drops input)
+        // This is safe because we're launching on the tab's scope, not blocking the caller
+        coroutineScope.launch {
+            try {
+                writeChannel.send(text)  // Suspends if buffer full, doesn't drop
+            } catch (e: Exception) {
+                // Channel closed (tab closing) - expected during shutdown
+                if (debugEnabled.value) {
+                    println("DEBUG: Failed to queue input to PTY: ${e.message}")
+                }
+            }
         }
     }
 }

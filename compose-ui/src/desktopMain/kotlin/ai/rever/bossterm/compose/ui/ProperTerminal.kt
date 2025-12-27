@@ -823,11 +823,19 @@ fun ProperTerminal(
                     }
                   },
                   onPaste = {
-                    val text = clipboardManager.getText()?.text
-                    if (!text.isNullOrEmpty()) {
-                      scope.launch {
-                        tab.pasteText(text)
+                    try {
+                      val text = clipboardManager.getText()?.text
+                      if (!text.isNullOrEmpty()) {
+                        scope.launch {
+                          try {
+                            tab.pasteText(text)
+                          } catch (e: Exception) {
+                            println("ERROR: Failed to paste text via context menu: ${e.message}")
+                          }
+                        }
                       }
+                    } catch (e: Exception) {
+                      println("ERROR: Failed to access clipboard: ${e.message}")
                     }
                   },
                   onSelectAll = { selectAll() },
@@ -859,11 +867,19 @@ fun ProperTerminal(
                     }
                   },
                   onPaste = {
-                    val text = clipboardManager.getText()?.text
-                    if (!text.isNullOrEmpty()) {
-                      scope.launch {
-                        tab.pasteText(text)
+                    try {
+                      val text = clipboardManager.getText()?.text
+                      if (!text.isNullOrEmpty()) {
+                        scope.launch {
+                          try {
+                            tab.pasteText(text)
+                          } catch (e: Exception) {
+                            println("ERROR: Failed to paste text via context menu: ${e.message}")
+                          }
+                        }
                       }
+                    } catch (e: Exception) {
+                      println("ERROR: Failed to access clipboard: ${e.message}")
                     }
                   },
                   onSelectAll = { selectAll() },

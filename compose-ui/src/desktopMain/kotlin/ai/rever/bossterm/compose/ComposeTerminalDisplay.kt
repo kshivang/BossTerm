@@ -91,6 +91,19 @@ class ComposeTerminalDisplay : TerminalDisplay {
     @Volatile private var _cursorShapeValue: CursorShape? = null
     private val _bracketedPasteMode = mutableStateOf(false)
     private val _termSize = mutableStateOf(TermSize(80, 24))
+
+    // ===== SYNCHRONIZED UPDATE MODE (DEC Private Mode 2026) =====
+    // When enabled, redraws are suppressed until mode is disabled.
+    // This reduces flicker for applications that send many escape sequences rapidly.
+    //
+    // Uses synchronized() instead of Kotlin Mutex because:
+    // - requestRedraw() is NOT a suspend function (Mutex.withLock requires suspend)
+    // - Critical section is extremely short (nanoseconds) - no suspension benefit
+    // - High-frequency calls need low overhead - synchronized is JVM-optimized
+    // - Converting to Mutex would require making requestRedraw() suspend (breaking change)
+    private val syncUpdateLock = Any()
+    @Volatile private var _synchronizedUpdateEnabled = false
+    @Volatile private var _pendingRedrawDuringSync = false
     private val _windowTitle = MutableStateFlow("")
     private val _iconTitle = MutableStateFlow("")
     private val _mouseMode = mutableStateOf(MouseMode.MOUSE_REPORTING_NONE)
@@ -343,10 +356,54 @@ class ComposeTerminalDisplay : TerminalDisplay {
      * Trigger a redraw of the terminal (normal priority, applies debouncing).
      */
     fun requestRedraw() {
+        // Synchronized Update Mode (2026): Suppress redraws while enabled
+        // Uses lock to prevent race condition with setSynchronizedUpdate()
+        synchronized(syncUpdateLock) {
+            if (_synchronizedUpdateEnabled) {
+                _pendingRedrawDuringSync = true
+                return
+            }
+        }
+
         val sent = redrawChannel.trySend(RedrawRequest(priority = RedrawPriority.NORMAL))
         if (!sent.isSuccess) {
             // Channel is full (CONFLATED), request was coalesced
             skippedRedraws.incrementAndGet()
+        }
+    }
+
+    /**
+     * Set synchronized update mode (DEC Private Mode 2026).
+     * When enabled, redraws are suppressed until mode is disabled.
+     * When disabled, if any redraws were pending, one redraw is triggered.
+     *
+     * Note: A single redraw is sufficient because:
+     * - TerminalTextBuffer accumulates ALL changes regardless of rendering
+     * - A "redraw" renders the entire current buffer state
+     * - One final redraw displays all accumulated changes at once
+     * - Multiple redraws would just re-render the same final state
+     *
+     * Thread-safe: Uses lock to prevent race conditions with requestRedraw().
+     *
+     * @param enabled true to suppress rendering, false to resume
+     */
+    override fun setSynchronizedUpdate(enabled: Boolean) {
+        val shouldRedraw: Boolean
+        synchronized(syncUpdateLock) {
+            if (enabled) {
+                _synchronizedUpdateEnabled = true
+                _pendingRedrawDuringSync = false
+                shouldRedraw = false
+            } else {
+                shouldRedraw = _pendingRedrawDuringSync
+                _synchronizedUpdateEnabled = false
+                _pendingRedrawDuringSync = false
+            }
+        }
+
+        // Flush outside the lock to avoid potential deadlock
+        if (shouldRedraw) {
+            requestRedraw()
         }
     }
 
@@ -358,8 +415,20 @@ class ComposeTerminalDisplay : TerminalDisplay {
      * are never dropped. During initialization, rapid redraw requests (10-20 in <50ms)
      * were being conflated, causing the initial prompt to not display until user clicked.
      * By calling actualRedraw() directly on Main thread, we ensure instant response.
+     *
+     * Note: Respects Mode 2026 (synchronized update) to maintain flicker-reduction guarantee.
+     * During sync mode window, sets pending flag instead of rendering immediately.
      */
     fun requestImmediateRedraw() {
+        // Synchronized Update Mode (2026): Suppress redraws while enabled
+        // Even immediate redraws must respect sync mode to prevent partial rendering
+        synchronized(syncUpdateLock) {
+            if (_synchronizedUpdateEnabled) {
+                _pendingRedrawDuringSync = true
+                return
+            }
+        }
+
         // Bypass channel entirely - call actualRedraw() directly on Main thread
         // This ensures IMMEDIATE requests are never dropped during rapid initialization
         // MUST use Main dispatcher because actualRedraw() modifies Compose state

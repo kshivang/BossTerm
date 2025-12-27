@@ -1552,6 +1552,10 @@ class BossTerminal(
         myDisplay.setBracketedPasteMode(enabled)
     }
 
+    override fun setSynchronizedUpdate(enabled: Boolean) {
+        myDisplay.setSynchronizedUpdate(enabled)
+    }
+
     override fun setMouseFormat(mouseFormat: MouseFormat?) {
         mouseFormat?.let {
             myMouseFormat = it

@@ -30,11 +30,15 @@ private val NavRailWidth = 180.dp
 
 /**
  * Main settings panel with navigation and content area.
+ *
+ * @param onSettingsChange Called on every settings change for immediate UI feedback
+ * @param onSettingsSave Called when a slider is released (use for persistence to avoid I/O during drag)
  */
 @Composable
 fun SettingsPanel(
     settings: TerminalSettings,
     onSettingsChange: (TerminalSettings) -> Unit,
+    onSettingsSave: (() -> Unit)? = null,
     onResetToDefaults: () -> Unit,
     onRestartApp: (() -> Unit)? = null,
     modifier: Modifier = Modifier
@@ -80,6 +84,7 @@ fun SettingsPanel(
                     category = selectedCategory,
                     settings = settings,
                     onSettingsChange = onSettingsChange,
+                    onSettingsSave = onSettingsSave,
                     onRestartApp = onRestartApp,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -244,6 +249,7 @@ private fun SettingsContent(
     category: SettingsCategory,
     settings: TerminalSettings,
     onSettingsChange: (TerminalSettings) -> Unit,
+    onSettingsSave: (() -> Unit)? = null,
     onRestartApp: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -274,6 +280,7 @@ private fun SettingsContent(
             SettingsCategory.VISUAL -> VisualSettingsSection(
                 settings = settings,
                 onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave,
                 onRestartApp = onRestartApp
             )
             SettingsCategory.THEMES -> ThemeSettingsSection(
@@ -282,15 +289,19 @@ private fun SettingsContent(
             )
             SettingsCategory.BEHAVIOR -> BehaviorSettingsSection(
                 settings = settings,
-                onSettingsChange = onSettingsChange
+                onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave
             )
             SettingsCategory.SCROLLBAR -> ScrollbarSettingsSection(
                 settings = settings,
-                onSettingsChange = onSettingsChange
+                onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave
             )
             SettingsCategory.PERFORMANCE -> PerformanceSettingsSection(
                 settings = settings,
-                onSettingsChange = onSettingsChange
+                onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave,
+                onRestartApp = onRestartApp
             )
             SettingsCategory.EMULATION -> TerminalEmulationSection(
                 settings = settings,
@@ -318,11 +329,13 @@ private fun SettingsContent(
             )
             SettingsCategory.NOTIFICATIONS -> NotificationSettingsSection(
                 settings = settings,
-                onSettingsChange = onSettingsChange
+                onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave
             )
             SettingsCategory.SPLITS -> SplitsSettingsSection(
                 settings = settings,
-                onSettingsChange = onSettingsChange
+                onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave
             )
             SettingsCategory.ABOUT -> AboutSection()
         }

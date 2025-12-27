@@ -17,6 +17,7 @@ import ai.rever.bossterm.compose.settings.components.*
 fun ScrollbarSettingsSection(
     settings: TerminalSettings,
     onSettingsChange: (TerminalSettings) -> Unit,
+    onSettingsSave: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier) {
@@ -41,6 +42,7 @@ fun ScrollbarSettingsSection(
                 label = "Scrollbar Width",
                 value = settings.scrollbarWidth,
                 onValueChange = { onSettingsChange(settings.copy(scrollbarWidth = it)) },
+                onValueChangeFinished = onSettingsSave,
                 valueRange = 6f..20f,
                 steps = 13,
                 valueDisplay = { "${it.toInt()} px" },

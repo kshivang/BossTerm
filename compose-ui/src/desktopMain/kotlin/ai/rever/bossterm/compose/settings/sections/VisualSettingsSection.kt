@@ -37,6 +37,7 @@ import ai.rever.bossterm.compose.util.FONT_SECTION_VARIABLE_PITCH
 fun VisualSettingsSection(
     settings: TerminalSettings,
     onSettingsChange: (TerminalSettings) -> Unit,
+    onSettingsSave: (() -> Unit)? = null,
     onRestartApp: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -68,6 +69,7 @@ fun VisualSettingsSection(
                 label = "Font Size",
                 value = settings.fontSize,
                 onValueChange = { onSettingsChange(settings.copy(fontSize = it)) },
+                onValueChangeFinished = onSettingsSave,
                 valueRange = 8f..24f,
                 steps = 15,
                 valueDisplay = { "${it.toInt()} sp" }
@@ -77,6 +79,7 @@ fun VisualSettingsSection(
                 label = "Line Spacing",
                 value = settings.lineSpacing,
                 onValueChange = { onSettingsChange(settings.copy(lineSpacing = it)) },
+                onValueChangeFinished = onSettingsSave,
                 valueRange = 0.8f..2.0f,
                 valueDisplay = { "%.2fx".format(it) },
                 description = "Multiplier for line height (1.0 = normal)"
@@ -162,6 +165,7 @@ fun VisualSettingsSection(
                     label = "Background Opacity",
                     value = settings.backgroundOpacity,
                     onValueChange = { onSettingsChange(settings.copy(backgroundOpacity = it)) },
+                    onValueChangeFinished = onSettingsSave,
                     valueRange = 0.1f..1.0f,
                     steps = 17,
                     valueDisplay = { "${(it * 100).toInt()}%" },
@@ -182,6 +186,7 @@ fun VisualSettingsSection(
                         label = "Blur Radius",
                         value = settings.blurRadius,
                         onValueChange = { onSettingsChange(settings.copy(blurRadius = it)) },
+                        onValueChangeFinished = onSettingsSave,
                         valueRange = 5f..50f,
                         steps = 8,
                         valueDisplay = { "${it.toInt()} dp" },
@@ -208,6 +213,7 @@ fun VisualSettingsSection(
                     label = "Image Opacity",
                     value = settings.backgroundImageOpacity,
                     onValueChange = { onSettingsChange(settings.copy(backgroundImageOpacity = it)) },
+                    onValueChangeFinished = onSettingsSave,
                     valueRange = 0.1f..1.0f,
                     steps = 17,
                     valueDisplay = { "${(it * 100).toInt()}%" },

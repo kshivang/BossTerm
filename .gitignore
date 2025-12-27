@@ -12,3 +12,4 @@ local.properties
 parts/
 prime/
 stage/
+firebase-debug.log

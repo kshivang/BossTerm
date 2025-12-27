@@ -81,7 +81,18 @@ fun AboutSection(modifier: Modifier = Modifier) {
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // Section 3: Links
+        // Section 4: GPU Rendering Info
+        SettingsSection(title = "GPU Rendering") {
+            val gpuInfo = remember { getGpuRenderingInfo() }
+            InfoRow("Render API", gpuInfo.renderApi)
+            InfoRow("GPU Backend", gpuInfo.backend)
+            InfoRow("VSync", if (gpuInfo.vsyncEnabled) "Enabled" else "Disabled")
+            InfoRow("Hardware Acceleration", if (gpuInfo.hardwareAccelerated) "Active" else "Software")
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Section 5: Links
         SettingsSection(title = "Links") {
             LinkRow("GitHub Repository", "https://github.com/kshivang/BossTerm")
             LinkRow("Release Notes", "https://github.com/kshivang/BossTerm/releases")
@@ -309,4 +320,58 @@ private fun AcknowledgmentRow(
             fontSize = 12.sp
         )
     }
+}
+
+/**
+ * GPU rendering information data class.
+ */
+private data class GpuRenderingInfo(
+    val renderApi: String,
+    val backend: String,
+    val vsyncEnabled: Boolean,
+    val hardwareAccelerated: Boolean
+)
+
+/**
+ * Get current GPU rendering information from Skiko.
+ */
+private fun getGpuRenderingInfo(): GpuRenderingInfo {
+    val osName = System.getProperty("os.name").lowercase()
+    val isMacOS = osName.contains("mac")
+    val isWindows = osName.contains("windows")
+    val isLinux = osName.contains("linux")
+
+    // Try to get render API from system property (set by our config)
+    val configuredApi = System.getProperty("skiko.renderApi")
+
+    // Determine actual render API in use
+    val renderApi = when {
+        configuredApi != null -> configuredApi
+        isMacOS -> "METAL"
+        isWindows -> "DIRECT3D12"
+        isLinux -> "OPENGL"
+        else -> "Unknown"
+    }
+
+    // Determine backend description
+    val backend = when (renderApi.uppercase()) {
+        "METAL" -> "Apple Metal"
+        "OPENGL" -> "OpenGL"
+        "DIRECT3D12", "DIRECT3D" -> "DirectX 12"
+        "SOFTWARE", "SOFTWARE_FAST" -> "Software (CPU)"
+        else -> renderApi
+    }
+
+    // Check if hardware accelerated
+    val hardwareAccelerated = renderApi.uppercase() !in listOf("SOFTWARE", "SOFTWARE_FAST")
+
+    // VSync setting
+    val vsyncEnabled = System.getProperty("skiko.vsync.enabled")?.toBoolean() ?: true
+
+    return GpuRenderingInfo(
+        renderApi = renderApi,
+        backend = backend,
+        vsyncEnabled = vsyncEnabled,
+        hardwareAccelerated = hardwareAccelerated
+    )
 }

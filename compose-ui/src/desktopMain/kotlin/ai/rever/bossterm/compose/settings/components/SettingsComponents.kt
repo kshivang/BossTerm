@@ -106,6 +106,9 @@ fun SettingsToggle(
 
 /**
  * A slider with label and value display.
+ *
+ * @param onValueChange Called on every drag event for immediate UI feedback
+ * @param onValueChangeFinished Called when user releases the slider (use for persistence)
  */
 @Composable
 fun SettingsSlider(
@@ -113,6 +116,7 @@ fun SettingsSlider(
     value: Float,
     onValueChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
+    onValueChangeFinished: (() -> Unit)? = null,
     valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
     steps: Int = 0,
     valueDisplay: (Float) -> String = { "%.1f".format(it) },
@@ -156,6 +160,7 @@ fun SettingsSlider(
         Slider(
             value = value,
             onValueChange = onValueChange,
+            onValueChangeFinished = onValueChangeFinished,
             valueRange = valueRange,
             steps = steps,
             enabled = enabled,

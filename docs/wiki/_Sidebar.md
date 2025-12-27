@@ -3,6 +3,7 @@
 - [[Home]]
 - [[Installation]]
 - [[Features]]
+- [[iTerm2 Comparison|Feature-Comparison-iTerm2]]
 
 ### Configuration
 

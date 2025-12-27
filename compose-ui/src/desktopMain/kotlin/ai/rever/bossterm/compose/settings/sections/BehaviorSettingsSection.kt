@@ -16,6 +16,7 @@ import ai.rever.bossterm.compose.settings.components.*
 fun BehaviorSettingsSection(
     settings: TerminalSettings,
     onSettingsChange: (TerminalSettings) -> Unit,
+    onSettingsSave: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier) {
@@ -40,6 +41,7 @@ fun BehaviorSettingsSection(
                 label = "Initial Command Delay",
                 value = settings.initialCommandDelayMs.toFloat(),
                 onValueChange = { onSettingsChange(settings.copy(initialCommandDelayMs = it.toInt())) },
+                onValueChangeFinished = onSettingsSave,
                 valueRange = 100f..2000f,
                 steps = 18,
                 valueDisplay = { "${it.toInt()} ms" },
@@ -150,6 +152,7 @@ fun BehaviorSettingsSection(
                 label = "Scroll Sensitivity Threshold",
                 value = settings.mouseScrollThreshold,
                 onValueChange = { onSettingsChange(settings.copy(mouseScrollThreshold = it)) },
+                onValueChangeFinished = onSettingsSave,
                 valueRange = 0f..2f,
                 valueDisplay = { "%.1f".format(it) },
                 description = "Higher = less sensitive (filters tiny scroll events)"
@@ -211,6 +214,7 @@ fun BehaviorSettingsSection(
                 label = "Height",
                 value = settings.progressBarHeight,
                 onValueChange = { onSettingsChange(settings.copy(progressBarHeight = it)) },
+                onValueChangeFinished = onSettingsSave,
                 valueRange = 1f..10f,
                 steps = 8,
                 valueDisplay = { "${it.toInt()} dp" },

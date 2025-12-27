@@ -42,6 +42,9 @@ import java.awt.event.WindowEvent
  * This is the main entry point for the BossTerm application.
  */
 fun main() {
+    // Configure GPU rendering (must be before any Skiko/Compose initialization)
+    configureGpuRendering()
+
     // Set WM_CLASS for Linux desktop integration (must be before any AWT init)
     setLinuxWMClass()
 
@@ -530,4 +533,82 @@ private fun setLinuxWMClass() {
     } catch (e: Exception) {
         System.err.println("Could not set WM_CLASS: ${e.message}")
     }
+}
+
+/**
+ * Configure GPU rendering based on user settings.
+ * Must be called before any Skiko/Compose initialization.
+ *
+ * Sets Skiko system properties to control:
+ * - Render API (Metal, OpenGL, DirectX, Software)
+ * - GPU selection (integrated vs discrete)
+ * - VSync
+ * - GPU resource cache size
+ */
+private fun configureGpuRendering() {
+    val osName = System.getProperty("os.name").lowercase()
+    val isMacOS = osName.contains("mac")
+    val isWindows = osName.contains("windows")
+
+    // Load settings using SettingsLoader (handles JSON parsing and defaults)
+    val settings = try {
+        ai.rever.bossterm.compose.settings.SettingsLoader.loadFromPathOrDefault(null)
+    } catch (e: Exception) {
+        System.err.println("Could not load settings for GPU config, using defaults: ${e.message}")
+        e.printStackTrace()
+        ai.rever.bossterm.compose.settings.TerminalSettings()
+    }
+
+    // Configure render API
+    val renderApi = if (!settings.gpuAcceleration) {
+        "SOFTWARE"
+    } else {
+        when (settings.gpuRenderApi.lowercase()) {
+            "metal" -> if (isMacOS) "METAL" else null
+            "opengl" -> "OPENGL"
+            "direct3d" -> if (isWindows) "DIRECT3D12" else null
+            "software" -> "SOFTWARE"
+            else -> null // "auto" - let Skiko decide
+        }
+    }
+
+    renderApi?.let {
+        System.setProperty("skiko.renderApi", it)
+        println("GPU: Render API set to $it")
+    }
+
+    // Configure GPU priority (for systems with multiple GPUs)
+    val gpuPriority = when (settings.gpuPriority.lowercase()) {
+        "integrated" -> "integrated"
+        "discrete" -> "discrete"
+        else -> null // "auto" - let system decide
+    }
+
+    gpuPriority?.let { priority ->
+        if (isMacOS) {
+            System.setProperty("skiko.metal.gpu.priority", priority)
+            println("GPU: Metal GPU priority set to $priority")
+        } else if (isWindows) {
+            System.setProperty("skiko.directx.gpu.priority", priority)
+            println("GPU: DirectX GPU priority set to $priority")
+        }
+    }
+
+    // Configure VSync
+    System.setProperty("skiko.vsync.enabled", settings.gpuVsyncEnabled.toString())
+    if (!settings.gpuVsyncEnabled) {
+        println("GPU: VSync disabled")
+    }
+
+    // Configure GPU resource cache limit (convert MB to bytes)
+    // Note: Skiko uses this for glyph/texture caching
+    val cacheSizeMb = settings.gpuCacheSizeMb.coerceIn(
+        ai.rever.bossterm.compose.settings.SystemInfoUtils.GPU_CACHE_MIN_MB,
+        ai.rever.bossterm.compose.settings.SystemInfoUtils.GPU_CACHE_MAX_MB
+    )
+    System.setProperty("skiko.gpu.resourceCacheLimit", (cacheSizeMb * 1024L * 1024L).toString())
+
+    // Log GPU configuration summary
+    println("GPU: Acceleration=${settings.gpuAcceleration}, API=${settings.gpuRenderApi}, " +
+            "Priority=${settings.gpuPriority}, VSync=${settings.gpuVsyncEnabled}, Cache=${settings.gpuCacheSizeMb}MB")
 }

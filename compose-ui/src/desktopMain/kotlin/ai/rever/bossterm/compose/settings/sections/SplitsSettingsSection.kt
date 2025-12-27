@@ -17,6 +17,7 @@ import ai.rever.bossterm.compose.settings.toSettingsHex
 fun SplitsSettingsSection(
     settings: TerminalSettings,
     onSettingsChange: (TerminalSettings) -> Unit,
+    onSettingsSave: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier) {
@@ -25,6 +26,7 @@ fun SplitsSettingsSection(
                 label = "Default Split Ratio",
                 value = settings.splitDefaultRatio,
                 onValueChange = { onSettingsChange(settings.copy(splitDefaultRatio = it)) },
+                onValueChangeFinished = onSettingsSave,
                 valueRange = 0.3f..0.7f,
                 steps = 8,
                 valueDisplay = { "${(it * 100).toInt()}%" },
@@ -35,6 +37,7 @@ fun SplitsSettingsSection(
                 label = "Minimum Pane Size",
                 value = settings.splitMinimumSize,
                 onValueChange = { onSettingsChange(settings.copy(splitMinimumSize = it)) },
+                onValueChangeFinished = onSettingsSave,
                 valueRange = 0.05f..0.4f,
                 steps = 7,
                 valueDisplay = { "${(it * 100).toInt()}%" },

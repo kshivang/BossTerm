@@ -16,6 +16,7 @@ import ai.rever.bossterm.compose.settings.components.*
 fun NotificationSettingsSection(
     settings: TerminalSettings,
     onSettingsChange: (TerminalSettings) -> Unit,
+    onSettingsSave: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier) {
@@ -31,6 +32,7 @@ fun NotificationSettingsSection(
                 label = "Minimum Duration",
                 value = settings.notifyMinDurationSeconds.toFloat(),
                 onValueChange = { onSettingsChange(settings.copy(notifyMinDurationSeconds = it.toInt())) },
+                onValueChangeFinished = onSettingsSave,
                 valueRange = 1f..60f,
                 steps = 58,
                 valueDisplay = { "${it.toInt()} sec" },

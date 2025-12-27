@@ -308,6 +308,67 @@ data class TerminalSettings(
      */
     val currentSearchMarkerColor: String = "0xFFFF6600",
 
+    // ===== GPU Rendering Settings =====
+
+    /**
+     * Enable GPU-accelerated rendering via Skia/Skiko.
+     * When true, uses hardware acceleration (Metal on macOS, DirectX on Windows, OpenGL on Linux).
+     * When false, forces software rendering (slower but more compatible).
+     * Default: true (GPU acceleration enabled)
+     */
+    val gpuAcceleration: Boolean = true,
+
+    /**
+     * GPU render API to use. Options:
+     * - "auto": Automatic selection based on platform (recommended)
+     * - "metal": Metal backend (macOS only)
+     * - "opengl": OpenGL backend (cross-platform)
+     * - "direct3d": DirectX 12 backend (Windows only)
+     * - "software": Software rendering (fallback, no GPU)
+     *
+     * Note: Invalid values for the platform will fall back to "auto".
+     * Requires app restart to take effect.
+     */
+    val gpuRenderApi: String = "auto",
+
+    /**
+     * GPU priority for systems with multiple GPUs. Options:
+     * - "auto": Let the system decide (default, usually integrated for power saving)
+     * - "integrated": Prefer integrated GPU (lower power, cooler)
+     * - "discrete": Prefer discrete GPU (higher performance)
+     *
+     * Only affects Metal (macOS) and DirectX (Windows).
+     * Requires app restart to take effect.
+     */
+    val gpuPriority: String = "auto",
+
+    /**
+     * Enable vertical sync (VSync) to eliminate screen tearing.
+     * When true, synchronizes frame rendering with display refresh rate.
+     * When false, allows higher frame rates but may cause tearing.
+     * Default: true
+     */
+    val gpuVsyncEnabled: Boolean = true,
+
+    /**
+     * GPU resource cache limit in megabytes.
+     * Controls how much GPU memory is used for caching glyphs, textures, etc.
+     * Higher values improve performance but use more GPU memory.
+     * Range: 64 MB to gpuCacheMaxPercent% of system RAM (max 8192 MB).
+     * Default: 256 MB.
+     * Requires app restart to take effect.
+     */
+    val gpuCacheSizeMb: Int = 256,
+
+    /**
+     * Maximum GPU cache as percentage of system RAM.
+     * Advanced setting to control the upper limit of GPU cache slider.
+     * Range: 10-90%. Default: 75%.
+     * Higher values allow more GPU memory usage on high-RAM systems.
+     * Requires app restart to take effect.
+     */
+    val gpuCacheMaxPercent: Int = 75,
+
     // ===== Performance Settings =====
 
     /**

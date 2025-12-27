@@ -415,8 +415,20 @@ class ComposeTerminalDisplay : TerminalDisplay {
      * are never dropped. During initialization, rapid redraw requests (10-20 in <50ms)
      * were being conflated, causing the initial prompt to not display until user clicked.
      * By calling actualRedraw() directly on Main thread, we ensure instant response.
+     *
+     * Note: Respects Mode 2026 (synchronized update) to maintain flicker-reduction guarantee.
+     * During sync mode window, sets pending flag instead of rendering immediately.
      */
     fun requestImmediateRedraw() {
+        // Synchronized Update Mode (2026): Suppress redraws while enabled
+        // Even immediate redraws must respect sync mode to prevent partial rendering
+        synchronized(syncUpdateLock) {
+            if (_synchronizedUpdateEnabled) {
+                _pendingRedrawDuringSync = true
+                return
+            }
+        }
+
         // Bypass channel entirely - call actualRedraw() directly on Main thread
         // This ensures IMMEDIATE requests are never dropped during rapid initialization
         // MUST use Main dispatcher because actualRedraw() modifies Compose state

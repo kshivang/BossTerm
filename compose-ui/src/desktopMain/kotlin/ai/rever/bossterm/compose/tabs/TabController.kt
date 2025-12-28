@@ -200,6 +200,7 @@ class TabController(
      * @param tabId Optional stable ID for this tab (default: auto-generated UUID). Use this to assign
      *              a predictable ID that survives tab reordering and can be used for reliable lookup.
      * @return The newly created TerminalTab
+     * @throws IllegalArgumentException if tabId is provided but already exists
      */
     fun createTab(
         workingDir: String? = null,
@@ -209,6 +210,13 @@ class TabController(
         initialCommand: String? = null,
         tabId: String? = null
     ): TerminalTab {
+        // Validate tab ID uniqueness if custom ID provided
+        if (tabId != null && tabs.any { it.id == tabId }) {
+            throw IllegalArgumentException(
+                "Tab ID '$tabId' already exists. Each tab must have a unique ID."
+            )
+        }
+
         tabCounter++
 
         // On macOS, optionally use 'login -fp $USER' to properly register the session
@@ -421,15 +429,28 @@ class TabController(
      * @param arguments Command-line arguments for the shell (default: empty)
      * @param sessionTitle Title for the session (used for display purposes)
      * @param onProcessExit Callback invoked when the shell process exits (for pane auto-close)
+     * @param tabId Optional stable ID for this session (default: auto-generated UUID). The ID is
+     *              preserved when the session is promoted to a tab via createTabFromExistingSession.
      * @return A fully initialized TerminalSession for use in split panes
+     * @throws IllegalArgumentException if tabId is provided but already exists in the tabs list
      */
     fun createSessionForSplit(
         workingDir: String? = null,
         command: String? = null,
         arguments: List<String> = emptyList(),
         sessionTitle: String = "Split",
-        onProcessExit: (() -> Unit)? = null
+        onProcessExit: (() -> Unit)? = null,
+        tabId: String? = null
     ): TerminalSession {
+        // Validate tab ID uniqueness if custom ID provided
+        // Note: We check against tabs list for consistency, even though split sessions
+        // aren't added to tabs until promoted via createTabFromExistingSession
+        if (tabId != null && tabs.any { it.id == tabId }) {
+            throw IllegalArgumentException(
+                "Tab ID '$tabId' already exists. Each tab/session must have a unique ID."
+            )
+        }
+
         // On macOS, optionally use 'login -fp $USER' for proper session registration
         val isMacOS = System.getProperty("os.name")?.lowercase()?.contains("mac") == true
         val username = System.getProperty("user.name")
@@ -545,7 +566,7 @@ class TabController(
 
         // Create session (TerminalTab) with all state
         val session = TerminalTab(
-            id = java.util.UUID.randomUUID().toString(),
+            id = tabId ?: java.util.UUID.randomUUID().toString(),
             title = mutableStateOf(sessionTitle),
             terminal = terminal,
             textBuffer = textBuffer,

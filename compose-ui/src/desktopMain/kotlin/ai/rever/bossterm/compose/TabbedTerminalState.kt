@@ -169,6 +169,7 @@ class TabbedTerminalState {
      *              Use this to assign a predictable ID that can be used for later operations
      *              (e.g., sendInput, closeTab) even after tabs are reordered.
      * @return The stable ID of the created tab, or null if the state is not initialized
+     * @throws IllegalArgumentException if tabId is provided but already exists
      */
     fun createTab(
         workingDir: String? = null,

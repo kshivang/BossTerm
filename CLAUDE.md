@@ -617,6 +617,33 @@ None - feature complete for current phase
 December 28, 2025
 
 ### Recent Changes
+- **December 28, 2025**: Stable Tab/Session ID API (#190)
+  - **Feature**: Add stable ID-based API for reliable tab targeting that survives reordering
+  - **Purpose**: Tab indices change when tabs are reordered/closed; stable IDs provide reliable targeting
+  - **New Properties**:
+    - `TabbedTerminalState.activeTabId: String?` - Stable ID of active tab
+    - `TabController.activeTabId: String?` - Same at controller level
+  - **New Methods in TabbedTerminalState**:
+    - `createTab(..., tabId?): String?` - Create tab with optional custom ID, returns tab ID
+    - `getTabById(tabId): TerminalTab?` - Find tab by stable ID
+    - `closeTab(tabId): Boolean` - Close by stable ID
+    - `switchToTab(tabId): Boolean` - Switch by stable ID
+    - `sendInput(bytes, tabId): Boolean` - Send input by stable ID
+    - `write(text, tabId): Boolean` - Write by stable ID
+    - `sendCtrlC/D/Z(tabId): Boolean` - Control signals by stable ID
+  - **New Methods in TabController**:
+    - `getTabById(tabId)`, `getTabIndexById(tabId)`
+    - `closeTabById(tabId)`, `switchToTabById(tabId)`
+    - `createTab(..., tabId)` - Optional custom ID parameter
+  - **Usage**:
+    ```kotlin
+    val tabA = state.createTab(tabId = "config-A")
+    state.sendCtrlC("config-A")  // Works even after tab reorder
+    state.write("restart\n", "config-A")
+    ```
+  - **Modified Files**: `TabbedTerminalState.kt` (+116 lines), `TabController.kt` (+59 lines)
+  - **Documentation**: Updated `docs/tabbed-terminal.md` with new "Stable Tab IDs" section
+  - **Status**: Complete, PR #191
 - **December 28, 2025**: Settings Override Parameter (#187)
   - **Feature**: Per-instance settings customization for `TabbedTerminal` and `EmbeddableTerminal`
   - **Purpose**: Allows different terminal instances to have different configurations (e.g., sidebar terminals with persistent tab bars)

@@ -126,6 +126,7 @@ DisposableEffect(Unit) { onDispose { terminalState.dispose() } }
 | `tabCount` | `Int` | Number of open tabs |
 | `activeTabIndex` | `Int` | Index of active tab (0-based) |
 | `activeTab` | `TerminalTab?` | Currently active tab |
+| `activeTabId` | `String?` | Stable ID of active tab (survives reordering) |
 | `isInitialized` | `Boolean` | Whether state has been initialized |
 | `isDisposed` | `Boolean` | Whether state has been disposed |
 
@@ -133,20 +134,25 @@ DisposableEffect(Unit) { onDispose { terminalState.dispose() } }
 
 | Method | Description |
 |--------|-------------|
-| `createTab(workingDir?, initialCommand?)` | Create a new terminal tab |
+| `createTab(workingDir?, initialCommand?, tabId?): String?` | Create tab, optionally with stable ID. Returns the tab ID |
+| `getTabById(tabId): TerminalTab?` | Find tab by stable ID |
 | `closeTab(index)` | Close tab at index |
+| `closeTab(tabId): Boolean` | Close tab by stable ID |
 | `closeActiveTab()` | Close the active tab |
 | `switchToTab(index)` | Switch to tab at index |
+| `switchToTab(tabId): Boolean` | Switch to tab by stable ID |
 | `nextTab()` | Switch to next tab (wraps) |
 | `previousTab()` | Switch to previous tab (wraps) |
 | `getActiveWorkingDirectory()` | Get active tab's working directory (OSC 7) |
 | `write(text)` | Send text to active tab |
-| `write(text, tabIndex)` | Send text to specific tab |
+| `write(text, tabIndex)` | Send text to specific tab by index |
+| `write(text, tabId): Boolean` | Send text to specific tab by stable ID |
 | `sendInput(bytes)` | Send raw bytes to active tab |
-| `sendInput(bytes, tabIndex)` | Send raw bytes to specific tab |
-| `sendCtrlC()` / `sendCtrlC(tabIndex)` | Send Ctrl+C (interrupt) |
-| `sendCtrlD()` / `sendCtrlD(tabIndex)` | Send Ctrl+D (EOF) |
-| `sendCtrlZ()` / `sendCtrlZ(tabIndex)` | Send Ctrl+Z (suspend) |
+| `sendInput(bytes, tabIndex)` | Send raw bytes to specific tab by index |
+| `sendInput(bytes, tabId): Boolean` | Send raw bytes to specific tab by stable ID |
+| `sendCtrlC()` / `sendCtrlC(tabIndex)` / `sendCtrlC(tabId)` | Send Ctrl+C (interrupt) |
+| `sendCtrlD()` / `sendCtrlD(tabIndex)` / `sendCtrlD(tabId)` | Send Ctrl+D (EOF) |
+| `sendCtrlZ()` / `sendCtrlZ(tabIndex)` / `sendCtrlZ(tabId)` | Send Ctrl+Z (suspend) |
 | `addSessionListener(listener)` | Add session lifecycle listener |
 | `removeSessionListener(listener)` | Remove session listener |
 | `dispose()` | Dispose all sessions and cleanup |
@@ -415,6 +421,94 @@ fun MyApp() {
 - Call `terminalState.dispose()` manually when truly done
 - State is automatically initialized on first composition
 - All tabs, sessions, and split states are preserved
+
+## Stable Tab IDs
+
+Tab indices are unstable - they change when tabs are reordered, closed, or inserted. Use stable tab IDs for reliable tab targeting.
+
+### The Problem
+
+```kotlin
+// Create tabs
+state.createTab()  // Index 0
+state.createTab()  // Index 1
+
+// Later, user closes tab 0...
+// Now the second tab is at index 0!
+state.write("command\n", tabIndex = 1)  // Wrong tab or no-op!
+```
+
+### The Solution: Stable IDs
+
+Each tab has a unique, stable ID (UUID) that survives reordering:
+
+```kotlin
+// Create tabs with stable IDs
+val configA = state.createTab(tabId = "config-A")  // Returns "config-A"
+val configB = state.createTab(tabId = "config-B")  // Returns "config-B"
+
+// Later, even if tabs are reordered or closed:
+state.sendCtrlC("config-A")           // Always targets the right tab
+state.write("restart\n", "config-A")  // Reliable!
+state.closeTab("config-B")            // Works regardless of index
+```
+
+### Auto-Generated IDs
+
+If you don't specify a `tabId`, a UUID is generated automatically:
+
+```kotlin
+// Get the auto-generated ID
+val tabId = state.createTab()  // Returns something like "a1b2c3d4-..."
+
+// Use it later
+state.write("command\n", tabId!!)
+```
+
+### API Overview
+
+```kotlin
+// Properties
+state.activeTabId          // Stable ID of active tab
+
+// Lookup
+state.getTabById(tabId)    // Find tab by ID
+
+// Tab management (by ID)
+state.createTab(tabId = "my-id")  // Create with custom ID
+state.closeTab(tabId)             // Close by ID
+state.switchToTab(tabId)          // Switch by ID
+
+// Input (by ID)
+state.write(text, tabId)          // Send text by ID
+state.sendInput(bytes, tabId)     // Send bytes by ID
+state.sendCtrlC(tabId)            // Ctrl+C by ID
+state.sendCtrlD(tabId)            // Ctrl+D by ID
+state.sendCtrlZ(tabId)            // Ctrl+Z by ID
+```
+
+### Example: Runner System
+
+```kotlin
+// Track config → tab mappings
+val configTabs = mutableMapOf<String, String>()
+
+fun runConfig(configId: String, command: String) {
+    val existingTabId = configTabs[configId]
+
+    if (existingTabId != null && state.getTabById(existingTabId) != null) {
+        // Re-run in existing tab
+        state.sendCtrlC(existingTabId)
+        state.write("$command\n", existingTabId)
+        state.switchToTab(existingTabId)
+    } else {
+        // Create new tab for this config
+        val newTabId = state.createTab(tabId = "config-$configId")!!
+        configTabs[configId] = newTabId
+        state.write("$command\n", newTabId)
+    }
+}
+```
 
 ## Programmatic Input
 

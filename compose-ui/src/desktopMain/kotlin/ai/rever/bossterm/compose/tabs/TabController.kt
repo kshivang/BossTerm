@@ -138,6 +138,58 @@ class TabController(
         get() = tabs.getOrNull(activeTabIndex)
 
     /**
+     * Get the ID of the currently active tab, or null if no tabs exist.
+     */
+    val activeTabId: String?
+        get() = activeTab?.id
+
+    /**
+     * Find a tab by its stable ID.
+     *
+     * @param tabId The unique tab ID (UUID) to search for
+     * @return The tab with the given ID, or null if not found
+     */
+    fun getTabById(tabId: String): TerminalTab? {
+        return tabs.find { it.id == tabId }
+    }
+
+    /**
+     * Find the index of a tab by its stable ID.
+     *
+     * @param tabId The unique tab ID (UUID) to search for
+     * @return The index of the tab (0-based), or -1 if not found
+     */
+    fun getTabIndexById(tabId: String): Int {
+        return tabs.indexOfFirst { it.id == tabId }
+    }
+
+    /**
+     * Close a tab by its stable ID.
+     *
+     * @param tabId The unique tab ID (UUID) to close
+     * @return true if the tab was found and closed, false if not found
+     */
+    fun closeTabById(tabId: String): Boolean {
+        val index = getTabIndexById(tabId)
+        if (index == -1) return false
+        closeTab(index)
+        return true
+    }
+
+    /**
+     * Switch to a tab by its stable ID.
+     *
+     * @param tabId The unique tab ID (UUID) to switch to
+     * @return true if the tab was found and switched to, false if not found
+     */
+    fun switchToTabById(tabId: String): Boolean {
+        val index = getTabIndexById(tabId)
+        if (index == -1) return false
+        switchToTab(index)
+        return true
+    }
+
+    /**
      * Create a new terminal tab with optional working directory.
      *
      * @param workingDir Working directory to start the shell in (inherits from active tab if null)
@@ -145,6 +197,8 @@ class TabController(
      * @param arguments Command-line arguments for the shell (default: empty)
      * @param onProcessExit Callback invoked when shell process exits (before auto-closing tab)
      * @param initialCommand Optional command to execute after terminal is ready (sent as input with newline)
+     * @param tabId Optional stable ID for this tab (default: auto-generated UUID). Use this to assign
+     *              a predictable ID that survives tab reordering and can be used for reliable lookup.
      * @return The newly created TerminalTab
      */
     fun createTab(
@@ -152,7 +206,8 @@ class TabController(
         command: String? = null,
         arguments: List<String> = emptyList(),
         onProcessExit: (() -> Unit)? = null,
-        initialCommand: String? = null
+        initialCommand: String? = null,
+        tabId: String? = null
     ): TerminalTab {
         tabCounter++
 
@@ -275,7 +330,7 @@ class TabController(
 
         // Create tab with all state
         val tab = TerminalTab(
-            id = java.util.UUID.randomUUID().toString(),
+            id = tabId ?: java.util.UUID.randomUUID().toString(),
             title = mutableStateOf("Shell $tabCounter"),
             terminal = terminal,
             textBuffer = textBuffer,

@@ -104,6 +104,13 @@ class TabbedTerminalState {
         get() = tabController?.activeTab
 
     /**
+     * The stable ID of the currently active tab, or null if no tabs exist.
+     * This ID is stable across tab reordering and can be used for reliable tab targeting.
+     */
+    val activeTabId: String?
+        get() = tabController?.activeTabId
+
+    /**
      * Whether the state has been initialized (has a TabController).
      */
     val isInitialized: Boolean
@@ -158,9 +165,31 @@ class TabbedTerminalState {
      *
      * @param workingDir Working directory to start the shell in (null = home directory)
      * @param initialCommand Optional command to run after terminal is ready
+     * @param tabId Optional stable ID for this tab. If not provided, a UUID will be generated.
+     *              Use this to assign a predictable ID that can be used for later operations
+     *              (e.g., sendInput, closeTab) even after tabs are reordered.
+     * @return The stable ID of the created tab, or null if the state is not initialized
      */
-    fun createTab(workingDir: String? = null, initialCommand: String? = null) {
-        tabController?.createTab(workingDir = workingDir, initialCommand = initialCommand)
+    fun createTab(
+        workingDir: String? = null,
+        initialCommand: String? = null,
+        tabId: String? = null
+    ): String? {
+        return tabController?.createTab(
+            workingDir = workingDir,
+            initialCommand = initialCommand,
+            tabId = tabId
+        )?.id
+    }
+
+    /**
+     * Find a tab by its stable ID.
+     *
+     * @param tabId The stable tab ID to search for
+     * @return The tab with the given ID, or null if not found
+     */
+    fun getTabById(tabId: String): TerminalTab? {
+        return tabController?.getTabById(tabId)
     }
 
     /**
@@ -170,6 +199,16 @@ class TabbedTerminalState {
      */
     fun closeTab(index: Int) {
         tabController?.closeTab(index)
+    }
+
+    /**
+     * Close a tab by its stable ID.
+     *
+     * @param tabId The stable tab ID to close
+     * @return true if the tab was found and closed, false otherwise
+     */
+    fun closeTab(tabId: String): Boolean {
+        return tabController?.closeTabById(tabId) ?: false
     }
 
     /**
@@ -188,6 +227,16 @@ class TabbedTerminalState {
      */
     fun switchToTab(index: Int) {
         tabController?.switchToTab(index)
+    }
+
+    /**
+     * Switch to a tab by its stable ID.
+     *
+     * @param tabId The stable tab ID to switch to
+     * @return true if the tab was found and switched to, false otherwise
+     */
+    fun switchToTab(tabId: String): Boolean {
+        return tabController?.switchToTabById(tabId) ?: false
     }
 
     /**
@@ -238,7 +287,7 @@ class TabbedTerminalState {
     }
 
     /**
-     * Send raw bytes to a specific tab's process.
+     * Send raw bytes to a specific tab's process by index.
      *
      * This method is asynchronous - it queues the bytes and returns immediately.
      *
@@ -249,6 +298,22 @@ class TabbedTerminalState {
      */
     fun sendInput(bytes: ByteArray, tabIndex: Int) {
         tabs.getOrNull(tabIndex)?.writeRawBytes(bytes)
+    }
+
+    /**
+     * Send raw bytes to a specific tab's process by stable ID.
+     *
+     * This method is asynchronous - it queues the bytes and returns immediately.
+     * Unlike the index-based variant, this method is stable across tab reordering.
+     *
+     * @param bytes Raw bytes to send to the shell
+     * @param tabId Stable ID of the tab to send input to
+     * @return true if the tab was found, false otherwise
+     */
+    fun sendInput(bytes: ByteArray, tabId: String): Boolean {
+        val tab = getTabById(tabId) ?: return false
+        tab.writeRawBytes(bytes)
+        return true
     }
 
     /**
@@ -266,7 +331,7 @@ class TabbedTerminalState {
     }
 
     /**
-     * Send text input to a specific tab.
+     * Send text input to a specific tab by index.
      *
      * This method is asynchronous - it queues the text and returns immediately.
      *
@@ -280,6 +345,22 @@ class TabbedTerminalState {
     }
 
     /**
+     * Send text input to a specific tab by stable ID.
+     *
+     * This method is asynchronous - it queues the text and returns immediately.
+     * Unlike the index-based variant, this method is stable across tab reordering.
+     *
+     * @param text Text to send to the shell
+     * @param tabId Stable ID of the tab to send input to
+     * @return true if the tab was found, false otherwise
+     */
+    fun write(text: String, tabId: String): Boolean {
+        val tab = getTabById(tabId) ?: return false
+        tab.writeUserInput(text)
+        return true
+    }
+
+    /**
      * Send Ctrl+C (SIGINT) to the active terminal tab's process.
      * This is equivalent to pressing Ctrl+C in the terminal to interrupt a running process.
      *
@@ -290,7 +371,7 @@ class TabbedTerminalState {
     }
 
     /**
-     * Send Ctrl+C (SIGINT) to a specific tab's process.
+     * Send Ctrl+C (SIGINT) to a specific tab's process by index.
      *
      * Note: If tabIndex is out of bounds, this call is a no-op.
      *
@@ -298,6 +379,16 @@ class TabbedTerminalState {
      */
     fun sendCtrlC(tabIndex: Int) {
         sendInput(byteArrayOf(0x03), tabIndex)
+    }
+
+    /**
+     * Send Ctrl+C (SIGINT) to a specific tab's process by stable ID.
+     *
+     * @param tabId Stable ID of the tab to send input to
+     * @return true if the tab was found, false otherwise
+     */
+    fun sendCtrlC(tabId: String): Boolean {
+        return sendInput(byteArrayOf(0x03), tabId)
     }
 
     /**
@@ -311,7 +402,7 @@ class TabbedTerminalState {
     }
 
     /**
-     * Send Ctrl+D (EOF) to a specific tab's process.
+     * Send Ctrl+D (EOF) to a specific tab's process by index.
      *
      * Note: If tabIndex is out of bounds, this call is a no-op.
      *
@@ -319,6 +410,16 @@ class TabbedTerminalState {
      */
     fun sendCtrlD(tabIndex: Int) {
         sendInput(byteArrayOf(0x04), tabIndex)
+    }
+
+    /**
+     * Send Ctrl+D (EOF) to a specific tab's process by stable ID.
+     *
+     * @param tabId Stable ID of the tab to send input to
+     * @return true if the tab was found, false otherwise
+     */
+    fun sendCtrlD(tabId: String): Boolean {
+        return sendInput(byteArrayOf(0x04), tabId)
     }
 
     /**
@@ -332,7 +433,7 @@ class TabbedTerminalState {
     }
 
     /**
-     * Send Ctrl+Z (SIGTSTP) to a specific tab's process.
+     * Send Ctrl+Z (SIGTSTP) to a specific tab's process by index.
      *
      * Note: If tabIndex is out of bounds, this call is a no-op.
      *
@@ -340,6 +441,16 @@ class TabbedTerminalState {
      */
     fun sendCtrlZ(tabIndex: Int) {
         sendInput(byteArrayOf(0x1A), tabIndex)
+    }
+
+    /**
+     * Send Ctrl+Z (SIGTSTP) to a specific tab's process by stable ID.
+     *
+     * @param tabId Stable ID of the tab to send input to
+     * @return true if the tab was found, false otherwise
+     */
+    fun sendCtrlZ(tabId: String): Boolean {
+        return sendInput(byteArrayOf(0x1A), tabId)
     }
 
     // ========== Session Listeners ==========

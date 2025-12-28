@@ -103,8 +103,11 @@ data class TerminalTab(
      * Callback invoked when the shell process exits.
      * Called by TabController before auto-closing the tab.
      * Can be used for cleanup, logging, or custom exit handling.
+     *
+     * Note: This can be reassigned after creation (e.g., when the tab becomes
+     * part of a split pane and needs split-aware exit behavior).
      */
-    val onProcessExit: (() -> Unit)? = null,
+    var onProcessExit: (() -> Unit)? = null,
 
     // === Coroutine Management ===
 

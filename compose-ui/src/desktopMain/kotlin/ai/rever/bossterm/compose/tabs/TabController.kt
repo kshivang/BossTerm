@@ -899,14 +899,21 @@ class TabController(
             handle.waitFor()
             println("INFO: Shell process exited for tab: ${tab.title.value}")
 
+            // Call onProcessExit callback - this handles split pane closure
+            // If callback exists, it handles the exit (e.g., closing just the pane in a split)
+            val hasCallback = tab.onProcessExit != null
             withContext(Dispatchers.Main) {
                 tab.onProcessExit?.invoke()
             }
 
-            withContext(Dispatchers.Main) {
-                val tabIndex = tabs.indexOf(tab)
-                if (tabIndex != -1) {
-                    closeTab(tabIndex)
+            // Auto-close tab only if no callback is set
+            // (tabs in splits have callbacks that handle pane closure)
+            if (!hasCallback) {
+                withContext(Dispatchers.Main) {
+                    val tabIndex = tabs.indexOf(tab)
+                    if (tabIndex != -1) {
+                        closeTab(tabIndex)
+                    }
                 }
             }
 
@@ -1086,16 +1093,21 @@ class TabController(
                 handle.waitFor()  // Blocks until process exits
                 println("INFO: Shell process exited for tab: ${tab.title.value}")
 
-                // Call onProcessExit callback for custom cleanup/logging (if provided)
+                // Call onProcessExit callback - this handles split pane closure
+                // If callback exists, it handles the exit (e.g., closing just the pane in a split)
+                val hasCallback = tab.onProcessExit != null
                 withContext(Dispatchers.Main) {
                     tab.onProcessExit?.invoke()
                 }
 
-                // Auto-close tab when shell exits (as per user requirements)
-                withContext(Dispatchers.Main) {
-                    val tabIndex = tabs.indexOf(tab)
-                    if (tabIndex != -1) {
-                        closeTab(tabIndex)
+                // Auto-close tab only if no callback is set
+                // (tabs in splits have callbacks that handle pane closure)
+                if (!hasCallback) {
+                    withContext(Dispatchers.Main) {
+                        val tabIndex = tabs.indexOf(tab)
+                        if (tabIndex != -1) {
+                            closeTab(tabIndex)
+                        }
                     }
                 }
 

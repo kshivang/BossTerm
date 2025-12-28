@@ -135,7 +135,27 @@ fun TabbedTerminal(
     // Helper function to get or create SplitViewState for a tab
     fun getOrCreateSplitState(tab: TerminalTab): SplitViewState {
         return splitStates.getOrPut(tab.id) {
-            SplitViewState(initialSession = tab)
+            val state = SplitViewState(initialSession = tab)
+
+            // Set up split-aware process exit for the original tab
+            // This ensures exiting the original pane closes just that pane,
+            // not the entire tab (unless it's the last pane)
+            tab.onProcessExit = {
+                if (state.isSinglePane) {
+                    // Last pane - close the tab
+                    val tabIndex = tabController.tabs.indexOfFirst { it.id == tab.id }
+                    if (tabIndex != -1) {
+                        tabController.closeTab(tabIndex)
+                    }
+                } else {
+                    // Close just this pane
+                    state.getAllPanes()
+                        .find { it.session === tab }
+                        ?.let { pane -> state.closePane(pane.id) }
+                }
+            }
+
+            state
         }
     }
 
@@ -175,7 +195,7 @@ fun TabbedTerminal(
     LaunchedEffect(menuActions, tabController.activeTabIndex, tabController.tabs.size) {
         if (tabController.tabs.isEmpty()) return@LaunchedEffect
         val activeTab = tabController.tabs.getOrNull(tabController.activeTabIndex) ?: return@LaunchedEffect
-        val splitState = splitStates.getOrPut(activeTab.id) { SplitViewState(initialSession = activeTab) }
+        val splitState = getOrCreateSplitState(activeTab)
 
         menuActions?.apply {
             onSplitVertical = {
@@ -184,10 +204,20 @@ fun TabbedTerminal(
                 val newSession = tabController.createSessionForSplit(
                     workingDir = workingDir,
                     onProcessExit = {
-                        newSessionRef?.let { session ->
-                            splitState.getAllPanes()
-                                .find { it.session === session }
-                                ?.let { pane -> splitState.closePane(pane.id) }
+                        // Auto-close the pane when process exits
+                        if (splitState.isSinglePane) {
+                            // Last pane - close the tab
+                            val tabIndex = tabController.tabs.indexOfFirst { it.id == activeTab.id }
+                            if (tabIndex != -1) {
+                                tabController.closeTab(tabIndex)
+                            }
+                        } else {
+                            // Close just this pane
+                            newSessionRef?.let { session ->
+                                splitState.getAllPanes()
+                                    .find { it.session === session }
+                                    ?.let { pane -> splitState.closePane(pane.id) }
+                            }
                         }
                     }
                 )
@@ -200,10 +230,20 @@ fun TabbedTerminal(
                 val newSession = tabController.createSessionForSplit(
                     workingDir = workingDir,
                     onProcessExit = {
-                        newSessionRef?.let { session ->
-                            splitState.getAllPanes()
-                                .find { it.session === session }
-                                ?.let { pane -> splitState.closePane(pane.id) }
+                        // Auto-close the pane when process exits
+                        if (splitState.isSinglePane) {
+                            // Last pane - close the tab
+                            val tabIndex = tabController.tabs.indexOfFirst { it.id == activeTab.id }
+                            if (tabIndex != -1) {
+                                tabController.closeTab(tabIndex)
+                            }
+                        } else {
+                            // Close just this pane
+                            newSessionRef?.let { session ->
+                                splitState.getAllPanes()
+                                    .find { it.session === session }
+                                    ?.let { pane -> splitState.closePane(pane.id) }
+                            }
                         }
                     }
                 )
@@ -342,10 +382,19 @@ fun TabbedTerminal(
                     workingDir = workingDir,
                     onProcessExit = {
                         // Auto-close the pane when process exits
-                        newSessionRef?.let { session ->
-                            splitState.getAllPanes()
-                                .find { it.session === session }
-                                ?.let { pane -> splitState.closePane(pane.id) }
+                        if (splitState.isSinglePane) {
+                            // Last pane - close the tab
+                            val tabIndex = tabController.tabs.indexOfFirst { it.id == activeTab.id }
+                            if (tabIndex != -1) {
+                                tabController.closeTab(tabIndex)
+                            }
+                        } else {
+                            // Close just this pane
+                            newSessionRef?.let { session ->
+                                splitState.getAllPanes()
+                                    .find { it.session === session }
+                                    ?.let { pane -> splitState.closePane(pane.id) }
+                            }
                         }
                     }
                 )
@@ -366,10 +415,19 @@ fun TabbedTerminal(
                     workingDir = workingDir,
                     onProcessExit = {
                         // Auto-close the pane when process exits
-                        newSessionRef?.let { session ->
-                            splitState.getAllPanes()
-                                .find { it.session === session }
-                                ?.let { pane -> splitState.closePane(pane.id) }
+                        if (splitState.isSinglePane) {
+                            // Last pane - close the tab
+                            val tabIndex = tabController.tabs.indexOfFirst { it.id == activeTab.id }
+                            if (tabIndex != -1) {
+                                tabController.closeTab(tabIndex)
+                            }
+                        } else {
+                            // Close just this pane
+                            newSessionRef?.let { session ->
+                                splitState.getAllPanes()
+                                    .find { it.session === session }
+                                    ?.let { pane -> splitState.closePane(pane.id) }
+                            }
                         }
                     }
                 )

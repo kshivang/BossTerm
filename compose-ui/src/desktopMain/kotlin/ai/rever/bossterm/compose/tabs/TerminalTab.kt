@@ -243,7 +243,7 @@ data class TerminalTab(
      */
     private sealed class WriteOperation {
         data class Text(val data: String) : WriteOperation()
-        data class RawBytes(val data: ByteArray) : WriteOperation()
+        class RawBytes(val data: ByteArray) : WriteOperation()  // Not data class - ByteArray uses referential equality
     }
 
     /**

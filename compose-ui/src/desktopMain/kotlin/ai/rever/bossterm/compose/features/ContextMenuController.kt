@@ -261,6 +261,7 @@ fun createTerminalContextMenuItems(
     onSplitVertical: (() -> Unit)? = null,
     onSplitHorizontal: (() -> Unit)? = null,
     onMoveToNewTab: (() -> Unit)? = null,
+    onClosePane: (() -> Unit)? = null,
     onShowDebug: (() -> Unit)? = null,
     onShowSettings: (() -> Unit)? = null,
     customItems: List<ai.rever.bossterm.compose.ContextMenuElement> = emptyList()
@@ -346,6 +347,17 @@ fun createTerminalContextMenuItems(
                     label = "Move Pane to New Tab",
                     enabled = true,
                     action = onMoveToNewTab
+                )
+            )
+        }
+
+        if (onClosePane != null) {
+            splitItems.add(
+                ContextMenuController.MenuItem(
+                    id = "close_pane",
+                    label = "Close Pane",
+                    enabled = true,
+                    action = onClosePane
                 )
             )
         }
@@ -469,6 +481,7 @@ fun showTerminalContextMenu(
     onSplitVertical: (() -> Unit)? = null,
     onSplitHorizontal: (() -> Unit)? = null,
     onMoveToNewTab: (() -> Unit)? = null,
+    onClosePane: (() -> Unit)? = null,
     onShowDebug: (() -> Unit)? = null,
     onShowSettings: (() -> Unit)? = null,
     customItems: List<ai.rever.bossterm.compose.ContextMenuElement> = emptyList(),
@@ -486,6 +499,7 @@ fun showTerminalContextMenu(
         onSplitVertical = onSplitVertical,
         onSplitHorizontal = onSplitHorizontal,
         onMoveToNewTab = onMoveToNewTab,
+        onClosePane = onClosePane,
         onShowDebug = onShowDebug,
         onShowSettings = onShowSettings,
         customItems = customItems
@@ -557,6 +571,7 @@ fun showHyperlinkContextMenu(
     onSplitVertical: (() -> Unit)? = null,
     onSplitHorizontal: (() -> Unit)? = null,
     onMoveToNewTab: (() -> Unit)? = null,
+    onClosePane: (() -> Unit)? = null,
     onShowDebug: (() -> Unit)? = null,
     onShowSettings: (() -> Unit)? = null,
     customItems: List<ai.rever.bossterm.compose.ContextMenuElement> = emptyList(),
@@ -579,6 +594,7 @@ fun showHyperlinkContextMenu(
         onSplitVertical = onSplitVertical,
         onSplitHorizontal = onSplitHorizontal,
         onMoveToNewTab = onMoveToNewTab,
+        onClosePane = onClosePane,
         onShowDebug = onShowDebug,
         onShowSettings = onShowSettings,
         customItems = customItems

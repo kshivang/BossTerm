@@ -846,6 +846,7 @@ fun ProperTerminal(
                   onSplitVertical = onSplitVertical,
                   onSplitHorizontal = onSplitHorizontal,
                   onMoveToNewTab = onMoveToNewTab,
+                  onClosePane = if (onMoveToNewTab != null) onClosePane else null,
                   onShowDebug = if (enableDebugPanel && settings.debugModeEnabled) {
                     { debugPanelVisible = !debugPanelVisible }
                   } else null,
@@ -890,6 +891,7 @@ fun ProperTerminal(
                   onSplitVertical = onSplitVertical,
                   onSplitHorizontal = onSplitHorizontal,
                   onMoveToNewTab = onMoveToNewTab,
+                  onClosePane = if (onMoveToNewTab != null) onClosePane else null,
                   onShowDebug = if (enableDebugPanel && settings.debugModeEnabled) {
                     { debugPanelVisible = !debugPanelVisible }
                   } else null,

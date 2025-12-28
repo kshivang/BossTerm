@@ -63,6 +63,26 @@ class BlockingTerminalDataStream(
     private val pushBackStack = mutableListOf<Char>()
 
     /**
+     * Threshold for buffer compaction. When position exceeds this value,
+     * consumed data is removed from the buffer to prevent memory leaks.
+     * Set to 4KB as a balance between compaction overhead and memory usage.
+     */
+    private val compactionThreshold = 4096
+
+    /**
+     * Compact the buffer by removing already-consumed data.
+     * This prevents the StringBuilder from growing indefinitely during long sessions.
+     *
+     * Called periodically when position exceeds compactionThreshold.
+     */
+    private fun compactBuffer() {
+        if (position > compactionThreshold) {
+            buffer.delete(0, position)
+            position = 0
+        }
+    }
+
+    /**
      * Reusable StringBuilder for readNonControlCharacters to avoid allocation per call.
      * Pre-sized to 256 for typical read sizes.
      */
@@ -168,6 +188,10 @@ class BlockingTerminalDataStream(
                     onChunkEnd?.invoke()
                 }
 
+                // Compact buffer to prevent memory leak (issue #179)
+                // Do this when buffer is exhausted, before waiting for more data
+                compactBuffer()
+
                 // Notify type-ahead system before blocking wait
                 // This allows the type-ahead manager to validate predictions
                 // against the current terminal state before we wait for more data
@@ -234,6 +258,9 @@ class BlockingTerminalDataStream(
 
             // Check if we need more data - timeout depends on performance mode
             if (position >= buffer.length) {
+                // Compact buffer to prevent memory leak (issue #179)
+                compactBuffer()
+
                 val chunk = when (performanceMode) {
                     // LATENCY: Non-blocking - return immediately with what we have
                     PerformanceMode.LATENCY -> dataQueue.poll()

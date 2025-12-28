@@ -217,10 +217,19 @@ class TabbedTerminalState {
     }
 
     // ========== Input API ==========
+    //
+    // All input methods are asynchronous - they queue input and return immediately.
+    // Input is processed in FIFO order (write() and sendInput() share the same queue).
+    // Methods with tabIndex parameter are no-ops if the index is invalid.
 
     /**
      * Send raw bytes to the active terminal tab's process.
      * Useful for sending control characters like Ctrl+C (0x03) or Ctrl+D (0x04).
+     *
+     * This method is asynchronous - it queues the bytes and returns immediately.
+     * Bytes are sent in FIFO order with respect to [write] calls.
+     *
+     * Note: If no active tab exists, this call is a no-op.
      *
      * @param bytes Raw bytes to send to the shell
      */
@@ -230,6 +239,10 @@ class TabbedTerminalState {
 
     /**
      * Send raw bytes to a specific tab's process.
+     *
+     * This method is asynchronous - it queues the bytes and returns immediately.
+     *
+     * Note: If tabIndex is out of bounds, this call is a no-op.
      *
      * @param bytes Raw bytes to send to the shell
      * @param tabIndex Index of the tab to send input to (0-based)
@@ -242,6 +255,10 @@ class TabbedTerminalState {
      * Send text input to the active terminal tab.
      * Use "\n" for enter key.
      *
+     * This method is asynchronous - it queues the text and returns immediately.
+     *
+     * Note: If no active tab exists, this call is a no-op.
+     *
      * @param text Text to send to the shell
      */
     fun write(text: String) {
@@ -250,6 +267,10 @@ class TabbedTerminalState {
 
     /**
      * Send text input to a specific tab.
+     *
+     * This method is asynchronous - it queues the text and returns immediately.
+     *
+     * Note: If tabIndex is out of bounds, this call is a no-op.
      *
      * @param text Text to send to the shell
      * @param tabIndex Index of the tab to send input to (0-based)
@@ -260,7 +281,9 @@ class TabbedTerminalState {
 
     /**
      * Send Ctrl+C (SIGINT) to the active terminal tab's process.
-     * This is equivalent to pressing Ctrl+C in the terminal.
+     * This is equivalent to pressing Ctrl+C in the terminal to interrupt a running process.
+     *
+     * This method is asynchronous - it queues the signal and returns immediately.
      */
     fun sendCtrlC() {
         sendInput(byteArrayOf(0x03))
@@ -268,6 +291,8 @@ class TabbedTerminalState {
 
     /**
      * Send Ctrl+C (SIGINT) to a specific tab's process.
+     *
+     * Note: If tabIndex is out of bounds, this call is a no-op.
      *
      * @param tabIndex Index of the tab to send input to (0-based)
      */
@@ -277,7 +302,9 @@ class TabbedTerminalState {
 
     /**
      * Send Ctrl+D (EOF) to the active terminal tab's process.
-     * This is equivalent to pressing Ctrl+D in the terminal.
+     * This is equivalent to pressing Ctrl+D in the terminal to signal end-of-input.
+     *
+     * This method is asynchronous - it queues the signal and returns immediately.
      */
     fun sendCtrlD() {
         sendInput(byteArrayOf(0x04))
@@ -285,6 +312,8 @@ class TabbedTerminalState {
 
     /**
      * Send Ctrl+D (EOF) to a specific tab's process.
+     *
+     * Note: If tabIndex is out of bounds, this call is a no-op.
      *
      * @param tabIndex Index of the tab to send input to (0-based)
      */
@@ -294,7 +323,9 @@ class TabbedTerminalState {
 
     /**
      * Send Ctrl+Z (SIGTSTP) to the active terminal tab's process.
-     * This is equivalent to pressing Ctrl+Z in the terminal (suspend process).
+     * This is equivalent to pressing Ctrl+Z in the terminal to suspend the foreground process.
+     *
+     * This method is asynchronous - it queues the signal and returns immediately.
      */
     fun sendCtrlZ() {
         sendInput(byteArrayOf(0x1A))
@@ -302,6 +333,8 @@ class TabbedTerminalState {
 
     /**
      * Send Ctrl+Z (SIGTSTP) to a specific tab's process.
+     *
+     * Note: If tabIndex is out of bounds, this call is a no-op.
      *
      * @param tabIndex Index of the tab to send input to (0-based)
      */

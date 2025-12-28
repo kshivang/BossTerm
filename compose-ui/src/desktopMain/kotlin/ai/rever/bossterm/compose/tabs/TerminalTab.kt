@@ -239,25 +239,35 @@ data class TerminalTab(
     // keyboard input is processed in order even under high load.
 
     /**
+     * Sealed class for write operations to ensure FIFO ordering between text and raw bytes.
+     */
+    private sealed class WriteOperation {
+        data class Text(val data: String) : WriteOperation()
+        data class RawBytes(val data: ByteArray) : WriteOperation()
+    }
+
+    /**
      * Channel for queuing user input writes to the PTY.
      * Capacity of 256 provides reasonable buffer for burst input (e.g., paste operations).
+     * Uses WriteOperation sealed class to handle both text and raw bytes in FIFO order.
      */
-    private val writeChannel = Channel<String>(capacity = 256)
+    private val writeChannel = Channel<WriteOperation>(capacity = 256)
 
     /**
      * Background job that consumes from writeChannel and writes to PTY sequentially.
      * Runs on IO dispatcher to avoid blocking other coroutines.
      */
     private val writeConsumerJob: Job = coroutineScope.launch(Dispatchers.IO) {
-        for (text in writeChannel) {
+        for (operation in writeChannel) {
             try {
-                processHandle.value?.write(text)
+                when (operation) {
+                    is WriteOperation.Text -> processHandle.value?.write(operation.data)
+                    is WriteOperation.RawBytes -> processHandle.value?.writeBytes(operation.data)
+                }
             } catch (e: java.io.IOException) {
                 // PTY might be closed - log but don't crash
                 // This can happen during normal tab close or if shell exits
-                if (debugEnabled.value) {
-                    println("DEBUG: PTY write failed (expected during tab close): ${e.message}")
-                }
+                println("WARNING: PTY write failed: ${e.message}")
             }
         }
     }
@@ -372,12 +382,10 @@ data class TerminalTab(
         // This is safe because we're launching on the tab's scope, not blocking the caller
         coroutineScope.launch {
             try {
-                writeChannel.send(text)  // Suspends if buffer full, doesn't drop
+                writeChannel.send(WriteOperation.Text(text))
             } catch (e: Exception) {
                 // Channel closed (tab closing) - expected during shutdown
-                if (debugEnabled.value) {
-                    println("DEBUG: Failed to queue input to PTY: ${e.message}")
-                }
+                println("WARNING: Failed to queue text input to PTY: ${e.message}")
             }
         }
     }
@@ -385,6 +393,9 @@ data class TerminalTab(
     /**
      * Write raw bytes to the process stdin.
      * Use this for sending control characters or binary data without string encoding issues.
+     *
+     * This method uses the same write queue as writeUserInput() to guarantee FIFO ordering.
+     * Calls are asynchronous - they return immediately after queuing.
      *
      * @param bytes The raw bytes to send to the shell
      */
@@ -395,13 +406,14 @@ data class TerminalTab(
             ai.rever.bossterm.compose.debug.ChunkSource.USER_INPUT
         )
 
-        coroutineScope.launch(Dispatchers.IO) {
+        // Queue for sequential processing by writeConsumerJob (same queue as text)
+        // This ensures FIFO ordering between write() and sendInput() calls
+        coroutineScope.launch {
             try {
-                processHandle.value?.writeBytes(bytes)
+                writeChannel.send(WriteOperation.RawBytes(bytes))
             } catch (e: Exception) {
-                if (debugEnabled.value) {
-                    println("DEBUG: Failed to write raw bytes to PTY: ${e.message}")
-                }
+                // Channel closed (tab closing) - expected during shutdown
+                println("WARNING: Failed to queue raw bytes to PTY: ${e.message}")
             }
         }
     }

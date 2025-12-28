@@ -491,6 +491,47 @@ gh pr create --base master --head dev --title "Your PR title" --body "Descriptio
 
 **Status**: Complete (December 7, 2025)
 
+### 14. Programmatic Input API (#182)
+- **sendInput(bytes)**: Send raw bytes to terminal process (e.g., control characters)
+- **sendCtrlC()**: Send Ctrl+C (0x03) to interrupt running process
+- **sendCtrlD()**: Send Ctrl+D (0x04) to send EOF
+- **sendCtrlZ()**: Send Ctrl+Z (0x1A) to suspend process
+- **write(text)**: Send text input to terminal
+
+**Usage (EmbeddableTerminal)**:
+```kotlin
+val state = rememberEmbeddableTerminalState()
+EmbeddableTerminal(state = state)
+
+// Send Ctrl+C to stop running process
+state.sendCtrlC()
+
+// Send raw bytes
+state.sendInput(byteArrayOf(0x03))
+
+// Send text command
+state.write("ls -la\n")
+```
+
+**Usage (TabbedTerminal)**:
+```kotlin
+val state = rememberTabbedTerminalState()
+TabbedTerminal(state = state)
+
+// Send to active tab
+state.sendCtrlC()
+
+// Send to specific tab by index
+state.sendCtrlC(tabIndex = 1)
+state.write("echo hello\n", tabIndex = 0)
+```
+
+**Key Files**:
+- `EmbeddableTerminal.kt`: `sendInput()`, `sendCtrlC()`, `sendCtrlD()`, `sendCtrlZ()`, `write()`
+- `TabbedTerminalState.kt`: Same methods + overloads with `tabIndex` parameter
+
+**Status**: Complete (December 28, 2025, issue #182)
+
 ## Known Issues & Todos
 
 ### In Progress
@@ -503,6 +544,7 @@ None - feature complete for current phase
 - SSH key management UI (future enhancement)
 
 ### Completed (Recent)
+✅ Programmatic Input API (sendInput, sendCtrlC, sendCtrlD, sendCtrlZ) - December 28, 2025, issue #182
 ✅ Command Completion Notifications (OSC 133 Shell Integration) - December 7, 2025
 ✅ Tab Keyboard Shortcuts (Ctrl+T, Ctrl+W, Ctrl+Tab, Ctrl+1-9) - December 3, 2025
 ✅ OSC 7 Working Directory Tracking - December 3, 2025
@@ -572,9 +614,20 @@ None - feature complete for current phase
 ---
 
 ## Last Updated
-December 27, 2025
+December 28, 2025
 
 ### Recent Changes
+- **December 28, 2025**: Programmatic Input API (#182)
+  - **Feature**: Added API to send raw bytes and control characters to terminal processes
+  - **Purpose**: Allows parent applications to send Ctrl+C (interrupt), Ctrl+D (EOF), Ctrl+Z (suspend), and arbitrary bytes
+  - **New Methods in EmbeddableTerminalState**:
+    - `sendInput(bytes: ByteArray)`: Send raw bytes to terminal
+    - `sendCtrlC()`: Send Ctrl+C (0x03) - interrupt signal
+    - `sendCtrlD()`: Send Ctrl+D (0x04) - EOF
+    - `sendCtrlZ()`: Send Ctrl+Z (0x1A) - suspend
+  - **New Methods in TabbedTerminalState**: Same methods + overloads with `tabIndex` parameter
+  - **Modified Files**: `EmbeddableTerminal.kt` (+38 lines), `TabbedTerminalState.kt` (+70 lines)
+  - **Status**: Complete, ready for PR
 - **December 27, 2025**: Expose workingDirectory parameter in TabbedTerminal (#176)
   - **Feature**: Added `workingDirectory: String? = null` parameter to `TabbedTerminal` composable
   - **Purpose**: Allows setting the initial working directory for the first tab (matches `EmbeddableTerminal` API)

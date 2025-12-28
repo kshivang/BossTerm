@@ -57,6 +57,10 @@ fun EmbeddedExampleApp() {
                     Sidebar(
                         onAction = { action -> statusMessage = "Action: $action" },
                         onSendToTerminal = { text -> terminalState.write(text) },
+                        // Control signal callbacks using sendInput API
+                        onSendCtrlC = { terminalState.sendCtrlC() },
+                        onSendCtrlD = { terminalState.sendCtrlD() },
+                        onSendCtrlZ = { terminalState.sendCtrlZ() },
                         modifier = Modifier.width(250.dp)
                     )
                 }
@@ -146,6 +150,9 @@ fun EmbeddedExampleApp() {
 fun Sidebar(
     onAction: (String) -> Unit,
     onSendToTerminal: (String) -> Unit,
+    onSendCtrlC: () -> Unit,
+    onSendCtrlD: () -> Unit,
+    onSendCtrlZ: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -186,6 +193,19 @@ fun Sidebar(
         SidebarButton("Send 'ls'") { onSendToTerminal("ls\n") }
         SidebarButton("Send 'pwd'") { onSendToTerminal("pwd\n") }
         SidebarButton("Send 'clear'") { onSendToTerminal("clear\n") }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = "Control Signals:",
+            style = MaterialTheme.typography.labelMedium,
+            color = Color.Gray
+        )
+
+        // Buttons that send control signals (sendInput API demo)
+        SidebarButton("Send Ctrl+C") { onSendCtrlC() }
+        SidebarButton("Send Ctrl+D") { onSendCtrlD() }
+        SidebarButton("Send Ctrl+Z") { onSendCtrlZ() }
 
         Spacer(modifier = Modifier.weight(1f))
 

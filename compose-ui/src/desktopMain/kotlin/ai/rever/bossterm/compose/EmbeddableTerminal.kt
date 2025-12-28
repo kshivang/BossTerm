@@ -334,6 +334,41 @@ class EmbeddableTerminalState {
     }
 
     /**
+     * Send raw bytes to the terminal process.
+     * Useful for sending control characters like Ctrl+C (0x03) or Ctrl+D (0x04).
+     *
+     * @param bytes Raw bytes to send to the shell
+     */
+    fun sendInput(bytes: ByteArray) {
+        // Convert bytes to String using ISO-8859-1 to preserve raw byte values
+        session?.writeUserInput(String(bytes, Charsets.ISO_8859_1))
+    }
+
+    /**
+     * Send Ctrl+C (SIGINT) to the terminal process.
+     * This is equivalent to pressing Ctrl+C in the terminal.
+     */
+    fun sendCtrlC() {
+        sendInput(byteArrayOf(0x03))
+    }
+
+    /**
+     * Send Ctrl+D (EOF) to the terminal process.
+     * This is equivalent to pressing Ctrl+D in the terminal.
+     */
+    fun sendCtrlD() {
+        sendInput(byteArrayOf(0x04))
+    }
+
+    /**
+     * Send Ctrl+Z (SIGTSTP) to the terminal process.
+     * This is equivalent to pressing Ctrl+Z in the terminal (suspend process).
+     */
+    fun sendCtrlZ() {
+        sendInput(byteArrayOf(0x1A))
+    }
+
+    /**
      * Paste text to the terminal with proper bracketed paste mode handling.
      *
      * @param text Text to paste

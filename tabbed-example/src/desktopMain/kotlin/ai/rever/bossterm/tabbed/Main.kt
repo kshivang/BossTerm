@@ -230,6 +230,26 @@ private fun ApplicationScope.TabbedTerminalWindow(
                                             id = "system_info",
                                             label = "System Info (uname -a)",
                                             action = { terminalState.activeTab?.writeUserInput("uname -a\n") }
+                                        ),
+                                        // Control signals section (sendInput API demo)
+                                        ContextMenuSection(
+                                            id = "control_signals_section",
+                                            label = "Control Signals"
+                                        ),
+                                        ContextMenuItem(
+                                            id = "send_ctrl_c",
+                                            label = "Send Ctrl+C (Interrupt)",
+                                            action = { terminalState.sendCtrlC() }
+                                        ),
+                                        ContextMenuItem(
+                                            id = "send_ctrl_d",
+                                            label = "Send Ctrl+D (EOF)",
+                                            action = { terminalState.sendCtrlD() }
+                                        ),
+                                        ContextMenuItem(
+                                            id = "send_ctrl_z",
+                                            label = "Send Ctrl+Z (Suspend)",
+                                            action = { terminalState.sendCtrlZ() }
                                         )
                                     )
                                 }

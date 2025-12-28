@@ -216,6 +216,100 @@ class TabbedTerminalState {
         return tabController?.getActiveWorkingDirectory()
     }
 
+    // ========== Input API ==========
+
+    /**
+     * Send raw bytes to the active terminal tab's process.
+     * Useful for sending control characters like Ctrl+C (0x03) or Ctrl+D (0x04).
+     *
+     * @param bytes Raw bytes to send to the shell
+     */
+    fun sendInput(bytes: ByteArray) {
+        // Convert bytes to String using ISO-8859-1 to preserve raw byte values
+        activeTab?.writeUserInput(String(bytes, Charsets.ISO_8859_1))
+    }
+
+    /**
+     * Send raw bytes to a specific tab's process.
+     *
+     * @param bytes Raw bytes to send to the shell
+     * @param tabIndex Index of the tab to send input to (0-based)
+     */
+    fun sendInput(bytes: ByteArray, tabIndex: Int) {
+        tabs.getOrNull(tabIndex)?.writeUserInput(String(bytes, Charsets.ISO_8859_1))
+    }
+
+    /**
+     * Send text input to the active terminal tab.
+     * Use "\n" for enter key.
+     *
+     * @param text Text to send to the shell
+     */
+    fun write(text: String) {
+        activeTab?.writeUserInput(text)
+    }
+
+    /**
+     * Send text input to a specific tab.
+     *
+     * @param text Text to send to the shell
+     * @param tabIndex Index of the tab to send input to (0-based)
+     */
+    fun write(text: String, tabIndex: Int) {
+        tabs.getOrNull(tabIndex)?.writeUserInput(text)
+    }
+
+    /**
+     * Send Ctrl+C (SIGINT) to the active terminal tab's process.
+     * This is equivalent to pressing Ctrl+C in the terminal.
+     */
+    fun sendCtrlC() {
+        sendInput(byteArrayOf(0x03))
+    }
+
+    /**
+     * Send Ctrl+C (SIGINT) to a specific tab's process.
+     *
+     * @param tabIndex Index of the tab to send input to (0-based)
+     */
+    fun sendCtrlC(tabIndex: Int) {
+        sendInput(byteArrayOf(0x03), tabIndex)
+    }
+
+    /**
+     * Send Ctrl+D (EOF) to the active terminal tab's process.
+     * This is equivalent to pressing Ctrl+D in the terminal.
+     */
+    fun sendCtrlD() {
+        sendInput(byteArrayOf(0x04))
+    }
+
+    /**
+     * Send Ctrl+D (EOF) to a specific tab's process.
+     *
+     * @param tabIndex Index of the tab to send input to (0-based)
+     */
+    fun sendCtrlD(tabIndex: Int) {
+        sendInput(byteArrayOf(0x04), tabIndex)
+    }
+
+    /**
+     * Send Ctrl+Z (SIGTSTP) to the active terminal tab's process.
+     * This is equivalent to pressing Ctrl+Z in the terminal (suspend process).
+     */
+    fun sendCtrlZ() {
+        sendInput(byteArrayOf(0x1A))
+    }
+
+    /**
+     * Send Ctrl+Z (SIGTSTP) to a specific tab's process.
+     *
+     * @param tabIndex Index of the tab to send input to (0-based)
+     */
+    fun sendCtrlZ(tabIndex: Int) {
+        sendInput(byteArrayOf(0x1A), tabIndex)
+    }
+
     // ========== Session Listeners ==========
 
     /**

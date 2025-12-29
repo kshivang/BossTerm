@@ -129,7 +129,8 @@ class TabbedTerminalState {
     internal fun initialize(
         settings: TerminalSettings,
         onLastTabClosed: () -> Unit,
-        isWindowFocused: () -> Boolean
+        isWindowFocused: () -> Boolean,
+        onTabClose: ((tabId: String) -> Unit)? = null
     ) {
         if (initialized) return
         initialized = true
@@ -137,7 +138,8 @@ class TabbedTerminalState {
         tabController = TabController(
             settings = settings,
             onLastTabClosed = onLastTabClosed,
-            isWindowFocused = isWindowFocused
+            isWindowFocused = isWindowFocused,
+            onTabClose = onTabClose
         )
     }
 

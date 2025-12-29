@@ -50,7 +50,8 @@ import java.io.EOFException
 class TabController(
     private val settings: TerminalSettings,
     private val onLastTabClosed: () -> Unit,
-    private val isWindowFocused: () -> Boolean = { true }
+    private val isWindowFocused: () -> Boolean = { true },
+    private val onTabClose: ((tabId: String) -> Unit)? = null
 ) {
     /**
      * List of all terminal tabs (observable, triggers recomposition).
@@ -1279,6 +1280,14 @@ class TabController(
         if (index < 0 || index >= tabs.size) return
 
         val tab = tabs[index]
+
+        // Invoke onTabClose callback BEFORE removal/disposal
+        // This allows parent application to clean up associated resources
+        try {
+            onTabClose?.invoke(tab.id)
+        } catch (e: Exception) {
+            println("WARN: onTabClose callback threw exception: ${e.message}")
+        }
 
         // Hold reference to process before tab disposal to prevent GC during kill()
         val processToKill = tab.processHandle.value

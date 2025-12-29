@@ -50,6 +50,7 @@ TabbedTerminal provides a complete terminal experience:
 fun TabbedTerminal(
     state: TabbedTerminalState? = null,
     onExit: () -> Unit,
+    onTabClose: ((tabId: String) -> Unit)? = null,
     onWindowTitleChange: (String) -> Unit = {},
     onNewWindow: () -> Unit = {},
     onShowSettings: () -> Unit = {},
@@ -67,6 +68,7 @@ fun TabbedTerminal(
 |-----------|------|-------------|
 | `state` | `TabbedTerminalState?` | External state holder for persistence across recomposition |
 | `onExit` | `() -> Unit` | **Required.** Called when last tab closes |
+| `onTabClose` | `((tabId: String) -> Unit)?` | Called before a tab closes. Receives the stable tab ID for cleanup |
 | `onWindowTitleChange` | `(String) -> Unit` | Called when active tab's title changes |
 | `onNewWindow` | `() -> Unit` | Called when user requests new window (Cmd/Ctrl+N) |
 | `onShowSettings` | `() -> Unit` | Called when user opens settings |
@@ -487,11 +489,34 @@ state.sendCtrlD(tabId)            // Ctrl+D by ID
 state.sendCtrlZ(tabId)            // Ctrl+Z by ID
 ```
 
-### Example: Runner System
+### Example: Runner System with Cleanup
+
+Use `onTabClose` to clean up associated resources when tabs are closed:
 
 ```kotlin
 // Track config → tab mappings
 val configTabs = mutableMapOf<String, String>()
+val runnerStates = mutableMapOf<String, RunnerState>()
+
+@Composable
+fun MyApp() {
+    val state = rememberTabbedTerminalState()
+
+    TabbedTerminal(
+        state = state,
+        onExit = { exitApplication() },
+        onTabClose = { tabId ->
+            // Clean up runner state when tab closes
+            val configId = configTabs.entries
+                .find { it.value == tabId }?.key
+            if (configId != null) {
+                configTabs.remove(configId)
+                runnerStates.remove(configId)?.cleanup()
+                println("Cleaned up runner for config: $configId")
+            }
+        }
+    )
+}
 
 fun runConfig(configId: String, command: String) {
     val existingTabId = configTabs[configId]
@@ -505,10 +530,16 @@ fun runConfig(configId: String, command: String) {
         // Create new tab for this config
         val newTabId = state.createTab(tabId = "config-$configId")!!
         configTabs[configId] = newTabId
+        runnerStates[configId] = RunnerState(/* ... */)
         state.write("$command\n", newTabId)
     }
 }
 ```
+
+The `onTabClose` callback is invoked **before** the tab is removed, allowing you to:
+- Clean up associated resources (runner states, file watchers, etc.)
+- Log tab closure for analytics
+- Update UI state that depends on tab count
 
 ## Programmatic Input
 

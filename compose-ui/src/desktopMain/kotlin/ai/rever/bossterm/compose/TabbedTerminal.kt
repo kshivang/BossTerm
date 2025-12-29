@@ -63,6 +63,8 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  *              recomposition (e.g., when embedded in a tab system). When null, state is
  *              managed internally and lost when composable unmounts.
  * @param onExit Called when the last tab is closed
+ * @param onTabClose Called when a tab is about to close (before removal). Receives the stable tab ID.
+ *                   Use this to clean up resources associated with specific tabs.
  * @param onWindowTitleChange Called when active tab's title changes (for window title bar)
  * @param onNewWindow Called when user requests a new window (Cmd/Ctrl+N)
  * @param menuActions Optional menu action callbacks for wiring up menu bar
@@ -81,6 +83,7 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
 fun TabbedTerminal(
     state: TabbedTerminalState? = null,
     onExit: () -> Unit,
+    onTabClose: ((tabId: String) -> Unit)? = null,
     onWindowTitleChange: (String) -> Unit = {},
     onNewWindow: () -> Unit = {},
     onShowSettings: () -> Unit = {},
@@ -112,7 +115,8 @@ fun TabbedTerminal(
         state.initialize(
             settings = settings,
             onLastTabClosed = onExit,
-            isWindowFocused = isWindowFocused
+            isWindowFocused = isWindowFocused,
+            onTabClose = onTabClose
         )
     }
 
@@ -121,7 +125,8 @@ fun TabbedTerminal(
         TabController(
             settings = settings,
             onLastTabClosed = onExit,
-            isWindowFocused = isWindowFocused
+            isWindowFocused = isWindowFocused,
+            onTabClose = onTabClose
         )
     }
 

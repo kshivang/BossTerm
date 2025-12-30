@@ -268,6 +268,31 @@ class VersionedBufferSnapshot(
             historyLines.getOrNull(historyIndex)?.version
         }
     }
+
+    /**
+     * Compute a hash of all line versions in this snapshot.
+     * Used for detecting content changes across frames to enable caching.
+     *
+     * @return A hash combining all screen and recent history line versions
+     */
+    fun computeVersionHash(): Long {
+        var hash = 17L
+        // Hash all screen lines
+        for (i in 0 until height) {
+            val version = screenLines.getOrNull(i)?.version ?: 0L
+            hash = hash * 31 + version
+        }
+        // Include recent history lines (limit to avoid excessive computation)
+        val historyToInclude = minOf(historyLinesCount, 100)
+        for (i in 0 until historyToInclude) {
+            val version = historyLines.getOrNull(historyLinesCount - 1 - i)?.version ?: 0L
+            hash = hash * 31 + version
+        }
+        // Include structural info
+        hash = hash * 31 + width
+        hash = hash * 31 + height
+        return hash
+    }
 }
 
 /**

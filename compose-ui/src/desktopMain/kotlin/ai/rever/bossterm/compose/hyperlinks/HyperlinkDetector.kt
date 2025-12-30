@@ -1,6 +1,8 @@
 package ai.rever.bossterm.compose.hyperlinks
 
+import ai.rever.bossterm.terminal.model.TerminalLine
 import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
+import ai.rever.bossterm.terminal.util.ColumnConversionUtils
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -372,7 +374,7 @@ object HyperlinkDetector {
             if (endLineIndex >= snapshot.height) break
         }
 
-        // Join lines with position tracking
+        // Join lines with VISUAL WIDTH-aware position tracking
         val joinedText = StringBuilder()
         val rowOffsets = mutableListOf<Int>()
 
@@ -382,11 +384,14 @@ object HyperlinkDetector {
             val text = line.text
             joinedText.append(text)
 
-            // Pad short lines to terminal width for accurate position mapping
-            // (only for wrapped lines that continue, not the final line)
-            if (idx < endLineIndex && text.length < terminalWidth) {
-                repeat(terminalWidth - text.length) {
-                    joinedText.append(' ')
+            // Pad to terminal width based on VISUAL width, not character count
+            // This correctly handles double-width characters (CJK, emoji) and DWC markers
+            if (idx < endLineIndex) {
+                val visualWidth = calculateVisualWidth(line, terminalWidth)
+                if (visualWidth < terminalWidth) {
+                    repeat(terminalWidth - visualWidth) {
+                        joinedText.append(' ')
+                    }
                 }
             }
         }
@@ -397,6 +402,30 @@ object HyperlinkDetector {
             endRow = endRow,
             rowOffsets = rowOffsets
         )
+    }
+
+    /**
+     * Calculate visual width of a line, accounting for:
+     * - Double-width characters (CJK, emoji) = 2 columns
+     * - DWC markers = 0 columns (already counted with their parent)
+     * - Variation selectors, ZWJ = 0 columns
+     */
+    private fun calculateVisualWidth(line: TerminalLine, terminalWidth: Int): Int {
+        val text = line.text
+        var visualWidth = 0
+        var col = 0
+
+        while (col < text.length && visualWidth < terminalWidth) {
+            val skipResult = ColumnConversionUtils.shouldSkipChar(line, col, terminalWidth)
+            if (skipResult.shouldSkip) {
+                col += skipResult.colsToAdvance
+            } else {
+                visualWidth += ColumnConversionUtils.getCharacterVisualWidth(line, col, terminalWidth)
+                col++
+            }
+        }
+
+        return visualWidth
     }
 
     /**

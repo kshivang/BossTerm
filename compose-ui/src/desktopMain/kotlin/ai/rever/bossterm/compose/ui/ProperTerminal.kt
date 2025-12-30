@@ -256,6 +256,8 @@ fun ProperTerminal(
   // Hyperlink state from tab
   var hoveredHyperlink by tab.hoveredHyperlink
   var cachedHyperlinks by remember { mutableStateOf<Map<Int, List<Hyperlink>>>(emptyMap()) }
+  // Version hash for hyperlink caching - reuse cached hyperlinks when buffer unchanged
+  var lastHyperlinkVersionHash by remember { mutableStateOf(0L) }
   // Track previous hover state for consumer callbacks
   var previousHoveredHyperlink by remember { mutableStateOf<Hyperlink?>(null) }
 
@@ -1457,6 +1459,18 @@ fun ProperTerminal(
             Color(customCursorColor.red, customCursorColor.green, customCursorColor.blue)
           } else null
 
+          // Version-based hyperlink caching: compute hash including scroll position
+          // since visible content changes with scroll even if buffer content is same
+          val currentVersionHash = bufferSnapshot.computeVersionHash() * 31 + scrollOffset
+
+          // Reuse cached hyperlinks if buffer content and scroll position unchanged
+          val precomputedHyperlinks = if (currentVersionHash == lastHyperlinkVersionHash &&
+                                          cachedHyperlinks.isNotEmpty()) {
+            cachedHyperlinks
+          } else {
+            null // Force fresh detection
+          }
+
           // Build rendering context with all state
           val renderingContext = RenderingContext(
             bufferSnapshot = bufferSnapshot,
@@ -1492,13 +1506,16 @@ fun ProperTerminal(
             rapidBlinkVisible = rapidBlinkVisible,
             imageDataCache = terminal.getImageDataCache(),
             terminalWidthCells = bufferSnapshot.width,
-            terminalHeightCells = bufferSnapshot.height
+            terminalHeightCells = bufferSnapshot.height,
+            precomputedHyperlinks = precomputedHyperlinks
           )
 
           // Render terminal using extracted renderer - returns detected hyperlinks
           with(TerminalCanvasRenderer) {
             val detectedHyperlinks = renderTerminal(renderingContext)
+            // Update cache for next frame
             cachedHyperlinks = detectedHyperlinks
+            lastHyperlinkVersionHash = currentVersionHash
           }
         }
 

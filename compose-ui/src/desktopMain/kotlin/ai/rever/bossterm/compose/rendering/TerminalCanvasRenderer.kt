@@ -85,7 +85,11 @@ data class RenderingContext(
     // Cell-based image rendering (images flow with text)
     val imageDataCache: ImageDataCache? = null,
     val terminalWidthCells: Int = 80,
-    val terminalHeightCells: Int = 24
+    val terminalHeightCells: Int = 24,
+
+    // Pre-computed hyperlinks cache (for version-based caching optimization)
+    // If provided, hyperlink detection will be skipped and these will be used
+    val precomputedHyperlinks: Map<Int, List<Hyperlink>>? = null
 )
 
 /**
@@ -483,11 +487,16 @@ object TerminalCanvasRenderer {
     }
 
     /**
-     * Pass 2: Render all text with proper font handling.
-     * Reuses character analysis from the cache populated by renderBackgrounds().
-     * Returns map of row to detected hyperlinks.
+     * Detect all hyperlinks in the visible buffer area.
+     * This method can be called independently for caching purposes.
+     *
+     * Returns a map of row index to list of hyperlinks on that row.
+     * Multi-row hyperlinks are added to ALL rows they span.
+     *
+     * @param ctx The rendering context containing buffer snapshot and scroll state
+     * @return Map of row to detected hyperlinks
      */
-    private fun DrawScope.renderText(ctx: RenderingContext, analysisCache: AnalysisCache): Map<Int, List<Hyperlink>> {
+    fun detectAllHyperlinks(ctx: RenderingContext): Map<Int, List<Hyperlink>> {
         val snapshot = ctx.bufferSnapshot
         val hyperlinksCache = mutableMapOf<Int, MutableList<Hyperlink>>()
 
@@ -538,6 +547,27 @@ object TerminalCanvasRenderer {
                     }
                 }
             }
+        }
+
+        return hyperlinksCache
+    }
+
+    /**
+     * Pass 2: Render all text with proper font handling.
+     * Reuses character analysis from the cache populated by renderBackgrounds().
+     * Returns map of row to detected hyperlinks.
+     */
+    private fun DrawScope.renderText(ctx: RenderingContext, analysisCache: AnalysisCache): Map<Int, List<Hyperlink>> {
+        val snapshot = ctx.bufferSnapshot
+
+        // Use precomputed hyperlinks if available (version-based caching),
+        // otherwise detect them fresh
+        val hyperlinksCache: Map<Int, List<Hyperlink>> = ctx.precomputedHyperlinks
+            ?: detectAllHyperlinks(ctx)
+
+        for (row in 0 until ctx.visibleRows) {
+            val lineIndex = row - ctx.scrollOffset
+            val line = snapshot.getLine(lineIndex)
 
             // Text batching state
             val batchText = StringBuilder()

@@ -57,6 +57,7 @@ data class TerminalSettingsOverride(
     val mouseScrollThreshold: Float? = null,
     val audibleBell: Boolean? = null,
     val visualBell: Boolean? = null,
+    val shiftEnterBehavior: String? = null,
 
     // ===== Progress Bar Settings =====
     val progressBarEnabled: Boolean? = null,
@@ -194,6 +195,7 @@ fun TerminalSettings.withOverrides(override: TerminalSettingsOverride?): Termina
         mouseScrollThreshold = override.mouseScrollThreshold ?: mouseScrollThreshold,
         audibleBell = override.audibleBell ?: audibleBell,
         visualBell = override.visualBell ?: visualBell,
+        shiftEnterBehavior = override.shiftEnterBehavior ?: shiftEnterBehavior,
 
         // Progress Bar Settings
         progressBarEnabled = override.progressBarEnabled ?: progressBarEnabled,

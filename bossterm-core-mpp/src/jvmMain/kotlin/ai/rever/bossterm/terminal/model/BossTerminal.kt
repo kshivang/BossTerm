@@ -1509,6 +1509,10 @@ class BossTerminal(
         myTerminalKeyEncoder.setAltSendsEscape(enabled)
     }
 
+    override fun setShiftEnterSendsNewline(enabled: Boolean) {
+        myTerminalKeyEncoder.setShiftEnterSendsNewline(enabled)
+    }
+
     override fun deviceStatusReport(str: String?) {
         str?.let {
             myTerminalOutput?.sendString(it, false)

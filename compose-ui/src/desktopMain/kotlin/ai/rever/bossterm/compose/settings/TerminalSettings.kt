@@ -224,6 +224,16 @@ data class TerminalSettings(
      */
     val visualBell: Boolean = true,
 
+    /**
+     * Shift+Enter key behavior.
+     * Valid values:
+     * - "newline": Send LF (0x0A) - inserts literal newline for multi-line input (iTerm2 style)
+     * - "same-as-enter": Send CR (0x0D) - same as regular Enter key
+     * Default: "newline" to match iTerm2 behavior
+     * IMPORTANT: Default must match TerminalKeyEncoder init block default
+     */
+    val shiftEnterBehavior: String = "newline",
+
     // ===== Progress Bar Settings =====
 
     /**

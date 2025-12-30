@@ -115,6 +115,25 @@ fun BehaviorSettingsSection(
 
         // Keyboard Settings
         SettingsSection(title = "Keyboard") {
+            // Valid values: "newline", "same-as-enter" (see TerminalSettings.shiftEnterBehavior)
+            SettingsDropdown(
+                label = "Shift+Enter Behavior",
+                options = listOf("Newline (iTerm2 style)", "Same as Enter"),
+                selectedOption = when (settings.shiftEnterBehavior) {
+                    "newline" -> "Newline (iTerm2 style)"
+                    "same-as-enter" -> "Same as Enter"
+                    else -> "Newline (iTerm2 style)" // Invalid value defaults to newline
+                },
+                onOptionSelected = {
+                    val value = when (it) {
+                        "Newline (iTerm2 style)" -> "newline"
+                        else -> "same-as-enter"
+                    }
+                    onSettingsChange(settings.copy(shiftEnterBehavior = value))
+                },
+                description = "Newline inserts line break without executing command"
+            )
+
             SettingsToggle(
                 label = "Alt Sends Escape",
                 checked = settings.altSendsEscape,

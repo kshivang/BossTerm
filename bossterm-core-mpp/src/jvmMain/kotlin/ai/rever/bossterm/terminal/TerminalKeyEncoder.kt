@@ -48,6 +48,11 @@ class TerminalKeyEncoder @JvmOverloads constructor(private val myPlatform: Platf
 
         putCode(KeyCodeAndModifier(VK_TAB, InputEvent.SHIFT_MASK), ESC, '['.code, 'Z'.code)
 
+        // Default: Shift+Enter sends LF (newline) - matches iTerm2 behavior
+        // IMPORTANT: This default must match TerminalSettings.shiftEnterBehavior default ("newline")
+        // Can be changed via setShiftEnterSendsNewline()
+        putCode(KeyCodeAndModifier(VK_ENTER, InputEvent.SHIFT_MASK), Ascii.LF.code)
+
         putCode(KeyCodeAndModifier(VK_BACK_SPACE, InputEvent.CTRL_MASK), VK_BACK_SPACE)
         if (isMacOS) {
             putCode(KeyCodeAndModifier(VK_LEFT, InputEvent.META_MASK), Ascii.SOH.code)
@@ -209,6 +214,19 @@ class TerminalKeyEncoder @JvmOverloads constructor(private val myPlatform: Platf
 
     fun setMetaSendsEscape(metaSendsEscape: Boolean) {
         myMetaSendsEscape = metaSendsEscape
+    }
+
+    /**
+     * Configure Shift+Enter behavior.
+     * @param sendsNewline true = send LF (0x0A, newline) for multi-line input (iTerm2 style)
+     *                     false = send CR (0x0D, same as Enter)
+     */
+    fun setShiftEnterSendsNewline(sendsNewline: Boolean) {
+        if (sendsNewline) {
+            putCode(KeyCodeAndModifier(VK_ENTER, InputEvent.SHIFT_MASK), Ascii.LF.code)
+        } else {
+            putCode(KeyCodeAndModifier(VK_ENTER, InputEvent.SHIFT_MASK), Ascii.CR.code)
+        }
     }
 
     private class KeyCodeAndModifier(private val myCode: Int, private val myModifier: Int) {

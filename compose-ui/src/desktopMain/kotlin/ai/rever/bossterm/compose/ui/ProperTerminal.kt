@@ -262,6 +262,23 @@ fun ProperTerminal(
   // Terminal key encoder for proper escape sequence generation (function keys, modifiers, etc.)
   val keyEncoder = remember { TerminalKeyEncoder() }
 
+  // Configure key encoder based on settings
+  // We configure BOTH encoders because:
+  // - keyEncoder (local): Used at line ~1358 for keyboard input processing (getCode)
+  // - terminal's encoder: Configured via Terminal interface for architectural consistency
+  //   and potential future use by terminal emulation code
+  // Note: Defaults in TerminalKeyEncoder.init() match TerminalSettings defaults,
+  // so there's no incorrect state before this effect runs on first render.
+  LaunchedEffect(settings.shiftEnterBehavior, settings.altSendsEscape) {
+    val shiftEnterNewline = settings.shiftEnterBehavior == "newline"
+    // Configure local key encoder (used for keyboard input at line ~1358)
+    keyEncoder.setShiftEnterSendsNewline(shiftEnterNewline)
+    keyEncoder.setAltSendsEscape(settings.altSendsEscape)
+    // Configure terminal's internal encoder (via Terminal interface)
+    terminal.setShiftEnterSendsNewline(shiftEnterNewline)
+    terminal.setAltSendsEscape(settings.altSendsEscape)
+  }
+
   // ProcessTerminalOutput is now defined in TabController
   // No longer needed here since terminal output routing is set up during tab initialization
 

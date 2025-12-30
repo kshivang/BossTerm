@@ -183,6 +183,8 @@ interface Terminal {
 
     fun setAltSendsEscape(enabled: Boolean)
 
+    fun setShiftEnterSendsNewline(enabled: Boolean)
+
     fun deviceStatusReport(str: String?)
 
     fun deviceAttributes(response: ByteArray?)

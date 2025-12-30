@@ -1,20 +1,52 @@
 package ai.rever.bossterm.compose.hyperlinks
 
+import ai.rever.bossterm.terminal.model.TerminalLine
+import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
+import ai.rever.bossterm.terminal.util.ColumnConversionUtils
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * Represents a detected hyperlink in terminal text.
+ * Represents a detected hyperlink in terminal text that may span multiple terminal lines.
  *
  * @property url The URL to open when clicked
- * @property startCol Start column (0-based) in the line
- * @property endCol End column (exclusive) in the line
- * @property row Row number in the terminal buffer
+ * @property startCol Start column (0-based) in the first row
+ * @property endCol End column (exclusive) in the last row
+ * @property row Row number of the first line (for backwards compatibility)
+ * @property startRow First row of the hyperlink (same as row)
+ * @property endRow Last row of the hyperlink (same as startRow for single-line links)
+ * @property rowSpans Map of row -> (startCol, endCol) for each row the hyperlink spans
  */
 data class Hyperlink(
     val url: String,
     val startCol: Int,
     val endCol: Int,
-    val row: Int
+    val row: Int,
+    val startRow: Int = row,
+    val endRow: Int = row,
+    val rowSpans: Map<Int, Pair<Int, Int>> = mapOf(row to Pair(startCol, endCol))
+) {
+    /**
+     * Check if this hyperlink contains the given position.
+     */
+    fun containsPosition(col: Int, checkRow: Int): Boolean {
+        val span = rowSpans[checkRow] ?: return false
+        return col >= span.first && col < span.second
+    }
+}
+
+/**
+ * Holds information about joined wrapped lines for hyperlink detection.
+ *
+ * @property joinedText The concatenated text from all wrapped lines
+ * @property startRow The first row (screen coordinates) of the logical line
+ * @property endRow The last row (screen coordinates) of the logical line
+ * @property rowOffsets Character offset in joinedText where each row starts
+ */
+data class JoinedLineInfo(
+    val joinedText: String,
+    val startRow: Int,
+    val endRow: Int,
+    val rowOffsets: List<Int>
 )
 
 /**
@@ -294,5 +326,190 @@ object HyperlinkDetector {
                line.contains("www.") ||
                line.contains("mailto:") ||
                line.contains("file:/")
+    }
+
+    /**
+     * Collect wrapped lines starting from a given row, walking backwards to find the start
+     * and forwards to find the end of the logical line.
+     *
+     * @param snapshot The buffer snapshot
+     * @param row The current row (screen row, 0-based from top of visible area)
+     * @param scrollOffset Current scroll offset (negative = scrolled into history)
+     * @param terminalWidth Terminal width in columns
+     * @return JoinedLineInfo containing the complete logical line text and row mapping
+     */
+    fun collectWrappedLines(
+        snapshot: VersionedBufferSnapshot,
+        row: Int,
+        scrollOffset: Int,
+        terminalWidth: Int
+    ): JoinedLineInfo {
+        val lineIndex = row + scrollOffset
+
+        // Find start of logical line (walk backwards while previous line is wrapped)
+        // Note: -snapshot.historyLinesCount is the oldest valid history line index
+        var startRow = row
+        var startLineIndex = lineIndex
+        while (startLineIndex > -snapshot.historyLinesCount) {
+            val prevLineIndex = startLineIndex - 1
+            val prevLine = snapshot.getLine(prevLineIndex)
+            if (prevLine.isWrapped) {
+                startLineIndex--
+                startRow--
+            } else {
+                break
+            }
+        }
+
+        // Find end of logical line (walk forwards while current line is wrapped)
+        var endRow = startRow
+        var endLineIndex = startLineIndex
+        while (true) {
+            val currentLine = snapshot.getLine(endLineIndex)
+            if (!currentLine.isWrapped) {
+                break
+            }
+            endLineIndex++
+            endRow++
+            if (endLineIndex >= snapshot.height) break
+        }
+
+        // Join lines with VISUAL WIDTH-aware position tracking
+        val joinedText = StringBuilder()
+        val rowOffsets = mutableListOf<Int>()
+
+        for (idx in startLineIndex..endLineIndex) {
+            rowOffsets.add(joinedText.length)
+            val line = snapshot.getLine(idx)
+            val text = line.text
+            joinedText.append(text)
+
+            // Pad to terminal width based on VISUAL width, not character count
+            // This correctly handles double-width characters (CJK, emoji) and DWC markers
+            if (idx < endLineIndex) {
+                val visualWidth = calculateVisualWidth(line, terminalWidth)
+                if (visualWidth < terminalWidth) {
+                    repeat(terminalWidth - visualWidth) {
+                        joinedText.append(' ')
+                    }
+                }
+            }
+        }
+
+        return JoinedLineInfo(
+            joinedText = joinedText.toString(),
+            startRow = startRow,
+            endRow = endRow,
+            rowOffsets = rowOffsets
+        )
+    }
+
+    /**
+     * Calculate visual width of a line, accounting for:
+     * - Double-width characters (CJK, emoji) = 2 columns
+     * - DWC markers = 0 columns (already counted with their parent)
+     * - Variation selectors, ZWJ = 0 columns
+     */
+    private fun calculateVisualWidth(line: TerminalLine, terminalWidth: Int): Int {
+        val text = line.text
+        var visualWidth = 0
+        var col = 0
+
+        while (col < text.length && visualWidth < terminalWidth) {
+            val skipResult = ColumnConversionUtils.shouldSkipChar(line, col, terminalWidth)
+            if (skipResult.shouldSkip) {
+                col += skipResult.colsToAdvance
+            } else {
+                visualWidth += ColumnConversionUtils.getCharacterVisualWidth(line, col, terminalWidth)
+                col++
+            }
+        }
+
+        return visualWidth
+    }
+
+    /**
+     * Detect hyperlinks in wrapped lines, returning hyperlinks with proper row spans.
+     *
+     * @param snapshot The buffer snapshot
+     * @param screenRow The screen row to check (0-based from top of visible area)
+     * @param scrollOffset Current scroll offset
+     * @param terminalWidth Terminal width
+     * @return List of hyperlinks that are part of this logical line
+     */
+    fun detectHyperlinksWithWrapping(
+        snapshot: VersionedBufferSnapshot,
+        screenRow: Int,
+        scrollOffset: Int,
+        terminalWidth: Int
+    ): List<Hyperlink> {
+        val lineInfo = collectWrappedLines(snapshot, screenRow, scrollOffset, terminalWidth)
+
+        // Detect hyperlinks in the joined text
+        val rawHyperlinks = detectHyperlinks(lineInfo.joinedText, lineInfo.startRow)
+
+        // Convert flat positions to row-based spans
+        return rawHyperlinks.map { hyperlink ->
+            convertToMultiRowHyperlink(hyperlink, lineInfo, terminalWidth)
+        }
+    }
+
+    /**
+     * Convert a hyperlink detected in joined text to a multi-row hyperlink.
+     */
+    private fun convertToMultiRowHyperlink(
+        hyperlink: Hyperlink,
+        lineInfo: JoinedLineInfo,
+        terminalWidth: Int
+    ): Hyperlink {
+        val rowSpans = mutableMapOf<Int, Pair<Int, Int>>()
+
+        // Iterate through each row in the logical line
+        for ((rowIdx, offset) in lineInfo.rowOffsets.withIndex()) {
+            val row = lineInfo.startRow + rowIdx
+            val nextOffset = lineInfo.rowOffsets.getOrElse(rowIdx + 1) { lineInfo.joinedText.length }
+
+            // Calculate intersection of hyperlink range with this row's range
+            val hyperlinkStartInJoined = hyperlink.startCol
+            val hyperlinkEndInJoined = hyperlink.endCol
+
+            val rowStartInJoined = offset
+            val rowEndInJoined = nextOffset
+
+            val intersectStart = maxOf(hyperlinkStartInJoined, rowStartInJoined)
+            val intersectEnd = minOf(hyperlinkEndInJoined, rowEndInJoined)
+
+            if (intersectStart < intersectEnd) {
+                // Convert back to row-relative columns
+                val startCol = intersectStart - offset
+                val endCol = intersectEnd - offset
+                rowSpans[row] = Pair(startCol, endCol)
+            }
+        }
+
+        if (rowSpans.isEmpty()) {
+            // Fallback: shouldn't happen, but return original
+            return hyperlink
+        }
+
+        // Safe access with descriptive error - rowSpans is guaranteed non-empty after check above
+        val startRow = rowSpans.keys.minOrNull()
+            ?: error("rowSpans unexpectedly empty after non-empty check")
+        val endRow = rowSpans.keys.maxOrNull()
+            ?: error("rowSpans unexpectedly empty after non-empty check")
+        val startSpan = rowSpans[startRow]
+            ?: error("rowSpans[$startRow] unexpectedly null")
+        val endSpan = rowSpans[endRow]
+            ?: error("rowSpans[$endRow] unexpectedly null")
+
+        return Hyperlink(
+            url = hyperlink.url,
+            startCol = startSpan.first,
+            endCol = endSpan.second,
+            row = startRow,
+            startRow = startRow,
+            endRow = endRow,
+            rowSpans = rowSpans
+        )
     }
 }

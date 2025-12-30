@@ -256,6 +256,8 @@ fun ProperTerminal(
   // Hyperlink state from tab
   var hoveredHyperlink by tab.hoveredHyperlink
   var cachedHyperlinks by remember { mutableStateOf<Map<Int, List<Hyperlink>>>(emptyMap()) }
+  // Version hash for hyperlink caching - reuse cached hyperlinks when buffer unchanged
+  var lastHyperlinkVersionHash by remember { mutableStateOf(0L) }
   // Track previous hover state for consumer callbacks
   var previousHoveredHyperlink by remember { mutableStateOf<Hyperlink?>(null) }
 
@@ -1073,10 +1075,10 @@ fun ProperTerminal(
           val row = (pos.y / cellHeight).toInt() + scrollOffset
           val absoluteRow = row - scrollOffset
 
-          // Get hyperlinks for this row
+          // Get hyperlinks for this row (supports multi-row hyperlinks)
           val hyperlinksForRow = cachedHyperlinks[absoluteRow]
           hoveredHyperlink = hyperlinksForRow?.firstOrNull { link ->
-            link.row == absoluteRow && col >= link.startCol && col < link.endCol
+            link.containsPosition(col, absoluteRow)
           }
 
           // Notify hover consumers when hyperlink hover state changes
@@ -1088,11 +1090,13 @@ fun ProperTerminal(
             // Enter callback for new hyperlink with bounds - notify all consumers
             if (hoveredHyperlink != null) {
               val link = hoveredHyperlink!!
+              // For multi-row hyperlinks, provide bounds for the current row's span
+              val span = link.rowSpans[absoluteRow] ?: Pair(link.startCol, link.endCol)
               val bounds = Rect(
-                left = link.startCol * cellWidth,
-                top = (link.row - scrollOffset) * cellHeight,
-                right = link.endCol * cellWidth,
-                bottom = (link.row - scrollOffset + 1) * cellHeight
+                left = span.first * cellWidth,
+                top = (absoluteRow) * cellHeight,
+                right = span.second * cellWidth,
+                bottom = (absoluteRow + 1) * cellHeight
               )
               tab.hoverConsumers.forEach { it.onMouseEntered(bounds, link.url) }
             }
@@ -1455,6 +1459,18 @@ fun ProperTerminal(
             Color(customCursorColor.red, customCursorColor.green, customCursorColor.blue)
           } else null
 
+          // Version-based hyperlink caching: compute hash including scroll position
+          // since visible content changes with scroll even if buffer content is same
+          val currentVersionHash = bufferSnapshot.computeVersionHash() * 31 + scrollOffset
+
+          // Reuse cached hyperlinks if buffer content and scroll position unchanged
+          val precomputedHyperlinks = if (currentVersionHash == lastHyperlinkVersionHash &&
+                                          cachedHyperlinks.isNotEmpty()) {
+            cachedHyperlinks
+          } else {
+            null // Force fresh detection
+          }
+
           // Build rendering context with all state
           val renderingContext = RenderingContext(
             bufferSnapshot = bufferSnapshot,
@@ -1490,13 +1506,16 @@ fun ProperTerminal(
             rapidBlinkVisible = rapidBlinkVisible,
             imageDataCache = terminal.getImageDataCache(),
             terminalWidthCells = bufferSnapshot.width,
-            terminalHeightCells = bufferSnapshot.height
+            terminalHeightCells = bufferSnapshot.height,
+            precomputedHyperlinks = precomputedHyperlinks
           )
 
           // Render terminal using extracted renderer - returns detected hyperlinks
           with(TerminalCanvasRenderer) {
             val detectedHyperlinks = renderTerminal(renderingContext)
+            // Update cache for next frame
             cachedHyperlinks = detectedHyperlinks
+            lastHyperlinkVersionHash = currentVersionHash
           }
         }
 

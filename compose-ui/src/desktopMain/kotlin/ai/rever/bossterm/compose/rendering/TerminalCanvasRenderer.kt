@@ -85,7 +85,11 @@ data class RenderingContext(
     // Cell-based image rendering (images flow with text)
     val imageDataCache: ImageDataCache? = null,
     val terminalWidthCells: Int = 80,
-    val terminalHeightCells: Int = 24
+    val terminalHeightCells: Int = 24,
+
+    // Pre-computed hyperlinks cache (for version-based caching optimization)
+    // If provided, hyperlink detection will be skipped and these will be used
+    val precomputedHyperlinks: Map<Int, List<Hyperlink>>? = null
 )
 
 /**
@@ -483,23 +487,87 @@ object TerminalCanvasRenderer {
     }
 
     /**
+     * Detect all hyperlinks in the visible buffer area.
+     * This method can be called independently for caching purposes.
+     *
+     * Returns a map of row index to list of hyperlinks on that row.
+     * Multi-row hyperlinks are added to ALL rows they span.
+     *
+     * @param ctx The rendering context containing buffer snapshot and scroll state
+     * @return Map of row to detected hyperlinks
+     */
+    fun detectAllHyperlinks(ctx: RenderingContext): Map<Int, List<Hyperlink>> {
+        val snapshot = ctx.bufferSnapshot
+        val hyperlinksCache = mutableMapOf<Int, MutableList<Hyperlink>>()
+
+        for (row in 0 until ctx.visibleRows) {
+            val lineIndex = row - ctx.scrollOffset
+            val line = snapshot.getLine(lineIndex)
+
+            // Detect hyperlinks - handle wrapped lines specially
+            // isWrapped semantics: true means "this line wraps INTO the next line"
+            // Check if this row is a continuation of a wrapped line (previous line was wrapped)
+            val prevLineIndex = lineIndex - 1
+            val isPreviousLineWrapped = if (prevLineIndex >= -snapshot.historyLinesCount) {
+                snapshot.getLine(prevLineIndex).isWrapped
+            } else {
+                false
+            }
+
+            // Determine if we need to detect hyperlinks for this row
+            // Skip continuation rows IF we already processed them (check cache)
+            // This handles the case where start row is scrolled off-screen
+            val shouldDetect = if (isPreviousLineWrapped) {
+                // Continuation row - only detect if not already in cache
+                // (start row might be off-screen and not yet processed)
+                !hyperlinksCache.containsKey(row)
+            } else {
+                true
+            }
+
+            if (shouldDetect) {
+                val isPartOfWrappedSequence = isPreviousLineWrapped || line.isWrapped
+                val hyperlinks = if (isPartOfWrappedSequence) {
+                    // Part of a wrapped sequence - use wrapped detection
+                    // This walks backwards to find start even if off-screen
+                    HyperlinkDetector.detectHyperlinksWithWrapping(
+                        snapshot, row, ctx.scrollOffset, ctx.visibleCols
+                    )
+                } else {
+                    // Single line - use standard detection
+                    HyperlinkDetector.detectHyperlinks(line.text, row)
+                }
+
+                // Populate cache for ALL rows each hyperlink spans
+                // Note: The same Hyperlink object is intentionally added to multiple rows
+                // to enable efficient lookup when hovering over any part of a wrapped URL
+                for (hyperlink in hyperlinks) {
+                    for (spanRow in hyperlink.rowSpans.keys) {
+                        hyperlinksCache.getOrPut(spanRow) { mutableListOf() }.add(hyperlink)
+                    }
+                }
+            }
+        }
+
+        return hyperlinksCache
+    }
+
+    /**
      * Pass 2: Render all text with proper font handling.
      * Reuses character analysis from the cache populated by renderBackgrounds().
      * Returns map of row to detected hyperlinks.
      */
     private fun DrawScope.renderText(ctx: RenderingContext, analysisCache: AnalysisCache): Map<Int, List<Hyperlink>> {
         val snapshot = ctx.bufferSnapshot
-        val hyperlinksCache = mutableMapOf<Int, List<Hyperlink>>()
+
+        // Use precomputed hyperlinks if available (version-based caching),
+        // otherwise detect them fresh
+        val hyperlinksCache: Map<Int, List<Hyperlink>> = ctx.precomputedHyperlinks
+            ?: detectAllHyperlinks(ctx)
 
         for (row in 0 until ctx.visibleRows) {
             val lineIndex = row - ctx.scrollOffset
             val line = snapshot.getLine(lineIndex)
-
-            // Detect hyperlinks in current line
-            val hyperlinks = HyperlinkDetector.detectHyperlinks(line.text, row)
-            if (hyperlinks.isNotEmpty()) {
-                hyperlinksCache[row] = hyperlinks
-            }
 
             // Text batching state
             val batchText = StringBuilder()
@@ -741,20 +809,23 @@ object TerminalCanvasRenderer {
     private fun DrawScope.renderOverlays(ctx: RenderingContext) {
         val snapshot = ctx.bufferSnapshot
 
-        // Hyperlink underline
+        // Hyperlink underline - supports multi-row hyperlinks
         if (ctx.settings.hyperlinkUnderlineOnHover && ctx.hoveredHyperlink != null && ctx.isModifierPressed) {
             val link = ctx.hoveredHyperlink
-            if (link.row in 0 until ctx.visibleRows) {
-                val y = link.row * ctx.cellHeight
-                val underlineY = y + ctx.cellHeight - 1f
-                val startX = link.startCol * ctx.cellWidth
-                val endX = link.endCol * ctx.cellWidth
-                drawLine(
-                    color = ctx.settings.hyperlinkColorValue,
-                    start = Offset(startX, underlineY),
-                    end = Offset(endX, underlineY),
-                    strokeWidth = 1f
-                )
+            // Draw underline for each row the hyperlink spans
+            for ((spanRow, span) in link.rowSpans) {
+                if (spanRow in 0 until ctx.visibleRows) {
+                    val y = spanRow * ctx.cellHeight
+                    val underlineY = y + ctx.cellHeight - 1f
+                    val startX = span.first * ctx.cellWidth
+                    val endX = span.second * ctx.cellWidth
+                    drawLine(
+                        color = ctx.settings.hyperlinkColorValue,
+                        start = Offset(startX, underlineY),
+                        end = Offset(endX, underlineY),
+                        strokeWidth = 1f
+                    )
+                }
             }
         }
 

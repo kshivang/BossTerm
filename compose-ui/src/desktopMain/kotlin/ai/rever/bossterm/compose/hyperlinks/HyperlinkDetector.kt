@@ -345,11 +345,11 @@ object HyperlinkDetector {
         val lineIndex = row + scrollOffset
 
         // Find start of logical line (walk backwards while previous line is wrapped)
+        // Note: -snapshot.historyLinesCount is the oldest valid history line index
         var startRow = row
         var startLineIndex = lineIndex
         while (startLineIndex > -snapshot.historyLinesCount) {
             val prevLineIndex = startLineIndex - 1
-            if (prevLineIndex < -snapshot.historyLinesCount) break
             val prevLine = snapshot.getLine(prevLineIndex)
             if (prevLine.isWrapped) {
                 startLineIndex--
@@ -463,13 +463,20 @@ object HyperlinkDetector {
             return hyperlink
         }
 
-        val startRow = rowSpans.keys.minOrNull()!!
-        val endRow = rowSpans.keys.maxOrNull()!!
+        // Safe access with descriptive error - rowSpans is guaranteed non-empty after check above
+        val startRow = rowSpans.keys.minOrNull()
+            ?: error("rowSpans unexpectedly empty after non-empty check")
+        val endRow = rowSpans.keys.maxOrNull()
+            ?: error("rowSpans unexpectedly empty after non-empty check")
+        val startSpan = rowSpans[startRow]
+            ?: error("rowSpans[$startRow] unexpectedly null")
+        val endSpan = rowSpans[endRow]
+            ?: error("rowSpans[$endRow] unexpectedly null")
 
         return Hyperlink(
             url = hyperlink.url,
-            startCol = rowSpans[startRow]!!.first,
-            endCol = rowSpans[endRow]!!.second,
+            startCol = startSpan.first,
+            endCol = endSpan.second,
             row = startRow,
             startRow = startRow,
             endRow = endRow,

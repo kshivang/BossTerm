@@ -496,6 +496,7 @@ object TerminalCanvasRenderer {
             val line = snapshot.getLine(lineIndex)
 
             // Detect hyperlinks - handle wrapped lines specially
+            // isWrapped semantics: true means "this line wraps INTO the next line"
             // Check if this row is a continuation of a wrapped line (previous line was wrapped)
             val prevLineIndex = lineIndex - 1
             val isPreviousLineWrapped = if (prevLineIndex >= -snapshot.historyLinesCount) {
@@ -504,11 +505,22 @@ object TerminalCanvasRenderer {
                 false
             }
 
-            // Only detect hyperlinks if this is not a continuation row
-            // (continuation rows were already processed when we handled the start row)
-            if (!isPreviousLineWrapped) {
-                val hyperlinks = if (line.isWrapped) {
-                    // This line is the start of a wrapped sequence - use wrapped detection
+            // Determine if we need to detect hyperlinks for this row
+            // Skip continuation rows IF we already processed them (check cache)
+            // This handles the case where start row is scrolled off-screen
+            val shouldDetect = if (isPreviousLineWrapped) {
+                // Continuation row - only detect if not already in cache
+                // (start row might be off-screen and not yet processed)
+                !hyperlinksCache.containsKey(row)
+            } else {
+                true
+            }
+
+            if (shouldDetect) {
+                val isPartOfWrappedSequence = isPreviousLineWrapped || line.isWrapped
+                val hyperlinks = if (isPartOfWrappedSequence) {
+                    // Part of a wrapped sequence - use wrapped detection
+                    // This walks backwards to find start even if off-screen
                     HyperlinkDetector.detectHyperlinksWithWrapping(
                         snapshot, row, ctx.scrollOffset, ctx.visibleCols
                     )
@@ -518,6 +530,8 @@ object TerminalCanvasRenderer {
                 }
 
                 // Populate cache for ALL rows each hyperlink spans
+                // Note: The same Hyperlink object is intentionally added to multiple rows
+                // to enable efficient lookup when hovering over any part of a wrapped URL
                 for (hyperlink in hyperlinks) {
                     for (spanRow in hyperlink.rowSpans.keys) {
                         hyperlinksCache.getOrPut(spanRow) { mutableListOf() }.add(hyperlink)

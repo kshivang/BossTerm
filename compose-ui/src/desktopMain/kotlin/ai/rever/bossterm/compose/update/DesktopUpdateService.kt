@@ -245,8 +245,14 @@ class DesktopUpdateService {
                 it.name.equals(expectedAssetName, ignoreCase = true)
             }
 
+            // Only show update available if the asset exists for this platform
+            // (handles library-only releases that have no platform binaries)
+            if (asset == null && isUpdateAvailable) {
+                println("⚠️ Update v$latestVersion exists but no asset for ${getCurrentPlatform()}")
+            }
+
             UpdateInfo(
-                available = isUpdateAvailable,
+                available = isUpdateAvailable && asset != null,
                 currentVersion = Version.CURRENT,
                 latestVersion = latestVersion,
                 releaseNotes = latestRelease.body,

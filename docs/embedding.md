@@ -56,8 +56,9 @@ fun EmbeddableTerminal(
     onExit: ((Int) -> Unit)? = null,
     onReady: (() -> Unit)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
-    onLinkClick: ((String) -> Unit)? = null,
+    onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     settingsOverride: TerminalSettingsOverride? = null,
+    hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 )
 ```
@@ -76,8 +77,9 @@ fun EmbeddableTerminal(
 | `onExit` | `(Int) -> Unit` | Callback when shell process exits |
 | `onReady` | `() -> Unit` | Callback when terminal is ready |
 | `contextMenuItems` | `List<ContextMenuElement>` | Custom context menu items |
-| `onLinkClick` | `(String) -> Unit` | Custom link click handler (see [Custom Link Handling](#custom-link-handling)) |
+| `onLinkClick` | `(HyperlinkInfo) -> Boolean` | Custom link click handler with rich metadata; return `true` if handled, `false` for default behavior (see [Custom Link Handling](#custom-link-handling)) |
 | `settingsOverride` | `TerminalSettingsOverride?` | Per-instance settings overrides (see [Settings Override](#settings-override)) |
+| `hyperlinkRegistry` | `HyperlinkRegistry` | Custom hyperlink patterns for this instance (see [Custom Hyperlink Patterns](#custom-hyperlink-patterns)) |
 | `modifier` | `Modifier` | Compose modifier |
 
 ### EmbeddableTerminalState
@@ -414,43 +416,120 @@ TerminalSettingsOverride(
 
 ## Custom Link Handling
 
-By default, clicking links in the terminal (with Ctrl/Cmd+Click or via the context menu "Open Link") opens them in the system's default browser. You can intercept these clicks with the `onLinkClick` callback:
+By default, clicking links in the terminal (with Ctrl/Cmd+Click or via the context menu "Open Link") opens them in the system's default browser. You can intercept these clicks with the `onLinkClick` callback, which receives rich metadata about the link.
+
+### HyperlinkInfo
+
+The callback receives a `HyperlinkInfo` object with detailed link metadata:
+
+```kotlin
+data class HyperlinkInfo(
+    val url: String,           // The resolved URL or file path
+    val type: HyperlinkType,   // HTTP, FILE, FOLDER, EMAIL, FTP, or CUSTOM
+    val patternId: String,     // Pattern that matched (e.g., "builtin:http", "jira")
+    val matchedText: String,   // Original text that was matched
+    val isFile: Boolean,       // True if path points to existing file
+    val isFolder: Boolean,     // True if path points to existing directory
+    val scheme: String?,       // URL scheme (http, https, file, mailto, etc.)
+    val isBuiltin: Boolean     // True if matched by built-in pattern
+)
+
+enum class HyperlinkType {
+    HTTP,    // http:// or https:// URLs
+    FILE,    // File paths (validated as existing file)
+    FOLDER,  // Directory paths (validated as existing directory)
+    EMAIL,   // mailto: links
+    FTP,     // ftp:// or ftps:// URLs
+    CUSTOM   // User-defined patterns
+}
+```
+
+### Basic Usage
+
+Return `true` if you handled the link, `false` to use default behavior:
 
 ```kotlin
 EmbeddableTerminal(
-    onLinkClick = { url ->
+    onLinkClick = { info ->
         // Custom handling - e.g., open in an in-app browser
-        myInAppBrowser.openUrl(url)
+        myInAppBrowser.openUrl(info.url)
+        true  // We handled it
+    }
+)
+```
+
+### Selective Handling with Default Fallback
+
+Handle only specific link types and let others use the default behavior:
+
+```kotlin
+EmbeddableTerminal(
+    onLinkClick = { info ->
+        when (info.type) {
+            HyperlinkType.FILE -> {
+                openInEditor(info.url)
+                true  // Handled
+            }
+            HyperlinkType.FOLDER -> {
+                openInFileBrowser(info.url)
+                true  // Handled
+            }
+            else -> false  // Use default behavior (open in browser)
+        }
     }
 )
 ```
 
 ### Use Cases
 
+- **File handling**: Open files in your app's editor instead of system default
+- **Folder handling**: Open directories in your app's file browser
 - **In-app browser**: Open URLs in a browser tab within your application
-- **URL filtering**: Validate or sanitize URLs before opening
-- **Custom protocols**: Handle custom URL schemes (e.g., `myapp://...`)
-- **Logging**: Track which links users click
+- **Custom patterns**: Handle JIRA tickets, PR links, or other custom patterns
+- **Analytics**: Track link clicks while still using default behavior
 
 ### Behavior
 
-| `onLinkClick` | Ctrl/Cmd+Click | Context Menu "Open Link" |
-|---------------|----------------|--------------------------|
-| `null` (default) | Opens in system browser | Opens in system browser |
-| Provided | Calls your callback | Calls your callback |
+| `onLinkClick` | Return Value | Result |
+|---------------|--------------|--------|
+| `null` (default) | N/A | Opens in system browser/finder |
+| Provided | `true` | Your callback handles it |
+| Provided | `false` | Falls back to system browser/finder |
 
-### Example: In-App Browser Integration
+### Example: Smart Link Handling
 
 ```kotlin
 @Composable
-fun TerminalWithInAppBrowser() {
+fun TerminalWithSmartLinks() {
     var browserUrl by remember { mutableStateOf<String?>(null) }
 
     Column {
-        // Terminal with custom link handling
         EmbeddableTerminal(
-            onLinkClick = { url ->
-                browserUrl = url  // Open in our browser component
+            onLinkClick = { info ->
+                when {
+                    // Handle JIRA tickets specially
+                    info.patternId == "jira" -> {
+                        openJiraTicket(info.matchedText)
+                        true
+                    }
+                    // Open files in our editor
+                    info.type == HyperlinkType.FILE -> {
+                        openInEditor(info.url)
+                        true
+                    }
+                    // Show folders in our file browser
+                    info.type == HyperlinkType.FOLDER -> {
+                        openInFileBrowser(info.url)
+                        true
+                    }
+                    // HTTP links go to our in-app browser
+                    info.type == HyperlinkType.HTTP -> {
+                        browserUrl = info.url
+                        true
+                    }
+                    // Everything else uses default behavior
+                    else -> false
+                }
             },
             modifier = Modifier.weight(1f)
         )
@@ -466,6 +545,57 @@ fun TerminalWithInAppBrowser() {
     }
 }
 ```
+
+## Custom Hyperlink Patterns
+
+Add custom hyperlink patterns (e.g., JIRA tickets, GitHub issues) using `HyperlinkRegistry`:
+
+```kotlin
+import ai.rever.bossterm.compose.hyperlinks.HyperlinkRegistry
+import ai.rever.bossterm.compose.hyperlinks.HyperlinkPattern
+
+// Create a custom registry with additional patterns
+val customRegistry = HyperlinkRegistry().apply {
+    // Add JIRA ticket pattern (e.g., PROJ-123)
+    register(HyperlinkPattern(
+        id = "jira",
+        regex = Regex("""\b([A-Z]+-\d+)\b"""),
+        priority = 10,
+        urlTransformer = { match -> "https://jira.company.com/browse/$match" }
+    ))
+
+    // Add GitHub issue pattern (e.g., #123)
+    register(HyperlinkPattern(
+        id = "github-issue",
+        regex = Regex("""#(\d+)\b"""),
+        priority = 5,
+        urlTransformer = { match -> "https://github.com/org/repo/issues/${match.removePrefix("#")}" }
+    ))
+}
+
+EmbeddableTerminal(
+    hyperlinkRegistry = customRegistry,
+    onLinkClick = { info ->
+        when (info.patternId) {
+            "jira" -> {
+                openJiraInApp(info.matchedText)
+                true
+            }
+            else -> false  // Default behavior
+        }
+    }
+)
+```
+
+### HyperlinkPattern Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | `String` | Unique pattern identifier (returned in `HyperlinkInfo.patternId`) |
+| `regex` | `Regex` | Pattern to match in terminal output |
+| `priority` | `Int` | Higher priority patterns are checked first (default: 0) |
+| `urlTransformer` | `(String) -> String` | Transform matched text to URL |
+| `quickCheck` | `((String) -> Boolean)?` | Optional fast pre-check before regex (for performance) |
 
 ## Programmatic Input
 

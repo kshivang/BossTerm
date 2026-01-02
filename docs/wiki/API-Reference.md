@@ -25,7 +25,8 @@ fun EmbeddableTerminal(
     onExit: ((Int) -> Unit)? = null,
     onReady: (() -> Unit)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
-    onLinkClick: ((String) -> Unit)? = null,
+    onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
+    hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 )
 ```
@@ -87,8 +88,9 @@ fun TabbedTerminal(
     menuActions: MenuActions? = null,
     isWindowFocused: () -> Boolean = { true },
     initialCommand: String? = null,
-    onLinkClick: ((String) -> Unit)? = null,
+    onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
+    hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 )
 ```

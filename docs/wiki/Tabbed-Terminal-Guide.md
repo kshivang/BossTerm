@@ -57,7 +57,7 @@ fun TabbedTerminal(
     menuActions: MenuActions? = null,
     isWindowFocused: () -> Boolean = { true },
     initialCommand: String? = null,
-    onLinkClick: ((String) -> Unit)? = null,
+    onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
     modifier: Modifier = Modifier
 )
@@ -75,7 +75,8 @@ fun TabbedTerminal(
 | `menuActions` | `MenuActions?` | Menu bar integration |
 | `isWindowFocused` | `() -> Boolean` | Window focus state |
 | `initialCommand` | `String?` | First tab initial command |
-| `onLinkClick` | `(String) -> Unit` | Custom link handler |
+| `onLinkClick` | `(HyperlinkInfo) -> Boolean` | Custom link handler; return `true` if handled, `false` for default |
+| `hyperlinkRegistry` | `HyperlinkRegistry` | Custom hyperlink patterns (e.g., JIRA tickets) |
 | `contextMenuItems` | `List<ContextMenuElement>` | Custom context menu |
 
 ---

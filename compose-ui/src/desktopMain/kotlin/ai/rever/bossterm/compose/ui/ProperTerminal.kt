@@ -70,6 +70,9 @@ import ai.rever.bossterm.compose.features.showHyperlinkContextMenu
 import ai.rever.bossterm.compose.features.showTerminalContextMenu
 import ai.rever.bossterm.compose.hyperlinks.Hyperlink
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
+import ai.rever.bossterm.compose.hyperlinks.HyperlinkInfo
+import ai.rever.bossterm.compose.hyperlinks.HyperlinkRegistry
+import ai.rever.bossterm.compose.hyperlinks.toHyperlinkInfo
 import ai.rever.bossterm.compose.SelectionMode
 import ai.rever.bossterm.compose.ime.IMEHandler
 import ai.rever.bossterm.compose.search.RabinKarpSearch
@@ -134,7 +137,8 @@ fun ProperTerminal(
   menuActions: MenuActions? = null,
   enableDebugPanel: Boolean = true,  // Whether to show debug panel option in context menu
   customContextMenuItems: List<ai.rever.bossterm.compose.ContextMenuElement> = emptyList(),
-  onLinkClick: ((String) -> Unit)? = null,  // Custom link handler (null = open in system browser)
+  onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,  // Custom link handler; return true if handled, false for default behavior
+  hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,  // Per-instance hyperlink patterns
   modifier: Modifier = Modifier
 ) {
   // Extract session state (no more remember {} blocks - state lives in TerminalSession)
@@ -821,9 +825,9 @@ fun ProperTerminal(
                   y = pos.y,
                   url = link.url,
                   onOpenLink = {
-                    if (onLinkClick != null) {
-                      onLinkClick(link.url)
-                    } else {
+                    val info = link.toHyperlinkInfo()
+                    val handled = onLinkClick?.invoke(info) ?: false
+                    if (!handled) {
                       HyperlinkDetector.openUrl(link.url)
                     }
                   },
@@ -954,11 +958,11 @@ fun ProperTerminal(
             // Check for hyperlink click with Ctrl/Cmd modifier
             // Standard terminal behavior: Ctrl+Click (Windows/Linux) or Cmd+Click (macOS)
             if (hoveredHyperlink != null && isModifierPressed) {
-              val url = hoveredHyperlink!!.url
-              if (onLinkClick != null) {
-                onLinkClick(url)
-              } else {
-                HyperlinkDetector.openUrl(url)
+              val link = hoveredHyperlink!!
+              val info = link.toHyperlinkInfo()
+              val handled = onLinkClick?.invoke(info) ?: false
+              if (!handled) {
+                HyperlinkDetector.openUrl(link.url)
               }
               change.consume()
               return@onPointerEvent
@@ -1519,7 +1523,10 @@ fun ProperTerminal(
             imageDataCache = terminal.getImageDataCache(),
             terminalWidthCells = bufferSnapshot.width,
             terminalHeightCells = bufferSnapshot.height,
-            precomputedHyperlinks = precomputedHyperlinks
+            precomputedHyperlinks = precomputedHyperlinks,
+            workingDirectory = tab.workingDirectory.value,
+            detectFilePaths = settings.detectFilePaths,
+            hyperlinkRegistry = hyperlinkRegistry
           )
 
           // Render terminal using extracted renderer - returns detected hyperlinks

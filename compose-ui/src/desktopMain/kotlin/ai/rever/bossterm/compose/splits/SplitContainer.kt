@@ -2,6 +2,9 @@ package ai.rever.bossterm.compose.splits
 
 import ai.rever.bossterm.compose.ContextMenuElement
 import ai.rever.bossterm.compose.TerminalSession
+import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
+import ai.rever.bossterm.compose.hyperlinks.HyperlinkInfo
+import ai.rever.bossterm.compose.hyperlinks.HyperlinkRegistry
 import ai.rever.bossterm.compose.menu.MenuActions
 import ai.rever.bossterm.compose.ui.ProperTerminal
 import androidx.compose.foundation.border
@@ -58,8 +61,9 @@ fun SplitContainer(
     splitFocusBorderEnabled: Boolean = true,
     splitFocusBorderColor: Color = Color(0xFF4A90E2),
     splitMinimumSize: Float = 0.1f,
-    onLinkClick: ((String) -> Unit)? = null,
+    onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     customContextMenuItems: List<ContextMenuElement> = emptyList(),
+    hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 ) {
     Box(modifier = modifier.fillMaxSize()) {
@@ -89,6 +93,7 @@ fun SplitContainer(
             splitMinimumSize = splitMinimumSize,
             onLinkClick = onLinkClick,
             customContextMenuItems = customContextMenuItems,
+            hyperlinkRegistry = hyperlinkRegistry,
             modifier = Modifier.fillMaxSize()
         )
     }
@@ -122,8 +127,9 @@ private fun RenderSplitNode(
     splitFocusBorderEnabled: Boolean,
     splitFocusBorderColor: Color,
     splitMinimumSize: Float,
-    onLinkClick: ((String) -> Unit)? = null,
+    onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     customContextMenuItems: List<ContextMenuElement> = emptyList(),
+    hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 ) {
     when (node) {
@@ -154,6 +160,7 @@ private fun RenderSplitNode(
                 splitFocusBorderColor = splitFocusBorderColor,
                 onLinkClick = onLinkClick,
                 customContextMenuItems = customContextMenuItems,
+                hyperlinkRegistry = hyperlinkRegistry,
                 modifier = modifier
             )
         }
@@ -185,6 +192,7 @@ private fun RenderSplitNode(
                 splitMinimumSize = splitMinimumSize,
                 onLinkClick = onLinkClick,
                 customContextMenuItems = customContextMenuItems,
+                hyperlinkRegistry = hyperlinkRegistry,
                 modifier = modifier
             )
         }
@@ -216,6 +224,7 @@ private fun RenderSplitNode(
                 splitMinimumSize = splitMinimumSize,
                 onLinkClick = onLinkClick,
                 customContextMenuItems = customContextMenuItems,
+                hyperlinkRegistry = hyperlinkRegistry,
                 modifier = modifier
             )
         }
@@ -250,8 +259,9 @@ private fun RenderPane(
     menuActions: MenuActions?,
     splitFocusBorderEnabled: Boolean,
     splitFocusBorderColor: Color,
-    onLinkClick: ((String) -> Unit)? = null,
+    onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     customContextMenuItems: List<ContextMenuElement> = emptyList(),
+    hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 ) {
     // Focus border for active pane (only show when there are multiple panes and enabled)
@@ -307,6 +317,7 @@ private fun RenderPane(
             menuActions = menuActions,
             onLinkClick = onLinkClick,
             customContextMenuItems = customContextMenuItems,
+            hyperlinkRegistry = hyperlinkRegistry,
             modifier = Modifier.fillMaxSize()
         )
     }
@@ -340,8 +351,9 @@ private fun RenderVerticalSplit(
     splitFocusBorderEnabled: Boolean,
     splitFocusBorderColor: Color,
     splitMinimumSize: Float,
-    onLinkClick: ((String) -> Unit)? = null,
+    onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     customContextMenuItems: List<ContextMenuElement> = emptyList(),
+    hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(modifier = modifier) {
@@ -382,6 +394,7 @@ private fun RenderVerticalSplit(
                     splitMinimumSize = splitMinimumSize,
                     onLinkClick = onLinkClick,
                     customContextMenuItems = customContextMenuItems,
+                    hyperlinkRegistry = hyperlinkRegistry,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -417,6 +430,7 @@ private fun RenderVerticalSplit(
                     splitMinimumSize = splitMinimumSize,
                     onLinkClick = onLinkClick,
                     customContextMenuItems = customContextMenuItems,
+                    hyperlinkRegistry = hyperlinkRegistry,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -466,8 +480,9 @@ private fun RenderHorizontalSplit(
     splitFocusBorderEnabled: Boolean,
     splitFocusBorderColor: Color,
     splitMinimumSize: Float,
-    onLinkClick: ((String) -> Unit)? = null,
+    onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     customContextMenuItems: List<ContextMenuElement> = emptyList(),
+    hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(modifier = modifier) {
@@ -508,6 +523,7 @@ private fun RenderHorizontalSplit(
                     splitMinimumSize = splitMinimumSize,
                     onLinkClick = onLinkClick,
                     customContextMenuItems = customContextMenuItems,
+                    hyperlinkRegistry = hyperlinkRegistry,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -543,6 +559,7 @@ private fun RenderHorizontalSplit(
                     splitMinimumSize = splitMinimumSize,
                     onLinkClick = onLinkClick,
                     customContextMenuItems = customContextMenuItems,
+                    hyperlinkRegistry = hyperlinkRegistry,
                     modifier = Modifier.fillMaxSize()
                 )
             }

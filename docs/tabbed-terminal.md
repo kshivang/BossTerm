@@ -57,9 +57,10 @@ fun TabbedTerminal(
     menuActions: MenuActions? = null,
     isWindowFocused: () -> Boolean = { true },
     initialCommand: String? = null,
-    onLinkClick: ((String) -> Unit)? = null,
+    onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
     settingsOverride: TerminalSettingsOverride? = null,
+    hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 )
 ```
@@ -75,9 +76,10 @@ fun TabbedTerminal(
 | `menuActions` | `MenuActions?` | Callbacks for menu bar integration |
 | `isWindowFocused` | `() -> Boolean` | Returns window focus state (for notifications) |
 | `initialCommand` | `String?` | Command to run in first tab after startup |
-| `onLinkClick` | `(String) -> Unit` | Custom link click handler (see [Custom Link Handling](#custom-link-handling)) |
+| `onLinkClick` | `(HyperlinkInfo) -> Boolean` | Custom link click handler with rich metadata; return `true` if handled, `false` for default behavior (see [Custom Link Handling](#custom-link-handling)) |
 | `contextMenuItems` | `List<ContextMenuElement>` | Custom context menu items (see [Custom Context Menu](#custom-context-menu)) |
 | `settingsOverride` | `TerminalSettingsOverride?` | Per-instance settings overrides (see [Settings Override](#settings-override)) |
+| `hyperlinkRegistry` | `HyperlinkRegistry` | Custom hyperlink patterns for this instance (see [Custom Hyperlink Patterns](#custom-hyperlink-patterns)) |
 | `modifier` | `Modifier` | Compose modifier |
 
 ### MenuActions
@@ -637,33 +639,111 @@ Run the example:
 
 ## Custom Link Handling
 
-By default, clicking links in the terminal (with Ctrl/Cmd+Click or via the context menu "Open Link") opens them in the system's default browser. You can intercept these clicks with the `onLinkClick` callback:
+By default, clicking links in the terminal (with Ctrl/Cmd+Click or via the context menu "Open Link") opens them in the system's default browser. You can intercept these clicks with the `onLinkClick` callback, which receives rich metadata about the link.
+
+### HyperlinkInfo
+
+The callback receives a `HyperlinkInfo` object with detailed link metadata:
+
+```kotlin
+data class HyperlinkInfo(
+    val url: String,           // The resolved URL or file path
+    val type: HyperlinkType,   // HTTP, FILE, FOLDER, EMAIL, FTP, or CUSTOM
+    val patternId: String,     // Pattern that matched (e.g., "builtin:http", "jira")
+    val matchedText: String,   // Original text that was matched
+    val isFile: Boolean,       // True if path points to existing file
+    val isFolder: Boolean,     // True if path points to existing directory
+    val scheme: String?,       // URL scheme (http, https, file, mailto, etc.)
+    val isBuiltin: Boolean     // True if matched by built-in pattern
+)
+```
+
+### Basic Usage
+
+Return `true` if you handled the link, `false` to use default behavior:
 
 ```kotlin
 TabbedTerminal(
     onExit = { exitApplication() },
-    onLinkClick = { url ->
-        // Custom handling - e.g., open in an in-app browser
-        myInAppBrowser.openUrl(url)
+    onLinkClick = { info ->
+        myInAppBrowser.openUrl(info.url)
+        true  // We handled it
+    }
+)
+```
+
+### Selective Handling with Default Fallback
+
+Handle only specific link types and let others use the default behavior:
+
+```kotlin
+TabbedTerminal(
+    onExit = { exitApplication() },
+    onLinkClick = { info ->
+        when {
+            info.patternId == "jira" -> {
+                openJiraTicket(info.matchedText)
+                true  // Handled
+            }
+            info.type == HyperlinkType.FILE -> {
+                openInEditor(info.url)
+                true  // Handled
+            }
+            else -> false  // Use default behavior
+        }
     }
 )
 ```
 
 ### Use Cases
 
+- **File handling**: Open files in your app's editor instead of system default
+- **Folder handling**: Open directories in your app's file browser
 - **In-app browser**: Open URLs in a browser tab within your application
-- **URL filtering**: Validate or sanitize URLs before opening
-- **Custom protocols**: Handle custom URL schemes (e.g., `myapp://...`)
-- **Logging**: Track which links users click
+- **Custom patterns**: Handle JIRA tickets, PR links, or other custom patterns
+- **Analytics**: Track link clicks while still using default behavior
 
 ### Behavior
 
-| `onLinkClick` | Ctrl/Cmd+Click | Context Menu "Open Link" |
-|---------------|----------------|--------------------------|
-| `null` (default) | Opens in system browser | Opens in system browser |
-| Provided | Calls your callback | Calls your callback |
+| `onLinkClick` | Return Value | Result |
+|---------------|--------------|--------|
+| `null` (default) | N/A | Opens in system browser/finder |
+| Provided | `true` | Your callback handles it |
+| Provided | `false` | Falls back to system browser/finder |
 
 The callback is invoked for all tabs and split panes within the terminal.
+
+## Custom Hyperlink Patterns
+
+Add custom hyperlink patterns (e.g., JIRA tickets, GitHub issues) using `HyperlinkRegistry`:
+
+```kotlin
+import ai.rever.bossterm.compose.hyperlinks.HyperlinkRegistry
+import ai.rever.bossterm.compose.hyperlinks.HyperlinkPattern
+
+val customRegistry = HyperlinkRegistry().apply {
+    // JIRA ticket pattern (e.g., PROJ-123)
+    register(HyperlinkPattern(
+        id = "jira",
+        regex = Regex("""\b([A-Z]+-\d+)\b"""),
+        priority = 10,
+        urlTransformer = { match -> "https://jira.company.com/browse/$match" }
+    ))
+}
+
+TabbedTerminal(
+    onExit = { exitApplication() },
+    hyperlinkRegistry = customRegistry,
+    onLinkClick = { info ->
+        if (info.patternId == "jira") {
+            openJiraInApp(info.matchedText)
+            true
+        } else false
+    }
+)
+```
+
+See [Embedding Guide - Custom Hyperlink Patterns](embedding.md#custom-hyperlink-patterns) for full `HyperlinkPattern` documentation.
 
 ## Custom Context Menu
 

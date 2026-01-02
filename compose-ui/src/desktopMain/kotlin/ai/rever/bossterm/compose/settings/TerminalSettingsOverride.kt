@@ -31,6 +31,7 @@ data class TerminalSettingsOverride(
     val defaultForeground: String? = null,
     val defaultBackground: String? = null,
     val selectionColor: String? = null,
+    val selectionAlpha: Float? = null,
     val foundPatternColor: String? = null,
     val hyperlinkColor: String? = null,
     val activeThemeId: String? = null,
@@ -110,6 +111,7 @@ data class TerminalSettingsOverride(
     // ===== Hyperlink Settings =====
     val hyperlinkUnderlineOnHover: Boolean? = null,
     val hyperlinkRequireModifier: Boolean? = null,
+    val detectFilePaths: Boolean? = null,
 
     // ===== Type-Ahead Settings =====
     val typeAheadEnabled: Boolean? = null,
@@ -169,6 +171,7 @@ fun TerminalSettings.withOverrides(override: TerminalSettingsOverride?): Termina
         defaultForeground = override.defaultForeground ?: defaultForeground,
         defaultBackground = override.defaultBackground ?: defaultBackground,
         selectionColor = override.selectionColor ?: selectionColor,
+        selectionAlpha = override.selectionAlpha ?: selectionAlpha,
         foundPatternColor = override.foundPatternColor ?: foundPatternColor,
         hyperlinkColor = override.hyperlinkColor ?: hyperlinkColor,
         activeThemeId = override.activeThemeId ?: activeThemeId,
@@ -248,6 +251,7 @@ fun TerminalSettings.withOverrides(override: TerminalSettingsOverride?): Termina
         // Hyperlink Settings
         hyperlinkUnderlineOnHover = override.hyperlinkUnderlineOnHover ?: hyperlinkUnderlineOnHover,
         hyperlinkRequireModifier = override.hyperlinkRequireModifier ?: hyperlinkRequireModifier,
+        detectFilePaths = override.detectFilePaths ?: detectFilePaths,
 
         // Type-Ahead Settings
         typeAheadEnabled = override.typeAheadEnabled ?: typeAheadEnabled,

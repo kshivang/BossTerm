@@ -62,7 +62,8 @@ fun EmbeddableTerminal(
     onExit: ((Int) -> Unit)? = null,
     onReady: (() -> Unit)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
-    onLinkClick: ((String) -> Unit)? = null,
+    onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
+    hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 )
 ```
@@ -83,7 +84,8 @@ fun EmbeddableTerminal(
 | `onExit` | `(Int) -> Unit` | Process exit callback |
 | `onReady` | `() -> Unit` | Terminal ready callback |
 | `contextMenuItems` | `List<ContextMenuElement>` | Custom context menu items |
-| `onLinkClick` | `(String) -> Unit` | Custom link handler |
+| `onLinkClick` | `(HyperlinkInfo) -> Boolean` | Custom link handler; return `true` if handled, `false` for default |
+| `hyperlinkRegistry` | `HyperlinkRegistry` | Custom hyperlink patterns (e.g., JIRA tickets) |
 
 ---
 
@@ -185,14 +187,24 @@ EmbeddableTerminal(
 
 ```kotlin
 EmbeddableTerminal(
-    onLinkClick = { url ->
-        // Custom handling - e.g., in-app browser
-        myBrowser.open(url)
+    onLinkClick = { info ->
+        when (info.type) {
+            HyperlinkType.FILE -> {
+                openInEditor(info.url)
+                true  // Handled
+            }
+            HyperlinkType.FOLDER -> {
+                openInFileBrowser(info.url)
+                true  // Handled
+            }
+            else -> false  // Use default browser
+        }
     }
 )
 ```
 
-Default behavior opens links in the system browser.
+The callback receives `HyperlinkInfo` with link metadata (type, url, patternId, isFile, isFolder).
+Return `true` if handled, `false` to use default behavior (system browser/finder).
 
 ---
 

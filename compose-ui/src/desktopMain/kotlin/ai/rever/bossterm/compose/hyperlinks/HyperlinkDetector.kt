@@ -15,6 +15,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  * @property startRow First row of the hyperlink (same as row)
  * @property endRow Last row of the hyperlink (same as startRow for single-line links)
  * @property rowSpans Map of row -> (startCol, endCol) for each row the hyperlink spans
+ * @property patternId The ID of the pattern that matched this hyperlink (e.g., "builtin:http")
+ * @property matchedText The original text that was matched before URL transformation
  */
 data class Hyperlink(
     val url: String,
@@ -23,7 +25,9 @@ data class Hyperlink(
     val row: Int,
     val startRow: Int = row,
     val endRow: Int = row,
-    val rowSpans: Map<Int, Pair<Int, Int>> = mapOf(row to Pair(startCol, endCol))
+    val rowSpans: Map<Int, Pair<Int, Int>> = mapOf(row to Pair(startCol, endCol)),
+    val patternId: String? = null,
+    val matchedText: String? = null
 ) {
     /**
      * Check if this hyperlink contains the given position.
@@ -57,13 +61,17 @@ data class JoinedLineInfo(
  * @property priority Higher priority patterns are matched first (default: 0)
  * @property urlTransformer Transforms the matched text into a URL (default: identity)
  * @property quickCheck Optional fast check before applying regex (for performance)
+ * @property pathValidator Optional validator for file paths. Takes (match, workingDir) and returns
+ *           the resolved file:// URL if the path exists, or null to skip this match.
+ *           When set, urlTransformer is ignored and pathValidator takes precedence.
  */
 data class HyperlinkPattern(
     val id: String,
     val regex: Regex,
     val priority: Int = 0,
     val urlTransformer: (matchedText: String) -> String = { it },
-    val quickCheck: ((line: String) -> Boolean)? = null
+    val quickCheck: ((line: String) -> Boolean)? = null,
+    val pathValidator: ((match: String, workingDir: String?) -> String?)? = null
 )
 
 /**
@@ -106,9 +114,10 @@ class HyperlinkRegistry {
 
     private fun addBuiltinPatterns() {
         // HTTP/HTTPS URL pattern (priority 0 - lowest built-in)
+        // Uses two-part pattern to exclude trailing punctuation (., ,, ;, !, etc.)
         addPattern(HyperlinkPattern(
             id = "builtin:http",
-            regex = Regex("\\bhttps?://[\\w\\-._~:/?#\\[\\]@!$&'()*+,;=%]+"),
+            regex = Regex("\\bhttps?://[\\w\\-._~:/?#\\[\\]@!\$&'()*+,;=%]*[\\w\\-_~/?#@\$&=%]"),
             priority = 0,
             quickCheck = { it.contains("http://") || it.contains("https://") }
         ))
@@ -130,20 +139,79 @@ class HyperlinkRegistry {
         ))
 
         // FTP URL pattern (priority 0)
+        // Uses two-part pattern to exclude trailing punctuation
         addPattern(HyperlinkPattern(
             id = "builtin:ftp",
-            regex = Regex("\\bftps?://[\\w\\-._~:/?#\\[\\]@!$&'()*+,;=%]+"),
+            regex = Regex("\\bftps?://[\\w\\-._~:/?#\\[\\]@!\$&'()*+,;=%]*[\\w\\-_~/?#@\$&=%]"),
             priority = 0,
             quickCheck = { it.contains("ftp://") || it.contains("ftps://") }
         ))
 
         // www. URL pattern (priority -1, lower than explicit protocols)
+        // Uses two-part pattern to exclude trailing punctuation
         addPattern(HyperlinkPattern(
             id = "builtin:www",
-            regex = Regex("(?<![\\p{L}0-9_.])www\\.[\\w\\-._~:/?#\\[\\]@!$&'()*+,;=%]+"),
+            regex = Regex("(?<![\\p{L}0-9_.])www\\.[\\w\\-._~:/?#\\[\\]@!\$&'()*+,;=%]*[\\w\\-_~/?#@\$&=%]"),
             priority = -1,
             urlTransformer = { "https://$it" },
             quickCheck = { it.contains("www.") }
+        ))
+
+        // ================ File Path Patterns ================
+        // These patterns validate that paths exist before creating hyperlinks
+
+        // Home-relative paths: ~/path/to/file (priority -5)
+        // Must come before absolute Unix paths to avoid ~/... matching as Unix path
+        addPattern(HyperlinkPattern(
+            id = "builtin:path-home",
+            regex = Regex("""(?:^|(?<=[\s"'`]))~/[^\s<>"'`\[\](){}|;]+"""),
+            priority = -5,
+            quickCheck = { FilePathResolver.looksLikeHomePath(it) },
+            pathValidator = { match, cwd ->
+                FilePathResolver.resolveAndValidate(match, cwd)?.let {
+                    FilePathResolver.toFileUrl(it)
+                }
+            }
+        ))
+
+        // Relative paths: ./path, ../path (priority -6)
+        addPattern(HyperlinkPattern(
+            id = "builtin:path-relative",
+            regex = Regex("""(?:^|(?<=[\s"'`]))\.\.?/[^\s<>"'`\[\](){}|;]+"""),
+            priority = -6,
+            quickCheck = { FilePathResolver.looksLikeRelativePath(it) },
+            pathValidator = { match, cwd ->
+                FilePathResolver.resolveAndValidate(match, cwd)?.let {
+                    FilePathResolver.toFileUrl(it)
+                }
+            }
+        ))
+
+        // Absolute Unix paths: /path/to/file (priority -7)
+        // Lower priority to avoid matching URLs like http://path
+        addPattern(HyperlinkPattern(
+            id = "builtin:path-unix",
+            regex = Regex("""(?:^|(?<=[\s"'`]))/(?:[^\s<>"'`\[\](){}|;:/]+/)*[^\s<>"'`\[\](){}|;:/]+"""),
+            priority = -7,
+            quickCheck = { FilePathResolver.looksLikeUnixPath(it) },
+            pathValidator = { match, cwd ->
+                FilePathResolver.resolveAndValidate(match, cwd)?.let {
+                    FilePathResolver.toFileUrl(it)
+                }
+            }
+        ))
+
+        // Windows paths: C:\path\to\file (priority -7)
+        addPattern(HyperlinkPattern(
+            id = "builtin:path-windows",
+            regex = Regex("""(?:^|(?<=[\s"'`]))[A-Za-z]:\\[^\s<>"'`\[\](){}|;]+"""),
+            priority = -7,
+            quickCheck = { FilePathResolver.looksLikeWindowsPath(it) },
+            pathValidator = { match, cwd ->
+                FilePathResolver.resolveAndValidate(match, cwd)?.let {
+                    FilePathResolver.toFileUrl(it)
+                }
+            }
         ))
     }
 
@@ -248,16 +316,30 @@ object HyperlinkDetector {
      *
      * @param text The line of text to scan
      * @param row The row number in the terminal buffer
+     * @param workingDirectory The current working directory for resolving relative paths (optional)
+     * @param detectFilePaths Whether to detect file paths as hyperlinks (default: true)
+     * @param registry The pattern registry to use (default: global registry)
      * @return List of detected hyperlinks, sorted by column position
      */
-    fun detectHyperlinks(text: String, row: Int): List<Hyperlink> {
+    fun detectHyperlinks(
+        text: String,
+        row: Int,
+        workingDirectory: String? = null,
+        detectFilePaths: Boolean = true,
+        registry: HyperlinkRegistry = this.registry
+    ): List<Hyperlink> {
         if (text.isEmpty()) return emptyList()
 
         val hyperlinks = mutableListOf<Hyperlink>()
         val coveredRanges = mutableListOf<IntRange>()
 
-        // Apply patterns in priority order
+        // Apply patterns in priority order (use passed registry, not this.registry)
         for (pattern in registry.getPatterns()) {
+            // Skip file path patterns if detectFilePaths is disabled
+            if (!detectFilePaths && pattern.pathValidator != null) {
+                continue
+            }
+
             // Skip if quick check fails
             if (pattern.quickCheck != null && !pattern.quickCheck.invoke(text)) {
                 continue
@@ -273,12 +355,21 @@ object HyperlinkDetector {
                 }
 
                 if (!overlaps) {
-                    val url = pattern.urlTransformer(match.value)
+                    // If pattern has pathValidator, use it (for file paths)
+                    // pathValidator returns null if path doesn't exist, so skip the match
+                    val url = if (pattern.pathValidator != null) {
+                        pattern.pathValidator.invoke(match.value, workingDirectory) ?: continue
+                    } else {
+                        pattern.urlTransformer(match.value)
+                    }
+
                     hyperlinks.add(Hyperlink(
                         url = url,
                         startCol = range.first,
                         endCol = range.last + 1,
-                        row = row
+                        row = row,
+                        patternId = pattern.id,
+                        matchedText = match.value
                     ))
                     coveredRanges.add(range)
                 }
@@ -316,16 +407,36 @@ object HyperlinkDetector {
      * Check if a line potentially contains any hyperlinks.
      *
      * This is a fast check that can be used to skip expensive regex matching
-     * for lines that definitely don't contain URLs.
+     * for lines that definitely don't contain URLs or file paths.
      *
      * @param line The line to check
+     * @param includeFilePaths Whether to include file path checks (default: true)
      * @return true if the line might contain hyperlinks
      */
-    fun canContainHyperlink(line: String): Boolean {
-        return line.contains("://") ||
-               line.contains("www.") ||
-               line.contains("mailto:") ||
-               line.contains("file:/")
+    fun canContainHyperlink(line: String, includeFilePaths: Boolean = true): Boolean {
+        // URL checks
+        if (line.contains("://") ||
+            line.contains("www.") ||
+            line.contains("mailto:") ||
+            line.contains("file:/")) {
+            return true
+        }
+
+        // File path checks (when enabled)
+        if (includeFilePaths) {
+            // Quick checks for various path types
+            if (FilePathResolver.looksLikeHomePath(line) ||
+                FilePathResolver.looksLikeRelativePath(line) ||
+                FilePathResolver.looksLikeWindowsPath(line)) {
+                return true
+            }
+            // Unix absolute paths - check for / but exclude URLs
+            if (line.contains('/') && !line.contains("://")) {
+                return true
+            }
+        }
+
+        return false
     }
 
     /**
@@ -435,18 +546,24 @@ object HyperlinkDetector {
      * @param screenRow The screen row to check (0-based from top of visible area)
      * @param scrollOffset Current scroll offset
      * @param terminalWidth Terminal width
+     * @param workingDirectory The current working directory for resolving relative paths (optional)
+     * @param detectFilePaths Whether to detect file paths as hyperlinks (default: true)
+     * @param registry The pattern registry to use (default: global registry)
      * @return List of hyperlinks that are part of this logical line
      */
     fun detectHyperlinksWithWrapping(
         snapshot: VersionedBufferSnapshot,
         screenRow: Int,
         scrollOffset: Int,
-        terminalWidth: Int
+        terminalWidth: Int,
+        workingDirectory: String? = null,
+        detectFilePaths: Boolean = true,
+        registry: HyperlinkRegistry = this.registry
     ): List<Hyperlink> {
         val lineInfo = collectWrappedLines(snapshot, screenRow, scrollOffset, terminalWidth)
 
-        // Detect hyperlinks in the joined text
-        val rawHyperlinks = detectHyperlinks(lineInfo.joinedText, lineInfo.startRow)
+        // Detect hyperlinks in the joined text (pass the registry)
+        val rawHyperlinks = detectHyperlinks(lineInfo.joinedText, lineInfo.startRow, workingDirectory, detectFilePaths, registry)
 
         // Convert flat positions to row-based spans
         return rawHyperlinks.map { hyperlink ->
@@ -509,7 +626,9 @@ object HyperlinkDetector {
             row = startRow,
             startRow = startRow,
             endRow = endRow,
-            rowSpans = rowSpans
+            rowSpans = rowSpans,
+            patternId = hyperlink.patternId,
+            matchedText = hyperlink.matchedText
         )
     }
 }

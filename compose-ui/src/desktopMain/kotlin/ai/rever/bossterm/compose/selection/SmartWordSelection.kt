@@ -40,12 +40,32 @@ class WordSelectionPatternRegistry {
     }
 
     private fun addBuiltinPatterns() {
-        // HTTP/HTTPS URLs (highest priority)
+        // URLs with various schemes (highest priority)
+        // RFC 3986 compliant character set: unreserved + reserved chars
+        // Handles http, https, ftp, ftps, ssh, file, mailto
+        // Uses two-part pattern to exclude trailing punctuation (., ,, ;, !, etc.)
         addPattern(WordSelectionPattern(
             id = "builtin:url",
-            regex = Regex("""https?://[^\s<>"'`\[\](){}]+"""),
+            regex = Regex("""(?:https?|ftps?|ssh|file)://[\w\-._~:/?#\[\]@!$&'()*+,;=%]*[\w\-_~/?#@$&=%]"""),
             priority = 100,
             quickCheck = { it.contains("://") }
+        ))
+
+        // Mailto URLs (email links)
+        addPattern(WordSelectionPattern(
+            id = "builtin:mailto",
+            regex = Regex("""mailto:[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}(?:\?[^\s<>"'`]*)?"""),
+            priority = 99,
+            quickCheck = { it.contains("mailto:") }
+        ))
+
+        // www URLs without protocol (common shorthand)
+        // Uses two-part pattern to exclude trailing punctuation
+        addPattern(WordSelectionPattern(
+            id = "builtin:www",
+            regex = Regex("""(?<![/\w])www\.[\w\-._~:/?#\[\]@!$&'()*+,;=%]*[\w\-_~/?#@$&=%]"""),
+            priority = 95,
+            quickCheck = { it.contains("www.") }
         ))
 
         // Unix file paths

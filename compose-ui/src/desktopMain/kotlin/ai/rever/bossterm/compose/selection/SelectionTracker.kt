@@ -20,9 +20,15 @@ class SelectionTracker(private val textBuffer: TerminalTextBuffer) {
 
     /**
      * Line identity cache: maps TerminalLine reference to its current row index.
-     * Rebuilt on each resolveToCoordinates() call for accuracy.
+     * Rebuilt when snapshot changes (tracked via lastCachedSnapshot).
      */
     private val lineIndexCache = IdentityHashMap<TerminalLine, Int>()
+
+    /**
+     * Reference to the snapshot used for the last cache build.
+     * Used for cache invalidation - if snapshot identity changes, rebuild cache.
+     */
+    private var lastCachedSnapshot: VersionedBufferSnapshot? = null
 
     /**
      * Set selection from buffer coordinates.
@@ -155,8 +161,16 @@ class SelectionTracker(private val textBuffer: TerminalTextBuffer) {
      * CRITICAL: Must use originalLine (from buffer) not line (the copy).
      * SelectionAnchor stores WeakReferences to original line objects, so identity
      * lookup must match against originals to track lines across buffer scrolling.
+     *
+     * Cache invalidation: Only rebuilds if snapshot has changed (identity check).
+     * This is safe because a new snapshot object is created on each buffer mutation.
      */
     private fun buildLineIndexCache(snapshot: VersionedBufferSnapshot) {
+        // Skip rebuild if we're looking at the same snapshot
+        if (lastCachedSnapshot === snapshot) {
+            return
+        }
+
         lineIndexCache.clear()
 
         // Map screen lines (indices 0 to height-1) using ORIGINAL reference
@@ -175,5 +189,16 @@ class SelectionTracker(private val textBuffer: TerminalTextBuffer) {
                 lineIndexCache[versionedLine.originalLine] = i - snapshot.historyLinesCount
             }
         }
+
+        // Remember which snapshot we built the cache for
+        lastCachedSnapshot = snapshot
+    }
+
+    /**
+     * Invalidate the cache, forcing a rebuild on next resolveToCoordinates() call.
+     * Call this if external factors may have changed line positions.
+     */
+    fun invalidateCache() {
+        lastCachedSnapshot = null
     }
 }

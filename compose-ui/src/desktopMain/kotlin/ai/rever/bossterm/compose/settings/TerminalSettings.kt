@@ -74,6 +74,13 @@ data class TerminalSettings(
     val selectionColor: String = "0xFF214283",
 
     /**
+     * Selection highlight opacity (0.0 to 1.0).
+     * Lower values make text more readable through selection highlight.
+     * Default 0.6 provides good contrast while keeping text visible.
+     */
+    val selectionAlpha: Float = 0.6f,
+
+    /**
      * Search result highlight color (serialized as ARGB hex)
      */
     val foundPatternColor: String = "0xFFE6DB74",
@@ -474,6 +481,14 @@ data class TerminalSettings(
      */
     val hyperlinkRequireModifier: Boolean = true,
 
+    /**
+     * Detect file/folder paths as clickable hyperlinks.
+     * When enabled, absolute paths, home-relative paths (~/...), and relative paths
+     * (./..., ../...) are highlighted and can be Ctrl+Clicked to open.
+     * Paths are validated to exist before being highlighted.
+     */
+    val detectFilePaths: Boolean = true,
+
     // ===== Type-Ahead Settings =====
 
     /**
@@ -651,6 +666,7 @@ data class TerminalSettings(
 
     @Transient
     val selectionColorValue: Color = Color(selectionColor.removePrefix("0x").toULong(16).toLong())
+        .copy(alpha = selectionAlpha.coerceIn(0f, 1f))
 
     @Transient
     val foundPatternColorValue: Color = Color(foundPatternColor.removePrefix("0x").toULong(16).toLong())

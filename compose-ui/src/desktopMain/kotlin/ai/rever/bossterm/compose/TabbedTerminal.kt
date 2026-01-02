@@ -14,6 +14,9 @@ import ai.rever.bossterm.compose.util.loadTerminalFont
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
 import ai.rever.bossterm.compose.settings.withOverrides
+import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
+import ai.rever.bossterm.compose.hyperlinks.HyperlinkInfo
+import ai.rever.bossterm.compose.hyperlinks.HyperlinkRegistry
 import ai.rever.bossterm.compose.splits.NavigationDirection
 import ai.rever.bossterm.compose.splits.SplitContainer
 import ai.rever.bossterm.compose.splits.SplitOrientation
@@ -72,11 +75,16 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  * @param initialCommand Optional command to run in the first terminal tab after startup
  * @param workingDirectory Initial working directory for the first tab (defaults to user home)
  * @param onLinkClick Optional callback for custom link handling. When provided, intercepts Ctrl/Cmd+Click
- *                    on links and context menu "Open Link" action. When null, links open in system browser.
+ *                    on links and context menu "Open Link" action. Receives HyperlinkInfo with type,
+ *                    patternId, isFile/isFolder, and other metadata. Return true if handled, false to
+ *                    proceed with default behavior (open in browser/finder). When null, uses default behavior.
  * @param contextMenuItems Custom context menu items to add below the built-in items (Copy, Paste, Clear, Select All).
  *                         Applies to all tabs and split panes within the terminal.
  * @param settingsOverride Per-instance settings overrides. Non-null fields override global settings.
  *                         Example: `TerminalSettingsOverride(alwaysShowTabBar = true)` to always show tab bar.
+ * @param hyperlinkRegistry Custom hyperlink pattern registry for per-instance hyperlink customization.
+ *                          Use this to add custom patterns (e.g., JIRA ticket IDs, custom URLs).
+ *                          Default: global HyperlinkDetector.registry
  * @param modifier Compose modifier for the terminal container
  */
 @Composable
@@ -91,9 +99,10 @@ fun TabbedTerminal(
     isWindowFocused: () -> Boolean = { true },
     initialCommand: String? = null,
     workingDirectory: String? = null,
-    onLinkClick: ((String) -> Unit)? = null,
+    onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
     settingsOverride: TerminalSettingsOverride? = null,
+    hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 ) {
     // Settings integration
@@ -523,6 +532,7 @@ fun TabbedTerminal(
                 splitMinimumSize = settings.splitMinimumSize,
                 onLinkClick = onLinkClick,
                 customContextMenuItems = contextMenuItems,
+                hyperlinkRegistry = hyperlinkRegistry,
                 modifier = Modifier.fillMaxSize()
             )
         }

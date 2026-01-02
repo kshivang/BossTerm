@@ -571,12 +571,15 @@ private suspend fun initializeProcess(
             emptyList()
         }
 
-        // Build environment
+        // Build environment (filter out PWD/OLDPWD to avoid inheriting stale values)
+        val effectiveWorkingDir = workingDirectory ?: System.getProperty("user.home")
         val terminalEnvironment = buildMap {
-            putAll(System.getenv())
+            putAll(System.getenv().filterKeys { it != "PWD" && it != "OLDPWD" })
             put("TERM", "xterm-256color")
             put("COLORTERM", "truecolor")
             put("TERM_PROGRAM", "BossTerm")
+            // Set PWD to match actual working directory (required for Starship and other prompts)
+            put("PWD", effectiveWorkingDir)
             environment?.let { putAll(it) }
         }
 
@@ -585,7 +588,7 @@ private suspend fun initializeProcess(
             command = command,
             arguments = args,
             environment = terminalEnvironment,
-            workingDirectory = workingDirectory ?: System.getProperty("user.home")
+            workingDirectory = effectiveWorkingDir
         )
 
         // Spawn PTY process

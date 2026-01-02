@@ -481,6 +481,14 @@ data class TerminalSettings(
      */
     val hyperlinkRequireModifier: Boolean = true,
 
+    /**
+     * Detect file/folder paths as clickable hyperlinks.
+     * When enabled, absolute paths, home-relative paths (~/...), and relative paths
+     * (./..., ../...) are highlighted and can be Ctrl+Clicked to open.
+     * Paths are validated to exist before being highlighted.
+     */
+    val detectFilePaths: Boolean = true,
+
     // ===== Type-Ahead Settings =====
 
     /**

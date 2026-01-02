@@ -111,6 +111,7 @@ data class TerminalSettingsOverride(
     // ===== Hyperlink Settings =====
     val hyperlinkUnderlineOnHover: Boolean? = null,
     val hyperlinkRequireModifier: Boolean? = null,
+    val detectFilePaths: Boolean? = null,
 
     // ===== Type-Ahead Settings =====
     val typeAheadEnabled: Boolean? = null,
@@ -250,6 +251,7 @@ fun TerminalSettings.withOverrides(override: TerminalSettingsOverride?): Termina
         // Hyperlink Settings
         hyperlinkUnderlineOnHover = override.hyperlinkUnderlineOnHover ?: hyperlinkUnderlineOnHover,
         hyperlinkRequireModifier = override.hyperlinkRequireModifier ?: hyperlinkRequireModifier,
+        detectFilePaths = override.detectFilePaths ?: detectFilePaths,
 
         // Type-Ahead Settings
         typeAheadEnabled = override.typeAheadEnabled ?: typeAheadEnabled,

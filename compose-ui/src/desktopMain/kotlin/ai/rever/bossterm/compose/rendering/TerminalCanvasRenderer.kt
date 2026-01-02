@@ -89,7 +89,13 @@ data class RenderingContext(
 
     // Pre-computed hyperlinks cache (for version-based caching optimization)
     // If provided, hyperlink detection will be skipped and these will be used
-    val precomputedHyperlinks: Map<Int, List<Hyperlink>>? = null
+    val precomputedHyperlinks: Map<Int, List<Hyperlink>>? = null,
+
+    // Working directory for resolving relative file paths in hyperlinks
+    val workingDirectory: String? = null,
+
+    // Whether to detect file/folder paths as clickable hyperlinks
+    val detectFilePaths: Boolean = true
 )
 
 /**
@@ -537,11 +543,14 @@ object TerminalCanvasRenderer {
                     // Part of a wrapped sequence - use wrapped detection
                     // This walks backwards to find start even if off-screen
                     HyperlinkDetector.detectHyperlinksWithWrapping(
-                        snapshot, row, ctx.scrollOffset, ctx.visibleCols
+                        snapshot, row, ctx.scrollOffset, ctx.visibleCols,
+                        ctx.workingDirectory, ctx.detectFilePaths
                     )
                 } else {
                     // Single line - use standard detection
-                    HyperlinkDetector.detectHyperlinks(line.text, row)
+                    HyperlinkDetector.detectHyperlinks(
+                        line.text, row, ctx.workingDirectory, ctx.detectFilePaths
+                    )
                 }
 
                 // Populate cache for ALL rows each hyperlink spans

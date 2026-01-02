@@ -1519,7 +1519,9 @@ fun ProperTerminal(
             imageDataCache = terminal.getImageDataCache(),
             terminalWidthCells = bufferSnapshot.width,
             terminalHeightCells = bufferSnapshot.height,
-            precomputedHyperlinks = precomputedHyperlinks
+            precomputedHyperlinks = precomputedHyperlinks,
+            workingDirectory = tab.workingDirectory.value,
+            detectFilePaths = settings.detectFilePaths
           )
 
           // Render terminal using extracted renderer - returns detected hyperlinks

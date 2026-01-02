@@ -904,6 +904,8 @@ class TabController(
                 put("COLORTERM", "truecolor")
                 put("TERM_PROGRAM", "BossTerm")
                 put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
+                // Set PWD to match actual working directory (required for Starship and other prompts)
+                put("PWD", config.workingDir ?: System.getProperty("user.home"))
                 putAll(config.environment)
             }
 
@@ -1066,6 +1068,8 @@ class TabController(
                     put("COLORTERM", "truecolor")
                     put("TERM_PROGRAM", "BossTerm")
                     put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
+                    // Set PWD to match actual working directory (required for Starship and other prompts)
+                    put("PWD", workingDir ?: System.getProperty("user.home"))
                 }
 
                 val config = PlatformServices.ProcessService.ProcessConfig(
@@ -1548,13 +1552,17 @@ class TabController(
 
     /**
      * Filter environment variables to remove potentially problematic ones.
-     * (e.g., parent terminal's TERM variables that shouldn't be inherited)
+     * (e.g., parent terminal's TERM variables that shouldn't be inherited,
+     * and PWD/OLDPWD which would reflect the parent's directory instead of
+     * the requested working directory)
      */
     private fun filterEnvironmentVariables(env: Map<String, String>): Map<String, String> {
         return env.filterKeys { key ->
             !key.startsWith("ITERM_") &&
             !key.startsWith("KITTY_") &&
-            key != "TERM_SESSION_ID"
+            key != "TERM_SESSION_ID" &&
+            key != "PWD" &&
+            key != "OLDPWD"
         }
     }
 

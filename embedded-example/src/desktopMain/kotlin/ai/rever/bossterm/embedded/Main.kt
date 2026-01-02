@@ -100,9 +100,11 @@ fun EmbeddedExampleApp() {
                     ) {
                         EmbeddableTerminal(
                             state = terminalState,
+                            // Test workingDirectory fix for Starship prompt
+                            workingDirectory = "/tmp",
                             // Run a command automatically when terminal is ready
                             // Uses OSC 133 shell integration for proper timing if available
-                            initialCommand = "echo 'Welcome to BossTerm Embedded Example!'",
+                            initialCommand = "echo 'Welcome to BossTerm Embedded Example!' && pwd",
                             onExit = { exitCode ->
                                 statusMessage = "Terminal exited with code: $exitCode"
                             },

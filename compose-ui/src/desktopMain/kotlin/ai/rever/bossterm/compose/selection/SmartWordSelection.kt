@@ -187,10 +187,10 @@ object SmartWordSelection {
             // Search within the window only
             for (match in pattern.regex.findAll(window)) {
                 if (colInWindow >= match.range.first && colInWindow <= match.range.last) {
-                    // Adjust coordinates back to full line
+                    // Adjust coordinates back to full line (inclusive end)
                     return Pair(
                         windowStart + match.range.first,
-                        windowStart + match.range.last + 1
+                        windowStart + match.range.last
                     )
                 }
             }
@@ -209,7 +209,7 @@ object SmartWordSelection {
             }
             for (match in pattern.regex.findAll(text)) {
                 if (col >= match.range.first && col <= match.range.last) {
-                    return Pair(match.range.first, match.range.last + 1)
+                    return Pair(match.range.first, match.range.last)  // Inclusive end
                 }
             }
         }

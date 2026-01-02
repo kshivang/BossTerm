@@ -40,7 +40,8 @@ object SelectionEngine {
         val endPoint = getNextSeparator(clickPoint, textBuffer)
 
         // Convert Point back to Pair<Int, Int>
-        return Pair(Pair(startPoint.x, startPoint.y), Pair(endPoint.x, endPoint.y))
+        // getNextSeparator returns separator position (exclusive), convert to inclusive
+        return Pair(Pair(startPoint.x, startPoint.y), Pair(endPoint.x - 1, endPoint.y))
     }
 
     /**
@@ -194,7 +195,7 @@ object SelectionEngine {
         while (endCol >= 0) {
             val char = line.charAt(endCol)
             if (char != ' ' && char != '\u0000' && char != CharUtils.EMPTY_CHAR && char != CharUtils.DWC) {
-                return endCol + 1  // Return exclusive end
+                return endCol  // Return inclusive end
             }
             endCol--
         }

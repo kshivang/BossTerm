@@ -12,13 +12,15 @@ import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.compose.PlatformServices
 import ai.rever.bossterm.compose.SelectionMode
 import ai.rever.bossterm.compose.ime.IMEState
+import ai.rever.bossterm.compose.selection.SelectionTracker
+import ai.rever.bossterm.compose.selection.SelectionEngine
 
 /**
  * Creates all built-in terminal actions.
  * These actions are extracted from ProperTerminal.kt's keyboard handling.
  *
- * @param selectionStart Mutable state for selection start position (col, row)
- * @param selectionEnd Mutable state for selection end position (col, row)
+ * @param selectionTracker Content-anchored selection tracker (single source of truth)
+ * @param selectionMode Mutable state for selection mode (NORMAL vs BLOCK)
  * @param textBuffer The terminal text buffer
  * @param clipboardManager The clipboard manager for copy/paste
  * @param writeUserInput Lambda that writes user input to the terminal (records in debug collector)
@@ -32,8 +34,7 @@ import ai.rever.bossterm.compose.ime.IMEState
  * @return ActionRegistry with all built-in actions registered
  */
 fun createBuiltinActions(
-    selectionStart: MutableState<Pair<Int, Int>?>,
-    selectionEnd: MutableState<Pair<Int, Int>?>,
+    selectionTracker: SelectionTracker,
     selectionMode: MutableState<SelectionMode>,
     textBuffer: TerminalTextBuffer,
     clipboardManager: ClipboardManager,
@@ -59,12 +60,17 @@ fun createBuiltinActions(
             KeyStroke(key = Key.C, ctrl = true),  // Windows/Linux
             KeyStroke(key = Key.C, meta = true)   // macOS
         ),
-        enabled = { selectionStart.value != null && selectionEnd.value != null },
+        enabled = { selectionTracker.hasSelection() },
         handler = { _ ->
-            val start = selectionStart.value
-            val end = selectionEnd.value
-            if (start != null && end != null) {
-                val selectedText = extractSelectedText(textBuffer, start, end, selectionMode.value)
+            // Resolve selection to current coordinates
+            val snapshot = textBuffer.createIncrementalSnapshot()
+            val resolved = selectionTracker.resolveToCoordinates(snapshot)
+            if (resolved != null) {
+                val start = resolved.toStartPair()
+                val end = resolved.toEndPair()
+                val selectedText = SelectionEngine.extractSelectedTextTrimmed(
+                    textBuffer, start, end, resolved.mode
+                )
                 if (selectedText.isNotEmpty()) {
                     clipboardManager.setText(AnnotatedString(selectedText))
                     true  // Consume event
@@ -133,10 +139,9 @@ fun createBuiltinActions(
         id = "clear_selection",
         name = "Clear Selection",
         keyStroke = KeyStroke(key = Key.Escape),
-        enabled = { selectionStart.value != null || selectionEnd.value != null },
+        enabled = { selectionTracker.hasSelection() },
         handler = { _ ->
-            selectionStart.value = null
-            selectionEnd.value = null
+            selectionTracker.clearSelection()
             display.requestImmediateRedraw()
             true  // Consume event
         }

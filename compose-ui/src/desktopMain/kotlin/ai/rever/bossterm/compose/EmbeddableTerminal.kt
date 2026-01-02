@@ -431,8 +431,7 @@ class EmbeddableTerminalState {
      * Clear selection if any.
      */
     fun clearSelection() {
-        session?.selectionStart?.value = null
-        session?.selectionEnd?.value = null
+        session?.selectionTracker?.clearSelection()
     }
 
     /**
@@ -541,8 +540,6 @@ private fun createTerminalSession(
         searchQuery = mutableStateOf(""),
         searchMatches = mutableStateOf(emptyList()),
         currentSearchMatchIndex = mutableStateOf(-1),
-        selectionStart = mutableStateOf(null),
-        selectionEnd = mutableStateOf(null),
         selectionClipboard = mutableStateOf(null),
         imeState = IMEState(),
         contextMenuController = ContextMenuController(),

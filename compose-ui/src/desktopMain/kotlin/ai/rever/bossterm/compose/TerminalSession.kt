@@ -116,14 +116,11 @@ interface TerminalSession {
     // === Selection State ===
 
     /**
-     * Selection start position (row, column) or null if no selection.
+     * Content-anchored selection tracker for iTerm2-style selection.
+     * Tracks selection by line object identity, surviving buffer scrolling.
+     * This is the single source of truth for selection state.
      */
-    val selectionStart: MutableState<Pair<Int, Int>?>
-
-    /**
-     * Selection end position (row, column) or null if no selection.
-     */
-    val selectionEnd: MutableState<Pair<Int, Int>?>
+    val selectionTracker: SelectionTracker
 
     /**
      * Selection clipboard for X11 emulation mode (copy-on-select).
@@ -134,12 +131,6 @@ interface TerminalSession {
      * Current selection mode (NORMAL for line-based, BLOCK for rectangular).
      */
     val selectionMode: MutableState<SelectionMode>
-
-    /**
-     * Content-anchored selection tracker for iTerm2-style selection.
-     * Tracks selection by line object identity, surviving buffer scrolling.
-     */
-    val selectionTracker: SelectionTracker
 
     // === Input Method (IME) ===
 

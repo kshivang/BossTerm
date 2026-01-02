@@ -282,6 +282,58 @@ See the [tabbed-example](https://github.com/kshivang/BossTerm/tree/master/tabbed
 
 ---
 
+## Migration Guide
+
+### v1.0.65+ Breaking Changes
+
+#### `onLinkClick` Signature Change
+
+The `onLinkClick` callback now returns `Boolean` to support fallback behavior:
+
+```kotlin
+// Before (v1.0.64 and earlier)
+onLinkClick: ((HyperlinkInfo) -> Unit)? = null
+
+// After (v1.0.65+)
+onLinkClick: ((HyperlinkInfo) -> Boolean)? = null
+```
+
+**Migration:**
+
+```kotlin
+// Before
+TabbedTerminal(
+    onLinkClick = { info -> openCustomHandler(info.url) },
+    onExit = { exitApplication() }
+)
+
+// After - return true if handled, false for default behavior
+TabbedTerminal(
+    onLinkClick = { info ->
+        openCustomHandler(info.url)
+        true  // Handled - skip default behavior
+    },
+    onExit = { exitApplication() }
+)
+```
+
+Return `false` to fall back to default behavior (open in browser/finder):
+
+```kotlin
+TabbedTerminal(
+    onLinkClick = { info ->
+        when {
+            info.patternId == "jira" -> { openJiraTicket(info.matchedText); true }
+            info.type == HyperlinkType.FILE -> { openInEditor(info.url); true }
+            else -> false  // Use default behavior
+        }
+    },
+    onExit = { exitApplication() }
+)
+```
+
+---
+
 ## See Also
 
 - [[Embedding-Guide]] - Simple single terminal

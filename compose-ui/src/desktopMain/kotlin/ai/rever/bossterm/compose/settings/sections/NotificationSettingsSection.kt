@@ -20,12 +20,24 @@ fun NotificationSettingsSection(
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier) {
+        SettingsSection(title = "Shell Integration") {
+            SettingsToggle(
+                label = "Auto-inject Shell Integration",
+                checked = settings.autoInjectShellIntegration,
+                onCheckedChange = { onSettingsChange(settings.copy(autoInjectShellIntegration = it)) },
+                description = "Automatically enable OSC 133 command tracking (required for notifications)"
+            )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
         SettingsSection(title = "Command Notifications") {
             SettingsToggle(
                 label = "Enable Notifications",
                 checked = settings.notifyOnCommandComplete,
                 onCheckedChange = { onSettingsChange(settings.copy(notifyOnCommandComplete = it)) },
-                description = "Show notification when commands complete while unfocused"
+                description = "Show notification when commands complete while unfocused",
+                enabled = settings.autoInjectShellIntegration
             )
 
             SettingsSlider(
@@ -37,7 +49,7 @@ fun NotificationSettingsSection(
                 steps = 58,
                 valueDisplay = { "${it.toInt()} sec" },
                 description = "Only notify for commands longer than this",
-                enabled = settings.notifyOnCommandComplete
+                enabled = settings.autoInjectShellIntegration && settings.notifyOnCommandComplete
             )
         }
 
@@ -49,7 +61,7 @@ fun NotificationSettingsSection(
                 checked = settings.notifyShowExitCode,
                 onCheckedChange = { onSettingsChange(settings.copy(notifyShowExitCode = it)) },
                 description = "Include exit code in notification message",
-                enabled = settings.notifyOnCommandComplete
+                enabled = settings.autoInjectShellIntegration && settings.notifyOnCommandComplete
             )
 
             SettingsToggle(
@@ -57,7 +69,7 @@ fun NotificationSettingsSection(
                 checked = settings.notifyWithSound,
                 onCheckedChange = { onSettingsChange(settings.copy(notifyWithSound = it)) },
                 description = "Play system notification sound",
-                enabled = settings.notifyOnCommandComplete
+                enabled = settings.autoInjectShellIntegration && settings.notifyOnCommandComplete
             )
         }
     }

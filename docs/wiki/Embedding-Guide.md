@@ -284,6 +284,54 @@ See the [embedded-example](https://github.com/kshivang/BossTerm/tree/master/embe
 
 ---
 
+## Migration Guide
+
+### v1.0.65+ Breaking Changes
+
+#### `onLinkClick` Signature Change
+
+The `onLinkClick` callback now returns `Boolean` to support fallback behavior:
+
+```kotlin
+// Before (v1.0.64 and earlier)
+onLinkClick: ((HyperlinkInfo) -> Unit)? = null
+
+// After (v1.0.65+)
+onLinkClick: ((HyperlinkInfo) -> Boolean)? = null
+```
+
+**Migration:**
+
+```kotlin
+// Before
+EmbeddableTerminal(
+    onLinkClick = { info -> openCustomHandler(info.url) }
+)
+
+// After - return true if handled, false for default behavior
+EmbeddableTerminal(
+    onLinkClick = { info ->
+        openCustomHandler(info.url)
+        true  // Handled - skip default behavior
+    }
+)
+```
+
+Return `false` to fall back to default behavior (open in browser/finder):
+
+```kotlin
+EmbeddableTerminal(
+    onLinkClick = { info ->
+        when (info.type) {
+            HyperlinkType.FILE -> { openInEditor(info.url); true }
+            else -> false  // Use default behavior
+        }
+    }
+)
+```
+
+---
+
 ## See Also
 
 - [[Tabbed-Terminal-Guide]] - Full tabbed terminal with splits

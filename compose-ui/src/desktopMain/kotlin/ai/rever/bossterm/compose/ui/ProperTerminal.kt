@@ -37,6 +37,7 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -153,6 +154,7 @@ fun ProperTerminal(
   val focusRequester = remember { FocusRequester() }
   val textMeasurer = rememberTextMeasurer()
   val clipboardManager = LocalClipboardManager.current
+  val density = LocalDensity.current  // Observe display density for multi-monitor support (#206)
 
   // Settings integration
   val settingsManager = remember { SettingsManager.instance }
@@ -513,7 +515,7 @@ fun ProperTerminal(
   // Use shared font loaded once by Main.kt (performance optimization for multiple tabs)
   // Font loading is expensive and should only happen once, not per tab
 
-  val measurementStyle = remember(sharedFont, settings.fontSize) {
+  val measurementStyle = remember(sharedFont, settings.fontSize, density) {
     TextStyle(
       fontFamily = sharedFont,
       fontSize = settings.fontSize.sp,
@@ -521,15 +523,15 @@ fun ProperTerminal(
     )
   }
 
-  // Invalidate measurement cache when font or size changes (issue #147)
-  LaunchedEffect(sharedFont, settings.fontSize) {
+  // Invalidate measurement cache when font, size, or display density changes (issue #147, #206)
+  LaunchedEffect(sharedFont, settings.fontSize, density) {
     ai.rever.bossterm.compose.rendering.TerminalCanvasRenderer.invalidateMeasurementCache()
   }
 
-  // Cache cell dimensions and baseline offset (calculated once, reused for all rendering)
+  // Cache cell dimensions and baseline offset (recalculated when font/size/density changes)
   // Measure a string of 100 characters to get accurate average advance width
   // This prevents cumulative rounding errors when rendering long lines
-  val cellMetrics = remember(measurementStyle) {
+  val cellMetrics = remember(measurementStyle, density) {
     val sampleString = "W".repeat(100)  // 100 characters for precise averaging
     val measurement = textMeasurer.measure(sampleString, measurementStyle)
     val width = measurement.size.width.toFloat() / sampleString.length

@@ -691,3 +691,54 @@ fun TerminalWithControls() {
     }
 }
 ```
+
+## Migration Guide
+
+### v1.0.65+ Breaking Changes
+
+#### `onLinkClick` Signature Change
+
+The `onLinkClick` callback now returns `Boolean` to support fallback behavior:
+
+```kotlin
+// Before (v1.0.64 and earlier)
+onLinkClick: ((HyperlinkInfo) -> Unit)? = null
+
+// After (v1.0.65+)
+onLinkClick: ((HyperlinkInfo) -> Boolean)? = null
+```
+
+**Migration:**
+
+```kotlin
+// Before
+EmbeddableTerminal(
+    onLinkClick = { info ->
+        openCustomHandler(info.url)
+    }
+)
+
+// After - return true if handled, false for default behavior
+EmbeddableTerminal(
+    onLinkClick = { info ->
+        openCustomHandler(info.url)
+        true  // Handled - skip default behavior
+    }
+)
+```
+
+**Why this change?** Previously, providing `onLinkClick` completely replaced default behavior. If your callback didn't handle all link types, unhandled links did nothing. Now you can return `false` to fall back to default behavior (open in browser/finder):
+
+```kotlin
+EmbeddableTerminal(
+    onLinkClick = { info ->
+        when (info.type) {
+            HyperlinkType.FILE -> {
+                openInEditor(info.url)
+                true  // Handled
+            }
+            else -> false  // Not handled - use default behavior
+        }
+    }
+)
+```

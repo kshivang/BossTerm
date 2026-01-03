@@ -797,3 +797,61 @@ For detailed context menu element types and examples, see [Custom Context Menu i
 | Use case | Simple embedding | Full terminal app |
 
 Choose `EmbeddableTerminal` for simple use cases where you need a single terminal instance with custom context menus. Choose `TabbedTerminal` when building a full-featured terminal application with tabs, splits, and window management. Both support external state holders for persistence across recomposition.
+
+## Migration Guide
+
+### v1.0.65+ Breaking Changes
+
+#### `onLinkClick` Signature Change
+
+The `onLinkClick` callback now returns `Boolean` to support fallback behavior:
+
+```kotlin
+// Before (v1.0.64 and earlier)
+onLinkClick: ((HyperlinkInfo) -> Unit)? = null
+
+// After (v1.0.65+)
+onLinkClick: ((HyperlinkInfo) -> Boolean)? = null
+```
+
+**Migration:**
+
+```kotlin
+// Before
+TabbedTerminal(
+    onLinkClick = { info ->
+        openCustomHandler(info.url)
+    },
+    onExit = { exitApplication() }
+)
+
+// After - return true if handled, false for default behavior
+TabbedTerminal(
+    onLinkClick = { info ->
+        openCustomHandler(info.url)
+        true  // Handled - skip default behavior
+    },
+    onExit = { exitApplication() }
+)
+```
+
+**Why this change?** Previously, providing `onLinkClick` completely replaced default behavior. If your callback didn't handle all link types, unhandled links did nothing. Now you can return `false` to fall back to default behavior (open in browser/finder):
+
+```kotlin
+TabbedTerminal(
+    onLinkClick = { info ->
+        when {
+            info.patternId == "jira" -> {
+                openJiraTicket(info.matchedText)
+                true  // Handled
+            }
+            info.type == HyperlinkType.FILE -> {
+                openInEditor(info.url)
+                true  // Handled
+            }
+            else -> false  // Not handled - use default behavior
+        }
+    },
+    onExit = { exitApplication() }
+)
+```

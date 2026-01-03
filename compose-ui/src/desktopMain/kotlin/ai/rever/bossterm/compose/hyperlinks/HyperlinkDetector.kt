@@ -138,6 +138,15 @@ class HyperlinkRegistry {
             quickCheck = { it.contains("mailto:") }
         ))
 
+        // SSH URL pattern (priority 0)
+        // Supports ssh://[user@]host[:port][/path] format
+        addPattern(HyperlinkPattern(
+            id = "builtin:ssh",
+            regex = Regex("\\bssh://[\\w.@:-]+[\\w\\-._~:/?#\\[\\]@!\$&'()*+,;=%]*[\\w\\-_~/?#@\$&=%]?"),
+            priority = 0,
+            quickCheck = { it.contains("ssh://") }
+        ))
+
         // FTP URL pattern (priority 0)
         // Uses two-part pattern to exclude trailing punctuation
         addPattern(HyperlinkPattern(

@@ -907,7 +907,14 @@ class TabController(
                 // Set PWD to match actual working directory (required for Starship and other prompts)
                 put("PWD", config.workingDir ?: System.getProperty("user.home"))
                 putAll(config.environment)
-            }
+            }.toMutableMap()
+
+            // Inject shell integration for command completion notifications (OSC 133)
+            ShellIntegrationInjector.injectForShell(
+                shell = config.command,
+                env = terminalEnvironment,
+                enabled = settings.autoInjectShellIntegration
+            )
 
             val processConfig = PlatformServices.ProcessService.ProcessConfig(
                 command = config.command,
@@ -1070,7 +1077,14 @@ class TabController(
                     put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
                     // Set PWD to match actual working directory (required for Starship and other prompts)
                     put("PWD", workingDir ?: System.getProperty("user.home"))
-                }
+                }.toMutableMap()
+
+                // Inject shell integration for command completion notifications (OSC 133)
+                ShellIntegrationInjector.injectForShell(
+                    shell = command,
+                    env = terminalEnvironment,
+                    enabled = settings.autoInjectShellIntegration
+                )
 
                 val config = PlatformServices.ProcessService.ProcessConfig(
                     command = command,

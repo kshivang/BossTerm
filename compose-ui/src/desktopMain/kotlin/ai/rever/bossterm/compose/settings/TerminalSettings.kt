@@ -600,6 +600,15 @@ data class TerminalSettings(
      */
     val notificationPermissionRequested: Boolean = false,
 
+    /**
+     * Automatically inject shell integration (OSC 133) into new terminal sessions.
+     * When enabled, BossTerm hijacks shell environment variables (ZDOTDIR for zsh,
+     * ENV for bash, XDG_DATA_DIRS for fish) to auto-load shell integration scripts.
+     * This enables command completion notifications without manual shell configuration.
+     * Set to false if this causes issues with your shell setup.
+     */
+    val autoInjectShellIntegration: Boolean = true,
+
     // ===== Split Pane Settings =====
 
     /**

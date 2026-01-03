@@ -54,7 +54,7 @@ class CommandNotificationHandler(
 
         // Check for incomplete shell integration (D without B)
         if (startTime == 0L) {
-            LOG.warn("Command finished without corresponding start event - shell integration may be incomplete")
+            // This is normal for the initial prompt before any command is run
             isCommandRunning.set(false)
             return
         }

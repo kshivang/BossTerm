@@ -50,16 +50,17 @@ fun createBuiltinActions(
 ): ActionRegistry {
     val registry = ActionRegistry(isMacOS)
 
-    // COPY - Ctrl/Cmd+C (only when selection exists)
+    // COPY - Cmd+C (macOS) / Ctrl+C (Windows/Linux) - only when selection exists
     // Copies selected text to clipboard
     // If no selection, the event passes through to terminal (for process interrupt)
     val copyAction = TerminalAction(
         id = "copy",
         name = "Copy",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.C, ctrl = true),  // Windows/Linux
-            KeyStroke(key = Key.C, meta = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.C, meta = true))   // macOS: Cmd+C only
+        } else {
+            listOf(KeyStroke(key = Key.C, ctrl = true))   // Windows/Linux: Ctrl+C
+        },
         enabled = { selectionTracker.hasSelection() },
         handler = { _ ->
             // Resolve selection to current coordinates
@@ -83,15 +84,16 @@ fun createBuiltinActions(
         }
     )
 
-    // PASTE - Ctrl/Cmd+V
+    // PASTE - Cmd+V (macOS) / Ctrl+V (Windows/Linux)
     // Pastes clipboard text to the terminal with bracketed paste mode support
     val pasteAction = TerminalAction(
         id = "paste",
         name = "Paste",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.V, ctrl = true),  // Windows/Linux
-            KeyStroke(key = Key.V, meta = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.V, meta = true))   // macOS: Cmd+V only
+        } else {
+            listOf(KeyStroke(key = Key.V, ctrl = true))   // Windows/Linux: Ctrl+V
+        },
         enabled = { true },
         handler = { _ ->
             try {
@@ -117,16 +119,18 @@ fun createBuiltinActions(
         }
     )
 
-    // SEARCH - Ctrl/Cmd+F
+    // SEARCH - Cmd+F (macOS) / Ctrl+F (Windows/Linux)
     // Toggles search bar visibility
+    // Disabled when alternate buffer is active (vim, less, tmux have own search)
     val searchAction = TerminalAction(
         id = "search",
         name = "Search",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.F, ctrl = true),  // Windows/Linux
-            KeyStroke(key = Key.F, meta = true)   // macOS
-        ),
-        enabled = { true },
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.F, meta = true))   // macOS: Cmd+F only
+        } else {
+            listOf(KeyStroke(key = Key.F, ctrl = true))   // Windows/Linux: Ctrl+F
+        },
+        enabled = { !textBuffer.isUsingAlternateBuffer },
         handler = { _ ->
             searchVisible.value = !searchVisible.value
             true
@@ -162,28 +166,30 @@ fun createBuiltinActions(
 
     // SELECT_ALL - Cmd+A (macOS only)
     // Ctrl+A passes through to terminal (tmux prefix, bash beginning-of-line, etc.)
+    // Disabled when alternate buffer is active (TUI apps control selection)
     val selectAllAction = TerminalAction(
         id = "select_all",
         name = "Select All",
         keyStrokes = listOf(
             KeyStroke(key = Key.A, meta = true)   // macOS only, Ctrl+A passes through
         ),
-        enabled = { true },
+        enabled = { !textBuffer.isUsingAlternateBuffer },
         handler = { _ ->
             selectAllCallback()
             true
         }
     )
 
-    // DEBUG PANEL - Ctrl/Cmd+Shift+D
+    // DEBUG PANEL - Cmd+Shift+D (macOS) / Ctrl+Shift+D (Windows/Linux)
     // Toggles the debug panel for inspecting terminal I/O and state
     val debugPanelAction = TerminalAction(
         id = "debug_panel",
         name = "Toggle Debug Panel",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.D, ctrl = true, shift = true),   // Windows/Linux
-            KeyStroke(key = Key.D, meta = true, shift = true)    // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.D, meta = true, shift = true))    // macOS: Cmd+Shift+D
+        } else {
+            listOf(KeyStroke(key = Key.D, ctrl = true, shift = true))    // Windows/Linux: Ctrl+Shift+D
+        },
         enabled = { true },
         handler = { _ ->
             debugPanelVisible.value = !debugPanelVisible.value
@@ -313,57 +319,61 @@ fun addTabManagementActions(
     onNewWindow: () -> Unit = {},
     isMacOS: Boolean
 ) {
-    // NEW TAB - Cmd/Ctrl+T
+    // NEW TAB - Cmd+T (macOS) / Ctrl+T (Windows/Linux)
     registry.register(TerminalAction(
         id = "new_tab",
         name = "New Tab",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.T, ctrl = true),  // Windows/Linux
-            KeyStroke(key = Key.T, meta = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.T, meta = true))   // macOS: Cmd+T
+        } else {
+            listOf(KeyStroke(key = Key.T, ctrl = true))   // Windows/Linux: Ctrl+T
+        },
         handler = { event ->
             onNewTab()
             true  // Consume event
         }
     ))
 
-    // NEW PRE-CONNECT TAB - Cmd/Ctrl+Shift+T
+    // NEW PRE-CONNECT TAB - Cmd+Shift+T (macOS) / Ctrl+Shift+T (Windows/Linux)
     // Opens a new tab with pre-connection input prompts (for testing)
     registry.register(TerminalAction(
         id = "new_preconnect_tab",
         name = "New Pre-Connect Tab",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.T, ctrl = true, shift = true),  // Windows/Linux
-            KeyStroke(key = Key.T, meta = true, shift = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.T, meta = true, shift = true))   // macOS: Cmd+Shift+T
+        } else {
+            listOf(KeyStroke(key = Key.T, ctrl = true, shift = true))   // Windows/Linux: Ctrl+Shift+T
+        },
         handler = { event ->
             onNewPreConnectTab()
             true  // Consume event
         }
     ))
 
-    // NEW WINDOW - Cmd/Ctrl+N
+    // NEW WINDOW - Cmd+N (macOS) / Ctrl+N (Windows/Linux)
     registry.register(TerminalAction(
         id = "new_window",
         name = "New Window",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.N, ctrl = true),  // Windows/Linux
-            KeyStroke(key = Key.N, meta = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.N, meta = true))   // macOS: Cmd+N
+        } else {
+            listOf(KeyStroke(key = Key.N, ctrl = true))   // Windows/Linux: Ctrl+N
+        },
         handler = { event ->
             onNewWindow()
             true  // Consume event
         }
     ))
 
-    // CLOSE TAB - Cmd/Ctrl+W
+    // CLOSE TAB - Cmd+W (macOS) / Ctrl+W (Windows/Linux)
     registry.register(TerminalAction(
         id = "close_tab",
         name = "Close Tab",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.W, ctrl = true),  // Windows/Linux
-            KeyStroke(key = Key.W, meta = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.W, meta = true))   // macOS: Cmd+W
+        } else {
+            listOf(KeyStroke(key = Key.W, ctrl = true))   // Windows/Linux: Ctrl+W
+        },
         handler = { event ->
             onCloseTab()
             true  // Consume event
@@ -396,7 +406,7 @@ fun addTabManagementActions(
         }
     ))
 
-    // SWITCH TO TAB 1-9 - Cmd/Ctrl+1 through Cmd/Ctrl+9
+    // SWITCH TO TAB 1-9 - Cmd+1-9 (macOS) / Ctrl+1-9 (Windows/Linux)
     for (i in 1..9) {
         val key = when (i) {
             1 -> Key.One
@@ -414,10 +424,11 @@ fun addTabManagementActions(
         registry.register(TerminalAction(
             id = "switch_to_tab_$i",
             name = "Switch to Tab $i",
-            keyStrokes = listOf(
-                KeyStroke(key = key, ctrl = true),  // Windows/Linux
-                KeyStroke(key = key, meta = true)   // macOS
-            ),
+            keyStrokes = if (isMacOS) {
+                listOf(KeyStroke(key = key, meta = true))   // macOS: Cmd+N
+            } else {
+                listOf(KeyStroke(key = key, ctrl = true))   // Windows/Linux: Ctrl+N
+            },
             handler = { event ->
                 onSwitchToTab(i - 1)  // Convert to 0-based index
                 true  // Consume event
@@ -469,10 +480,11 @@ fun addSplitPaneActions(
     registry.register(TerminalAction(
         id = "split_vertical",
         name = "Split Vertically",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.D, ctrl = true),  // Windows/Linux
-            KeyStroke(key = Key.D, meta = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.D, meta = true))   // macOS: Cmd+D
+        } else {
+            listOf(KeyStroke(key = Key.D, ctrl = true))   // Windows/Linux: Ctrl+D
+        },
         handler = { _ ->
             onSplitVertical()
             true
@@ -484,10 +496,11 @@ fun addSplitPaneActions(
     registry.register(TerminalAction(
         id = "split_horizontal",
         name = "Split Horizontally",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.H, ctrl = true, shift = true),  // Windows/Linux
-            KeyStroke(key = Key.H, meta = true, shift = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.H, meta = true, shift = true))   // macOS: Cmd+Shift+H
+        } else {
+            listOf(KeyStroke(key = Key.H, ctrl = true, shift = true))   // Windows/Linux: Ctrl+Shift+H
+        },
         handler = { _ ->
             onSplitHorizontal()
             true
@@ -499,10 +512,11 @@ fun addSplitPaneActions(
     registry.register(TerminalAction(
         id = "close_pane",
         name = "Close Pane",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.W, ctrl = true, shift = true),  // Windows/Linux
-            KeyStroke(key = Key.W, meta = true, shift = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.W, meta = true, shift = true))   // macOS: Cmd+Shift+W
+        } else {
+            listOf(KeyStroke(key = Key.W, ctrl = true, shift = true))   // Windows/Linux: Ctrl+Shift+W
+        },
         handler = { _ ->
             onClosePane()
             true
@@ -515,10 +529,11 @@ fun addSplitPaneActions(
         registry.register(TerminalAction(
             id = "move_to_new_tab",
             name = "Move Pane to New Tab",
-            keyStrokes = listOf(
-                KeyStroke(key = Key.M, ctrl = true, shift = true),  // Windows/Linux
-                KeyStroke(key = Key.M, meta = true, shift = true)   // macOS
-            ),
+            keyStrokes = if (isMacOS) {
+                listOf(KeyStroke(key = Key.M, meta = true, shift = true))   // macOS: Cmd+Shift+M
+            } else {
+                listOf(KeyStroke(key = Key.M, ctrl = true, shift = true))   // Windows/Linux: Ctrl+Shift+M
+            },
             handler = { _ ->
                 onMoveToNewTab()
                 true
@@ -530,10 +545,11 @@ fun addSplitPaneActions(
     registry.register(TerminalAction(
         id = "navigate_pane_up",
         name = "Navigate Pane Up",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.DirectionUp, ctrl = true, alt = true),  // Windows/Linux
-            KeyStroke(key = Key.DirectionUp, meta = true, alt = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.DirectionUp, meta = true, alt = true))   // macOS: Cmd+Opt+Up
+        } else {
+            listOf(KeyStroke(key = Key.DirectionUp, ctrl = true, alt = true))   // Windows/Linux: Ctrl+Alt+Up
+        },
         handler = { _ ->
             onNavigateUp()
             true
@@ -544,10 +560,11 @@ fun addSplitPaneActions(
     registry.register(TerminalAction(
         id = "navigate_pane_down",
         name = "Navigate Pane Down",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.DirectionDown, ctrl = true, alt = true),  // Windows/Linux
-            KeyStroke(key = Key.DirectionDown, meta = true, alt = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.DirectionDown, meta = true, alt = true))   // macOS: Cmd+Opt+Down
+        } else {
+            listOf(KeyStroke(key = Key.DirectionDown, ctrl = true, alt = true))   // Windows/Linux: Ctrl+Alt+Down
+        },
         handler = { _ ->
             onNavigateDown()
             true
@@ -558,10 +575,11 @@ fun addSplitPaneActions(
     registry.register(TerminalAction(
         id = "navigate_pane_left",
         name = "Navigate Pane Left",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.DirectionLeft, ctrl = true, alt = true),  // Windows/Linux
-            KeyStroke(key = Key.DirectionLeft, meta = true, alt = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.DirectionLeft, meta = true, alt = true))   // macOS: Cmd+Opt+Left
+        } else {
+            listOf(KeyStroke(key = Key.DirectionLeft, ctrl = true, alt = true))   // Windows/Linux: Ctrl+Alt+Left
+        },
         handler = { _ ->
             onNavigateLeft()
             true
@@ -572,10 +590,11 @@ fun addSplitPaneActions(
     registry.register(TerminalAction(
         id = "navigate_pane_right",
         name = "Navigate Pane Right",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.DirectionRight, ctrl = true, alt = true),  // Windows/Linux
-            KeyStroke(key = Key.DirectionRight, meta = true, alt = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.DirectionRight, meta = true, alt = true))   // macOS: Cmd+Opt+Right
+        } else {
+            listOf(KeyStroke(key = Key.DirectionRight, ctrl = true, alt = true))   // Windows/Linux: Ctrl+Alt+Right
+        },
         handler = { _ ->
             onNavigateRight()
             true
@@ -586,10 +605,11 @@ fun addSplitPaneActions(
     registry.register(TerminalAction(
         id = "navigate_next_pane",
         name = "Next Pane",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.RightBracket, ctrl = true),  // Windows/Linux
-            KeyStroke(key = Key.RightBracket, meta = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.RightBracket, meta = true))   // macOS: Cmd+]
+        } else {
+            listOf(KeyStroke(key = Key.RightBracket, ctrl = true))   // Windows/Linux: Ctrl+]
+        },
         handler = { _ ->
             onNavigateNext()
             true
@@ -600,10 +620,11 @@ fun addSplitPaneActions(
     registry.register(TerminalAction(
         id = "navigate_previous_pane",
         name = "Previous Pane",
-        keyStrokes = listOf(
-            KeyStroke(key = Key.LeftBracket, ctrl = true),  // Windows/Linux
-            KeyStroke(key = Key.LeftBracket, meta = true)   // macOS
-        ),
+        keyStrokes = if (isMacOS) {
+            listOf(KeyStroke(key = Key.LeftBracket, meta = true))   // macOS: Cmd+[
+        } else {
+            listOf(KeyStroke(key = Key.LeftBracket, ctrl = true))   // Windows/Linux: Ctrl+[
+        },
         handler = { _ ->
             onNavigatePrevious()
             true

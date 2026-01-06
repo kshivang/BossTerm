@@ -75,9 +75,12 @@ fun TabbedTerminal(
 | `onShowSettings` | `() -> Unit` | Called when user opens settings |
 | `menuActions` | `MenuActions?` | Callbacks for menu bar integration |
 | `isWindowFocused` | `() -> Boolean` | Returns window focus state (for notifications) |
+| `workingDirectory` | `String?` | Initial working directory for first tab (defaults to user home) |
 | `initialCommand` | `String?` | Command to run in first tab after startup |
+| `onInitialCommandComplete` | `(Boolean, Int) -> Unit` | Callback when initial command finishes (see [Initial Command Completion](#initial-command-completion)) |
 | `onLinkClick` | `(HyperlinkInfo) -> Boolean` | Custom link click handler with rich metadata; return `true` if handled, `false` for default behavior (see [Custom Link Handling](#custom-link-handling)) |
 | `contextMenuItems` | `List<ContextMenuElement>` | Custom context menu items (see [Custom Context Menu](#custom-context-menu)) |
+| `onContextMenuOpen` | `() -> Unit` | Callback before context menu displays (see [Context Menu Open Callback](#context-menu-open-callback)) |
 | `settingsOverride` | `TerminalSettingsOverride?` | Per-instance settings overrides (see [Settings Override](#settings-override)) |
 | `hyperlinkRegistry` | `HyperlinkRegistry` | Custom hyperlink patterns for this instance (see [Custom Hyperlink Patterns](#custom-hyperlink-patterns)) |
 | `modifier` | `Modifier` | Compose modifier |
@@ -322,6 +325,98 @@ TabbedTerminal(
     initialCommand = "echo 'Welcome!' && ls -la"
 )
 ```
+
+## Initial Command Completion
+
+The `onInitialCommandComplete` callback fires when the initial command finishes executing. This is useful for:
+- Triggering the next step in a workflow after setup completes
+- Updating UI status based on command success/failure
+- Error handling when initial setup fails
+
+```kotlin
+TabbedTerminal(
+    onExit = { exitApplication() },
+    initialCommand = "npm install && npm run build",
+    onInitialCommandComplete = { success, exitCode ->
+        if (success) {
+            println("Setup complete!")
+        } else {
+            println("Setup failed with exit code: $exitCode")
+        }
+    }
+)
+```
+
+### Callback Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `success` | `Boolean` | `true` if exit code is 0, `false` otherwise |
+| `exitCode` | `Int` | The command's exit code (0 = success, non-zero = failure) |
+
+### Requirements
+
+This callback requires **OSC 133 shell integration** to detect command completion. Without shell integration, the callback will not fire.
+
+To enable OSC 133 in your shell, see [Shell Integration](../README.md#shell-integration).
+
+### Example: Window Title Status
+
+```kotlin
+@Composable
+fun TerminalWindowWithStatus() {
+    var windowTitle by remember { mutableStateOf("Terminal") }
+
+    Window(
+        onCloseRequest = { /* ... */ },
+        title = windowTitle
+    ) {
+        TabbedTerminal(
+            onExit = { /* ... */ },
+            initialCommand = "./setup.sh",
+            onInitialCommandComplete = { success, exitCode ->
+                windowTitle = if (success) {
+                    "Terminal - Setup Complete"
+                } else {
+                    "Terminal - Setup Failed (exit: $exitCode)"
+                }
+            }
+        )
+    }
+}
+```
+
+## Context Menu Open Callback
+
+The `onContextMenuOpen` callback fires immediately before the context menu is displayed. This is useful for:
+- Refreshing dynamic menu item state (e.g., checking if a tool is installed)
+- Analytics tracking
+- Updating UI state based on menu visibility
+
+```kotlin
+TabbedTerminal(
+    onExit = { exitApplication() },
+    onContextMenuOpen = {
+        // Refresh menu item state before display
+        refreshAIAssistantStatus()
+    },
+    contextMenuItems = listOf(
+        ContextMenuItem(
+            id = "ai_assist",
+            label = if (isAIInstalled) "Ask AI" else "Install AI Assistant",
+            action = { /* ... */ }
+        )
+    )
+)
+```
+
+### Use Cases
+
+- **Dynamic menu items**: Check installation status, connection state, or permissions before showing menu
+- **Analytics**: Track how often users open the context menu
+- **State refresh**: Update menu item labels or enabled states based on current context
+
+The callback is invoked for all tabs and split panes within the terminal.
 
 ## Settings Override
 

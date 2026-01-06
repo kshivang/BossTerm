@@ -72,11 +72,13 @@ fun EmbeddableTerminal(
 | `workingDirectory` | `String?` | Initial working directory (defaults to user home) |
 | `environment` | `Map<String, String>?` | Additional environment variables |
 | `initialCommand` | `String?` | Command to run after terminal is ready (see [Initial Command](#initial-command)) |
+| `onInitialCommandComplete` | `(Boolean, Int) -> Unit` | Callback when initial command finishes (see [Initial Command Completion](#initial-command-completion)) |
 | `onOutput` | `(String) -> Unit` | Callback for terminal output |
 | `onTitleChange` | `(String) -> Unit` | Callback when terminal title changes |
 | `onExit` | `(Int) -> Unit` | Callback when shell process exits |
 | `onReady` | `() -> Unit` | Callback when terminal is ready |
 | `contextMenuItems` | `List<ContextMenuElement>` | Custom context menu items |
+| `onContextMenuOpen` | `() -> Unit` | Callback before context menu displays (see [Context Menu Open Callback](#context-menu-open-callback)) |
 | `onLinkClick` | `(HyperlinkInfo) -> Boolean` | Custom link click handler with rich metadata; return `true` if handled, `false` for default behavior (see [Custom Link Handling](#custom-link-handling)) |
 | `settingsOverride` | `TerminalSettingsOverride?` | Per-instance settings overrides (see [Settings Override](#settings-override)) |
 | `hyperlinkRegistry` | `HyperlinkRegistry` | Custom hyperlink patterns for this instance (see [Custom Hyperlink Patterns](#custom-hyperlink-patterns)) |
@@ -165,6 +167,101 @@ EmbeddableTerminal(
 ```
 
 The `initialCommand` parameter is preferred because it handles shell readiness timing automatically.
+
+## Initial Command Completion
+
+The `onInitialCommandComplete` callback fires when the initial command finishes executing. This is useful for:
+- Triggering the next step in a workflow after setup completes
+- Updating UI status based on command success/failure
+- Error handling when initial setup fails
+
+```kotlin
+EmbeddableTerminal(
+    initialCommand = "npm install && npm run build",
+    onInitialCommandComplete = { success, exitCode ->
+        if (success) {
+            println("Setup complete!")
+            // Proceed with next step
+        } else {
+            println("Setup failed with exit code: $exitCode")
+            // Show error UI
+        }
+    }
+)
+```
+
+### Callback Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `success` | `Boolean` | `true` if exit code is 0, `false` otherwise |
+| `exitCode` | `Int` | The command's exit code (0 = success, non-zero = failure) |
+
+### Requirements
+
+This callback requires **OSC 133 shell integration** to detect command completion. Without shell integration, the callback will not fire.
+
+To enable OSC 133 in your shell, see [Shell Integration](../README.md#shell-integration).
+
+### Example: Build Status Indicator
+
+```kotlin
+@Composable
+fun TerminalWithBuildStatus() {
+    var buildStatus by remember { mutableStateOf<String?>(null) }
+
+    Column {
+        // Status indicator
+        buildStatus?.let { status ->
+            Text(
+                text = status,
+                color = if (status.contains("success")) Color.Green else Color.Red
+            )
+        }
+
+        EmbeddableTerminal(
+            initialCommand = "./gradlew build",
+            onInitialCommandComplete = { success, exitCode ->
+                buildStatus = if (success) {
+                    "Build succeeded!"
+                } else {
+                    "Build failed (exit code: $exitCode)"
+                }
+            },
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+```
+
+## Context Menu Open Callback
+
+The `onContextMenuOpen` callback fires immediately before the context menu is displayed. This is useful for:
+- Refreshing dynamic menu item state (e.g., checking if a tool is installed)
+- Analytics tracking
+- Updating UI state based on menu visibility
+
+```kotlin
+EmbeddableTerminal(
+    onContextMenuOpen = {
+        // Refresh menu item state before display
+        refreshAIAssistantStatus()
+    },
+    contextMenuItems = listOf(
+        ContextMenuItem(
+            id = "ai_assist",
+            label = if (isAIInstalled) "Ask AI" else "Install AI Assistant",
+            action = { /* ... */ }
+        )
+    )
+)
+```
+
+### Use Cases
+
+- **Dynamic menu items**: Check installation status, connection state, or permissions before showing menu
+- **Analytics**: Track how often users open the context menu
+- **State refresh**: Update menu item labels or enabled states based on current context
 
 ## Custom Context Menu
 

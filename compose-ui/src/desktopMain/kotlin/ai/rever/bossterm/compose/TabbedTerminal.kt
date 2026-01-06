@@ -83,8 +83,11 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  *                    proceed with default behavior (open in browser/finder). When null, uses default behavior.
  * @param contextMenuItems Custom context menu items to add below the built-in items (Copy, Paste, Clear, Select All).
  *                         Applies to all tabs and split panes within the terminal.
- * @param onContextMenuOpen Callback invoked right before the context menu is displayed.
+ * @param onContextMenuOpen Callback invoked right before the context menu is displayed (sync).
  *                          Use case: refresh dynamic menu item state (e.g., check AI assistant installation status).
+ * @param onContextMenuOpenAsync Async callback invoked right before the context menu is displayed.
+ *                               Menu display is delayed until this callback completes.
+ *                               Use case: async refresh of dynamic menu item state before menu shows.
  * @param settingsOverride Per-instance settings overrides. Non-null fields override global settings.
  *                         Example: `TerminalSettingsOverride(alwaysShowTabBar = true)` to always show tab bar.
  * @param hyperlinkRegistry Custom hyperlink pattern registry for per-instance hyperlink customization.
@@ -108,6 +111,7 @@ fun TabbedTerminal(
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
     onContextMenuOpen: (() -> Unit)? = null,
+    onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     settingsOverride: TerminalSettingsOverride? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
@@ -558,6 +562,7 @@ fun TabbedTerminal(
                 },
                 customContextMenuItems = contextMenuItems,
                 onContextMenuOpen = onContextMenuOpen,
+                onContextMenuOpenAsync = onContextMenuOpenAsync,
                 hyperlinkRegistry = hyperlinkRegistry,
                 modifier = Modifier.fillMaxSize()
             )

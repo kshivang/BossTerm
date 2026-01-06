@@ -106,6 +106,11 @@ private fun ApplicationScope.TabbedTerminalWindow(
     // Track context menu opens (onContextMenuOpen demo)
     var contextMenuOpenCount by remember { mutableStateOf(0) }
 
+    // === Dynamic Context Menu Demo (issue #223) ===
+    // Simulates AI assistant installation status that changes over time
+    var aiAssistantInstalled by remember { mutableStateOf(false) }
+    var lastCheckTime by remember { mutableStateOf("Never") }
+
     // Menu actions for wiring up menu bar
     val menuActions = remember { MenuActions() }
 
@@ -186,78 +191,6 @@ private fun ApplicationScope.TabbedTerminalWindow(
                     Box(modifier = Modifier.fillMaxSize()) {
                         when (currentView) {
                             AppView.TERMINAL -> {
-                                // Custom context menu items demonstrating the contextMenuItems API
-                                val customContextMenuItems = remember {
-                                    listOf(
-                                        // Section with label
-                                        ContextMenuSection(
-                                            id = "quick_commands_section",
-                                            label = "Quick Commands"
-                                        ),
-                                        // Simple menu items
-                                        ContextMenuItem(
-                                            id = "list_files",
-                                            label = "List Files (ls -la)",
-                                            action = { terminalState.activeTab?.writeUserInput("ls -la\n") }
-                                        ),
-                                        ContextMenuItem(
-                                            id = "show_pwd",
-                                            label = "Show Directory (pwd)",
-                                            action = { terminalState.activeTab?.writeUserInput("pwd\n") }
-                                        ),
-                                        // Submenu with nested items
-                                        ContextMenuSubmenu(
-                                            id = "git_commands",
-                                            label = "Git Commands",
-                                            items = listOf(
-                                                ContextMenuItem(
-                                                    id = "git_status",
-                                                    label = "Status",
-                                                    action = { terminalState.activeTab?.writeUserInput("git status\n") }
-                                                ),
-                                                ContextMenuItem(
-                                                    id = "git_log",
-                                                    label = "Log (last 10)",
-                                                    action = { terminalState.activeTab?.writeUserInput("git log --oneline -10\n") }
-                                                ),
-                                                ContextMenuSection(id = "git_branch_section"),
-                                                ContextMenuItem(
-                                                    id = "git_branch",
-                                                    label = "List Branches",
-                                                    action = { terminalState.activeTab?.writeUserInput("git branch -a\n") }
-                                                )
-                                            )
-                                        ),
-                                        // Another section
-                                        ContextMenuSection(id = "system_section"),
-                                        ContextMenuItem(
-                                            id = "system_info",
-                                            label = "System Info (uname -a)",
-                                            action = { terminalState.activeTab?.writeUserInput("uname -a\n") }
-                                        ),
-                                        // Control signals section (sendInput API demo)
-                                        ContextMenuSection(
-                                            id = "control_signals_section",
-                                            label = "Control Signals"
-                                        ),
-                                        ContextMenuItem(
-                                            id = "send_ctrl_c",
-                                            label = "Send Ctrl+C (Interrupt)",
-                                            action = { terminalState.sendCtrlC() }
-                                        ),
-                                        ContextMenuItem(
-                                            id = "send_ctrl_d",
-                                            label = "Send Ctrl+D (EOF)",
-                                            action = { terminalState.sendCtrlD() }
-                                        ),
-                                        ContextMenuItem(
-                                            id = "send_ctrl_z",
-                                            label = "Send Ctrl+Z (Suspend)",
-                                            action = { terminalState.sendCtrlZ() }
-                                        )
-                                    )
-                                }
-
                                 // Terminal with external state - sessions persist across view switches!
                                 TabbedTerminal(
                                     state = terminalState,
@@ -267,7 +200,6 @@ private fun ApplicationScope.TabbedTerminalWindow(
                                     onShowSettings = { showSettings = true },
                                     menuActions = menuActions,
                                     isWindowFocused = { isWindowFocused },
-                                    contextMenuItems = customContextMenuItems,
                                     // onInitialCommandComplete callback - called when initial command finishes
                                     // Use case: trigger next step in workflow after setup completes
                                     // Requires OSC 133 shell integration to detect command completion
@@ -278,15 +210,95 @@ private fun ApplicationScope.TabbedTerminalWindow(
                                             "Initial command failed (exit: $exitCode)"
                                         }
                                     },
-                                    // onContextMenuOpenAsync callback - awaited before menu is displayed
-                                    // Use case: refresh dynamic menu item state (e.g., AI assistant detection)
-                                    // The context menu will wait for this suspend function to complete
+                                    // === contextMenuItemsProvider Demo (issue #223) ===
+                                    // onContextMenuOpenAsync runs first, updates state
                                     onContextMenuOpenAsync = {
                                         contextMenuOpenCount++
-                                        windowTitle = "Refreshing... ($contextMenuOpenCount)"
-                                        // Simulate async data fetch (e.g., checking AI tool installation)
-                                        delay(100) // Replace with actual async operation
-                                        windowTitle = "Menu ready with fresh data ($contextMenuOpenCount times)"
+                                        windowTitle = "Checking AI assistant... ($contextMenuOpenCount)"
+                                        // Simulate async check (e.g., checking if Claude/Copilot is installed)
+                                        delay(150)
+                                        // Toggle installation status to demonstrate dynamic updates
+                                        aiAssistantInstalled = !aiAssistantInstalled
+                                        lastCheckTime = java.time.LocalTime.now().toString().take(8)
+                                        windowTitle = "AI: ${if (aiAssistantInstalled) "Installed" else "Not installed"}"
+                                    },
+                                    // contextMenuItemsProvider is called AFTER onContextMenuOpenAsync completes
+                                    // This ensures the menu items reflect the latest state
+                                    contextMenuItemsProvider = {
+                                        listOf(
+                                            // === Dynamic AI Assistant Section ===
+                                            ContextMenuSection(id = "ai_section", label = "AI Assistant (Dynamic)"),
+                                            ContextMenuItem(
+                                                id = "ai_action",
+                                                // Label changes based on installation status
+                                                label = if (aiAssistantInstalled) "Ask AI Assistant" else "Install AI Assistant",
+                                                action = {
+                                                    if (aiAssistantInstalled) {
+                                                        terminalState.write("echo 'AI Assistant: How can I help?'\n")
+                                                    } else {
+                                                        terminalState.write("echo 'Installing AI Assistant...'\n")
+                                                    }
+                                                }
+                                            ),
+                                            ContextMenuItem(
+                                                id = "ai_status",
+                                                label = "Status: ${if (aiAssistantInstalled) "Installed" else "Not installed"} (checked: $lastCheckTime)",
+                                                enabled = false,  // Info-only item
+                                                action = {}
+                                            ),
+                                            // === Static Commands Section ===
+                                            ContextMenuSection(id = "quick_commands_section", label = "Quick Commands"),
+                                            ContextMenuItem(
+                                                id = "list_files",
+                                                label = "List Files (ls -la)",
+                                                action = { terminalState.write("ls -la\n") }
+                                            ),
+                                            ContextMenuItem(
+                                                id = "show_pwd",
+                                                label = "Show Directory (pwd)",
+                                                action = { terminalState.write("pwd\n") }
+                                            ),
+                                            // Submenu with nested items
+                                            ContextMenuSubmenu(
+                                                id = "git_commands",
+                                                label = "Git Commands",
+                                                items = listOf(
+                                                    ContextMenuItem(
+                                                        id = "git_status",
+                                                        label = "Status",
+                                                        action = { terminalState.write("git status\n") }
+                                                    ),
+                                                    ContextMenuItem(
+                                                        id = "git_log",
+                                                        label = "Log (last 10)",
+                                                        action = { terminalState.write("git log --oneline -10\n") }
+                                                    ),
+                                                    ContextMenuSection(id = "git_branch_section"),
+                                                    ContextMenuItem(
+                                                        id = "git_branch",
+                                                        label = "List Branches",
+                                                        action = { terminalState.write("git branch -a\n") }
+                                                    )
+                                                )
+                                            ),
+                                            // Control signals section
+                                            ContextMenuSection(id = "control_signals_section", label = "Control Signals"),
+                                            ContextMenuItem(
+                                                id = "send_ctrl_c",
+                                                label = "Send Ctrl+C (Interrupt)",
+                                                action = { terminalState.sendCtrlC() }
+                                            ),
+                                            ContextMenuItem(
+                                                id = "send_ctrl_d",
+                                                label = "Send Ctrl+D (EOF)",
+                                                action = { terminalState.sendCtrlD() }
+                                            ),
+                                            ContextMenuItem(
+                                                id = "send_ctrl_z",
+                                                label = "Send Ctrl+Z (Suspend)",
+                                                action = { terminalState.sendCtrlZ() }
+                                            )
+                                        )
                                     },
                                     workingDirectory = "/tmp",
                                     // Initial command to run when terminal starts

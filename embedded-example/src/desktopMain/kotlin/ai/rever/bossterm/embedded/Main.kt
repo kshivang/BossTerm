@@ -51,6 +51,12 @@ fun EmbeddedExampleApp() {
     var statusMessage by remember { mutableStateOf("Ready") }
     var contextMenuOpenCount by remember { mutableStateOf(0) }
 
+    // === Dynamic Context Menu Demo ===
+    // Simulates AI assistant installation status that changes over time
+    // This demonstrates the contextMenuItemsProvider feature (issue #223)
+    var aiAssistantInstalled by remember { mutableStateOf(false) }
+    var lastCheckTime by remember { mutableStateOf("Never") }
+
     // Settings override for compact terminal (smaller font, no scrollbar)
     val compactSettingsOverride = remember {
         TerminalSettingsOverride(
@@ -122,54 +128,80 @@ fun EmbeddedExampleApp() {
                                     "Initial command failed (exit code: $exitCode)"
                                 }
                             },
-                            // onContextMenuOpenAsync callback demo - awaited before menu shows
-                            // Use this for async operations like fetching fresh data for dynamic menu items
-                            // The context menu will wait for this to complete before displaying
+                            // === contextMenuItemsProvider Demo (issue #223) ===
+                            // onContextMenuOpenAsync runs first, updates state
                             onContextMenuOpenAsync = {
                                 contextMenuOpenCount++
-                                statusMessage = "Refreshing data before context menu... ($contextMenuOpenCount)"
-                                // Simulate async data fetch (e.g., AI assistant detection)
-                                delay(100) // Replace with actual async operation
-                                statusMessage = "Context menu ready with fresh data ($contextMenuOpenCount times)"
+                                statusMessage = "Checking AI assistant status... ($contextMenuOpenCount)"
+                                // Simulate async check (e.g., checking if Claude/Copilot is installed)
+                                delay(150)
+                                // Toggle installation status to demonstrate dynamic updates
+                                aiAssistantInstalled = !aiAssistantInstalled
+                                lastCheckTime = java.time.LocalTime.now().toString().take(8)
+                                statusMessage = "AI check complete: ${if (aiAssistantInstalled) "Installed" else "Not installed"}"
                             },
-                            // Custom context menu items with sections and submenus
-                            contextMenuItems = listOf(
-                                // Section with label
-                                ContextMenuSection(id = "commands_section", label = "Quick Commands"),
-                                ContextMenuItem(
-                                    id = "run_pwd",
-                                    label = "Run 'pwd'",
-                                    action = { terminalState.write("pwd\n") }
-                                ),
-                                ContextMenuItem(
-                                    id = "run_ls",
-                                    label = "Run 'ls'",
-                                    action = { terminalState.write("ls\n") }
-                                ),
-                                // Submenu with more options
-                                ContextMenuSubmenu(
-                                    id = "more_commands",
-                                    label = "More Commands",
-                                    items = listOf(
-                                        ContextMenuItem(
-                                            id = "run_date",
-                                            label = "Show Date",
-                                            action = { terminalState.write("date\n") }
-                                        ),
-                                        ContextMenuItem(
-                                            id = "run_whoami",
-                                            label = "Who Am I",
-                                            action = { terminalState.write("whoami\n") }
-                                        ),
-                                        ContextMenuSection(id = "git_section"),
-                                        ContextMenuItem(
-                                            id = "git_status",
-                                            label = "Git Status",
-                                            action = { terminalState.write("git status\n") }
+                            // contextMenuItemsProvider is called AFTER onContextMenuOpenAsync completes
+                            // This ensures the menu items reflect the latest state
+                            contextMenuItemsProvider = {
+                                listOf(
+                                    // === Dynamic AI Assistant Section ===
+                                    // These items update based on aiAssistantInstalled state
+                                    ContextMenuSection(id = "ai_section", label = "AI Assistant (Dynamic)"),
+                                    ContextMenuItem(
+                                        id = "ai_action",
+                                        // Label changes based on installation status
+                                        label = if (aiAssistantInstalled) "Ask AI Assistant" else "Install AI Assistant",
+                                        action = {
+                                            if (aiAssistantInstalled) {
+                                                terminalState.write("echo 'AI Assistant: How can I help?'\n")
+                                            } else {
+                                                terminalState.write("echo 'Installing AI Assistant...'\n")
+                                            }
+                                        }
+                                    ),
+                                    ContextMenuItem(
+                                        id = "ai_status",
+                                        label = "Status: ${if (aiAssistantInstalled) "Installed" else "Not installed"} (checked: $lastCheckTime)",
+                                        enabled = false,  // Info-only item
+                                        action = {}
+                                    ),
+                                    // === Static Commands Section ===
+                                    ContextMenuSection(id = "commands_section", label = "Quick Commands"),
+                                    ContextMenuItem(
+                                        id = "run_pwd",
+                                        label = "Run 'pwd'",
+                                        action = { terminalState.write("pwd\n") }
+                                    ),
+                                    ContextMenuItem(
+                                        id = "run_ls",
+                                        label = "Run 'ls'",
+                                        action = { terminalState.write("ls\n") }
+                                    ),
+                                    // Submenu with more options
+                                    ContextMenuSubmenu(
+                                        id = "more_commands",
+                                        label = "More Commands",
+                                        items = listOf(
+                                            ContextMenuItem(
+                                                id = "run_date",
+                                                label = "Show Date",
+                                                action = { terminalState.write("date\n") }
+                                            ),
+                                            ContextMenuItem(
+                                                id = "run_whoami",
+                                                label = "Who Am I",
+                                                action = { terminalState.write("whoami\n") }
+                                            ),
+                                            ContextMenuSection(id = "git_section"),
+                                            ContextMenuItem(
+                                                id = "git_status",
+                                                label = "Git Status",
+                                                action = { terminalState.write("git status\n") }
+                                            )
                                         )
                                     )
                                 )
-                            ),
+                            },
                             modifier = Modifier.fillMaxSize()
                         )
                     }

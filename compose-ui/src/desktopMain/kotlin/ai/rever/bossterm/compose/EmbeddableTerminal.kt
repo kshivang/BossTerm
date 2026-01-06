@@ -10,6 +10,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import ai.rever.bossterm.compose.ai.AIAssistantDetector
+import ai.rever.bossterm.compose.ai.AIAssistantLauncher
+import ai.rever.bossterm.compose.ai.AIAssistantMenuProvider
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
 import ai.rever.bossterm.compose.ui.ProperTerminal
@@ -201,6 +204,29 @@ fun EmbeddableTerminal(
         loadTerminalFont(resolvedSettings.fontName)
     }
 
+    // AI Assistant integration (issue #225)
+    val aiDetector = remember { AIAssistantDetector() }
+    val aiLauncher = remember { AIAssistantLauncher() }
+    val aiMenuProvider = remember(aiDetector, aiLauncher) {
+        AIAssistantMenuProvider(aiDetector, aiLauncher)
+    }
+
+    // Start auto-refresh if enabled in settings
+    LaunchedEffect(resolvedSettings.aiAssistantsEnabled, resolvedSettings.aiAssistantsAutoRefresh) {
+        if (resolvedSettings.aiAssistantsEnabled && resolvedSettings.aiAssistantsAutoRefresh) {
+            aiDetector.startAutoRefresh(resolvedSettings.aiAssistantsRefreshIntervalMs)
+        } else {
+            aiDetector.stopAutoRefresh()
+        }
+    }
+
+    // Cleanup AI detector on dispose
+    DisposableEffect(aiDetector) {
+        onDispose {
+            aiDetector.dispose()
+        }
+    }
+
     // Initialize session if not already done (session lives in state, not composable)
     LaunchedEffect(effectiveState, resolvedSettings, effectiveCommand) {
         if (effectiveState.session == null) {
@@ -249,9 +275,36 @@ fun EmbeddableTerminal(
             onNewWindow = onNewWindow,
             enableDebugPanel = false,  // Hide debug panel in embedded mode
             customContextMenuItems = contextMenuItems,
-            customContextMenuItemsProvider = contextMenuItemsProvider,
+            // Combine user-provided items with AI assistant items
+            customContextMenuItemsProvider = if (resolvedSettings.aiAssistantsEnabled || contextMenuItemsProvider != null) {
+                {
+                    val userItems = contextMenuItemsProvider?.invoke() ?: contextMenuItems
+                    if (resolvedSettings.aiAssistantsEnabled) {
+                        // Get working directory from session for launching AI assistants
+                        val workingDir = session.workingDirectory?.value
+                        val aiItems = aiMenuProvider.getMenuItems(
+                            terminalWriter = { text -> session.writeUserInput(text) },
+                            workingDirectory = workingDir,
+                            configs = resolvedSettings.aiAssistantConfigs
+                        )
+                        userItems + aiItems
+                    } else {
+                        userItems
+                    }
+                }
+            } else null,
             onContextMenuOpen = onContextMenuOpen,
-            onContextMenuOpenAsync = onContextMenuOpenAsync,
+            // Combine user async callback with AI detection refresh
+            onContextMenuOpenAsync = if (resolvedSettings.aiAssistantsEnabled || onContextMenuOpenAsync != null) {
+                {
+                    // Run user callback first if provided
+                    onContextMenuOpenAsync?.invoke()
+                    // Refresh AI assistant detection before showing menu
+                    if (resolvedSettings.aiAssistantsEnabled) {
+                        aiDetector.detectAll()
+                    }
+                }
+            } else null,
             onLinkClick = onLinkClick,
             hyperlinkRegistry = hyperlinkRegistry,
             modifier = modifier

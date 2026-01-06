@@ -6,6 +6,31 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 
 /**
+ * Per-assistant configuration stored in settings.
+ */
+@Serializable
+data class AIAssistantConfigData(
+    val enabled: Boolean = true,
+    val yoloEnabled: Boolean = true,
+    val customCommand: String? = null,
+    val customYoloFlag: String? = null
+)
+
+/**
+ * Custom AI assistant defined by the user.
+ */
+@Serializable
+data class CustomAIAssistantData(
+    val id: String,
+    val displayName: String,
+    val command: String,
+    val yoloFlag: String = "",
+    val yoloLabel: String = "Auto",
+    val description: String = "",
+    val websiteUrl: String = ""
+)
+
+/**
  * Terminal settings data class with all user-configurable options.
  * Based on legacy SettingsProvider interface from ui module.
  */
@@ -650,7 +675,41 @@ data class TerminalSettings(
      * When false (default), tab bar auto-hides when only one tab is open.
      * When true, tab bar is always visible for consistency and quick access to "+" button.
      */
-    val alwaysShowTabBar: Boolean = false
+    val alwaysShowTabBar: Boolean = false,
+
+    // ===== AI Assistant Settings =====
+
+    /**
+     * Enable AI coding assistant integration in context menu.
+     * When true, shows "AI Assistants" section with detected assistants.
+     * When false, the AI Assistants section is hidden from context menu.
+     */
+    val aiAssistantsEnabled: Boolean = true,
+
+    /**
+     * Automatically refresh AI assistant installation status.
+     * When true, periodically checks if assistants are installed/uninstalled.
+     * When false, only checks once on context menu first open.
+     */
+    val aiAssistantsAutoRefresh: Boolean = true,
+
+    /**
+     * Interval in milliseconds for auto-refresh of AI assistant status.
+     * Only applies when aiAssistantsAutoRefresh is true.
+     * Default: 30 seconds (30000ms)
+     */
+    val aiAssistantsRefreshIntervalMs: Long = 30000,
+
+    /**
+     * Per-assistant configuration (enabled, yoloEnabled, customCommand, etc.).
+     * Key is the assistant ID.
+     */
+    val aiAssistantConfigs: Map<String, AIAssistantConfigData> = emptyMap(),
+
+    /**
+     * Custom AI assistants defined by the user.
+     */
+    val customAIAssistants: List<CustomAIAssistantData> = emptyList()
 ) {
     // Non-serialized computed properties
 

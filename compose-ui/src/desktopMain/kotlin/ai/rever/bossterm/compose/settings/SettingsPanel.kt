@@ -337,6 +337,11 @@ private fun SettingsContent(
                 onSettingsChange = onSettingsChange,
                 onSettingsSave = onSettingsSave
             )
+            SettingsCategory.AI_ASSISTANTS -> AIAssistantSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave
+            )
             SettingsCategory.ABOUT -> AboutSection()
         }
     }

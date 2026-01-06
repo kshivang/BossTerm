@@ -180,10 +180,11 @@ class ContextMenuController {
             when (element) {
                 is MenuItem -> {
                     if (element.id.startsWith("separator")) {
-                        menu.add(JSeparator().apply {
+                        val separator = JSeparator().apply {
                             background = Color(0x2B, 0x2B, 0x2B)
                             foreground = Color(0x3C, 0x3F, 0x41)
-                        })
+                        }
+                        addToMenu(menu, separator)
                     } else {
                         val menuItem = JMenuItem(element.label).apply {
                             isEnabled = element.enabled
@@ -194,27 +195,30 @@ class ContextMenuController {
                             isOpaque = true
                             addActionListener { element.action() }
                         }
-                        menu.add(menuItem)
+                        addToMenu(menu, menuItem)
                     }
                 }
                 is MenuSeparator -> {
                     if (element.label != null) {
                         // Section with label
-                        menu.add(JSeparator().apply {
+                        val separator = JSeparator().apply {
                             background = Color(0x2B, 0x2B, 0x2B)
                             foreground = Color(0x3C, 0x3F, 0x41)
-                        })
-                        menu.add(JLabel(element.label).apply {
+                        }
+                        addToMenu(menu, separator)
+                        val label = JLabel(element.label).apply {
                             foreground = Color.GRAY
                             font = Font(".AppleSystemUIFont", Font.PLAIN, 11)
                             border = BorderFactory.createEmptyBorder(2, 12, 2, 12)
-                        })
+                        }
+                        addToMenu(menu, label)
                     } else {
                         // Plain separator
-                        menu.add(JSeparator().apply {
+                        val separator = JSeparator().apply {
                             background = Color(0x2B, 0x2B, 0x2B)
                             foreground = Color(0x3C, 0x3F, 0x41)
-                        })
+                        }
+                        addToMenu(menu, separator)
                     }
                 }
                 is MenuSubmenu -> {
@@ -228,9 +232,21 @@ class ContextMenuController {
                         popupMenu.border = BorderFactory.createLineBorder(Color(0x3C, 0x3F, 0x41), 1)
                     }
                     addElementsToMenu(submenu, element.items)
-                    menu.add(submenu)
+                    addToMenu(menu, submenu)
                 }
             }
+        }
+    }
+
+    /**
+     * Helper to add component to the correct menu type.
+     * JMenu and JPopupMenu have different add() methods than JComponent.
+     */
+    private fun addToMenu(menu: javax.swing.JComponent, item: java.awt.Component) {
+        when (menu) {
+            is JMenu -> menu.add(item)
+            is JPopupMenu -> menu.add(item)
+            else -> menu.add(item)
         }
     }
 

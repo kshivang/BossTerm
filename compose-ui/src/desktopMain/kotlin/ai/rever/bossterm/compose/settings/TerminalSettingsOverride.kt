@@ -147,7 +147,14 @@ data class TerminalSettingsOverride(
     val splitInheritWorkingDirectory: Boolean? = null,
 
     // ===== Tab Bar Settings =====
-    val alwaysShowTabBar: Boolean? = null
+    val alwaysShowTabBar: Boolean? = null,
+
+    // ===== AI Assistant Settings =====
+    val aiAssistantsEnabled: Boolean? = null,
+    val aiAssistantsAutoRefresh: Boolean? = null,
+    val aiAssistantsRefreshIntervalMs: Long? = null,
+    val aiAssistantConfigs: Map<String, AIAssistantConfigData>? = null,
+    val customAIAssistants: List<CustomAIAssistantData>? = null
 )
 
 /**
@@ -287,6 +294,13 @@ fun TerminalSettings.withOverrides(override: TerminalSettingsOverride?): Termina
         splitInheritWorkingDirectory = override.splitInheritWorkingDirectory ?: splitInheritWorkingDirectory,
 
         // Tab Bar Settings
-        alwaysShowTabBar = override.alwaysShowTabBar ?: alwaysShowTabBar
+        alwaysShowTabBar = override.alwaysShowTabBar ?: alwaysShowTabBar,
+
+        // AI Assistant Settings
+        aiAssistantsEnabled = override.aiAssistantsEnabled ?: aiAssistantsEnabled,
+        aiAssistantsAutoRefresh = override.aiAssistantsAutoRefresh ?: aiAssistantsAutoRefresh,
+        aiAssistantsRefreshIntervalMs = override.aiAssistantsRefreshIntervalMs ?: aiAssistantsRefreshIntervalMs,
+        aiAssistantConfigs = override.aiAssistantConfigs ?: aiAssistantConfigs,
+        customAIAssistants = override.customAIAssistants ?: customAIAssistants
     )
 }

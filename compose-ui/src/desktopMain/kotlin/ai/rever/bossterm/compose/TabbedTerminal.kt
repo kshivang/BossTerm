@@ -9,6 +9,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import ai.rever.bossterm.compose.ContextMenuElement
+import ai.rever.bossterm.compose.ai.AIAssistantDetector
+import ai.rever.bossterm.compose.ai.AIAssistantLauncher
+import ai.rever.bossterm.compose.ai.AIAssistantMenuProvider
 import ai.rever.bossterm.compose.menu.MenuActions
 import ai.rever.bossterm.compose.util.loadTerminalFont
 import ai.rever.bossterm.compose.settings.SettingsManager
@@ -134,6 +137,29 @@ fun TabbedTerminal(
     // Load font once and share across all tabs (supports custom font via settings)
     val sharedFont = remember(settings.fontName) {
         loadTerminalFont(settings.fontName)
+    }
+
+    // AI Assistant integration (issue #225)
+    val aiDetector = remember { AIAssistantDetector() }
+    val aiLauncher = remember { AIAssistantLauncher() }
+    val aiMenuProvider = remember(aiDetector, aiLauncher) {
+        AIAssistantMenuProvider(aiDetector, aiLauncher)
+    }
+
+    // Start auto-refresh if enabled in settings
+    LaunchedEffect(settings.aiAssistantsEnabled, settings.aiAssistantsAutoRefresh) {
+        if (settings.aiAssistantsEnabled && settings.aiAssistantsAutoRefresh) {
+            aiDetector.startAutoRefresh(settings.aiAssistantsRefreshIntervalMs)
+        } else {
+            aiDetector.stopAutoRefresh()
+        }
+    }
+
+    // Cleanup AI detector on dispose
+    DisposableEffect(aiDetector) {
+        onDispose {
+            aiDetector.dispose()
+        }
     }
 
     // Initialize external state if provided (only once)
@@ -567,9 +593,38 @@ fun TabbedTerminal(
                     }
                 },
                 customContextMenuItems = contextMenuItems,
-                customContextMenuItemsProvider = contextMenuItemsProvider,
+                // Combine user-provided items with AI assistant items
+                customContextMenuItemsProvider = if (settings.aiAssistantsEnabled || contextMenuItemsProvider != null) {
+                    {
+                        val userItems = contextMenuItemsProvider?.invoke() ?: contextMenuItems
+                        if (settings.aiAssistantsEnabled) {
+                            // Get working directory from focused session for launching AI assistants
+                            val workingDir = splitState.getFocusedSession()?.workingDirectory?.value
+                            val aiItems = aiMenuProvider.getMenuItems(
+                                terminalWriter = { text ->
+                                    splitState.getFocusedSession()?.writeUserInput(text)
+                                },
+                                workingDirectory = workingDir,
+                                configs = settings.aiAssistantConfigs
+                            )
+                            userItems + aiItems
+                        } else {
+                            userItems
+                        }
+                    }
+                } else null,
                 onContextMenuOpen = onContextMenuOpen,
-                onContextMenuOpenAsync = onContextMenuOpenAsync,
+                // Combine user async callback with AI detection refresh
+                onContextMenuOpenAsync = if (settings.aiAssistantsEnabled || onContextMenuOpenAsync != null) {
+                    {
+                        // Run user callback first if provided
+                        onContextMenuOpenAsync?.invoke()
+                        // Refresh AI assistant detection before showing menu
+                        if (settings.aiAssistantsEnabled) {
+                            aiDetector.detectAll()
+                        }
+                    }
+                } else null,
                 hyperlinkRegistry = hyperlinkRegistry,
                 modifier = Modifier.fillMaxSize()
             )

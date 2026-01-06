@@ -78,6 +78,11 @@ enum class SettingsCategory(
         icon = Icons.Default.Splitscreen,
         description = "Split pane behavior and appearance"
     ),
+    AI_ASSISTANTS(
+        displayName = "AI Assistants",
+        icon = Icons.Default.Face,
+        description = "AI coding assistant integration"
+    ),
     ABOUT(
         displayName = "About",
         icon = Icons.Default.Favorite,

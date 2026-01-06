@@ -47,7 +47,6 @@ import ai.rever.bossterm.core.util.TermSize
 import ai.rever.bossterm.terminal.CursorShape
 import ai.rever.bossterm.terminal.RequestOrigin
 import ai.rever.bossterm.terminal.TerminalDisplay
-import ai.rever.bossterm.terminal.TerminalKeyEncoder
 import ai.rever.bossterm.terminal.emulator.mouse.MouseButtonCodes
 import ai.rever.bossterm.terminal.emulator.mouse.MouseMode
 import ai.rever.bossterm.terminal.model.BufferSnapshot
@@ -271,22 +270,9 @@ fun ProperTerminal(
   // Track previous hover state for consumer callbacks
   var previousHoveredHyperlink by remember { mutableStateOf<Hyperlink?>(null) }
 
-  // Terminal key encoder for proper escape sequence generation (function keys, modifiers, etc.)
-  val keyEncoder = remember { TerminalKeyEncoder() }
-
-  // Configure key encoder based on settings
-  // We configure BOTH encoders because:
-  // - keyEncoder (local): Used at line ~1358 for keyboard input processing (getCode)
-  // - terminal's encoder: Configured via Terminal interface for architectural consistency
-  //   and potential future use by terminal emulation code
-  // Note: Defaults in TerminalKeyEncoder.init() match TerminalSettings defaults,
-  // so there's no incorrect state before this effect runs on first render.
+  // Configure terminal's key encoder based on settings
   LaunchedEffect(settings.shiftEnterBehavior, settings.altSendsEscape) {
     val shiftEnterNewline = settings.shiftEnterBehavior == "newline"
-    // Configure local key encoder (used for keyboard input at line ~1358)
-    keyEncoder.setShiftEnterSendsNewline(shiftEnterNewline)
-    keyEncoder.setAltSendsEscape(settings.altSendsEscape)
-    // Configure terminal's internal encoder (via Terminal interface)
     terminal.setShiftEnterSendsNewline(shiftEnterNewline)
     terminal.setAltSendsEscape(settings.altSendsEscape)
   }
@@ -1373,12 +1359,12 @@ fun ProperTerminal(
 
             scope.launch {
               val text = run {
-                // Try to map key to VK code and use TerminalKeyEncoder
-                // This handles function keys, navigation keys, and all modifier combinations
+                // Try to map key to VK code and use terminal's key encoder
+                // This handles function keys, navigation keys, and respects terminal mode (DECCKM, DECKPAM)
                 val vkCode = KeyMappingUtils.mapComposeKeyToVK(keyEvent.key)
                 if (vkCode != null) {
                   val modifiers = KeyMappingUtils.mapComposeModifiers(keyEvent)
-                  val bytes = keyEncoder.getCode(vkCode, modifiers)
+                  val bytes = terminal.getCodeForKey(vkCode, modifiers)
                   if (bytes != null) {
                     return@run String(bytes, Charsets.UTF_8)
                   }

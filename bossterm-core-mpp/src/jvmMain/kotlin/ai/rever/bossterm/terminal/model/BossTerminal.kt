@@ -887,10 +887,17 @@ class BossTerminal(
     }
 
     override fun setApplicationKeypad(enabled: Boolean) {
+        // DECKPAM (ESC =) enables keypad application sequences.
+        // We also synchronize arrow keys to application mode here, matching practical xterm
+        // behavior where smkx typically sends both DECKPAM and DECCKM sequences.
+        // Note: VT100 spec separates DECKPAM (keypad) from DECCKM (cursor keys), but
+        // synchronizing them provides better compatibility with ncurses apps like htop/less.
         if (enabled) {
             myTerminalKeyEncoder.keypadApplicationSequences()
+            myTerminalKeyEncoder.arrowKeysApplicationSequences()
         } else {
             myTerminalKeyEncoder.keypadAnsiSequences()
+            myTerminalKeyEncoder.arrowKeysAnsiCursorSequences()
         }
     }
 

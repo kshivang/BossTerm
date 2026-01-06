@@ -64,6 +64,7 @@ fun SplitContainer(
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     customContextMenuItems: List<ContextMenuElement> = emptyList(),
     onContextMenuOpen: (() -> Unit)? = null,
+    onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 ) {
@@ -95,6 +96,7 @@ fun SplitContainer(
             onLinkClick = onLinkClick,
             customContextMenuItems = customContextMenuItems,
             onContextMenuOpen = onContextMenuOpen,
+            onContextMenuOpenAsync = onContextMenuOpenAsync,
             hyperlinkRegistry = hyperlinkRegistry,
             modifier = Modifier.fillMaxSize()
         )
@@ -132,6 +134,7 @@ private fun RenderSplitNode(
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     customContextMenuItems: List<ContextMenuElement> = emptyList(),
     onContextMenuOpen: (() -> Unit)? = null,
+    onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 ) {
@@ -164,6 +167,7 @@ private fun RenderSplitNode(
                 onLinkClick = onLinkClick,
                 customContextMenuItems = customContextMenuItems,
                 onContextMenuOpen = onContextMenuOpen,
+                onContextMenuOpenAsync = onContextMenuOpenAsync,
                 hyperlinkRegistry = hyperlinkRegistry,
                 modifier = modifier
             )
@@ -197,6 +201,7 @@ private fun RenderSplitNode(
                 onLinkClick = onLinkClick,
                 customContextMenuItems = customContextMenuItems,
                 onContextMenuOpen = onContextMenuOpen,
+                onContextMenuOpenAsync = onContextMenuOpenAsync,
                 hyperlinkRegistry = hyperlinkRegistry,
                 modifier = modifier
             )
@@ -230,6 +235,7 @@ private fun RenderSplitNode(
                 onLinkClick = onLinkClick,
                 customContextMenuItems = customContextMenuItems,
                 onContextMenuOpen = onContextMenuOpen,
+                onContextMenuOpenAsync = onContextMenuOpenAsync,
                 hyperlinkRegistry = hyperlinkRegistry,
                 modifier = modifier
             )
@@ -268,6 +274,7 @@ private fun RenderPane(
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     customContextMenuItems: List<ContextMenuElement> = emptyList(),
     onContextMenuOpen: (() -> Unit)? = null,
+    onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 ) {
@@ -325,6 +332,7 @@ private fun RenderPane(
             onLinkClick = onLinkClick,
             customContextMenuItems = customContextMenuItems,
             onContextMenuOpen = onContextMenuOpen,
+            onContextMenuOpenAsync = onContextMenuOpenAsync,
             hyperlinkRegistry = hyperlinkRegistry,
             modifier = Modifier.fillMaxSize()
         )
@@ -362,6 +370,7 @@ private fun RenderVerticalSplit(
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     customContextMenuItems: List<ContextMenuElement> = emptyList(),
     onContextMenuOpen: (() -> Unit)? = null,
+    onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 ) {
@@ -404,6 +413,7 @@ private fun RenderVerticalSplit(
                     onLinkClick = onLinkClick,
                     customContextMenuItems = customContextMenuItems,
                     onContextMenuOpen = onContextMenuOpen,
+                    onContextMenuOpenAsync = onContextMenuOpenAsync,
                     hyperlinkRegistry = hyperlinkRegistry,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -441,6 +451,7 @@ private fun RenderVerticalSplit(
                     onLinkClick = onLinkClick,
                     customContextMenuItems = customContextMenuItems,
                     onContextMenuOpen = onContextMenuOpen,
+                    onContextMenuOpenAsync = onContextMenuOpenAsync,
                     hyperlinkRegistry = hyperlinkRegistry,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -494,6 +505,7 @@ private fun RenderHorizontalSplit(
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     customContextMenuItems: List<ContextMenuElement> = emptyList(),
     onContextMenuOpen: (() -> Unit)? = null,
+    onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 ) {
@@ -536,6 +548,7 @@ private fun RenderHorizontalSplit(
                     onLinkClick = onLinkClick,
                     customContextMenuItems = customContextMenuItems,
                     onContextMenuOpen = onContextMenuOpen,
+                    onContextMenuOpenAsync = onContextMenuOpenAsync,
                     hyperlinkRegistry = hyperlinkRegistry,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -573,6 +586,7 @@ private fun RenderHorizontalSplit(
                     onLinkClick = onLinkClick,
                     customContextMenuItems = customContextMenuItems,
                     onContextMenuOpen = onContextMenuOpen,
+                    onContextMenuOpenAsync = onContextMenuOpenAsync,
                     hyperlinkRegistry = hyperlinkRegistry,
                     modifier = Modifier.fillMaxSize()
                 )

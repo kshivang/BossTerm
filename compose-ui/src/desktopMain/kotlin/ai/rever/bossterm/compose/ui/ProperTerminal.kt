@@ -137,7 +137,8 @@ fun ProperTerminal(
   menuActions: MenuActions? = null,
   enableDebugPanel: Boolean = true,  // Whether to show debug panel option in context menu
   customContextMenuItems: List<ai.rever.bossterm.compose.ContextMenuElement> = emptyList(),
-  onContextMenuOpen: (() -> Unit)? = null,  // Callback invoked right before context menu is shown
+  onContextMenuOpen: (() -> Unit)? = null,  // Callback invoked right before context menu is shown (sync)
+  onContextMenuOpenAsync: (suspend () -> Unit)? = null,  // Async callback - menu waits for completion before showing
   onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,  // Custom link handler; return true if handled, false for default behavior
   hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,  // Per-instance hyperlink patterns
   modifier: Modifier = Modifier
@@ -802,121 +803,136 @@ fun ProperTerminal(
 
             // Check for right-click (secondary button)
             if (event.button == PointerButton.Secondary) {
-              // Invoke callback before showing menu
-              onContextMenuOpen?.invoke()
-              // Show context menu
+              // Capture values needed for showing menu
               val pos = change.position
+              val currentHoveredHyperlink = hoveredHyperlink
 
-              // Check if we're hovering over a hyperlink
-              if (hoveredHyperlink != null) {
-                val link = hoveredHyperlink!!
-                showHyperlinkContextMenu(
-                  controller = contextMenuController,
-                  x = pos.x,
-                  y = pos.y,
-                  url = link.url,
-                  onOpenLink = {
-                    val info = link.toHyperlinkInfo()
-                    val handled = onLinkClick?.invoke(info) ?: false
-                    if (!handled) {
-                      HyperlinkDetector.openUrl(link.url)
-                    }
-                  },
-                  onCopyLinkAddress = { clipboardManager.setText(AnnotatedString(link.url)) },
-                  hasSelection = selectionTracker.hasSelection(),
-                  onCopy = {
-                    val snapshot = textBuffer.createIncrementalSnapshot()
-                    val resolved = selectionTracker.resolveToCoordinates(snapshot)
-                    if (resolved != null) {
-                      val selectedText = SelectionEngine.extractSelectedTextTrimmed(
-                        textBuffer, resolved.toStartPair(), resolved.toEndPair(), resolved.mode
-                      )
-                      if (selectedText.isNotEmpty()) {
-                        clipboardManager.setText(AnnotatedString(selectedText))
+              // Helper to show the context menu (called after async callback if provided)
+              fun doShowContextMenu() {
+                // Check if we're hovering over a hyperlink
+                if (currentHoveredHyperlink != null) {
+                  val link = currentHoveredHyperlink
+                  showHyperlinkContextMenu(
+                    controller = contextMenuController,
+                    x = pos.x,
+                    y = pos.y,
+                    url = link.url,
+                    onOpenLink = {
+                      val info = link.toHyperlinkInfo()
+                      val handled = onLinkClick?.invoke(info) ?: false
+                      if (!handled) {
+                        HyperlinkDetector.openUrl(link.url)
                       }
-                    }
-                  },
-                  onPaste = {
-                    try {
-                      val text = clipboardManager.getText()?.text
-                      if (!text.isNullOrEmpty()) {
-                        scope.launch {
-                          try {
-                            tab.pasteText(text)
-                          } catch (e: Exception) {
-                            println("ERROR: Failed to paste text via context menu: ${e.message}")
-                          }
+                    },
+                    onCopyLinkAddress = { clipboardManager.setText(AnnotatedString(link.url)) },
+                    hasSelection = selectionTracker.hasSelection(),
+                    onCopy = {
+                      val snapshot = textBuffer.createIncrementalSnapshot()
+                      val resolved = selectionTracker.resolveToCoordinates(snapshot)
+                      if (resolved != null) {
+                        val selectedText = SelectionEngine.extractSelectedTextTrimmed(
+                          textBuffer, resolved.toStartPair(), resolved.toEndPair(), resolved.mode
+                        )
+                        if (selectedText.isNotEmpty()) {
+                          clipboardManager.setText(AnnotatedString(selectedText))
                         }
                       }
-                    } catch (e: Exception) {
-                      println("ERROR: Failed to access clipboard: ${e.message}")
-                    }
-                  },
-                  onSelectAll = { selectAll() },
-                  onClearScreen = { clearBuffer() },
-                  onClearScrollback = { clearScrollback() },
-                  onFind = { searchVisible = true },
-                  onNewTab = onNewTab,
-                  onSplitVertical = onSplitVertical,
-                  onSplitHorizontal = onSplitHorizontal,
-                  onMoveToNewTab = onMoveToNewTab,
-                  onClosePane = if (onMoveToNewTab != null) onClosePane else null,
-                  onShowDebug = if (enableDebugPanel && settings.debugModeEnabled) {
-                    { debugPanelVisible = !debugPanelVisible }
-                  } else null,
-                  onShowSettings = onShowSettings,
-                  customItems = customContextMenuItems
-                )
-              } else {
-                showTerminalContextMenu(
-                  controller = contextMenuController,
-                  x = pos.x,
-                  y = pos.y,
-                  hasSelection = selectionTracker.hasSelection(),
-                  onCopy = {
-                    val snapshot = textBuffer.createIncrementalSnapshot()
-                    val resolved = selectionTracker.resolveToCoordinates(snapshot)
-                    if (resolved != null) {
-                      val selectedText = SelectionEngine.extractSelectedTextTrimmed(
-                        textBuffer, resolved.toStartPair(), resolved.toEndPair(), resolved.mode
-                      )
-                      if (selectedText.isNotEmpty()) {
-                        clipboardManager.setText(AnnotatedString(selectedText))
-                      }
-                    }
-                  },
-                  onPaste = {
-                    try {
-                      val text = clipboardManager.getText()?.text
-                      if (!text.isNullOrEmpty()) {
-                        scope.launch {
-                          try {
-                            tab.pasteText(text)
-                          } catch (e: Exception) {
-                            println("ERROR: Failed to paste text via context menu: ${e.message}")
+                    },
+                    onPaste = {
+                      try {
+                        val text = clipboardManager.getText()?.text
+                        if (!text.isNullOrEmpty()) {
+                          scope.launch {
+                            try {
+                              tab.pasteText(text)
+                            } catch (e: Exception) {
+                              println("ERROR: Failed to paste text via context menu: ${e.message}")
+                            }
                           }
                         }
+                      } catch (e: Exception) {
+                        println("ERROR: Failed to access clipboard: ${e.message}")
                       }
-                    } catch (e: Exception) {
-                      println("ERROR: Failed to access clipboard: ${e.message}")
-                    }
-                  },
-                  onSelectAll = { selectAll() },
-                  onClearScreen = { clearBuffer() },
-                  onClearScrollback = { clearScrollback() },
-                  onFind = { searchVisible = true },
-                  onNewTab = onNewTab,
-                  onSplitVertical = onSplitVertical,
-                  onSplitHorizontal = onSplitHorizontal,
-                  onMoveToNewTab = onMoveToNewTab,
-                  onClosePane = if (onMoveToNewTab != null) onClosePane else null,
-                  onShowDebug = if (enableDebugPanel && settings.debugModeEnabled) {
-                    { debugPanelVisible = !debugPanelVisible }
-                  } else null,
-                  onShowSettings = onShowSettings,
-                  customItems = customContextMenuItems
-                )
+                    },
+                    onSelectAll = { selectAll() },
+                    onClearScreen = { clearBuffer() },
+                    onClearScrollback = { clearScrollback() },
+                    onFind = { searchVisible = true },
+                    onNewTab = onNewTab,
+                    onSplitVertical = onSplitVertical,
+                    onSplitHorizontal = onSplitHorizontal,
+                    onMoveToNewTab = onMoveToNewTab,
+                    onClosePane = if (onMoveToNewTab != null) onClosePane else null,
+                    onShowDebug = if (enableDebugPanel && settings.debugModeEnabled) {
+                      { debugPanelVisible = !debugPanelVisible }
+                    } else null,
+                    onShowSettings = onShowSettings,
+                    customItems = customContextMenuItems
+                  )
+                } else {
+                  showTerminalContextMenu(
+                    controller = contextMenuController,
+                    x = pos.x,
+                    y = pos.y,
+                    hasSelection = selectionTracker.hasSelection(),
+                    onCopy = {
+                      val snapshot = textBuffer.createIncrementalSnapshot()
+                      val resolved = selectionTracker.resolveToCoordinates(snapshot)
+                      if (resolved != null) {
+                        val selectedText = SelectionEngine.extractSelectedTextTrimmed(
+                          textBuffer, resolved.toStartPair(), resolved.toEndPair(), resolved.mode
+                        )
+                        if (selectedText.isNotEmpty()) {
+                          clipboardManager.setText(AnnotatedString(selectedText))
+                        }
+                      }
+                    },
+                    onPaste = {
+                      try {
+                        val text = clipboardManager.getText()?.text
+                        if (!text.isNullOrEmpty()) {
+                          scope.launch {
+                            try {
+                              tab.pasteText(text)
+                            } catch (e: Exception) {
+                              println("ERROR: Failed to paste text via context menu: ${e.message}")
+                            }
+                          }
+                        }
+                      } catch (e: Exception) {
+                        println("ERROR: Failed to access clipboard: ${e.message}")
+                      }
+                    },
+                    onSelectAll = { selectAll() },
+                    onClearScreen = { clearBuffer() },
+                    onClearScrollback = { clearScrollback() },
+                    onFind = { searchVisible = true },
+                    onNewTab = onNewTab,
+                    onSplitVertical = onSplitVertical,
+                    onSplitHorizontal = onSplitHorizontal,
+                    onMoveToNewTab = onMoveToNewTab,
+                    onClosePane = if (onMoveToNewTab != null) onClosePane else null,
+                    onShowDebug = if (enableDebugPanel && settings.debugModeEnabled) {
+                      { debugPanelVisible = !debugPanelVisible }
+                    } else null,
+                    onShowSettings = onShowSettings,
+                    customItems = customContextMenuItems
+                  )
+                }
               }
+
+              // If async callback provided, wait for it to complete before showing menu
+              if (onContextMenuOpenAsync != null) {
+                scope.launch {
+                  onContextMenuOpenAsync.invoke()
+                  doShowContextMenu()
+                }
+              } else {
+                // Legacy sync callback - invoke and show menu immediately
+                onContextMenuOpen?.invoke()
+                doShowContextMenu()
+              }
+
               change.consume()
               return@onPointerEvent
             }

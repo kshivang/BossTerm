@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.*
 import java.awt.event.WindowEvent
 import java.awt.event.WindowFocusListener
+import kotlinx.coroutines.delay
 
 /**
  * Example application demonstrating BossTerm's TabbedTerminal component.
@@ -277,11 +278,15 @@ private fun ApplicationScope.TabbedTerminalWindow(
                                             "Initial command failed (exit: $exitCode)"
                                         }
                                     },
-                                    // onContextMenuOpen callback - called right before menu is displayed
-                                    // Use case: refresh dynamic menu item state (e.g., AI assistant installation status)
-                                    onContextMenuOpen = {
+                                    // onContextMenuOpenAsync callback - awaited before menu is displayed
+                                    // Use case: refresh dynamic menu item state (e.g., AI assistant detection)
+                                    // The context menu will wait for this suspend function to complete
+                                    onContextMenuOpenAsync = {
                                         contextMenuOpenCount++
-                                        windowTitle = "Context menu opened ($contextMenuOpenCount times)"
+                                        windowTitle = "Refreshing... ($contextMenuOpenCount)"
+                                        // Simulate async data fetch (e.g., checking AI tool installation)
+                                        delay(100) // Replace with actual async operation
+                                        windowTitle = "Menu ready with fresh data ($contextMenuOpenCount times)"
                                     },
                                     workingDirectory = "/tmp",
                                     // Initial command to run when terminal starts

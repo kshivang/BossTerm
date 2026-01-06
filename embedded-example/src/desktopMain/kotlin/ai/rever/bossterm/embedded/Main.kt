@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import kotlinx.coroutines.delay
 
 /**
  * Example application demonstrating BossTerm embedded in a parent application.
@@ -121,10 +122,15 @@ fun EmbeddedExampleApp() {
                                     "Initial command failed (exit code: $exitCode)"
                                 }
                             },
-                            // onContextMenuOpen callback demo - called before menu shows
-                            onContextMenuOpen = {
+                            // onContextMenuOpenAsync callback demo - awaited before menu shows
+                            // Use this for async operations like fetching fresh data for dynamic menu items
+                            // The context menu will wait for this to complete before displaying
+                            onContextMenuOpenAsync = {
                                 contextMenuOpenCount++
-                                statusMessage = "Context menu opened ($contextMenuOpenCount times)"
+                                statusMessage = "Refreshing data before context menu... ($contextMenuOpenCount)"
+                                // Simulate async data fetch (e.g., AI assistant detection)
+                                delay(100) // Replace with actual async operation
+                                statusMessage = "Context menu ready with fresh data ($contextMenuOpenCount times)"
                             },
                             // Custom context menu items with sections and submenus
                             contextMenuItems = listOf(
@@ -210,7 +216,8 @@ fun EmbeddedExampleApp() {
                                 onExit = { exitCode ->
                                     statusMessage = "Compact terminal exited: $exitCode"
                                 },
-                                // onContextMenuOpen works in compact terminal too
+                                // onContextMenuOpen (sync) - for simple cases without async operations
+                                // Use onContextMenuOpenAsync when you need to await before showing menu
                                 onContextMenuOpen = {
                                     contextMenuOpenCount++
                                     statusMessage = "Compact terminal context menu ($contextMenuOpenCount times)"

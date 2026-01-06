@@ -139,8 +139,11 @@ data class ContextMenuSubmenu(
  * @param onExit Callback invoked when shell process exits with exit code
  * @param onReady Callback invoked when terminal is ready (process started)
  * @param contextMenuItems Custom context menu elements (items, sections, submenus) to add after the default items
- * @param onContextMenuOpen Callback invoked right before the context menu is displayed.
+ * @param onContextMenuOpen Callback invoked right before the context menu is displayed (sync).
  *                          Use case: refresh dynamic menu item state (e.g., check AI assistant installation status).
+ * @param onContextMenuOpenAsync Async callback invoked right before the context menu is displayed.
+ *                               Menu display is delayed until this callback completes.
+ *                               Use case: async refresh of dynamic menu item state before menu shows.
  * @param onLinkClick Optional callback for custom link handling. When provided, intercepts Ctrl/Cmd+Click
  *                    on links and context menu "Open Link" action. Receives [HyperlinkInfo] with rich metadata:
  *                    type (HTTP, FILE, FOLDER, EMAIL, FTP, CUSTOM), isFile/isFolder validation, scheme, patternId.
@@ -170,6 +173,7 @@ fun EmbeddableTerminal(
     onNewWindow: (() -> Unit)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
     onContextMenuOpen: (() -> Unit)? = null,
+    onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     settingsOverride: TerminalSettingsOverride? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
@@ -240,6 +244,7 @@ fun EmbeddableTerminal(
             enableDebugPanel = false,  // Hide debug panel in embedded mode
             customContextMenuItems = contextMenuItems,
             onContextMenuOpen = onContextMenuOpen,
+            onContextMenuOpenAsync = onContextMenuOpenAsync,
             onLinkClick = onLinkClick,
             hyperlinkRegistry = hyperlinkRegistry,
             modifier = modifier

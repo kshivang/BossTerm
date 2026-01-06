@@ -267,6 +267,16 @@ private fun ApplicationScope.TabbedTerminalWindow(
                                     menuActions = menuActions,
                                     isWindowFocused = { isWindowFocused },
                                     contextMenuItems = customContextMenuItems,
+                                    // onInitialCommandComplete callback - called when initial command finishes
+                                    // Use case: trigger next step in workflow after setup completes
+                                    // Requires OSC 133 shell integration to detect command completion
+                                    onInitialCommandComplete = { success, exitCode ->
+                                        windowTitle = if (success) {
+                                            "Initial command completed (exit: $exitCode)"
+                                        } else {
+                                            "Initial command failed (exit: $exitCode)"
+                                        }
+                                    },
                                     // onContextMenuOpen callback - called right before menu is displayed
                                     // Use case: refresh dynamic menu item state (e.g., AI assistant installation status)
                                     onContextMenuOpen = {
@@ -274,6 +284,8 @@ private fun ApplicationScope.TabbedTerminalWindow(
                                         windowTitle = "Context menu opened ($contextMenuOpenCount times)"
                                     },
                                     workingDirectory = "/tmp",
+                                    // Initial command to run when terminal starts
+                                    initialCommand = "echo 'TabbedTerminal ready!' && date",
                                     modifier = Modifier.fillMaxSize()
                                 )
                             }

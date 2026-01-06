@@ -73,6 +73,9 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  * @param menuActions Optional menu action callbacks for wiring up menu bar
  * @param isWindowFocused Lambda returning whether this window is currently focused (for notifications)
  * @param initialCommand Optional command to run in the first terminal tab after startup
+ * @param onInitialCommandComplete Callback invoked when initialCommand finishes executing.
+ *                                  Requires OSC 133 shell integration to detect command completion.
+ *                                  Parameters: success (true if exit code is 0), exitCode (command exit code).
  * @param workingDirectory Initial working directory for the first tab (defaults to user home)
  * @param onLinkClick Optional callback for custom link handling. When provided, intercepts Ctrl/Cmd+Click
  *                    on links and context menu "Open Link" action. Receives HyperlinkInfo with type,
@@ -80,6 +83,8 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  *                    proceed with default behavior (open in browser/finder). When null, uses default behavior.
  * @param contextMenuItems Custom context menu items to add below the built-in items (Copy, Paste, Clear, Select All).
  *                         Applies to all tabs and split panes within the terminal.
+ * @param onContextMenuOpen Callback invoked right before the context menu is displayed.
+ *                          Use case: refresh dynamic menu item state (e.g., check AI assistant installation status).
  * @param settingsOverride Per-instance settings overrides. Non-null fields override global settings.
  *                         Example: `TerminalSettingsOverride(alwaysShowTabBar = true)` to always show tab bar.
  * @param hyperlinkRegistry Custom hyperlink pattern registry for per-instance hyperlink customization.
@@ -98,6 +103,7 @@ fun TabbedTerminal(
     menuActions: MenuActions? = null,
     isWindowFocused: () -> Boolean = { true },
     initialCommand: String? = null,
+    onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)? = null,
     workingDirectory: String? = null,
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
@@ -297,7 +303,8 @@ fun TabbedTerminal(
                 val effectiveInitialCommand = initialCommand ?: settings.initialCommand.ifEmpty { null }
                 tabController.createTab(
                     workingDir = workingDirectory,
-                    initialCommand = effectiveInitialCommand
+                    initialCommand = effectiveInitialCommand,
+                    onInitialCommandComplete = onInitialCommandComplete
                 )
             }
         }

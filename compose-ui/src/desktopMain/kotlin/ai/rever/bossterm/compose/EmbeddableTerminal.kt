@@ -23,6 +23,7 @@ import ai.rever.bossterm.compose.settings.withOverrides
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkInfo
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkRegistry
+import ai.rever.bossterm.compose.tabs.ShellIntegrationInjector
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import ai.rever.bossterm.terminal.emulator.BossEmulator
 import ai.rever.bossterm.terminal.model.BossTerminal
@@ -130,11 +131,16 @@ data class ContextMenuSubmenu(
  * @param environment Additional environment variables to set
  * @param initialCommand Optional command to execute after terminal is ready. Uses OSC 133 shell
  *                       integration for proper timing if available, with fallback delay.
+ * @param onInitialCommandComplete Callback invoked when initialCommand finishes executing.
+ *                                  Requires OSC 133 shell integration to detect command completion.
+ *                                  Parameters: success (true if exit code is 0), exitCode (command exit code).
  * @param onOutput Callback invoked when terminal produces output
  * @param onTitleChange Callback invoked when terminal title changes (OSC 0/1/2)
  * @param onExit Callback invoked when shell process exits with exit code
  * @param onReady Callback invoked when terminal is ready (process started)
  * @param contextMenuItems Custom context menu elements (items, sections, submenus) to add after the default items
+ * @param onContextMenuOpen Callback invoked right before the context menu is displayed.
+ *                          Use case: refresh dynamic menu item state (e.g., check AI assistant installation status).
  * @param onLinkClick Optional callback for custom link handling. When provided, intercepts Ctrl/Cmd+Click
  *                    on links and context menu "Open Link" action. Receives [HyperlinkInfo] with rich metadata:
  *                    type (HTTP, FILE, FOLDER, EMAIL, FTP, CUSTOM), isFile/isFolder validation, scheme, patternId.
@@ -156,6 +162,7 @@ fun EmbeddableTerminal(
     workingDirectory: String? = null,
     environment: Map<String, String>? = null,
     initialCommand: String? = null,
+    onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)? = null,
     onOutput: ((String) -> Unit)? = null,
     onTitleChange: ((String) -> Unit)? = null,
     onExit: ((Int) -> Unit)? = null,
@@ -193,6 +200,7 @@ fun EmbeddableTerminal(
                 workingDirectory = workingDirectory,
                 environment = environment,
                 initialCommand = initialCommand,
+                onInitialCommandComplete = onInitialCommandComplete,
                 onOutput = onOutput,
                 onExit = onExit
             )
@@ -308,6 +316,7 @@ class EmbeddableTerminalState {
         workingDirectory: String?,
         environment: Map<String, String>?,
         initialCommand: String?,
+        onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)?,
         onOutput: ((String) -> Unit)?,
         onExit: ((Int) -> Unit)?
     ) {
@@ -326,6 +335,7 @@ class EmbeddableTerminalState {
                 workingDirectory = workingDirectory,
                 environment = environment,
                 initialCommand = initialCommand,
+                onInitialCommandComplete = onInitialCommandComplete,
                 onExit = onExit
             )
         }
@@ -570,6 +580,7 @@ private suspend fun initializeProcess(
     workingDirectory: String?,
     environment: Map<String, String>?,
     initialCommand: String?,
+    onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)?,
     onExit: ((Int) -> Unit)?
 ) {
     try {
@@ -585,7 +596,7 @@ private suspend fun initializeProcess(
 
         // Build environment (filter out PWD/OLDPWD to avoid inheriting stale values)
         val effectiveWorkingDir = workingDirectory ?: System.getProperty("user.home")
-        val terminalEnvironment = buildMap {
+        val terminalEnvironment = mutableMapOf<String, String>().apply {
             putAll(System.getenv().filterKeys { it != "PWD" && it != "OLDPWD" })
             put("TERM", "xterm-256color")
             put("COLORTERM", "truecolor")
@@ -594,6 +605,13 @@ private suspend fun initializeProcess(
             put("PWD", effectiveWorkingDir)
             environment?.let { putAll(it) }
         }
+
+        // Inject shell integration for command completion notifications (OSC 133)
+        ShellIntegrationInjector.injectForShell(
+            shell = command,
+            env = terminalEnvironment,
+            enabled = settings.autoInjectShellIntegration
+        )
 
         // Create process config
         val processConfig = PlatformServices.ProcessService.ProcessConfig(
@@ -674,6 +692,24 @@ private suspend fun initializeProcess(
                     }
                     // If result is null, timeout occurred - proceed with fallback delay
                     // (already waited initialCommandDelayMs)
+
+                    // Register one-shot listener BEFORE sending command
+                    // (must be registered before command executes to catch fast commands)
+                    if (onInitialCommandComplete != null) {
+                        val completionListener = object : CommandStateListener {
+                            override fun onCommandFinished(exitCode: Int) {
+                                try {
+                                    println("DEBUG: Initial command completed with exit code: $exitCode")
+                                    // Fire callback once with success status and exit code
+                                    onInitialCommandComplete(exitCode == 0, exitCode)
+                                } finally {
+                                    // Always unregister, even if callback throws
+                                    session.terminal.removeCommandStateListener(this)
+                                }
+                            }
+                        }
+                        session.terminal.addCommandStateListener(completionListener)
+                    }
 
                     // Send the command followed by newline
                     processHandle.write(initialCommand + "\n")

@@ -237,6 +237,7 @@ class TabController(
         arguments: List<String> = emptyList(),
         onProcessExit: (() -> Unit)? = null,
         initialCommand: String? = null,
+        onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)? = null,
         tabId: String? = null
     ): TerminalTab {
         // Validate tab ID uniqueness if custom ID provided
@@ -437,7 +438,7 @@ class TabController(
         }
 
         // Initialize the terminal session (spawn PTY, start coroutines)
-        initializeTerminalSession(tab, workingDir, effectiveCommand, effectiveArguments, initialCommand)
+        initializeTerminalSession(tab, workingDir, effectiveCommand, effectiveArguments, initialCommand, onInitialCommandComplete)
 
         // Add to tabs list
         tabs.add(tab)
@@ -1064,7 +1065,8 @@ class TabController(
         workingDir: String?,
         command: String,
         arguments: List<String>,
-        initialCommand: String? = null
+        initialCommand: String? = null,
+        onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)? = null
     ) {
         tab.coroutineScope.launch(Dispatchers.IO) {
             try {
@@ -1182,6 +1184,24 @@ class TabController(
                             }
                             // If result is null, timeout occurred - proceed with fallback delay
                             // (already waited initialCommandDelayMs)
+
+                            // Register one-shot listener BEFORE sending command
+                            // (must be registered before command executes to catch fast commands)
+                            if (onInitialCommandComplete != null) {
+                                val completionListener = object : CommandStateListener {
+                                    override fun onCommandFinished(exitCode: Int) {
+                                        try {
+                                            println("DEBUG: Initial command completed with exit code: $exitCode")
+                                            // Fire callback once with success status and exit code
+                                            onInitialCommandComplete(exitCode == 0, exitCode)
+                                        } finally {
+                                            // Always unregister, even if callback throws
+                                            tab.terminal.removeCommandStateListener(this)
+                                        }
+                                    }
+                                }
+                                tab.terminal.addCommandStateListener(completionListener)
+                            }
 
                             // Send the command followed by newline
                             handle.write(initialCommand + "\n")

@@ -5,6 +5,11 @@ import ai.rever.bossterm.compose.ContextMenuItem
 import ai.rever.bossterm.compose.ContextMenuSection
 import ai.rever.bossterm.compose.ContextMenuSubmenu
 import ai.rever.bossterm.compose.settings.AIAssistantConfigData
+import ai.rever.bossterm.compose.settings.TerminalSettings
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 
 /**
  * Generates context menu items for AI coding assistants.
@@ -160,5 +165,51 @@ class AIAssistantMenuProvider(
      */
     fun getInstalledCount(): Int {
         return detector.installationStatus.value.values.count { it }
+    }
+}
+
+/**
+ * State holder for AI assistant integration.
+ * Encapsulates detector, launcher, and menu provider.
+ */
+class AIAssistantState(
+    val detector: AIAssistantDetector,
+    val launcher: AIAssistantLauncher,
+    val menuProvider: AIAssistantMenuProvider
+)
+
+/**
+ * Remember AI assistant state with automatic lifecycle management.
+ * Handles detector creation, auto-refresh based on settings, and cleanup on dispose.
+ *
+ * @param settings Terminal settings containing AI assistant configuration
+ * @return AIAssistantState with initialized components
+ */
+@Composable
+fun rememberAIAssistantState(settings: TerminalSettings): AIAssistantState {
+    val detector = remember { AIAssistantDetector() }
+    val launcher = remember { AIAssistantLauncher() }
+    val menuProvider = remember(detector, launcher) {
+        AIAssistantMenuProvider(detector, launcher)
+    }
+
+    // Start/stop auto-refresh based on settings
+    LaunchedEffect(settings.aiAssistantsEnabled, settings.aiAssistantsAutoRefresh) {
+        if (settings.aiAssistantsEnabled && settings.aiAssistantsAutoRefresh) {
+            detector.startAutoRefresh(settings.aiAssistantsRefreshIntervalMs)
+        } else {
+            detector.stopAutoRefresh()
+        }
+    }
+
+    // Cleanup detector on dispose
+    DisposableEffect(detector) {
+        onDispose {
+            detector.dispose()
+        }
+    }
+
+    return remember(detector, launcher, menuProvider) {
+        AIAssistantState(detector, launcher, menuProvider)
     }
 }

@@ -10,9 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import ai.rever.bossterm.compose.ai.AIAssistantDetector
-import ai.rever.bossterm.compose.ai.AIAssistantLauncher
-import ai.rever.bossterm.compose.ai.AIAssistantMenuProvider
+import ai.rever.bossterm.compose.ai.rememberAIAssistantState
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
 import ai.rever.bossterm.compose.ui.ProperTerminal
@@ -205,27 +203,7 @@ fun EmbeddableTerminal(
     }
 
     // AI Assistant integration (issue #225)
-    val aiDetector = remember { AIAssistantDetector() }
-    val aiLauncher = remember { AIAssistantLauncher() }
-    val aiMenuProvider = remember(aiDetector, aiLauncher) {
-        AIAssistantMenuProvider(aiDetector, aiLauncher)
-    }
-
-    // Start auto-refresh if enabled in settings
-    LaunchedEffect(resolvedSettings.aiAssistantsEnabled, resolvedSettings.aiAssistantsAutoRefresh) {
-        if (resolvedSettings.aiAssistantsEnabled && resolvedSettings.aiAssistantsAutoRefresh) {
-            aiDetector.startAutoRefresh(resolvedSettings.aiAssistantsRefreshIntervalMs)
-        } else {
-            aiDetector.stopAutoRefresh()
-        }
-    }
-
-    // Cleanup AI detector on dispose
-    DisposableEffect(aiDetector) {
-        onDispose {
-            aiDetector.dispose()
-        }
-    }
+    val aiState = rememberAIAssistantState(resolvedSettings)
 
     // Initialize session if not already done (session lives in state, not composable)
     LaunchedEffect(effectiveState, resolvedSettings, effectiveCommand) {
@@ -282,7 +260,7 @@ fun EmbeddableTerminal(
                     if (resolvedSettings.aiAssistantsEnabled) {
                         // Get working directory from session for launching AI assistants
                         val workingDir = session.workingDirectory?.value
-                        val aiItems = aiMenuProvider.getMenuItems(
+                        val aiItems = aiState.menuProvider.getMenuItems(
                             terminalWriter = { text -> session.writeUserInput(text) },
                             workingDirectory = workingDir,
                             configs = resolvedSettings.aiAssistantConfigs
@@ -301,7 +279,7 @@ fun EmbeddableTerminal(
                     onContextMenuOpenAsync?.invoke()
                     // Refresh AI assistant detection before showing menu
                     if (resolvedSettings.aiAssistantsEnabled) {
-                        aiDetector.detectAll()
+                        aiState.detector.detectAll()
                     }
                 }
             } else null,

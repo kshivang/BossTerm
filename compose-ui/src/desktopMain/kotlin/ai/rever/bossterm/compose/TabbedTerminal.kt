@@ -9,9 +9,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import ai.rever.bossterm.compose.ContextMenuElement
-import ai.rever.bossterm.compose.ai.AIAssistantDetector
-import ai.rever.bossterm.compose.ai.AIAssistantLauncher
-import ai.rever.bossterm.compose.ai.AIAssistantMenuProvider
+import ai.rever.bossterm.compose.ai.rememberAIAssistantState
 import ai.rever.bossterm.compose.menu.MenuActions
 import ai.rever.bossterm.compose.util.loadTerminalFont
 import ai.rever.bossterm.compose.settings.SettingsManager
@@ -140,27 +138,7 @@ fun TabbedTerminal(
     }
 
     // AI Assistant integration (issue #225)
-    val aiDetector = remember { AIAssistantDetector() }
-    val aiLauncher = remember { AIAssistantLauncher() }
-    val aiMenuProvider = remember(aiDetector, aiLauncher) {
-        AIAssistantMenuProvider(aiDetector, aiLauncher)
-    }
-
-    // Start auto-refresh if enabled in settings
-    LaunchedEffect(settings.aiAssistantsEnabled, settings.aiAssistantsAutoRefresh) {
-        if (settings.aiAssistantsEnabled && settings.aiAssistantsAutoRefresh) {
-            aiDetector.startAutoRefresh(settings.aiAssistantsRefreshIntervalMs)
-        } else {
-            aiDetector.stopAutoRefresh()
-        }
-    }
-
-    // Cleanup AI detector on dispose
-    DisposableEffect(aiDetector) {
-        onDispose {
-            aiDetector.dispose()
-        }
-    }
+    val aiState = rememberAIAssistantState(settings)
 
     // Initialize external state if provided (only once)
     if (state != null && !state.isInitialized) {
@@ -600,7 +578,7 @@ fun TabbedTerminal(
                         if (settings.aiAssistantsEnabled) {
                             // Get working directory from focused session for launching AI assistants
                             val workingDir = splitState.getFocusedSession()?.workingDirectory?.value
-                            val aiItems = aiMenuProvider.getMenuItems(
+                            val aiItems = aiState.menuProvider.getMenuItems(
                                 terminalWriter = { text ->
                                     splitState.getFocusedSession()?.writeUserInput(text)
                                 },
@@ -621,7 +599,7 @@ fun TabbedTerminal(
                         onContextMenuOpenAsync?.invoke()
                         // Refresh AI assistant detection before showing menu
                         if (settings.aiAssistantsEnabled) {
-                            aiDetector.detectAll()
+                            aiState.detector.detectAll()
                         }
                     }
                 } else null,

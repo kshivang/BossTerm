@@ -59,6 +59,9 @@ fun TabbedTerminal(
     initialCommand: String? = null,
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
+    contextMenuItemsProvider: (() -> List<ContextMenuElement>)? = null,
+    onContextMenuOpen: (() -> Unit)? = null,
+    onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     settingsOverride: TerminalSettingsOverride? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
@@ -80,7 +83,9 @@ fun TabbedTerminal(
 | `onInitialCommandComplete` | `(Boolean, Int) -> Unit` | Callback when initial command finishes (see [Initial Command Completion](#initial-command-completion)) |
 | `onLinkClick` | `(HyperlinkInfo) -> Boolean` | Custom link click handler with rich metadata; return `true` if handled, `false` for default behavior (see [Custom Link Handling](#custom-link-handling)) |
 | `contextMenuItems` | `List<ContextMenuElement>` | Custom context menu items (see [Custom Context Menu](#custom-context-menu)) |
-| `onContextMenuOpen` | `() -> Unit` | Callback before context menu displays (see [Context Menu Open Callback](#context-menu-open-callback)) |
+| `contextMenuItemsProvider` | `(() -> List<ContextMenuElement>)?` | Lambda to get fresh menu items after async callback (see [Dynamic Context Menu Items](#dynamic-context-menu-items)) |
+| `onContextMenuOpen` | `() -> Unit` | Callback before context menu displays (sync) |
+| `onContextMenuOpenAsync` | `suspend () -> Unit` | Async callback before context menu displays - menu waits for completion |
 | `settingsOverride` | `TerminalSettingsOverride?` | Per-instance settings overrides (see [Settings Override](#settings-override)) |
 | `hyperlinkRegistry` | `HyperlinkRegistry` | Custom hyperlink patterns for this instance (see [Custom Hyperlink Patterns](#custom-hyperlink-patterns)) |
 | `modifier` | `Modifier` | Compose modifier |
@@ -417,6 +422,75 @@ TabbedTerminal(
 - **State refresh**: Update menu item labels or enabled states based on current context
 
 The callback is invoked for all tabs and split panes within the terminal.
+
+## Dynamic Context Menu Items
+
+The `contextMenuItemsProvider` lambda solves a timing problem with dynamic context menus. When you use `contextMenuItems` with `onContextMenuOpenAsync`, the menu shows stale data because Compose captures the items at composition time, before the async callback runs.
+
+### The Problem
+
+```kotlin
+// This doesn't work as expected!
+var installStatus by remember { mutableStateOf("checking...") }
+
+TabbedTerminal(
+    onExit = { exitApplication() },
+    onContextMenuOpenAsync = {
+        installStatus = checkInstallation()  // Updates state
+    },
+    contextMenuItems = listOf(
+        ContextMenuItem(
+            id = "status",
+            label = installStatus,  // Captured at composition time!
+            action = { }
+        )
+    )
+)
+// Menu shows old value - requires TWO right-clicks to see fresh data
+```
+
+### The Solution: contextMenuItemsProvider
+
+Use `contextMenuItemsProvider` to get fresh items **after** the async callback completes:
+
+```kotlin
+var installStatus by remember { mutableStateOf("checking...") }
+
+TabbedTerminal(
+    onExit = { exitApplication() },
+    onContextMenuOpenAsync = {
+        installStatus = checkInstallation()  // Updates state
+    },
+    contextMenuItemsProvider = {
+        // Called AFTER onContextMenuOpenAsync completes, BEFORE menu shows
+        listOf(
+            ContextMenuItem(
+                id = "status",
+                label = installStatus,  // Always fresh!
+                action = { }
+            )
+        )
+    }
+)
+// Menu always shows current value on first right-click
+```
+
+### Execution Order
+
+1. User right-clicks
+2. `onContextMenuOpenAsync` runs (if provided), menu waits
+3. `contextMenuItemsProvider` called to get fresh items
+4. Menu displays with up-to-date items
+
+### Fallback Behavior
+
+| `contextMenuItemsProvider` | `contextMenuItems` | Result |
+|---------------------------|-------------------|--------|
+| `null` | `[...]` | Uses static `contextMenuItems` |
+| `{ [...] }` | `[...]` | Uses `contextMenuItemsProvider` result |
+| `{ [...] }` | `emptyList()` | Uses `contextMenuItemsProvider` result |
+
+For a detailed example with AI assistant status detection, see [Dynamic Context Menu Items in EmbeddableTerminal](embedding.md#dynamic-context-menu-items).
 
 ## Settings Override
 

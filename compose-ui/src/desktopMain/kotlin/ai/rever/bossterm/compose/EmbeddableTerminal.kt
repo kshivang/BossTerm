@@ -139,6 +139,11 @@ data class ContextMenuSubmenu(
  * @param onExit Callback invoked when shell process exits with exit code
  * @param onReady Callback invoked when terminal is ready (process started)
  * @param contextMenuItems Custom context menu elements (items, sections, submenus) to add after the default items
+ * @param contextMenuItemsProvider Lambda to get fresh context menu items on each menu open.
+ *                                 When provided, this is called **after** onContextMenuOpenAsync completes
+ *                                 (but before showing the menu) to get the most up-to-date items.
+ *                                 If null, contextMenuItems is used instead.
+ *                                 Use case: dynamic menu items that change based on async state (e.g., AI assistant status).
  * @param onContextMenuOpen Callback invoked right before the context menu is displayed (sync).
  *                          Use case: refresh dynamic menu item state (e.g., check AI assistant installation status).
  * @param onContextMenuOpenAsync Async callback invoked right before the context menu is displayed.
@@ -172,6 +177,7 @@ fun EmbeddableTerminal(
     onReady: (() -> Unit)? = null,
     onNewWindow: (() -> Unit)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
+    contextMenuItemsProvider: (() -> List<ContextMenuElement>)? = null,
     onContextMenuOpen: (() -> Unit)? = null,
     onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
@@ -243,6 +249,7 @@ fun EmbeddableTerminal(
             onNewWindow = onNewWindow,
             enableDebugPanel = false,  // Hide debug panel in embedded mode
             customContextMenuItems = contextMenuItems,
+            customContextMenuItemsProvider = contextMenuItemsProvider,
             onContextMenuOpen = onContextMenuOpen,
             onContextMenuOpenAsync = onContextMenuOpenAsync,
             onLinkClick = onLinkClick,

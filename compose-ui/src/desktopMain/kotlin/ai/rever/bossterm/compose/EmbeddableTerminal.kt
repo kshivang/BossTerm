@@ -156,6 +156,7 @@ fun EmbeddableTerminal(
     workingDirectory: String? = null,
     environment: Map<String, String>? = null,
     initialCommand: String? = null,
+    onInitialCommandComplete: ((success: Boolean, exitCode: Int?) -> Unit)? = null,
     onOutput: ((String) -> Unit)? = null,
     onTitleChange: ((String) -> Unit)? = null,
     onExit: ((Int) -> Unit)? = null,
@@ -193,6 +194,7 @@ fun EmbeddableTerminal(
                 workingDirectory = workingDirectory,
                 environment = environment,
                 initialCommand = initialCommand,
+                onInitialCommandComplete = onInitialCommandComplete,
                 onOutput = onOutput,
                 onExit = onExit
             )
@@ -308,6 +310,7 @@ class EmbeddableTerminalState {
         workingDirectory: String?,
         environment: Map<String, String>?,
         initialCommand: String?,
+        onInitialCommandComplete: ((success: Boolean, exitCode: Int?) -> Unit)?,
         onOutput: ((String) -> Unit)?,
         onExit: ((Int) -> Unit)?
     ) {
@@ -326,6 +329,7 @@ class EmbeddableTerminalState {
                 workingDirectory = workingDirectory,
                 environment = environment,
                 initialCommand = initialCommand,
+                onInitialCommandComplete = onInitialCommandComplete,
                 onExit = onExit
             )
         }
@@ -570,6 +574,7 @@ private suspend fun initializeProcess(
     workingDirectory: String?,
     environment: Map<String, String>?,
     initialCommand: String?,
+    onInitialCommandComplete: ((success: Boolean, exitCode: Int?) -> Unit)?,
     onExit: ((Int) -> Unit)?
 ) {
     try {
@@ -677,6 +682,19 @@ private suspend fun initializeProcess(
 
                     // Send the command followed by newline
                     processHandle.write(initialCommand + "\n")
+
+                    // Register one-shot listener for command completion callback
+                    if (onInitialCommandComplete != null) {
+                        val completionListener = object : CommandStateListener {
+                            override fun onCommandFinished(exitCode: Int) {
+                                // Fire callback once with success status and exit code
+                                onInitialCommandComplete(exitCode == 0, exitCode)
+                                // Unregister self to ensure callback only fires once
+                                session.terminal.removeCommandStateListener(this)
+                            }
+                        }
+                        session.terminal.addCommandStateListener(completionListener)
+                    }
                 } finally {
                     // Clean up the temporary listener
                     session.terminal.removeCommandStateListener(promptListener)

@@ -112,6 +112,15 @@ fun EmbeddedExampleApp() {
                             onTitleChange = { title ->
                                 statusMessage = "Title: $title"
                             },
+                            // onInitialCommandComplete callback demo - called when initial command finishes
+                            // Requires OSC 133 shell integration to detect command completion
+                            onInitialCommandComplete = { success, exitCode ->
+                                statusMessage = if (success) {
+                                    "Initial command completed successfully (exit code: $exitCode)"
+                                } else {
+                                    "Initial command failed (exit code: $exitCode)"
+                                }
+                            },
                             // onContextMenuOpen callback demo - called before menu shows
                             onContextMenuOpen = {
                                 contextMenuOpenCount++

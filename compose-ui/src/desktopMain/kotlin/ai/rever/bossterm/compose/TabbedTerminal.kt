@@ -98,6 +98,7 @@ fun TabbedTerminal(
     menuActions: MenuActions? = null,
     isWindowFocused: () -> Boolean = { true },
     initialCommand: String? = null,
+    onInitialCommandComplete: ((success: Boolean, exitCode: Int?) -> Unit)? = null,
     workingDirectory: String? = null,
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
@@ -297,7 +298,8 @@ fun TabbedTerminal(
                 val effectiveInitialCommand = initialCommand ?: settings.initialCommand.ifEmpty { null }
                 tabController.createTab(
                     workingDir = workingDirectory,
-                    initialCommand = effectiveInitialCommand
+                    initialCommand = effectiveInitialCommand,
+                    onInitialCommandComplete = onInitialCommandComplete
                 )
             }
         }

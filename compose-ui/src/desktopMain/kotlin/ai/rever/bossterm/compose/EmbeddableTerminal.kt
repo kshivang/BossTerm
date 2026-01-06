@@ -23,6 +23,7 @@ import ai.rever.bossterm.compose.settings.withOverrides
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkInfo
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkRegistry
+import ai.rever.bossterm.compose.tabs.ShellIntegrationInjector
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import ai.rever.bossterm.terminal.emulator.BossEmulator
 import ai.rever.bossterm.terminal.model.BossTerminal
@@ -590,7 +591,7 @@ private suspend fun initializeProcess(
 
         // Build environment (filter out PWD/OLDPWD to avoid inheriting stale values)
         val effectiveWorkingDir = workingDirectory ?: System.getProperty("user.home")
-        val terminalEnvironment = buildMap {
+        val terminalEnvironment = mutableMapOf<String, String>().apply {
             putAll(System.getenv().filterKeys { it != "PWD" && it != "OLDPWD" })
             put("TERM", "xterm-256color")
             put("COLORTERM", "truecolor")
@@ -599,6 +600,13 @@ private suspend fun initializeProcess(
             put("PWD", effectiveWorkingDir)
             environment?.let { putAll(it) }
         }
+
+        // Inject shell integration for command completion notifications (OSC 133)
+        ShellIntegrationInjector.injectForShell(
+            shell = command,
+            env = terminalEnvironment,
+            enabled = settings.autoInjectShellIntegration
+        )
 
         // Create process config
         val processConfig = PlatformServices.ProcessService.ProcessConfig(

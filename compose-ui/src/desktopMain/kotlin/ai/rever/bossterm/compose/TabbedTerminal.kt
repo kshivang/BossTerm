@@ -83,6 +83,11 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  *                    proceed with default behavior (open in browser/finder). When null, uses default behavior.
  * @param contextMenuItems Custom context menu items to add below the built-in items (Copy, Paste, Clear, Select All).
  *                         Applies to all tabs and split panes within the terminal.
+ * @param contextMenuItemsProvider Lambda to get fresh context menu items on each menu open.
+ *                                 When provided, this is called **after** onContextMenuOpenAsync completes
+ *                                 (but before showing the menu) to get the most up-to-date items.
+ *                                 If null, contextMenuItems is used instead.
+ *                                 Use case: dynamic menu items that change based on async state (e.g., AI assistant status).
  * @param onContextMenuOpen Callback invoked right before the context menu is displayed (sync).
  *                          Use case: refresh dynamic menu item state (e.g., check AI assistant installation status).
  * @param onContextMenuOpenAsync Async callback invoked right before the context menu is displayed.
@@ -110,6 +115,7 @@ fun TabbedTerminal(
     workingDirectory: String? = null,
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
+    contextMenuItemsProvider: (() -> List<ContextMenuElement>)? = null,
     onContextMenuOpen: (() -> Unit)? = null,
     onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     settingsOverride: TerminalSettingsOverride? = null,
@@ -561,6 +567,7 @@ fun TabbedTerminal(
                     }
                 },
                 customContextMenuItems = contextMenuItems,
+                customContextMenuItemsProvider = contextMenuItemsProvider,
                 onContextMenuOpen = onContextMenuOpen,
                 onContextMenuOpenAsync = onContextMenuOpenAsync,
                 hyperlinkRegistry = hyperlinkRegistry,

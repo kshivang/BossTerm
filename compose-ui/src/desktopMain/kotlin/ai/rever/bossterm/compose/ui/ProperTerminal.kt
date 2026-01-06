@@ -137,6 +137,7 @@ fun ProperTerminal(
   menuActions: MenuActions? = null,
   enableDebugPanel: Boolean = true,  // Whether to show debug panel option in context menu
   customContextMenuItems: List<ai.rever.bossterm.compose.ContextMenuElement> = emptyList(),
+  customContextMenuItemsProvider: (() -> List<ai.rever.bossterm.compose.ContextMenuElement>)? = null,  // Lambda to get fresh items after async callback
   onContextMenuOpen: (() -> Unit)? = null,  // Callback invoked right before context menu is shown (sync)
   onContextMenuOpenAsync: (suspend () -> Unit)? = null,  // Async callback - menu waits for completion before showing
   onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,  // Custom link handler; return true if handled, false for default behavior
@@ -809,6 +810,10 @@ fun ProperTerminal(
 
               // Helper to show the context menu (called after async callback if provided)
               fun doShowContextMenu() {
+                // Get fresh items from provider if available, otherwise use static list
+                // This is called AFTER onContextMenuOpenAsync completes, so provider can return fresh data
+                val effectiveCustomItems = customContextMenuItemsProvider?.invoke() ?: customContextMenuItems
+
                 // Check if we're hovering over a hyperlink
                 if (currentHoveredHyperlink != null) {
                   val link = currentHoveredHyperlink
@@ -867,7 +872,7 @@ fun ProperTerminal(
                       { debugPanelVisible = !debugPanelVisible }
                     } else null,
                     onShowSettings = onShowSettings,
-                    customItems = customContextMenuItems
+                    customItems = effectiveCustomItems
                   )
                 } else {
                   showTerminalContextMenu(
@@ -916,7 +921,7 @@ fun ProperTerminal(
                       { debugPanelVisible = !debugPanelVisible }
                     } else null,
                     onShowSettings = onShowSettings,
-                    customItems = customContextMenuItems
+                    customItems = effectiveCustomItems
                   )
                 }
               }

@@ -56,6 +56,9 @@ fun EmbeddableTerminal(
     onExit: ((Int) -> Unit)? = null,
     onReady: (() -> Unit)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
+    contextMenuItemsProvider: (() -> List<ContextMenuElement>)? = null,
+    onContextMenuOpen: (() -> Unit)? = null,
+    onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     settingsOverride: TerminalSettingsOverride? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
@@ -78,7 +81,9 @@ fun EmbeddableTerminal(
 | `onExit` | `(Int) -> Unit` | Callback when shell process exits |
 | `onReady` | `() -> Unit` | Callback when terminal is ready |
 | `contextMenuItems` | `List<ContextMenuElement>` | Custom context menu items |
-| `onContextMenuOpen` | `() -> Unit` | Callback before context menu displays (see [Context Menu Open Callback](#context-menu-open-callback)) |
+| `contextMenuItemsProvider` | `(() -> List<ContextMenuElement>)?` | Lambda to get fresh menu items after async callback (see [Dynamic Context Menu Items](#dynamic-context-menu-items)) |
+| `onContextMenuOpen` | `() -> Unit` | Callback before context menu displays (sync) |
+| `onContextMenuOpenAsync` | `suspend () -> Unit` | Async callback before context menu displays - menu waits for completion |
 | `onLinkClick` | `(HyperlinkInfo) -> Boolean` | Custom link click handler with rich metadata; return `true` if handled, `false` for default behavior (see [Custom Link Handling](#custom-link-handling)) |
 | `settingsOverride` | `TerminalSettingsOverride?` | Per-instance settings overrides (see [Settings Override](#settings-override)) |
 | `hyperlinkRegistry` | `HyperlinkRegistry` | Custom hyperlink patterns for this instance (see [Custom Hyperlink Patterns](#custom-hyperlink-patterns)) |
@@ -262,6 +267,108 @@ EmbeddableTerminal(
 - **Dynamic menu items**: Check installation status, connection state, or permissions before showing menu
 - **Analytics**: Track how often users open the context menu
 - **State refresh**: Update menu item labels or enabled states based on current context
+
+## Dynamic Context Menu Items
+
+The `contextMenuItemsProvider` lambda solves a timing problem with dynamic context menus. When you use `contextMenuItems` with `onContextMenuOpenAsync`, the menu shows stale data because Compose captures the items at composition time, before the async callback runs.
+
+### The Problem
+
+```kotlin
+// This doesn't work as expected!
+var installStatus by remember { mutableStateOf("checking...") }
+
+EmbeddableTerminal(
+    onContextMenuOpenAsync = {
+        installStatus = checkInstallation()  // Updates state
+    },
+    contextMenuItems = listOf(
+        ContextMenuItem(
+            id = "status",
+            label = installStatus,  // Captured at composition time!
+            action = { }
+        )
+    )
+)
+// Menu shows old value - requires TWO right-clicks to see fresh data
+```
+
+### The Solution: contextMenuItemsProvider
+
+Use `contextMenuItemsProvider` to get fresh items **after** the async callback completes:
+
+```kotlin
+var installStatus by remember { mutableStateOf("checking...") }
+
+EmbeddableTerminal(
+    onContextMenuOpenAsync = {
+        installStatus = checkInstallation()  // Updates state
+    },
+    contextMenuItemsProvider = {
+        // Called AFTER onContextMenuOpenAsync completes, BEFORE menu shows
+        listOf(
+            ContextMenuItem(
+                id = "status",
+                label = installStatus,  // Always fresh!
+                action = { }
+            )
+        )
+    }
+)
+// Menu always shows current value on first right-click
+```
+
+### Execution Order
+
+1. User right-clicks
+2. `onContextMenuOpenAsync` runs (if provided), menu waits
+3. `contextMenuItemsProvider` called to get fresh items
+4. Menu displays with up-to-date items
+
+### Fallback Behavior
+
+| `contextMenuItemsProvider` | `contextMenuItems` | Result |
+|---------------------------|-------------------|--------|
+| `null` | `[...]` | Uses static `contextMenuItems` |
+| `{ [...] }` | `[...]` | Uses `contextMenuItemsProvider` result |
+| `{ [...] }` | `emptyList()` | Uses `contextMenuItemsProvider` result |
+
+### Real-World Example: AI Assistant Status
+
+```kotlin
+@Composable
+fun TerminalWithAIMenu() {
+    val aiDetector = remember { AIAssistantDetector() }
+    val installStatuses = aiDetector.installationStatuses.collectAsState()
+
+    EmbeddableTerminal(
+        // Refresh installation status before menu shows
+        onContextMenuOpenAsync = {
+            aiDetector.refreshIfStale()
+        },
+        // Build menu items with fresh data
+        contextMenuItemsProvider = {
+            buildAIContextMenuItems(installStatuses.value)
+        }
+    )
+}
+
+fun buildAIContextMenuItems(statuses: Map<String, Boolean>): List<ContextMenuElement> {
+    return listOf(
+        ContextMenuSection(id = "ai_section", label = "AI Assistants"),
+        ContextMenuItem(
+            id = "claude",
+            label = if (statuses["claude"] == true) "Ask Claude" else "Install Claude",
+            action = { /* ... */ }
+        ),
+        ContextMenuItem(
+            id = "copilot",
+            label = if (statuses["copilot"] == true) "Ask Copilot" else "Install Copilot",
+            action = { /* ... */ }
+        )
+    )
+}
+```
 
 ## Custom Context Menu
 

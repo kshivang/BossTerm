@@ -680,10 +680,8 @@ private suspend fun initializeProcess(
                     // If result is null, timeout occurred - proceed with fallback delay
                     // (already waited initialCommandDelayMs)
 
-                    // Send the command followed by newline
-                    processHandle.write(initialCommand + "\n")
-
-                    // Register one-shot listener for command completion callback
+                    // Register one-shot listener BEFORE sending command
+                    // (must be registered before command executes to catch fast commands)
                     if (onInitialCommandComplete != null) {
                         val completionListener = object : CommandStateListener {
                             override fun onCommandFinished(exitCode: Int) {
@@ -695,6 +693,9 @@ private suspend fun initializeProcess(
                         }
                         session.terminal.addCommandStateListener(completionListener)
                     }
+
+                    // Send the command followed by newline
+                    processHandle.write(initialCommand + "\n")
                 } finally {
                     // Clean up the temporary listener
                     session.terminal.removeCommandStateListener(promptListener)

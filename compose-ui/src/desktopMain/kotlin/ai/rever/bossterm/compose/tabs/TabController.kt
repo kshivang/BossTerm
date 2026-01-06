@@ -1185,10 +1185,8 @@ class TabController(
                             // If result is null, timeout occurred - proceed with fallback delay
                             // (already waited initialCommandDelayMs)
 
-                            // Send the command followed by newline
-                            handle.write(initialCommand + "\n")
-
-                            // Register one-shot listener for command completion callback
+                            // Register one-shot listener BEFORE sending command
+                            // (must be registered before command executes to catch fast commands)
                             if (onInitialCommandComplete != null) {
                                 val completionListener = object : CommandStateListener {
                                     override fun onCommandFinished(exitCode: Int) {
@@ -1200,6 +1198,9 @@ class TabController(
                                 }
                                 tab.terminal.addCommandStateListener(completionListener)
                             }
+
+                            // Send the command followed by newline
+                            handle.write(initialCommand + "\n")
                         } finally {
                             // Clean up the temporary listener
                             tab.terminal.removeCommandStateListener(promptListener)

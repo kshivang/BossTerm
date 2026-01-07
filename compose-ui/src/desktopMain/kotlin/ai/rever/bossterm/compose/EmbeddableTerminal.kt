@@ -11,7 +11,10 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import ai.rever.bossterm.compose.ai.AIAssistantDefinition
+import ai.rever.bossterm.compose.ai.AIAssistantDetector
 import ai.rever.bossterm.compose.ai.AIAssistantInstallDialog
+import ai.rever.bossterm.compose.ai.AIAssistantLauncher
+import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.ai.rememberAIAssistantState
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
@@ -311,7 +314,7 @@ fun EmbeddableTerminal(
         )
     }
 
-    // AI Assistant Installation Dialog
+    // AI Assistant Installation Dialog (from context menu)
     installDialogState?.let { params ->
         val coroutineScope = rememberCoroutineScope()
         AIAssistantInstallDialog(
@@ -331,6 +334,31 @@ fun EmbeddableTerminal(
                     params.terminalWriter("echo -e '\\033[32m✓ ${params.assistant.displayName} installed successfully!\\033[0m'\n")
                 } else {
                     params.terminalWriter("echo -e '\\033[31m✗ ${params.assistant.displayName} installation failed.\\033[0m'\n")
+                }
+            }
+        )
+    }
+
+    // AI Assistant Installation Dialog (from programmatic API)
+    effectiveState.aiInstallRequest?.let { request ->
+        val coroutineScope = rememberCoroutineScope()
+        AIAssistantInstallDialog(
+            assistant = request.assistant,
+            installCommand = request.command,
+            npmInstallCommand = request.npmCommand,
+            onDismiss = {
+                effectiveState.cancelAIInstallation()
+                // Refresh detection when dialog closes
+                coroutineScope.launch {
+                    aiState.detector.detectAll()
+                }
+            },
+            onInstallComplete = { success ->
+                // Write result to parent terminal using echo for proper ANSI handling
+                if (success) {
+                    request.terminalWriter("echo -e '\\033[32m✓ ${request.assistant.displayName} installed successfully!\\033[0m'\n")
+                } else {
+                    request.terminalWriter("echo -e '\\033[31m✗ ${request.assistant.displayName} installation failed.\\033[0m'\n")
                 }
             }
         )
@@ -565,6 +593,81 @@ class EmbeddableTerminalState {
             s.searchQuery.value = query
             s.searchVisible.value = true
         }
+    }
+
+    // ===== AI Assistant Installation API =====
+
+    /**
+     * Internal state for AI assistant installation request.
+     * Observed by the EmbeddableTerminal composable to show the install dialog.
+     */
+    internal var aiInstallRequest by mutableStateOf<AIInstallRequest?>(null)
+
+    /**
+     * Request to install an AI assistant.
+     */
+    data class AIInstallRequest(
+        val assistant: AIAssistantDefinition,
+        val command: String,
+        val npmCommand: String?,
+        val terminalWriter: (String) -> Unit
+    )
+
+    /**
+     * Get list of available AI assistant IDs.
+     *
+     * @return List of assistant IDs (e.g., "claude-code", "codex", "gemini-cli", "opencode")
+     */
+    fun getAvailableAIAssistants(): List<String> = AIAssistants.ALL.map { it.id }
+
+    /**
+     * Get AI assistant definition by ID.
+     *
+     * @param assistantId The assistant ID (e.g., "claude-code")
+     * @return The assistant definition, or null if not found
+     */
+    fun getAIAssistant(assistantId: String): AIAssistantDefinition? =
+        AIAssistants.findById(assistantId)
+
+    /**
+     * Check if an AI assistant is installed.
+     *
+     * @param assistantId The assistant ID to check
+     * @return true if installed, false otherwise
+     */
+    suspend fun isAIAssistantInstalled(assistantId: String): Boolean {
+        val assistant = AIAssistants.findById(assistantId) ?: return false
+        return AIAssistantDetector().detectSingle(assistant)
+    }
+
+    /**
+     * Trigger installation of an AI assistant.
+     * Opens the installation dialog in the terminal.
+     *
+     * @param assistantId The assistant ID to install (e.g., "claude-code", "codex", "gemini-cli", "opencode")
+     * @param useNpm If true, use npm installation; if false (default), use script installation with npm fallback
+     * @return true if installation was triggered, false if assistant not found or session not ready
+     */
+    fun installAIAssistant(assistantId: String, useNpm: Boolean = false): Boolean {
+        val assistant = AIAssistants.findById(assistantId) ?: return false
+        val currentSession = session ?: return false
+
+        val resolved = AIAssistantLauncher().resolveInstallCommands(assistant, useNpm)
+
+        aiInstallRequest = AIInstallRequest(
+            assistant = assistant,
+            command = resolved.command,
+            npmCommand = resolved.npmFallback,
+            terminalWriter = { text -> currentSession.writeUserInput(text) }
+        )
+        return true
+    }
+
+    /**
+     * Cancel any pending AI assistant installation request.
+     */
+    fun cancelAIInstallation() {
+        aiInstallRequest = null
     }
 }
 

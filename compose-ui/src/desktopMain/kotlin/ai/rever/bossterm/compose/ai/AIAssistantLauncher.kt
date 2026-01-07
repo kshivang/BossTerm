@@ -115,6 +115,37 @@ class AIAssistantLauncher {
     }
 
     /**
+     * Result of resolving install commands for an assistant.
+     *
+     * @property command The primary install command to run
+     * @property npmFallback Optional npm fallback command (null if useNpm was true or no npm available)
+     */
+    data class ResolvedInstallCommands(
+        val command: String,
+        val npmFallback: String?
+    )
+
+    /**
+     * Resolve the install commands for an AI assistant.
+     * This handles the logic of choosing between script and npm installation methods.
+     *
+     * @param assistant The assistant to install
+     * @param useNpm If true, use npm as primary method; if false, use script with npm as fallback
+     * @return Resolved commands ready to use for installation
+     */
+    fun resolveInstallCommands(assistant: AIAssistantDefinition, useNpm: Boolean = false): ResolvedInstallCommands {
+        val scriptCommand = getInstallCommand(assistant).trim()
+        val npmCommand = if (assistant.npmInstallCommand != null) {
+            getNpmInstallCommand(assistant).trim()
+        } else null
+
+        val command = if (useNpm && npmCommand != null) npmCommand else scriptCommand
+        val fallbackNpm = if (useNpm) null else npmCommand
+
+        return ResolvedInstallCommands(command, fallbackNpm)
+    }
+
+    /**
      * Open the assistant's website in the default browser.
      */
     fun openWebsite(assistant: AIAssistantDefinition): Boolean {

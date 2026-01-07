@@ -642,7 +642,7 @@ fun TabbedTerminal(
         }
     }
 
-    // AI Assistant Installation Dialog
+    // AI Assistant Installation Dialog (from context menu)
     installDialogState?.let { params ->
         val coroutineScope = rememberCoroutineScope()
         AIAssistantInstallDialog(
@@ -662,6 +662,31 @@ fun TabbedTerminal(
                     params.terminalWriter("echo -e '\\033[32m✓ ${params.assistant.displayName} installed successfully!\\033[0m'\n")
                 } else {
                     params.terminalWriter("echo -e '\\033[31m✗ ${params.assistant.displayName} installation failed.\\033[0m'\n")
+                }
+            }
+        )
+    }
+
+    // AI Assistant Installation Dialog (from programmatic API via TabbedTerminalState)
+    state?.aiInstallRequest?.let { request ->
+        val coroutineScope = rememberCoroutineScope()
+        AIAssistantInstallDialog(
+            assistant = request.assistant,
+            installCommand = request.command,
+            npmInstallCommand = request.npmCommand,
+            onDismiss = {
+                state.cancelAIInstallation()
+                // Refresh detection when dialog closes
+                coroutineScope.launch {
+                    aiState.detector.detectAll()
+                }
+            },
+            onInstallComplete = { success ->
+                // Write result to parent terminal using echo for proper ANSI handling
+                if (success) {
+                    request.terminalWriter("echo -e '\\033[32m✓ ${request.assistant.displayName} installed successfully!\\033[0m'\n")
+                } else {
+                    request.terminalWriter("echo -e '\\033[31m✗ ${request.assistant.displayName} installation failed.\\033[0m'\n")
                 }
             }
         )

@@ -2,6 +2,10 @@ package ai.rever.bossterm.compose
 
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.SnapshotStateMap
+import ai.rever.bossterm.compose.ai.AIAssistantDefinition
+import ai.rever.bossterm.compose.ai.AIAssistantDetector
+import ai.rever.bossterm.compose.ai.AIAssistantLauncher
+import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.splits.SplitViewState
 import ai.rever.bossterm.compose.tabs.TabController
@@ -474,6 +478,115 @@ class TabbedTerminalState {
      */
     fun removeSessionListener(listener: TerminalSessionListener) {
         tabController?.removeSessionListener(listener)
+    }
+
+    // ========== AI Assistant Installation API ==========
+
+    /**
+     * Internal state for AI assistant installation request.
+     * Observed by the TabbedTerminal composable to show the install dialog.
+     */
+    internal var aiInstallRequest by mutableStateOf<AIInstallRequest?>(null)
+
+    /**
+     * Request to install an AI assistant.
+     */
+    data class AIInstallRequest(
+        val assistant: AIAssistantDefinition,
+        val command: String,
+        val npmCommand: String?,
+        val terminalWriter: (String) -> Unit
+    )
+
+    /**
+     * Get list of available AI assistant IDs.
+     *
+     * @return List of assistant IDs (e.g., "claude-code", "codex", "gemini-cli", "opencode")
+     */
+    fun getAvailableAIAssistants(): List<String> = AIAssistants.ALL.map { it.id }
+
+    /**
+     * Get AI assistant definition by ID.
+     *
+     * @param assistantId The assistant ID (e.g., "claude-code")
+     * @return The assistant definition, or null if not found
+     */
+    fun getAIAssistant(assistantId: String): AIAssistantDefinition? =
+        AIAssistants.findById(assistantId)
+
+    /**
+     * Check if an AI assistant is installed.
+     *
+     * @param assistantId The assistant ID to check
+     * @return true if installed, false otherwise
+     */
+    suspend fun isAIAssistantInstalled(assistantId: String): Boolean {
+        val assistant = AIAssistants.findById(assistantId) ?: return false
+        return AIAssistantDetector().detectSingle(assistant)
+    }
+
+    /**
+     * Trigger installation of an AI assistant.
+     * Opens the installation dialog in the terminal.
+     *
+     * @param assistantId The assistant ID to install (e.g., "claude-code", "codex", "gemini-cli", "opencode")
+     * @param useNpm If true, use npm installation; if false (default), use script installation with npm fallback
+     * @return true if installation was triggered, false if assistant not found or no active tab
+     */
+    fun installAIAssistant(assistantId: String, useNpm: Boolean = false): Boolean {
+        val assistant = AIAssistants.findById(assistantId) ?: return false
+        val currentTab = activeTab ?: return false
+        return triggerInstall(assistant, currentTab, useNpm)
+    }
+
+    /**
+     * Trigger installation of an AI assistant in a specific tab.
+     *
+     * @param assistantId The assistant ID to install
+     * @param tabIndex Index of the tab to use for the installation
+     * @param useNpm If true, use npm installation; if false (default), use script installation with npm fallback
+     * @return true if installation was triggered, false if assistant not found or tab index invalid
+     */
+    fun installAIAssistant(assistantId: String, tabIndex: Int, useNpm: Boolean = false): Boolean {
+        val assistant = AIAssistants.findById(assistantId) ?: return false
+        val tab = tabs.getOrNull(tabIndex) ?: return false
+        return triggerInstall(assistant, tab, useNpm)
+    }
+
+    /**
+     * Trigger installation of an AI assistant in a specific tab by stable ID.
+     *
+     * @param assistantId The assistant ID to install
+     * @param tabId Stable ID of the tab to use for the installation
+     * @param useNpm If true, use npm installation; if false (default), use script installation with npm fallback
+     * @return true if installation was triggered, false if assistant or tab not found
+     */
+    fun installAIAssistant(assistantId: String, tabId: String, useNpm: Boolean = false): Boolean {
+        val assistant = AIAssistants.findById(assistantId) ?: return false
+        val tab = getTabById(tabId) ?: return false
+        return triggerInstall(assistant, tab, useNpm)
+    }
+
+    /**
+     * Internal helper to trigger installation for a given tab.
+     */
+    private fun triggerInstall(assistant: AIAssistantDefinition, tab: TerminalTab, useNpm: Boolean): Boolean {
+        val resolved = AIAssistantLauncher().resolveInstallCommands(assistant, useNpm)
+
+        aiInstallRequest = AIInstallRequest(
+            assistant = assistant,
+            command = resolved.command,
+            npmCommand = resolved.npmFallback,
+            terminalWriter = { text -> tab.writeUserInput(text) }
+        )
+        return true
+    }
+
+    /**
+     * Cancel any pending AI assistant installation request.
+     */
+    fun cancelAIInstallation() {
+        aiInstallRequest = null
     }
 }
 

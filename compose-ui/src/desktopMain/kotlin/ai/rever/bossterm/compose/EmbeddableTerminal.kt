@@ -389,7 +389,9 @@ fun EmbeddableTerminal(
                     detectionResultsHolder.set(freshStatus)
                 }
                 // Refresh VCS status with current working directory
+                // Try OSC 7 tracked directory first, fallback to reading from process
                 val cwd = session.workingDirectory?.value
+                    ?: session.processHandle.value?.getWorkingDirectory()
                 vcsMenuProvider.refreshStatus(cwd)
                 vcsStatusHolder.set(vcsMenuProvider.getStatus())
             },

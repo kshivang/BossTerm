@@ -725,7 +725,10 @@ fun TabbedTerminal(
                         detectionResultsHolder.set(freshStatus)
                     }
                     // Refresh VCS status with current working directory
-                    val cwd = splitState.getFocusedSession()?.workingDirectory?.value
+                    // Try OSC 7 tracked directory first, fallback to reading from process
+                    val session = splitState.getFocusedSession()
+                    val cwd = session?.workingDirectory?.value
+                        ?: session?.processHandle?.value?.getWorkingDirectory()
                     vcsMenuProvider.refreshStatus(cwd)
                     vcsStatusHolder.set(vcsMenuProvider.getStatus())
                 },

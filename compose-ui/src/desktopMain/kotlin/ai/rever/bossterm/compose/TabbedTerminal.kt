@@ -759,7 +759,10 @@ fun TabbedTerminal(
                     vcsStatusHolder.set(vcsMenuProvider.getStatus())
                     // Refresh Shell Customization status
                     shellMenuProvider.refreshStatus()
-                    shellStatusHolder.set(mapOf("starship" to (shellMenuProvider.getStatus() ?: false)))
+                    shellStatusHolder.set(mapOf(
+                        "starship" to (shellMenuProvider.getStatus() ?: false),
+                        "oh-my-zsh" to (shellMenuProvider.getOhMyZshStatus() ?: false)
+                    ))
                 },
                 hyperlinkRegistry = hyperlinkRegistry,
                 modifier = Modifier.fillMaxSize()

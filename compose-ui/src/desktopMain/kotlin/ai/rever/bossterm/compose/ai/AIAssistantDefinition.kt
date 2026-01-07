@@ -171,6 +171,18 @@ object AIAssistants {
             npmInstallCommand = null,
             websiteUrl = "https://starship.rs/",
             description = "Cross-shell prompt customization"
+        ),
+        AIAssistantDefinition(
+            id = "oh-my-zsh",
+            displayName = "Oh My Zsh",
+            command = "omz",
+            category = ToolCategory.SHELL_CUSTOMIZATION,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = AIAssistantLauncher.getOhMyZshInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://ohmyz.sh/",
+            description = "Zsh framework with plugins and themes"
         )
     )
 

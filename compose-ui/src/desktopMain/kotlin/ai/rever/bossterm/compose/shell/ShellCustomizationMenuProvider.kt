@@ -8,6 +8,7 @@ import ai.rever.bossterm.compose.ai.AIAssistantLauncher
 import ai.rever.bossterm.compose.util.UrlOpener
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 /**
@@ -20,9 +21,10 @@ import java.util.concurrent.TimeUnit
 class ShellCustomizationMenuProvider {
 
     /**
-     * Cached installation status to avoid repeated `which` calls.
+     * Cached installation status to avoid repeated checks.
      */
     private var starshipInstalled: Boolean? = null
+    private var ohmyzshInstalled: Boolean? = null
 
     /**
      * Detect if a command is installed by checking `which`.
@@ -40,16 +42,30 @@ class ShellCustomizationMenuProvider {
     }
 
     /**
+     * Detect if Oh My Zsh is installed by checking ~/.oh-my-zsh directory.
+     */
+    private fun isOhMyZshInstalled(): Boolean {
+        val home = System.getProperty("user.home") ?: return false
+        return File(home, ".oh-my-zsh").isDirectory
+    }
+
+    /**
      * Refresh installation status for shell customization tools.
      */
     suspend fun refreshStatus() = withContext(Dispatchers.IO) {
         starshipInstalled = isCommandInstalled("starship")
+        ohmyzshInstalled = isOhMyZshInstalled()
     }
 
     /**
      * Get cached installation status for Starship.
      */
     fun getStatus(): Boolean? = starshipInstalled
+
+    /**
+     * Get cached installation status for Oh My Zsh.
+     */
+    fun getOhMyZshStatus(): Boolean? = ohmyzshInstalled
 
     /**
      * Get context menu items for shell customization.
@@ -66,6 +82,8 @@ class ShellCustomizationMenuProvider {
     ): List<ContextMenuElement> {
         val isStarshipInstalled = statusOverride?.get("starship")
             ?: (starshipInstalled ?: isCommandInstalled("starship"))
+        val isOhMyZshInstalled = statusOverride?.get("oh-my-zsh")
+            ?: (ohmyzshInstalled ?: isOhMyZshInstalled())
 
         val shellItems = mutableListOf<ContextMenuElement>()
 
@@ -99,6 +117,38 @@ class ShellCustomizationMenuProvider {
         } else {
             // Installed: Configuration submenu
             shellItems.add(buildStarshipMenu(terminalWriter))
+        }
+
+        // Oh My Zsh menu
+        if (!isOhMyZshInstalled) {
+            // Not installed: Install + Learn More submenu
+            shellItems.add(
+                ContextMenuSubmenu(
+                    id = "ohmyzsh_submenu",
+                    label = "Oh My Zsh",
+                    items = listOf(
+                        ContextMenuItem(
+                            id = "ohmyzsh_install",
+                            label = "Install",
+                            action = {
+                                if (onInstallRequest != null) {
+                                    onInstallRequest("oh-my-zsh", AIAssistantLauncher.getOhMyZshInstallCommand(), null)
+                                } else {
+                                    UrlOpener.open("https://ohmyz.sh/")
+                                }
+                            }
+                        ),
+                        ContextMenuItem(
+                            id = "ohmyzsh_learnmore",
+                            label = "Learn More",
+                            action = { UrlOpener.open("https://ohmyz.sh/") }
+                        )
+                    )
+                )
+            )
+        } else {
+            // Installed: Configuration submenu
+            shellItems.add(buildOhMyZshMenu(terminalWriter))
         }
 
         return if (shellItems.isEmpty()) {
@@ -214,6 +264,115 @@ class ShellCustomizationMenuProvider {
                     id = "starship_docs",
                     label = "Documentation",
                     action = { UrlOpener.open("https://starship.rs/config/") }
+                )
+            )
+        )
+    }
+
+    /**
+     * Build Oh My Zsh submenu with configuration options.
+     */
+    private fun buildOhMyZshMenu(terminalWriter: (String) -> Unit): ContextMenuSubmenu {
+        return ContextMenuSubmenu(
+            id = "ohmyzsh_submenu",
+            label = "Oh My Zsh",
+            items = listOf(
+                // Themes section
+                ContextMenuSection(id = "ohmyzsh_themes_section", label = "Themes"),
+                ContextMenuItem(
+                    id = "ohmyzsh_current_theme",
+                    label = "Show Current Theme",
+                    action = { terminalWriter("echo \"Current theme: \$ZSH_THEME\"\n") }
+                ),
+                ContextMenuSubmenu(
+                    id = "ohmyzsh_themes_submenu",
+                    label = "Change Theme",
+                    items = listOf(
+                        ContextMenuItem(
+                            id = "ohmyzsh_theme_robbyrussell",
+                            label = "robbyrussell (default)",
+                            action = { terminalWriter("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"robbyrussell\"/' ~/.zshrc && echo '✓ Theme changed to robbyrussell - run: source ~/.zshrc'\n") }
+                        ),
+                        ContextMenuItem(
+                            id = "ohmyzsh_theme_agnoster",
+                            label = "agnoster",
+                            action = { terminalWriter("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"agnoster\"/' ~/.zshrc && echo '✓ Theme changed to agnoster - run: source ~/.zshrc'\n") }
+                        ),
+                        ContextMenuItem(
+                            id = "ohmyzsh_theme_avit",
+                            label = "avit",
+                            action = { terminalWriter("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"avit\"/' ~/.zshrc && echo '✓ Theme changed to avit - run: source ~/.zshrc'\n") }
+                        ),
+                        ContextMenuItem(
+                            id = "ohmyzsh_theme_bira",
+                            label = "bira",
+                            action = { terminalWriter("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"bira\"/' ~/.zshrc && echo '✓ Theme changed to bira - run: source ~/.zshrc'\n") }
+                        ),
+                        ContextMenuItem(
+                            id = "ohmyzsh_theme_candy",
+                            label = "candy",
+                            action = { terminalWriter("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"candy\"/' ~/.zshrc && echo '✓ Theme changed to candy - run: source ~/.zshrc'\n") }
+                        ),
+                        ContextMenuItem(
+                            id = "ohmyzsh_theme_dst",
+                            label = "dst",
+                            action = { terminalWriter("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"dst\"/' ~/.zshrc && echo '✓ Theme changed to dst - run: source ~/.zshrc'\n") }
+                        ),
+                        ContextMenuItem(
+                            id = "ohmyzsh_theme_list",
+                            label = "List All Themes",
+                            action = { terminalWriter("ls ~/.oh-my-zsh/themes/\n") }
+                        )
+                    )
+                ),
+
+                // Plugins section
+                ContextMenuSection(id = "ohmyzsh_plugins_section", label = "Plugins"),
+                ContextMenuItem(
+                    id = "ohmyzsh_show_plugins",
+                    label = "Show Active Plugins",
+                    action = { terminalWriter("grep '^plugins=' ~/.zshrc\n") }
+                ),
+                ContextMenuItem(
+                    id = "ohmyzsh_list_plugins",
+                    label = "List Available Plugins",
+                    action = { terminalWriter("ls ~/.oh-my-zsh/plugins/\n") }
+                ),
+                ContextMenuItem(
+                    id = "ohmyzsh_edit_plugins",
+                    label = "Edit Plugins",
+                    action = { terminalWriter("\${EDITOR:-nano} ~/.zshrc\n") }
+                ),
+
+                // Maintenance section
+                ContextMenuSection(id = "ohmyzsh_maintenance_section", label = "Maintenance"),
+                ContextMenuItem(
+                    id = "ohmyzsh_update",
+                    label = "Update Oh My Zsh",
+                    action = { terminalWriter("omz update\n") }
+                ),
+                ContextMenuItem(
+                    id = "ohmyzsh_reload",
+                    label = "Reload Config",
+                    action = { terminalWriter("source ~/.zshrc\n") }
+                ),
+                ContextMenuItem(
+                    id = "ohmyzsh_edit_zshrc",
+                    label = "Edit .zshrc",
+                    action = { terminalWriter("\${EDITOR:-nano} ~/.zshrc\n") }
+                ),
+
+                // Help section
+                ContextMenuSection(id = "ohmyzsh_help_section"),
+                ContextMenuItem(
+                    id = "ohmyzsh_help",
+                    label = "Help",
+                    action = { terminalWriter("omz help\n") }
+                ),
+                ContextMenuItem(
+                    id = "ohmyzsh_docs",
+                    label = "Documentation",
+                    action = { UrlOpener.open("https://github.com/ohmyzsh/ohmyzsh/wiki") }
                 )
             )
         )

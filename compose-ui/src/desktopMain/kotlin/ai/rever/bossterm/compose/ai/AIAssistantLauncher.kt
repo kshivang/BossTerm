@@ -202,6 +202,14 @@ class AIAssistantLauncher {
         }
 
         /**
+         * Get install command for Oh My Zsh.
+         * Uses official install script from ohmyz.sh.
+         */
+        fun getOhMyZshInstallCommand(): String {
+            return "sh -c \"\$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)\""
+        }
+
+        /**
          * Get Linux install command with package manager detection.
          * Tries apt, dnf, then pacman in order.
          */

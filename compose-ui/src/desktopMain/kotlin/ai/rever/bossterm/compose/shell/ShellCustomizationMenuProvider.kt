@@ -335,7 +335,7 @@ class ShellCustomizationMenuProvider {
                             "sed -i '/eval.*starship init/d' ~/.bashrc 2>/dev/null; " +
                             "sed -i '/eval.*starship init/d' ~/.zshrc 2>/dev/null; " +
                             "sed -i '/starship init fish/d' ~/.config/fish/config.fish 2>/dev/null; " +
-                            "echo '✓ Starship uninstalled and init lines removed from shell configs.'\n")
+                            "echo '✓ Starship uninstalled. Restarting shell...' && exec \$SHELL\n")
                     }
                 )
             )

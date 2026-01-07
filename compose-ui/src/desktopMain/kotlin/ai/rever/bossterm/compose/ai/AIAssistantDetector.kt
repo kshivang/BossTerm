@@ -145,31 +145,43 @@ class AIAssistantDetector {
      * @return true if command exits with code 0, false otherwise
      */
     private fun runCommand(vararg args: String): Boolean {
-        var process: Process? = null
-        return try {
+        val process: Process
+        try {
             process = ProcessBuilder(*args)
                 .redirectErrorStream(true)
                 .start()
+        } catch (e: Exception) {
+            return false
+        }
 
-            // Read and discard output to prevent buffer blocking
-            process.inputStream.bufferedReader().use { it.readText() }
+        // Process started successfully - ensure cleanup in all cases
+        return try {
+            try {
+                // Read and discard output to prevent buffer blocking
+                process.inputStream.bufferedReader().use { it.readText() }
+            } finally {
+                // Always close streams, even if reading fails
+                closeStreams(process)
+            }
 
             val completed = process.waitFor(5, TimeUnit.SECONDS)
             completed && process.exitValue() == 0
         } catch (e: Exception) {
             false
         } finally {
-            // Ensure process and streams are cleaned up
-            process?.let { p ->
-                // Close streams explicitly to prevent resource leaks on timeout
-                try { p.inputStream.close() } catch (_: Exception) {}
-                try { p.outputStream.close() } catch (_: Exception) {}
-                try { p.errorStream.close() } catch (_: Exception) {}
-                // Destroy process if still running (e.g., timeout)
-                if (p.isAlive) {
-                    p.destroyForcibly()
-                }
+            // Ensure process is terminated
+            if (process.isAlive) {
+                process.destroyForcibly()
             }
         }
+    }
+
+    /**
+     * Safely close all process streams.
+     */
+    private fun closeStreams(process: Process) {
+        try { process.inputStream.close() } catch (_: Exception) {}
+        try { process.outputStream.close() } catch (_: Exception) {}
+        try { process.errorStream.close() } catch (_: Exception) {}
     }
 }

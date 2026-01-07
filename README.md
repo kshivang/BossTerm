@@ -144,6 +144,7 @@ cd BossTerm
 - **OSC 7 Support** - Working directory tracking for new tabs
 - **Settings UI** - Full GUI settings panel with live preview
 - **Debug Tools** - Built-in terminal debugging with Ctrl+Shift+D
+- **Welcome Wizard** - First-time setup wizard for shell, tools, and AI assistants
 - **Customizable** - JSON-based settings at `~/.bossterm/settings.json`
 
 ## Keyboard Shortcuts
@@ -390,6 +391,7 @@ fun MyApp() {
 
 - [Embedding Guide](docs/embedding.md) - Embed a single terminal with custom context menus
 - [Tabbed Terminal Guide](docs/tabbed-terminal.md) - Full-featured tabbed terminal with splits
+- [Onboarding Wizard](docs/onboarding.md) - First-time setup wizard for users
 - [Troubleshooting Guide](docs/troubleshooting.md) - Common issues and solutions
 - [Release Notes](docs/release-notes/) - Detailed changelog for each version
 

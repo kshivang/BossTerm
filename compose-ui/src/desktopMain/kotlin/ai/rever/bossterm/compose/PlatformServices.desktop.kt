@@ -266,8 +266,52 @@ class DesktopProcessService : PlatformServices.ProcessService {
             }
         }
 
+        /**
+         * Get the shell process PID (child of PTY wrapper).
+         *
+         * The PTY spawns a shell as a child process. When the user runs `cd`,
+         * the shell's cwd changes but the PTY wrapper's cwd stays the same.
+         * We need the shell's PID to read its actual working directory.
+         *
+         * On Linux: reads /proc/<pty-pid>/task/<pty-pid>/children
+         * On macOS: uses pgrep -P <pty-pid>
+         */
+        private fun getShellPid(): Long? {
+            val ptyPid = getPid() ?: return null
+            val osName = System.getProperty("os.name")?.lowercase() ?: ""
+
+            return when {
+                osName.contains("linux") -> {
+                    try {
+                        val childrenFile = java.io.File("/proc/$ptyPid/task/$ptyPid/children")
+                        if (childrenFile.exists()) {
+                            childrenFile.readText().trim().split("\\s+".toRegex())
+                                .mapNotNull { it.toLongOrNull() }
+                                .firstOrNull()
+                        } else null
+                    } catch (e: Exception) { null }
+                }
+                osName.contains("mac") || osName.contains("darwin") -> {
+                    try {
+                        // Use pgrep -P <pty-pid> to find child processes
+                        val proc = ProcessBuilder("pgrep", "-P", ptyPid.toString())
+                            .redirectErrorStream(true)
+                            .start()
+                        val output = proc.inputStream.bufferedReader().readText().trim()
+                        if (proc.waitFor() == 0) {
+                            output.lines().firstOrNull()?.toLongOrNull()
+                        } else null
+                    } catch (e: Exception) { null }
+                }
+                else -> null
+            }
+        }
+
         override fun getWorkingDirectory(): String? {
-            val pid = getPid() ?: return null
+            // Prefer shell PID over PTY PID for accurate cwd after cd commands
+            val shellPid = getShellPid()
+            val pid = shellPid ?: getPid() ?: return null
+
             return try {
                 val osName = System.getProperty("os.name")?.lowercase() ?: ""
                 when {
@@ -278,7 +322,7 @@ class DesktopProcessService : PlatformServices.ProcessService {
                             cwdLink.canonicalPath
                         } else null
                     }
-                    osName.contains("mac") -> {
+                    osName.contains("mac") || osName.contains("darwin") -> {
                         // On macOS, use lsof to get current working directory
                         val proc = ProcessBuilder("lsof", "-a", "-p", pid.toString(), "-d", "cwd", "-Fn")
                             .redirectErrorStream(true)

@@ -15,6 +15,7 @@ import ai.rever.bossterm.compose.TabbedTerminal
 import ai.rever.bossterm.compose.cli.CLIInstallDialog
 import ai.rever.bossterm.compose.cli.CLIInstaller
 import ai.rever.bossterm.compose.notification.NotificationService
+import ai.rever.bossterm.compose.onboarding.OnboardingWizard
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.SettingsWindow
 import ai.rever.bossterm.compose.update.UpdateBanner
@@ -68,11 +69,19 @@ fun main() {
                 var isFirstRun by remember { mutableStateOf(false) }
                 var isCLIInstalled by remember { mutableStateOf(CLIInstaller.isInstalled()) }
 
-                // Check for first run (CLI not installed)
+                // Onboarding wizard state
+                var showOnboardingWizard by remember { mutableStateOf(false) }
+
+                // Check for first run (CLI not installed or onboarding not completed)
                 LaunchedEffect(Unit) {
-                    if (!isCLIInstalled) {
-                        // Check if this is the first window (avoid showing on every window)
-                        if (WindowManager.windows.firstOrNull()?.id == window.id) {
+                    // Check if this is the first window (avoid showing on every window)
+                    if (WindowManager.windows.firstOrNull()?.id == window.id) {
+                        // Check onboarding first
+                        val settings = SettingsManager.instance.settings.value
+                        if (!settings.onboardingCompleted) {
+                            showOnboardingWizard = true
+                        } else if (!isCLIInstalled) {
+                            // Only show CLI install dialog if onboarding is done
                             isFirstRun = true
                             showCLIInstallDialog = true
                         }
@@ -294,18 +303,18 @@ fun main() {
 
                         Menu("Shell", mnemonic = 'S') {
                             Item(
-                                "Split Pane Vertically",
+                                "Split Vertically",
                                 onClick = { window.menuActions.onSplitVertical?.invoke() },
                                 shortcut = KeyShortcut(Key.D, meta = isMacOS, ctrl = !isMacOS)
                             )
                             Item(
-                                "Split Pane Horizontally",
+                                "Split Horizontally",
                                 onClick = { window.menuActions.onSplitHorizontal?.invoke() },
                                 shortcut = KeyShortcut(Key.H, meta = isMacOS, ctrl = !isMacOS, shift = true)
                             )
                             Separator()
                             Item(
-                                "Close Split Pane",
+                                "Close Split",
                                 onClick = { window.menuActions.onClosePane?.invoke() }
                                 // No shortcut - conflicts with Close Window. Use Cmd+W when pane is focused.
                             )
@@ -330,7 +339,123 @@ fun main() {
                             )
                         }
 
+                        Menu("Tools", mnemonic = 'T') {
+                            // AI Assistants submenu
+                            Menu("AI Assistants") {
+                                Item(
+                                    "Claude Code",
+                                    onClick = { window.menuActions.onLaunchClaudeCode?.invoke() }
+                                )
+                                Item(
+                                    "Gemini CLI",
+                                    onClick = { window.menuActions.onLaunchGemini?.invoke() }
+                                )
+                                Item(
+                                    "Codex",
+                                    onClick = { window.menuActions.onLaunchCodex?.invoke() }
+                                )
+                                Item(
+                                    "OpenCode",
+                                    onClick = { window.menuActions.onLaunchOpenCode?.invoke() }
+                                )
+                            }
+                            Separator()
+                            // Git submenu - conditional based on repo status
+                            Menu("Git") {
+                                val isGitRepo = window.menuActions.isGitRepo.value
+                                if (isGitRepo) {
+                                    // In a git repository - show full menu
+                                    Item("git status", onClick = { window.menuActions.onGitStatus?.invoke() })
+                                    Item("git diff", onClick = { window.menuActions.onGitDiff?.invoke() })
+                                    Item("git log", onClick = { window.menuActions.onGitLog?.invoke() })
+                                    Separator()
+                                    Item("git add .", onClick = { window.menuActions.onGitAddAll?.invoke() })
+                                    Item("git add -p", onClick = { window.menuActions.onGitAddPatch?.invoke() })
+                                    Item("git reset HEAD", onClick = { window.menuActions.onGitReset?.invoke() })
+                                    Separator()
+                                    Item("git commit", onClick = { window.menuActions.onGitCommit?.invoke() })
+                                    Item("git commit --amend", onClick = { window.menuActions.onGitCommitAmend?.invoke() })
+                                    Separator()
+                                    Item("git push", onClick = { window.menuActions.onGitPush?.invoke() })
+                                    Item("git pull", onClick = { window.menuActions.onGitPull?.invoke() })
+                                    Item("git fetch --all", onClick = { window.menuActions.onGitFetch?.invoke() })
+                                    Separator()
+                                    Item("git branch -a", onClick = { window.menuActions.onGitBranch?.invoke() })
+                                    Item("git checkout -", onClick = { window.menuActions.onGitCheckoutPrev?.invoke() })
+                                    Item("git checkout -b ...", onClick = { window.menuActions.onGitCheckoutNew?.invoke() })
+                                    Separator()
+                                    Item("git stash", onClick = { window.menuActions.onGitStash?.invoke() })
+                                    Item("git stash pop", onClick = { window.menuActions.onGitStashPop?.invoke() })
+                                } else {
+                                    // Not in a git repository - show init/clone only
+                                    Item("git init", onClick = { window.menuActions.onGitInit?.invoke() })
+                                    Item("git clone ...", onClick = { window.menuActions.onGitClone?.invoke() })
+                                }
+                            }
+                            // GitHub CLI submenu - conditional based on repo status
+                            Menu("GitHub CLI") {
+                                val isGitRepo = window.menuActions.isGitRepo.value
+                                val isGhConfigured = window.menuActions.isGhConfigured.value
+
+                                Item("gh auth status", onClick = { window.menuActions.onGhAuthStatus?.invoke() })
+                                Item("gh auth login", onClick = { window.menuActions.onGhAuthLogin?.invoke() })
+                                Separator()
+                                if (!isGitRepo) {
+                                    // Not in git repo - show clone only
+                                    Item("gh repo clone ...", onClick = { window.menuActions.onGhRepoClone?.invoke() })
+                                } else if (!isGhConfigured) {
+                                    // In git repo but gh not configured
+                                    Item("gh repo set-default", onClick = { window.menuActions.onGhSetDefault?.invoke() })
+                                    Separator()
+                                    Item("gh repo clone ...", onClick = { window.menuActions.onGhRepoClone?.invoke() })
+                                } else {
+                                    // Fully configured - show all options
+                                    Item("gh pr list", onClick = { window.menuActions.onGhPrList?.invoke() })
+                                    Item("gh pr status", onClick = { window.menuActions.onGhPrStatus?.invoke() })
+                                    Item("gh pr create", onClick = { window.menuActions.onGhPrCreate?.invoke() })
+                                    Item("gh pr view --web", onClick = { window.menuActions.onGhPrView?.invoke() })
+                                    Separator()
+                                    Item("gh issue list", onClick = { window.menuActions.onGhIssueList?.invoke() })
+                                    Item("gh issue create", onClick = { window.menuActions.onGhIssueCreate?.invoke() })
+                                    Separator()
+                                    Item("gh repo view --web", onClick = { window.menuActions.onGhRepoView?.invoke() })
+                                }
+                            }
+                            Separator()
+                            // Shell Configuration submenu
+                            Menu("Shell Config") {
+                                Item("Edit .zshrc", onClick = { window.menuActions.onEditZshrc?.invoke() })
+                                Item("Edit .bashrc", onClick = { window.menuActions.onEditBashrc?.invoke() })
+                                Item("Edit config.fish", onClick = { window.menuActions.onEditFishConfig?.invoke() })
+                                Separator()
+                                Item("Reload Config", onClick = { window.menuActions.onReloadShellConfig?.invoke() })
+                            }
+                            // Starship submenu
+                            Menu("Starship") {
+                                Item("Edit Config", onClick = { window.menuActions.onStarshipEditConfig?.invoke() })
+                                Item("Apply Preset...", onClick = { window.menuActions.onStarshipPresets?.invoke() })
+                            }
+                            // Oh My Zsh submenu
+                            Menu("Oh My Zsh") {
+                                Item("Update", onClick = { window.menuActions.onOhMyZshUpdate?.invoke() })
+                                Item("List Themes", onClick = { window.menuActions.onOhMyZshThemes?.invoke() })
+                                Item("List Plugins", onClick = { window.menuActions.onOhMyZshPlugins?.invoke() })
+                            }
+                            // Prezto submenu
+                            Menu("Prezto") {
+                                Item("Update", onClick = { window.menuActions.onPreztoUpdate?.invoke() })
+                                Item("Edit Config", onClick = { window.menuActions.onPreztoEditConfig?.invoke() })
+                                Item("List Themes", onClick = { window.menuActions.onPreztoListThemes?.invoke() })
+                                Item("Show Modules", onClick = { window.menuActions.onPreztoShowModules?.invoke() })
+                            }
+                        }
+
                         Menu("Help", mnemonic = 'H') {
+                            Item(
+                                "Welcome Wizard...",
+                                onClick = { showOnboardingWizard = true }
+                            )
+                            Separator()
                             Item(
                                 "Check for Updates...",
                                 onClick = {
@@ -508,6 +633,29 @@ fun main() {
                         },
                         isFirstRun = isFirstRun
                     )
+
+                    // Onboarding wizard
+                    if (showOnboardingWizard) {
+                        OnboardingWizard(
+                            onDismiss = {
+                                showOnboardingWizard = false
+                                // After onboarding, check if CLI needs to be installed
+                                if (!isCLIInstalled) {
+                                    isFirstRun = true
+                                    showCLIInstallDialog = true
+                                }
+                            },
+                            onComplete = {
+                                showOnboardingWizard = false
+                                // After onboarding, check if CLI needs to be installed
+                                if (!isCLIInstalled) {
+                                    isFirstRun = true
+                                    showCLIInstallDialog = true
+                                }
+                            },
+                            settingsManager = settingsManager
+                        )
+                    }
                 }
             }
         }

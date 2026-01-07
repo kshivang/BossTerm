@@ -626,6 +626,12 @@ data class TerminalSettings(
     val notificationPermissionRequested: Boolean = false,
 
     /**
+     * Whether first-run onboarding wizard has been completed.
+     * When false, wizard is shown on first launch. Can be re-run from Help menu.
+     */
+    val onboardingCompleted: Boolean = false,
+
+    /**
      * Automatically inject shell integration (OSC 133) into new terminal sessions.
      * When enabled, BossTerm hijacks shell environment variables (ZDOTDIR for zsh,
      * ENV for bash, XDG_DATA_DIRS for fish) to auto-load shell integration scripts.

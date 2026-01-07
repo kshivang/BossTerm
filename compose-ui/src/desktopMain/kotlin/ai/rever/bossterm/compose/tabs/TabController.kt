@@ -1196,7 +1196,6 @@ class TabController(
                                     override fun onCommandStarted() {
                                         // Only count the first B after we send the command
                                         if (!commandStarted) {
-                                            println("DEBUG: Initial command started (OSC 133;B)")
                                             commandStarted = true
                                         }
                                     }
@@ -1204,11 +1203,9 @@ class TabController(
                                     override fun onCommandFinished(exitCode: Int) {
                                         // Only fire callback if we saw a B first (command actually started)
                                         if (!commandStarted) {
-                                            println("DEBUG: Ignoring OSC 133;D (no preceding B) - exitCode=$exitCode")
                                             return
                                         }
                                         try {
-                                            println("DEBUG: Initial command completed with exit code: $exitCode")
                                             // Fire callback once with success status and exit code
                                             onInitialCommandComplete(exitCode == 0, exitCode)
                                         } finally {

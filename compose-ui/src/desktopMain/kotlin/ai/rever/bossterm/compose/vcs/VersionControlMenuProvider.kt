@@ -76,9 +76,16 @@ class VersionControlMenuProvider {
 
         // Check if current directory is a git repo and fetch branches
         if (gitInstalled == true && cwd != null) {
-            isGitRepo = checkIsGitRepo(cwd)
+            isGitRepo = GitUtils.isGitRepo(cwd)
             if (isGitRepo) {
-                fetchGitBranches(cwd)
+                currentBranch = GitUtils.getCurrentBranch(cwd)
+                gitBranches = GitUtils.getLocalBranches(cwd).sortedWith(compareBy(
+                    // Sort: current branch first, then main/master/dev, then alphabetically
+                    { it != currentBranch },
+                    { it != "main" && it != "master" },
+                    { it != "dev" && it != "develop" },
+                    { it }
+                ))
             } else {
                 gitBranches = emptyList()
                 currentBranch = null
@@ -91,90 +98,9 @@ class VersionControlMenuProvider {
 
         // Check if gh repo default is configured (only if in git repo and gh installed)
         if (ghInstalled == true && isGitRepo && cwd != null) {
-            ghRepoConfigured = checkGhRepoConfigured(cwd)
+            ghRepoConfigured = GitUtils.isGhRepoConfigured(cwd)
         } else {
             ghRepoConfigured = false
-        }
-    }
-
-    /**
-     * Check if a directory is inside a git repository.
-     */
-    private fun checkIsGitRepo(cwd: String): Boolean {
-        return try {
-            val process = ProcessBuilder("git", "rev-parse", "--git-dir")
-                .directory(java.io.File(cwd))
-                .redirectErrorStream(true)
-                .start()
-            val completed = process.waitFor(2, TimeUnit.SECONDS)
-            completed && process.exitValue() == 0
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    /**
-     * Check if GitHub CLI has a default repository configured for this directory.
-     * Checks the git config for 'remote.origin.gh-resolved' which gh sets when
-     * you run 'gh repo set-default'.
-     */
-    private fun checkGhRepoConfigured(cwd: String): Boolean {
-        return try {
-            val process = ProcessBuilder("git", "config", "--get", "remote.origin.gh-resolved")
-                .directory(java.io.File(cwd))
-                .redirectErrorStream(true)
-                .start()
-            val output = process.inputStream.bufferedReader().readText().trim()
-            val completed = process.waitFor(2, TimeUnit.SECONDS)
-            // Exit code 0 means the config exists (default is set)
-            completed && process.exitValue() == 0 && output.isNotEmpty()
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    /**
-     * Fetch local git branches and current branch.
-     *
-     * @param cwd Working directory to run git commands in
-     */
-    private fun fetchGitBranches(cwd: String) {
-        try {
-            val dir = java.io.File(cwd)
-
-            // Get current branch
-            val headProcess = ProcessBuilder("git", "rev-parse", "--abbrev-ref", "HEAD")
-                .directory(dir)
-                .redirectErrorStream(true)
-                .start()
-            val headOutput = headProcess.inputStream.bufferedReader().readText().trim()
-            val headCompleted = headProcess.waitFor(2, TimeUnit.SECONDS)
-            currentBranch = headOutput.takeIf {
-                headCompleted && headProcess.exitValue() == 0 && it.isNotEmpty() && it != "HEAD"
-            }
-
-            // Get all local branches
-            val branchProcess = ProcessBuilder("git", "branch", "--format=%(refname:short)")
-                .directory(dir)
-                .redirectErrorStream(true)
-                .start()
-            val output = branchProcess.inputStream.bufferedReader().readText()
-            val branchCompleted = branchProcess.waitFor(2, TimeUnit.SECONDS)
-            if (branchCompleted && branchProcess.exitValue() == 0) {
-                gitBranches = output.lines()
-                    .map { it.trim() }
-                    .filter { it.isNotEmpty() }
-                    .sortedWith(compareBy(
-                        // Sort: current branch first, then main/master/dev, then alphabetically
-                        { it != currentBranch },
-                        { it != "main" && it != "master" },
-                        { it != "dev" && it != "develop" },
-                        { it }
-                    ))
-            }
-        } catch (e: Exception) {
-            gitBranches = emptyList()
-            currentBranch = null
         }
     }
 

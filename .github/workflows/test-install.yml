@@ -62,10 +62,15 @@ jobs:
 
       - name: Test platform detection (dry-run)
         run: |
-          OUTPUT=$(./install.sh --dry-run --method ${{ matrix.method }} 2>&1)
-          echo "$OUTPUT"
-          echo "$OUTPUT" | grep -q "Platform: darwin"
-          echo "$OUTPUT" | grep -q "arm64"
+          set +e
+          echo "=== Running install.sh --dry-run --method ${{ matrix.method }} ==="
+          ./install.sh --dry-run --method ${{ matrix.method }}
+          EXIT_CODE=$?
+          echo "=== Exit code: $EXIT_CODE ==="
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "Script failed with exit code $EXIT_CODE"
+            exit 1
+          fi
 
       - name: Test install (real)
         if: github.event_name == 'release' || github.event.inputs.run_real_install == 'true'

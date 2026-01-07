@@ -40,9 +40,9 @@ if /i "%~1"=="/uninstall" set "UNINSTALL=1" & shift & goto :parse_args
 if /i "%~1"=="/dryrun" set "DRYRUN=1" & shift & goto :parse_args
 if /i "%~1"=="/force" set "FORCE=1" & shift & goto :parse_args
 if /i "%~1"=="/nocli" set "NOCLI=1" & shift & goto :parse_args
-if /i "%~1:~0,9%"=="/version:" (
-    set "VERSION=%~1"
-    set "VERSION=!VERSION:~9!"
+set "_arg=%~1"
+if /i "!_arg:~0,9!"=="/version:" (
+    set "VERSION=!_arg:~9!"
     shift
     goto :parse_args
 )

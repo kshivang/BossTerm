@@ -372,7 +372,7 @@ function Main {
     # Show help
     if ($Help) {
         Show-Help
-        return
+        exit 0
     }
 
     # Detect platform
@@ -387,30 +387,30 @@ function Main {
     if ($Uninstall) {
         if (-not (Test-BossTermInstalled)) {
             Write-Warning "BossTerm does not appear to be installed"
-            return
+            exit 0
         }
 
         if ($DryRun) {
             Write-Info "Dry run mode - would uninstall BossTerm"
-            return
+            exit 0
         }
 
         Uninstall-BossTerm
-        return
+        exit 0
     }
 
     # Check if already installed
     if ((Test-BossTermInstalled) -and (-not $Force)) {
         Write-Warning "BossTerm is already installed at $script:JAR_PATH"
         Write-Warning "Use -Force to reinstall or -Uninstall to remove first"
-        return
+        exit 0
     }
 
     # Get version
     if (-not $Version) {
         $Version = Get-LatestVersion
         if (-not $Version) {
-            return
+            exit 1
         }
     }
 
@@ -422,7 +422,7 @@ function Main {
         Write-Host ""
         Write-Info "Dry run mode - no changes will be made"
         Write-Info "Would install BossTerm $Version on Windows ($arch)"
-        return
+        exit 0
     }
 
     Write-Host ""
@@ -434,14 +434,14 @@ function Main {
 
         if (-not (Install-Java)) {
             Write-Error "Please install Java 17+ and try again"
-            return
+            exit 1
         }
 
         # Verify Java after install
         if (-not (Test-JavaInstalled)) {
             Write-Error "Java installation succeeded but version check failed"
             Write-Host "Please restart your terminal and run this script again"
-            return
+            exit 1
         }
     }
     else {
@@ -452,7 +452,7 @@ function Main {
     # Install
     if (-not (Install-BossTerm -Version $Version)) {
         Write-Error "Installation failed"
-        return
+        exit 1
     }
 
     # Install CLI launcher
@@ -472,6 +472,7 @@ function Main {
     Write-Host ""
     Write-Host "Note: You may need to restart your terminal for PATH changes to take effect."
     Write-Host ""
+    exit 0
 }
 
 # Run main

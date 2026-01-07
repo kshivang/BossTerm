@@ -371,6 +371,13 @@ fun EmbeddableTerminal(
                 val terminalWriter: (String) -> Unit = { text -> session.writeUserInput(text) }
                 val vcsItems = vcsMenuProvider.getMenuItems(
                     terminalWriter = terminalWriter,
+                    onInstallRequest = { toolId, command, npmCommand ->
+                        // Find the tool definition and show install dialog
+                        val tool = AIAssistants.findById(toolId)
+                        if (tool != null) {
+                            installDialogState = AIInstallDialogParams(tool, command, npmCommand, terminalWriter)
+                        }
+                    },
                     statusOverride = vcsStatusHolder.get()
                 )
                 items = items + vcsItems
@@ -737,7 +744,7 @@ class EmbeddableTerminalState {
      *
      * @return List of assistant IDs (e.g., "claude-code", "codex", "gemini-cli", "opencode")
      */
-    fun getAvailableAIAssistants(): List<String> = AIAssistants.ALL.map { it.id }
+    fun getAvailableAIAssistants(): List<String> = AIAssistants.AI_ASSISTANTS.map { it.id }
 
     /**
      * Get AI assistant definition by ID.
@@ -788,6 +795,24 @@ class EmbeddableTerminalState {
     fun cancelAIInstallation() {
         aiInstallRequest = null
     }
+
+    // ==================== VCS Tool Installation ====================
+
+    /**
+     * Trigger installation of Git.
+     * Opens the installation dialog in the terminal.
+     *
+     * @return true if installation was triggered, false if no active session
+     */
+    fun installGit(): Boolean = installAIAssistant("git")
+
+    /**
+     * Trigger installation of GitHub CLI (gh).
+     * Opens the installation dialog in the terminal.
+     *
+     * @return true if installation was triggered, false if no active session
+     */
+    fun installGitHubCLI(): Boolean = installAIAssistant("gh")
 }
 
 /**

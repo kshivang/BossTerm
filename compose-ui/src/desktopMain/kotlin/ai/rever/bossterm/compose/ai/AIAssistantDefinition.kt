@@ -3,24 +3,34 @@ package ai.rever.bossterm.compose.ai
 import kotlinx.serialization.Serializable
 
 /**
- * Definition of an AI coding assistant that can be integrated with BossTerm.
+ * Category of tool definition.
+ */
+enum class ToolCategory {
+    AI_ASSISTANT,  // AI coding assistants (claude, gemini, codex, etc.)
+    VERSION_CONTROL  // Version control tools (git, gh)
+}
+
+/**
+ * Definition of a CLI tool that can be integrated with BossTerm.
  *
- * @property id Unique identifier for the assistant (e.g., "claude-code")
+ * @property id Unique identifier for the tool (e.g., "claude-code")
  * @property displayName Human-readable name shown in menus (e.g., "Claude Code")
- * @property command The CLI command to launch the assistant (e.g., "claude")
+ * @property command The CLI command to launch the tool (e.g., "claude")
+ * @property category Category of the tool (AI_ASSISTANT or VERSION_CONTROL)
  * @property yoloFlag The flag to enable auto/YOLO mode (e.g., "--dangerously-skip-permissions")
  * @property yoloLabel Label for YOLO mode (e.g., "Auto Mode")
- * @property installCommand Command to install the assistant
+ * @property installCommand Command to install the tool
  * @property npmInstallCommand Alternative npm install command
  * @property websiteUrl URL for "Learn more" action
- * @property description Brief description of the assistant
- * @property isBuiltIn Whether this is a built-in assistant (vs custom)
+ * @property description Brief description of the tool
+ * @property isBuiltIn Whether this is a built-in tool (vs custom)
  */
 @Serializable
 data class AIAssistantDefinition(
     val id: String,
     val displayName: String,
     val command: String,
+    val category: ToolCategory = ToolCategory.AI_ASSISTANT,
     val yoloFlag: String = "",
     val yoloLabel: String = "Auto",
     val installCommand: String = "",
@@ -122,15 +132,52 @@ object AIAssistants {
             npmInstallCommand = "npm install -g opencode-ai",
             websiteUrl = "https://github.com/anomalyco/opencode",
             description = "Open-source AI coding assistant"
+        ),
+        // Version Control Tools
+        AIAssistantDefinition(
+            id = "gh",
+            displayName = "GitHub CLI",
+            command = "gh",
+            category = ToolCategory.VERSION_CONTROL,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = "sudo apt install -y gh",
+            npmInstallCommand = null,
+            websiteUrl = "https://cli.github.com/",
+            description = "GitHub's official CLI"
+        ),
+        AIAssistantDefinition(
+            id = "git",
+            displayName = "Git",
+            command = "git",
+            category = ToolCategory.VERSION_CONTROL,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = "sudo apt install -y git",
+            npmInstallCommand = null,
+            websiteUrl = "https://git-scm.com/downloads",
+            description = "Distributed version control system"
         )
     )
 
     /**
-     * All supported AI coding assistants (built-in + custom).
-     * Custom assistants are loaded from settings at runtime.
+     * All supported tools (built-in + custom).
+     * Custom tools are loaded from settings at runtime.
      */
     val ALL: List<AIAssistantDefinition>
         get() = BUILTIN + _customAssistants
+
+    /**
+     * Only AI coding assistants (claude, gemini, codex, etc.)
+     */
+    val AI_ASSISTANTS: List<AIAssistantDefinition>
+        get() = ALL.filter { it.category == ToolCategory.AI_ASSISTANT }
+
+    /**
+     * Only version control tools (git, gh)
+     */
+    val VCS_TOOLS: List<AIAssistantDefinition>
+        get() = ALL.filter { it.category == ToolCategory.VERSION_CONTROL }
 
     private var _customAssistants: List<AIAssistantDefinition> = emptyList()
 

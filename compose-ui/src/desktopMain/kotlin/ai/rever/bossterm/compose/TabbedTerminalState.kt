@@ -494,7 +494,7 @@ class TabbedTerminalState {
      *
      * @return List of assistant IDs (e.g., "claude-code", "codex", "gemini-cli", "opencode")
      */
-    fun getAvailableAIAssistants(): List<String> = AIAssistants.ALL.map { it.id }
+    fun getAvailableAIAssistants(): List<String> = AIAssistants.AI_ASSISTANTS.map { it.id }
 
     /**
      * Get AI assistant definition by ID.
@@ -579,6 +579,56 @@ class TabbedTerminalState {
     fun cancelAIInstallation() {
         aiInstallRequest = null
     }
+
+    // ==================== VCS Tool Installation ====================
+
+    /**
+     * Trigger installation of Git.
+     * Opens the installation dialog in the active tab's terminal.
+     *
+     * @return true if installation was triggered, false if no active tab
+     */
+    fun installGit(): Boolean = installAIAssistant("git")
+
+    /**
+     * Trigger installation of Git in a specific tab.
+     *
+     * @param tabIndex Index of the tab to use for the installation
+     * @return true if installation was triggered, false if tab index invalid
+     */
+    fun installGit(tabIndex: Int): Boolean = installAIAssistant("git", tabIndex)
+
+    /**
+     * Trigger installation of Git in a specific tab by stable ID.
+     *
+     * @param tabId Stable ID of the tab to use for the installation
+     * @return true if installation was triggered, false if tab not found
+     */
+    fun installGit(tabId: String): Boolean = installAIAssistant("git", tabId)
+
+    /**
+     * Trigger installation of GitHub CLI (gh).
+     * Opens the installation dialog in the active tab's terminal.
+     *
+     * @return true if installation was triggered, false if no active tab
+     */
+    fun installGitHubCLI(): Boolean = installAIAssistant("gh")
+
+    /**
+     * Trigger installation of GitHub CLI (gh) in a specific tab.
+     *
+     * @param tabIndex Index of the tab to use for the installation
+     * @return true if installation was triggered, false if tab index invalid
+     */
+    fun installGitHubCLI(tabIndex: Int): Boolean = installAIAssistant("gh", tabIndex)
+
+    /**
+     * Trigger installation of GitHub CLI (gh) in a specific tab by stable ID.
+     *
+     * @param tabId Stable ID of the tab to use for the installation
+     * @return true if installation was triggered, false if tab not found
+     */
+    fun installGitHubCLI(tabId: String): Boolean = installAIAssistant("gh", tabId)
 }
 
 /**

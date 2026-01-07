@@ -156,6 +156,17 @@ class AIAssistantDetector {
                 "$home/.local/bin/gemini",
                 "/usr/local/bin/gemini"
             )
+            "gh" -> listOf(
+                "/usr/bin/gh",
+                "/usr/local/bin/gh",
+                "/opt/homebrew/bin/gh",
+                "$home/.local/bin/gh"
+            )
+            "git" -> listOf(
+                "/usr/bin/git",
+                "/usr/local/bin/git",
+                "/opt/homebrew/bin/git"
+            )
             else -> emptyList()
         }
     }

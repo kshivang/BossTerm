@@ -185,22 +185,82 @@ class VersionControlMenuProvider {
      * Generate context menu items for version control.
      *
      * @param terminalWriter Function to write commands to the terminal
+     * @param onInstallRequest Callback to trigger installation dialog (toolId, installCommand, npmCommand?)
      * @param statusOverride Optional pre-computed status (gitInstalled, ghInstalled)
      * @return List of context menu elements for the Version Control section
      */
     fun getMenuItems(
         terminalWriter: (String) -> Unit,
+        onInstallRequest: ((String, String, String?) -> Unit)? = null,
         statusOverride: Pair<Boolean, Boolean>? = null
     ): List<ContextMenuElement> {
         val (isGitInstalled, isGhInstalled) = statusOverride ?: getStatus()
 
         val vcsItems = mutableListOf<ContextMenuElement>()
 
-        // Git submenu
-        vcsItems.add(buildGitMenu(isGitInstalled, terminalWriter))
+        // Git menu - follows same pattern as AI assistants
+        if (!isGitInstalled) {
+            // Not installed: Submenu with Install + Learn More (same as AI assistants)
+            vcsItems.add(
+                ContextMenuSubmenu(
+                    id = "git_submenu",
+                    label = "Git",
+                    items = listOf(
+                        ContextMenuItem(
+                            id = "git_install",
+                            label = "Install",
+                            action = {
+                                if (onInstallRequest != null) {
+                                    onInstallRequest("git", "sudo apt install -y git", null)
+                                } else {
+                                    openUrl("https://git-scm.com/downloads")
+                                }
+                            }
+                        ),
+                        ContextMenuItem(
+                            id = "git_learnmore",
+                            label = "Learn More",
+                            action = { openUrl("https://git-scm.com/") }
+                        )
+                    )
+                )
+            )
+        } else {
+            // Installed: Submenu with commands
+            vcsItems.add(buildGitMenu(isGitInstalled, terminalWriter, onInstallRequest))
+        }
 
-        // GitHub CLI submenu
-        vcsItems.add(buildGhMenu(isGhInstalled, terminalWriter))
+        // GitHub CLI menu - follows same pattern as AI assistants
+        if (!isGhInstalled) {
+            // Not installed: Submenu with Install + Learn More (same as AI assistants)
+            vcsItems.add(
+                ContextMenuSubmenu(
+                    id = "gh_submenu",
+                    label = "GitHub CLI",
+                    items = listOf(
+                        ContextMenuItem(
+                            id = "gh_install",
+                            label = "Install",
+                            action = {
+                                if (onInstallRequest != null) {
+                                    onInstallRequest("gh", "sudo apt install -y gh", null)
+                                } else {
+                                    openUrl("https://cli.github.com/")
+                                }
+                            }
+                        ),
+                        ContextMenuItem(
+                            id = "gh_learnmore",
+                            label = "Learn More",
+                            action = { openUrl("https://cli.github.com/") }
+                        )
+                    )
+                )
+            )
+        } else {
+            // Installed: Submenu with commands
+            vcsItems.add(buildGhMenu(isGhInstalled, terminalWriter, onInstallRequest))
+        }
 
         return listOf(
             ContextMenuSubmenu(
@@ -212,26 +272,14 @@ class VersionControlMenuProvider {
     }
 
     /**
-     * Build Git submenu with common commands or install option.
+     * Build Git submenu with common commands.
+     * Only called when git is installed.
      */
-    private fun buildGitMenu(isInstalled: Boolean, terminalWriter: (String) -> Unit): ContextMenuElement {
-        // Git not installed - show install option
-        if (!isInstalled) {
-            return ContextMenuSubmenu(
-                id = "git_submenu",
-                label = "Git",
-                items = listOf(
-                    ContextMenuItem(
-                        id = "git_install",
-                        label = "Install Git",
-                        action = {
-                            openUrl("https://git-scm.com/downloads")
-                        }
-                    )
-                )
-            )
-        }
-
+    private fun buildGitMenu(
+        isInstalled: Boolean,
+        terminalWriter: (String) -> Unit,
+        onInstallRequest: ((String, String, String?) -> Unit)?
+    ): ContextMenuElement {
         // Not in a git repository - show only git init
         if (!isGitRepo) {
             return ContextMenuSubmenu(
@@ -479,25 +527,14 @@ class VersionControlMenuProvider {
     }
 
     /**
-     * Build GitHub CLI submenu with common commands or install option.
+     * Build GitHub CLI submenu with common commands.
+     * Only called when gh is installed.
      */
-    private fun buildGhMenu(isInstalled: Boolean, terminalWriter: (String) -> Unit): ContextMenuElement {
-        if (!isInstalled) {
-            return ContextMenuSubmenu(
-                id = "gh_submenu",
-                label = "GitHub CLI",
-                items = listOf(
-                    ContextMenuItem(
-                        id = "gh_install",
-                        label = "Install GitHub CLI",
-                        action = {
-                            openUrl("https://cli.github.com/")
-                        }
-                    )
-                )
-            )
-        }
-
+    private fun buildGhMenu(
+        isInstalled: Boolean,
+        terminalWriter: (String) -> Unit,
+        onInstallRequest: ((String, String, String?) -> Unit)?
+    ): ContextMenuElement {
         // Not in a git repository - show only auth and clone options
         if (!isGitRepo) {
             return ContextMenuSubmenu(
@@ -626,12 +663,53 @@ class VersionControlMenuProvider {
      * Open URL in default browser.
      */
     private fun openUrl(url: String) {
+        val os = System.getProperty("os.name").lowercase()
+
         try {
-            if (Desktop.isDesktopSupported()) {
-                Desktop.getDesktop().browse(URI(url))
+            when {
+                os.contains("linux") -> openUrlOnLinux(url)
+                os.contains("mac") -> {
+                    ProcessBuilder("open", url).start()
+                }
+                os.contains("win") -> {
+                    ProcessBuilder("cmd", "/c", "start", "", url).start()
+                }
+                else -> {
+                    if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+                        Desktop.getDesktop().browse(URI(url))
+                    }
+                }
             }
         } catch (e: Exception) {
             // Silently fail - user can manually visit the URL
+        }
+    }
+
+    /**
+     * Open URL on Linux using multiple fallback strategies.
+     */
+    private fun openUrlOnLinux(url: String) {
+        val browserCommands = listOf(
+            listOf("xdg-open", url),
+            listOf("sensible-browser", url),
+            listOf("x-www-browser", url),
+            listOf("gnome-open", url),
+            listOf("kde-open", url)
+        )
+
+        for (command in browserCommands) {
+            try {
+                val process = ProcessBuilder(command)
+                    .redirectErrorStream(true)
+                    .start()
+                // Give it a moment to fail if the command doesn't exist
+                Thread.sleep(100)
+                if (process.isAlive) {
+                    return // Success
+                }
+            } catch (e: Exception) {
+                // Try next command
+            }
         }
     }
 }

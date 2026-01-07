@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import ai.rever.bossterm.compose.ContextMenuElement
 import ai.rever.bossterm.compose.ai.AIAssistantDefinition
+import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.ai.AICommandInterceptor
 import ai.rever.bossterm.compose.ai.AIAssistantLauncher
 import ai.rever.bossterm.compose.ai.AIInstallDialogHost
@@ -707,6 +708,13 @@ fun TabbedTerminal(
                     }
                     val vcsItems = vcsMenuProvider.getMenuItems(
                         terminalWriter = terminalWriter,
+                        onInstallRequest = { toolId, command, npmCommand ->
+                            // Find the tool definition and show install dialog
+                            val tool = AIAssistants.findById(toolId)
+                            if (tool != null) {
+                                installDialogState = AIInstallDialogParams(tool, command, npmCommand, terminalWriter)
+                            }
+                        },
                         statusOverride = vcsStatusHolder.get()
                     )
                     items = items + vcsItems

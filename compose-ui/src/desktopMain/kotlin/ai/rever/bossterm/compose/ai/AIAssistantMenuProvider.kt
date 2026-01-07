@@ -46,7 +46,7 @@ class AIAssistantMenuProvider(
         val assistantItems = mutableListOf<ContextMenuElement>()
 
         // Add items for each assistant
-        for (assistant in AIAssistants.ALL) {
+        for (assistant in AIAssistants.AI_ASSISTANTS) {
             val config = configs[assistant.id] ?: AIAssistantConfigData()
 
             // Skip if assistant is disabled in config

@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.ai
 import ai.rever.bossterm.compose.EmbeddableTerminal
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.*
@@ -73,14 +74,9 @@ fun AIAssistantInstallDialog(
                     dialogState is InstallDialogState.Error
 
     Dialog(
-        onDismissRequest = {
-            // Only allow dismiss if not installing or if there's an error
-            if (dialogState != InstallDialogState.Installing) {
-                onDismiss()
-            }
-        },
+        onDismissRequest = { onDismiss() },
         properties = DialogProperties(
-            dismissOnBackPress = dialogState != InstallDialogState.Installing,
+            dismissOnBackPress = true,
             dismissOnClickOutside = false,
             usePlatformDefaultWidth = false
         )
@@ -110,19 +106,18 @@ fun AIAssistantInstallDialog(
                         fontWeight = FontWeight.Medium
                     )
 
-                    // Close button (only enabled when not installing)
-                    IconButton(
-                        onClick = onDismiss,
-                        enabled = dialogState != InstallDialogState.Installing,
-                        modifier = Modifier.size(28.dp)
+                    // Close button - always clickable to allow canceling
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .clickable { onDismiss() },
+                        contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "Close",
-                            tint = if (dialogState != InstallDialogState.Installing)
-                                Color.White.copy(alpha = 0.7f)
-                            else
-                                Color.White.copy(alpha = 0.3f),
+                            tint = Color.White.copy(alpha = 0.7f),
                             modifier = Modifier.size(18.dp)
                         )
                     }

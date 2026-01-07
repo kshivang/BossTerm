@@ -27,6 +27,7 @@ class ShellCustomizationMenuProvider {
     private var ohmyzshInstalled: Boolean? = null
     private var zshInstalled: Boolean? = null
     private var bashInstalled: Boolean? = null
+    private var fishInstalled: Boolean? = null
 
     /**
      * Detect if a command is installed by checking `which`.
@@ -59,6 +60,7 @@ class ShellCustomizationMenuProvider {
         ohmyzshInstalled = isOhMyZshInstalled()
         zshInstalled = isCommandInstalled("zsh")
         bashInstalled = isCommandInstalled("bash")
+        fishInstalled = isCommandInstalled("fish")
     }
 
     /**
@@ -80,6 +82,11 @@ class ShellCustomizationMenuProvider {
      * Get cached installation status for Bash.
      */
     fun getBashStatus(): Boolean? = bashInstalled
+
+    /**
+     * Get cached installation status for Fish.
+     */
+    fun getFishStatus(): Boolean? = fishInstalled
 
     /**
      * Get context menu items for shell customization.
@@ -208,6 +215,27 @@ class ShellCustomizationMenuProvider {
             )
         } else {
             shellItems.add(buildBashMenu(terminalWriter))
+        }
+
+        // Fish menu
+        val isFishInstalled = statusOverride?.get("fish")
+            ?: (fishInstalled ?: isCommandInstalled("fish"))
+        if (!isFishInstalled) {
+            shellItems.add(
+                ContextMenuItem(
+                    id = "fish_install",
+                    label = "Install Fish",
+                    action = {
+                        if (onInstallRequest != null) {
+                            onInstallRequest("fish", getFishInstallCommand(), null)
+                        } else {
+                            terminalWriter("${getFishInstallCommand()}\n")
+                        }
+                    }
+                )
+            )
+        } else {
+            shellItems.add(buildFishMenu(terminalWriter))
         }
 
         return if (shellItems.isEmpty()) {
@@ -571,6 +599,56 @@ class ShellCustomizationMenuProvider {
                 "echo 'Bash is available through Git Bash or WSL on Windows.'"
             else -> getLinuxInstallCommand("bash", "bash", "bash")
         }
+    }
+
+    /**
+     * Get platform-aware install command for Fish.
+     */
+    private fun getFishInstallCommand(): String {
+        return when {
+            System.getProperty("os.name").lowercase().contains("mac") ->
+                "brew install fish"
+            System.getProperty("os.name").lowercase().contains("windows") ->
+                "echo 'Fish is available through WSL on Windows. Visit https://fishshell.com for more info.'"
+            else -> getLinuxInstallCommand("fish", "fish", "fish")
+        }
+    }
+
+    /**
+     * Build Fish submenu with configuration options.
+     */
+    private fun buildFishMenu(terminalWriter: (String) -> Unit): ContextMenuSubmenu {
+        return ContextMenuSubmenu(
+            id = "fish_submenu",
+            label = "Fish",
+            items = listOf(
+                ContextMenuItem(
+                    id = "fish_version",
+                    label = "Show Version",
+                    action = { terminalWriter("fish --version\n") }
+                ),
+                ContextMenuItem(
+                    id = "fish_set_default",
+                    label = "Set as Default Shell",
+                    action = { terminalWriter("chsh -s \$(which fish)\n") }
+                ),
+                ContextMenuItem(
+                    id = "fish_edit_config",
+                    label = "Edit config.fish",
+                    action = { terminalWriter("\${EDITOR:-nano} ~/.config/fish/config.fish\n") }
+                ),
+                ContextMenuItem(
+                    id = "fish_reload",
+                    label = "Reload Config",
+                    action = { terminalWriter("source ~/.config/fish/config.fish\n") }
+                ),
+                ContextMenuItem(
+                    id = "fish_web_config",
+                    label = "Web Config (GUI)",
+                    action = { terminalWriter("fish_config\n") }
+                )
+            )
+        )
     }
 
     /**

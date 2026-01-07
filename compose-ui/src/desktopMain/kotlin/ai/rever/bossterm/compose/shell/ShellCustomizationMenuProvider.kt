@@ -62,6 +62,26 @@ class ShellCustomizationMenuProvider {
     }
 
     /**
+     * Get the user's default shell from $SHELL environment variable.
+     */
+    private fun getDefaultShell(): String {
+        return System.getenv("SHELL")?.substringAfterLast("/") ?: "bash"
+    }
+
+    /**
+     * Check if Starship is configured for Zsh (has init line in .zshrc).
+     */
+    private fun isStarshipConfiguredForZsh(): Boolean {
+        val home = System.getProperty("user.home") ?: return false
+        val zshrc = File(home, ".zshrc")
+        return try {
+            zshrc.exists() && zshrc.readText().contains("starship init zsh")
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
      * Refresh installation status for shell customization tools.
      */
     suspend fun refreshStatus() = withContext(Dispatchers.IO) {
@@ -103,6 +123,57 @@ class ShellCustomizationMenuProvider {
      */
     fun getFishStatus(): Boolean? = fishInstalled
 
+    // ===== Uninstall Commands (reusable) =====
+
+    /**
+     * Get command to uninstall Starship (removes binary and config lines).
+     */
+    private fun getStarshipUninstallCommand(): String {
+        return "sed -i '/eval.*starship init/d' ~/.bashrc 2>/dev/null; " +
+            "sed -i '/eval.*starship init/d' ~/.zshrc 2>/dev/null; " +
+            "sed -i '/starship init fish/d' ~/.config/fish/config.fish 2>/dev/null; " +
+            "sudo rm -v \"\$(which starship)\" && echo '✓ Starship uninstalled'"
+    }
+
+    /**
+     * Get command to uninstall Oh My Zsh.
+     */
+    private fun getOhMyZshUninstallCommand(): String {
+        return "env ZSH=\"\$HOME/.oh-my-zsh\" sh \"\$HOME/.oh-my-zsh/tools/uninstall.sh\" --unattended && echo '✓ Oh My Zsh uninstalled'"
+    }
+
+    /**
+     * Get command to uninstall Prezto.
+     */
+    private fun getPreztoUninstallCommand(): String {
+        return "rm -rf ~/.zprezto ~/.zshrc ~/.zlogin ~/.zlogout ~/.zpreztorc ~/.zprofile ~/.zshenv && echo '✓ Prezto uninstalled'"
+    }
+
+    /**
+     * Build install command that first uninstalls conflicting tools.
+     */
+    private fun buildInstallWithUninstall(
+        installCmd: String,
+        uninstallStarship: Boolean = false,
+        uninstallOhMyZsh: Boolean = false,
+        uninstallPrezto: Boolean = false
+    ): String {
+        val parts = mutableListOf<String>()
+
+        if (uninstallStarship && (starshipInstalled == true)) {
+            parts.add(getStarshipUninstallCommand())
+        }
+        if (uninstallOhMyZsh && (ohmyzshInstalled == true)) {
+            parts.add(getOhMyZshUninstallCommand())
+        }
+        if (uninstallPrezto && (preztoInstalled == true)) {
+            parts.add(getPreztoUninstallCommand())
+        }
+        parts.add(installCmd)
+
+        return parts.joinToString(" && ")
+    }
+
     /**
      * Get context menu items for shell customization.
      *
@@ -136,7 +207,17 @@ class ShellCustomizationMenuProvider {
                             label = "Install",
                             action = {
                                 if (onInstallRequest != null) {
-                                    onInstallRequest("starship", AIAssistantLauncher.getStarshipInstallCommand(), null)
+                                    // When default shell is Zsh, uninstall Oh My Zsh/Prezto first
+                                    val installCmd = if (getDefaultShell() == "zsh") {
+                                        buildInstallWithUninstall(
+                                            AIAssistantLauncher.getStarshipInstallCommand(),
+                                            uninstallOhMyZsh = true,
+                                            uninstallPrezto = true
+                                        )
+                                    } else {
+                                        AIAssistantLauncher.getStarshipInstallCommand()
+                                    }
+                                    onInstallRequest("starship", installCmd, null)
                                 } else {
                                     UrlOpener.open("https://starship.rs/")
                                 }
@@ -173,7 +254,13 @@ class ShellCustomizationMenuProvider {
                                 label = "Install",
                                 action = {
                                     if (onInstallRequest != null) {
-                                        onInstallRequest("oh-my-zsh", AIAssistantLauncher.getOhMyZshInstallCommand(), null)
+                                        // Uninstall Prezto (always) and Starship (if configured for Zsh)
+                                        val installCmd = buildInstallWithUninstall(
+                                            AIAssistantLauncher.getOhMyZshInstallCommand(),
+                                            uninstallStarship = isStarshipConfiguredForZsh(),
+                                            uninstallPrezto = true
+                                        )
+                                        onInstallRequest("oh-my-zsh", installCmd, null)
                                     } else {
                                         UrlOpener.open("https://ohmyz.sh/")
                                     }
@@ -207,7 +294,13 @@ class ShellCustomizationMenuProvider {
                                 label = "Install",
                                 action = {
                                     if (onInstallRequest != null) {
-                                        onInstallRequest("prezto", getPreztoInstallCommand(), null)
+                                        // Uninstall Oh My Zsh (always) and Starship (if configured for Zsh)
+                                        val installCmd = buildInstallWithUninstall(
+                                            getPreztoInstallCommand(),
+                                            uninstallStarship = isStarshipConfiguredForZsh(),
+                                            uninstallOhMyZsh = true
+                                        )
+                                        onInstallRequest("prezto", installCmd, null)
                                     } else {
                                         UrlOpener.open("https://github.com/sorin-ionescu/prezto")
                                     }

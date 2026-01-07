@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.awt.Desktop
 import java.net.URI
+import java.util.concurrent.TimeUnit
 
 /**
  * Provides context menu items for version control operations (Git and GitHub CLI).
@@ -56,8 +57,8 @@ class VersionControlMenuProvider {
             val process = ProcessBuilder("which", command)
                 .redirectErrorStream(true)
                 .start()
-            val exitCode = process.waitFor()
-            exitCode == 0
+            val completed = process.waitFor(2, TimeUnit.SECONDS)
+            completed && process.exitValue() == 0
         } catch (e: Exception) {
             false
         }
@@ -105,7 +106,8 @@ class VersionControlMenuProvider {
                 .directory(java.io.File(cwd))
                 .redirectErrorStream(true)
                 .start()
-            process.waitFor() == 0
+            val completed = process.waitFor(2, TimeUnit.SECONDS)
+            completed && process.exitValue() == 0
         } catch (e: Exception) {
             false
         }
@@ -123,9 +125,9 @@ class VersionControlMenuProvider {
                 .redirectErrorStream(true)
                 .start()
             val output = process.inputStream.bufferedReader().readText().trim()
-            val exitCode = process.waitFor()
+            val completed = process.waitFor(2, TimeUnit.SECONDS)
             // Exit code 0 means the config exists (default is set)
-            exitCode == 0 && output.isNotEmpty()
+            completed && process.exitValue() == 0 && output.isNotEmpty()
         } catch (e: Exception) {
             false
         }
@@ -145,8 +147,11 @@ class VersionControlMenuProvider {
                 .directory(dir)
                 .redirectErrorStream(true)
                 .start()
-            currentBranch = headProcess.inputStream.bufferedReader().readText().trim()
-                .takeIf { headProcess.waitFor() == 0 && it.isNotEmpty() && it != "HEAD" }
+            val headOutput = headProcess.inputStream.bufferedReader().readText().trim()
+            val headCompleted = headProcess.waitFor(2, TimeUnit.SECONDS)
+            currentBranch = headOutput.takeIf {
+                headCompleted && headProcess.exitValue() == 0 && it.isNotEmpty() && it != "HEAD"
+            }
 
             // Get all local branches
             val branchProcess = ProcessBuilder("git", "branch", "--format=%(refname:short)")
@@ -154,7 +159,8 @@ class VersionControlMenuProvider {
                 .redirectErrorStream(true)
                 .start()
             val output = branchProcess.inputStream.bufferedReader().readText()
-            if (branchProcess.waitFor() == 0) {
+            val branchCompleted = branchProcess.waitFor(2, TimeUnit.SECONDS)
+            if (branchCompleted && branchProcess.exitValue() == 0) {
                 gitBranches = output.lines()
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }

@@ -205,7 +205,8 @@ class AIAssistantLauncher {
                 val whichProcess = ProcessBuilder("which", command[0])
                     .redirectErrorStream(true)
                     .start()
-                val exists = whichProcess.waitFor() == 0
+                val completed = whichProcess.waitFor(2, TimeUnit.SECONDS)
+                val exists = completed && whichProcess.exitValue() == 0
 
                 if (exists) {
                     ProcessBuilder(command)

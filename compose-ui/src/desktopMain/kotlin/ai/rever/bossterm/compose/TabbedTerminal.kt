@@ -761,7 +761,9 @@ fun TabbedTerminal(
                     shellMenuProvider.refreshStatus()
                     shellStatusHolder.set(mapOf(
                         "starship" to (shellMenuProvider.getStatus() ?: false),
-                        "oh-my-zsh" to (shellMenuProvider.getOhMyZshStatus() ?: false)
+                        "oh-my-zsh" to (shellMenuProvider.getOhMyZshStatus() ?: false),
+                        "zsh" to (shellMenuProvider.getZshStatus() ?: false),
+                        "bash" to (shellMenuProvider.getBashStatus() ?: false)
                     ))
                 },
                 hyperlinkRegistry = hyperlinkRegistry,

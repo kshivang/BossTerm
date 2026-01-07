@@ -25,6 +25,8 @@ class ShellCustomizationMenuProvider {
      */
     private var starshipInstalled: Boolean? = null
     private var ohmyzshInstalled: Boolean? = null
+    private var zshInstalled: Boolean? = null
+    private var bashInstalled: Boolean? = null
 
     /**
      * Detect if a command is installed by checking `which`.
@@ -55,6 +57,8 @@ class ShellCustomizationMenuProvider {
     suspend fun refreshStatus() = withContext(Dispatchers.IO) {
         starshipInstalled = isCommandInstalled("starship")
         ohmyzshInstalled = isOhMyZshInstalled()
+        zshInstalled = isCommandInstalled("zsh")
+        bashInstalled = isCommandInstalled("bash")
     }
 
     /**
@@ -66,6 +70,16 @@ class ShellCustomizationMenuProvider {
      * Get cached installation status for Oh My Zsh.
      */
     fun getOhMyZshStatus(): Boolean? = ohmyzshInstalled
+
+    /**
+     * Get cached installation status for Zsh.
+     */
+    fun getZshStatus(): Boolean? = zshInstalled
+
+    /**
+     * Get cached installation status for Bash.
+     */
+    fun getBashStatus(): Boolean? = bashInstalled
 
     /**
      * Get context menu items for shell customization.
@@ -149,6 +163,51 @@ class ShellCustomizationMenuProvider {
         } else {
             // Installed: Configuration submenu
             shellItems.add(buildOhMyZshMenu(terminalWriter))
+        }
+
+        // Shells section separator
+        shellItems.add(ContextMenuSection(id = "shells_section", label = "Shells"))
+
+        // Zsh menu
+        val isZshInstalled = statusOverride?.get("zsh")
+            ?: (zshInstalled ?: isCommandInstalled("zsh"))
+        if (!isZshInstalled) {
+            shellItems.add(
+                ContextMenuItem(
+                    id = "zsh_install",
+                    label = "Install Zsh",
+                    action = {
+                        if (onInstallRequest != null) {
+                            onInstallRequest("zsh", getZshInstallCommand(), null)
+                        } else {
+                            terminalWriter("${getZshInstallCommand()}\n")
+                        }
+                    }
+                )
+            )
+        } else {
+            shellItems.add(buildZshMenu(terminalWriter))
+        }
+
+        // Bash menu
+        val isBashInstalled = statusOverride?.get("bash")
+            ?: (bashInstalled ?: isCommandInstalled("bash"))
+        if (!isBashInstalled) {
+            shellItems.add(
+                ContextMenuItem(
+                    id = "bash_install",
+                    label = "Install Bash",
+                    action = {
+                        if (onInstallRequest != null) {
+                            onInstallRequest("bash", getBashInstallCommand(), null)
+                        } else {
+                            terminalWriter("${getBashInstallCommand()}\n")
+                        }
+                    }
+                )
+            )
+        } else {
+            shellItems.add(buildBashMenu(terminalWriter))
         }
 
         return if (shellItems.isEmpty()) {
@@ -394,5 +453,110 @@ class ShellCustomizationMenuProvider {
                 )
             )
         )
+    }
+
+    /**
+     * Build Zsh submenu with configuration options.
+     */
+    private fun buildZshMenu(terminalWriter: (String) -> Unit): ContextMenuSubmenu {
+        return ContextMenuSubmenu(
+            id = "zsh_submenu",
+            label = "Zsh",
+            items = listOf(
+                ContextMenuItem(
+                    id = "zsh_version",
+                    label = "Show Version",
+                    action = { terminalWriter("zsh --version\n") }
+                ),
+                ContextMenuItem(
+                    id = "zsh_set_default",
+                    label = "Set as Default Shell",
+                    action = { terminalWriter("chsh -s \$(which zsh)\n") }
+                ),
+                ContextMenuItem(
+                    id = "zsh_edit_zshrc",
+                    label = "Edit .zshrc",
+                    action = { terminalWriter("\${EDITOR:-nano} ~/.zshrc\n") }
+                ),
+                ContextMenuItem(
+                    id = "zsh_reload",
+                    label = "Reload Config",
+                    action = { terminalWriter("source ~/.zshrc\n") }
+                )
+            )
+        )
+    }
+
+    /**
+     * Build Bash submenu with configuration options.
+     */
+    private fun buildBashMenu(terminalWriter: (String) -> Unit): ContextMenuSubmenu {
+        return ContextMenuSubmenu(
+            id = "bash_submenu",
+            label = "Bash",
+            items = listOf(
+                ContextMenuItem(
+                    id = "bash_version",
+                    label = "Show Version",
+                    action = { terminalWriter("bash --version\n") }
+                ),
+                ContextMenuItem(
+                    id = "bash_set_default",
+                    label = "Set as Default Shell",
+                    action = { terminalWriter("chsh -s \$(which bash)\n") }
+                ),
+                ContextMenuItem(
+                    id = "bash_edit_bashrc",
+                    label = "Edit .bashrc",
+                    action = { terminalWriter("\${EDITOR:-nano} ~/.bashrc\n") }
+                ),
+                ContextMenuItem(
+                    id = "bash_edit_profile",
+                    label = "Edit .bash_profile",
+                    action = { terminalWriter("\${EDITOR:-nano} ~/.bash_profile\n") }
+                ),
+                ContextMenuItem(
+                    id = "bash_reload",
+                    label = "Reload Config",
+                    action = { terminalWriter("source ~/.bashrc\n") }
+                )
+            )
+        )
+    }
+
+    /**
+     * Get platform-aware install command for Zsh.
+     */
+    private fun getZshInstallCommand(): String {
+        return when {
+            System.getProperty("os.name").lowercase().contains("mac") ->
+                "brew install zsh"
+            System.getProperty("os.name").lowercase().contains("windows") ->
+                "echo 'Zsh is not natively supported on Windows. Consider using WSL.'"
+            else -> getLinuxInstallCommand("zsh", "zsh", "zsh")
+        }
+    }
+
+    /**
+     * Get platform-aware install command for Bash.
+     */
+    private fun getBashInstallCommand(): String {
+        return when {
+            System.getProperty("os.name").lowercase().contains("mac") ->
+                "brew install bash"
+            System.getProperty("os.name").lowercase().contains("windows") ->
+                "echo 'Bash is available through Git Bash or WSL on Windows.'"
+            else -> getLinuxInstallCommand("bash", "bash", "bash")
+        }
+    }
+
+    /**
+     * Get Linux install command with package manager detection.
+     */
+    private fun getLinuxInstallCommand(aptPkg: String, dnfPkg: String, pacmanPkg: String): String {
+        return "{ command -v apt >/dev/null 2>&1 && sudo apt install -y $aptPkg; } || " +
+               "{ command -v dnf >/dev/null 2>&1 && sudo dnf install -y $dnfPkg; } || " +
+               "{ command -v pacman >/dev/null 2>&1 && sudo pacman -S --noconfirm $pacmanPkg; } || " +
+               "{ echo 'No supported package manager found (apt/dnf/pacman)'; exit 1; }"
     }
 }

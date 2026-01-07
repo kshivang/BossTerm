@@ -466,7 +466,7 @@ class ShellCustomizationMenuProvider {
                     id = "ohmyzsh_uninstall",
                     label = "Uninstall",
                     action = {
-                        val uninstallCmd = "uninstall_oh_my_zsh"
+                        val uninstallCmd = "sh ~/.oh-my-zsh/tools/uninstall.sh"
                         if (onInstallRequest != null) {
                             onInstallRequest("oh-my-zsh-uninstall", uninstallCmd, null)
                         } else {

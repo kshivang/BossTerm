@@ -43,6 +43,12 @@ class VersionControlMenuProvider {
     private var workingDirectory: String? = null
 
     /**
+     * Whether the GitHub CLI has a default repository configured.
+     * Commands like `gh pr list` require `gh repo set-default` to be run first.
+     */
+    private var ghRepoConfigured: Boolean = false
+
+    /**
      * Detect if a command is installed by checking `which`.
      */
     private fun isCommandInstalled(command: String): Boolean {
@@ -81,6 +87,13 @@ class VersionControlMenuProvider {
             gitBranches = emptyList()
             currentBranch = null
         }
+
+        // Check if gh repo default is configured (only if in git repo and gh installed)
+        if (ghInstalled == true && isGitRepo && cwd != null) {
+            ghRepoConfigured = checkGhRepoConfigured(cwd)
+        } else {
+            ghRepoConfigured = false
+        }
     }
 
     /**
@@ -93,6 +106,26 @@ class VersionControlMenuProvider {
                 .redirectErrorStream(true)
                 .start()
             process.waitFor() == 0
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Check if GitHub CLI has a default repository configured for this directory.
+     * Checks the git config for 'remote.origin.gh-resolved' which gh sets when
+     * you run 'gh repo set-default'.
+     */
+    private fun checkGhRepoConfigured(cwd: String): Boolean {
+        return try {
+            val process = ProcessBuilder("git", "config", "--get", "remote.origin.gh-resolved")
+                .directory(java.io.File(cwd))
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().readText().trim()
+            val exitCode = process.waitFor()
+            // Exit code 0 means the config exists (default is set)
+            exitCode == 0 && output.isNotEmpty()
         } catch (e: Exception) {
             false
         }
@@ -492,7 +525,29 @@ class VersionControlMenuProvider {
             )
         }
 
-        // In a git repository - show full menu
+        // In git repo but no default gh repo set - show warning and set-default option
+        if (!ghRepoConfigured) {
+            return ContextMenuSubmenu(
+                id = "gh_submenu",
+                label = "GitHub CLI",
+                items = listOf(
+                    ContextMenuItem(
+                        id = "gh_set_default",
+                        label = "Set default repository",
+                        action = { terminalWriter("gh repo set-default\n") }
+                    ),
+                    ContextMenuSection(id = "gh_warning_section"),
+                    ContextMenuItem(
+                        id = "gh_warning",
+                        label = "Run 'gh repo set-default' first",
+                        enabled = false,
+                        action = {}
+                    )
+                )
+            )
+        }
+
+        // In a git repository with default configured - show full menu
         val ghCommands = listOf(
             ContextMenuSection(id = "gh_auth_section", label = "Auth"),
             ContextMenuItem(

@@ -870,7 +870,7 @@ main "$@"
 
         # Check if ~/.local/bin is in PATH
         if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
-            warn "~/.local/bin is not in your PATH"
+            warn "\$HOME/.local/bin is not in your PATH"
             warn "Add this to your shell profile:"
             warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
         fi

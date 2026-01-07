@@ -1,3 +1,4 @@
+#!/bin/zsh
 # BossTerm Shell Integration for Zsh
 # Provides OSC 133 command tracking for notifications
 

@@ -130,7 +130,7 @@ class ShellCustomizationMenuProvider {
             )
         } else {
             // Installed: Configuration submenu
-            shellItems.add(buildStarshipMenu(terminalWriter))
+            shellItems.add(buildStarshipMenu(terminalWriter, onInstallRequest))
         }
 
         // Oh My Zsh menu
@@ -162,7 +162,7 @@ class ShellCustomizationMenuProvider {
             )
         } else {
             // Installed: Configuration submenu
-            shellItems.add(buildOhMyZshMenu(terminalWriter))
+            shellItems.add(buildOhMyZshMenu(terminalWriter, onInstallRequest))
         }
 
         // Shells section separator
@@ -226,7 +226,10 @@ class ShellCustomizationMenuProvider {
     /**
      * Build Starship submenu with configuration options.
      */
-    private fun buildStarshipMenu(terminalWriter: (String) -> Unit): ContextMenuSubmenu {
+    private fun buildStarshipMenu(
+        terminalWriter: (String) -> Unit,
+        onInstallRequest: ((String, String, String?) -> Unit)?
+    ): ContextMenuSubmenu {
         return ContextMenuSubmenu(
             id = "starship_submenu",
             label = "Starship",
@@ -331,11 +334,16 @@ class ShellCustomizationMenuProvider {
                     id = "starship_uninstall",
                     label = "Uninstall",
                     action = {
-                        terminalWriter("sudo rm -v \"\$(which starship)\" && " +
+                        val uninstallCmd = "sudo rm -v \"\$(which starship)\" && " +
                             "sed -i '/eval.*starship init/d' ~/.bashrc 2>/dev/null; " +
                             "sed -i '/eval.*starship init/d' ~/.zshrc 2>/dev/null; " +
                             "sed -i '/starship init fish/d' ~/.config/fish/config.fish 2>/dev/null; " +
-                            "echo '✓ Starship uninstalled. Restarting shell...' && exec \$SHELL\n")
+                            "echo '✓ Starship uninstalled. Restarting shell...' && exec \$SHELL"
+                        if (onInstallRequest != null) {
+                            onInstallRequest("starship-uninstall", uninstallCmd, null)
+                        } else {
+                            terminalWriter("$uninstallCmd\n")
+                        }
                     }
                 )
             )
@@ -345,7 +353,10 @@ class ShellCustomizationMenuProvider {
     /**
      * Build Oh My Zsh submenu with configuration options.
      */
-    private fun buildOhMyZshMenu(terminalWriter: (String) -> Unit): ContextMenuSubmenu {
+    private fun buildOhMyZshMenu(
+        terminalWriter: (String) -> Unit,
+        onInstallRequest: ((String, String, String?) -> Unit)?
+    ): ContextMenuSubmenu {
         return ContextMenuSubmenu(
             id = "ohmyzsh_submenu",
             label = "Oh My Zsh",
@@ -453,7 +464,14 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "ohmyzsh_uninstall",
                     label = "Uninstall",
-                    action = { terminalWriter("uninstall_oh_my_zsh\n") }
+                    action = {
+                        val uninstallCmd = "uninstall_oh_my_zsh"
+                        if (onInstallRequest != null) {
+                            onInstallRequest("oh-my-zsh-uninstall", uninstallCmd, null)
+                        } else {
+                            terminalWriter("$uninstallCmd\n")
+                        }
+                    }
                 )
             )
         )

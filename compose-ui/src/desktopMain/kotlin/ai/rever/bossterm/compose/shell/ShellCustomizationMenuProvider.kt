@@ -331,7 +331,11 @@ class ShellCustomizationMenuProvider {
                     id = "starship_uninstall",
                     label = "Uninstall",
                     action = {
-                        terminalWriter("sudo rm -v \"\$(which starship)\" && echo '✓ Starship uninstalled. Remove init line from your shell config.'\n")
+                        terminalWriter("sudo rm -v \"\$(which starship)\" && " +
+                            "sed -i '/eval.*starship init/d' ~/.bashrc 2>/dev/null; " +
+                            "sed -i '/eval.*starship init/d' ~/.zshrc 2>/dev/null; " +
+                            "sed -i '/starship init fish/d' ~/.config/fish/config.fish 2>/dev/null; " +
+                            "echo '✓ Starship uninstalled and init lines removed from shell configs.'\n")
                     }
                 )
             )

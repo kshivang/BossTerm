@@ -625,6 +625,7 @@ fun main() {
                                         WindowManager.createWindow()
                                     },
                                     onShowSettings = { showSettingsDialog = true },
+                                    onShowWelcomeWizard = { showOnboardingWizard = true },
                                     menuActions = window.menuActions,
                                     isWindowFocused = { window.isWindowFocused.value },
                                     modifier = Modifier.fillMaxSize().weight(1f)

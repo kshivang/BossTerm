@@ -281,6 +281,7 @@ fun createTerminalContextMenuItems(
     onClosePane: (() -> Unit)? = null,
     onShowDebug: (() -> Unit)? = null,
     onShowSettings: (() -> Unit)? = null,
+    onShowWelcomeWizard: (() -> Unit)? = null,
     customItems: List<ai.rever.bossterm.compose.ContextMenuElement> = emptyList()
 ): List<ContextMenuController.MenuElement> {
     val baseItems = listOf(
@@ -420,13 +421,24 @@ fun createTerminalContextMenuItems(
     // Add extra options section
     val extraItems = mutableListOf<ContextMenuController.MenuItem>()
 
-    if (onShowSettings != null || onShowDebug != null) {
+    if (onShowSettings != null || onShowDebug != null || onShowWelcomeWizard != null) {
         extraItems.add(
             ContextMenuController.MenuItem(
                 id = "separator_extra",
                 label = "",
                 enabled = false,
                 action = {}
+            )
+        )
+    }
+
+    if (onShowWelcomeWizard != null) {
+        extraItems.add(
+            ContextMenuController.MenuItem(
+                id = "show_welcome_wizard",
+                label = "Welcome Wizard...",
+                enabled = true,
+                action = onShowWelcomeWizard
             )
         )
     }
@@ -517,6 +529,7 @@ fun showTerminalContextMenu(
     onClosePane: (() -> Unit)? = null,
     onShowDebug: (() -> Unit)? = null,
     onShowSettings: (() -> Unit)? = null,
+    onShowWelcomeWizard: (() -> Unit)? = null,
     customItems: List<ai.rever.bossterm.compose.ContextMenuElement> = emptyList(),
     window: ComposeWindow? = null
 ) {
@@ -536,6 +549,7 @@ fun showTerminalContextMenu(
         onClosePane = onClosePane,
         onShowDebug = onShowDebug,
         onShowSettings = onShowSettings,
+        onShowWelcomeWizard = onShowWelcomeWizard,
         customItems = customItems
     )
     controller.showMenu(x, y, items, window)
@@ -609,6 +623,7 @@ fun showHyperlinkContextMenu(
     onClosePane: (() -> Unit)? = null,
     onShowDebug: (() -> Unit)? = null,
     onShowSettings: (() -> Unit)? = null,
+    onShowWelcomeWizard: (() -> Unit)? = null,
     customItems: List<ai.rever.bossterm.compose.ContextMenuElement> = emptyList(),
     window: ComposeWindow? = null
 ) {
@@ -633,6 +648,7 @@ fun showHyperlinkContextMenu(
         onClosePane = onClosePane,
         onShowDebug = onShowDebug,
         onShowSettings = onShowSettings,
+        onShowWelcomeWizard = onShowWelcomeWizard,
         customItems = customItems
     )
     controller.showMenu(x, y, hyperlinkItems + terminalItems, window)

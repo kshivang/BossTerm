@@ -127,6 +127,7 @@ fun ProperTerminal(
   onSwitchToTab: (Int) -> Unit = {},
   onNewWindow: (() -> Unit)? = null,  // Cmd/Ctrl+N: New window
   onShowSettings: (() -> Unit)? = null,  // Open settings window
+  onShowWelcomeWizard: (() -> Unit)? = null,  // Open welcome wizard
   onSplitHorizontal: (() -> Unit)? = null,  // Cmd+Shift+H: Split horizontally (top/bottom)
   onSplitVertical: (() -> Unit)? = null,  // Cmd+D: Split vertically (left/right)
   onClosePane: () -> Unit = {},  // Cmd+Shift+W: Close current pane
@@ -905,6 +906,7 @@ fun ProperTerminal(
                       { debugPanelVisible = !debugPanelVisible }
                     } else null,
                     onShowSettings = onShowSettings,
+                    onShowWelcomeWizard = onShowWelcomeWizard,
                     customItems = effectiveCustomItems
                   )
                 } else {
@@ -955,6 +957,7 @@ fun ProperTerminal(
                       { debugPanelVisible = !debugPanelVisible }
                     } else null,
                     onShowSettings = onShowSettings,
+                    onShowWelcomeWizard = onShowWelcomeWizard,
                     customItems = effectiveCustomItems
                   )
                 }

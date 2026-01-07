@@ -765,6 +765,7 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
 
     // Group sudo commands (only for non-Windows)
     if (sudoCommands.isNotEmpty() && !isWindows) {
+        allCommands.add("echo '🔐 Administrator password required for installation...'")
         allCommands.add("sudo -v")  // Request sudo upfront
         allCommands.addAll(sudoCommands)
     } else if (sudoCommands.isNotEmpty()) {

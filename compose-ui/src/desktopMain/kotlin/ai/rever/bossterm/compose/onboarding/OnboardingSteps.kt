@@ -548,7 +548,7 @@ fun InstallingStep(
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = "Please wait while we install your selected tools.\nNote: When typing your password, the cursor won't move - this is normal.",
+            text = "Please wait while we install your selected tools.\n🔐 Note: When typing your password, the cursor won't move - this is normal.",
             fontSize = 14.sp,
             color = TextSecondary
         )

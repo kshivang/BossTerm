@@ -264,6 +264,16 @@ class ShellCustomizationMenuProvider {
                     id = "starship_docs",
                     label = "Documentation",
                     action = { UrlOpener.open("https://starship.rs/config/") }
+                ),
+
+                // Uninstall section
+                ContextMenuSection(id = "starship_uninstall_section"),
+                ContextMenuItem(
+                    id = "starship_uninstall",
+                    label = "Uninstall",
+                    action = {
+                        terminalWriter("sh -c 'rm -v \"\$(which starship)\"' && echo '✓ Starship uninstalled. Remove init line from your shell config.'\n")
+                    }
                 )
             )
         )
@@ -373,6 +383,14 @@ class ShellCustomizationMenuProvider {
                     id = "ohmyzsh_docs",
                     label = "Documentation",
                     action = { UrlOpener.open("https://github.com/ohmyzsh/ohmyzsh/wiki") }
+                ),
+
+                // Uninstall section
+                ContextMenuSection(id = "ohmyzsh_uninstall_section"),
+                ContextMenuItem(
+                    id = "ohmyzsh_uninstall",
+                    label = "Uninstall",
+                    action = { terminalWriter("uninstall_oh_my_zsh\n") }
                 )
             )
         )

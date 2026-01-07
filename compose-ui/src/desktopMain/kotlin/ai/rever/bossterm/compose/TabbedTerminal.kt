@@ -143,8 +143,8 @@ fun TabbedTerminal(
     // AI Assistant integration (issue #225)
     val aiState = rememberAIAssistantState(settings)
 
-    // State for AI assistant installation dialog
-    var installDialogAssistant by remember { mutableStateOf<Pair<AIAssistantDefinition, String>?>(null) }
+    // State for AI assistant installation dialog (assistant, command, terminalWriter)
+    var installDialogState by remember { mutableStateOf<Triple<AIAssistantDefinition, String, (String) -> Unit>?>(null) }
 
     // Initialize external state if provided (only once)
     if (state != null && !state.isInitialized) {
@@ -584,12 +584,13 @@ fun TabbedTerminal(
                         if (settings.aiAssistantsEnabled) {
                             // Get working directory from focused session for launching AI assistants
                             val workingDir = splitState.getFocusedSession()?.workingDirectory?.value
+                            val terminalWriter: (String) -> Unit = { text ->
+                                splitState.getFocusedSession()?.writeUserInput(text)
+                            }
                             val aiItems = aiState.menuProvider.getMenuItems(
-                                terminalWriter = { text ->
-                                    splitState.getFocusedSession()?.writeUserInput(text)
-                                },
+                                terminalWriter = terminalWriter,
                                 onInstallRequest = { assistant, command ->
-                                    installDialogAssistant = Pair(assistant, command)
+                                    installDialogState = Triple(assistant, command, terminalWriter)
                                 },
                                 workingDirectory = workingDir,
                                 configs = settings.aiAssistantConfigs
@@ -629,20 +630,24 @@ fun TabbedTerminal(
     }
 
     // AI Assistant Installation Dialog
-    installDialogAssistant?.let { (assistant, command) ->
+    installDialogState?.let { (assistant, command, terminalWriter) ->
         val coroutineScope = rememberCoroutineScope()
         AIAssistantInstallDialog(
             assistant = assistant,
             installCommand = command,
             onDismiss = {
-                installDialogAssistant = null
+                installDialogState = null
             },
             onInstallComplete = { success ->
+                // Write result to parent terminal
                 if (success) {
-                    // Refresh detection after successful install
-                    coroutineScope.launch {
-                        aiState.detector.detectAll()
-                    }
+                    terminalWriter("\n\u001b[32m✓ ${assistant.displayName} installed successfully!\u001b[0m\n")
+                } else {
+                    terminalWriter("\n\u001b[31m✗ ${assistant.displayName} installation failed.\u001b[0m\n")
+                }
+                // Refresh detection
+                coroutineScope.launch {
+                    aiState.detector.detectAll()
                 }
             }
         )

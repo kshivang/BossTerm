@@ -207,8 +207,8 @@ fun EmbeddableTerminal(
     // AI Assistant integration (issue #225)
     val aiState = rememberAIAssistantState(resolvedSettings)
 
-    // State for AI assistant installation dialog
-    var installDialogAssistant by remember { mutableStateOf<Pair<AIAssistantDefinition, String>?>(null) }
+    // State for AI assistant installation dialog (assistant, command, terminalWriter)
+    var installDialogState by remember { mutableStateOf<Triple<AIAssistantDefinition, String, (String) -> Unit>?>(null) }
 
     // Initialize session if not already done (session lives in state, not composable)
     LaunchedEffect(effectiveState, resolvedSettings, effectiveCommand) {
@@ -265,10 +265,11 @@ fun EmbeddableTerminal(
                     if (resolvedSettings.aiAssistantsEnabled) {
                         // Get working directory from session for launching AI assistants
                         val workingDir = session.workingDirectory?.value
+                        val terminalWriter: (String) -> Unit = { text -> session.writeUserInput(text) }
                         val aiItems = aiState.menuProvider.getMenuItems(
-                            terminalWriter = { text -> session.writeUserInput(text) },
+                            terminalWriter = terminalWriter,
                             onInstallRequest = { assistant, command ->
-                                installDialogAssistant = Pair(assistant, command)
+                                installDialogState = Triple(assistant, command, terminalWriter)
                             },
                             workingDirectory = workingDir,
                             configs = resolvedSettings.aiAssistantConfigs
@@ -298,20 +299,24 @@ fun EmbeddableTerminal(
     }
 
     // AI Assistant Installation Dialog
-    installDialogAssistant?.let { (assistant, command) ->
+    installDialogState?.let { (assistant, command, terminalWriter) ->
         val coroutineScope = rememberCoroutineScope()
         AIAssistantInstallDialog(
             assistant = assistant,
             installCommand = command,
             onDismiss = {
-                installDialogAssistant = null
+                installDialogState = null
             },
             onInstallComplete = { success ->
+                // Write result to parent terminal
                 if (success) {
-                    // Refresh detection after successful install
-                    coroutineScope.launch {
-                        aiState.detector.detectAll()
-                    }
+                    terminalWriter("\n\u001b[32m✓ ${assistant.displayName} installed successfully!\u001b[0m\n")
+                } else {
+                    terminalWriter("\n\u001b[31m✗ ${assistant.displayName} installation failed.\u001b[0m\n")
+                }
+                // Refresh detection
+                coroutineScope.launch {
+                    aiState.detector.detectAll()
                 }
             }
         )

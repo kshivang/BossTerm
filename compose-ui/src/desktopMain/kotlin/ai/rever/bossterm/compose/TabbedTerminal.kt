@@ -764,6 +764,7 @@ fun TabbedTerminal(
                     shellStatusHolder.set(mapOf(
                         "starship" to (shellMenuProvider.getStatus() ?: false),
                         "oh-my-zsh" to (shellMenuProvider.getOhMyZshStatus() ?: false),
+                        "prezto" to (shellMenuProvider.getPreztoStatus() ?: false),
                         "zsh" to (shellMenuProvider.getZshStatus() ?: false),
                         "bash" to (shellMenuProvider.getBashStatus() ?: false),
                         "fish" to (shellMenuProvider.getFishStatus() ?: false)

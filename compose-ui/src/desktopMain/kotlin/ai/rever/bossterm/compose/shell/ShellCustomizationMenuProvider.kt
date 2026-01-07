@@ -25,6 +25,7 @@ class ShellCustomizationMenuProvider {
      */
     private var starshipInstalled: Boolean? = null
     private var ohmyzshInstalled: Boolean? = null
+    private var preztoInstalled: Boolean? = null
     private var zshInstalled: Boolean? = null
     private var bashInstalled: Boolean? = null
     private var fishInstalled: Boolean? = null
@@ -53,11 +54,20 @@ class ShellCustomizationMenuProvider {
     }
 
     /**
+     * Detect if Prezto is installed by checking ~/.zprezto directory.
+     */
+    private fun isPreztoInstalled(): Boolean {
+        val home = System.getProperty("user.home") ?: return false
+        return File(home, ".zprezto").isDirectory
+    }
+
+    /**
      * Refresh installation status for shell customization tools.
      */
     suspend fun refreshStatus() = withContext(Dispatchers.IO) {
         starshipInstalled = isCommandInstalled("starship")
         ohmyzshInstalled = isOhMyZshInstalled()
+        preztoInstalled = isPreztoInstalled()
         zshInstalled = isCommandInstalled("zsh")
         bashInstalled = isCommandInstalled("bash")
         fishInstalled = isCommandInstalled("fish")
@@ -72,6 +82,11 @@ class ShellCustomizationMenuProvider {
      * Get cached installation status for Oh My Zsh.
      */
     fun getOhMyZshStatus(): Boolean? = ohmyzshInstalled
+
+    /**
+     * Get cached installation status for Prezto.
+     */
+    fun getPreztoStatus(): Boolean? = preztoInstalled
 
     /**
      * Get cached installation status for Zsh.
@@ -175,6 +190,40 @@ class ShellCustomizationMenuProvider {
             } else {
                 // Installed: Configuration submenu
                 shellItems.add(buildOhMyZshMenu(terminalWriter, onInstallRequest))
+            }
+
+            // Prezto menu (only show if Zsh is installed)
+            val isPreztoInstalled = statusOverride?.get("prezto")
+                ?: (preztoInstalled ?: isPreztoInstalled())
+            if (!isPreztoInstalled) {
+                // Not installed: Install + Learn More submenu
+                shellItems.add(
+                    ContextMenuSubmenu(
+                        id = "prezto_submenu",
+                        label = "Prezto",
+                        items = listOf(
+                            ContextMenuItem(
+                                id = "prezto_install",
+                                label = "Install",
+                                action = {
+                                    if (onInstallRequest != null) {
+                                        onInstallRequest("prezto", getPreztoInstallCommand(), null)
+                                    } else {
+                                        UrlOpener.open("https://github.com/sorin-ionescu/prezto")
+                                    }
+                                }
+                            ),
+                            ContextMenuItem(
+                                id = "prezto_learnmore",
+                                label = "Learn More",
+                                action = { UrlOpener.open("https://github.com/sorin-ionescu/prezto") }
+                            )
+                        )
+                    )
+                )
+            } else {
+                // Installed: Configuration submenu
+                shellItems.add(buildPreztoMenu(terminalWriter, onInstallRequest))
             }
         }
 
@@ -508,6 +557,98 @@ class ShellCustomizationMenuProvider {
                 )
             )
         )
+    }
+
+    /**
+     * Build Prezto submenu with configuration options.
+     */
+    private fun buildPreztoMenu(
+        terminalWriter: (String) -> Unit,
+        onInstallRequest: ((String, String, String?) -> Unit)?
+    ): ContextMenuSubmenu {
+        return ContextMenuSubmenu(
+            id = "prezto_submenu",
+            label = "Prezto",
+            items = listOf(
+                // Modules section
+                ContextMenuSection(id = "prezto_modules_section", label = "Modules"),
+                ContextMenuItem(
+                    id = "prezto_show_modules",
+                    label = "Show Loaded Modules",
+                    action = { terminalWriter("grep '^\\s*zmodule' ~/.zpreztorc 2>/dev/null || grep \"'\" ~/.zpreztorc | head -20\n") }
+                ),
+                ContextMenuItem(
+                    id = "prezto_edit_modules",
+                    label = "Edit Modules",
+                    action = { terminalWriter("\${EDITOR:-nano} ~/.zpreztorc\n") }
+                ),
+
+                // Theme section
+                ContextMenuSection(id = "prezto_theme_section", label = "Theme"),
+                ContextMenuItem(
+                    id = "prezto_show_theme",
+                    label = "Show Current Theme",
+                    action = { terminalWriter("grep 'zstyle.*theme' ~/.zpreztorc\n") }
+                ),
+                ContextMenuItem(
+                    id = "prezto_list_themes",
+                    label = "List Themes",
+                    action = { terminalWriter("ls ~/.zprezto/modules/prompt/functions/ | grep prompt_ | sed 's/prompt_//'\n") }
+                ),
+
+                // Maintenance section
+                ContextMenuSection(id = "prezto_maintenance_section", label = "Maintenance"),
+                ContextMenuItem(
+                    id = "prezto_update",
+                    label = "Update Prezto",
+                    action = { terminalWriter("cd ~/.zprezto && git pull && git submodule update --init --recursive && cd -\n") }
+                ),
+                ContextMenuItem(
+                    id = "prezto_reload",
+                    label = "Reload Config",
+                    action = { terminalWriter("source ~/.zshrc\n") }
+                ),
+                ContextMenuItem(
+                    id = "prezto_edit_zshrc",
+                    label = "Edit .zshrc",
+                    action = { terminalWriter("\${EDITOR:-nano} ~/.zshrc\n") }
+                ),
+
+                // Help section
+                ContextMenuSection(id = "prezto_help_section"),
+                ContextMenuItem(
+                    id = "prezto_docs",
+                    label = "Documentation",
+                    action = { UrlOpener.open("https://github.com/sorin-ionescu/prezto") }
+                ),
+
+                // Uninstall section
+                ContextMenuSection(id = "prezto_uninstall_section"),
+                ContextMenuItem(
+                    id = "prezto_uninstall",
+                    label = "Uninstall",
+                    action = {
+                        val uninstallCmd = "rm -rf ~/.zprezto ~/.zshrc ~/.zlogin ~/.zlogout ~/.zpreztorc ~/.zprofile ~/.zshenv && " +
+                            "echo '✓ Prezto uninstalled. Run: exec \$SHELL to restart with default zsh config'"
+                        if (onInstallRequest != null) {
+                            onInstallRequest("prezto-uninstall", uninstallCmd, null)
+                        } else {
+                            terminalWriter("$uninstallCmd\n")
+                        }
+                    }
+                )
+            )
+        )
+    }
+
+    /**
+     * Get install command for Prezto.
+     */
+    private fun getPreztoInstallCommand(): String {
+        return "git clone --recursive https://github.com/sorin-ionescu/prezto.git \"\${ZDOTDIR:-\$HOME}/.zprezto\" && " +
+            "setopt EXTENDED_GLOB && " +
+            "for rcfile in \"\${ZDOTDIR:-\$HOME}\"/.zprezto/runcoms/^README.md(.N); do ln -s \"\$rcfile\" \"\${ZDOTDIR:-\$HOME}/.\${rcfile:t}\"; done && " +
+            "echo '✓ Prezto installed. Restart shell or run: exec zsh'"
     }
 
     /**

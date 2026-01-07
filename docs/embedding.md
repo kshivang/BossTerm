@@ -896,11 +896,13 @@ fun TerminalWithControls() {
 }
 ```
 
-## AI Assistant Installation API
+## AI Assistant & VCS Tool Installation API
 
-BossTerm includes built-in support for detecting and installing AI coding assistants (Claude Code, Codex, Gemini CLI, OpenCode). This API provides programmatic access to the AI assistant integration features.
+BossTerm includes built-in support for detecting and installing AI coding assistants (Claude Code, Codex, Gemini CLI, OpenCode) and VCS tools (Git, GitHub CLI). This API provides programmatic access to the installation features.
 
-### Available Assistants
+### Available Tools
+
+**AI Assistants:**
 
 | ID | Name | Description |
 |----|------|-------------|
@@ -909,10 +911,19 @@ BossTerm includes built-in support for detecting and installing AI coding assist
 | `gemini-cli` | Gemini CLI | Google's AI assistant |
 | `opencode` | OpenCode | Open-source AI coding assistant |
 
+**VCS Tools:**
+
+| ID | Name | Description |
+|----|------|-------------|
+| `git` | Git | Distributed version control system |
+| `gh` | GitHub CLI | GitHub's official CLI |
+
 ### API Methods
 
 ```kotlin
 val state = rememberEmbeddableTerminalState()
+
+// === AI Assistants ===
 
 // List all available AI assistant IDs
 val assistants = state.getAvailableAIAssistants()
@@ -935,6 +946,16 @@ state.installAIAssistant("claude-code", useNpm = true)
 
 // Cancel pending installation
 state.cancelAIInstallation()
+
+// === VCS Tools ===
+
+// Install Git
+state.installGit()
+// Opens installation dialog for Git
+
+// Install GitHub CLI
+state.installGitHubCLI()
+// Opens installation dialog for GitHub CLI
 ```
 
 ### Installation Methods

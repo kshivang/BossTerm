@@ -914,11 +914,13 @@ TabbedTerminal(
 
 See [Embedding Guide - Custom Hyperlink Patterns](embedding.md#custom-hyperlink-patterns) for full `HyperlinkPattern` documentation.
 
-## AI Assistant Installation API
+## AI Assistant & VCS Tool Installation API
 
-BossTerm includes built-in support for detecting and installing AI coding assistants. The API provides programmatic access from `TabbedTerminalState`.
+BossTerm includes built-in support for detecting and installing AI coding assistants and VCS tools. The API provides programmatic access from `TabbedTerminalState`.
 
-### Available Assistants
+### Available Tools
+
+**AI Assistants:**
 
 | ID | Name | Description |
 |----|------|-------------|
@@ -927,10 +929,19 @@ BossTerm includes built-in support for detecting and installing AI coding assist
 | `gemini-cli` | Gemini CLI | Google's AI assistant |
 | `opencode` | OpenCode | Open-source AI coding assistant |
 
+**VCS Tools:**
+
+| ID | Name | Description |
+|----|------|-------------|
+| `git` | Git | Distributed version control system |
+| `gh` | GitHub CLI | GitHub's official CLI |
+
 ### API Methods
 
 ```kotlin
 val state = rememberTabbedTerminalState()
+
+// === AI Assistants ===
 
 // List all available AI assistant IDs
 val assistants = state.getAvailableAIAssistants()
@@ -955,6 +966,18 @@ state.installAIAssistant("claude-code", useNpm = true)
 
 // Cancel pending installation
 state.cancelAIInstallation()
+
+// === VCS Tools ===
+
+// Install Git
+state.installGit()                    // Active tab
+state.installGit(tabIndex = 0)        // By index
+state.installGit(tabId = "my-tab")    // By stable ID
+
+// Install GitHub CLI
+state.installGitHubCLI()              // Active tab
+state.installGitHubCLI(tabIndex = 0)  // By index
+state.installGitHubCLI(tabId = "my-tab") // By stable ID
 ```
 
 ### Example: AI Toolbar

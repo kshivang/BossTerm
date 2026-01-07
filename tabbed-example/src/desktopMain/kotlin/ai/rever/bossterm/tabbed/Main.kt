@@ -213,6 +213,7 @@ private fun ApplicationScope.TabbedTerminalWindow(
                                     onWindowTitleChange = { title -> windowTitle = title },
                                     onNewWindow = onNewWindow,
                                     onShowSettings = { showSettings = true },
+                                    onShowWelcomeWizard = { showWelcomeWizard = true },
                                     menuActions = menuActions,
                                     isWindowFocused = { isWindowFocused },
                                     // onInitialCommandComplete callback - called when initial command finishes

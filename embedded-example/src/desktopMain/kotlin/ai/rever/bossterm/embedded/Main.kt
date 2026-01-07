@@ -5,6 +5,8 @@ import ai.rever.bossterm.compose.ContextMenuSection
 import ai.rever.bossterm.compose.ContextMenuSubmenu
 import ai.rever.bossterm.compose.EmbeddableTerminal
 import ai.rever.bossterm.compose.rememberEmbeddableTerminalState
+import ai.rever.bossterm.compose.onboarding.OnboardingWizard
+import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -50,6 +52,10 @@ fun EmbeddedExampleApp() {
     var bottomPanelExpanded by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("Ready") }
     var contextMenuOpenCount by remember { mutableStateOf(0) }
+
+    // Welcome Wizard state
+    val settingsManager = remember { SettingsManager.instance }
+    var showWelcomeWizard by remember { mutableStateOf(false) }
 
     // === Dynamic Context Menu Demo ===
     // Simulates AI assistant installation status that changes over time
@@ -110,6 +116,7 @@ fun EmbeddedExampleApp() {
                             state = terminalState,
                             // Test workingDirectory fix for Starship prompt
                             workingDirectory = "/tmp",
+                            onShowWelcomeWizard = { showWelcomeWizard = true },
                             // Run a command automatically when terminal is ready
                             // Uses OSC 133 shell integration for proper timing if available
                             initialCommand = "echo 'Welcome to BossTerm Embedded Example!' && pwd",
@@ -268,6 +275,15 @@ fun EmbeddedExampleApp() {
                     )
                 }
             }
+        }
+
+        // Welcome Wizard dialog
+        if (showWelcomeWizard) {
+            OnboardingWizard(
+                onDismiss = { showWelcomeWizard = false },
+                onComplete = { showWelcomeWizard = false },
+                settingsManager = settingsManager
+            )
         }
     }
 }

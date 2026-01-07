@@ -687,20 +687,6 @@ data class TerminalSettings(
     val aiAssistantsEnabled: Boolean = true,
 
     /**
-     * Automatically refresh AI assistant installation status.
-     * When true, periodically checks if assistants are installed/uninstalled.
-     * When false, only checks once on context menu first open.
-     */
-    val aiAssistantsAutoRefresh: Boolean = true,
-
-    /**
-     * Interval in milliseconds for auto-refresh of AI assistant status.
-     * Only applies when aiAssistantsAutoRefresh is true.
-     * Default: 30 seconds (30000ms)
-     */
-    val aiAssistantsRefreshIntervalMs: Long = 30000,
-
-    /**
      * Per-assistant configuration (enabled, yoloEnabled, customCommand, etc.).
      * Key is the assistant ID.
      */

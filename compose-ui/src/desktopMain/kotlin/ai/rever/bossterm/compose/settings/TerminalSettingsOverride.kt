@@ -151,8 +151,6 @@ data class TerminalSettingsOverride(
 
     // ===== AI Assistant Settings =====
     val aiAssistantsEnabled: Boolean? = null,
-    val aiAssistantsAutoRefresh: Boolean? = null,
-    val aiAssistantsRefreshIntervalMs: Long? = null,
     val aiAssistantConfigs: Map<String, AIAssistantConfigData>? = null,
     val customAIAssistants: List<CustomAIAssistantData>? = null
 )
@@ -298,8 +296,6 @@ fun TerminalSettings.withOverrides(override: TerminalSettingsOverride?): Termina
 
         // AI Assistant Settings
         aiAssistantsEnabled = override.aiAssistantsEnabled ?: aiAssistantsEnabled,
-        aiAssistantsAutoRefresh = override.aiAssistantsAutoRefresh ?: aiAssistantsAutoRefresh,
-        aiAssistantsRefreshIntervalMs = override.aiAssistantsRefreshIntervalMs ?: aiAssistantsRefreshIntervalMs,
         aiAssistantConfigs = override.aiAssistantConfigs ?: aiAssistantConfigs,
         customAIAssistants = override.customAIAssistants ?: customAIAssistants
     )

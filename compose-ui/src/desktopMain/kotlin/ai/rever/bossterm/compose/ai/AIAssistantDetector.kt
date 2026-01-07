@@ -10,8 +10,7 @@ import java.util.concurrent.TimeUnit
 /**
  * Detects which AI coding assistants are installed on the system.
  *
- * This class provides both one-shot detection and continuous auto-refresh
- * capabilities with reactive StateFlow updates.
+ * Detection is performed on-demand when the context menu opens, not via polling.
  *
  * Detection strategy (in order):
  * 1. Direct path check in common locations
@@ -27,9 +26,6 @@ class AIAssistantDetector {
      * Key is the assistant ID, value is true if installed.
      */
     val installationStatus: StateFlow<Map<String, Boolean>> = _installationStatus.asStateFlow()
-
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private var autoRefreshJob: Job? = null
 
     private val home = System.getProperty("user.home")
 
@@ -54,37 +50,6 @@ class AIAssistantDetector {
      */
     suspend fun detectSingle(assistant: AIAssistantDefinition): Boolean = withContext(Dispatchers.IO) {
         isInstalled(assistant.id, assistant.command)
-    }
-
-    /**
-     * Start auto-refresh of installation status.
-     *
-     * @param intervalMs Refresh interval in milliseconds (default: 30 seconds)
-     */
-    fun startAutoRefresh(intervalMs: Long = 30000) {
-        stopAutoRefresh()
-        autoRefreshJob = scope.launch {
-            while (isActive) {
-                detectAll()
-                delay(intervalMs)
-            }
-        }
-    }
-
-    /**
-     * Stop auto-refresh.
-     */
-    fun stopAutoRefresh() {
-        autoRefreshJob?.cancel()
-        autoRefreshJob = null
-    }
-
-    /**
-     * Clean up resources.
-     */
-    fun dispose() {
-        stopAutoRefresh()
-        scope.cancel()
     }
 
     /**

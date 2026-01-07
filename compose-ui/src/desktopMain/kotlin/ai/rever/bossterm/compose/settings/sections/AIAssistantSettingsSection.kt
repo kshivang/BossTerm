@@ -72,27 +72,9 @@ fun AIAssistantSettingsSection(
         )
     }
 
-    // Initial detection and auto-refresh
+    // Initial detection (on-demand, no polling)
     LaunchedEffect(Unit) {
         detector.detectAll()
-        if (settings.aiAssistantsAutoRefresh) {
-            detector.startAutoRefresh(settings.aiAssistantsRefreshIntervalMs)
-        }
-    }
-
-    // Update auto-refresh when settings change
-    LaunchedEffect(settings.aiAssistantsAutoRefresh, settings.aiAssistantsRefreshIntervalMs) {
-        if (settings.aiAssistantsAutoRefresh) {
-            detector.startAutoRefresh(settings.aiAssistantsRefreshIntervalMs)
-        } else {
-            detector.stopAutoRefresh()
-        }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            detector.dispose()
-        }
     }
 
     Column(modifier = modifier) {
@@ -102,30 +84,6 @@ fun AIAssistantSettingsSection(
                 checked = settings.aiAssistantsEnabled,
                 onCheckedChange = { onSettingsChange(settings.copy(aiAssistantsEnabled = it)) },
                 description = "Show AI Assistants submenu in terminal context menu"
-            )
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        SettingsSection(title = "Auto-Refresh") {
-            SettingsToggle(
-                label = "Auto-Detect Installations",
-                checked = settings.aiAssistantsAutoRefresh,
-                onCheckedChange = { onSettingsChange(settings.copy(aiAssistantsAutoRefresh = it)) },
-                description = "Periodically check if assistants are installed",
-                enabled = settings.aiAssistantsEnabled
-            )
-
-            SettingsSlider(
-                label = "Refresh Interval",
-                value = (settings.aiAssistantsRefreshIntervalMs / 1000).toFloat(),
-                onValueChange = { onSettingsChange(settings.copy(aiAssistantsRefreshIntervalMs = (it * 1000).toLong())) },
-                onValueChangeFinished = onSettingsSave,
-                valueRange = 10f..120f,
-                steps = 21,
-                valueDisplay = { "${it.toInt()} sec" },
-                description = "How often to check installation status",
-                enabled = settings.aiAssistantsEnabled && settings.aiAssistantsAutoRefresh
             )
         }
 

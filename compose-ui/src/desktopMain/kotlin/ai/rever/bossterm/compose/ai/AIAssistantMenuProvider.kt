@@ -2,13 +2,10 @@ package ai.rever.bossterm.compose.ai
 
 import ai.rever.bossterm.compose.ContextMenuElement
 import ai.rever.bossterm.compose.ContextMenuItem
-import ai.rever.bossterm.compose.ContextMenuSection
 import ai.rever.bossterm.compose.ContextMenuSubmenu
 import ai.rever.bossterm.compose.settings.AIAssistantConfigData
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 
 /**
@@ -180,7 +177,7 @@ class AIAssistantState(
 
 /**
  * Remember AI assistant state with automatic lifecycle management.
- * Handles detector creation, auto-refresh based on settings, and cleanup on dispose.
+ * Detection is performed on-demand when context menu opens, not via polling.
  *
  * @param settings Terminal settings containing AI assistant configuration
  * @return AIAssistantState with initialized components
@@ -191,22 +188,6 @@ fun rememberAIAssistantState(settings: TerminalSettings): AIAssistantState {
     val launcher = remember { AIAssistantLauncher() }
     val menuProvider = remember(detector, launcher) {
         AIAssistantMenuProvider(detector, launcher)
-    }
-
-    // Start/stop auto-refresh based on settings
-    LaunchedEffect(settings.aiAssistantsEnabled, settings.aiAssistantsAutoRefresh) {
-        if (settings.aiAssistantsEnabled && settings.aiAssistantsAutoRefresh) {
-            detector.startAutoRefresh(settings.aiAssistantsRefreshIntervalMs)
-        } else {
-            detector.stopAutoRefresh()
-        }
-    }
-
-    // Cleanup detector on dispose
-    DisposableEffect(detector) {
-        onDispose {
-            detector.dispose()
-        }
     }
 
     return remember(detector, launcher, menuProvider) {

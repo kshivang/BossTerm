@@ -306,6 +306,10 @@ fun EmbeddableTerminal(
             installCommand = command,
             onDismiss = {
                 installDialogState = null
+                // Refresh detection when dialog closes (avoids race condition)
+                coroutineScope.launch {
+                    aiState.detector.detectAll()
+                }
             },
             onInstallComplete = { success ->
                 // Write result to parent terminal using echo for proper ANSI handling
@@ -313,10 +317,6 @@ fun EmbeddableTerminal(
                     terminalWriter("echo -e '\\033[32m✓ ${assistant.displayName} installed successfully!\\033[0m'\n")
                 } else {
                     terminalWriter("echo -e '\\033[31m✗ ${assistant.displayName} installation failed.\\033[0m'\n")
-                }
-                // Refresh detection
-                coroutineScope.launch {
-                    aiState.detector.detectAll()
                 }
             }
         )

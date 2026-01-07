@@ -13,9 +13,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.ai.AIAssistantDefinition
 import ai.rever.bossterm.compose.ai.AIAssistantDetector
-import ai.rever.bossterm.compose.ai.AIAssistantInstallDialog
 import ai.rever.bossterm.compose.ai.AIAssistantLauncher
 import ai.rever.bossterm.compose.ai.AIAssistants
+import ai.rever.bossterm.compose.ai.AIInstallDialogHost
+import ai.rever.bossterm.compose.ai.AIInstallDialogParams
 import ai.rever.bossterm.compose.ai.rememberAIAssistantState
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
@@ -215,14 +216,8 @@ fun EmbeddableTerminal(
     // Uses AtomicReference for safe access from suspend functions
     val detectionResultsHolder = remember { AtomicReference<Map<String, Boolean>?>(null) }
 
-    // State for AI assistant installation dialog
-    data class InstallDialogParams(
-        val assistant: AIAssistantDefinition,
-        val command: String,
-        val npmCommand: String?,
-        val terminalWriter: (String) -> Unit
-    )
-    var installDialogState by remember { mutableStateOf<InstallDialogParams?>(null) }
+    // State for AI assistant installation dialog (uses shared AIInstallDialogParams)
+    var installDialogState by remember { mutableStateOf<AIInstallDialogParams?>(null) }
 
     // Initialize session if not already done (session lives in state, not composable)
     LaunchedEffect(effectiveState, resolvedSettings, effectiveCommand) {
@@ -283,7 +278,7 @@ fun EmbeddableTerminal(
                         val aiItems = aiState.menuProvider.getMenuItems(
                             terminalWriter = terminalWriter,
                             onInstallRequest = { assistant, command, npmCommand ->
-                                installDialogState = InstallDialogParams(assistant, command, npmCommand, terminalWriter)
+                                installDialogState = AIInstallDialogParams(assistant, command, npmCommand, terminalWriter)
                             },
                             workingDirectory = workingDir,
                             configs = resolvedSettings.aiAssistantConfigs,
@@ -315,55 +310,24 @@ fun EmbeddableTerminal(
         )
     }
 
-    // AI Assistant Installation Dialog (from context menu)
-    installDialogState?.let { params ->
-        val coroutineScope = rememberCoroutineScope()
-        AIAssistantInstallDialog(
-            assistant = params.assistant,
-            installCommand = params.command,
-            npmInstallCommand = params.npmCommand,
-            onDismiss = {
-                installDialogState = null
-                // Refresh detection when dialog closes (avoids race condition)
-                coroutineScope.launch {
-                    aiState.detector.detectAll()
-                }
-            },
-            onInstallComplete = { success ->
-                // Write result to parent terminal using echo for proper ANSI handling
-                if (success) {
-                    params.terminalWriter("echo -e '\\033[32m✓ ${params.assistant.displayName} installed successfully!\\033[0m'\n")
-                } else {
-                    params.terminalWriter("echo -e '\\033[31m✗ ${params.assistant.displayName} installation failed.\\033[0m'\n")
-                }
-            }
-        )
-    }
+    // AI Assistant Installation Dialogs (shared composable handles common logic)
+    val coroutineScope = rememberCoroutineScope()
 
-    // AI Assistant Installation Dialog (from programmatic API)
-    effectiveState.aiInstallRequest?.let { request ->
-        val coroutineScope = rememberCoroutineScope()
-        AIAssistantInstallDialog(
-            assistant = request.assistant,
-            installCommand = request.command,
-            npmInstallCommand = request.npmCommand,
-            onDismiss = {
-                effectiveState.cancelAIInstallation()
-                // Refresh detection when dialog closes
-                coroutineScope.launch {
-                    aiState.detector.detectAll()
-                }
-            },
-            onInstallComplete = { success ->
-                // Write result to parent terminal using echo for proper ANSI handling
-                if (success) {
-                    request.terminalWriter("echo -e '\\033[32m✓ ${request.assistant.displayName} installed successfully!\\033[0m'\n")
-                } else {
-                    request.terminalWriter("echo -e '\\033[31m✗ ${request.assistant.displayName} installation failed.\\033[0m'\n")
-                }
-            }
-        )
-    }
+    // From context menu
+    AIInstallDialogHost(
+        params = installDialogState,
+        coroutineScope = coroutineScope,
+        detector = aiState.detector,
+        onDismiss = { installDialogState = null }
+    )
+
+    // From programmatic API
+    AIInstallDialogHost(
+        params = effectiveState.aiInstallRequest,
+        coroutineScope = coroutineScope,
+        detector = aiState.detector,
+        onDismiss = { effectiveState.cancelAIInstallation() }
+    )
 }
 
 /**
@@ -602,17 +566,7 @@ class EmbeddableTerminalState {
      * Internal state for AI assistant installation request.
      * Observed by the EmbeddableTerminal composable to show the install dialog.
      */
-    internal var aiInstallRequest by mutableStateOf<AIInstallRequest?>(null)
-
-    /**
-     * Request to install an AI assistant.
-     */
-    data class AIInstallRequest(
-        val assistant: AIAssistantDefinition,
-        val command: String,
-        val npmCommand: String?,
-        val terminalWriter: (String) -> Unit
-    )
+    internal var aiInstallRequest by mutableStateOf<AIInstallDialogParams?>(null)
 
     /**
      * Get list of available AI assistant IDs.
@@ -655,7 +609,7 @@ class EmbeddableTerminalState {
 
         val resolved = AIAssistantLauncher().resolveInstallCommands(assistant, useNpm)
 
-        aiInstallRequest = AIInstallRequest(
+        aiInstallRequest = AIInstallDialogParams(
             assistant = assistant,
             command = resolved.command,
             npmCommand = resolved.npmFallback,

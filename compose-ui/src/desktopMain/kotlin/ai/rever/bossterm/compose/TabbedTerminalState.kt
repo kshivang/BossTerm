@@ -6,6 +6,7 @@ import ai.rever.bossterm.compose.ai.AIAssistantDefinition
 import ai.rever.bossterm.compose.ai.AIAssistantDetector
 import ai.rever.bossterm.compose.ai.AIAssistantLauncher
 import ai.rever.bossterm.compose.ai.AIAssistants
+import ai.rever.bossterm.compose.ai.AIInstallDialogParams
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.splits.SplitViewState
 import ai.rever.bossterm.compose.tabs.TabController
@@ -486,17 +487,7 @@ class TabbedTerminalState {
      * Internal state for AI assistant installation request.
      * Observed by the TabbedTerminal composable to show the install dialog.
      */
-    internal var aiInstallRequest by mutableStateOf<AIInstallRequest?>(null)
-
-    /**
-     * Request to install an AI assistant.
-     */
-    data class AIInstallRequest(
-        val assistant: AIAssistantDefinition,
-        val command: String,
-        val npmCommand: String?,
-        val terminalWriter: (String) -> Unit
-    )
+    internal var aiInstallRequest by mutableStateOf<AIInstallDialogParams?>(null)
 
     /**
      * Get list of available AI assistant IDs.
@@ -573,7 +564,7 @@ class TabbedTerminalState {
     private fun triggerInstall(assistant: AIAssistantDefinition, tab: TerminalTab, useNpm: Boolean): Boolean {
         val resolved = AIAssistantLauncher().resolveInstallCommands(assistant, useNpm)
 
-        aiInstallRequest = AIInstallRequest(
+        aiInstallRequest = AIInstallDialogParams(
             assistant = assistant,
             command = resolved.command,
             npmCommand = resolved.npmFallback,

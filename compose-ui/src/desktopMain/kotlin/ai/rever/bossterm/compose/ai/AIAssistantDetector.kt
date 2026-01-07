@@ -148,7 +148,8 @@ class AIAssistantDetector {
         val process: Process
         try {
             process = ProcessBuilder(*args)
-                .redirectErrorStream(true)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
                 .start()
         } catch (e: Exception) {
             return false
@@ -156,14 +157,6 @@ class AIAssistantDetector {
 
         // Process started successfully - ensure cleanup in all cases
         return try {
-            try {
-                // Read and discard output to prevent buffer blocking
-                process.inputStream.bufferedReader().use { it.readText() }
-            } finally {
-                // Always close streams, even if reading fails
-                closeStreams(process)
-            }
-
             val completed = process.waitFor(5, TimeUnit.SECONDS)
             completed && process.exitValue() == 0
         } catch (e: Exception) {
@@ -174,14 +167,5 @@ class AIAssistantDetector {
                 process.destroyForcibly()
             }
         }
-    }
-
-    /**
-     * Safely close all process streams.
-     */
-    private fun closeStreams(process: Process) {
-        try { process.inputStream.close() } catch (_: Exception) {}
-        try { process.outputStream.close() } catch (_: Exception) {}
-        try { process.errorStream.close() } catch (_: Exception) {}
     }
 }

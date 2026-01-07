@@ -19,6 +19,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
 /**
  * Dialog state for AI assistant installation.
@@ -256,4 +258,56 @@ fun AIAssistantInstallDialog(
         }
     }
 
+}
+
+/**
+ * Parameters for AI assistant installation dialog.
+ * Shared data class used by both context menu and programmatic API.
+ */
+data class AIInstallDialogParams(
+    val assistant: AIAssistantDefinition,
+    val command: String,
+    val npmCommand: String?,
+    val terminalWriter: (String) -> Unit
+)
+
+/**
+ * Renders an AI assistant installation dialog with standard behavior.
+ * Handles showing the dialog, refreshing detection on dismiss, and writing
+ * success/failure messages to the terminal.
+ *
+ * @param params Installation parameters (assistant, command, terminalWriter)
+ * @param coroutineScope Scope for launching detection refresh
+ * @param detector AI assistant detector for refreshing status
+ * @param onDismiss Additional cleanup to perform on dialog dismiss (e.g., clearing state)
+ */
+@Composable
+fun AIInstallDialogHost(
+    params: AIInstallDialogParams?,
+    coroutineScope: CoroutineScope,
+    detector: AIAssistantDetector,
+    onDismiss: () -> Unit
+) {
+    params?.let { p ->
+        AIAssistantInstallDialog(
+            assistant = p.assistant,
+            installCommand = p.command,
+            npmInstallCommand = p.npmCommand,
+            onDismiss = {
+                onDismiss()
+                // Refresh detection when dialog closes
+                coroutineScope.launch {
+                    detector.detectAll()
+                }
+            },
+            onInstallComplete = { success ->
+                // Write result to parent terminal using echo for proper ANSI handling
+                if (success) {
+                    p.terminalWriter("echo -e '\\033[32m✓ ${p.assistant.displayName} installed successfully!\\033[0m'\n")
+                } else {
+                    p.terminalWriter("echo -e '\\033[31m✗ ${p.assistant.displayName} installation failed.\\033[0m'\n")
+                }
+            }
+        )
+    }
 }

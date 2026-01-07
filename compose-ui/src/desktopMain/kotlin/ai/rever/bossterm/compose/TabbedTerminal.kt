@@ -14,6 +14,7 @@ import ai.rever.bossterm.compose.ai.AIAssistantInstallDialog
 import ai.rever.bossterm.compose.ai.rememberAIAssistantState
 import ai.rever.bossterm.compose.menu.MenuActions
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.util.loadTerminalFont
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
@@ -143,9 +144,9 @@ fun TabbedTerminal(
     // AI Assistant integration (issue #225)
     val aiState = rememberAIAssistantState(settings)
 
-    // Simple holder for detection results - avoids Compose state recomposition issues
-    // This is NOT a Compose state; it's a plain mutable reference that both lambdas can access
-    val detectionResultsHolder = remember { mutableMapOf<String, Map<String, Boolean>?>().apply { put("latest", null) } }
+    // Thread-safe holder for detection results - avoids Compose state recomposition issues
+    // Uses AtomicReference for safe access from suspend functions
+    val detectionResultsHolder = remember { AtomicReference<Map<String, Boolean>?>(null) }
 
     // State for AI assistant installation dialog
     data class InstallDialogParams(
@@ -604,7 +605,7 @@ fun TabbedTerminal(
                                 },
                                 workingDirectory = workingDir,
                                 configs = settings.aiAssistantConfigs,
-                                statusOverride = detectionResultsHolder["latest"]
+                                statusOverride = detectionResultsHolder.get()
                             )
                             userItems + aiItems
                         } else {
@@ -622,7 +623,7 @@ fun TabbedTerminal(
                         // Store results in shared holder for immediate access by customContextMenuItemsProvider
                         if (settings.aiAssistantsEnabled) {
                             val freshStatus = aiState.detector.detectAll()
-                            detectionResultsHolder["latest"] = freshStatus
+                            detectionResultsHolder.set(freshStatus)
                         }
                     }
                 } else null,

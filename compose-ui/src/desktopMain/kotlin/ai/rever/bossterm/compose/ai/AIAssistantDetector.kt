@@ -159,10 +159,15 @@ class AIAssistantDetector {
         } catch (e: Exception) {
             false
         } finally {
-            // Ensure process is cleaned up if it's still running (e.g., timeout)
-            process?.let {
-                if (it.isAlive) {
-                    it.destroyForcibly()
+            // Ensure process and streams are cleaned up
+            process?.let { p ->
+                // Close streams explicitly to prevent resource leaks on timeout
+                try { p.inputStream.close() } catch (_: Exception) {}
+                try { p.outputStream.close() } catch (_: Exception) {}
+                try { p.errorStream.close() } catch (_: Exception) {}
+                // Destroy process if still running (e.g., timeout)
+                if (p.isAlive) {
+                    p.destroyForcibly()
                 }
             }
         }

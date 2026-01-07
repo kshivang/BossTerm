@@ -401,7 +401,7 @@ class BossTerminal(
             'D' -> {
                 // Command finished with exit code
                 val exitCode = args.firstOrNull()?.toIntOrNull() ?: 0
-                println("DEBUG BossTerminal: OSC 133 D received, args=$args, parsed exitCode=$exitCode")
+                LOG.debug("OSC 133 D received, args={}, parsed exitCode={}", args, exitCode)
                 for (listener in myCommandStateListeners) {
                     listener.onCommandFinished(exitCode)
                 }

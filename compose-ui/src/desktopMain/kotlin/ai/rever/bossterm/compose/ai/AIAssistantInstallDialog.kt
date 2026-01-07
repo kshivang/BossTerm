@@ -167,7 +167,6 @@ fun AIAssistantInstallDialog(
                             EmbeddableTerminal(
                                 initialCommand = currentCommand,
                                 onInitialCommandComplete = { success, exitCode ->
-                                    println("DEBUG: AIAssistantInstallDialog - onInitialCommandComplete: success=$success, exitCode=$exitCode, method=$currentMethod")
                                     if (success) {
                                         dialogState = InstallDialogState.Success
                                         onInstallComplete(true)

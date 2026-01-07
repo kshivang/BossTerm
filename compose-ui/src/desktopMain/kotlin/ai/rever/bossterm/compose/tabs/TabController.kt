@@ -27,6 +27,7 @@ import ai.rever.bossterm.compose.notification.CommandNotificationHandler
 import ai.rever.bossterm.compose.clipboard.ClipboardHandler
 import ai.rever.bossterm.terminal.model.CommandStateListener
 import ai.rever.bossterm.compose.TerminalSession
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.core.typeahead.TerminalTypeAheadManager
 import ai.rever.bossterm.core.typeahead.TypeAheadTerminalModel
 import ai.rever.bossterm.terminal.util.GraphemeBoundaryUtils
@@ -222,7 +223,7 @@ class TabController(
      * Create a new terminal tab with optional working directory.
      *
      * @param workingDir Working directory to start the shell in (inherits from active tab if null)
-     * @param command Shell command to execute (default: $SHELL or /bin/bash)
+     * @param command Shell command to execute (default: $SHELL or /bin/sh)
      * @param arguments Command-line arguments for the shell (default: empty)
      * @param onProcessExit Callback invoked when shell process exits (before auto-closing tab)
      * @param initialCommand Optional command to execute after terminal is ready (sent as input with newline)
@@ -259,8 +260,8 @@ class TabController(
             // NOTE: Only when workingDir is null - login command ignores workingDirectory parameter
             "/usr/bin/login" to listOf("-fp", username)
         } else {
-            // Use provided command or fall back to shell
-            val shellCommand = command ?: System.getenv("SHELL") ?: "/bin/bash"
+            // Use provided command or fall back to a valid shell
+            val shellCommand = command ?: ShellCustomizationUtils.getValidShell()
             // Ensure shell is started as login shell to get proper PATH from /etc/zprofile
             val shellArgs = if (arguments.isEmpty() &&
                 (shellCommand.endsWith("/zsh") || shellCommand.endsWith("/bash") ||
@@ -465,7 +466,7 @@ class TabController(
      * Caller is responsible for managing the session lifecycle via dispose().
      *
      * @param workingDir Working directory to start the shell in
-     * @param command Shell command to execute (default: $SHELL or /bin/bash)
+     * @param command Shell command to execute (default: $SHELL or /bin/sh)
      * @param arguments Command-line arguments for the shell (default: empty)
      * @param sessionTitle Title for the session (used for display purposes)
      * @param onProcessExit Callback invoked when the shell process exits (for pane auto-close)
@@ -500,8 +501,8 @@ class TabController(
             // NOTE: Only when workingDir is null - login command ignores workingDirectory parameter
             "/usr/bin/login" to listOf("-fp", username)
         } else {
-            // Use provided command or fall back to shell
-            val shellCommand = command ?: System.getenv("SHELL") ?: "/bin/bash"
+            // Use provided command or fall back to a valid shell
+            val shellCommand = command ?: ShellCustomizationUtils.getValidShell()
             // Ensure shell is started as login shell to get proper PATH from /etc/zprofile
             val shellArgs = if (arguments.isEmpty() &&
                 (shellCommand.endsWith("/zsh") || shellCommand.endsWith("/bash") ||
@@ -1196,7 +1197,6 @@ class TabController(
                                     override fun onCommandStarted() {
                                         // Only count the first B after we send the command
                                         if (!commandStarted) {
-                                            println("DEBUG: Initial command started (OSC 133;B)")
                                             commandStarted = true
                                         }
                                     }
@@ -1204,11 +1204,9 @@ class TabController(
                                     override fun onCommandFinished(exitCode: Int) {
                                         // Only fire callback if we saw a B first (command actually started)
                                         if (!commandStarted) {
-                                            println("DEBUG: Ignoring OSC 133;D (no preceding B) - exitCode=$exitCode")
                                             return
                                         }
                                         try {
-                                            println("DEBUG: Initial command completed with exit code: $exitCode")
                                             // Fire callback once with success status and exit code
                                             onInitialCommandComplete(exitCode == 0, exitCode)
                                         } finally {

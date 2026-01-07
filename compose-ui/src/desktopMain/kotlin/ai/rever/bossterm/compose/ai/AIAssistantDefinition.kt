@@ -6,8 +6,9 @@ import kotlinx.serialization.Serializable
  * Category of tool definition.
  */
 enum class ToolCategory {
-    AI_ASSISTANT,  // AI coding assistants (claude, gemini, codex, etc.)
-    VERSION_CONTROL  // Version control tools (git, gh)
+    AI_ASSISTANT,        // AI coding assistants (claude, gemini, codex, etc.)
+    VERSION_CONTROL,     // Version control tools (git, gh)
+    SHELL_CUSTOMIZATION  // Shell customization tools (starship, etc.)
 }
 
 /**
@@ -78,6 +79,44 @@ data class AIAssistantConfig(
 }
 
 /**
+ * Constants for AI assistant IDs to avoid magic strings.
+ */
+object AIAssistantIds {
+    // AI Coding Assistants
+    const val CLAUDE_CODE = "claude-code"
+    const val CODEX = "codex"
+    const val GEMINI_CLI = "gemini-cli"
+    const val OPENCODE = "opencode"
+
+    // Version Control Tools
+    const val GIT = "git"
+    const val GH = "gh"
+
+    // Shell Customization Tools
+    const val STARSHIP = "starship"
+    const val OH_MY_ZSH = "oh-my-zsh"
+    const val PREZTO = "prezto"
+    const val ZSH = "zsh"
+    const val BASH = "bash"
+    const val FISH = "fish"
+
+    /**
+     * All AI assistant IDs (coding assistants only).
+     */
+    val ALL_AI_ASSISTANTS = setOf(CLAUDE_CODE, GEMINI_CLI, CODEX, OPENCODE)
+
+    /**
+     * All version control tool IDs.
+     */
+    val ALL_VCS_TOOLS = setOf(GIT, GH)
+
+    /**
+     * All shell customization tool IDs.
+     */
+    val ALL_SHELL_TOOLS = setOf(STARSHIP, OH_MY_ZSH, PREZTO, ZSH, BASH, FISH)
+}
+
+/**
  * Registry of supported AI coding assistants.
  *
  * This object provides a centralized list of AI assistants that BossTerm can
@@ -90,7 +129,7 @@ object AIAssistants {
      */
     val BUILTIN: List<AIAssistantDefinition> = listOf(
         AIAssistantDefinition(
-            id = "claude-code",
+            id = AIAssistantIds.CLAUDE_CODE,
             displayName = "Claude Code",
             command = "claude",
             yoloFlag = "--dangerously-skip-permissions",
@@ -101,29 +140,29 @@ object AIAssistants {
             description = "Anthropic's AI coding assistant"
         ),
         AIAssistantDefinition(
-            id = "codex",
+            id = AIAssistantIds.CODEX,
             displayName = "Codex (OpenAI)",
             command = "codex",
             yoloFlag = "--full-auto",
             yoloLabel = "Full Auto",
             installCommand = "npm install -g @openai/codex",
-            npmInstallCommand = null,
+            npmInstallCommand = "npm install -g @openai/codex",
             websiteUrl = "https://github.com/openai/codex",
             description = "OpenAI's coding assistant"
         ),
         AIAssistantDefinition(
-            id = "gemini-cli",
+            id = AIAssistantIds.GEMINI_CLI,
             displayName = "Gemini CLI",
             command = "gemini",
             yoloFlag = "-y",
             yoloLabel = "Auto",
             installCommand = "npm install -g @google/gemini-cli",
-            npmInstallCommand = null,
+            npmInstallCommand = "npm install -g @google/gemini-cli",
             websiteUrl = "https://github.com/google-gemini/gemini-cli",
             description = "Google's AI coding assistant"
         ),
         AIAssistantDefinition(
-            id = "opencode",
+            id = AIAssistantIds.OPENCODE,
             displayName = "OpenCode",
             command = "opencode",
             yoloFlag = "--auto-approve",
@@ -135,7 +174,7 @@ object AIAssistants {
         ),
         // Version Control Tools (platform-aware install commands)
         AIAssistantDefinition(
-            id = "gh",
+            id = AIAssistantIds.GH,
             displayName = "GitHub CLI",
             command = "gh",
             category = ToolCategory.VERSION_CONTROL,
@@ -147,7 +186,7 @@ object AIAssistants {
             description = "GitHub's official CLI"
         ),
         AIAssistantDefinition(
-            id = "git",
+            id = AIAssistantIds.GIT,
             displayName = "Git",
             command = "git",
             category = ToolCategory.VERSION_CONTROL,
@@ -157,6 +196,80 @@ object AIAssistants {
             npmInstallCommand = null,
             websiteUrl = "https://git-scm.com/downloads",
             description = "Distributed version control system"
+        ),
+        // Shell Customization Tools
+        AIAssistantDefinition(
+            id = AIAssistantIds.STARSHIP,
+            displayName = "Starship",
+            command = "starship",
+            category = ToolCategory.SHELL_CUSTOMIZATION,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = AIAssistantLauncher.getStarshipInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://starship.rs/",
+            description = "Cross-shell prompt customization"
+        ),
+        AIAssistantDefinition(
+            id = AIAssistantIds.OH_MY_ZSH,
+            displayName = "Oh My Zsh",
+            command = "omz",
+            category = ToolCategory.SHELL_CUSTOMIZATION,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = AIAssistantLauncher.getOhMyZshInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://ohmyz.sh/",
+            description = "Zsh framework with plugins and themes"
+        ),
+        AIAssistantDefinition(
+            id = AIAssistantIds.PREZTO,
+            displayName = "Prezto",
+            command = "zprezto",
+            category = ToolCategory.SHELL_CUSTOMIZATION,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = "",  // Complex install handled in ShellCustomizationMenuProvider
+            npmInstallCommand = null,
+            websiteUrl = "https://github.com/sorin-ionescu/prezto",
+            description = "Zsh configuration framework"
+        ),
+        // Shell installations
+        AIAssistantDefinition(
+            id = AIAssistantIds.ZSH,
+            displayName = "Zsh",
+            command = "zsh",
+            category = ToolCategory.SHELL_CUSTOMIZATION,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = AIAssistantLauncher.getZshInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://www.zsh.org/",
+            description = "Z shell - powerful command interpreter"
+        ),
+        AIAssistantDefinition(
+            id = AIAssistantIds.BASH,
+            displayName = "Bash",
+            command = "bash",
+            category = ToolCategory.SHELL_CUSTOMIZATION,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = AIAssistantLauncher.getBashInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://www.gnu.org/software/bash/",
+            description = "Bourne Again Shell"
+        ),
+        AIAssistantDefinition(
+            id = AIAssistantIds.FISH,
+            displayName = "Fish",
+            command = "fish",
+            category = ToolCategory.SHELL_CUSTOMIZATION,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = AIAssistantLauncher.getFishInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://fishshell.com/",
+            description = "Friendly Interactive Shell"
         )
     )
 

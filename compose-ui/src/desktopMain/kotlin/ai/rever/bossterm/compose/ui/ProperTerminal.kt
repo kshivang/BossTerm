@@ -101,6 +101,7 @@ import androidx.compose.ui.draganddrop.DragAndDropTarget
 import androidx.compose.ui.draganddrop.awtTransferable
 import java.awt.datatransfer.DataFlavor
 import java.io.File
+import javax.swing.JFileChooser
 /**
  * Proper terminal implementation using BossTerm's emulator.
  * This uses the real BossTerminal, BossEmulator, and TerminalTextBuffer from the core module.
@@ -808,6 +809,37 @@ fun ProperTerminal(
               val pos = change.position
               val currentHoveredHyperlink = hoveredHyperlink
 
+              // Helper to open folder picker and cd to selected folder
+              fun openFolderPicker() {
+                // Get current working directory before switching threads
+                val cwd = tab.workingDirectory.value
+
+                // Run dialog on AWT Event Dispatch Thread to avoid Compose reentry issues
+                javax.swing.SwingUtilities.invokeLater {
+                  val fileChooser = JFileChooser().apply {
+                    fileSelectionMode = JFileChooser.DIRECTORIES_ONLY
+                    dialogTitle = "Open Folder"
+                    approveButtonText = "Select"
+                    // Start from current working directory if available
+                    cwd?.let { currentDirectory = File(it) }
+                  }
+                  val result = fileChooser.showOpenDialog(null)
+                  if (result == JFileChooser.APPROVE_OPTION) {
+                    val selectedFolder = fileChooser.selectedFile
+                    if (selectedFolder != null && selectedFolder.isDirectory) {
+                      // Escape path for shell (handle spaces and special characters)
+                      val escapedPath = selectedFolder.absolutePath
+                        .replace("\\", "\\\\")
+                        .replace("\"", "\\\"")
+                        .replace("$", "\\$")
+                        .replace("`", "\\`")
+                      // Send cd command followed by ls to show folder contents
+                      tab.writeUserInput("cd \"$escapedPath\" && ls\n")
+                    }
+                  }
+                }
+              }
+
               // Helper to show the context menu (called after async callback if provided)
               fun doShowContextMenu() {
                 // Get fresh items from provider if available, otherwise use static list
@@ -863,6 +895,7 @@ fun ProperTerminal(
                     onClearScreen = { clearBuffer() },
                     onClearScrollback = { clearScrollback() },
                     onFind = { searchVisible = true },
+                    onOpenFolder = { openFolderPicker() },
                     onNewTab = onNewTab,
                     onSplitVertical = onSplitVertical,
                     onSplitHorizontal = onSplitHorizontal,
@@ -912,6 +945,7 @@ fun ProperTerminal(
                     onClearScreen = { clearBuffer() },
                     onClearScrollback = { clearScrollback() },
                     onFind = { searchVisible = true },
+                    onOpenFolder = { openFolderPicker() },
                     onNewTab = onNewTab,
                     onSplitVertical = onSplitVertical,
                     onSplitHorizontal = onSplitHorizontal,

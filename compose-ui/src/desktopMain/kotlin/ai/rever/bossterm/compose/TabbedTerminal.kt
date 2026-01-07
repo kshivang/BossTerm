@@ -35,7 +35,9 @@ import ai.rever.bossterm.compose.ai.AIAssistantLauncher
 import ai.rever.bossterm.compose.ai.AIInstallDialogHost
 import ai.rever.bossterm.compose.ai.AIInstallDialogParams
 import ai.rever.bossterm.compose.ai.rememberAIAssistantState
+import ai.rever.bossterm.compose.vcs.GitUtils
 import ai.rever.bossterm.compose.vcs.VersionControlMenuProvider
+import ai.rever.bossterm.compose.shell.ShellCustomizationMenuProvider
 import ai.rever.bossterm.compose.menu.MenuActions
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
@@ -175,6 +177,10 @@ fun TabbedTerminal(
     // Version Control menu provider (Git and GitHub CLI)
     val vcsMenuProvider = remember { VersionControlMenuProvider() }
     val vcsStatusHolder = remember { AtomicReference<Pair<Boolean, Boolean>?>(null) }
+
+    // Shell Customization menu provider (Starship, etc.)
+    val shellMenuProvider = remember { ShellCustomizationMenuProvider() }
+    val shellStatusHolder = remember { AtomicReference<Map<String, Boolean>?>(null) }
 
     // State for AI assistant installation dialog (uses shared AIInstallDialogParams)
     var installDialogState by remember { mutableStateOf<AIInstallDialogParams?>(null) }
@@ -343,6 +349,193 @@ fun TabbedTerminal(
                     splitState.closeFocusedPane()
                 }
             }
+        }
+    }
+
+    // Wire up Tools menu actions
+    LaunchedEffect(menuActions, tabController.activeTabIndex, tabController.tabs.size, aiState) {
+        if (tabController.tabs.isEmpty()) return@LaunchedEffect
+        val activeTab = tabController.tabs.getOrNull(tabController.activeTabIndex) ?: return@LaunchedEffect
+        val splitState = getOrCreateSplitState(activeTab)
+
+        // Helper to write to terminal
+        val writeToTerminal: (String) -> Unit = { cmd -> activeTab.writeUserInput(cmd) }
+
+        // Get current working directory from focused session
+        val getWorkingDir: () -> String? = {
+            splitState.getFocusedSession()?.workingDirectory?.value
+        }
+
+        // Check git repo status for current working directory using shared GitUtils
+        fun checkGitStatus(cwd: String?) {
+            menuActions?.isGitRepo?.value = GitUtils.isGitRepo(cwd)
+            menuActions?.isGhConfigured?.value = if (menuActions?.isGitRepo?.value == true) {
+                GitUtils.isGhRepoConfigured(cwd)
+            } else {
+                false
+            }
+        }
+
+        // Initial check
+        checkGitStatus(getWorkingDir())
+
+        // Helper to run git command in working directory using shared GitUtils
+        val gitCmd: (String) -> Unit = { cmd ->
+            writeToTerminal(GitUtils.gitCommand(cmd, getWorkingDir()))
+        }
+
+        // Helper to run gh command in working directory using shared GitUtils
+        val ghCmd: (String) -> Unit = { cmd ->
+            writeToTerminal(GitUtils.ghCommand(cmd, getWorkingDir()))
+        }
+
+        // Get current shell from environment
+        val currentShell = System.getenv("SHELL")?.substringAfterLast("/") ?: "bash"
+        val shellConfigFile = when (currentShell) {
+            "zsh" -> "~/.zshrc"
+            "fish" -> "~/.config/fish/config.fish"
+            else -> "~/.bashrc"
+        }
+
+        menuActions?.apply {
+            // AI Assistants - launch or show install dialog
+            onLaunchClaudeCode = {
+                val assistant = AIAssistants.findById("claude-code")
+                if (assistant != null) {
+                    val isInstalled = aiState.detector.installationStatus.value["claude-code"] ?: false
+                    if (isInstalled) {
+                        val config = settings.aiAssistantConfigs["claude-code"]
+                        writeToTerminal(aiState.launcher.getLaunchCommand(assistant, config))
+                    } else {
+                        installConfirmState = InstallConfirmState(
+                            assistant = assistant,
+                            originalCommand = "claude",
+                            clearLine = {},  // No line to clear when launched from menu
+                            terminalWriter = writeToTerminal
+                        )
+                    }
+                }
+            }
+            onLaunchGemini = {
+                val assistant = AIAssistants.findById("gemini-cli")
+                if (assistant != null) {
+                    val isInstalled = aiState.detector.installationStatus.value["gemini-cli"] ?: false
+                    if (isInstalled) {
+                        val config = settings.aiAssistantConfigs["gemini-cli"]
+                        writeToTerminal(aiState.launcher.getLaunchCommand(assistant, config))
+                    } else {
+                        installConfirmState = InstallConfirmState(
+                            assistant = assistant,
+                            originalCommand = "gemini",
+                            clearLine = {},
+                            terminalWriter = writeToTerminal
+                        )
+                    }
+                }
+            }
+            onLaunchCodex = {
+                val assistant = AIAssistants.findById("codex")
+                if (assistant != null) {
+                    val isInstalled = aiState.detector.installationStatus.value["codex"] ?: false
+                    if (isInstalled) {
+                        val config = settings.aiAssistantConfigs["codex"]
+                        writeToTerminal(aiState.launcher.getLaunchCommand(assistant, config))
+                    } else {
+                        installConfirmState = InstallConfirmState(
+                            assistant = assistant,
+                            originalCommand = "codex",
+                            clearLine = {},
+                            terminalWriter = writeToTerminal
+                        )
+                    }
+                }
+            }
+            onLaunchOpenCode = {
+                val assistant = AIAssistants.findById("opencode")
+                if (assistant != null) {
+                    val isInstalled = aiState.detector.installationStatus.value["opencode"] ?: false
+                    if (isInstalled) {
+                        val config = settings.aiAssistantConfigs["opencode"]
+                        writeToTerminal(aiState.launcher.getLaunchCommand(assistant, config))
+                    } else {
+                        installConfirmState = InstallConfirmState(
+                            assistant = assistant,
+                            originalCommand = "opencode",
+                            clearLine = {},
+                            terminalWriter = writeToTerminal
+                        )
+                    }
+                }
+            }
+
+            // Git commands (path-aware using GitUtils)
+            onGitInit = { writeToTerminal("git ${GitUtils.Commands.INIT}\n") }
+            onGitClone = { writeToTerminal("git ${GitUtils.Commands.CLONE}") }
+            onGitStatus = { gitCmd(GitUtils.Commands.STATUS) }
+            onGitDiff = { gitCmd(GitUtils.Commands.DIFF) }
+            onGitLog = { gitCmd(GitUtils.Commands.LOG) }
+            onGitAddAll = { gitCmd(GitUtils.Commands.ADD_ALL) }
+            onGitAddPatch = { gitCmd(GitUtils.Commands.ADD_PATCH) }
+            onGitReset = { gitCmd(GitUtils.Commands.RESET) }
+            onGitCommit = { gitCmd(GitUtils.Commands.COMMIT) }
+            onGitCommitAmend = { gitCmd(GitUtils.Commands.COMMIT_AMEND) }
+            onGitPush = { gitCmd(GitUtils.Commands.PUSH) }
+            onGitPull = { gitCmd(GitUtils.Commands.PULL) }
+            onGitFetch = { gitCmd(GitUtils.Commands.FETCH) }
+            onGitBranch = { gitCmd(GitUtils.Commands.BRANCH) }
+            onGitCheckoutPrev = { gitCmd(GitUtils.Commands.CHECKOUT_PREV) }
+            onGitCheckoutNew = {
+                // Uses gitCommand but without trailing newline (user types branch name)
+                val cwd = getWorkingDir()
+                if (cwd != null) {
+                    writeToTerminal("git -C \"$cwd\" ${GitUtils.Commands.CHECKOUT_NEW}")
+                } else {
+                    writeToTerminal("git ${GitUtils.Commands.CHECKOUT_NEW}")
+                }
+            }
+            onGitStash = { gitCmd(GitUtils.Commands.STASH) }
+            onGitStashPop = { gitCmd(GitUtils.Commands.STASH_POP) }
+
+            // GitHub CLI commands (path-aware using GitUtils)
+            onGhAuthStatus = { writeToTerminal("gh ${GitUtils.GhCommands.AUTH_STATUS}\n") }
+            onGhAuthLogin = { writeToTerminal("gh ${GitUtils.GhCommands.AUTH_LOGIN}\n") }
+            onGhSetDefault = { ghCmd(GitUtils.GhCommands.SET_DEFAULT) }
+            onGhRepoClone = { writeToTerminal("gh ${GitUtils.GhCommands.REPO_CLONE}") }
+            onGhPrList = { ghCmd(GitUtils.GhCommands.PR_LIST) }
+            onGhPrStatus = { ghCmd(GitUtils.GhCommands.PR_STATUS) }
+            onGhPrCreate = { ghCmd(GitUtils.GhCommands.PR_CREATE) }
+            onGhPrView = { ghCmd(GitUtils.GhCommands.PR_VIEW_WEB) }
+            onGhIssueList = { ghCmd(GitUtils.GhCommands.ISSUE_LIST) }
+            onGhIssueCreate = { ghCmd(GitUtils.GhCommands.ISSUE_CREATE) }
+            onGhRepoView = { ghCmd(GitUtils.GhCommands.REPO_VIEW_WEB) }
+
+            // Shell config
+            onEditZshrc = { writeToTerminal("\${EDITOR:-nano} ~/.zshrc\n") }
+            onEditBashrc = { writeToTerminal("\${EDITOR:-nano} ~/.bashrc\n") }
+            onEditFishConfig = { writeToTerminal("\${EDITOR:-nano} ~/.config/fish/config.fish\n") }
+            onReloadShellConfig = {
+                val sourceCmd = when (currentShell) {
+                    "zsh" -> "source ~/.zshrc"
+                    "fish" -> "source ~/.config/fish/config.fish"
+                    else -> "source ~/.bashrc"
+                }
+                writeToTerminal("$sourceCmd\n")
+            }
+
+            // Starship
+            onStarshipEditConfig = { writeToTerminal("\${EDITOR:-nano} ~/.config/starship.toml\n") }
+            onStarshipPresets = { writeToTerminal("starship preset --list\n") }
+
+            // Oh My Zsh
+            onOhMyZshUpdate = { writeToTerminal("omz update\n") }
+            onOhMyZshThemes = { writeToTerminal("ls ~/.oh-my-zsh/themes/\n") }
+            onOhMyZshPlugins = { writeToTerminal("ls ~/.oh-my-zsh/plugins/\n") }
+
+            // Prezto
+            onPreztoUpdate = { writeToTerminal("cd ~/.zprezto && git pull && git submodule update --init --recursive && cd -\n") }
+            onPreztoEditConfig = { writeToTerminal("\${EDITOR:-nano} ~/.zpreztorc\n") }
+            onPreztoListThemes = { writeToTerminal("ls ~/.zprezto/modules/prompt/functions/ | grep prompt_ | sed 's/prompt_//'\n") }
+            onPreztoShowModules = { writeToTerminal("grep '^\\s*zmodule' ~/.zpreztorc 2>/dev/null || grep \"'\" ~/.zpreztorc | head -20\n") }
         }
     }
 
@@ -719,6 +912,21 @@ fun TabbedTerminal(
                     )
                     items = items + vcsItems
 
+                    // Add Shell Customization menu items (Starship, etc.)
+                    val shellItems = shellMenuProvider.getMenuItems(
+                        terminalWriter = terminalWriter,
+                        onInstallRequest = { toolId, command, npmCommand ->
+                            // Handle both install and uninstall (e.g., "starship-uninstall" -> "starship")
+                            val baseToolId = toolId.removeSuffix("-uninstall")
+                            val tool = AIAssistants.findById(baseToolId)
+                            if (tool != null) {
+                                installDialogState = AIInstallDialogParams(tool, command, npmCommand, terminalWriter)
+                            }
+                        },
+                        statusOverride = shellStatusHolder.get()
+                    )
+                    items = items + shellItems
+
                     items
                 },
                 onContextMenuOpen = onContextMenuOpen,
@@ -739,6 +947,16 @@ fun TabbedTerminal(
                         ?: session?.processHandle?.value?.getWorkingDirectory()
                     vcsMenuProvider.refreshStatus(cwd)
                     vcsStatusHolder.set(vcsMenuProvider.getStatus())
+                    // Refresh Shell Customization status
+                    shellMenuProvider.refreshStatus()
+                    shellStatusHolder.set(mapOf(
+                        "starship" to (shellMenuProvider.getStatus() ?: false),
+                        "oh-my-zsh" to (shellMenuProvider.getOhMyZshStatus() ?: false),
+                        "prezto" to (shellMenuProvider.getPreztoStatus() ?: false),
+                        "zsh" to (shellMenuProvider.getZshStatus() ?: false),
+                        "bash" to (shellMenuProvider.getBashStatus() ?: false),
+                        "fish" to (shellMenuProvider.getFishStatus() ?: false)
+                    ))
                 },
                 hyperlinkRegistry = hyperlinkRegistry,
                 modifier = Modifier.fillMaxSize()

@@ -167,6 +167,12 @@ class AIAssistantDetector {
                 "/usr/local/bin/git",
                 "/opt/homebrew/bin/git"
             )
+            "starship" -> listOf(
+                "/usr/bin/starship",
+                "/usr/local/bin/starship",
+                "/opt/homebrew/bin/starship",
+                "$home/.cargo/bin/starship"  // Cargo install location
+            )
             else -> emptyList()
         }
     }

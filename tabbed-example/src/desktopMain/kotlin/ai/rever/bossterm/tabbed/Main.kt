@@ -7,6 +7,7 @@ import ai.rever.bossterm.compose.TabbedTerminal
 import ai.rever.bossterm.compose.TabbedTerminalState
 import ai.rever.bossterm.compose.rememberTabbedTerminalState
 import ai.rever.bossterm.compose.menu.MenuActions
+import ai.rever.bossterm.compose.onboarding.OnboardingWizard
 import ai.rever.bossterm.compose.settings.SettingsManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -36,6 +37,7 @@ import kotlinx.coroutines.delay
  * - Menu bar integration
  * - **Custom context menu items** (right-click to see)
  * - **State persistence across view switches** (TabbedTerminalState demo)
+ * - **Welcome Wizard** for first-time setup (Help > Welcome Wizard)
  *
  * Run with: ./gradlew :tabbed-example:run
  */
@@ -102,6 +104,16 @@ private fun ApplicationScope.TabbedTerminalWindow(
 
     // Track settings panel visibility
     var showSettings by remember { mutableStateOf(false) }
+
+    // Track Welcome Wizard visibility
+    var showWelcomeWizard by remember { mutableStateOf(false) }
+
+    // Check if onboarding should be shown on first launch
+    LaunchedEffect(Unit) {
+        if (!settings.onboardingCompleted) {
+            showWelcomeWizard = true
+        }
+    }
 
     // Track context menu opens (onContextMenuOpen demo)
     var contextMenuOpenCount by remember { mutableStateOf(0) }
@@ -171,6 +183,9 @@ private fun ApplicationScope.TabbedTerminalWindow(
             Menu("Window") {
                 Item("Next Tab", onClick = { menuActions.onNextTab?.invoke() })
                 Item("Previous Tab", onClick = { menuActions.onPreviousTab?.invoke() })
+            }
+            Menu("Help") {
+                Item("Welcome Wizard...", onClick = { showWelcomeWizard = true })
             }
         }
 
@@ -329,6 +344,15 @@ private fun ApplicationScope.TabbedTerminalWindow(
                     }
                 }
             }
+        }
+
+        // Welcome Wizard dialog
+        if (showWelcomeWizard) {
+            OnboardingWizard(
+                onDismiss = { showWelcomeWizard = false },
+                onComplete = { showWelcomeWizard = false },
+                settingsManager = settingsManager
+            )
         }
     }
 }

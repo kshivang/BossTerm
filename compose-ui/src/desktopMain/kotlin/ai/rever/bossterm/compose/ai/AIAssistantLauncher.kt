@@ -194,6 +194,74 @@ class AIAssistantLauncher {
         }
 
         /**
+         * Get install command for Starship prompt.
+         * Uses universal curl script that works on macOS, Linux, and WSL.
+         * Also adds init line to shell config based on $SHELL and restarts shell.
+         */
+        fun getStarshipInstallCommand(): String {
+            // Install starship, configure for current shell, restart shell to activate
+            return """curl -sS https://starship.rs/install.sh | sh && """ +
+                """SHELL_NAME=$(basename "${"$"}SHELL") && """ +
+                """if [ "${"$"}SHELL_NAME" = "zsh" ]; then """ +
+                """  grep -q 'starship init zsh' ~/.zshrc 2>/dev/null || echo 'eval "$(starship init zsh)"' >> ~/.zshrc; """ +
+                """  echo '✓ Starship configured for Zsh. Restarting shell...'; """ +
+                """elif [ "${"$"}SHELL_NAME" = "bash" ]; then """ +
+                """  grep -q 'starship init bash' ~/.bashrc 2>/dev/null || echo 'eval "$(starship init bash)"' >> ~/.bashrc; """ +
+                """  echo '✓ Starship configured for Bash. Restarting shell...'; """ +
+                """elif [ "${"$"}SHELL_NAME" = "fish" ]; then """ +
+                """  mkdir -p ~/.config/fish && grep -q 'starship init fish' ~/.config/fish/config.fish 2>/dev/null || echo 'starship init fish | source' >> ~/.config/fish/config.fish; """ +
+                """  echo '✓ Starship configured for Fish. Restarting shell...'; """ +
+                """fi && exec ${"$"}SHELL -l"""
+        }
+
+        /**
+         * Get install command for Oh My Zsh.
+         * Uses official install script from ohmyz.sh.
+         */
+        fun getOhMyZshInstallCommand(): String {
+            return "sh -c \"\$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)\""
+        }
+
+        /**
+         * Get platform-aware install command for Zsh.
+         */
+        fun getZshInstallCommand(): String {
+            return when {
+                System.getProperty("os.name").lowercase().contains("mac") ->
+                    "brew install zsh"
+                System.getProperty("os.name").lowercase().contains("windows") ->
+                    "echo 'Zsh is not natively supported on Windows. Consider using WSL.'"
+                else -> getLinuxInstallCommand("zsh", "zsh", "zsh")
+            }
+        }
+
+        /**
+         * Get platform-aware install command for Bash.
+         */
+        fun getBashInstallCommand(): String {
+            return when {
+                System.getProperty("os.name").lowercase().contains("mac") ->
+                    "brew install bash"
+                System.getProperty("os.name").lowercase().contains("windows") ->
+                    "echo 'Bash is available through Git Bash or WSL on Windows.'"
+                else -> getLinuxInstallCommand("bash", "bash", "bash")
+            }
+        }
+
+        /**
+         * Get platform-aware install command for Fish.
+         */
+        fun getFishInstallCommand(): String {
+            return when {
+                System.getProperty("os.name").lowercase().contains("mac") ->
+                    "brew install fish"
+                System.getProperty("os.name").lowercase().contains("windows") ->
+                    "echo 'Fish is available through WSL on Windows. Visit https://fishshell.com for more info.'"
+                else -> getLinuxInstallCommand("fish", "fish", "fish")
+            }
+        }
+
+        /**
          * Get Linux install command with package manager detection.
          * Tries apt, dnf, then pacman in order.
          */

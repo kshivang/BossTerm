@@ -41,6 +41,8 @@ import ai.rever.bossterm.compose.ai.AIInstallDialogHost
 import ai.rever.bossterm.compose.ai.AIInstallDialogParams
 import ai.rever.bossterm.compose.ai.rememberAIAssistantState
 import ai.rever.bossterm.compose.vcs.VersionControlMenuProvider
+import ai.rever.bossterm.compose.shell.ShellCustomizationMenuProvider
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
 import ai.rever.bossterm.compose.ui.ProperTerminal
@@ -157,7 +159,7 @@ data class ContextMenuSubmenu(
  * @param state Optional EmbeddableTerminalState for programmatic control and session preservation
  * @param settingsPath Path to custom settings JSON file. If null, uses ~/.bossterm/settings.json
  * @param settings Direct TerminalSettings object. Overrides settingsPath if provided.
- * @param command Shell command to run. Defaults to $SHELL or /bin/zsh
+ * @param command Shell command to run. Defaults to $SHELL or /bin/sh
  * @param workingDirectory Initial working directory. Defaults to user home
  * @param environment Additional environment variables to set
  * @param initialCommand Optional command to execute after terminal is ready. Uses OSC 133 shell
@@ -224,8 +226,8 @@ fun EmbeddableTerminal(
         SettingsLoader.resolveSettings(settings, settingsPath).withOverrides(settingsOverride)
     }
 
-    // Effective shell command
-    val effectiveCommand = command ?: System.getenv("SHELL") ?: "/bin/zsh"
+    // Effective shell command (validates $SHELL exists, falls back to /bin/bash or /bin/sh)
+    val effectiveCommand = command ?: ShellCustomizationUtils.getValidShell()
 
     // Load font from settings.fontName or use default bundled font
     val terminalFont = remember(resolvedSettings.fontName) {
@@ -242,6 +244,10 @@ fun EmbeddableTerminal(
     // Version Control menu provider (Git and GitHub CLI)
     val vcsMenuProvider = remember { VersionControlMenuProvider() }
     val vcsStatusHolder = remember { AtomicReference<Pair<Boolean, Boolean>?>(null) }
+
+    // Shell Customization menu provider (Starship, etc.)
+    val shellMenuProvider = remember { ShellCustomizationMenuProvider() }
+    val shellStatusHolder = remember { AtomicReference<Map<String, Boolean>?>(null) }
 
     // State for AI assistant installation dialog (uses shared AIInstallDialogParams)
     var installDialogState by remember { mutableStateOf<AIInstallDialogParams?>(null) }
@@ -382,6 +388,21 @@ fun EmbeddableTerminal(
                 )
                 items = items + vcsItems
 
+                // Add Shell Customization menu items (Starship, etc.)
+                val shellItems = shellMenuProvider.getMenuItems(
+                    terminalWriter = terminalWriter,
+                    onInstallRequest = { toolId, command, npmCommand ->
+                        // Handle both install and uninstall (e.g., "starship-uninstall" -> "starship")
+                        val baseToolId = toolId.removeSuffix("-uninstall")
+                        val tool = AIAssistants.findById(baseToolId)
+                        if (tool != null) {
+                            installDialogState = AIInstallDialogParams(tool, command, npmCommand, terminalWriter)
+                        }
+                    },
+                    statusOverride = shellStatusHolder.get()
+                )
+                items = items + shellItems
+
                 items
             },
             onContextMenuOpen = onContextMenuOpen,
@@ -401,6 +422,16 @@ fun EmbeddableTerminal(
                     ?: session.processHandle.value?.getWorkingDirectory()
                 vcsMenuProvider.refreshStatus(cwd)
                 vcsStatusHolder.set(vcsMenuProvider.getStatus())
+                // Refresh Shell Customization status
+                shellMenuProvider.refreshStatus()
+                shellStatusHolder.set(mapOf(
+                    "starship" to (shellMenuProvider.getStatus() ?: false),
+                    "oh-my-zsh" to (shellMenuProvider.getOhMyZshStatus() ?: false),
+                    "prezto" to (shellMenuProvider.getPreztoStatus() ?: false),
+                    "zsh" to (shellMenuProvider.getZshStatus() ?: false),
+                    "bash" to (shellMenuProvider.getBashStatus() ?: false),
+                    "fish" to (shellMenuProvider.getFishStatus() ?: false)
+                ))
             },
             onLinkClick = onLinkClick,
             hyperlinkRegistry = hyperlinkRegistry,
@@ -1041,7 +1072,6 @@ private suspend fun initializeProcess(
                             override fun onCommandStarted() {
                                 // Only count the first B after we send the command
                                 if (!commandStarted) {
-                                    println("DEBUG: Initial command started (OSC 133;B)")
                                     commandStarted = true
                                 }
                             }
@@ -1049,11 +1079,9 @@ private suspend fun initializeProcess(
                             override fun onCommandFinished(exitCode: Int) {
                                 // Only fire callback if we saw a B first (command actually started)
                                 if (!commandStarted) {
-                                    println("DEBUG: Ignoring OSC 133;D (no preceding B) - exitCode=$exitCode")
                                     return
                                 }
                                 try {
-                                    println("DEBUG: Initial command completed with exit code: $exitCode")
                                     // Fire callback once with success status and exit code
                                     onInitialCommandComplete(exitCode == 0, exitCode)
                                 } finally {

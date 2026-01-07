@@ -334,10 +334,11 @@ class ShellCustomizationMenuProvider {
                     id = "starship_uninstall",
                     label = "Uninstall",
                     action = {
-                        val uninstallCmd = "sudo rm -v \"\$(which starship)\" && " +
-                            "sed -i '/eval.*starship init/d' ~/.bashrc 2>/dev/null; " +
+                        // Remove config lines first, then binary, then restart shell
+                        val uninstallCmd = "sed -i '/eval.*starship init/d' ~/.bashrc 2>/dev/null; " +
                             "sed -i '/eval.*starship init/d' ~/.zshrc 2>/dev/null; " +
                             "sed -i '/starship init fish/d' ~/.config/fish/config.fish 2>/dev/null; " +
+                            "sudo rm -v \"\$(which starship)\" && " +
                             "echo '✓ Starship uninstalled. Restarting shell...' && exec \$SHELL"
                         if (onInstallRequest != null) {
                             onInstallRequest("starship-uninstall", uninstallCmd, null)

@@ -129,10 +129,12 @@ class ShellCustomizationMenuProvider {
      * Get command to uninstall Starship (removes binary and config lines).
      */
     private fun getStarshipUninstallCommand(): String {
-        return "sed -i '/eval.*starship init/d' ~/.bashrc 2>/dev/null; " +
-            "sed -i '/eval.*starship init/d' ~/.zshrc 2>/dev/null; " +
-            "sed -i '/starship init fish/d' ~/.config/fish/config.fish 2>/dev/null; " +
-            "sudo rm -v \"\$(which starship)\" && echo '✓ Starship uninstalled'"
+        // Use sed -i.bak for cross-platform compatibility, then remove backup
+        return "sed -i.bak '/starship init/d' ~/.bashrc 2>/dev/null; rm -f ~/.bashrc.bak 2>/dev/null; " +
+            "sed -i.bak '/starship init/d' ~/.zshrc 2>/dev/null; rm -f ~/.zshrc.bak 2>/dev/null; " +
+            "sed -i.bak '/starship init/d' ~/.config/fish/config.fish 2>/dev/null; rm -f ~/.config/fish/config.fish.bak 2>/dev/null; " +
+            "sudo rm -f \"\$(which starship 2>/dev/null)\" 2>/dev/null; " +
+            "echo '✓ Starship uninstalled'"
     }
 
     /**
@@ -326,16 +328,27 @@ class ShellCustomizationMenuProvider {
         // Zsh menu
         if (!isZshInstalled) {
             shellItems.add(
-                ContextMenuItem(
-                    id = "zsh_install",
-                    label = "Install Zsh",
-                    action = {
-                        if (onInstallRequest != null) {
-                            onInstallRequest("zsh", getZshInstallCommand(), null)
-                        } else {
-                            terminalWriter("${getZshInstallCommand()}\n")
-                        }
-                    }
+                ContextMenuSubmenu(
+                    id = "zsh_submenu",
+                    label = "Zsh",
+                    items = listOf(
+                        ContextMenuItem(
+                            id = "zsh_install",
+                            label = "Install",
+                            action = {
+                                if (onInstallRequest != null) {
+                                    onInstallRequest("zsh", getZshInstallCommand(), null)
+                                } else {
+                                    terminalWriter("${getZshInstallCommand()}\n")
+                                }
+                            }
+                        ),
+                        ContextMenuItem(
+                            id = "zsh_learnmore",
+                            label = "Learn More",
+                            action = { UrlOpener.open("https://www.zsh.org/") }
+                        )
+                    )
                 )
             )
         } else {
@@ -347,16 +360,27 @@ class ShellCustomizationMenuProvider {
             ?: (bashInstalled ?: isCommandInstalled("bash"))
         if (!isBashInstalled) {
             shellItems.add(
-                ContextMenuItem(
-                    id = "bash_install",
-                    label = "Install Bash",
-                    action = {
-                        if (onInstallRequest != null) {
-                            onInstallRequest("bash", getBashInstallCommand(), null)
-                        } else {
-                            terminalWriter("${getBashInstallCommand()}\n")
-                        }
-                    }
+                ContextMenuSubmenu(
+                    id = "bash_submenu",
+                    label = "Bash",
+                    items = listOf(
+                        ContextMenuItem(
+                            id = "bash_install",
+                            label = "Install",
+                            action = {
+                                if (onInstallRequest != null) {
+                                    onInstallRequest("bash", getBashInstallCommand(), null)
+                                } else {
+                                    terminalWriter("${getBashInstallCommand()}\n")
+                                }
+                            }
+                        ),
+                        ContextMenuItem(
+                            id = "bash_learnmore",
+                            label = "Learn More",
+                            action = { UrlOpener.open("https://www.gnu.org/software/bash/") }
+                        )
+                    )
                 )
             )
         } else {
@@ -368,16 +392,27 @@ class ShellCustomizationMenuProvider {
             ?: (fishInstalled ?: isCommandInstalled("fish"))
         if (!isFishInstalled) {
             shellItems.add(
-                ContextMenuItem(
-                    id = "fish_install",
-                    label = "Install Fish",
-                    action = {
-                        if (onInstallRequest != null) {
-                            onInstallRequest("fish", getFishInstallCommand(), null)
-                        } else {
-                            terminalWriter("${getFishInstallCommand()}\n")
-                        }
-                    }
+                ContextMenuSubmenu(
+                    id = "fish_submenu",
+                    label = "Fish",
+                    items = listOf(
+                        ContextMenuItem(
+                            id = "fish_install",
+                            label = "Install",
+                            action = {
+                                if (onInstallRequest != null) {
+                                    onInstallRequest("fish", getFishInstallCommand(), null)
+                                } else {
+                                    terminalWriter("${getFishInstallCommand()}\n")
+                                }
+                            }
+                        ),
+                        ContextMenuItem(
+                            id = "fish_learnmore",
+                            label = "Learn More",
+                            action = { UrlOpener.open("https://fishshell.com/") }
+                        )
+                    )
                 )
             )
         } else {
@@ -509,11 +544,11 @@ class ShellCustomizationMenuProvider {
                     label = "Uninstall",
                     action = {
                         // Remove config lines first, then binary, then restart shell
-                        val uninstallCmd = "sed -i '/eval.*starship init/d' ~/.bashrc 2>/dev/null; " +
-                            "sed -i '/eval.*starship init/d' ~/.zshrc 2>/dev/null; " +
-                            "sed -i '/starship init fish/d' ~/.config/fish/config.fish 2>/dev/null; " +
-                            "sudo rm -v \"\$(which starship)\" && " +
-                            "echo '✓ Starship uninstalled. Restarting shell...' && exec \$SHELL"
+                        val uninstallCmd = "sed -i.bak '/starship init/d' ~/.bashrc 2>/dev/null; rm -f ~/.bashrc.bak 2>/dev/null; " +
+                            "sed -i.bak '/starship init/d' ~/.zshrc 2>/dev/null; rm -f ~/.zshrc.bak 2>/dev/null; " +
+                            "sed -i.bak '/starship init/d' ~/.config/fish/config.fish 2>/dev/null; rm -f ~/.config/fish/config.fish.bak 2>/dev/null; " +
+                            "sudo rm -f \"\$(which starship 2>/dev/null)\" 2>/dev/null; " +
+                            "echo '✓ Starship uninstalled. Restarting shell...' && exec \$SHELL -l"
                         if (onInstallRequest != null) {
                             onInstallRequest("starship-uninstall", uninstallCmd, null)
                         } else {
@@ -760,7 +795,7 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "zsh_set_default",
                     label = "Set as Default Shell",
-                    action = { terminalWriter("chsh -s \$(which zsh)\n") }
+                    action = { terminalWriter("chsh -s \$(which zsh) && echo '✓ Default shell changed to Zsh. Log out and log back in for new tabs to use Zsh.' && exec zsh -l\n") }
                 ),
                 ContextMenuItem(
                     id = "zsh_edit_zshrc",
@@ -792,7 +827,7 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "bash_set_default",
                     label = "Set as Default Shell",
-                    action = { terminalWriter("chsh -s \$(which bash)\n") }
+                    action = { terminalWriter("chsh -s \$(which bash) && echo '✓ Default shell changed to Bash. Log out and log back in for new tabs to use Bash.' && exec bash -l\n") }
                 ),
                 ContextMenuItem(
                     id = "bash_edit_bashrc",
@@ -868,7 +903,7 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "fish_set_default",
                     label = "Set as Default Shell",
-                    action = { terminalWriter("chsh -s \$(which fish)\n") }
+                    action = { terminalWriter("chsh -s \$(which fish) && echo '✓ Default shell changed to Fish. Log out and log back in for new tabs to use Fish.' && exec fish -l\n") }
                 ),
                 ContextMenuItem(
                     id = "fish_edit_config",

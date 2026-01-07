@@ -222,7 +222,7 @@ class TabController(
      * Create a new terminal tab with optional working directory.
      *
      * @param workingDir Working directory to start the shell in (inherits from active tab if null)
-     * @param command Shell command to execute (default: $SHELL or /bin/bash)
+     * @param command Shell command to execute (default: $SHELL or /bin/sh)
      * @param arguments Command-line arguments for the shell (default: empty)
      * @param onProcessExit Callback invoked when shell process exits (before auto-closing tab)
      * @param initialCommand Optional command to execute after terminal is ready (sent as input with newline)
@@ -260,7 +260,7 @@ class TabController(
             "/usr/bin/login" to listOf("-fp", username)
         } else {
             // Use provided command or fall back to shell
-            val shellCommand = command ?: System.getenv("SHELL") ?: "/bin/bash"
+            val shellCommand = command ?: System.getenv("SHELL") ?: "/bin/sh"
             // Ensure shell is started as login shell to get proper PATH from /etc/zprofile
             val shellArgs = if (arguments.isEmpty() &&
                 (shellCommand.endsWith("/zsh") || shellCommand.endsWith("/bash") ||
@@ -465,7 +465,7 @@ class TabController(
      * Caller is responsible for managing the session lifecycle via dispose().
      *
      * @param workingDir Working directory to start the shell in
-     * @param command Shell command to execute (default: $SHELL or /bin/bash)
+     * @param command Shell command to execute (default: $SHELL or /bin/sh)
      * @param arguments Command-line arguments for the shell (default: empty)
      * @param sessionTitle Title for the session (used for display purposes)
      * @param onProcessExit Callback invoked when the shell process exits (for pane auto-close)
@@ -501,7 +501,7 @@ class TabController(
             "/usr/bin/login" to listOf("-fp", username)
         } else {
             // Use provided command or fall back to shell
-            val shellCommand = command ?: System.getenv("SHELL") ?: "/bin/bash"
+            val shellCommand = command ?: System.getenv("SHELL") ?: "/bin/sh"
             // Ensure shell is started as login shell to get proper PATH from /etc/zprofile
             val shellArgs = if (arguments.isEmpty() &&
                 (shellCommand.endsWith("/zsh") || shellCommand.endsWith("/bash") ||

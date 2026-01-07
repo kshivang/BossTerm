@@ -158,7 +158,7 @@ data class ContextMenuSubmenu(
  * @param state Optional EmbeddableTerminalState for programmatic control and session preservation
  * @param settingsPath Path to custom settings JSON file. If null, uses ~/.bossterm/settings.json
  * @param settings Direct TerminalSettings object. Overrides settingsPath if provided.
- * @param command Shell command to run. Defaults to $SHELL or /bin/zsh
+ * @param command Shell command to run. Defaults to $SHELL or /bin/sh
  * @param workingDirectory Initial working directory. Defaults to user home
  * @param environment Additional environment variables to set
  * @param initialCommand Optional command to execute after terminal is ready. Uses OSC 133 shell
@@ -226,7 +226,7 @@ fun EmbeddableTerminal(
     }
 
     // Effective shell command
-    val effectiveCommand = command ?: System.getenv("SHELL") ?: "/bin/zsh"
+    val effectiveCommand = command ?: System.getenv("SHELL") ?: "/bin/sh"
 
     // Load font from settings.fontName or use default bundled font
     val terminalFont = remember(resolvedSettings.fontName) {

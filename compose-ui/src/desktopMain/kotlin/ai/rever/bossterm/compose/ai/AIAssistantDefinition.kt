@@ -108,7 +108,7 @@ object AIAssistants {
             yoloFlag = "--full-auto",
             yoloLabel = "Full Auto",
             installCommand = "npm install -g @openai/codex",
-            npmInstallCommand = null,
+            npmInstallCommand = "npm install -g @openai/codex",
             websiteUrl = "https://github.com/openai/codex",
             description = "OpenAI's coding assistant"
         ),
@@ -119,7 +119,7 @@ object AIAssistants {
             yoloFlag = "-y",
             yoloLabel = "Auto",
             installCommand = "npm install -g @google/gemini-cli",
-            npmInstallCommand = null,
+            npmInstallCommand = "npm install -g @google/gemini-cli",
             websiteUrl = "https://github.com/google-gemini/gemini-cli",
             description = "Google's AI coding assistant"
         ),
@@ -183,6 +183,55 @@ object AIAssistants {
             npmInstallCommand = null,
             websiteUrl = "https://ohmyz.sh/",
             description = "Zsh framework with plugins and themes"
+        ),
+        AIAssistantDefinition(
+            id = "prezto",
+            displayName = "Prezto",
+            command = "zprezto",
+            category = ToolCategory.SHELL_CUSTOMIZATION,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = "",  // Complex install handled in ShellCustomizationMenuProvider
+            npmInstallCommand = null,
+            websiteUrl = "https://github.com/sorin-ionescu/prezto",
+            description = "Zsh configuration framework"
+        ),
+        // Shell installations
+        AIAssistantDefinition(
+            id = "zsh",
+            displayName = "Zsh",
+            command = "zsh",
+            category = ToolCategory.SHELL_CUSTOMIZATION,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = AIAssistantLauncher.getZshInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://www.zsh.org/",
+            description = "Z shell - powerful command interpreter"
+        ),
+        AIAssistantDefinition(
+            id = "bash",
+            displayName = "Bash",
+            command = "bash",
+            category = ToolCategory.SHELL_CUSTOMIZATION,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = AIAssistantLauncher.getBashInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://www.gnu.org/software/bash/",
+            description = "Bourne Again Shell"
+        ),
+        AIAssistantDefinition(
+            id = "fish",
+            displayName = "Fish",
+            command = "fish",
+            category = ToolCategory.SHELL_CUSTOMIZATION,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = AIAssistantLauncher.getFishInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://fishshell.com/",
+            description = "Friendly Interactive Shell"
         )
     )
 

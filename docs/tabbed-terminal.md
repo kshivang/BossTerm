@@ -914,11 +914,13 @@ TabbedTerminal(
 
 See [Embedding Guide - Custom Hyperlink Patterns](embedding.md#custom-hyperlink-patterns) for full `HyperlinkPattern` documentation.
 
-## AI Assistant Installation API
+## AI Assistant & VCS Tool Installation API
 
-BossTerm includes built-in support for detecting and installing AI coding assistants. The API provides programmatic access from `TabbedTerminalState`.
+BossTerm includes built-in support for detecting and installing AI coding assistants and VCS tools. The API provides programmatic access from `TabbedTerminalState`.
 
-### Available Assistants
+### Available Tools
+
+**AI Assistants:**
 
 | ID | Name | Description |
 |----|------|-------------|
@@ -927,10 +929,19 @@ BossTerm includes built-in support for detecting and installing AI coding assist
 | `gemini-cli` | Gemini CLI | Google's AI assistant |
 | `opencode` | OpenCode | Open-source AI coding assistant |
 
+**VCS Tools:**
+
+| ID | Name | Description |
+|----|------|-------------|
+| `git` | Git | Distributed version control system |
+| `gh` | GitHub CLI | GitHub's official CLI |
+
 ### API Methods
 
 ```kotlin
 val state = rememberTabbedTerminalState()
+
+// === AI Assistants ===
 
 // List all available AI assistant IDs
 val assistants = state.getAvailableAIAssistants()
@@ -955,6 +966,22 @@ state.installAIAssistant("claude-code", useNpm = true)
 
 // Cancel pending installation
 state.cancelAIInstallation()
+
+// === VCS Tools ===
+
+// Check if Git/GitHub CLI is installed (uses same API as AI assistants)
+val gitInstalled = state.isAIAssistantInstalled("git")
+val ghInstalled = state.isAIAssistantInstalled("gh")
+
+// Install Git
+state.installGit()                    // Active tab
+state.installGit(tabIndex = 0)        // By index
+state.installGit(tabId = "my-tab")    // By stable ID
+
+// Install GitHub CLI
+state.installGitHubCLI()              // Active tab
+state.installGitHubCLI(tabIndex = 0)  // By index
+state.installGitHubCLI(tabId = "my-tab") // By stable ID
 ```
 
 ### Example: AI Toolbar
@@ -993,11 +1020,17 @@ fun TerminalWithAIToolbar() {
 
 ### Built-in Context Menu
 
-When `aiAssistantsEnabled` is `true` in settings, the context menu includes an "AI Assistants" submenu with install/launch options for all supported assistants. Detection runs when the menu opens.
+When `aiAssistantsEnabled` is `true` in settings (default), the context menu includes:
+- **AI Assistants** submenu: Install/launch options for all supported AI assistants
+- **Version Control** submenu: Git commands, branch switching, and VCS tool installation
+
+**Note**: The `aiAssistantsEnabled` setting controls both AI assistants and VCS tools. There is no separate VCS-specific setting.
 
 ### Command Interception (OSC 133 Required)
 
-When OSC 133 shell integration is configured, BossTerm detects when you type an AI command (`claude`, `codex`, `gemini`, `opencode`) and shows an install prompt **before** the command runs (if not installed).
+When OSC 133 shell integration is configured, BossTerm detects when you type an AI assistant or VCS tool command (`claude`, `codex`, `gemini`, `opencode`, `git`, `gh`) and shows an install prompt **before** the command runs (if not installed).
+
+**VCS Tools Note**: Command interception works identically for VCS tools (git, gh) as it does for AI assistants. They use the same detection and dialog mechanism.
 
 **Requirements**: OSC 133 shell integration configured in `.bashrc`/`.zshrc`. See embedding.md for setup instructions.
 

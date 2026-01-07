@@ -1,9 +1,7 @@
 package ai.rever.bossterm.compose.ai
 
 import ai.rever.bossterm.compose.settings.AIAssistantConfigData
-import java.awt.Desktop
-import java.net.URI
-import java.util.concurrent.TimeUnit
+import ai.rever.bossterm.compose.util.UrlOpener
 
 /**
  * Generates commands for launching and installing AI assistants.
@@ -55,7 +53,11 @@ class AIAssistantLauncher {
         if (assistant.installCommand.startsWith("curl")) {
             return "${assistant.installCommand}\n"
         }
-        // Otherwise use npm with Node.js auto-installation
+        // If no npm package defined (VCS tools like git/gh), use installCommand directly
+        if (assistant.npmInstallCommand == null) {
+            return "${assistant.installCommand}\n"
+        }
+        // Otherwise use npm with Node.js auto-installation (AI assistants)
         return "${getNpmInstallCommandWithNodeCheck(assistant)}\n"
     }
 
@@ -149,86 +151,7 @@ class AIAssistantLauncher {
      * Open the assistant's website in the default browser.
      */
     fun openWebsite(assistant: AIAssistantDefinition): Boolean {
-        return openUrl(assistant.websiteUrl)
-    }
-
-    /**
-     * Open a URL in the default browser.
-     */
-    private fun openUrl(url: String): Boolean {
-        val os = System.getProperty("os.name").lowercase()
-
-        return try {
-            when {
-                os.contains("linux") -> openUrlOnLinux(url)
-                os.contains("mac") -> {
-                    ProcessBuilder("open", url).start()
-                    true
-                }
-                os.contains("win") -> {
-                    ProcessBuilder("cmd", "/c", "start", "", url).start()
-                    true
-                }
-                else -> {
-                    if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
-                        Desktop.getDesktop().browse(URI(url))
-                        true
-                    } else {
-                        false
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            println("Failed to open URL: $url - ${e.message}")
-            false
-        }
-    }
-
-    /**
-     * Open URL on Linux using multiple fallback strategies.
-     */
-    private fun openUrlOnLinux(url: String): Boolean {
-        val browserCommands = listOf(
-            listOf("sensible-browser", url),
-            listOf("x-www-browser", url),
-            listOf("gnome-open", url),
-            listOf("kde-open", url),
-            listOf("firefox", url),
-            listOf("google-chrome", url),
-            listOf("chromium", url),
-            listOf("chromium-browser", url),
-            listOf("xdg-open", url)
-        )
-
-        for (command in browserCommands) {
-            try {
-                val whichProcess = ProcessBuilder("which", command[0])
-                    .redirectErrorStream(true)
-                    .start()
-                val completed = whichProcess.waitFor(2, TimeUnit.SECONDS)
-                val exists = completed && whichProcess.exitValue() == 0
-
-                if (exists) {
-                    ProcessBuilder(command)
-                        .redirectErrorStream(true)
-                        .start()
-                    return true
-                }
-            } catch (e: Exception) {
-                continue
-            }
-        }
-
-        return try {
-            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
-                Desktop.getDesktop().browse(URI(url))
-                true
-            } else {
-                false
-            }
-        } catch (e: Exception) {
-            false
-        }
+        return UrlOpener.open(assistant.websiteUrl)
     }
 
     private fun escapeShellArg(arg: String): String {
@@ -240,4 +163,45 @@ class AIAssistantLauncher {
 
     private fun isMacOS(): Boolean =
         System.getProperty("os.name").lowercase().contains("mac")
+
+    companion object {
+        /**
+         * Get platform-aware install command for Git.
+         * Supports macOS (brew), Windows (winget), and Linux (apt/dnf/pacman).
+         */
+        fun getGitInstallCommand(): String {
+            return when {
+                System.getProperty("os.name").lowercase().contains("mac") ->
+                    "brew install git"
+                System.getProperty("os.name").lowercase().contains("windows") ->
+                    "winget install Git.Git --accept-source-agreements --accept-package-agreements"
+                else -> getLinuxInstallCommand("git", "git", "git")
+            }
+        }
+
+        /**
+         * Get platform-aware install command for GitHub CLI.
+         * Supports macOS (brew), Windows (winget), and Linux (apt/dnf/pacman).
+         */
+        fun getGhInstallCommand(): String {
+            return when {
+                System.getProperty("os.name").lowercase().contains("mac") ->
+                    "brew install gh"
+                System.getProperty("os.name").lowercase().contains("windows") ->
+                    "winget install GitHub.cli --accept-source-agreements --accept-package-agreements"
+                else -> getLinuxInstallCommand("gh", "gh", "github-cli")
+            }
+        }
+
+        /**
+         * Get Linux install command with package manager detection.
+         * Tries apt, dnf, then pacman in order.
+         */
+        private fun getLinuxInstallCommand(aptPkg: String, dnfPkg: String, pacmanPkg: String): String {
+            return "{ command -v apt >/dev/null 2>&1 && sudo apt install -y $aptPkg; } || " +
+                   "{ command -v dnf >/dev/null 2>&1 && sudo dnf install -y $dnfPkg; } || " +
+                   "{ command -v pacman >/dev/null 2>&1 && sudo pacman -S --noconfirm $pacmanPkg; } || " +
+                   "{ echo 'No supported package manager found (apt/dnf/pacman)'; exit 1; }"
+        }
+    }
 }

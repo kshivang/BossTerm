@@ -536,51 +536,58 @@ state.write("echo hello\n", tabIndex = 0)
 
 **Status**: Complete (December 28, 2025, issue #182)
 
-### 15. AI Assistant Integration (#225)
-- **Context Menu Integration**: Auto-detect and launch/install AI coding assistants
-- **Command Interception**: Detects typing `claude`, `codex`, `gemini`, `opencode` commands and shows install prompt if not installed (requires OSC 133 shell integration)
-- **Supported Assistants**: Claude Code, Codex CLI, Gemini CLI, OpenCode
+### 15. AI Assistant & VCS Tool Integration (#225)
+- **Context Menu Integration**: Auto-detect and launch/install AI coding assistants and VCS tools
+- **Command Interception**: Detects typing `claude`, `codex`, `gemini`, `opencode`, `git`, `gh` commands and shows install prompt if not installed (requires OSC 133 shell integration)
+- **Supported AI Assistants**: Claude Code, Codex CLI, Gemini CLI, OpenCode
+- **Supported VCS Tools**: Git, GitHub CLI (gh)
+- **Tool Categories**: `AI_ASSISTANT` and `VERSION_CONTROL` - appear in separate context menu sections
 - **Detection**: Multi-strategy detection (path check, `which`, shell-sourced which, nvm paths)
 - **Installation Dialog**: Embedded terminal with live output, npm fallback on failure
-- **Programmatic API**: `installAIAssistant()`, `isAIAssistantInstalled()`, `getAvailableAIAssistants()`
+- **Programmatic API**: `installAIAssistant()`, `installGit()`, `installGitHubCLI()`, `isAIAssistantInstalled()`
 
 **Usage (EmbeddableTerminal)**:
 ```kotlin
 val state = rememberEmbeddableTerminalState()
 
-// Check if installed
-val isInstalled = state.isAIAssistantInstalled("claude-code")
-
-// Trigger installation dialog
+// AI Assistants
 state.installAIAssistant("claude-code")
-
-// Use npm instead of script
 state.installAIAssistant("claude-code", useNpm = true)
+
+// VCS Tools
+state.installGit()
+state.installGitHubCLI()
 ```
 
 **Usage (TabbedTerminal)**:
 ```kotlin
 val state = rememberTabbedTerminalState()
 
-// Install to active tab
+// AI Assistants - install to active/specific tab
 state.installAIAssistant("claude-code")
-
-// Install to specific tab
 state.installAIAssistant("claude-code", tabIndex = 0)
 state.installAIAssistant("claude-code", tabId = "my-tab")
+
+// VCS Tools - install to active/specific tab
+state.installGit()
+state.installGit(tabIndex = 0)
+state.installGit(tabId = "my-tab")
+state.installGitHubCLI()
+state.installGitHubCLI(tabIndex = 0)
 ```
 
 **Key Files**:
-- `compose-ui/.../ai/AIAssistantDefinition.kt`: Assistant definitions and registry
+- `compose-ui/.../ai/AIAssistantDefinition.kt`: Tool definitions, registry, and ToolCategory enum
 - `compose-ui/.../ai/AIAssistantDetector.kt`: Multi-strategy installation detection
 - `compose-ui/.../ai/AIAssistantLauncher.kt`: Launch commands and install commands
-- `compose-ui/.../ai/AIAssistantMenuProvider.kt`: Context menu generation
+- `compose-ui/.../ai/AIAssistantMenuProvider.kt`: AI Assistants context menu
 - `compose-ui/.../ai/AIAssistantInstallDialog.kt`: Installation dialog with embedded terminal
-- `compose-ui/.../ai/AICommandInterceptor.kt`: Keyboard input interception for AI commands (requires OSC 133)
+- `compose-ui/.../ai/AICommandInterceptor.kt`: Keyboard input interception (requires OSC 133)
+- `compose-ui/.../vcs/VersionControlMenuProvider.kt`: Version Control context menu
 
 **Settings**: `aiAssistantsEnabled` (default: true), per-assistant `yoloEnabled` config
 
-**Status**: Complete (January 6, 2026, issue #225)
+**Status**: Complete (January 7, 2026)
 
 ## Known Issues & Todos
 
@@ -594,6 +601,7 @@ None - feature complete for current phase
 - SSH key management UI (future enhancement)
 
 ### Completed (Recent)
+✅ VCS Tool Install Dialog (git, gh with Install + Learn More menu) - January 7, 2026
 ✅ AI Command Interception (keyboard-based install prompts, OSC 133) - January 6, 2026
 ✅ AI Assistant Integration (context menu, detection, installation) - January 6, 2026, issue #225
 ✅ Programmatic Input API (sendInput, sendCtrlC, sendCtrlD, sendCtrlZ) - December 28, 2025, issue #182
@@ -666,9 +674,18 @@ None - feature complete for current phase
 ---
 
 ## Last Updated
-January 6, 2026
+January 7, 2026
 
 ### Recent Changes
+- **January 7, 2026**: VCS Tool Install Dialog
+  - **Feature**: Install dialog for Git and GitHub CLI (gh) with same UX as AI assistants
+  - **Menu Pattern**: Version Control > Git/GitHub CLI > Install + Learn More (consistent with AI Assistants)
+  - **Tool Categories**: Added `ToolCategory` enum (`AI_ASSISTANT`, `VERSION_CONTROL`) to separate menu sections
+  - **Programmatic API**: `installGit()`, `installGitHubCLI()` with tab targeting support
+  - **Fixes**: Dialog close button always clickable, Linux URL opening via xdg-open
+  - **Defensive Fix**: Added 2-second timeout to all `ProcessBuilder.waitFor()` calls
+  - **Modified Files**: `AIAssistantDefinition.kt`, `AIAssistantDetector.kt`, `AIAssistantMenuProvider.kt`, `VersionControlMenuProvider.kt`, `AIAssistantInstallDialog.kt`, `TabbedTerminalState.kt`, `EmbeddableTerminal.kt`
+  - **Status**: Complete
 - **January 6, 2026**: AI Assistant Integration (#225)
   - **Feature**: Context menu integration for detecting, launching, and installing AI coding assistants
   - **Supported Assistants**: Claude Code, Codex CLI, Gemini CLI, OpenCode

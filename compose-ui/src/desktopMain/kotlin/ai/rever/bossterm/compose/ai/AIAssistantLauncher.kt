@@ -244,4 +244,45 @@ class AIAssistantLauncher {
 
     private fun isMacOS(): Boolean =
         System.getProperty("os.name").lowercase().contains("mac")
+
+    companion object {
+        /**
+         * Get platform-aware install command for Git.
+         * Supports macOS (brew), Windows (winget), and Linux (apt/dnf/pacman).
+         */
+        fun getGitInstallCommand(): String {
+            return when {
+                System.getProperty("os.name").lowercase().contains("mac") ->
+                    "brew install git"
+                System.getProperty("os.name").lowercase().contains("windows") ->
+                    "winget install Git.Git --accept-source-agreements --accept-package-agreements"
+                else -> getLinuxInstallCommand("git", "git", "git")
+            }
+        }
+
+        /**
+         * Get platform-aware install command for GitHub CLI.
+         * Supports macOS (brew), Windows (winget), and Linux (apt/dnf/pacman).
+         */
+        fun getGhInstallCommand(): String {
+            return when {
+                System.getProperty("os.name").lowercase().contains("mac") ->
+                    "brew install gh"
+                System.getProperty("os.name").lowercase().contains("windows") ->
+                    "winget install GitHub.cli --accept-source-agreements --accept-package-agreements"
+                else -> getLinuxInstallCommand("gh", "gh", "github-cli")
+            }
+        }
+
+        /**
+         * Get Linux install command with package manager detection.
+         * Tries apt, dnf, then pacman in order.
+         */
+        private fun getLinuxInstallCommand(aptPkg: String, dnfPkg: String, pacmanPkg: String): String {
+            return "{ command -v apt >/dev/null 2>&1 && sudo apt install -y $aptPkg; } || " +
+                   "{ command -v dnf >/dev/null 2>&1 && sudo dnf install -y $dnfPkg; } || " +
+                   "{ command -v pacman >/dev/null 2>&1 && sudo pacman -S --noconfirm $pacmanPkg; } || " +
+                   "{ echo 'No supported package manager found (apt/dnf/pacman)'; exit 1; }"
+        }
+    }
 }

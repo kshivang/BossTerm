@@ -133,7 +133,7 @@ object AIAssistants {
             websiteUrl = "https://github.com/anomalyco/opencode",
             description = "Open-source AI coding assistant"
         ),
-        // Version Control Tools
+        // Version Control Tools (platform-aware install commands)
         AIAssistantDefinition(
             id = "gh",
             displayName = "GitHub CLI",
@@ -141,7 +141,7 @@ object AIAssistants {
             category = ToolCategory.VERSION_CONTROL,
             yoloFlag = "",
             yoloLabel = "",
-            installCommand = "sudo apt install -y gh",
+            installCommand = AIAssistantLauncher.getGhInstallCommand(),
             npmInstallCommand = null,
             websiteUrl = "https://cli.github.com/",
             description = "GitHub's official CLI"
@@ -153,7 +153,7 @@ object AIAssistants {
             category = ToolCategory.VERSION_CONTROL,
             yoloFlag = "",
             yoloLabel = "",
-            installCommand = "sudo apt install -y git",
+            installCommand = AIAssistantLauncher.getGitInstallCommand(),
             npmInstallCommand = null,
             websiteUrl = "https://git-scm.com/downloads",
             description = "Distributed version control system"

@@ -4,6 +4,7 @@ import ai.rever.bossterm.compose.ContextMenuElement
 import ai.rever.bossterm.compose.ContextMenuItem
 import ai.rever.bossterm.compose.ContextMenuSection
 import ai.rever.bossterm.compose.ContextMenuSubmenu
+import ai.rever.bossterm.compose.ai.AIAssistantLauncher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.awt.Desktop
@@ -217,7 +218,7 @@ class VersionControlMenuProvider {
                             label = "Install",
                             action = {
                                 if (onInstallRequest != null) {
-                                    onInstallRequest("git", "sudo apt install -y git", null)
+                                    onInstallRequest("git", AIAssistantLauncher.getGitInstallCommand(), null)
                                 } else {
                                     openUrl("https://git-scm.com/downloads")
                                 }
@@ -249,7 +250,7 @@ class VersionControlMenuProvider {
                             label = "Install",
                             action = {
                                 if (onInstallRequest != null) {
-                                    onInstallRequest("gh", "sudo apt install -y gh", null)
+                                    onInstallRequest("gh", AIAssistantLauncher.getGhInstallCommand(), null)
                                 } else {
                                     openUrl("https://cli.github.com/")
                                 }

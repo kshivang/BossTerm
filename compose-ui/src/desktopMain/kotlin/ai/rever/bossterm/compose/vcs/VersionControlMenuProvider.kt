@@ -26,6 +26,13 @@ class VersionControlMenuProvider {
     private var ghInstalled: Boolean? = null
 
     /**
+     * Cached list of git branches (local and remote tracking).
+     * Updated on each context menu open.
+     */
+    private var gitBranches: List<String> = emptyList()
+    private var currentBranch: String? = null
+
+    /**
      * Detect if a command is installed by checking `which`.
      */
     private fun isCommandInstalled(command: String): Boolean {
@@ -41,11 +48,51 @@ class VersionControlMenuProvider {
     }
 
     /**
-     * Refresh installation status for git and gh.
+     * Refresh installation status for git and gh, and fetch git branches.
      */
     suspend fun refreshStatus() = withContext(Dispatchers.IO) {
         gitInstalled = isCommandInstalled("git")
         ghInstalled = isCommandInstalled("gh")
+
+        // Fetch git branches if git is installed
+        if (gitInstalled == true) {
+            fetchGitBranches()
+        }
+    }
+
+    /**
+     * Fetch local git branches and current branch.
+     */
+    private fun fetchGitBranches() {
+        try {
+            // Get current branch
+            val headProcess = ProcessBuilder("git", "rev-parse", "--abbrev-ref", "HEAD")
+                .redirectErrorStream(true)
+                .start()
+            currentBranch = headProcess.inputStream.bufferedReader().readText().trim()
+                .takeIf { headProcess.waitFor() == 0 && it.isNotEmpty() && it != "HEAD" }
+
+            // Get all local branches
+            val branchProcess = ProcessBuilder("git", "branch", "--format=%(refname:short)")
+                .redirectErrorStream(true)
+                .start()
+            val output = branchProcess.inputStream.bufferedReader().readText()
+            if (branchProcess.waitFor() == 0) {
+                gitBranches = output.lines()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .sortedWith(compareBy(
+                        // Sort: current branch first, then main/master/dev, then alphabetically
+                        { it != currentBranch },
+                        { it != "main" && it != "master" },
+                        { it != "dev" && it != "develop" },
+                        { it }
+                    ))
+            }
+        } catch (e: Exception) {
+            gitBranches = emptyList()
+            currentBranch = null
+        }
     }
 
     /**
@@ -173,92 +220,162 @@ class VersionControlMenuProvider {
                 label = "git branch -a",
                 action = { terminalWriter("git branch -a\n") }
             ),
-            ContextMenuSubmenu(
-                id = "git_checkout_submenu",
-                label = "git checkout",
-                items = listOf(
-                    ContextMenuItem(
-                        id = "git_checkout_prev",
-                        label = "Previous branch (-)",
-                        action = { terminalWriter("git checkout -\n") }
-                    ),
-                    ContextMenuItem(
-                        id = "git_checkout_main",
-                        label = "main",
-                        action = { terminalWriter("git checkout main\n") }
-                    ),
-                    ContextMenuItem(
-                        id = "git_checkout_master",
-                        label = "master",
-                        action = { terminalWriter("git checkout master\n") }
-                    ),
-                    ContextMenuItem(
-                        id = "git_checkout_dev",
-                        label = "dev / develop",
-                        action = { terminalWriter("git checkout dev || git checkout develop\n") }
-                    ),
-                    ContextMenuSection(id = "git_checkout_new_section"),
-                    ContextMenuItem(
-                        id = "git_checkout_new",
-                        label = "New branch (-b) ...",
-                        action = { terminalWriter("git checkout -b ") }
-                    ),
-                    ContextMenuItem(
-                        id = "git_checkout_branch",
-                        label = "Other branch ...",
-                        action = { terminalWriter("git checkout ") }
-                    ),
-                    ContextMenuSection(id = "git_checkout_discard_section"),
-                    ContextMenuItem(
-                        id = "git_checkout_discard",
-                        label = "Discard all changes (-- .)",
-                        action = { terminalWriter("git checkout -- .\n") }
-                    )
-                )
-            ),
-            ContextMenuSubmenu(
-                id = "git_switch_submenu",
-                label = "git switch",
-                items = listOf(
-                    ContextMenuItem(
-                        id = "git_switch_prev",
-                        label = "Previous branch (-)",
-                        action = { terminalWriter("git switch -\n") }
-                    ),
-                    ContextMenuItem(
-                        id = "git_switch_main",
-                        label = "main",
-                        action = { terminalWriter("git switch main\n") }
-                    ),
-                    ContextMenuItem(
-                        id = "git_switch_master",
-                        label = "master",
-                        action = { terminalWriter("git switch master\n") }
-                    ),
-                    ContextMenuItem(
-                        id = "git_switch_dev",
-                        label = "dev / develop",
-                        action = { terminalWriter("git switch dev || git switch develop\n") }
-                    ),
-                    ContextMenuSection(id = "git_switch_new_section"),
-                    ContextMenuItem(
-                        id = "git_switch_create",
-                        label = "Create new branch (-c) ...",
-                        action = { terminalWriter("git switch -c ") }
-                    ),
-                    ContextMenuItem(
-                        id = "git_switch_branch",
-                        label = "Other branch ...",
-                        action = { terminalWriter("git switch ") }
-                    )
-                )
-            )
+            buildCheckoutSubmenu(terminalWriter),
+            buildSwitchSubmenu(terminalWriter)
         )
 
         return ContextMenuSubmenu(
             id = "git_submenu",
             label = "Git",
             items = gitCommands
+        )
+    }
+
+    /**
+     * Build git checkout submenu with dynamic branches.
+     */
+    private fun buildCheckoutSubmenu(terminalWriter: (String) -> Unit): ContextMenuElement {
+        val items = mutableListOf<ContextMenuElement>()
+
+        // Previous branch option
+        items.add(
+            ContextMenuItem(
+                id = "git_checkout_prev",
+                label = "Previous branch (-)",
+                action = { terminalWriter("git checkout -\n") }
+            )
+        )
+
+        // Dynamic branch list
+        if (gitBranches.isNotEmpty()) {
+            items.add(ContextMenuSection(id = "git_checkout_branches_section", label = "Branches"))
+
+            // Show up to 10 branches
+            gitBranches.take(10).forEach { branch ->
+                val label = if (branch == currentBranch) "● $branch (current)" else branch
+                val enabled = branch != currentBranch
+                items.add(
+                    ContextMenuItem(
+                        id = "git_checkout_branch_$branch",
+                        label = label,
+                        enabled = enabled,
+                        action = { terminalWriter("git checkout $branch\n") }
+                    )
+                )
+            }
+
+            // Show "more branches" hint if there are more
+            if (gitBranches.size > 10) {
+                items.add(
+                    ContextMenuItem(
+                        id = "git_checkout_more",
+                        label = "... ${gitBranches.size - 10} more (type manually)",
+                        enabled = false,
+                        action = {}
+                    )
+                )
+            }
+        }
+
+        // New branch and other options
+        items.add(ContextMenuSection(id = "git_checkout_actions_section", label = "Actions"))
+        items.add(
+            ContextMenuItem(
+                id = "git_checkout_new",
+                label = "New branch (-b) ...",
+                action = { terminalWriter("git checkout -b ") }
+            )
+        )
+        items.add(
+            ContextMenuItem(
+                id = "git_checkout_other",
+                label = "Other branch ...",
+                action = { terminalWriter("git checkout ") }
+            )
+        )
+        items.add(ContextMenuSection(id = "git_checkout_discard_section"))
+        items.add(
+            ContextMenuItem(
+                id = "git_checkout_discard",
+                label = "Discard all changes (-- .)",
+                action = { terminalWriter("git checkout -- .\n") }
+            )
+        )
+
+        return ContextMenuSubmenu(
+            id = "git_checkout_submenu",
+            label = "git checkout",
+            items = items
+        )
+    }
+
+    /**
+     * Build git switch submenu with dynamic branches.
+     */
+    private fun buildSwitchSubmenu(terminalWriter: (String) -> Unit): ContextMenuElement {
+        val items = mutableListOf<ContextMenuElement>()
+
+        // Previous branch option
+        items.add(
+            ContextMenuItem(
+                id = "git_switch_prev",
+                label = "Previous branch (-)",
+                action = { terminalWriter("git switch -\n") }
+            )
+        )
+
+        // Dynamic branch list
+        if (gitBranches.isNotEmpty()) {
+            items.add(ContextMenuSection(id = "git_switch_branches_section", label = "Branches"))
+
+            // Show up to 10 branches
+            gitBranches.take(10).forEach { branch ->
+                val label = if (branch == currentBranch) "● $branch (current)" else branch
+                val enabled = branch != currentBranch
+                items.add(
+                    ContextMenuItem(
+                        id = "git_switch_branch_$branch",
+                        label = label,
+                        enabled = enabled,
+                        action = { terminalWriter("git switch $branch\n") }
+                    )
+                )
+            }
+
+            // Show "more branches" hint if there are more
+            if (gitBranches.size > 10) {
+                items.add(
+                    ContextMenuItem(
+                        id = "git_switch_more",
+                        label = "... ${gitBranches.size - 10} more (type manually)",
+                        enabled = false,
+                        action = {}
+                    )
+                )
+            }
+        }
+
+        // New branch option
+        items.add(ContextMenuSection(id = "git_switch_actions_section", label = "Actions"))
+        items.add(
+            ContextMenuItem(
+                id = "git_switch_create",
+                label = "Create new branch (-c) ...",
+                action = { terminalWriter("git switch -c ") }
+            )
+        )
+        items.add(
+            ContextMenuItem(
+                id = "git_switch_other",
+                label = "Other branch ...",
+                action = { terminalWriter("git switch ") }
+            )
+        )
+
+        return ContextMenuSubmenu(
+            id = "git_switch_submenu",
+            label = "git switch",
+            items = items
         )
     }
 

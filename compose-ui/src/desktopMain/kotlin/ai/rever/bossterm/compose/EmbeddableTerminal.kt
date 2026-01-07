@@ -209,6 +209,7 @@ fun EmbeddableTerminal(
     onExit: ((Int) -> Unit)? = null,
     onReady: (() -> Unit)? = null,
     onNewWindow: (() -> Unit)? = null,
+    onShowWelcomeWizard: (() -> Unit)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
     contextMenuItemsProvider: (() -> List<ContextMenuElement>)? = null,
     onContextMenuOpen: (() -> Unit)? = null,
@@ -349,6 +350,7 @@ fun EmbeddableTerminal(
             sharedFont = terminalFont,
             onTabTitleChange = { onTitleChange?.invoke(it) },
             onNewWindow = onNewWindow,
+            onShowWelcomeWizard = onShowWelcomeWizard,
             enableDebugPanel = false,  // Hide debug panel in embedded mode
             customContextMenuItems = contextMenuItems,
             // Combine user-provided items with AI assistant and VCS items

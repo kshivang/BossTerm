@@ -176,6 +176,16 @@ fun BehaviorSettingsSection(
                 valueDisplay = { "%.1f".format(it) },
                 description = "Higher = less sensitive (filters tiny scroll events)"
             )
+
+            SettingsSlider(
+                label = "Scroll Speed Multiplier",
+                value = settings.scrollMultiplier,
+                onValueChange = { onSettingsChange(settings.copy(scrollMultiplier = it)) },
+                onValueChangeFinished = onSettingsSave,
+                valueRange = 1f..10f,
+                valueDisplay = { "%.1fx".format(it) },
+                description = "Higher = faster scrolling (Windows default: 10x)"
+            )
         }
 
         Spacer(modifier = Modifier.height(24.dp))

@@ -14,14 +14,29 @@ object ShellCustomizationUtils {
      * Get a valid shell command, with fallback if $SHELL is not available.
      *
      * Checks in order:
-     * 1. $SHELL environment variable (if the file exists and is executable)
-     * 2. /bin/bash (common default)
-     * 3. /bin/sh (POSIX fallback, always available)
+     * - Windows: PowerShell, then cmd.exe
+     * - Unix/Linux/macOS:
+     *   1. $SHELL environment variable (if the file exists and is executable)
+     *   2. /bin/bash (common default)
+     *   3. /bin/sh (POSIX fallback, always available)
      *
      * @return Path to a valid shell executable
      */
     fun getValidShell(): String {
-        // Try $SHELL first
+        val osName = System.getProperty("os.name")?.lowercase() ?: ""
+
+        // Windows: use PowerShell or cmd.exe
+        if (osName.contains("windows")) {
+            // Try PowerShell first (more modern)
+            val powershell = File("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+            if (powershell.exists()) {
+                return powershell.absolutePath
+            }
+            // Fallback to cmd.exe (always available on Windows)
+            return "cmd.exe"
+        }
+
+        // Unix/Linux/macOS: Try $SHELL first
         val envShell = System.getenv("SHELL")
         if (!envShell.isNullOrBlank()) {
             val shellFile = File(envShell)

@@ -55,14 +55,23 @@ object FilePathResolver {
             // Relative paths (./... or ../...)
             path.startsWith("./") || path.startsWith("../") -> {
                 val cwd = workingDirectory ?: return null
-                File(cwd, path).canonicalFile
+                try {
+                    File(cwd, path).canonicalFile
+                } catch (e: Exception) {
+                    null
+                }
             }
 
             // Not a recognized path format
             else -> null
         }
 
-        return resolved?.canonicalFile
+        return try {
+            resolved?.canonicalFile
+        } catch (e: Exception) {
+            // Windows throws IOException for invalid pathnames
+            null
+        }
     }
 
     /**

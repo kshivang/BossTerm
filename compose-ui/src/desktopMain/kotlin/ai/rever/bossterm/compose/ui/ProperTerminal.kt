@@ -303,6 +303,10 @@ fun ProperTerminal(
   var lastDragPosition by remember { mutableStateOf<Offset?>(null) }
   var canvasSize by remember { mutableStateOf(Size.Zero) }
 
+  // Accumulated scroll delta for smooth trackpad scrolling on Windows
+  // Windows sends small fractional deltas that get truncated to 0 with toInt()
+  var accumulatedScrollDelta by remember { mutableStateOf(0f) }
+
   // Multi-click tracking for double-click (word select) and triple-click (line select)
   var lastClickTime by remember { mutableStateOf(0L) }
   var lastClickPosition by remember { mutableStateOf(Offset.Zero) }
@@ -1333,9 +1337,16 @@ fun ProperTerminal(
           }
 
           // Local scroll (main buffer or Shift+Wheel override)
+          // Accumulate fractional deltas for smooth scrolling
+          // Windows trackpads send small fractional values, so multiplier helps
           val historySize = textBuffer.historyLinesCount
-          scrollOffset = (scrollOffset - delta.toInt()).coerceIn(0, historySize)
-          userScrollTrigger++  // Mark as user-initiated scroll for scrollbar visibility
+          accumulatedScrollDelta += delta * settings.scrollMultiplier
+          val scrollLines = accumulatedScrollDelta.toInt()
+          if (scrollLines != 0) {
+            scrollOffset = (scrollOffset - scrollLines).coerceIn(0, historySize)
+            accumulatedScrollDelta -= scrollLines.toFloat()
+            userScrollTrigger++  // Mark as user-initiated scroll for scrollbar visibility
+          }
         }
         .onPreviewKeyEvent { keyEvent ->
           // Track Ctrl/Cmd key state for hyperlink clicks and hover effects

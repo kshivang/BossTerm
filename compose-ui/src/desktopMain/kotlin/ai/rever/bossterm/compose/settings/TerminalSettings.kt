@@ -248,6 +248,14 @@ data class TerminalSettings(
     val mouseScrollThreshold: Float = 0.5f,
 
     /**
+     * Scroll speed multiplier for trackpad/mouse wheel scrolling.
+     * Higher values = faster scrolling.
+     * Range: 1.0 to 10.0
+     * Default: 10.0 for Windows (small fractional deltas), 1.0 for macOS/Linux
+     */
+    val scrollMultiplier: Float = if (System.getProperty("os.name")?.lowercase()?.contains("windows") == true) 10.0f else 1.0f,
+
+    /**
      * Play audible bell sound
      */
     val audibleBell: Boolean = true,

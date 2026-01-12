@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.hyperlinks
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.terminal.model.TerminalLine
 import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
 import ai.rever.bossterm.terminal.util.ColumnConversionUtils
@@ -397,10 +398,10 @@ object HyperlinkDetector {
     fun openUrl(url: String) {
         try {
             when {
-                System.getProperty("os.name").lowercase().contains("mac") -> {
+                ShellCustomizationUtils.isMacOS() -> {
                     Runtime.getRuntime().exec(arrayOf("open", url))
                 }
-                System.getProperty("os.name").lowercase().contains("win") -> {
+                ShellCustomizationUtils.isWindows() -> {
                     Runtime.getRuntime().exec(arrayOf("cmd", "/c", "start", url))
                 }
                 else -> {

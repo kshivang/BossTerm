@@ -190,17 +190,8 @@ object CLIInstaller {
                 return InstallResult.Error("Failed to update PATH: $error")
             }
 
-            // Broadcast WM_SETTINGCHANGE to notify system (optional, for Explorer to pick up)
-            // New terminals will get the updated PATH anyway
-            try {
-                ProcessBuilder(
-                    "powershell", "-Command",
-                    "[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User'), 'User')"
-                ).start().waitFor()
-            } catch (e: Exception) {
-                // Ignore - this is just to refresh environment
-            }
-
+            // Note: WM_SETTINGCHANGE broadcast would require Win32 API (JNA).
+            // New terminal sessions will pick up PATH changes automatically.
             InstallResult.Success
         } catch (e: Exception) {
             InstallResult.Error("Failed to update PATH: ${e.message}")

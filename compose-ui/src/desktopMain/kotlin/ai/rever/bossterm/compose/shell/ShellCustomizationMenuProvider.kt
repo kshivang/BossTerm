@@ -604,9 +604,9 @@ class ShellCustomizationMenuProvider {
      */
     private fun getZshInstallCommand(): String {
         return when {
-            System.getProperty("os.name").lowercase().contains("mac") ->
+            ShellCustomizationUtils.isMacOS() ->
                 "brew install zsh"
-            System.getProperty("os.name").lowercase().contains("windows") ->
+            ShellCustomizationUtils.isWindows() ->
                 "echo 'Zsh is not natively supported on Windows. Consider using WSL.'"
             else -> getLinuxInstallCommand("zsh", "zsh", "zsh")
         }
@@ -617,9 +617,9 @@ class ShellCustomizationMenuProvider {
      */
     private fun getBashInstallCommand(): String {
         return when {
-            System.getProperty("os.name").lowercase().contains("mac") ->
+            ShellCustomizationUtils.isMacOS() ->
                 "brew install bash"
-            System.getProperty("os.name").lowercase().contains("windows") ->
+            ShellCustomizationUtils.isWindows() ->
                 "echo 'Bash is available through Git Bash or WSL on Windows.'"
             else -> getLinuxInstallCommand("bash", "bash", "bash")
         }
@@ -630,9 +630,9 @@ class ShellCustomizationMenuProvider {
      */
     private fun getFishInstallCommand(): String {
         return when {
-            System.getProperty("os.name").lowercase().contains("mac") ->
+            ShellCustomizationUtils.isMacOS() ->
                 "brew install fish"
-            System.getProperty("os.name").lowercase().contains("windows") ->
+            ShellCustomizationUtils.isWindows() ->
                 "echo 'Fish is available through WSL on Windows. Visit https://fishshell.com for more info.'"
             else -> getLinuxInstallCommand("fish", "fish", "fish")
         }

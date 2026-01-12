@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.notification
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import com.sun.jna.*
 import com.sun.jna.ptr.PointerByReference
 import org.slf4j.LoggerFactory
@@ -12,7 +13,7 @@ import java.io.IOException
  */
 object NotificationService {
     private val LOG = LoggerFactory.getLogger(NotificationService::class.java)
-    private val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
+    private val isMacOS = ShellCustomizationUtils.isMacOS()
 
     /**
      * Objective-C runtime interface with specific method signatures.

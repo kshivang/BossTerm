@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.ai
 
 import ai.rever.bossterm.compose.settings.AIAssistantConfigData
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.util.UrlOpener
 
 /**
@@ -73,7 +74,7 @@ class AIAssistantLauncher {
         val command = assistant.command
 
         return when {
-            isWindows() -> {
+            ShellCustomizationUtils.isWindows() -> {
                 // Windows: check if npm exists, if not install Node.js via winget
                 "powershell -Command \"" +
                     "if (!(Get-Command npm -ErrorAction SilentlyContinue)) { " +
@@ -85,7 +86,7 @@ class AIAssistantLauncher {
                     "npm install -g $npmPackage ; " +
                     "Write-Host '' ; Write-Host '✓ Installation complete! Run ''$command'' to start.'\""
             }
-            isMacOS() -> {
+            ShellCustomizationUtils.isMacOS() -> {
                 // macOS: use Homebrew to install Node.js if npm not available
                 "{ command -v npm >/dev/null 2>&1 || { echo 'Installing Node.js via Homebrew...' && brew install node; }; } && " +
                     "npm install -g $npmPackage && " +
@@ -147,12 +148,6 @@ class AIAssistantLauncher {
         return UrlOpener.open(assistant.websiteUrl)
     }
 
-    private fun isWindows(): Boolean =
-        System.getProperty("os.name").lowercase().contains("windows")
-
-    private fun isMacOS(): Boolean =
-        System.getProperty("os.name").lowercase().contains("mac")
-
     companion object {
         /**
          * Get platform-aware install command for Git.
@@ -160,10 +155,8 @@ class AIAssistantLauncher {
          */
         fun getGitInstallCommand(): String {
             return when {
-                System.getProperty("os.name").lowercase().contains("mac") ->
-                    "brew install git"
-                System.getProperty("os.name").lowercase().contains("windows") ->
-                    "winget install Git.Git --accept-source-agreements --accept-package-agreements"
+                ShellCustomizationUtils.isMacOS() -> "brew install git"
+                ShellCustomizationUtils.isWindows() -> "winget install Git.Git --accept-source-agreements --accept-package-agreements"
                 else -> getLinuxInstallCommand("git", "git", "git")
             }
         }
@@ -174,10 +167,8 @@ class AIAssistantLauncher {
          */
         fun getGhInstallCommand(): String {
             return when {
-                System.getProperty("os.name").lowercase().contains("mac") ->
-                    "brew install gh"
-                System.getProperty("os.name").lowercase().contains("windows") ->
-                    "winget install GitHub.cli --accept-source-agreements --accept-package-agreements"
+                ShellCustomizationUtils.isMacOS() -> "brew install gh"
+                ShellCustomizationUtils.isWindows() -> "winget install GitHub.cli --accept-source-agreements --accept-package-agreements"
                 else -> getLinuxInstallCommand("gh", "gh", "github-cli")
             }
         }
@@ -216,10 +207,8 @@ class AIAssistantLauncher {
          */
         fun getZshInstallCommand(): String {
             return when {
-                System.getProperty("os.name").lowercase().contains("mac") ->
-                    "brew install zsh"
-                System.getProperty("os.name").lowercase().contains("windows") ->
-                    "echo 'Zsh is not natively supported on Windows. Consider using WSL.'"
+                ShellCustomizationUtils.isMacOS() -> "brew install zsh"
+                ShellCustomizationUtils.isWindows() -> "echo 'Zsh is not natively supported on Windows. Consider using WSL.'"
                 else -> getLinuxInstallCommand("zsh", "zsh", "zsh")
             }
         }
@@ -229,10 +218,8 @@ class AIAssistantLauncher {
          */
         fun getBashInstallCommand(): String {
             return when {
-                System.getProperty("os.name").lowercase().contains("mac") ->
-                    "brew install bash"
-                System.getProperty("os.name").lowercase().contains("windows") ->
-                    "echo 'Bash is available through Git Bash or WSL on Windows.'"
+                ShellCustomizationUtils.isMacOS() -> "brew install bash"
+                ShellCustomizationUtils.isWindows() -> "echo 'Bash is available through Git Bash or WSL on Windows.'"
                 else -> getLinuxInstallCommand("bash", "bash", "bash")
             }
         }
@@ -242,10 +229,8 @@ class AIAssistantLauncher {
          */
         fun getFishInstallCommand(): String {
             return when {
-                System.getProperty("os.name").lowercase().contains("mac") ->
-                    "brew install fish"
-                System.getProperty("os.name").lowercase().contains("windows") ->
-                    "echo 'Fish is available through WSL on Windows. Visit https://fishshell.com for more info.'"
+                ShellCustomizationUtils.isMacOS() -> "brew install fish"
+                ShellCustomizationUtils.isWindows() -> "echo 'Fish is available through WSL on Windows. Visit https://fishshell.com for more info.'"
                 else -> getLinuxInstallCommand("fish", "fish", "fish")
             }
         }

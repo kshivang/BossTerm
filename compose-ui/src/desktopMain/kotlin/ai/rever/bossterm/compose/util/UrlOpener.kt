@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.util
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import java.awt.Desktop
 import java.net.URI
 import java.util.concurrent.TimeUnit
@@ -17,16 +18,14 @@ object UrlOpener {
      * @return true if the URL was successfully opened, false otherwise
      */
     fun open(url: String): Boolean {
-        val os = System.getProperty("os.name").lowercase()
-
         return try {
             when {
-                os.contains("linux") -> openOnLinux(url)
-                os.contains("mac") -> {
+                ShellCustomizationUtils.isLinux() -> openOnLinux(url)
+                ShellCustomizationUtils.isMacOS() -> {
                     ProcessBuilder("open", url).start()
                     true
                 }
-                os.contains("win") -> {
+                ShellCustomizationUtils.isWindows() -> {
                     ProcessBuilder("cmd", "/c", "start", "", url).start()
                     true
                 }

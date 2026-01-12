@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.update
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermission
@@ -417,12 +418,11 @@ object UpdateScriptGenerator {
      */
     fun launchScript(scriptFile: File) {
         try {
-            val os = System.getProperty("os.name").lowercase()
             val command = when {
-                os.contains("mac") || os.contains("darwin") || os.contains("linux") -> {
+                ShellCustomizationUtils.isMacOS() || ShellCustomizationUtils.isLinux() -> {
                     listOf("nohup", "sh", scriptFile.absolutePath)
                 }
-                os.contains("win") -> {
+                ShellCustomizationUtils.isWindows() -> {
                     listOf("cmd", "/c", "start", "/b", scriptFile.absolutePath)
                 }
                 else -> {

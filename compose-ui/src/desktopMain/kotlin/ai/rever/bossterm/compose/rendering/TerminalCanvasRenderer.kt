@@ -16,6 +16,7 @@ import ai.rever.bossterm.compose.hyperlinks.Hyperlink
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkRegistry
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.util.ColorUtils
 import ai.rever.bossterm.terminal.CursorShape
 import ai.rever.bossterm.terminal.model.TerminalLine
@@ -1313,7 +1314,7 @@ object TerminalCanvasRenderer {
         isItalic: Boolean,
         isUnderline: Boolean
     ) {
-        val isMacOS = System.getProperty("os.name")?.lowercase()?.contains("mac") == true
+        val isMacOS = ShellCustomizationUtils.isMacOS()
         // Default: macOS uses system font for emoji, Linux uses bundled font. Setting overrides this.
         val useSystemFontForEmoji = if (ctx.settings.preferTerminalFontForSymbols != null) {
             !ctx.settings.preferTerminalFontForSymbols!!

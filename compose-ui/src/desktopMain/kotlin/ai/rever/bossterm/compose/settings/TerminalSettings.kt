@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.settings
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import kotlinx.serialization.Serializable
@@ -260,7 +261,7 @@ data class TerminalSettings(
      * Range: 1.0 to 10.0
      * Default: 10.0 for Windows (small fractional deltas), 1.0 for macOS/Linux
      */
-    val scrollMultiplier: Float = if (System.getProperty("os.name")?.lowercase()?.contains("windows") == true) 10.0f else 1.0f,
+    val scrollMultiplier: Float = if (ShellCustomizationUtils.isWindows()) 10.0f else 1.0f,
 
     /**
      * Play audible bell sound

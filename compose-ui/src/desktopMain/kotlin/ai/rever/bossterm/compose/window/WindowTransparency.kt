@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.window
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import com.sun.jna.Library
 import com.sun.jna.Native
 import com.sun.jna.Pointer
@@ -42,7 +43,7 @@ fun configureWindowTransparency(
 ) {
     if (!isTransparent) return
 
-    val isMacOS = System.getProperty("os.name").lowercase().contains("mac")
+    val isMacOS = ShellCustomizationUtils.isMacOS()
 
     // Set window background to be transparent
     window.background = java.awt.Color(0, 0, 0, 0)

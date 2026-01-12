@@ -109,7 +109,7 @@ object BuiltinColorPalettes {
     )
 
     /**
-     * XTerm palette - Classic XTerm default colors.
+     * XTerm palette - JediTerm-compatible colors (less saturated blues).
      */
     val XTERM = ColorPalette(
         id = "xterm",
@@ -118,15 +118,15 @@ object BuiltinColorPalettes {
         red = "0xFFCD0000",
         green = "0xFF00CD00",
         yellow = "0xFFCDCD00",
-        blue = "0xFF0000EE",
+        blue = "0xFF1E90FF",      // DodgerBlue - matches JediTerm
         magenta = "0xFFCD00CD",
         cyan = "0xFF00CDCD",
         white = "0xFFE5E5E5",
-        brightBlack = "0xFF7F7F7F",
+        brightBlack = "0xFF4C4C4C",  // Darker - matches JediTerm
         brightRed = "0xFFFF0000",
         brightGreen = "0xFF00FF00",
         brightYellow = "0xFFFFFF00",
-        brightBlue = "0xFF5C5CFF",
+        brightBlue = "0xFF4682B4",   // SteelBlue - matches JediTerm
         brightMagenta = "0xFFFF00FF",
         brightCyan = "0xFF00FFFF",
         brightWhite = "0xFFFFFFFF",

@@ -90,10 +90,14 @@ class DesktopProcessService : PlatformServices.ProcessService {
     override suspend fun spawnProcess(config: PlatformServices.ProcessService.ProcessConfig): PlatformServices.ProcessService.ProcessHandle? {
         return try {
             val command = arrayOf(config.command) + config.arguments.toTypedArray()
+            val isWindows = System.getProperty("os.name")?.lowercase()?.contains("windows") == true
             val pty = com.pty4j.PtyProcessBuilder()
                 .setCommand(command)
                 .setEnvironment(config.environment)
                 .setDirectory(config.workingDirectory ?: System.getProperty("user.home"))
+                .setConsole(false)  // Don't attach to parent console
+                .setWindowsAnsiColorEnabled(isWindows)  // Enable ANSI colors on Windows
+                .setUseWinConPty(isWindows)  // Use Windows ConPTY for better compatibility
                 .start()
             PtyProcessHandle(pty)
         } catch (e: Exception) {

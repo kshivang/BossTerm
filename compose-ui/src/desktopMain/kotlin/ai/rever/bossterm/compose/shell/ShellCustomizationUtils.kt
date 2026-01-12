@@ -25,15 +25,9 @@ object ShellCustomizationUtils {
     fun getValidShell(): String {
         val osName = System.getProperty("os.name")?.lowercase() ?: ""
 
-        // Windows: use PowerShell or cmd.exe
+        // Windows: use PowerShell (with cmd.exe fallback)
         if (osName.contains("windows")) {
-            // Try PowerShell first (more modern)
-            val powershell = File("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
-            if (powershell.exists()) {
-                return powershell.absolutePath
-            }
-            // Fallback to cmd.exe (always available on Windows)
-            return "cmd.exe"
+            return "powershell.exe"
         }
 
         // Unix/Linux/macOS: Try $SHELL first

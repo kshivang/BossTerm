@@ -37,6 +37,8 @@ import kotlinx.coroutines.launch
 import java.awt.GraphicsEnvironment
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
+import org.jetbrains.skia.Image
+import androidx.compose.ui.graphics.toComposeImageBitmap
 
 /**
  * BossTerm - Modern terminal emulator built with Kotlin and Compose Desktop.
@@ -499,7 +501,7 @@ fun main() {
                             try {
                                 val file = java.io.File(windowSettings.backgroundImagePath)
                                 if (file.exists()) {
-                                    androidx.compose.ui.res.loadImageBitmap(file.inputStream())
+                                    Image.makeFromEncoded(file.readBytes()).toComposeImageBitmap()
                                 } else null
                             } catch (e: Exception) {
                                 null

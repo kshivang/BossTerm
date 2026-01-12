@@ -798,6 +798,12 @@ fun TabbedTerminal(
                     // Use initial command from settings if configured
                     tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
                 },
+                onSwitchShell = { shell ->
+                    // Windows: switch to different shell (close current, open new with selected shell)
+                    val currentIndex = tabController.activeTabIndex
+                    tabController.createTab(command = shell)
+                    tabController.closeTab(currentIndex)
+                },
                 onCloseTab = {
                     tabController.closeTab(tabController.activeTabIndex)
                 },
@@ -922,7 +928,13 @@ fun TabbedTerminal(
                                 installDialogState = AIInstallDialogParams(tool, command, npmCommand, terminalWriter)
                             }
                         },
-                        statusOverride = shellStatusHolder.get()
+                        statusOverride = shellStatusHolder.get(),
+                        onSwitchShell = { shell ->
+                            // Windows: switch to different shell
+                            val currentIndex = tabController.activeTabIndex
+                            tabController.createTab(command = shell)
+                            tabController.closeTab(currentIndex)
+                        }
                     )
                     items = items + shellItems
 

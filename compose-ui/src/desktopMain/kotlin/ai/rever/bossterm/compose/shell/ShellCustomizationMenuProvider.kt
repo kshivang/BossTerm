@@ -125,7 +125,8 @@ class ShellCustomizationMenuProvider {
     fun getMenuItems(
         terminalWriter: (String) -> Unit,
         onInstallRequest: ((String, String, String?) -> Unit)? = null,
-        statusOverride: Map<String, Boolean>? = null
+        statusOverride: Map<String, Boolean>? = null,
+        onSwitchShell: ((String) -> Unit)? = null
     ): List<ContextMenuElement> {
         val isStarshipInstalled = statusOverride?.get("starship")
             ?: (starshipInstalled ?: ShellCustomizationUtils.isStarshipInstalled())
@@ -135,6 +136,20 @@ class ShellCustomizationMenuProvider {
             ?: (preztoInstalled ?: ShellCustomizationUtils.isPreztoInstalled())
 
         val shellItems = mutableListOf<ContextMenuElement>()
+
+        // Windows-only: Add PowerShell and Command Prompt options
+        if (ShellCustomizationUtils.isWindows() && onSwitchShell != null) {
+            shellItems.add(ContextMenuItem(
+                id = "shell_powershell",
+                label = "PowerShell",
+                action = { onSwitchShell("powershell.exe") }
+            ))
+            shellItems.add(ContextMenuItem(
+                id = "shell_cmd",
+                label = "Command Prompt",
+                action = { onSwitchShell("cmd.exe") }
+            ))
+        }
 
         // Only show installed shell customization tools
         if (isStarshipInstalled) {

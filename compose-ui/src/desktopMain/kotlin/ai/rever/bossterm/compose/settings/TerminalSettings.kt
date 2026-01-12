@@ -188,6 +188,13 @@ data class TerminalSettings(
     val useLoginSession: Boolean = true,
 
     /**
+     * Default shell for Windows.
+     * Options: "powershell" (default), "cmd"
+     * Only affects Windows; other platforms use $SHELL or /bin/bash.
+     */
+    val windowsShell: String = "powershell",
+
+    /**
      * Initial command to run when a new terminal tab is created.
      * This command is automatically sent to the shell after it starts.
      * Empty string means no initial command.

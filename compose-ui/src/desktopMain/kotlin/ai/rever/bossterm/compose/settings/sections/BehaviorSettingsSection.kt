@@ -8,6 +8,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.*
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 
 /**
  * Behavior settings section: mouse, keyboard, and interaction.
@@ -22,12 +23,35 @@ fun BehaviorSettingsSection(
     Column(modifier = modifier) {
         // Shell Settings
         SettingsSection(title = "Shell") {
-            SettingsToggle(
-                label = "Use Login Session (macOS)",
-                checked = settings.useLoginSession,
-                onCheckedChange = { onSettingsChange(settings.copy(useLoginSession = it)) },
-                description = "Show 'Last login' message and register in utmp/wtmp"
-            )
+            // Windows-only: Shell selection
+            if (ShellCustomizationUtils.isWindows()) {
+                SettingsDropdown(
+                    label = "Default Shell",
+                    options = listOf("PowerShell", "Command Prompt (cmd)"),
+                    selectedOption = when (settings.windowsShell) {
+                        "cmd" -> "Command Prompt (cmd)"
+                        else -> "PowerShell"
+                    },
+                    onOptionSelected = {
+                        val value = when (it) {
+                            "Command Prompt (cmd)" -> "cmd"
+                            else -> "powershell"
+                        }
+                        onSettingsChange(settings.copy(windowsShell = value))
+                    },
+                    description = "Shell to use for new terminal tabs"
+                )
+            }
+
+            // macOS-only: Login session
+            if (!ShellCustomizationUtils.isWindows()) {
+                SettingsToggle(
+                    label = "Use Login Session (macOS)",
+                    checked = settings.useLoginSession,
+                    onCheckedChange = { onSettingsChange(settings.copy(useLoginSession = it)) },
+                    description = "Show 'Last login' message and register in utmp/wtmp"
+                )
+            }
 
             SettingsTextField(
                 label = "Initial Command",

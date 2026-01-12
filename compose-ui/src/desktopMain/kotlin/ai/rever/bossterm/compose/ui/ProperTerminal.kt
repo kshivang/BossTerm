@@ -120,6 +120,7 @@ fun ProperTerminal(
   sharedFont: FontFamily,
   onTabTitleChange: (String) -> Unit,
   onNewTab: (() -> Unit)? = null,
+  onSwitchShell: ((String) -> Unit)? = null,  // Windows: switch current tab's shell
   onNewPreConnectTab: () -> Unit = {},  // Ctrl+Shift+T: Test pre-connection input
   onCloseTab: () -> Unit = {},
   onNextTab: () -> Unit = {},
@@ -902,6 +903,7 @@ fun ProperTerminal(
                     onFind = { searchVisible = true },
                     onOpenFolder = { openFolderPicker() },
                     onNewTab = onNewTab,
+                    onSwitchShell = onSwitchShell,
                     onSplitVertical = onSplitVertical,
                     onSplitHorizontal = onSplitHorizontal,
                     onMoveToNewTab = onMoveToNewTab,
@@ -953,6 +955,7 @@ fun ProperTerminal(
                     onFind = { searchVisible = true },
                     onOpenFolder = { openFolderPicker() },
                     onNewTab = onNewTab,
+                    onSwitchShell = onSwitchShell,
                     onSplitVertical = onSplitVertical,
                     onSplitHorizontal = onSplitHorizontal,
                     onMoveToNewTab = onMoveToNewTab,

@@ -261,7 +261,7 @@ class TabController(
             "/usr/bin/login" to listOf("-fp", username)
         } else {
             // Use provided command or fall back to a valid shell
-            val shellCommand = command ?: ShellCustomizationUtils.getValidShell()
+            val shellCommand = command ?: ShellCustomizationUtils.getValidShell(settings.windowsShell)
             // Ensure shell is started as login shell to get proper PATH from /etc/zprofile
             val shellArgs = if (arguments.isEmpty() &&
                 (shellCommand.endsWith("/zsh") || shellCommand.endsWith("/bash") ||
@@ -502,7 +502,7 @@ class TabController(
             "/usr/bin/login" to listOf("-fp", username)
         } else {
             // Use provided command or fall back to a valid shell
-            val shellCommand = command ?: ShellCustomizationUtils.getValidShell()
+            val shellCommand = command ?: ShellCustomizationUtils.getValidShell(settings.windowsShell)
             // Ensure shell is started as login shell to get proper PATH from /etc/zprofile
             val shellArgs = if (arguments.isEmpty() &&
                 (shellCommand.endsWith("/zsh") || shellCommand.endsWith("/bash") ||

@@ -14,20 +14,21 @@ object ShellCustomizationUtils {
      * Get a valid shell command, with fallback if $SHELL is not available.
      *
      * Checks in order:
-     * - Windows: PowerShell, then cmd.exe
+     * - Windows: Uses windowsShell setting ("powershell" or "cmd")
      * - Unix/Linux/macOS:
      *   1. $SHELL environment variable (if the file exists and is executable)
      *   2. /bin/bash (common default)
      *   3. /bin/sh (POSIX fallback, always available)
      *
+     * @param windowsShell The preferred Windows shell ("powershell" or "cmd")
      * @return Path to a valid shell executable
      */
-    fun getValidShell(): String {
+    fun getValidShell(windowsShell: String = "powershell"): String {
         val osName = System.getProperty("os.name")?.lowercase() ?: ""
 
-        // Windows: use PowerShell (with cmd.exe fallback)
+        // Windows: use configured shell
         if (osName.contains("windows")) {
-            return "powershell.exe"
+            return getWindowsShellCommand(windowsShell)
         }
 
         // Unix/Linux/macOS: Try $SHELL first
@@ -47,6 +48,25 @@ object ShellCustomizationUtils {
 
         // Ultimate fallback to /bin/sh (POSIX, always available)
         return "/bin/sh"
+    }
+
+    /**
+     * Get the Windows shell command based on setting.
+     * @param shellType "powershell" or "cmd"
+     * @return The shell executable name
+     */
+    fun getWindowsShellCommand(shellType: String): String {
+        return when (shellType.lowercase()) {
+            "cmd" -> "cmd.exe"
+            else -> "powershell.exe"
+        }
+    }
+
+    /**
+     * Check if running on Windows.
+     */
+    fun isWindows(): Boolean {
+        return System.getProperty("os.name")?.lowercase()?.contains("windows") == true
     }
 
     // ===== Detection Functions =====

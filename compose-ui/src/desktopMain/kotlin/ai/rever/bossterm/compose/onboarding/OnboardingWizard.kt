@@ -32,28 +32,48 @@ import java.util.concurrent.TimeUnit
  */
 sealed class OnboardingStep(val index: Int, val displayName: String) {
     object Welcome : OnboardingStep(0, "Welcome")
-    object ShellSelection : OnboardingStep(1, "Shell")
-    object ShellCustomization : OnboardingStep(2, "Customization")
-    object VersionControl : OnboardingStep(3, "Git")
-    object AIAssistants : OnboardingStep(4, "AI Assistants")
-    object Review : OnboardingStep(5, "Review")
-    object Installing : OnboardingStep(6, "Installing")
-    object GhAuth : OnboardingStep(7, "GitHub Auth")
-    object Complete : OnboardingStep(8, "Complete")
+    object Prerequisites : OnboardingStep(1, "Prerequisites")  // Windows only
+    object ShellSelection : OnboardingStep(2, "Shell")
+    object ShellCustomization : OnboardingStep(3, "Customization")
+    object VersionControl : OnboardingStep(4, "Git")
+    object AIAssistants : OnboardingStep(5, "AI Assistants")
+    object Review : OnboardingStep(6, "Review")
+    object Installing : OnboardingStep(7, "Installing")
+    object GhAuth : OnboardingStep(8, "GitHub Auth")
+    object Complete : OnboardingStep(9, "Complete")
 
     companion object {
-        val allSteps: List<OnboardingStep> by lazy {
+        // All steps including Prerequisites (Windows only)
+        val allStepsWindows: List<OnboardingStep> by lazy {
+            listOf(
+                Welcome, Prerequisites, ShellSelection, ShellCustomization,
+                VersionControl, AIAssistants, Review, Installing, GhAuth, Complete
+            )
+        }
+        // Steps for Unix (no Prerequisites)
+        val allStepsUnix: List<OnboardingStep> by lazy {
             listOf(
                 Welcome, ShellSelection, ShellCustomization,
                 VersionControl, AIAssistants, Review, Installing, GhAuth, Complete
             )
         }
-        val visibleSteps: List<OnboardingStep> by lazy {
+        // Visible steps for Windows (with Prerequisites)
+        val visibleStepsWindows: List<OnboardingStep> by lazy {
+            listOf(
+                Welcome, Prerequisites, ShellSelection, ShellCustomization,
+                VersionControl, AIAssistants, Review
+            )
+        }
+        // Visible steps for Unix (no Prerequisites)
+        val visibleStepsUnix: List<OnboardingStep> by lazy {
             listOf(
                 Welcome, ShellSelection, ShellCustomization,
                 VersionControl, AIAssistants, Review
             )
         }
+
+        fun allSteps(isWindows: Boolean) = if (isWindows) allStepsWindows else allStepsUnix
+        fun visibleSteps(isWindows: Boolean) = if (isWindows) visibleStepsWindows else visibleStepsUnix
     }
 }
 
@@ -122,6 +142,9 @@ data class InstalledTools(
     // Windows shells
     val powershell: Boolean = false,
     val cmd: Boolean = false,
+    // Windows package managers
+    val winget: Boolean = false,
+    val chocolatey: Boolean = false,
     // Customization tools
     val starship: Boolean = false,
     val ohMyZsh: Boolean = false,
@@ -138,6 +161,9 @@ data class InstalledTools(
 ) {
     val hasAnyShellCustomization: Boolean
         get() = starship || ohMyZsh || prezto || ohMyPosh
+
+    val hasWindowsPackageManager: Boolean
+        get() = winget || chocolatey
 }
 
 /**
@@ -160,6 +186,9 @@ fun OnboardingWizard(
     var installCommand by remember { mutableStateOf("") }
     var installationComplete by remember { mutableStateOf(false) }
     var ghInstalledDuringWizard by remember { mutableStateOf(false) }
+
+    // Platform detection
+    val isWindows = remember { ShellCustomizationUtils.isWindows() }
 
     val scope = rememberCoroutineScope()
 
@@ -200,7 +229,7 @@ fun OnboardingWizard(
                     currentStep !is OnboardingStep.Complete) {
                     StepIndicator(
                         currentStep = currentStep,
-                        steps = OnboardingStep.visibleSteps
+                        steps = OnboardingStep.visibleSteps(isWindows)
                     )
                     Spacer(modifier = Modifier.height(24.dp))
                 }
@@ -221,6 +250,16 @@ fun OnboardingWizard(
                     } else {
                             when (currentStep) {
                                 OnboardingStep.Welcome -> WelcomeStep()
+                                OnboardingStep.Prerequisites -> PrerequisitesStep(
+                                    installedTools = installedTools,
+                                    onRefreshTools = {
+                                        scope.launch {
+                                            isDetecting = true
+                                            installedTools = detectInstalledTools()
+                                            isDetecting = false
+                                        }
+                                    }
+                                )
                                 OnboardingStep.ShellSelection -> ShellSelectionStep(
                                     selections = selections,
                                     installedTools = installedTools,
@@ -303,14 +342,16 @@ fun OnboardingWizard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Back button (not on Welcome, Installing, GhAuth, or Complete)
-                    if (currentStep.index > 0 &&
+                    val allSteps = OnboardingStep.allSteps(isWindows)
+                    val currentIndex = allSteps.indexOf(currentStep)
+                    if (currentIndex > 0 &&
                         currentStep !is OnboardingStep.Installing &&
                         currentStep !is OnboardingStep.GhAuth &&
                         currentStep !is OnboardingStep.Complete
                     ) {
                         OutlinedButton(
                             onClick = {
-                                currentStep = OnboardingStep.allSteps[currentStep.index - 1]
+                                currentStep = allSteps[currentIndex - 1]
                             },
                             colors = ButtonDefaults.outlinedButtonColors(
                                 backgroundColor = Color.Transparent,
@@ -347,7 +388,10 @@ fun OnboardingWizard(
                         when (currentStep) {
                             OnboardingStep.Welcome -> {
                                 Button(
-                                    onClick = { currentStep = OnboardingStep.ShellSelection },
+                                    onClick = {
+                                        // On Windows, go to Prerequisites first; on Unix, go to ShellSelection
+                                        currentStep = if (isWindows) OnboardingStep.Prerequisites else OnboardingStep.ShellSelection
+                                    },
                                     colors = ButtonDefaults.buttonColors(
                                         backgroundColor = AccentColor,
                                         contentColor = Color.White
@@ -387,9 +431,26 @@ fun OnboardingWizard(
                             OnboardingStep.Complete -> {
                                 // CompleteStep handles its own buttons
                             }
+                            OnboardingStep.Prerequisites -> {
+                                // Prerequisites step on Windows
+                                Button(
+                                    onClick = { currentStep = OnboardingStep.ShellSelection },
+                                    colors = ButtonDefaults.buttonColors(
+                                        backgroundColor = AccentColor,
+                                        contentColor = Color.White
+                                    )
+                                ) {
+                                    Text("Next")
+                                }
+                            }
                             else -> {
                                 Button(
-                                    onClick = { currentStep = OnboardingStep.allSteps[currentStep.index + 1] },
+                                    onClick = {
+                                        val nextIndex = allSteps.indexOf(currentStep) + 1
+                                        if (nextIndex < allSteps.size) {
+                                            currentStep = allSteps[nextIndex]
+                                        }
+                                    },
                                     colors = ButtonDefaults.buttonColors(
                                         backgroundColor = AccentColor,
                                         contentColor = Color.White
@@ -465,6 +526,9 @@ suspend fun detectInstalledTools(): InstalledTools = withContext(Dispatchers.IO)
         // Windows shells (always available on Windows)
         powershell = if (isWindows) isCommandInstalled("powershell") else false,
         cmd = isWindows, // cmd is always available on Windows
+        // Windows package managers
+        winget = if (isWindows) isCommandInstalled("winget") else false,
+        chocolatey = if (isWindows) isCommandInstalled("choco") else false,
         // Customization tools
         starship = ShellCustomizationUtils.isStarshipInstalled() || isCommandInstalled("starship"),
         ohMyZsh = if (!isWindows) ShellCustomizationUtils.isOhMyZshInstalled() else false,
@@ -644,6 +708,25 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
                "{ command -v pacman >/dev/null 2>&1 && sudo pacman -S --noconfirm $pkg; }"
     }
 
+    // Helper to get Windows install command with winget/chocolatey fallback
+    // wingetId: winget package ID, chocoName: chocolatey package name
+    fun getWindowsInstall(wingetId: String, chocoName: String): String {
+        return when {
+            installed.winget -> "winget install $wingetId --accept-source-agreements --accept-package-agreements"
+            installed.chocolatey -> "choco install $chocoName -y"
+            else -> "echo 'No package manager available. Please install winget or Chocolatey first.' && exit 1"
+        }
+    }
+
+    // Helper for Windows uninstall with winget/chocolatey fallback
+    fun getWindowsUninstall(wingetId: String, chocoName: String): String {
+        return when {
+            installed.winget -> "winget uninstall $wingetId --silent"
+            installed.chocolatey -> "choco uninstall $chocoName -y"
+            else -> "echo 'Skipping uninstall - no package manager available'"
+        }
+    }
+
     // Shell installation and set as default
     if (selections.shell != ShellChoice.KEEP_CURRENT) {
         val shellInstalled = when (selections.shell) {
@@ -678,7 +761,7 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
     if (selections.shellCustomization == ShellCustomizationChoice.NONE) {
         if (installed.starship) {
             if (isWindows) {
-                userCommands.add("winget uninstall Starship.Starship --silent")
+                userCommands.add(getWindowsUninstall("Starship.Starship", "starship"))
             } else {
                 userCommands.add(uninstallStarship)
             }
@@ -690,7 +773,7 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
             userCommands.add(uninstallPrezto)
         }
         if (installed.ohMyPosh && isWindows) {
-            userCommands.add("winget uninstall JanDeDobbeleer.OhMyPosh --silent")
+            userCommands.add(getWindowsUninstall("JanDeDobbeleer.OhMyPosh", "oh-my-posh"))
         }
     } else if (selections.shellCustomization != ShellCustomizationChoice.KEEP_EXISTING) {
         val customInstalled = when (selections.shellCustomization) {
@@ -705,11 +788,11 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
             when (selections.shellCustomization) {
                 ShellCustomizationChoice.STARSHIP -> {
                     if (isWindows) {
-                        // Windows: Install Starship via winget and configure PowerShell profile
+                        // Windows: Install Starship and configure PowerShell profile
                         if (installed.ohMyPosh) {
-                            userCommands.add("winget uninstall JanDeDobbeleer.OhMyPosh --silent")
+                            userCommands.add(getWindowsUninstall("JanDeDobbeleer.OhMyPosh", "oh-my-posh"))
                         }
-                        userCommands.add("winget install Starship.Starship --accept-source-agreements --accept-package-agreements")
+                        userCommands.add(getWindowsInstall("Starship.Starship", "starship"))
                         // Configure PowerShell profile
                         postInstallCommands.add(
                             "powershell -Command \"" +
@@ -745,9 +828,9 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
                 ShellCustomizationChoice.OH_MY_POSH -> {
                     // Windows only: Install Oh My Posh
                     if (installed.starship) {
-                        userCommands.add("winget uninstall Starship.Starship --silent")
+                        userCommands.add(getWindowsUninstall("Starship.Starship", "starship"))
                     }
-                    userCommands.add("winget install JanDeDobbeleer.OhMyPosh --accept-source-agreements --accept-package-agreements")
+                    userCommands.add(getWindowsInstall("JanDeDobbeleer.OhMyPosh", "oh-my-posh"))
                     // Configure PowerShell profile
                     postInstallCommands.add(
                         "powershell -Command \"" +
@@ -794,14 +877,14 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
     if (selections.installGit && !installed.git) {
         when {
             isMac -> sudoCommands.add("brew install git")
-            isWindows -> userCommands.add("winget install Git.Git --accept-source-agreements --accept-package-agreements")
+            isWindows -> userCommands.add(getWindowsInstall("Git.Git", "git"))
             else -> sudoCommands.add(getLinuxInstall("git"))
         }
     }
     if (selections.installGitHubCLI && !installed.gh) {
         when {
             isMac -> sudoCommands.add("brew install gh")
-            isWindows -> userCommands.add("winget install GitHub.cli --accept-source-agreements --accept-package-agreements")
+            isWindows -> userCommands.add(getWindowsInstall("GitHub.cli", "gh"))
             else -> sudoCommands.add(getLinuxInstall("gh"))
         }
     }
@@ -838,8 +921,13 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
                 "npm install -g $npmPackages"
             }
             isWindows -> {
-                "powershell -Command \"if (!(Get-Command npm -ErrorAction SilentlyContinue)) { " +
-                "winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements } ; " +
+                // Use winget or Chocolatey to install Node.js if npm is not available
+                val nodeInstallCmd = when {
+                    installed.winget -> "winget install OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements"
+                    installed.chocolatey -> "choco install nodejs-lts -y"
+                    else -> "echo 'No package manager available. Please install Node.js manually.' && exit 1"
+                }
+                "powershell -Command \"if (!(Get-Command npm -ErrorAction SilentlyContinue)) { $nodeInstallCmd } ; " +
                 "npm install -g $npmPackages\""
             }
             else -> {

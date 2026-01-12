@@ -115,6 +115,290 @@ fun WelcomeStep() {
 }
 
 /**
+ * Prerequisites step for Windows package managers.
+ * Shows winget and Chocolatey status and allows installing them.
+ */
+@Composable
+fun PrerequisitesStep(
+    installedTools: InstalledTools,
+    onRefreshTools: () -> Unit
+) {
+    var showWingetInstall by remember { mutableStateOf(false) }
+    var showChocoInstall by remember { mutableStateOf(false) }
+
+    val wingetInstallCommand = """
+        powershell -Command "& {
+            Write-Host 'Installing winget (Windows Package Manager)...' -ForegroundColor Cyan
+            Write-Host ''
+            Write-Host 'Note: If this fails, please install App Installer from the Microsoft Store.' -ForegroundColor Yellow
+            Write-Host 'URL: https://aka.ms/getwinget' -ForegroundColor Yellow
+            Write-Host ''
+            try {
+                ${'$'}progressPreference = 'silentlyContinue'
+                ${'$'}latestRelease = Invoke-RestMethod -Uri 'https://api.github.com/repos/microsoft/winget-cli/releases/latest'
+                ${'$'}assetUrl = ${'$'}latestRelease.assets | Where-Object { ${'$'}_.name -match '\.msixbundle${'$'}' } | Select-Object -First 1 -ExpandProperty browser_download_url
+                if (${'$'}assetUrl) {
+                    Write-Host 'Downloading winget...' -ForegroundColor Cyan
+                    Invoke-WebRequest -Uri ${'$'}assetUrl -OutFile `"${'$'}env:TEMP\winget.msixbundle`"
+                    Write-Host 'Installing...' -ForegroundColor Cyan
+                    Add-AppxPackage -Path `"${'$'}env:TEMP\winget.msixbundle`"
+                    Remove-Item `"${'$'}env:TEMP\winget.msixbundle`" -Force
+                    Write-Host ''
+                    Write-Host 'winget installed successfully!' -ForegroundColor Green
+                    Write-Host 'Please click Refresh Status to update.' -ForegroundColor Cyan
+                } else {
+                    throw 'Could not find installer URL'
+                }
+            } catch {
+                Write-Host 'Installation failed. Please install manually from Microsoft Store.' -ForegroundColor Red
+                Write-Host 'Search for App Installer in Microsoft Store.' -ForegroundColor Yellow
+            }
+        }"
+    """.trimIndent().replace("\n", " ")
+
+    val chocoInstallCommand = """
+        powershell -Command "& {
+            Write-Host 'Installing Chocolatey...' -ForegroundColor Cyan
+            Write-Host ''
+            try {
+                Set-ExecutionPolicy Bypass -Scope Process -Force
+                [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+                iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+                Write-Host ''
+                Write-Host 'Chocolatey installed successfully!' -ForegroundColor Green
+                Write-Host 'Please click Refresh Status to update.' -ForegroundColor Cyan
+            } catch {
+                Write-Host 'Installation failed.' -ForegroundColor Red
+                Write-Host ${'$'}_.Exception.Message -ForegroundColor Red
+            }
+        }"
+    """.trimIndent().replace("\n", " ")
+
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+    ) {
+        Text(
+            text = "Package Managers",
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold,
+            color = TextPrimary
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "BossTerm uses package managers to install tools like Git, Starship, and AI assistants. We recommend having at least one package manager available.",
+            fontSize = 14.sp,
+            color = TextSecondary
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Winget card
+        PackageManagerCard(
+            title = "winget",
+            description = "Windows Package Manager - Built into Windows 10/11. Recommended for most users.",
+            isInstalled = installedTools.winget,
+            isRecommended = true,
+            onInstallClick = { showWingetInstall = true }
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Chocolatey card
+        PackageManagerCard(
+            title = "Chocolatey",
+            description = "Community-driven package manager with a large software catalog.",
+            isInstalled = installedTools.chocolatey,
+            isRecommended = false,
+            onInstallClick = { showChocoInstall = true }
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Status message
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            backgroundColor = if (installedTools.hasWindowsPackageManager) {
+                Color(0xFF1E3A1E)  // Dark green
+            } else {
+                Color(0xFF3A3A1E)  // Dark yellow/warning
+            }
+        ) {
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (installedTools.hasWindowsPackageManager) "✓" else "⚠",
+                    fontSize = 20.sp,
+                    color = if (installedTools.hasWindowsPackageManager) {
+                        Color(0xFF4CAF50)
+                    } else {
+                        Color(0xFFFFC107)
+                    }
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = if (installedTools.hasWindowsPackageManager) {
+                        "You have a package manager installed. You can proceed with setup."
+                    } else {
+                        "No package manager detected. Some tool installations may not work without one."
+                    },
+                    fontSize = 14.sp,
+                    color = TextPrimary
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Refresh button
+        OutlinedButton(
+            onClick = onRefreshTools,
+            modifier = Modifier.align(Alignment.CenterHorizontally),
+            colors = ButtonDefaults.outlinedButtonColors(
+                backgroundColor = Color.Transparent,
+                contentColor = TextPrimary
+            ),
+            border = BorderStroke(1.dp, BorderColor)
+        ) {
+            Text("Refresh Status")
+        }
+
+        // Installation terminals
+        if (showWingetInstall) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Installing winget...",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = TextPrimary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .border(1.dp, BorderColor, RoundedCornerShape(8.dp))
+            ) {
+                EmbeddableTerminal(
+                    initialCommand = wingetInstallCommand,
+                    onInitialCommandComplete = { _, _ ->
+                        // User should click Refresh Status after installation
+                    },
+                    settingsOverride = TerminalSettingsOverride(fontSize = 11f),
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
+        if (showChocoInstall) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Installing Chocolatey...",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = TextPrimary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .border(1.dp, BorderColor, RoundedCornerShape(8.dp))
+            ) {
+                EmbeddableTerminal(
+                    initialCommand = chocoInstallCommand,
+                    onInitialCommandComplete = { _, _ ->
+                        // User should click Refresh Status after installation
+                    },
+                    settingsOverride = TerminalSettingsOverride(fontSize = 11f),
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Card for displaying package manager status with install option.
+ */
+@Composable
+private fun PackageManagerCard(
+    title: String,
+    description: String,
+    isInstalled: Boolean,
+    isRecommended: Boolean,
+    onInstallClick: () -> Unit
+) {
+    val bgColor = if (isInstalled) AccentColor.copy(alpha = 0.15f) else SurfaceColor
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        backgroundColor = bgColor,
+        border = if (isInstalled) {
+            BorderStroke(2.dp, AccentColor)
+        } else {
+            BorderStroke(1.dp, BorderColor)
+        }
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = title,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = TextPrimary
+                    )
+                    if (isInstalled) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFF4CAF50), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text("Installed", fontSize = 10.sp, color = Color.White)
+                        }
+                    }
+                    if (isRecommended && !isInstalled) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(AccentColor, RoundedCornerShape(4.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text("Recommended", fontSize = 10.sp, color = Color.White)
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = description,
+                    fontSize = 12.sp,
+                    color = TextSecondary
+                )
+            }
+
+            if (!isInstalled) {
+                Spacer(modifier = Modifier.width(12.dp))
+                Button(
+                    onClick = onInstallClick,
+                    colors = ButtonDefaults.buttonColors(
+                        backgroundColor = AccentColor,
+                        contentColor = Color.White
+                    ),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Text("Install", fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+/**
  * Shell selection step.
  */
 @Composable

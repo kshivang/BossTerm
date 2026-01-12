@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.update
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import kotlinx.serialization.Serializable
 
 /**
@@ -48,8 +49,7 @@ data class Version(
          */
         private fun tryGetMacOSBundleVersion(): String? {
             return try {
-                val isMacOS = System.getProperty("os.name")?.lowercase()?.contains("mac") == true
-                if (!isMacOS) return null
+                if (!ShellCustomizationUtils.isMacOS()) return null
 
                 // Read from Info.plist file directly
                 // The app bundle path can be found from the executable location

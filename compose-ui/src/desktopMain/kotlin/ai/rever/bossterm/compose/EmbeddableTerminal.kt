@@ -228,7 +228,7 @@ fun EmbeddableTerminal(
     }
 
     // Effective shell command (validates $SHELL exists, falls back to /bin/bash or /bin/sh)
-    val effectiveCommand = command ?: ShellCustomizationUtils.getValidShell()
+    val effectiveCommand = command ?: ShellCustomizationUtils.getValidShell(resolvedSettings.windowsShell)
 
     // Load font from settings.fontName or use default bundled font
     val terminalFont = remember(resolvedSettings.fontName) {

@@ -115,6 +115,290 @@ fun WelcomeStep() {
 }
 
 /**
+ * Prerequisites step for Windows package managers.
+ * Shows winget and Chocolatey status and allows installing them.
+ */
+@Composable
+fun PrerequisitesStep(
+    installedTools: InstalledTools,
+    onRefreshTools: () -> Unit
+) {
+    var showWingetInstall by remember { mutableStateOf(false) }
+    var showChocoInstall by remember { mutableStateOf(false) }
+
+    val wingetInstallCommand = """
+        powershell -Command "& {
+            Write-Host 'Installing winget (Windows Package Manager)...' -ForegroundColor Cyan
+            Write-Host ''
+            Write-Host 'Note: If this fails, please install App Installer from the Microsoft Store.' -ForegroundColor Yellow
+            Write-Host 'URL: https://aka.ms/getwinget' -ForegroundColor Yellow
+            Write-Host ''
+            try {
+                ${'$'}progressPreference = 'silentlyContinue'
+                ${'$'}latestRelease = Invoke-RestMethod -Uri 'https://api.github.com/repos/microsoft/winget-cli/releases/latest'
+                ${'$'}assetUrl = ${'$'}latestRelease.assets | Where-Object { ${'$'}_.name -match '\.msixbundle${'$'}' } | Select-Object -First 1 -ExpandProperty browser_download_url
+                if (${'$'}assetUrl) {
+                    Write-Host 'Downloading winget...' -ForegroundColor Cyan
+                    Invoke-WebRequest -Uri ${'$'}assetUrl -OutFile `"${'$'}env:TEMP\winget.msixbundle`"
+                    Write-Host 'Installing...' -ForegroundColor Cyan
+                    Add-AppxPackage -Path `"${'$'}env:TEMP\winget.msixbundle`"
+                    Remove-Item `"${'$'}env:TEMP\winget.msixbundle`" -Force
+                    Write-Host ''
+                    Write-Host 'winget installed successfully!' -ForegroundColor Green
+                    Write-Host 'Please click Refresh Status to update.' -ForegroundColor Cyan
+                } else {
+                    throw 'Could not find installer URL'
+                }
+            } catch {
+                Write-Host 'Installation failed. Please install manually from Microsoft Store.' -ForegroundColor Red
+                Write-Host 'Search for App Installer in Microsoft Store.' -ForegroundColor Yellow
+            }
+        }"
+    """.trimIndent().replace("\n", " ")
+
+    val chocoInstallCommand = """
+        powershell -Command "& {
+            Write-Host 'Installing Chocolatey...' -ForegroundColor Cyan
+            Write-Host ''
+            try {
+                Set-ExecutionPolicy Bypass -Scope Process -Force
+                [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+                iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+                Write-Host ''
+                Write-Host 'Chocolatey installed successfully!' -ForegroundColor Green
+                Write-Host 'Please click Refresh Status to update.' -ForegroundColor Cyan
+            } catch {
+                Write-Host 'Installation failed.' -ForegroundColor Red
+                Write-Host ${'$'}_.Exception.Message -ForegroundColor Red
+            }
+        }"
+    """.trimIndent().replace("\n", " ")
+
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+    ) {
+        Text(
+            text = "Package Managers",
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold,
+            color = TextPrimary
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "BossTerm uses package managers to install tools like Git, Starship, and AI assistants. We recommend having at least one package manager available.",
+            fontSize = 14.sp,
+            color = TextSecondary
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Winget card
+        PackageManagerCard(
+            title = "winget",
+            description = "Windows Package Manager - Built into Windows 10/11. Recommended for most users.",
+            isInstalled = installedTools.winget,
+            isRecommended = true,
+            onInstallClick = { showWingetInstall = true }
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Chocolatey card
+        PackageManagerCard(
+            title = "Chocolatey",
+            description = "Community-driven package manager with a large software catalog.",
+            isInstalled = installedTools.chocolatey,
+            isRecommended = false,
+            onInstallClick = { showChocoInstall = true }
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Status message
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            backgroundColor = if (installedTools.hasWindowsPackageManager) {
+                Color(0xFF1E3A1E)  // Dark green
+            } else {
+                Color(0xFF3A3A1E)  // Dark yellow/warning
+            }
+        ) {
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (installedTools.hasWindowsPackageManager) "✓" else "⚠",
+                    fontSize = 20.sp,
+                    color = if (installedTools.hasWindowsPackageManager) {
+                        Color(0xFF4CAF50)
+                    } else {
+                        Color(0xFFFFC107)
+                    }
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = if (installedTools.hasWindowsPackageManager) {
+                        "You have a package manager installed. You can proceed with setup."
+                    } else {
+                        "No package manager detected. Some tool installations may not work without one."
+                    },
+                    fontSize = 14.sp,
+                    color = TextPrimary
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Refresh button
+        OutlinedButton(
+            onClick = onRefreshTools,
+            modifier = Modifier.align(Alignment.CenterHorizontally),
+            colors = ButtonDefaults.outlinedButtonColors(
+                backgroundColor = Color.Transparent,
+                contentColor = TextPrimary
+            ),
+            border = BorderStroke(1.dp, BorderColor)
+        ) {
+            Text("Refresh Status")
+        }
+
+        // Installation terminals
+        if (showWingetInstall) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Installing winget...",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = TextPrimary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .border(1.dp, BorderColor, RoundedCornerShape(8.dp))
+            ) {
+                EmbeddableTerminal(
+                    initialCommand = wingetInstallCommand,
+                    onInitialCommandComplete = { _, _ ->
+                        // User should click Refresh Status after installation
+                    },
+                    settingsOverride = TerminalSettingsOverride(fontSize = 11f),
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
+        if (showChocoInstall) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Installing Chocolatey...",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = TextPrimary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .border(1.dp, BorderColor, RoundedCornerShape(8.dp))
+            ) {
+                EmbeddableTerminal(
+                    initialCommand = chocoInstallCommand,
+                    onInitialCommandComplete = { _, _ ->
+                        // User should click Refresh Status after installation
+                    },
+                    settingsOverride = TerminalSettingsOverride(fontSize = 11f),
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Card for displaying package manager status with install option.
+ */
+@Composable
+private fun PackageManagerCard(
+    title: String,
+    description: String,
+    isInstalled: Boolean,
+    isRecommended: Boolean,
+    onInstallClick: () -> Unit
+) {
+    val bgColor = if (isInstalled) AccentColor.copy(alpha = 0.15f) else SurfaceColor
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        backgroundColor = bgColor,
+        border = if (isInstalled) {
+            BorderStroke(2.dp, AccentColor)
+        } else {
+            BorderStroke(1.dp, BorderColor)
+        }
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = title,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = TextPrimary
+                    )
+                    if (isInstalled) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFF4CAF50), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text("Installed", fontSize = 10.sp, color = Color.White)
+                        }
+                    }
+                    if (isRecommended && !isInstalled) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .background(AccentColor, RoundedCornerShape(4.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text("Recommended", fontSize = 10.sp, color = Color.White)
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = description,
+                    fontSize = 12.sp,
+                    color = TextSecondary
+                )
+            }
+
+            if (!isInstalled) {
+                Spacer(modifier = Modifier.width(12.dp))
+                Button(
+                    onClick = onInstallClick,
+                    colors = ButtonDefaults.buttonColors(
+                        backgroundColor = AccentColor,
+                        contentColor = Color.White
+                    ),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Text("Install", fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+/**
  * Shell selection step.
  */
 @Composable
@@ -123,12 +407,21 @@ fun ShellSelectionStep(
     installedTools: InstalledTools,
     onSelectionChange: (ShellChoice) -> Unit
 ) {
+    val isWindows = ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isWindows()
+
     // Determine user's current shell
     val currentShellPath = System.getenv("SHELL") ?: ""
     val currentShellName = currentShellPath.substringAfterLast("/").lowercase()
 
-    // Check if current shell is one of the main options
-    val isCurrentShellKnown = currentShellName in listOf("zsh", "bash", "fish")
+    // Platform-specific shell options
+    val shellOptions = if (isWindows) {
+        listOf(ShellChoice.POWERSHELL, ShellChoice.CMD)
+    } else {
+        listOf(ShellChoice.ZSH, ShellChoice.BASH, ShellChoice.FISH)
+    }
+
+    // Check if current shell is one of the main options (Unix only)
+    val isCurrentShellKnown = !isWindows && currentShellName in listOf("zsh", "bash", "fish")
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
@@ -141,27 +434,38 @@ fun ShellSelectionStep(
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = "Select a shell for your terminal. Zsh is recommended for its features and plugin ecosystem.",
+            text = if (isWindows) {
+                "Select a shell for your terminal. PowerShell is recommended for its modern features."
+            } else {
+                "Select a shell for your terminal. Zsh is recommended for its features and plugin ecosystem."
+            },
             fontSize = 14.sp,
             color = TextSecondary
         )
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Show Zsh, Bash, Fish options
-        listOf(ShellChoice.ZSH, ShellChoice.BASH, ShellChoice.FISH).forEach { choice ->
+        // Show platform-appropriate shell options
+        shellOptions.forEach { choice ->
             val isInstalled = when (choice) {
                 ShellChoice.ZSH -> installedTools.zsh
                 ShellChoice.BASH -> installedTools.bash
                 ShellChoice.FISH -> installedTools.fish
+                ShellChoice.POWERSHELL -> installedTools.powershell
+                ShellChoice.CMD -> installedTools.cmd
                 else -> false
             }
-            val isCurrent = currentShellName == choice.command
+            val isCurrent = if (isWindows) {
+                // On Windows, PowerShell is typically the default modern shell
+                choice == ShellChoice.POWERSHELL
+            } else {
+                currentShellName == choice.command
+            }
 
             SelectionCard(
                 title = choice.displayName,
                 description = choice.description,
                 isSelected = selections.shell == choice,
-                isRecommended = choice == ShellChoice.ZSH,
+                isRecommended = if (isWindows) choice == ShellChoice.POWERSHELL else choice == ShellChoice.ZSH,
                 badge = when {
                     isCurrent -> "Current"
                     isInstalled -> "Installed"
@@ -172,8 +476,8 @@ fun ShellSelectionStep(
             Spacer(modifier = Modifier.height(8.dp))
         }
 
-        // Only show "Keep Current" if using a different shell (not zsh, bash, or fish)
-        if (!isCurrentShellKnown && currentShellPath.isNotEmpty()) {
+        // Only show "Keep Current" if using a different shell (not zsh, bash, or fish) - Unix only
+        if (!isWindows && !isCurrentShellKnown && currentShellPath.isNotEmpty()) {
             SelectionCard(
                 title = "Keep Current ($currentShellName)",
                 description = "Continue using your current shell: $currentShellPath",
@@ -196,10 +500,27 @@ fun ShellCustomizationStep(
     installedTools: InstalledTools,
     onSelectionChange: (ShellCustomizationChoice) -> Unit
 ) {
+    val isWindows = ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isWindows()
     val currentShellPath = System.getenv("SHELL") ?: ""
     val currentShellName = currentShellPath.substringAfterLast("/").lowercase()
     val isZshSelected = selections.shell == ShellChoice.ZSH ||
         (selections.shell == ShellChoice.KEEP_CURRENT && currentShellName == "zsh")
+
+    // Platform-specific customization options
+    val customizationOptions = if (isWindows) {
+        listOf(
+            ShellCustomizationChoice.STARSHIP,
+            ShellCustomizationChoice.OH_MY_POSH,
+            ShellCustomizationChoice.NONE
+        )
+    } else {
+        listOf(
+            ShellCustomizationChoice.STARSHIP,
+            ShellCustomizationChoice.OH_MY_ZSH,
+            ShellCustomizationChoice.PREZTO,
+            ShellCustomizationChoice.NONE
+        )
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
@@ -218,18 +539,14 @@ fun ShellCustomizationStep(
         )
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Show main customization options: Starship, Oh My Zsh, Prezto, None
-        listOf(
-            ShellCustomizationChoice.STARSHIP,
-            ShellCustomizationChoice.OH_MY_ZSH,
-            ShellCustomizationChoice.PREZTO,
-            ShellCustomizationChoice.NONE
-        ).forEach { choice ->
-            val isDisabled = choice.requiresZsh && !isZshSelected
+        // Show platform-appropriate customization options
+        customizationOptions.forEach { choice ->
+            val isDisabled = !isWindows && choice.requiresZsh && !isZshSelected
             val isCurrent = when (choice) {
                 ShellCustomizationChoice.STARSHIP -> installedTools.starship
                 ShellCustomizationChoice.OH_MY_ZSH -> installedTools.ohMyZsh
                 ShellCustomizationChoice.PREZTO -> installedTools.prezto
+                ShellCustomizationChoice.OH_MY_POSH -> installedTools.ohMyPosh
                 else -> false  // Don't mark NONE as current - there could be other customizations we don't detect
             }
 
@@ -239,7 +556,7 @@ fun ShellCustomizationStep(
                 isSelected = selections.shellCustomization == choice,
                 isRecommended = choice == ShellCustomizationChoice.STARSHIP,
                 isDisabled = isDisabled,
-                badge = if (isCurrent) "Current" else null,
+                badge = if (isCurrent) "Installed" else null,
                 onClick = { if (!isDisabled) onSelectionChange(choice) }
             )
             Spacer(modifier = Modifier.height(8.dp))
@@ -372,6 +689,8 @@ fun ReviewStep(
     selections: OnboardingSelections,
     installedTools: InstalledTools
 ) {
+    val isWindows = ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isWindows()
+
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
     ) {
@@ -384,15 +703,18 @@ fun ReviewStep(
         Spacer(modifier = Modifier.height(16.dp))
 
         // Shell
+        val shellWillInstall = selections.shell != ShellChoice.KEEP_CURRENT && !isWindows && !when (selections.shell) {
+            ShellChoice.ZSH -> installedTools.zsh
+            ShellChoice.BASH -> installedTools.bash
+            ShellChoice.FISH -> installedTools.fish
+            ShellChoice.POWERSHELL -> installedTools.powershell
+            ShellChoice.CMD -> installedTools.cmd
+            ShellChoice.KEEP_CURRENT -> true
+        }
         ReviewItem(
             category = "Shell",
             value = selections.shell.displayName,
-            willInstall = selections.shell != ShellChoice.KEEP_CURRENT && !when (selections.shell) {
-                ShellChoice.ZSH -> installedTools.zsh
-                ShellChoice.BASH -> installedTools.bash
-                ShellChoice.FISH -> installedTools.fish
-                ShellChoice.KEEP_CURRENT -> true
-            }
+            willInstall = shellWillInstall
         )
 
         // Shell Customization
@@ -403,6 +725,7 @@ fun ReviewStep(
                 ShellCustomizationChoice.STARSHIP -> installedTools.starship
                 ShellCustomizationChoice.OH_MY_ZSH -> installedTools.ohMyZsh
                 ShellCustomizationChoice.PREZTO -> installedTools.prezto
+                ShellCustomizationChoice.OH_MY_POSH -> installedTools.ohMyPosh
                 else -> true
             }
             ReviewItem(
@@ -456,11 +779,16 @@ fun ReviewStep(
 }
 
 private fun hasAnyInstallation(selections: OnboardingSelections, installed: InstalledTools): Boolean {
-    if (selections.shell != ShellChoice.KEEP_CURRENT) {
+    val isWindows = ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isWindows()
+
+    // On Windows, shells are built-in, so don't count them as "to install"
+    if (selections.shell != ShellChoice.KEEP_CURRENT && !isWindows) {
         val shellInstalled = when (selections.shell) {
             ShellChoice.ZSH -> installed.zsh
             ShellChoice.BASH -> installed.bash
             ShellChoice.FISH -> installed.fish
+            ShellChoice.POWERSHELL -> installed.powershell
+            ShellChoice.CMD -> installed.cmd
             ShellChoice.KEEP_CURRENT -> true
         }
         if (!shellInstalled) return true
@@ -472,6 +800,7 @@ private fun hasAnyInstallation(selections: OnboardingSelections, installed: Inst
             ShellCustomizationChoice.STARSHIP -> installed.starship
             ShellCustomizationChoice.OH_MY_ZSH -> installed.ohMyZsh
             ShellCustomizationChoice.PREZTO -> installed.prezto
+            ShellCustomizationChoice.OH_MY_POSH -> installed.ohMyPosh
             else -> true
         }
         if (!customInstalled) return true

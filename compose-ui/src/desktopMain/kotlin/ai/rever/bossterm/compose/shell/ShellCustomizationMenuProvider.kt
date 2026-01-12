@@ -125,7 +125,8 @@ class ShellCustomizationMenuProvider {
     fun getMenuItems(
         terminalWriter: (String) -> Unit,
         onInstallRequest: ((String, String, String?) -> Unit)? = null,
-        statusOverride: Map<String, Boolean>? = null
+        statusOverride: Map<String, Boolean>? = null,
+        onSwitchShell: ((String) -> Unit)? = null
     ): List<ContextMenuElement> {
         val isStarshipInstalled = statusOverride?.get("starship")
             ?: (starshipInstalled ?: ShellCustomizationUtils.isStarshipInstalled())
@@ -135,6 +136,20 @@ class ShellCustomizationMenuProvider {
             ?: (preztoInstalled ?: ShellCustomizationUtils.isPreztoInstalled())
 
         val shellItems = mutableListOf<ContextMenuElement>()
+
+        // Windows-only: Add PowerShell and Command Prompt options
+        if (ShellCustomizationUtils.isWindows() && onSwitchShell != null) {
+            shellItems.add(ContextMenuItem(
+                id = "shell_powershell",
+                label = "PowerShell",
+                action = { onSwitchShell("powershell.exe") }
+            ))
+            shellItems.add(ContextMenuItem(
+                id = "shell_cmd",
+                label = "Command Prompt",
+                action = { onSwitchShell("cmd.exe") }
+            ))
+        }
 
         // Only show installed shell customization tools
         if (isStarshipInstalled) {
@@ -589,9 +604,9 @@ class ShellCustomizationMenuProvider {
      */
     private fun getZshInstallCommand(): String {
         return when {
-            System.getProperty("os.name").lowercase().contains("mac") ->
+            ShellCustomizationUtils.isMacOS() ->
                 "brew install zsh"
-            System.getProperty("os.name").lowercase().contains("windows") ->
+            ShellCustomizationUtils.isWindows() ->
                 "echo 'Zsh is not natively supported on Windows. Consider using WSL.'"
             else -> getLinuxInstallCommand("zsh", "zsh", "zsh")
         }
@@ -602,9 +617,9 @@ class ShellCustomizationMenuProvider {
      */
     private fun getBashInstallCommand(): String {
         return when {
-            System.getProperty("os.name").lowercase().contains("mac") ->
+            ShellCustomizationUtils.isMacOS() ->
                 "brew install bash"
-            System.getProperty("os.name").lowercase().contains("windows") ->
+            ShellCustomizationUtils.isWindows() ->
                 "echo 'Bash is available through Git Bash or WSL on Windows.'"
             else -> getLinuxInstallCommand("bash", "bash", "bash")
         }
@@ -615,9 +630,9 @@ class ShellCustomizationMenuProvider {
      */
     private fun getFishInstallCommand(): String {
         return when {
-            System.getProperty("os.name").lowercase().contains("mac") ->
+            ShellCustomizationUtils.isMacOS() ->
                 "brew install fish"
-            System.getProperty("os.name").lowercase().contains("windows") ->
+            ShellCustomizationUtils.isWindows() ->
                 "echo 'Fish is available through WSL on Windows. Visit https://fishshell.com for more info.'"
             else -> getLinuxInstallCommand("fish", "fish", "fish")
         }

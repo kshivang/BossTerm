@@ -1,9 +1,9 @@
 package ai.rever.bossterm.compose.update
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.*
 
 /**
  * Platform-specific update installation logic.
@@ -379,11 +379,10 @@ object UpdateInstaller {
     }
 
     fun getCurrentPlatform(): String {
-        val osName = System.getProperty("os.name").lowercase(Locale.getDefault())
         return when {
-            osName.contains("mac") || osName.contains("darwin") -> "macOS"
-            osName.contains("win") -> "Windows"
-            osName.contains("linux") -> detectLinuxDistroType()
+            ShellCustomizationUtils.isMacOS() -> "macOS"
+            ShellCustomizationUtils.isWindows() -> "Windows"
+            ShellCustomizationUtils.isLinux() -> detectLinuxDistroType()
             else -> "Unknown"
         }
     }

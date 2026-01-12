@@ -18,6 +18,7 @@ import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.getPlatformServices
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.ime.IMEState
 import ai.rever.bossterm.compose.osc.WorkingDirectoryOSCListener
 import ai.rever.bossterm.compose.settings.TerminalSettings
@@ -27,7 +28,6 @@ import ai.rever.bossterm.compose.notification.CommandNotificationHandler
 import ai.rever.bossterm.compose.clipboard.ClipboardHandler
 import ai.rever.bossterm.terminal.model.CommandStateListener
 import ai.rever.bossterm.compose.TerminalSession
-import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.core.typeahead.TerminalTypeAheadManager
 import ai.rever.bossterm.core.typeahead.TypeAheadTerminalModel
 import ai.rever.bossterm.terminal.util.GraphemeBoundaryUtils
@@ -252,7 +252,7 @@ class TabController(
 
         // On macOS, optionally use 'login -fp $USER' to properly register the session
         // This shows "Last login" message and registers in utmp/wtmp like iTerm2
-        val isMacOS = System.getProperty("os.name")?.lowercase()?.contains("mac") == true
+        val isMacOS = ShellCustomizationUtils.isMacOS()
         val username = System.getProperty("user.name")
 
         val (effectiveCommand, effectiveArguments) = if (command == null && arguments.isEmpty() && isMacOS && username != null && settings.useLoginSession && workingDir == null) {
@@ -261,7 +261,7 @@ class TabController(
             "/usr/bin/login" to listOf("-fp", username)
         } else {
             // Use provided command or fall back to a valid shell
-            val shellCommand = command ?: ShellCustomizationUtils.getValidShell()
+            val shellCommand = command ?: ShellCustomizationUtils.getValidShell(settings.windowsShell)
             // Ensure shell is started as login shell to get proper PATH from /etc/zprofile
             val shellArgs = if (arguments.isEmpty() &&
                 (shellCommand.endsWith("/zsh") || shellCommand.endsWith("/bash") ||
@@ -493,7 +493,7 @@ class TabController(
         }
 
         // On macOS, optionally use 'login -fp $USER' for proper session registration
-        val isMacOS = System.getProperty("os.name")?.lowercase()?.contains("mac") == true
+        val isMacOS = ShellCustomizationUtils.isMacOS()
         val username = System.getProperty("user.name")
 
         val (effectiveCommand, effectiveArguments) = if (command == null && arguments.isEmpty() && isMacOS && username != null && settings.useLoginSession && workingDir == null) {
@@ -502,7 +502,7 @@ class TabController(
             "/usr/bin/login" to listOf("-fp", username)
         } else {
             // Use provided command or fall back to a valid shell
-            val shellCommand = command ?: ShellCustomizationUtils.getValidShell()
+            val shellCommand = command ?: ShellCustomizationUtils.getValidShell(settings.windowsShell)
             // Ensure shell is started as login shell to get proper PATH from /etc/zprofile
             val shellArgs = if (arguments.isEmpty() &&
                 (shellCommand.endsWith("/zsh") || shellCommand.endsWith("/bash") ||

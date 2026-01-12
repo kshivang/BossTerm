@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
@@ -90,10 +91,14 @@ class DesktopProcessService : PlatformServices.ProcessService {
     override suspend fun spawnProcess(config: PlatformServices.ProcessService.ProcessConfig): PlatformServices.ProcessService.ProcessHandle? {
         return try {
             val command = arrayOf(config.command) + config.arguments.toTypedArray()
+            val isWindows = ShellCustomizationUtils.isWindows()
             val pty = com.pty4j.PtyProcessBuilder()
                 .setCommand(command)
                 .setEnvironment(config.environment)
                 .setDirectory(config.workingDirectory ?: System.getProperty("user.home"))
+                .setConsole(false)  // Don't attach to parent console
+                .setWindowsAnsiColorEnabled(isWindows)  // Enable ANSI colors on Windows
+                .setUseWinConPty(isWindows)  // Use Windows ConPTY for better compatibility
                 .start()
             PtyProcessHandle(pty)
         } catch (e: Exception) {
@@ -278,10 +283,9 @@ class DesktopProcessService : PlatformServices.ProcessService {
          */
         private fun getShellPid(): Long? {
             val ptyPid = getPid() ?: return null
-            val osName = System.getProperty("os.name")?.lowercase() ?: ""
 
             return when {
-                osName.contains("linux") -> {
+                ShellCustomizationUtils.isLinux() -> {
                     try {
                         val childrenFile = java.io.File("/proc/$ptyPid/task/$ptyPid/children")
                         if (childrenFile.exists()) {
@@ -291,7 +295,7 @@ class DesktopProcessService : PlatformServices.ProcessService {
                         } else null
                     } catch (e: Exception) { null }
                 }
-                osName.contains("mac") || osName.contains("darwin") -> {
+                ShellCustomizationUtils.isMacOS() -> {
                     try {
                         // Use pgrep -P <pty-pid> to find child processes
                         val proc = ProcessBuilder("pgrep", "-P", ptyPid.toString())
@@ -313,16 +317,15 @@ class DesktopProcessService : PlatformServices.ProcessService {
             val pid = shellPid ?: getPid() ?: return null
 
             return try {
-                val osName = System.getProperty("os.name")?.lowercase() ?: ""
                 when {
-                    osName.contains("linux") -> {
+                    ShellCustomizationUtils.isLinux() -> {
                         // On Linux, read /proc/<pid>/cwd symlink
                         val cwdLink = java.io.File("/proc/$pid/cwd")
                         if (cwdLink.exists()) {
                             cwdLink.canonicalPath
                         } else null
                     }
-                    osName.contains("mac") || osName.contains("darwin") -> {
+                    ShellCustomizationUtils.isMacOS() -> {
                         // On macOS, use lsof to get current working directory
                         val proc = ProcessBuilder("lsof", "-a", "-p", pid.toString(), "-d", "cwd", "-Fn")
                             .redirectErrorStream(true)

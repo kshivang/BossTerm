@@ -17,6 +17,7 @@ import javax.swing.JPopupMenu
 import javax.swing.JSeparator
 import javax.swing.UIManager
 import javax.swing.plaf.ColorUIResource
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 
 /**
  * Controller for managing context menu state and actions.
@@ -275,6 +276,7 @@ fun createTerminalContextMenuItems(
     onFind: () -> Unit,
     onOpenFolder: (() -> Unit)? = null,
     onNewTab: (() -> Unit)? = null,
+    onSwitchShell: ((String) -> Unit)? = null,  // Windows: switch current tab's shell
     onSplitVertical: (() -> Unit)? = null,
     onSplitHorizontal: (() -> Unit)? = null,
     onMoveToNewTab: (() -> Unit)? = null,
@@ -397,7 +399,7 @@ fun createTerminalContextMenuItems(
     }
 
     // Add tab options section
-    val tabItems = mutableListOf<ContextMenuController.MenuItem>()
+    val tabItems = mutableListOf<ContextMenuController.MenuElement>()
 
     if (onNewTab != null) {
         tabItems.add(
@@ -523,6 +525,7 @@ fun showTerminalContextMenu(
     onFind: () -> Unit,
     onOpenFolder: (() -> Unit)? = null,
     onNewTab: (() -> Unit)? = null,
+    onSwitchShell: ((String) -> Unit)? = null,
     onSplitVertical: (() -> Unit)? = null,
     onSplitHorizontal: (() -> Unit)? = null,
     onMoveToNewTab: (() -> Unit)? = null,
@@ -543,6 +546,7 @@ fun showTerminalContextMenu(
         onFind = onFind,
         onOpenFolder = onOpenFolder,
         onNewTab = onNewTab,
+        onSwitchShell = onSwitchShell,
         onSplitVertical = onSplitVertical,
         onSplitHorizontal = onSplitHorizontal,
         onMoveToNewTab = onMoveToNewTab,
@@ -617,6 +621,7 @@ fun showHyperlinkContextMenu(
     onFind: () -> Unit,
     onOpenFolder: (() -> Unit)? = null,
     onNewTab: (() -> Unit)? = null,
+    onSwitchShell: ((String) -> Unit)? = null,
     onSplitVertical: (() -> Unit)? = null,
     onSplitHorizontal: (() -> Unit)? = null,
     onMoveToNewTab: (() -> Unit)? = null,
@@ -642,6 +647,7 @@ fun showHyperlinkContextMenu(
         onFind = onFind,
         onOpenFolder = onOpenFolder,
         onNewTab = onNewTab,
+        onSwitchShell = onSwitchShell,
         onSplitVertical = onSplitVertical,
         onSplitHorizontal = onSplitHorizontal,
         onMoveToNewTab = onMoveToNewTab,

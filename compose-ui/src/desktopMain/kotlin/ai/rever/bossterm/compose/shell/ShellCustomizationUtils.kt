@@ -14,14 +14,24 @@ object ShellCustomizationUtils {
      * Get a valid shell command, with fallback if $SHELL is not available.
      *
      * Checks in order:
-     * 1. $SHELL environment variable (if the file exists and is executable)
-     * 2. /bin/bash (common default)
-     * 3. /bin/sh (POSIX fallback, always available)
+     * - Windows: Uses windowsShell setting ("powershell" or "cmd")
+     * - Unix/Linux/macOS:
+     *   1. $SHELL environment variable (if the file exists and is executable)
+     *   2. /bin/bash (common default)
+     *   3. /bin/sh (POSIX fallback, always available)
      *
+     * @param windowsShell The preferred Windows shell ("powershell" or "cmd")
      * @return Path to a valid shell executable
      */
-    fun getValidShell(): String {
-        // Try $SHELL first
+    fun getValidShell(windowsShell: String = "powershell"): String {
+        val osName = System.getProperty("os.name")?.lowercase() ?: ""
+
+        // Windows: use configured shell
+        if (osName.contains("windows")) {
+            return getWindowsShellCommand(windowsShell)
+        }
+
+        // Unix/Linux/macOS: Try $SHELL first
         val envShell = System.getenv("SHELL")
         if (!envShell.isNullOrBlank()) {
             val shellFile = File(envShell)
@@ -38,6 +48,50 @@ object ShellCustomizationUtils {
 
         // Ultimate fallback to /bin/sh (POSIX, always available)
         return "/bin/sh"
+    }
+
+    /**
+     * Get the Windows shell command based on setting.
+     * Falls back to cmd.exe if PowerShell is unavailable.
+     * @param shellType "powershell" or "cmd"
+     * @return The shell executable name
+     */
+    fun getWindowsShellCommand(shellType: String): String {
+        return when (shellType.lowercase()) {
+            "cmd" -> "cmd.exe"
+            else -> {
+                // Try PowerShell first, fallback to cmd.exe if unavailable
+                if (isCommandInstalled("powershell.exe")) {
+                    "powershell.exe"
+                } else {
+                    "cmd.exe"
+                }
+            }
+        }
+    }
+
+    // ===== Platform Detection =====
+
+    /**
+     * Check if running on Windows.
+     */
+    fun isWindows(): Boolean {
+        return System.getProperty("os.name")?.lowercase()?.contains("windows") == true
+    }
+
+    /**
+     * Check if running on macOS.
+     */
+    fun isMacOS(): Boolean {
+        return System.getProperty("os.name")?.lowercase()?.contains("mac") == true
+    }
+
+    /**
+     * Check if running on Linux.
+     */
+    fun isLinux(): Boolean {
+        val osName = System.getProperty("os.name")?.lowercase() ?: ""
+        return osName.contains("linux") || osName.contains("nix") || osName.contains("nux")
     }
 
     // ===== Detection Functions =====
@@ -65,11 +119,13 @@ object ShellCustomizationUtils {
 
     /**
      * Check if a command is available in PATH.
+     * Uses 'where' on Windows, 'which' on Unix/macOS.
      */
     fun isCommandInstalled(command: String): Boolean {
         var process: Process? = null
         return try {
-            process = ProcessBuilder("which", command)
+            val checkCommand = if (isWindows()) "where" else "which"
+            process = ProcessBuilder(checkCommand, command)
                 .redirectErrorStream(true)
                 .start()
             val completed = process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)

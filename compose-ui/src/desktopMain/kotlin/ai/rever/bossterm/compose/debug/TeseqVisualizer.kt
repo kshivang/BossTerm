@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.debug
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -102,7 +103,7 @@ object TeseqVisualizer {
      */
     private fun checkTeseqAvailable(): Boolean {
         return try {
-            val whichCommand = if (System.getProperty("os.name").lowercase().contains("win")) {
+            val whichCommand = if (ShellCustomizationUtils.isWindows()) {
                 ProcessBuilder("where", "teseq")
             } else {
                 ProcessBuilder("which", "teseq")

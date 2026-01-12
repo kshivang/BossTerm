@@ -24,6 +24,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.components.SettingsSection
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.update.Version
 import ai.rever.bossterm.compose.update.VersionManagementSection
 import java.awt.Desktop
@@ -34,9 +35,7 @@ import java.net.URI
  */
 @Composable
 fun AboutSection(modifier: Modifier = Modifier) {
-    val isMacOS = remember {
-        System.getProperty("os.name")?.lowercase()?.contains("mac") == true
-    }
+    val isMacOS = remember { ShellCustomizationUtils.isMacOS() }
 
     // Derive version display and release channel from Version.CURRENT
     val version = Version.CURRENT
@@ -336,10 +335,9 @@ private data class GpuRenderingInfo(
  * Get current GPU rendering information from Skiko.
  */
 private fun getGpuRenderingInfo(): GpuRenderingInfo {
-    val osName = System.getProperty("os.name").lowercase()
-    val isMacOS = osName.contains("mac")
-    val isWindows = osName.contains("windows")
-    val isLinux = osName.contains("linux")
+    val isMacOS = ShellCustomizationUtils.isMacOS()
+    val isWindows = ShellCustomizationUtils.isWindows()
+    val isLinux = ShellCustomizationUtils.isLinux()
 
     // Try to get render API from system property (set by our config)
     val configuredApi = System.getProperty("skiko.renderApi")

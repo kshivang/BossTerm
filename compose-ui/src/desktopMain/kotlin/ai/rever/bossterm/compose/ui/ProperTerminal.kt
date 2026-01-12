@@ -84,6 +84,7 @@ import ai.rever.bossterm.compose.rendering.RenderingContext
 import ai.rever.bossterm.compose.rendering.TerminalCanvasRenderer
 import ai.rever.bossterm.compose.selection.SelectionEngine
 import ai.rever.bossterm.compose.settings.SettingsManager
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.TerminalSession
 import ai.rever.bossterm.compose.util.ColorUtils
 import ai.rever.bossterm.compose.util.KeyMappingUtils
@@ -120,6 +121,7 @@ fun ProperTerminal(
   sharedFont: FontFamily,
   onTabTitleChange: (String) -> Unit,
   onNewTab: (() -> Unit)? = null,
+  onSwitchShell: ((String) -> Unit)? = null,  // Windows: switch current tab's shell
   onNewPreConnectTab: () -> Unit = {},  // Ctrl+Shift+T: Test pre-connection input
   onCloseTab: () -> Unit = {},
   onNextTab: () -> Unit = {},
@@ -303,6 +305,10 @@ fun ProperTerminal(
   var lastDragPosition by remember { mutableStateOf<Offset?>(null) }
   var canvasSize by remember { mutableStateOf(Size.Zero) }
 
+  // Accumulated scroll delta for smooth trackpad scrolling on Windows
+  // Windows sends small fractional deltas that get truncated to 0 with toInt()
+  var accumulatedScrollDelta by remember { mutableStateOf(0f) }
+
   // Multi-click tracking for double-click (word select) and triple-click (line select)
   var lastClickTime by remember { mutableStateOf(0L) }
   var lastClickPosition by remember { mutableStateOf(Offset.Zero) }
@@ -412,7 +418,7 @@ fun ProperTerminal(
   }
 
   // Detect macOS for keyboard shortcut handling (Cmd vs Ctrl)
-  val isMacOS = remember { System.getProperty("os.name").lowercase().contains("mac") }
+  val isMacOS = remember { ShellCustomizationUtils.isMacOS() }
 
   // Create action registry with all built-in actions
   // Key on `tab` to ensure paste/write operations target the current tab
@@ -898,6 +904,7 @@ fun ProperTerminal(
                     onFind = { searchVisible = true },
                     onOpenFolder = { openFolderPicker() },
                     onNewTab = onNewTab,
+                    onSwitchShell = onSwitchShell,
                     onSplitVertical = onSplitVertical,
                     onSplitHorizontal = onSplitHorizontal,
                     onMoveToNewTab = onMoveToNewTab,
@@ -949,6 +956,7 @@ fun ProperTerminal(
                     onFind = { searchVisible = true },
                     onOpenFolder = { openFolderPicker() },
                     onNewTab = onNewTab,
+                    onSwitchShell = onSwitchShell,
                     onSplitVertical = onSplitVertical,
                     onSplitHorizontal = onSplitHorizontal,
                     onMoveToNewTab = onMoveToNewTab,
@@ -1333,9 +1341,16 @@ fun ProperTerminal(
           }
 
           // Local scroll (main buffer or Shift+Wheel override)
+          // Accumulate fractional deltas for smooth scrolling
+          // Windows trackpads send small fractional values, so multiplier helps
           val historySize = textBuffer.historyLinesCount
-          scrollOffset = (scrollOffset - delta.toInt()).coerceIn(0, historySize)
-          userScrollTrigger++  // Mark as user-initiated scroll for scrollbar visibility
+          accumulatedScrollDelta += delta * settings.scrollMultiplier
+          val scrollLines = accumulatedScrollDelta.toInt()
+          if (scrollLines != 0) {
+            scrollOffset = (scrollOffset - scrollLines).coerceIn(0, historySize)
+            accumulatedScrollDelta -= scrollLines.toFloat()
+            userScrollTrigger++  // Mark as user-initiated scroll for scrollbar visibility
+          }
         }
         .onPreviewKeyEvent { keyEvent ->
           // Track Ctrl/Cmd key state for hyperlink clicks and hover effects

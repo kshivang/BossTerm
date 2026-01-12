@@ -13,6 +13,7 @@ import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SystemInfoUtils
 import ai.rever.bossterm.compose.settings.components.*
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 
 /**
  * Performance settings section: performance mode, refresh rate, buffer, and blink settings.
@@ -26,9 +27,8 @@ fun PerformanceSettingsSection(
     modifier: Modifier = Modifier
 ) {
     // Platform detection
-    val osName = System.getProperty("os.name").lowercase()
-    val isMacOS = osName.contains("mac")
-    val isWindows = osName.contains("windows")
+    val isMacOS = ShellCustomizationUtils.isMacOS()
+    val isWindows = ShellCustomizationUtils.isWindows()
 
     // Calculate dynamic GPU cache limits based on system memory and user's max percent setting
     // Computed directly (no remember) to ensure reactivity when max percent changes

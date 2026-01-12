@@ -41,7 +41,7 @@ fun CLIInstallDialog(
         onCloseRequest = onDismiss,
         title = "Install Command Line Tool",
         resizable = false,
-        state = rememberDialogState(size = DpSize(450.dp, 280.dp))
+        state = rememberDialogState(size = DpSize(450.dp, 320.dp))
     ) {
         Column(
             modifier = Modifier
@@ -134,6 +134,10 @@ fun CLIInstallDialog(
                                         statusMessage = "Uninstalled successfully"
                                         isInstalled = false
                                     }
+                                    is CLIInstaller.InstallResult.SuccessWithWarning -> {
+                                        statusMessage = result.message
+                                        isInstalled = false
+                                    }
                                     is CLIInstaller.InstallResult.Cancelled -> {
                                         statusMessage = "Uninstall cancelled"
                                     }
@@ -148,7 +152,7 @@ fun CLIInstallDialog(
                             backgroundColor = Color(0xFF424242),
                             contentColor = Color.White
                         ),
-                        modifier = Modifier.height(36.dp)
+                        modifier = Modifier.height(40.dp)
                     ) {
                         Text("Uninstall", fontSize = 13.sp)
                     }
@@ -172,6 +176,10 @@ fun CLIInstallDialog(
                                         statusMessage = "Installed successfully! You can now use 'bossterm' command."
                                         isInstalled = true
                                     }
+                                    is CLIInstaller.InstallResult.SuccessWithWarning -> {
+                                        statusMessage = result.message
+                                        isInstalled = true
+                                    }
                                     is CLIInstaller.InstallResult.Cancelled -> {
                                         statusMessage = "Installation cancelled"
                                     }
@@ -186,7 +194,7 @@ fun CLIInstallDialog(
                             backgroundColor = Color(0xFF4A90E2),
                             contentColor = Color.White
                         ),
-                        modifier = Modifier.height(36.dp)
+                        modifier = Modifier.height(40.dp)
                     ) {
                         Text(
                             if (isInstalled) "Update" else "Install",
@@ -205,7 +213,7 @@ fun CLIInstallDialog(
                         backgroundColor = Color(0xFF424242),
                         contentColor = Color.White
                     ),
-                    modifier = Modifier.height(36.dp)
+                    modifier = Modifier.height(40.dp)
                 ) {
                     Text(
                         if (isFirstRun && !isInstalled) "Skip" else "Close",

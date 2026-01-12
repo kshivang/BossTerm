@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.util
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.platform.Typeface
@@ -125,7 +126,7 @@ val bundledSymbolFont: FontFamily by lazy {
  * Used for emoji with variation selectors (U+FE0F) to ensure color rendering.
  */
 val cachedAppleColorEmojiFont: FontFamily? by lazy {
-    if (System.getProperty("os.name")?.lowercase()?.contains("mac") != true) {
+    if (!ShellCustomizationUtils.isMacOS()) {
         null
     } else {
         runCatching {

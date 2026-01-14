@@ -1198,6 +1198,7 @@ fun GhAuthStep(
                     // If auth failed/cancelled, user can still click buttons
                 },
                 onExit = { /* Terminal closed - do nothing */ },
+                onContextMenuOpenAsync = { },  // Skip async detection to prevent focus issues in dialog
                 settingsOverride = TerminalSettingsOverride(
                     fontSize = 12f
                 ),

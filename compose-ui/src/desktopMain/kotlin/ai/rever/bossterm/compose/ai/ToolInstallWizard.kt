@@ -123,10 +123,11 @@ fun ToolInstallWizard(
                 clearLine?.invoke()
                 // Echo success message
                 terminalWriter("echo '✓ ${tool.displayName} installed successfully!'\n")
-                // Run original command in a fresh login shell to pick up PATH changes
+                // Run original command with nvm sourced (login non-interactive shell doesn't source .zshrc)
                 if (commandToRunAfter != null) {
                     val escapedCmd = commandToRunAfter.replace("'", "'\\''")
-                    terminalWriter("\$SHELL -l -c '$escapedCmd'\n")
+                    // Source nvm explicitly since $SHELL -l -c doesn't source .zshrc/.bashrc
+                    terminalWriter("export NVM_DIR=\"\$HOME/.nvm\" && [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\" && $escapedCmd\n")
                 }
             }
             onComplete(success)

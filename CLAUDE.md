@@ -46,6 +46,14 @@ macOS: `FontFamily.Default`. Linux: bundled `NotoSansSymbols2-Regular.ttf`.
 ### Blocking Data Stream
 Single `BossEmulator` with `BlockingTerminalDataStream` prevents CSI truncation.
 
+### Platform Detection
+Use `ShellCustomizationUtils` for platform checks - never raw `System.getProperty("os.name")`:
+- `ShellCustomizationUtils.isWindows()`
+- `ShellCustomizationUtils.isMacOS()`
+- `ShellCustomizationUtils.isLinux()`
+
+Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/ShellCustomizationUtils.kt`
+
 ## Key Files
 
 **Rendering**
@@ -99,4 +107,4 @@ state.write("cmd\n", tabId = "id")   // Target tab by ID
 See `.claude/rules/shell-integration.md` for OSC 7/133 setup.
 
 ---
-*Last Updated: January 9, 2026*
+*Last Updated: January 12, 2026*

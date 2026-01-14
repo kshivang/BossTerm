@@ -7,6 +7,7 @@ import ai.rever.bossterm.compose.ai.AIAssistantDetector
 import ai.rever.bossterm.compose.ai.AIAssistantLauncher
 import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.ai.AIInstallDialogParams
+import ai.rever.bossterm.compose.search.RabinKarpSearch
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.splits.SplitViewState
 import ai.rever.bossterm.compose.tabs.TabController
@@ -629,7 +630,111 @@ class TabbedTerminalState {
      * @return true if installation was triggered, false if tab not found
      */
     fun installGitHubCLI(tabId: String): Boolean = installAIAssistant("gh", tabId)
+
+    // ========== Pattern Search API ==========
+
+    /**
+     * Search for a text pattern in the active terminal buffer.
+     *
+     * This uses the Rabin-Karp algorithm for efficient O(n+m) substring search
+     * across the terminal buffer (including scrollback history).
+     *
+     * @param pattern The text pattern to search for
+     * @param ignoreCase If true, performs case-insensitive search (default: false)
+     * @return List of matches with text and coordinates, or empty list if not found or no active tab
+     */
+    fun findPattern(pattern: String, ignoreCase: Boolean = false): List<PatternMatch> {
+        if (pattern.isEmpty()) return emptyList()
+
+        // Get the active tab's split state
+        val activeId = activeTabId ?: return emptyList()
+        val splitState = splitStates[activeId] ?: return emptyList()
+        val session = splitState.getFocusedSession() ?: return emptyList()
+
+        // Create snapshot for searching (RabinKarpSearch expects BufferSnapshot)
+        val snapshot = session.textBuffer.createSnapshot()
+
+        // Search using Rabin-Karp algorithm
+        val matches = RabinKarpSearch.searchBuffer(snapshot, pattern, ignoreCase)
+
+        // Extract matched text from buffer
+        return matches.mapNotNull { match ->
+            val line = snapshot.getLine(match.row)
+            val endCol = minOf(match.column + pattern.length, line.text.length)
+            if (match.column < line.text.length) {
+                PatternMatch(
+                    text = line.text.substring(match.column, endCol),
+                    row = match.row,
+                    column = match.column
+                )
+            } else null
+        }
+    }
+
+    /**
+     * Search for a regex pattern in the active terminal buffer.
+     *
+     * This searches line-by-line using Kotlin's Regex engine.
+     * Use this for complex patterns like OTP codes (e.g., "[A-Z0-9]{4}-[A-Z0-9]{4}").
+     *
+     * @param regexPattern The regex pattern to search for
+     * @param ignoreCase If true, performs case-insensitive search (default: false)
+     * @return List of matches with text and coordinates, or empty list if not found or no active tab
+     */
+    fun findPatternRegex(regexPattern: String, ignoreCase: Boolean = false): List<PatternMatch> {
+        if (regexPattern.isEmpty()) return emptyList()
+
+        // Get the active tab's split state
+        val activeId = activeTabId ?: return emptyList()
+        val splitState = splitStates[activeId] ?: return emptyList()
+        val session = splitState.getFocusedSession() ?: return emptyList()
+
+        // Create lock-free snapshot for searching
+        val snapshot = session.textBuffer.createIncrementalSnapshot()
+
+        // Compile regex with options
+        val options = if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()
+        val regex = try {
+            Regex(regexPattern, options)
+        } catch (e: Exception) {
+            return emptyList() // Invalid regex
+        }
+
+        val matches = mutableListOf<PatternMatch>()
+
+        // Search from history through screen buffer
+        for (row in -snapshot.historyLinesCount until snapshot.height) {
+            val line = snapshot.getLine(row)
+            val text = line.text
+
+            // Find all matches in this line
+            regex.findAll(text).forEach { matchResult ->
+                matches.add(
+                    PatternMatch(
+                        text = matchResult.value,
+                        row = row,
+                        column = matchResult.range.first
+                    )
+                )
+            }
+        }
+
+        return matches
+    }
 }
+
+/**
+ * Represents a pattern match found in the terminal buffer.
+ *
+ * @property text The actual matched text extracted from the buffer
+ * @property row The row number where the match was found (negative for history, 0+ for screen)
+ * @property column The column position where the match starts (0-based)
+ */
+data class PatternMatch(
+    val text: String,
+    val row: Int,
+    val column: Int
+)
 
 /**
  * Remember a TabbedTerminalState for controlling a TabbedTerminal composable.

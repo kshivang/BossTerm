@@ -118,6 +118,7 @@ import javax.swing.JFileChooser
 fun ProperTerminal(
   tab: TerminalSession,
   isActiveTab: Boolean,
+  autoFocus: Boolean = false,  // Request focus after a delay (useful for dialogs)
   sharedFont: FontFamily,
   onTabTitleChange: (String) -> Unit,
   onNewTab: (() -> Unit)? = null,
@@ -600,6 +601,15 @@ fun ProperTerminal(
     }
   }
 
+  // AutoFocus: Request focus after a longer delay (for dialogs/embedded terminals)
+  // This ensures focus is requested after the parent container is fully composed
+  LaunchedEffect(autoFocus) {
+    if (autoFocus) {
+      delay(200)  // Longer delay to ensure dialog is fully ready
+      focusRequester.requestFocus()
+    }
+  }
+
   // Resize PTY when it becomes available
   // This fixes the initial size issue: onGloballyPositioned fires and resizes the terminal buffer,
   // but processHandle is NULL at that point. When the PTY connects, we need to sync its size.
@@ -793,8 +803,9 @@ fun ProperTerminal(
             onPaneFocus()
 
             // Check if mouse event should be forwarded to terminal application
+            // NOTE: Exclude right-click (Secondary) from forwarding so context menu always works
             val shiftPressed = event.isShiftPressed()
-            if (settings.enableMouseReporting && isRemoteMouseAction(shiftPressed)) {
+            if (settings.enableMouseReporting && isRemoteMouseAction(shiftPressed) && event.button != PointerButton.Secondary) {
               // If button is null, skip remote forwarding and fall through to local handling
               // Button can be null for touch events, stylus input, or exotic input devices
               event.button?.let { button ->
@@ -810,7 +821,7 @@ fun ProperTerminal(
               }
             }
 
-            // Check for right-click (secondary button)
+            // Check for right-click (secondary button) - always handle locally for context menu
             if (event.button == PointerButton.Secondary) {
               // Capture values needed for showing menu
               val pos = change.position
@@ -1351,6 +1362,8 @@ fun ProperTerminal(
             accumulatedScrollDelta -= scrollLines.toFloat()
             userScrollTrigger++  // Mark as user-initiated scroll for scrollbar visibility
           }
+          // Always consume scroll events to prevent propagation to parent containers
+          change.consume()
         }
         .onPreviewKeyEvent { keyEvent ->
           // Track Ctrl/Cmd key state for hyperlink clicks and hover effects

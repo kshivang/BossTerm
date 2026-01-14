@@ -2,12 +2,16 @@ package ai.rever.bossterm.compose.onboarding
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogWindow
@@ -32,48 +36,53 @@ import java.util.concurrent.TimeUnit
  */
 sealed class OnboardingStep(val index: Int, val displayName: String) {
     object Welcome : OnboardingStep(0, "Welcome")
-    object Prerequisites : OnboardingStep(1, "Prerequisites")  // Windows only
-    object ShellSelection : OnboardingStep(2, "Shell")
-    object ShellCustomization : OnboardingStep(3, "Customization")
-    object VersionControl : OnboardingStep(4, "Git")
-    object AIAssistants : OnboardingStep(5, "AI Assistants")
-    object Review : OnboardingStep(6, "Review")
-    object Installing : OnboardingStep(7, "Installing")
-    object GhAuth : OnboardingStep(8, "GitHub Auth")
-    object Complete : OnboardingStep(9, "Complete")
+    object Password : OnboardingStep(1, "Password")  // Admin password for installations
+    object Prerequisites : OnboardingStep(2, "Prerequisites")  // Windows and macOS
+    object ShellSelection : OnboardingStep(3, "Shell")
+    object ShellCustomization : OnboardingStep(4, "Customization")
+    object VersionControl : OnboardingStep(5, "Git")
+    object AIAssistants : OnboardingStep(6, "AI Assistants")
+    object Review : OnboardingStep(7, "Review")
+    object Installing : OnboardingStep(8, "Installing")
+    object GhAuth : OnboardingStep(9, "GitHub Auth")
+    object Complete : OnboardingStep(10, "Complete")
 
     companion object {
-        // All steps including Prerequisites (Windows only)
-        val allStepsWindows: List<OnboardingStep> by lazy {
+        // All steps including Password and Prerequisites (Windows and macOS)
+        val allStepsWithPrerequisites: List<OnboardingStep> by lazy {
             listOf(
-                Welcome, Prerequisites, ShellSelection, ShellCustomization,
+                Welcome, Password, Prerequisites, ShellSelection, ShellCustomization,
                 VersionControl, AIAssistants, Review, Installing, GhAuth, Complete
             )
         }
-        // Steps for Unix (no Prerequisites)
-        val allStepsUnix: List<OnboardingStep> by lazy {
+        // Steps for Linux (has Password for sudo, but no Prerequisites/package manager step)
+        val allStepsLinux: List<OnboardingStep> by lazy {
             listOf(
-                Welcome, ShellSelection, ShellCustomization,
+                Welcome, Password, ShellSelection, ShellCustomization,
                 VersionControl, AIAssistants, Review, Installing, GhAuth, Complete
             )
         }
-        // Visible steps for Windows (with Prerequisites)
-        val visibleStepsWindows: List<OnboardingStep> by lazy {
+        // Visible steps with Password and Prerequisites (Windows and macOS)
+        val visibleStepsWithPrerequisites: List<OnboardingStep> by lazy {
             listOf(
-                Welcome, Prerequisites, ShellSelection, ShellCustomization,
+                Welcome, Password, Prerequisites, ShellSelection, ShellCustomization,
                 VersionControl, AIAssistants, Review
             )
         }
-        // Visible steps for Unix (no Prerequisites)
-        val visibleStepsUnix: List<OnboardingStep> by lazy {
+        // Visible steps for Linux (has Password, but no Prerequisites)
+        val visibleStepsLinux: List<OnboardingStep> by lazy {
             listOf(
-                Welcome, ShellSelection, ShellCustomization,
+                Welcome, Password, ShellSelection, ShellCustomization,
                 VersionControl, AIAssistants, Review
             )
         }
 
-        fun allSteps(isWindows: Boolean) = if (isWindows) allStepsWindows else allStepsUnix
-        fun visibleSteps(isWindows: Boolean) = if (isWindows) visibleStepsWindows else visibleStepsUnix
+        // Check if platform needs Prerequisites step (Windows and macOS)
+        fun needsPrerequisites(): Boolean =
+            ShellCustomizationUtils.isWindows() || ShellCustomizationUtils.isMacOS()
+
+        fun allSteps(needsPrerequisites: Boolean) = if (needsPrerequisites) allStepsWithPrerequisites else allStepsLinux
+        fun visibleSteps(needsPrerequisites: Boolean) = if (needsPrerequisites) visibleStepsWithPrerequisites else visibleStepsLinux
     }
 }
 
@@ -145,6 +154,8 @@ data class InstalledTools(
     // Windows package managers
     val winget: Boolean = false,
     val chocolatey: Boolean = false,
+    // macOS package managers
+    val homebrew: Boolean = false,
     // Customization tools
     val starship: Boolean = false,
     val ohMyZsh: Boolean = false,
@@ -164,6 +175,12 @@ data class InstalledTools(
 
     val hasWindowsPackageManager: Boolean
         get() = winget || chocolatey
+
+    val hasMacPackageManager: Boolean
+        get() = homebrew
+
+    val hasPackageManager: Boolean
+        get() = winget || chocolatey || homebrew
 }
 
 /**
@@ -186,9 +203,15 @@ fun OnboardingWizard(
     var installCommand by remember { mutableStateOf("") }
     var installationComplete by remember { mutableStateOf(false) }
     var ghInstalledDuringWizard by remember { mutableStateOf(false) }
+    var adminPassword by remember { mutableStateOf("") }  // Admin password for sudo commands
+
+    // Focus requester for primary action button (Get Started / Next)
+    val primaryButtonFocusRequester = remember { FocusRequester() }
 
     // Platform detection
     val isWindows = remember { ShellCustomizationUtils.isWindows() }
+    val isMac = remember { ShellCustomizationUtils.isMacOS() }
+    val needsPrerequisites = remember { isWindows || isMac }
 
     val scope = rememberCoroutineScope()
 
@@ -196,6 +219,20 @@ fun OnboardingWizard(
     LaunchedEffect(Unit) {
         installedTools = detectInstalledTools()
         isDetecting = false
+    }
+
+    // Request focus on primary button when step changes
+    LaunchedEffect(currentStep) {
+        // Focus the primary button for steps that have one
+        if (currentStep !is OnboardingStep.Installing &&
+            currentStep !is OnboardingStep.GhAuth &&
+            currentStep !is OnboardingStep.Complete) {
+            try {
+                primaryButtonFocusRequester.requestFocus()
+            } catch (_: Exception) {
+                // Ignore if focus request fails
+            }
+        }
     }
 
     // Mark onboarding as completed on dismiss or complete
@@ -229,7 +266,7 @@ fun OnboardingWizard(
                     currentStep !is OnboardingStep.Complete) {
                     StepIndicator(
                         currentStep = currentStep,
-                        steps = OnboardingStep.visibleSteps(isWindows)
+                        steps = OnboardingStep.visibleSteps(needsPrerequisites)
                     )
                     Spacer(modifier = Modifier.height(24.dp))
                 }
@@ -252,6 +289,7 @@ fun OnboardingWizard(
                                 OnboardingStep.Welcome -> WelcomeStep()
                                 OnboardingStep.Prerequisites -> PrerequisitesStep(
                                     installedTools = installedTools,
+                                    adminPassword = adminPassword,
                                     onRefreshTools = {
                                         scope.launch {
                                             isDetecting = true
@@ -259,6 +297,10 @@ fun OnboardingWizard(
                                             isDetecting = false
                                         }
                                     }
+                                )
+                                OnboardingStep.Password -> PasswordStep(
+                                    password = adminPassword,
+                                    onPasswordChange = { adminPassword = it }
                                 )
                                 OnboardingStep.ShellSelection -> ShellSelectionStep(
                                     selections = selections,
@@ -287,14 +329,18 @@ fun OnboardingWizard(
                                 )
                                 OnboardingStep.Installing -> InstallingStep(
                                     installCommand = installCommand,
-                                    onComplete = {
-                                        installationComplete = true
-                                        // Go to GhAuth step if gh was installed during wizard
-                                        if (ghInstalledDuringWizard) {
-                                            currentStep = OnboardingStep.GhAuth
-                                        } else {
-                                            currentStep = OnboardingStep.Complete
+                                    adminPassword = adminPassword,
+                                    onComplete = { success ->
+                                        if (success) {
+                                            installationComplete = true
+                                            // Go to GhAuth step if gh was installed during wizard
+                                            if (ghInstalledDuringWizard) {
+                                                currentStep = OnboardingStep.GhAuth
+                                            } else {
+                                                currentStep = OnboardingStep.Complete
+                                            }
                                         }
+                                        // On failure, stay on Installing step - user can see error message
                                     }
                                 )
                                 OnboardingStep.GhAuth -> GhAuthStep(
@@ -342,7 +388,7 @@ fun OnboardingWizard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Back button (not on Welcome, Installing, GhAuth, or Complete)
-                    val allSteps = OnboardingStep.allSteps(isWindows)
+                    val allSteps = OnboardingStep.allSteps(needsPrerequisites)
                     val currentIndex = allSteps.indexOf(currentStep)
                     if (currentIndex > 0 &&
                         currentStep !is OnboardingStep.Installing &&
@@ -389,35 +435,67 @@ fun OnboardingWizard(
                             OnboardingStep.Welcome -> {
                                 Button(
                                     onClick = {
-                                        // On Windows, go to Prerequisites first; on Unix, go to ShellSelection
-                                        currentStep = if (isWindows) OnboardingStep.Prerequisites else OnboardingStep.ShellSelection
+                                        // All platforms go to Password (needed for sudo on all platforms)
+                                        currentStep = OnboardingStep.Password
                                     },
                                     colors = ButtonDefaults.buttonColors(
                                         backgroundColor = AccentColor,
                                         contentColor = Color.White
-                                    )
+                                    ),
+                                    modifier = Modifier
+                                        .focusRequester(primaryButtonFocusRequester)
+                                        .focusable()
+                                        .onKeyEvent { event ->
+                                            if (event.key == Key.Enter && event.type == KeyEventType.KeyUp) {
+                                                currentStep = OnboardingStep.Password
+                                                true
+                                            } else false
+                                        }
                                 ) {
                                     Text("Get Started")
                                 }
                             }
                             OnboardingStep.Review -> {
                                 val hasSelections = hasAnySelection(selections, installedTools)
-                                Button(
-                                    onClick = {
-                                        if (hasSelections) {
-                                            // Track if gh will be installed
-                                            ghInstalledDuringWizard = selections.installGitHubCLI && !installedTools.gh
-                                            installCommand = buildInstallCommand(selections, installedTools)
-                                            currentStep = OnboardingStep.Installing
+                                val doInstallOrFinish = {
+                                    if (hasSelections) {
+                                        // Track if gh will be installed
+                                        ghInstalledDuringWizard = selections.installGitHubCLI && !installedTools.gh
+
+                                        // Build script content and write to file
+                                        val scriptContent = buildInstallCommand(selections, installedTools)
+                                        val isWindows = System.getProperty("os.name")?.lowercase()?.contains("windows") == true
+                                        if (isWindows) {
+                                            // Windows: run command directly
+                                            installCommand = scriptContent
                                         } else {
-                                            markCompleted()
-                                            onComplete()
+                                            // Unix: write script to file and run it
+                                            val scriptFile = File("/tmp/bossterm_install.sh")
+                                            scriptFile.writeText(scriptContent)
+                                            scriptFile.setExecutable(true)
+                                            installCommand = "/tmp/bossterm_install.sh"
                                         }
-                                    },
+                                        currentStep = OnboardingStep.Installing
+                                    } else {
+                                        markCompleted()
+                                        onComplete()
+                                    }
+                                }
+                                Button(
+                                    onClick = { doInstallOrFinish() },
                                     colors = ButtonDefaults.buttonColors(
                                         backgroundColor = AccentColor,
                                         contentColor = Color.White
-                                    )
+                                    ),
+                                    modifier = Modifier
+                                        .focusRequester(primaryButtonFocusRequester)
+                                        .focusable()
+                                        .onKeyEvent { event ->
+                                            if (event.key == Key.Enter && event.type == KeyEventType.KeyUp) {
+                                                doInstallOrFinish()
+                                                true
+                                            } else false
+                                        }
                                 ) {
                                     Text(if (hasSelections) "Install Selected" else "Finish")
                                 }
@@ -432,29 +510,64 @@ fun OnboardingWizard(
                                 // CompleteStep handles its own buttons
                             }
                             OnboardingStep.Prerequisites -> {
-                                // Prerequisites step on Windows
+                                // Prerequisites step on Windows and macOS - use normal navigation
+                                val goToNextFromPrereqs = {
+                                    val nextIndex = allSteps.indexOf(currentStep) + 1
+                                    if (nextIndex < allSteps.size) {
+                                        currentStep = allSteps[nextIndex]
+                                    }
+                                }
                                 Button(
-                                    onClick = { currentStep = OnboardingStep.ShellSelection },
+                                    onClick = { goToNextFromPrereqs() },
                                     colors = ButtonDefaults.buttonColors(
                                         backgroundColor = AccentColor,
                                         contentColor = Color.White
-                                    )
+                                    ),
+                                    modifier = Modifier
+                                        .focusRequester(primaryButtonFocusRequester)
+                                        .focusable()
+                                        .onKeyEvent { event ->
+                                            if (event.key == Key.Enter && event.type == KeyEventType.KeyUp) {
+                                                goToNextFromPrereqs()
+                                                true
+                                            } else false
+                                        }
                                 ) {
                                     Text("Next")
                                 }
                             }
                             else -> {
-                                Button(
-                                    onClick = {
+                                // Disable Next on Password step if password is empty
+                                val canProceed = when (currentStep) {
+                                    is OnboardingStep.Password -> adminPassword.isNotEmpty()
+                                    else -> true
+                                }
+                                val goToNextStep = {
+                                    if (canProceed) {
                                         val nextIndex = allSteps.indexOf(currentStep) + 1
                                         if (nextIndex < allSteps.size) {
                                             currentStep = allSteps[nextIndex]
                                         }
-                                    },
+                                    }
+                                }
+                                Button(
+                                    onClick = { goToNextStep() },
+                                    enabled = canProceed,
                                     colors = ButtonDefaults.buttonColors(
                                         backgroundColor = AccentColor,
-                                        contentColor = Color.White
-                                    )
+                                        contentColor = Color.White,
+                                        disabledBackgroundColor = AccentColor.copy(alpha = 0.5f),
+                                        disabledContentColor = Color.White.copy(alpha = 0.5f)
+                                    ),
+                                    modifier = Modifier
+                                        .focusRequester(primaryButtonFocusRequester)
+                                        .focusable()
+                                        .onKeyEvent { event ->
+                                            if (event.key == Key.Enter && event.type == KeyEventType.KeyUp) {
+                                                goToNextStep()
+                                                true
+                                            } else false
+                                        }
                                 ) {
                                     Text("Next")
                                 }
@@ -517,6 +630,7 @@ private fun hasAnySelection(selections: OnboardingSelections, installed: Install
  */
 suspend fun detectInstalledTools(): InstalledTools = withContext(Dispatchers.IO) {
     val isWindows = ShellCustomizationUtils.isWindows()
+    val isMac = ShellCustomizationUtils.isMacOS()
 
     InstalledTools(
         // Unix shells
@@ -529,6 +643,8 @@ suspend fun detectInstalledTools(): InstalledTools = withContext(Dispatchers.IO)
         // Windows package managers
         winget = if (isWindows) isCommandInstalled("winget") else false,
         chocolatey = if (isWindows) isCommandInstalled("choco") else false,
+        // macOS package managers - check file directly for more reliable detection
+        homebrew = if (isMac) isHomebrewInstalled() else false,
         // Customization tools
         starship = ShellCustomizationUtils.isStarshipInstalled() || isCommandInstalled("starship"),
         ohMyZsh = if (!isWindows) ShellCustomizationUtils.isOhMyZshInstalled() else false,
@@ -543,6 +659,18 @@ suspend fun detectInstalledTools(): InstalledTools = withContext(Dispatchers.IO)
         codex = isCommandInstalled("codex"),
         opencode = isCommandInstalled("opencode")
     )
+}
+
+/**
+ * Check if Homebrew is installed by directly checking known installation paths.
+ * More reliable than using login shell detection.
+ */
+private fun isHomebrewInstalled(): Boolean {
+    // Apple Silicon Macs
+    if (File("/opt/homebrew/bin/brew").exists()) return true
+    // Intel Macs
+    if (File("/usr/local/bin/brew").exists()) return true
+    return false
 }
 
 /**
@@ -741,7 +869,7 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
         if (!shellInstalled && !isWindows) {
             // Only install shells on Unix (Windows shells are built-in)
             when {
-                isMac -> sudoCommands.add("brew install $shellCmd")
+                isMac -> userCommands.add("brew install $shellCmd")
                 else -> sudoCommands.add(getLinuxInstall(shellCmd))
             }
         }
@@ -811,17 +939,20 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
                         if (installed.prezto) {
                             userCommands.add(uninstallPrezto)
                         }
-                        // Starship install script + shell config
+                        // Starship install script + shell config + PATH setup
                         userCommands.add("curl -sS https://starship.rs/install.sh | sh -s -- -y")
                         postInstallCommands.add(
                             "SHELL_NAME=\$(basename \"\$SHELL\") && " +
                             "if [ \"\$SHELL_NAME\" = \"zsh\" ]; then " +
+                            "  grep -q '/usr/local/bin' ~/.zshrc 2>/dev/null || grep -q '/usr/local/bin' ~/.zprofile 2>/dev/null || echo 'export PATH=\"/usr/local/bin:\$PATH\"' >> ~/.zprofile; " +
                             "  grep -q 'starship init zsh' ~/.zshrc 2>/dev/null || echo 'eval \"\$(starship init zsh)\"' >> ~/.zshrc; " +
                             "elif [ \"\$SHELL_NAME\" = \"bash\" ]; then " +
+                            "  grep -q '/usr/local/bin' ~/.bashrc 2>/dev/null || grep -q '/usr/local/bin' ~/.bash_profile 2>/dev/null || echo 'export PATH=\"/usr/local/bin:\$PATH\"' >> ~/.bash_profile; " +
                             "  grep -q 'starship init bash' ~/.bashrc 2>/dev/null || echo 'eval \"\$(starship init bash)\"' >> ~/.bashrc; " +
                             "elif [ \"\$SHELL_NAME\" = \"fish\" ]; then " +
+                            "  fish -c 'contains /usr/local/bin \$fish_user_paths' 2>/dev/null || fish -c 'set -U fish_user_paths /usr/local/bin \$fish_user_paths' 2>/dev/null; " +
                             "  mkdir -p ~/.config/fish && grep -q 'starship init fish' ~/.config/fish/config.fish 2>/dev/null || echo 'starship init fish | source' >> ~/.config/fish/config.fish; " +
-                            "fi && echo '✓ Starship configured'"
+                            "fi && echo '✓ Starship installed and PATH configured'"
                         )
                     }
                 }
@@ -876,14 +1007,14 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
     // Git tools
     if (selections.installGit && !installed.git) {
         when {
-            isMac -> sudoCommands.add("brew install git")
+            isMac -> userCommands.add("brew install git")
             isWindows -> userCommands.add(getWindowsInstall("Git.Git", "git"))
             else -> sudoCommands.add(getLinuxInstall("git"))
         }
     }
     if (selections.installGitHubCLI && !installed.gh) {
         when {
-            isMac -> sudoCommands.add("brew install gh")
+            isMac -> userCommands.add("brew install gh")
             isWindows -> userCommands.add(getWindowsInstall("GitHub.cli", "gh"))
             else -> sudoCommands.add(getLinuxInstall("gh"))
         }
@@ -931,27 +1062,62 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
                 "npm install -g $npmPackages\""
             }
             else -> {
-                "{ command -v npm >/dev/null 2>&1 || { " +
-                "echo 'Installing Node.js via nvm...' && " +
-                "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh | bash && " +
+                // Linux: use nvm to install Node.js and npm if not available
+                // If npm is missing (even with node installed), reinstall node to get npm back
                 "export NVM_DIR=\"\$HOME/.nvm\" && " +
-                "[ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\" && " +
-                "nvm install --lts; }; } && " +
-                "export NVM_DIR=\"\$HOME/.nvm\" && [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\" && " +
+                "if [ ! -s \"\$NVM_DIR/nvm.sh\" ]; then " +
+                "echo 'Installing nvm...' && " +
+                "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh | bash; " +
+                "fi && " +
+                ". \"\$NVM_DIR/nvm.sh\" && " +
+                "if ! command -v npm >/dev/null 2>&1; then " +
+                "echo 'Installing Node.js...' && " +
+                "NODE_VER=\$(nvm current 2>/dev/null) && " +
+                "if [ \"\$NODE_VER\" != \"none\" ] && [ \"\$NODE_VER\" != \"system\" ]; then nvm uninstall \"\$NODE_VER\" 2>/dev/null; fi && " +
+                "nvm install --lts && nvm alias default node; " +
+                "fi && " +
+                "nvm use default && " +
                 "npm install -g $npmPackages"
             }
         }
         userCommands.add(nodeCheckAndInstall)
+
+        // Add npm global bin to PATH if not already present
+        if (!isWindows) {
+            postInstallCommands.add(
+                "NPM_BIN=\$(npm bin -g 2>/dev/null) && " +
+                "if [ -n \"\$NPM_BIN\" ] && [ -d \"\$NPM_BIN\" ]; then " +
+                "  SHELL_NAME=\$(basename \"\$SHELL\") && " +
+                "  if [ \"\$SHELL_NAME\" = \"zsh\" ]; then " +
+                "    grep -q \"\$NPM_BIN\" ~/.zshrc 2>/dev/null || grep -q \"\$NPM_BIN\" ~/.zprofile 2>/dev/null || " +
+                "    echo \"export PATH=\\\"\$NPM_BIN:\\\$PATH\\\"\" >> ~/.zprofile; " +
+                "  elif [ \"\$SHELL_NAME\" = \"bash\" ]; then " +
+                "    grep -q \"\$NPM_BIN\" ~/.bashrc 2>/dev/null || grep -q \"\$NPM_BIN\" ~/.bash_profile 2>/dev/null || " +
+                "    echo \"export PATH=\\\"\$NPM_BIN:\\\$PATH\\\"\" >> ~/.bash_profile; " +
+                "  elif [ \"\$SHELL_NAME\" = \"fish\" ]; then " +
+                "    fish -c \"contains \$NPM_BIN \\\$fish_user_paths\" 2>/dev/null || " +
+                "    fish -c \"set -U fish_user_paths \$NPM_BIN \\\$fish_user_paths\" 2>/dev/null; " +
+                "  fi && " +
+                "  echo '✓ npm global bin added to PATH'; " +
+                "fi"
+            )
+        }
     }
 
-    // Build final command
+    // Build final command list
     val allCommands = mutableListOf<String>()
 
     // Group sudo commands (only for non-Windows)
     if (sudoCommands.isNotEmpty() && !isWindows) {
-        allCommands.add("echo '🔐 Administrator password required for installation...'")
-        allCommands.add("sudo -v")  // Request sudo upfront
+        allCommands.add("echo '🔐 Authenticating administrator access...'")
+        // Use sudo -S to read password from stdin (provided via env var)
+        allCommands.add("echo \"\$BOSSTERM_SUDO_PWD\" | sudo -S -v 2>/dev/null")
+        // Keep sudo credentials alive in background
+        allCommands.add("(while true; do sudo -n true; sleep 50; kill -0 \"\$\$\" 2>/dev/null || exit; done) &")
+        allCommands.add("SUDO_KEEPALIVE_PID=\$!")
         allCommands.addAll(sudoCommands)
+        // Kill the keepalive process when done
+        allCommands.add("kill \$SUDO_KEEPALIVE_PID 2>/dev/null || true")
     } else if (sudoCommands.isNotEmpty()) {
         allCommands.addAll(sudoCommands)
     }
@@ -963,7 +1129,21 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
     allCommands.addAll(postInstallCommands)
 
     // Add completion message
-    allCommands.add("echo '' && echo '✓ Installation complete!'")
+    allCommands.add("echo ''")
+    allCommands.add("echo '✓ Installation complete!'")
 
-    return allCommands.joinToString(" && ")
+    // For Windows, join with && (PowerShell handles long commands better)
+    // For Unix, return bash script content (caller will write to file)
+    return if (isWindows) {
+        allCommands.joinToString(" && ")
+    } else {
+        // Return script content - caller will write to file and run it
+        buildString {
+            appendLine("#!/bin/bash")
+            appendLine("set -e")  // Exit on first error
+            allCommands.forEach { cmd ->
+                appendLine(cmd)
+            }
+        }
+    }
 }

@@ -19,8 +19,24 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.material.IconButton
+import androidx.compose.material.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import ai.rever.bossterm.compose.EmbeddableTerminal
+import ai.rever.bossterm.compose.TabbedTerminal
+import ai.rever.bossterm.compose.rememberTabbedTerminalState
 import ai.rever.bossterm.compose.ai.AIAssistantIds
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import kotlinx.coroutines.delay
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
@@ -115,16 +131,109 @@ fun WelcomeStep() {
 }
 
 /**
- * Prerequisites step for Windows package managers.
- * Shows winget and Chocolatey status and allows installing them.
+ * Password step for collecting admin password.
+ * This password will be used for all sudo commands during installations.
+ */
+@Composable
+fun PasswordStep(
+    password: String,
+    onPasswordChange: (String) -> Unit
+) {
+    var passwordVisible by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+    ) {
+        Text(
+            text = "Administrator Password",
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold,
+            color = TextPrimary
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Some installations require administrator privileges. Enter your password once here, and it will be used for all installations.",
+            fontSize = 14.sp,
+            color = TextSecondary
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+
+        val passwordLabel = when {
+            ShellCustomizationUtils.isMacOS() -> "macOS Password"
+            ShellCustomizationUtils.isWindows() -> "Windows Password"
+            else -> "System Password"
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            backgroundColor = SurfaceColor,
+            border = BorderStroke(1.dp, BorderColor)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = passwordLabel,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = TextPrimary
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = onPasswordChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    visualTransformation = if (passwordVisible)
+                        VisualTransformation.None
+                    else
+                        PasswordVisualTransformation(),
+                    singleLine = true,
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(
+                                imageVector = if (passwordVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                                contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                                tint = TextMuted
+                            )
+                        }
+                    },
+                    colors = TextFieldDefaults.outlinedTextFieldColors(
+                        textColor = TextPrimary,
+                        cursorColor = AccentColor,
+                        focusedBorderColor = AccentColor,
+                        unfocusedBorderColor = BorderColor,
+                        backgroundColor = BackgroundColor
+                    ),
+                    placeholder = { Text("Enter your password", color = TextMuted) }
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Your password is stored only in memory during this session and is never saved to disk.",
+                    fontSize = 12.sp,
+                    color = TextMuted
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Prerequisites step for package managers.
+ * Shows platform-appropriate package managers:
+ * - Windows: winget and Chocolatey
+ * - macOS: Homebrew
  */
 @Composable
 fun PrerequisitesStep(
     installedTools: InstalledTools,
+    adminPassword: String,  // Password passed from wizard
     onRefreshTools: () -> Unit
 ) {
+    // Platform detection
+    val isWindows = remember { ShellCustomizationUtils.isWindows() }
+    val isMac = remember { ShellCustomizationUtils.isMacOS() }
+
     var showWingetInstall by remember { mutableStateOf(false) }
     var showChocoInstall by remember { mutableStateOf(false) }
+    var showHomebrewInstall by remember { mutableStateOf(false) }
 
     val wingetInstallCommand = """
         powershell -Command "& {
@@ -174,6 +283,91 @@ fun PrerequisitesStep(
         }"
     """.trimIndent().replace("\n", " ")
 
+    // Homebrew installation command for macOS - writes script to temp file for reliable execution
+    // Uses sudo -S to read password from environment variable (passed via BOSSTERM_SUDO_PWD)
+    val homebrewInstallCommand = """
+cat > /tmp/bossterm_brew_install.sh << 'BREWINSTALL_EOF'
+#!/bin/bash
+set -e
+
+echo "Installing Homebrew..."
+echo ""
+echo "This will install Homebrew, the missing package manager for macOS."
+echo ""
+
+# Authenticate sudo using password from environment variable
+echo "${'$'}BOSSTERM_SUDO_PWD" | sudo -S -v 2>/dev/null
+
+# Keep sudo credentials alive in background
+(while true; do sudo -n true; sleep 50; kill -0 "$$" 2>/dev/null || exit; done) &
+SUDO_KEEPALIVE_PID=${'$'}!
+
+# Cleanup function
+cleanup() {
+    kill ${'$'}SUDO_KEEPALIVE_PID 2>/dev/null || true
+    rm -f /tmp/bossterm_brew_install.sh
+}
+trap cleanup EXIT
+
+echo ""
+echo "Installing Homebrew (this may take a few minutes)..."
+echo ""
+
+# Run Homebrew installer in non-interactive mode
+NONINTERACTIVE=1 /bin/bash -c "${'$'}(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+echo ""
+echo "Configuring PATH..."
+
+# Detect brew installation path
+BREW_PATH=""
+if [ -f "/opt/homebrew/bin/brew" ]; then
+    BREW_PATH="/opt/homebrew/bin/brew"
+elif [ -f "/usr/local/bin/brew" ]; then
+    BREW_PATH="/usr/local/bin/brew"
+fi
+
+if [ -n "${'$'}BREW_PATH" ]; then
+    SHELL_NAME=${'$'}(basename "${'$'}SHELL")
+
+    if [ "${'$'}SHELL_NAME" = "zsh" ]; then
+        PROFILE_FILE="${'$'}HOME/.zprofile"
+    elif [ "${'$'}SHELL_NAME" = "bash" ]; then
+        PROFILE_FILE="${'$'}HOME/.bash_profile"
+        [ ! -f "${'$'}PROFILE_FILE" ] && PROFILE_FILE="${'$'}HOME/.bashrc"
+    else
+        PROFILE_FILE="${'$'}HOME/.profile"
+    fi
+
+    # Remove any existing brew shellenv lines (commented or not)
+    if [ -f "${'$'}PROFILE_FILE" ]; then
+        grep -v 'brew shellenv' "${'$'}PROFILE_FILE" > "${'$'}PROFILE_FILE.tmp" 2>/dev/null || true
+        mv "${'$'}PROFILE_FILE.tmp" "${'$'}PROFILE_FILE" 2>/dev/null || true
+    fi
+
+    # Add fresh brew shellenv line
+    echo "Adding Homebrew to PATH in ${'$'}PROFILE_FILE..."
+    echo "eval \"\${'$'}(${'$'}BREW_PATH shellenv)\"" >> "${'$'}PROFILE_FILE"
+
+    echo ""
+    echo "Homebrew installed and PATH configured!"
+    echo "Click 'Refresh Status' to verify installation."
+else
+    echo ""
+    echo "Warning: Homebrew installed but could not find brew executable."
+    echo "You may need to configure PATH manually."
+fi
+BREWINSTALL_EOF
+chmod +x /tmp/bossterm_brew_install.sh && /tmp/bossterm_brew_install.sh
+    """.trimIndent()
+
+    // Determine if package manager is available for current platform
+    val hasPackageManager = when {
+        isWindows -> installedTools.hasWindowsPackageManager
+        isMac -> installedTools.hasMacPackageManager
+        else -> true // Linux doesn't need this step
+    }
+
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
     ) {
@@ -191,30 +385,41 @@ fun PrerequisitesStep(
         )
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Winget card
-        PackageManagerCard(
-            title = "winget",
-            description = "Windows Package Manager - Built into Windows 10/11. Recommended for most users.",
-            isInstalled = installedTools.winget,
-            isRecommended = true,
-            onInstallClick = { showWingetInstall = true }
-        )
-        Spacer(modifier = Modifier.height(8.dp))
+        if (isWindows) {
+            // Windows: Show winget and Chocolatey
+            PackageManagerCard(
+                title = "winget",
+                description = "Windows Package Manager - Built into Windows 10/11. Recommended for most users.",
+                isInstalled = installedTools.winget,
+                isRecommended = true,
+                onInstallClick = { showWingetInstall = true }
+            )
+            Spacer(modifier = Modifier.height(8.dp))
 
-        // Chocolatey card
-        PackageManagerCard(
-            title = "Chocolatey",
-            description = "Community-driven package manager with a large software catalog.",
-            isInstalled = installedTools.chocolatey,
-            isRecommended = false,
-            onInstallClick = { showChocoInstall = true }
-        )
+            PackageManagerCard(
+                title = "Chocolatey",
+                description = "Community-driven package manager with a large software catalog.",
+                isInstalled = installedTools.chocolatey,
+                isRecommended = false,
+                onInstallClick = { showChocoInstall = true }
+            )
+        } else if (isMac) {
+            // macOS: Show Homebrew
+            PackageManagerCard(
+                title = "Homebrew",
+                description = "The missing package manager for macOS. Required to install most developer tools.",
+                isInstalled = installedTools.homebrew,
+                isRecommended = true,
+                onInstallClick = { showHomebrewInstall = true }
+            )
+        }
+
         Spacer(modifier = Modifier.height(16.dp))
 
         // Status message
         Card(
             modifier = Modifier.fillMaxWidth(),
-            backgroundColor = if (installedTools.hasWindowsPackageManager) {
+            backgroundColor = if (hasPackageManager) {
                 Color(0xFF1E3A1E)  // Dark green
             } else {
                 Color(0xFF3A3A1E)  // Dark yellow/warning
@@ -225,9 +430,9 @@ fun PrerequisitesStep(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = if (installedTools.hasWindowsPackageManager) "✓" else "⚠",
+                    text = if (hasPackageManager) "✓" else "⚠",
                     fontSize = 20.sp,
-                    color = if (installedTools.hasWindowsPackageManager) {
+                    color = if (hasPackageManager) {
                         Color(0xFF4CAF50)
                     } else {
                         Color(0xFFFFC107)
@@ -235,7 +440,7 @@ fun PrerequisitesStep(
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 Text(
-                    text = if (installedTools.hasWindowsPackageManager) {
+                    text = if (hasPackageManager) {
                         "You have a package manager installed. You can proceed with setup."
                     } else {
                         "No package manager detected. Some tool installations may not work without one."
@@ -280,9 +485,7 @@ fun PrerequisitesStep(
             ) {
                 EmbeddableTerminal(
                     initialCommand = wingetInstallCommand,
-                    onInitialCommandComplete = { _, _ ->
-                        // User should click Refresh Status after installation
-                    },
+                    onInitialCommandComplete = { _, _ -> },
                     settingsOverride = TerminalSettingsOverride(fontSize = 11f),
                     modifier = Modifier.fillMaxSize()
                 )
@@ -307,8 +510,37 @@ fun PrerequisitesStep(
             ) {
                 EmbeddableTerminal(
                     initialCommand = chocoInstallCommand,
-                    onInitialCommandComplete = { _, _ ->
-                        // User should click Refresh Status after installation
+                    onInitialCommandComplete = { _, _ -> },
+                    settingsOverride = TerminalSettingsOverride(fontSize = 11f),
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+
+        if (showHomebrewInstall) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Installing Homebrew...",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = TextPrimary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .border(1.dp, BorderColor, RoundedCornerShape(8.dp))
+            ) {
+                EmbeddableTerminal(
+                    initialCommand = homebrewInstallCommand,
+                    environment = mapOf("BOSSTERM_SUDO_PWD" to adminPassword),
+                    onInitialCommandComplete = { _, _ -> },
+                    onOutput = { output ->
+                        if (output.contains("Homebrew installed and PATH configured!")) {
+                            onRefreshTools()
+                        }
                     },
                     settingsOverride = TerminalSettingsOverride(fontSize = 11f),
                     modifier = Modifier.fillMaxSize()
@@ -862,9 +1094,11 @@ private fun ReviewItem(
 @Composable
 fun InstallingStep(
     installCommand: String,
-    onComplete: () -> Unit
+    adminPassword: String,
+    onComplete: (success: Boolean) -> Unit
 ) {
     var isRunning by remember { mutableStateOf(true) }
+    var installSuccess by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier.fillMaxSize()
@@ -877,7 +1111,7 @@ fun InstallingStep(
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = "Please wait while we install your selected tools.\n🔐 Note: When typing your password, the cursor won't move - this is normal.",
+            text = "Please wait while we install your selected tools.",
             fontSize = 14.sp,
             color = TextSecondary
         )
@@ -893,9 +1127,11 @@ fun InstallingStep(
         ) {
             EmbeddableTerminal(
                 initialCommand = installCommand,
+                environment = mapOf("BOSSTERM_SUDO_PWD" to adminPassword),
                 onInitialCommandComplete = { success, exitCode ->
                     isRunning = false
-                    onComplete()
+                    installSuccess = success
+                    onComplete(success)
                 },
                 settingsOverride = TerminalSettingsOverride(
                     fontSize = 12f
@@ -911,6 +1147,13 @@ fun InstallingStep(
                 color = AccentColor,
                 backgroundColor = SurfaceColor
             )
+        } else if (!installSuccess) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Installation failed. Please check the output above for errors.",
+                fontSize = 14.sp,
+                color = Color(0xFFFF6B6B)
+            )
         }
     }
 }
@@ -925,6 +1168,29 @@ fun GhAuthStep(
     onSkip: () -> Unit
 ) {
     var isRunning by remember { mutableStateOf(true) }
+    var detectedOtp by remember { mutableStateOf<String?>(null) }
+    val clipboardManager = LocalClipboardManager.current
+    val terminalState = rememberTabbedTerminalState(autoDispose = false)
+
+    // Poll for OTP pattern every 500ms while running
+    // GitHub OTP format: XXXX-XXXX (e.g., A1B2-C3D4)
+    LaunchedEffect(isRunning) {
+        while (isRunning && detectedOtp == null) {
+            delay(500)
+            // Search for pattern like "A1B2-C3D4" (alphanumeric with dash)
+            val matches = terminalState.findPatternRegex("[A-Z0-9]{4}-[A-Z0-9]{4}")
+            if (matches.isNotEmpty()) {
+                detectedOtp = matches.first().text
+            }
+        }
+    }
+
+    // Cleanup terminal state when leaving composition
+    DisposableEffect(Unit) {
+        onDispose {
+            terminalState.dispose()
+        }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize()
@@ -941,9 +1207,128 @@ fun GhAuthStep(
             fontSize = 14.sp,
             color = TextSecondary
         )
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // Embedded terminal for gh auth login
+        // Flowchart showing the 3-step process
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Step 1: Code Appears
+            Card(
+                backgroundColor = Color(0xFF2D4F2D),
+                border = BorderStroke(1.dp, Color(0xFF4CAF50)),
+                modifier = Modifier.weight(1f)
+            ) {
+                Column(
+                    modifier = Modifier.padding(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("1. CODE APPEARS", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color(0xFF4CAF50))
+                    Text("XXXX-XXXX", fontSize = 10.sp, color = TextMuted)
+                }
+            }
+
+            // Arrow
+            Text(" \u2192 ", fontSize = 16.sp, color = TextMuted, fontWeight = FontWeight.Bold)
+
+            // Step 2: Copy Code (highlighted)
+            Card(
+                backgroundColor = Color(0xFF4F4F2D),
+                border = BorderStroke(2.dp, Color(0xFFFFD700)),
+                modifier = Modifier.weight(1f)
+            ) {
+                Column(
+                    modifier = Modifier.padding(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("2. COPY CODE", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color(0xFFFFD700))
+                    Text("Select & Copy", fontSize = 10.sp, color = TextMuted)
+                }
+            }
+
+            // Arrow
+            Text(" \u2192 ", fontSize = 16.sp, color = TextMuted, fontWeight = FontWeight.Bold)
+
+            // Step 3: Paste in Browser
+            Card(
+                backgroundColor = Color(0xFF2D3D4F),
+                border = BorderStroke(1.dp, Color(0xFF2196F3)),
+                modifier = Modifier.weight(1f)
+            ) {
+                Column(
+                    modifier = Modifier.padding(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("3. PASTE", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color(0xFF2196F3))
+                    Text("In Browser", fontSize = 10.sp, color = TextMuted)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Bold instruction (hidden when OTP detected)
+        AnimatedVisibility(
+            visible = detectedOtp == null,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            Text(
+                text = "IMPORTANT: Copy the one-time code when it appears below!",
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+                color = Color(0xFFFFD700),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        // OTP Copy Button (appears when code is detected)
+        AnimatedVisibility(
+            visible = detectedOtp != null,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            Card(
+                backgroundColor = Color(0xFF2D4F2D),
+                border = BorderStroke(2.dp, Color(0xFF4CAF50)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "Code: ${detectedOtp ?: ""}",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = Color(0xFF4CAF50)
+                    )
+                    Spacer(Modifier.width(16.dp))
+                    Button(
+                        onClick = {
+                            detectedOtp?.let { otp ->
+                                clipboardManager.setText(AnnotatedString(otp))
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            backgroundColor = Color(0xFF4CAF50),
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text("Copy Code")
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        val ghAuthCommand = "gh auth login"
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -951,8 +1336,9 @@ fun GhAuthStep(
                 .clip(RoundedCornerShape(8.dp))
                 .border(1.dp, BorderColor, RoundedCornerShape(8.dp))
         ) {
-            EmbeddableTerminal(
-                initialCommand = "gh auth login",
+            TabbedTerminal(
+                state = terminalState,
+                initialCommand = ghAuthCommand,
                 onInitialCommandComplete = { success, exitCode ->
                     isRunning = false
                     if (success && exitCode == 0) {
@@ -960,6 +1346,8 @@ fun GhAuthStep(
                     }
                     // If auth failed/cancelled, user can still click buttons
                 },
+                onExit = { /* Terminal closed - do nothing */ },
+                onContextMenuOpen = { },  // Use SYNC callback to skip ALL async operations
                 settingsOverride = TerminalSettingsOverride(
                     fontSize = 12f
                 ),
@@ -967,7 +1355,7 @@ fun GhAuthStep(
             )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Action buttons
         Row(

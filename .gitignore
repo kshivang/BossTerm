@@ -13,3 +13,6 @@ parts/
 prime/
 stage/
 firebase-debug.log
+
+# Claude Code
+.claude/

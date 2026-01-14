@@ -94,17 +94,23 @@ class AIAssistantLauncher {
                     "echo '' && echo '✓ Installation complete! Run \"$command\" to start.'"
             }
             else -> {
-                // Linux: use nvm to install Node.js if npm not available
-                "{ command -v npm >/dev/null 2>&1 || { " +
-                    "echo 'Installing Node.js via nvm...' && " +
-                    "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh | bash && " +
-                    "export NVM_DIR=\"\$HOME/.nvm\" && " +
-                    "[ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\" && " +
-                    "nvm install --lts; " +
-                    "}; } && " +
+                // Linux: use nvm to install Node.js and npm if not available
+                // If npm is missing (even with node installed), reinstall node to get npm back
+                "export NVM_DIR=\"\$HOME/.nvm\" && " +
+                    "if [ ! -s \"\$NVM_DIR/nvm.sh\" ]; then " +
+                    "echo 'Installing nvm...' && " +
+                    "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh | bash; " +
+                    "fi && " +
+                    ". \"\$NVM_DIR/nvm.sh\" && " +
+                    "if ! command -v npm >/dev/null 2>&1; then " +
+                    "echo 'Installing Node.js...' && " +
+                    "NODE_VER=\$(nvm current 2>/dev/null) && " +
+                    "if [ \"\$NODE_VER\" != \"none\" ] && [ \"\$NODE_VER\" != \"system\" ]; then nvm uninstall \"\$NODE_VER\" 2>/dev/null; fi && " +
+                    "nvm install --lts && nvm alias default node; " +
+                    "fi && " +
+                    "nvm use default && " +
                     "npm install -g $npmPackage && " +
-                    "export NVM_DIR=\"\$HOME/.nvm\" && [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\" && " +
-                    "hash -r 2>/dev/null; " +
+                    "hash -r 2>/dev/null && " +
                     "echo '' && echo '✓ Installation complete! Run \"$command\" to start.'"
             }
         }
@@ -238,9 +244,12 @@ class AIAssistantLauncher {
         /**
          * Get Linux install command with package manager detection.
          * Tries apt, dnf, then pacman in order.
+         * Uses BOSSTERM_SUDO_PWD environment variable for password if available.
          */
         private fun getLinuxInstallCommand(aptPkg: String, dnfPkg: String, pacmanPkg: String): String {
-            return "{ command -v apt >/dev/null 2>&1 && sudo apt install -y $aptPkg; } || " +
+            // Validate sudo credentials using password from env var (same pattern as OnboardingWizard)
+            return "echo \"\$BOSSTERM_SUDO_PWD\" | sudo -S -v 2>/dev/null && " +
+                   "{ command -v apt >/dev/null 2>&1 && sudo apt install -y $aptPkg; } || " +
                    "{ command -v dnf >/dev/null 2>&1 && sudo dnf install -y $dnfPkg; } || " +
                    "{ command -v pacman >/dev/null 2>&1 && sudo pacman -S --noconfirm $pacmanPkg; } || " +
                    "{ echo 'No supported package manager found (apt/dnf/pacman)'; exit 1; }"

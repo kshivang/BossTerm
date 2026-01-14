@@ -238,9 +238,12 @@ class AIAssistantLauncher {
         /**
          * Get Linux install command with package manager detection.
          * Tries apt, dnf, then pacman in order.
+         * Uses BOSSTERM_SUDO_PWD environment variable for password if available.
          */
         private fun getLinuxInstallCommand(aptPkg: String, dnfPkg: String, pacmanPkg: String): String {
-            return "{ command -v apt >/dev/null 2>&1 && sudo apt install -y $aptPkg; } || " +
+            // Validate sudo credentials using password from env var (same pattern as OnboardingWizard)
+            return "echo \"\$BOSSTERM_SUDO_PWD\" | sudo -S -v 2>/dev/null && " +
+                   "{ command -v apt >/dev/null 2>&1 && sudo apt install -y $aptPkg; } || " +
                    "{ command -v dnf >/dev/null 2>&1 && sudo dnf install -y $dnfPkg; } || " +
                    "{ command -v pacman >/dev/null 2>&1 && sudo pacman -S --noconfirm $pacmanPkg; } || " +
                    "{ echo 'No supported package manager found (apt/dnf/pacman)'; exit 1; }"

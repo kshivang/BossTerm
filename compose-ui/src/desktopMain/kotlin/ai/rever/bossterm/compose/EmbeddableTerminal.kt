@@ -39,6 +39,8 @@ import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.ai.AICommandInterceptor
 import ai.rever.bossterm.compose.ai.AIInstallDialogHost
 import ai.rever.bossterm.compose.ai.AIInstallDialogParams
+import ai.rever.bossterm.compose.ai.ToolInstallWizardHost
+import ai.rever.bossterm.compose.ai.ToolInstallWizardParams
 import ai.rever.bossterm.compose.ai.rememberAIAssistantState
 import ai.rever.bossterm.compose.vcs.VersionControlMenuProvider
 import ai.rever.bossterm.compose.shell.ShellCustomizationMenuProvider
@@ -254,14 +256,8 @@ fun EmbeddableTerminal(
     // State for AI assistant installation dialog (uses shared AIInstallDialogParams)
     var installDialogState by remember { mutableStateOf<AIInstallDialogParams?>(null) }
 
-    // State for AI assistant install confirmation dialog (shown before install)
-    data class InstallConfirmState(
-        val assistant: AIAssistantDefinition,
-        val originalCommand: String,
-        val clearLine: () -> Unit,
-        val terminalWriter: (String) -> Unit
-    )
-    var installConfirmState by remember { mutableStateOf<InstallConfirmState?>(null) }
+    // State for AI tool installation wizard (shown when command is intercepted)
+    var toolWizardParams by remember { mutableStateOf<ToolInstallWizardParams?>(null) }
 
     // Initialize session if not already done (session lives in state, not composable)
     LaunchedEffect(effectiveState, resolvedSettings, effectiveCommand) {
@@ -317,16 +313,19 @@ fun EmbeddableTerminal(
         // Create interceptor for this session
         val interceptor = AICommandInterceptor(
             detector = aiState.detector,
-            onInstallConfirm = { assistant, originalCommand, clearLine ->
-                // Show confirmation dialog first
+            onInstallConfirm = { assistant, originalCommand, clearLineCallback ->
+                // Show installation wizard directly
                 val terminalWriter: (String) -> Unit = { text ->
                     session.writeUserInput(text)
                 }
-                installConfirmState = InstallConfirmState(
-                    assistant = assistant,
-                    originalCommand = originalCommand,
-                    clearLine = clearLine,
-                    terminalWriter = terminalWriter
+                val resolved = aiState.launcher.resolveInstallCommands(assistant)
+                toolWizardParams = ToolInstallWizardParams(
+                    tool = assistant,
+                    installCommand = resolved.command,
+                    npmCommand = resolved.npmFallback,
+                    terminalWriter = terminalWriter,
+                    commandToRunAfter = originalCommand,
+                    clearLine = clearLineCallback
                 )
             }
         )
@@ -440,83 +439,32 @@ fun EmbeddableTerminal(
         )
     }
 
-    // AI Assistant Installation Dialogs (shared composable handles common logic)
+    // AI Assistant Installation Wizard (command interception)
     val coroutineScope = rememberCoroutineScope()
 
-    // Confirmation dialog before install (from command interception)
-    installConfirmState?.let { confirmState ->
-        Dialog(
-            onDismissRequest = {
-                confirmState.clearLine()
-                installConfirmState = null
+    // Tool installation wizard (replaces confirmation dialog + install dialog)
+    ToolInstallWizardHost(
+        params = toolWizardParams,
+        onDismiss = {
+            // Clear line on dismiss (user cancelled)
+            toolWizardParams?.clearLine?.invoke()
+            toolWizardParams = null
+            // Refresh detection when wizard closes
+            coroutineScope.launch {
+                aiState.detector.detectAll()
             }
-        ) {
-            Surface(
-                modifier = Modifier
-                    .width(400.dp)
-                    .wrapContentHeight()
-                    .clip(RoundedCornerShape(12.dp)),
-                color = Color(0xFF1E1E1E),
-                elevation = 8.dp
-            ) {
-                Column(
-                    modifier = Modifier.padding(24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    // Title
-                    Text(
-                        text = "${confirmState.assistant.displayName} is not installed",
-                        color = Color.White,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    // Message
-                    Text(
-                        text = "Would you like to install ${confirmState.assistant.displayName}?",
-                        color = Color.White.copy(alpha = 0.8f),
-                        fontSize = 14.sp
-                    )
-                    // Buttons
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        TextButton(
-                            onClick = {
-                                confirmState.clearLine()
-                                installConfirmState = null
-                            }
-                        ) {
-                            Text("Cancel", color = Color.White.copy(alpha = 0.7f))
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        Button(
-                            onClick = {
-                                confirmState.clearLine()
-                                val resolved = AIAssistantLauncher().resolveInstallCommands(confirmState.assistant)
-                                installDialogState = AIInstallDialogParams(
-                                    assistant = confirmState.assistant,
-                                    command = resolved.command,
-                                    npmCommand = resolved.npmFallback,
-                                    terminalWriter = confirmState.terminalWriter,
-                                    commandToRunAfter = confirmState.originalCommand
-                                )
-                                installConfirmState = null
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                backgroundColor = Color(0xFF4CAF50)
-                            )
-                        ) {
-                            Text("Install", color = Color.White)
-                        }
-                    }
-                }
+        },
+        onComplete = { success ->
+            // clearLine is called inside ToolInstallWizard on success
+            toolWizardParams = null
+            // Refresh detection after installation
+            coroutineScope.launch {
+                aiState.detector.detectAll()
             }
         }
-    }
+    )
 
-    // From context menu
+    // Legacy context menu installs (uses AIInstallDialogHost for backward compatibility)
     AIInstallDialogHost(
         params = installDialogState,
         coroutineScope = coroutineScope,

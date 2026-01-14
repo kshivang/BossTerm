@@ -217,6 +217,7 @@ fun EmbeddableTerminal(
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     settingsOverride: TerminalSettingsOverride? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
+    autoFocus: Boolean = false,  // Request focus after a delay (useful for dialogs)
     modifier: Modifier = Modifier
 ) {
     // Use provided state or create auto-disposing one
@@ -347,6 +348,7 @@ fun EmbeddableTerminal(
         ProperTerminal(
             tab = session,
             isActiveTab = true,
+            autoFocus = autoFocus,
             sharedFont = terminalFont,
             onTabTitleChange = { onTitleChange?.invoke(it) },
             onNewWindow = onNewWindow,

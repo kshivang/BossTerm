@@ -1107,26 +1107,30 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
     // Build final command list
     val allCommands = mutableListOf<String>()
 
-    // Group sudo commands (only for non-Windows)
-    if (sudoCommands.isNotEmpty() && !isWindows) {
+    // Authenticate sudo upfront for Unix (Starship and other tools internally use sudo)
+    val needsSudo = !isWindows && (sudoCommands.isNotEmpty() || userCommands.any { it.contains("starship") })
+    if (needsSudo) {
         allCommands.add("echo '🔐 Authenticating administrator access...'")
         // Use sudo -S to read password from stdin (provided via env var)
         allCommands.add("echo \"\$BOSSTERM_SUDO_PWD\" | sudo -S -v 2>/dev/null")
         // Keep sudo credentials alive in background
         allCommands.add("(while true; do sudo -n true; sleep 50; kill -0 \"\$\$\" 2>/dev/null || exit; done) &")
         allCommands.add("SUDO_KEEPALIVE_PID=\$!")
-        allCommands.addAll(sudoCommands)
-        // Kill the keepalive process when done
-        allCommands.add("kill \$SUDO_KEEPALIVE_PID 2>/dev/null || true")
-    } else if (sudoCommands.isNotEmpty()) {
-        allCommands.addAll(sudoCommands)
     }
 
-    // Add user commands
+    // Add sudo commands
+    allCommands.addAll(sudoCommands)
+
+    // Add user commands (includes Starship install which internally uses sudo)
     allCommands.addAll(userCommands)
 
     // Add post-install commands
     allCommands.addAll(postInstallCommands)
+
+    // Kill sudo keepalive at the end (after ALL commands)
+    if (needsSudo) {
+        allCommands.add("kill \$SUDO_KEEPALIVE_PID 2>/dev/null || true")
+    }
 
     // Add completion message
     allCommands.add("echo ''")

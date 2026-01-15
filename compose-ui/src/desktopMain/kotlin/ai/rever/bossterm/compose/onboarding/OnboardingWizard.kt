@@ -1046,9 +1046,15 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
 
     if (aiToInstall.isNotEmpty()) {
         val npmPackages = aiToInstall.joinToString(" ") { it.second }
+        // Build cleanup command to remove any corrupted/partial npm installations (fixes ENOTEMPTY error)
+        val packagesToClean = aiToInstall.map { it.second }
+        val unixCleanup = packagesToClean.joinToString("; ") { pkg ->
+            "rm -rf \"\$(npm prefix -g 2>/dev/null)/lib/node_modules/$pkg\" 2>/dev/null || true"
+        }
         val nodeCheckAndInstall = when {
             isMac -> {
                 "{ command -v npm >/dev/null 2>&1 || { echo 'Installing Node.js via Homebrew...' && brew install node; }; } && " +
+                "echo 'Cleaning up any partial installations...' && $unixCleanup && " +
                 "npm install -g $npmPackages"
             }
             isWindows -> {
@@ -1058,7 +1064,12 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
                     installed.chocolatey -> "choco install nodejs-lts -y"
                     else -> "echo 'No package manager available. Please install Node.js manually.' && exit 1"
                 }
+                // Windows cleanup: remove partial npm installations
+                val windowsCleanup = packagesToClean.joinToString("; ") { pkg ->
+                    "Remove-Item -Recurse -Force \"\$(npm prefix -g)/node_modules/$pkg\" -ErrorAction SilentlyContinue"
+                }
                 "powershell -Command \"if (!(Get-Command npm -ErrorAction SilentlyContinue)) { $nodeInstallCmd } ; " +
+                "Write-Host 'Cleaning up any partial installations...'; $windowsCleanup; " +
                 "npm install -g $npmPackages\""
             }
             else -> {
@@ -1077,6 +1088,7 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
                 "nvm install --lts && nvm alias default node; " +
                 "fi && " +
                 "nvm use default && " +
+                "echo 'Cleaning up any partial installations...' && $unixCleanup && " +
                 "npm install -g $npmPackages"
             }
         }

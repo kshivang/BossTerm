@@ -5,6 +5,7 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import ai.rever.bossterm.compose.wizard.*
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
+import java.io.File
 
 // InstallMethod enum is defined in AIAssistantInstallDialog.kt
 
@@ -57,17 +58,21 @@ fun ToolInstallWizard(
     onComplete: (success: Boolean) -> Unit
 ) {
     val isGhTool = tool.id == AIAssistantIds.GH
+    val isBrewTool = tool.id == AIAssistantIds.BREW
 
     // Define wizard steps
     val steps = remember(tool.id) {
         buildList {
-            // Password step - only on Linux (macOS/Windows don't need sudo for npm/brew)
-            add(WizardStep<ToolInstallState>(
-                id = ToolInstallStepIds.PASSWORD,
-                displayName = "Password",
-                platformFilter = PlatformFilter.Linux,
-                canProceed = { it.adminPassword.isNotEmpty() }
-            ))
+            // Password step - Linux always needs sudo, macOS needs sudo for brew
+            val needsPassword = ShellCustomizationUtils.isLinux() ||
+                (ShellCustomizationUtils.isMacOS() && isBrewTool)
+            if (needsPassword) {
+                add(WizardStep<ToolInstallState>(
+                    id = ToolInstallStepIds.PASSWORD,
+                    displayName = "Password",
+                    canProceed = { it.adminPassword.isNotEmpty() }
+                ))
+            }
 
             // Installing step - always shown but not in indicator
             add(WizardStep<ToolInstallState>(
@@ -121,13 +126,23 @@ fun ToolInstallWizard(
             if (success && terminalWriter != null) {
                 // Clear command line first (remove the typed command that triggered wizard)
                 clearLine?.invoke()
-                // Echo success message
-                terminalWriter("echo '✓ ${tool.displayName} installed successfully!'\n")
-                // Run original command with nvm sourced (login non-interactive shell doesn't source .zshrc)
-                if (commandToRunAfter != null) {
+
+                // Build a single command to avoid race conditions between separate terminalWriter calls
+                if (isBrewTool && commandToRunAfter != null) {
+                    // For brew: source shellenv AND run the command in ONE line
+                    terminalWriter("echo '✓ ${tool.displayName} installed successfully!' && eval \"\$(/opt/homebrew/bin/brew shellenv 2>/dev/null)\" && eval \"\$(/usr/local/bin/brew shellenv 2>/dev/null)\"; $commandToRunAfter\n")
+                } else if (isBrewTool) {
+                    // Brew install without command to run after
+                    terminalWriter("echo '✓ ${tool.displayName} installed successfully!' && eval \"\$(/opt/homebrew/bin/brew shellenv 2>/dev/null)\" && eval \"\$(/usr/local/bin/brew shellenv 2>/dev/null)\"\n")
+                } else if (commandToRunAfter != null) {
+                    // Non-brew tool with command to run after
+                    terminalWriter("echo '✓ ${tool.displayName} installed successfully!'\n")
                     val escapedCmd = commandToRunAfter.replace("'", "'\\''")
                     // Source nvm explicitly since $SHELL -l -c doesn't source .zshrc/.bashrc
                     terminalWriter("export NVM_DIR=\"\$HOME/.nvm\" && [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\" && $escapedCmd\n")
+                } else {
+                    // Just echo success
+                    terminalWriter("echo '✓ ${tool.displayName} installed successfully!'\n")
                 }
             }
             onComplete(success)
@@ -167,6 +182,12 @@ fun ToolInstallWizard(
             ToolInstallStepIds.INSTALLING -> {
                 // Key the composable to recreate terminal when retrying with npm
                 key(state.state.terminalKey) {
+                    // Helper to check if brew is actually installed (same as welcome wizard)
+                    fun isBrewInstalled(): Boolean {
+                        return File("/opt/homebrew/bin/brew").exists() ||
+                               File("/usr/local/bin/brew").exists()
+                    }
+
                     WizardStepBuilders.TerminalInstallContent(
                         title = "Installing ${tool.displayName}...",
                         description = if (state.state.installMethod == InstallMethod.NPM) {
@@ -181,12 +202,24 @@ fun ToolInstallWizard(
                             emptyMap()
                         },
                         onComplete = { success, _ ->
-                            state.updateState { copy(installSuccess = success) }
-                            if (success) {
-                                // Auto-advance to next step
+                            // For brew, check if binary actually exists (more reliable than exit code)
+                            val effectiveSuccess = if (isBrewTool) {
+                                isBrewInstalled()
+                            } else {
+                                success
+                            }
+                            state.updateState { copy(installSuccess = effectiveSuccess) }
+                            if (effectiveSuccess) {
                                 state.next()
                             }
                         },
+                        // For brew: when success message detected, verify brew exists and advance immediately
+                        onOutput = if (isBrewTool) { output ->
+                            if (output.contains("Homebrew installed and PATH configured!") && isBrewInstalled()) {
+                                state.updateState { copy(installSuccess = true) }
+                                state.next()
+                            }
+                        } else null,
                         showNpmFallback = state.state.installSuccess == false && npmCommand != null && state.state.installMethod == InstallMethod.SCRIPT,
                         onTryNpm = if (npmCommand != null) {
                             {

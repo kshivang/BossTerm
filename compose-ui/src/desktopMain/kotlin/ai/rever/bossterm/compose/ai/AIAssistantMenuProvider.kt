@@ -21,7 +21,7 @@ import androidx.compose.runtime.remember
  */
 class AIAssistantMenuProvider(
     private val detector: AIAssistantDetector,
-    private val launcher: AIAssistantLauncher
+    private val launcher: ToolCommandProvider
 ) {
 
     /**
@@ -181,7 +181,7 @@ class AIAssistantMenuProvider(
  */
 class AIAssistantState(
     val detector: AIAssistantDetector,
-    val launcher: AIAssistantLauncher,
+    val launcher: ToolCommandProvider,
     val menuProvider: AIAssistantMenuProvider
 )
 
@@ -195,7 +195,7 @@ class AIAssistantState(
 @Composable
 fun rememberAIAssistantState(settings: TerminalSettings): AIAssistantState {
     val detector = remember { AIAssistantDetector() }
-    val launcher = remember { AIAssistantLauncher() }
+    val launcher = remember { ToolCommandProvider() }
     val menuProvider = remember(detector, launcher) {
         AIAssistantMenuProvider(detector, launcher)
     }

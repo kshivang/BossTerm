@@ -189,6 +189,7 @@ object WizardStepBuilders {
         installCommand: String,
         environment: Map<String, String> = emptyMap(),
         onComplete: (success: Boolean, exitCode: Int) -> Unit,
+        onOutput: ((String) -> Unit)? = null,
         onTryNpm: (() -> Unit)? = null,
         showNpmFallback: Boolean = false
     ) {
@@ -225,6 +226,7 @@ object WizardStepBuilders {
                         installSuccess = success
                         onComplete(success, exitCode)
                     },
+                    onOutput = onOutput,
                     settingsOverride = TerminalSettingsOverride(fontSize = 12f),
                     modifier = Modifier.fillMaxSize()
                 )

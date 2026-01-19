@@ -173,6 +173,37 @@ class AIAssistantDetector {
                 "/opt/homebrew/bin/starship",
                 "$home/.cargo/bin/starship"  // Cargo install location
             )
+            "brew" -> listOf(
+                "/opt/homebrew/bin/brew",      // M1/M2 macOS
+                "/usr/local/bin/brew",          // Intel macOS
+                "/home/linuxbrew/.linuxbrew/bin/brew"  // Linux
+            )
+            "docker" -> listOf(
+                "/usr/local/bin/docker",
+                "/usr/bin/docker",
+                "/Applications/Docker.app/Contents/Resources/bin/docker"  // macOS Docker Desktop
+            )
+            "kubectl" -> listOf(
+                "/usr/local/bin/kubectl",
+                "/usr/bin/kubectl",
+                "$home/.local/bin/kubectl"
+            )
+            "rustc", "cargo" -> listOf(
+                "$home/.cargo/bin/rustc",
+                "$home/.cargo/bin/cargo"
+            )
+            "tmux" -> listOf(
+                "/usr/local/bin/tmux",
+                "/usr/bin/tmux",
+                "/opt/homebrew/bin/tmux"
+            )
+            "fzf" -> listOf(
+                "/usr/local/bin/fzf",
+                "/usr/bin/fzf",
+                "/opt/homebrew/bin/fzf",
+                "$home/.local/bin/fzf",
+                "$home/.fzf/bin/fzf"
+            )
             else -> emptyList()
         }
     }

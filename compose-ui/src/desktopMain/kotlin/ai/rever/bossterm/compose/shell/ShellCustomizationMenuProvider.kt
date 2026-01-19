@@ -4,7 +4,7 @@ import ai.rever.bossterm.compose.ContextMenuElement
 import ai.rever.bossterm.compose.ContextMenuItem
 import ai.rever.bossterm.compose.ContextMenuSection
 import ai.rever.bossterm.compose.ContextMenuSubmenu
-import ai.rever.bossterm.compose.ai.AIAssistantLauncher
+import ai.rever.bossterm.compose.ai.ToolCommandProvider
 import ai.rever.bossterm.compose.util.UrlOpener
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

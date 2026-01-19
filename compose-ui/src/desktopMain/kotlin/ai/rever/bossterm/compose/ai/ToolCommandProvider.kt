@@ -5,10 +5,11 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.util.UrlOpener
 
 /**
- * Generates commands for launching and installing AI assistants.
- * Handles platform-specific installation with automatic Node.js installation when needed.
+ * Provides commands for launching and installing tools.
+ * Handles AI assistants, VCS tools, shells, and other development utilities.
+ * Supports platform-specific installation with automatic dependency installation when needed.
  */
-class AIAssistantLauncher {
+class ToolCommandProvider {
 
     /**
      * Get the command to launch an AI assistant with YOLO mode support.
@@ -238,6 +239,162 @@ class AIAssistantLauncher {
                 ShellCustomizationUtils.isMacOS() -> "brew install fish"
                 ShellCustomizationUtils.isWindows() -> "echo 'Fish is available through WSL on Windows. Visit https://fishshell.com for more info.'"
                 else -> getLinuxInstallCommand("fish", "fish", "fish")
+            }
+        }
+
+        /**
+         * Get platform-aware install command for Homebrew.
+         * Uses password from BOSSTERM_SUDO_PWD env var for sudo authentication.
+         * Same script as OnboardingSteps for consistency.
+         */
+        fun getBrewInstallCommand(): String {
+            return when {
+                ShellCustomizationUtils.isMacOS() || ShellCustomizationUtils.isLinux() -> """
+cat > /tmp/bossterm_brew_install.sh << 'BREWINSTALL_EOF'
+#!/bin/bash
+set -e
+
+echo "Installing Homebrew..."
+echo ""
+echo "This will install Homebrew, the missing package manager for macOS."
+echo ""
+
+# Authenticate sudo using password from environment variable
+echo "${'$'}BOSSTERM_SUDO_PWD" | sudo -S -v 2>/dev/null
+
+# Keep sudo credentials alive in background
+(while true; do sudo -n true; sleep 50; kill -0 "$$" 2>/dev/null || exit; done) &
+SUDO_KEEPALIVE_PID=${'$'}!
+
+# Cleanup function
+cleanup() {
+    kill ${'$'}SUDO_KEEPALIVE_PID 2>/dev/null || true
+    rm -f /tmp/bossterm_brew_install.sh
+}
+trap cleanup EXIT
+
+echo ""
+echo "Installing Homebrew (this may take a few minutes)..."
+echo ""
+
+# Run Homebrew installer in non-interactive mode
+NONINTERACTIVE=1 /bin/bash -c "${'$'}(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+echo ""
+echo "Configuring PATH..."
+
+# Detect brew installation path
+BREW_PATH=""
+if [ -f "/opt/homebrew/bin/brew" ]; then
+    BREW_PATH="/opt/homebrew/bin/brew"
+elif [ -f "/usr/local/bin/brew" ]; then
+    BREW_PATH="/usr/local/bin/brew"
+fi
+
+if [ -n "${'$'}BREW_PATH" ]; then
+    SHELL_NAME=${'$'}(basename "${'$'}SHELL")
+
+    if [ "${'$'}SHELL_NAME" = "zsh" ]; then
+        PROFILE_FILE="${'$'}HOME/.zprofile"
+    elif [ "${'$'}SHELL_NAME" = "bash" ]; then
+        PROFILE_FILE="${'$'}HOME/.bash_profile"
+        [ ! -f "${'$'}PROFILE_FILE" ] && PROFILE_FILE="${'$'}HOME/.bashrc"
+    else
+        PROFILE_FILE="${'$'}HOME/.profile"
+    fi
+
+    # Remove any existing brew shellenv lines (commented or not)
+    if [ -f "${'$'}PROFILE_FILE" ]; then
+        grep -v 'brew shellenv' "${'$'}PROFILE_FILE" > "${'$'}PROFILE_FILE.tmp" 2>/dev/null || true
+        mv "${'$'}PROFILE_FILE.tmp" "${'$'}PROFILE_FILE" 2>/dev/null || true
+    fi
+
+    # Add fresh brew shellenv line
+    echo "Adding Homebrew to PATH in ${'$'}PROFILE_FILE..."
+    echo "eval \"\${'$'}(${'$'}BREW_PATH shellenv)\"" >> "${'$'}PROFILE_FILE"
+
+    # Source brew for current session so it works immediately
+    eval "${'$'}(${'$'}BREW_PATH shellenv)"
+
+    echo ""
+    echo "Homebrew installed and PATH configured!"
+    echo "Click 'Refresh Status' to verify installation."
+else
+    echo ""
+    echo "Warning: Homebrew installed but could not find brew executable."
+    echo "You may need to configure PATH manually."
+fi
+BREWINSTALL_EOF
+chmod +x /tmp/bossterm_brew_install.sh && /tmp/bossterm_brew_install.sh
+                """.trimIndent()
+                else -> "echo 'Homebrew is not supported on Windows. Use winget or Chocolatey instead.'"
+            }
+        }
+
+        /**
+         * Get platform-aware install command for Docker.
+         */
+        fun getDockerInstallCommand(): String {
+            return when {
+                ShellCustomizationUtils.isMacOS() -> "brew install --cask docker"
+                ShellCustomizationUtils.isWindows() -> "winget install Docker.DockerDesktop --accept-source-agreements --accept-package-agreements"
+                else -> getLinuxInstallCommand("docker.io", "docker", "docker")
+            }
+        }
+
+        /**
+         * Get platform-aware install command for kubectl.
+         */
+        fun getKubectlInstallCommand(): String {
+            return when {
+                ShellCustomizationUtils.isMacOS() -> "brew install kubectl"
+                ShellCustomizationUtils.isWindows() -> "winget install Kubernetes.kubectl --accept-source-agreements --accept-package-agreements"
+                else -> """
+#!/bin/bash
+echo "Installing kubectl..."
+curl -LO "https://dl.k8s.io/release/${"$"}(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+chmod +x kubectl
+mkdir -p ~/.local/bin
+mv kubectl ~/.local/bin/
+echo "✓ kubectl installed to ~/.local/bin/kubectl"
+                """.trimIndent()
+            }
+        }
+
+        /**
+         * Get platform-aware install command for Rust and Cargo.
+         */
+        fun getRustInstallCommand(): String {
+            return """
+#!/bin/bash
+echo "Installing Rust and Cargo..."
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "${"$"}HOME/.cargo/env"
+echo ""
+echo "✓ Rust and Cargo installed successfully!"
+echo "Run 'source ${"$"}HOME/.cargo/env' to update your current shell"
+            """.trimIndent()
+        }
+
+        /**
+         * Get platform-aware install command for tmux.
+         */
+        fun getTmuxInstallCommand(): String {
+            return when {
+                ShellCustomizationUtils.isMacOS() -> "brew install tmux"
+                ShellCustomizationUtils.isWindows() -> "echo 'tmux is not supported on Windows. Consider using WSL or Windows Terminal.'"
+                else -> getLinuxInstallCommand("tmux", "tmux", "tmux")
+            }
+        }
+
+        /**
+         * Get platform-aware install command for fzf.
+         */
+        fun getFzfInstallCommand(): String {
+            return when {
+                ShellCustomizationUtils.isMacOS() -> "brew install fzf"
+                ShellCustomizationUtils.isWindows() -> "winget install junegunn.fzf --accept-source-agreements --accept-package-agreements"
+                else -> getLinuxInstallCommand("fzf", "fzf", "fzf")
             }
         }
 

@@ -4,7 +4,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import ai.rever.bossterm.compose.ai.AIAssistantDefinition
 import ai.rever.bossterm.compose.ai.AIAssistantDetector
-import ai.rever.bossterm.compose.ai.AIAssistantLauncher
+import ai.rever.bossterm.compose.ai.ToolCommandProvider
 import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.ai.AIInstallDialogParams
 import ai.rever.bossterm.compose.search.RabinKarpSearch
@@ -563,7 +563,7 @@ class TabbedTerminalState {
      * Internal helper to trigger installation for a given tab.
      */
     private fun triggerInstall(assistant: AIAssistantDefinition, tab: TerminalTab, useNpm: Boolean): Boolean {
-        val resolved = AIAssistantLauncher().resolveInstallCommands(assistant, useNpm)
+        val resolved = ToolCommandProvider().resolveInstallCommands(assistant, useNpm)
 
         aiInstallRequest = AIInstallDialogParams(
             assistant = assistant,

@@ -71,7 +71,7 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 
 **AI/VCS**
 - `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/ai/AIAssistantDefinition.kt`
-- `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/ai/AIAssistantLauncher.kt`
+- `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/ai/ToolCommandProvider.kt`
 
 **Settings**
 - `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/settings/TerminalSettings.kt`
@@ -97,7 +97,8 @@ state.write("cmd\n", tabId = "id")   // Target tab by ID
 
 ## Development Guidelines
 
-- Do NOT run app or capture screenshots - user handles testing
+- **NEVER run the app** - user handles all testing. Maximum allowed: `./gradlew build` to check for compile errors
+- Do NOT capture screenshots
 - Use `remember {}` for expensive computations
 - Task tool for searches, specialized tools over bash
 - No backwards-compatibility hacks

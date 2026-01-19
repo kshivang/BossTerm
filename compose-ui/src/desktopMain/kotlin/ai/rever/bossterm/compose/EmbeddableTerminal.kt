@@ -34,7 +34,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.ai.AIAssistantDefinition
 import ai.rever.bossterm.compose.ai.AIAssistantDetector
-import ai.rever.bossterm.compose.ai.AIAssistantLauncher
+import ai.rever.bossterm.compose.ai.ToolCommandProvider
 import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.ai.AICommandInterceptor
 import ai.rever.bossterm.compose.ai.AIInstallDialogHost
@@ -758,7 +758,7 @@ class EmbeddableTerminalState {
         val assistant = AIAssistants.findById(assistantId) ?: return false
         val currentSession = session ?: return false
 
-        val resolved = AIAssistantLauncher().resolveInstallCommands(assistant, useNpm)
+        val resolved = ToolCommandProvider().resolveInstallCommands(assistant, useNpm)
 
         aiInstallRequest = AIInstallDialogParams(
             assistant = assistant,

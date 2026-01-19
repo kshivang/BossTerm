@@ -4,7 +4,7 @@ import ai.rever.bossterm.compose.ContextMenuElement
 import ai.rever.bossterm.compose.ContextMenuItem
 import ai.rever.bossterm.compose.ContextMenuSection
 import ai.rever.bossterm.compose.ContextMenuSubmenu
-import ai.rever.bossterm.compose.ai.AIAssistantLauncher
+import ai.rever.bossterm.compose.ai.ToolCommandProvider
 import ai.rever.bossterm.compose.util.UrlOpener
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -143,7 +143,7 @@ class VersionControlMenuProvider {
                             label = "Install",
                             action = {
                                 if (onInstallRequest != null) {
-                                    onInstallRequest("git", AIAssistantLauncher.getGitInstallCommand(), null)
+                                    onInstallRequest("git", ToolCommandProvider.getGitInstallCommand(), null)
                                 } else {
                                     openUrl("https://git-scm.com/downloads")
                                 }
@@ -175,7 +175,7 @@ class VersionControlMenuProvider {
                             label = "Install",
                             action = {
                                 if (onInstallRequest != null) {
-                                    onInstallRequest("gh", AIAssistantLauncher.getGhInstallCommand(), null)
+                                    onInstallRequest("gh", ToolCommandProvider.getGhInstallCommand(), null)
                                 } else {
                                     openUrl("https://cli.github.com/")
                                 }

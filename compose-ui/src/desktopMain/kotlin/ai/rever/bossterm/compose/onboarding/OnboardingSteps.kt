@@ -225,7 +225,8 @@ fun PasswordStep(
 fun PrerequisitesStep(
     installedTools: InstalledTools,
     adminPassword: String,  // Password passed from wizard
-    onRefreshTools: () -> Unit
+    onRefreshTools: () -> Unit,
+    onInstallStateChange: (installing: Boolean) -> Unit
 ) {
     // Platform detection
     val isWindows = remember { ShellCustomizationUtils.isWindows() }
@@ -234,6 +235,13 @@ fun PrerequisitesStep(
     var showWingetInstall by remember { mutableStateOf(false) }
     var showChocoInstall by remember { mutableStateOf(false) }
     var showHomebrewInstall by remember { mutableStateOf(false) }
+    var homebrewInstalling by remember { mutableStateOf(false) }
+    var homebrewInstallSuccess by remember { mutableStateOf(false) }
+
+    // Notify parent when homebrew installation state changes
+    LaunchedEffect(homebrewInstalling) {
+        onInstallStateChange(homebrewInstalling)
+    }
 
     val wingetInstallCommand = """
         powershell -Command "& {
@@ -410,7 +418,10 @@ chmod +x /tmp/bossterm_brew_install.sh && /tmp/bossterm_brew_install.sh
                 description = "The missing package manager for macOS. Required to install most developer tools.",
                 isInstalled = installedTools.homebrew,
                 isRecommended = true,
-                onInstallClick = { showHomebrewInstall = true }
+                onInstallClick = {
+                    showHomebrewInstall = true
+                    homebrewInstalling = true
+                }
             )
         }
 
@@ -536,7 +547,13 @@ chmod +x /tmp/bossterm_brew_install.sh && /tmp/bossterm_brew_install.sh
                 EmbeddableTerminal(
                     initialCommand = homebrewInstallCommand,
                     environment = mapOf("BOSSTERM_SUDO_PWD" to adminPassword),
-                    onInitialCommandComplete = { _, _ -> },
+                    onInitialCommandComplete = { success, _ ->
+                        homebrewInstalling = false
+                        homebrewInstallSuccess = success
+                        if (success) {
+                            onRefreshTools()
+                        }
+                    },
                     onOutput = { output ->
                         if (output.contains("Homebrew installed and PATH configured!")) {
                             onRefreshTools()
@@ -544,6 +561,22 @@ chmod +x /tmp/bossterm_brew_install.sh && /tmp/bossterm_brew_install.sh
                     },
                     settingsOverride = TerminalSettingsOverride(fontSize = 11f),
                     modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            if (homebrewInstalling) {
+                Spacer(modifier = Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = AccentColor,
+                    backgroundColor = SurfaceColor
+                )
+            } else if (showHomebrewInstall && !homebrewInstallSuccess) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Installation failed. Please try again or skip this step.",
+                    fontSize = 14.sp,
+                    color = Color(0xFFFF6B6B)
                 )
             }
         }

@@ -8,7 +8,11 @@ import kotlinx.serialization.Serializable
 enum class ToolCategory {
     AI_ASSISTANT,        // AI coding assistants (claude, gemini, codex, etc.)
     VERSION_CONTROL,     // Version control tools (git, gh)
-    SHELL_CUSTOMIZATION  // Shell customization tools (starship, etc.)
+    SHELL_CUSTOMIZATION, // Shell customization tools (starship, etc.)
+    PACKAGE_MANAGER,     // Package managers (brew, winget, etc.)
+    CONTAINER_TOOLS,     // Container and orchestration tools (docker, kubectl, k3d)
+    LANGUAGE_RUNTIME,    // Language runtimes and toolchains (rust, cargo, go)
+    CLI_UTILITIES        // CLI utilities (tmux, fzf, ripgrep, etc.)
 }
 
 /**
@@ -100,6 +104,22 @@ object AIAssistantIds {
     const val BASH = "bash"
     const val FISH = "fish"
 
+    // Package Managers
+    const val BREW = "brew"
+
+    // Container Tools
+    const val DOCKER = "docker"
+    const val KUBECTL = "kubectl"
+    const val K3D = "k3d"
+
+    // Language Runtimes
+    const val RUST = "rust"
+    const val CARGO = "cargo"
+
+    // CLI Utilities
+    const val TMUX = "tmux"
+    const val FZF = "fzf"
+
     /**
      * All AI assistant IDs (coding assistants only).
      */
@@ -114,6 +134,26 @@ object AIAssistantIds {
      * All shell customization tool IDs.
      */
     val ALL_SHELL_TOOLS = setOf(STARSHIP, OH_MY_ZSH, PREZTO, ZSH, BASH, FISH)
+
+    /**
+     * All package manager IDs.
+     */
+    val ALL_PACKAGE_MANAGERS = setOf(BREW)
+
+    /**
+     * All container tool IDs.
+     */
+    val ALL_CONTAINER_TOOLS = setOf(DOCKER, KUBECTL, K3D)
+
+    /**
+     * All language runtime IDs.
+     */
+    val ALL_LANGUAGE_RUNTIMES = setOf(RUST, CARGO)
+
+    /**
+     * All CLI utility IDs.
+     */
+    val ALL_CLI_UTILITIES = setOf(TMUX, FZF)
 }
 
 /**
@@ -180,7 +220,7 @@ object AIAssistants {
             category = ToolCategory.VERSION_CONTROL,
             yoloFlag = "",
             yoloLabel = "",
-            installCommand = AIAssistantLauncher.getGhInstallCommand(),
+            installCommand = ToolCommandProvider.getGhInstallCommand(),
             npmInstallCommand = null,
             websiteUrl = "https://cli.github.com/",
             description = "GitHub's official CLI"
@@ -192,7 +232,7 @@ object AIAssistants {
             category = ToolCategory.VERSION_CONTROL,
             yoloFlag = "",
             yoloLabel = "",
-            installCommand = AIAssistantLauncher.getGitInstallCommand(),
+            installCommand = ToolCommandProvider.getGitInstallCommand(),
             npmInstallCommand = null,
             websiteUrl = "https://git-scm.com/downloads",
             description = "Distributed version control system"
@@ -205,7 +245,7 @@ object AIAssistants {
             category = ToolCategory.SHELL_CUSTOMIZATION,
             yoloFlag = "",
             yoloLabel = "",
-            installCommand = AIAssistantLauncher.getStarshipInstallCommand(),
+            installCommand = ToolCommandProvider.getStarshipInstallCommand(),
             npmInstallCommand = null,
             websiteUrl = "https://starship.rs/",
             description = "Cross-shell prompt customization"
@@ -217,7 +257,7 @@ object AIAssistants {
             category = ToolCategory.SHELL_CUSTOMIZATION,
             yoloFlag = "",
             yoloLabel = "",
-            installCommand = AIAssistantLauncher.getOhMyZshInstallCommand(),
+            installCommand = ToolCommandProvider.getOhMyZshInstallCommand(),
             npmInstallCommand = null,
             websiteUrl = "https://ohmyz.sh/",
             description = "Zsh framework with plugins and themes"
@@ -242,7 +282,7 @@ object AIAssistants {
             category = ToolCategory.SHELL_CUSTOMIZATION,
             yoloFlag = "",
             yoloLabel = "",
-            installCommand = AIAssistantLauncher.getZshInstallCommand(),
+            installCommand = ToolCommandProvider.getZshInstallCommand(),
             npmInstallCommand = null,
             websiteUrl = "https://www.zsh.org/",
             description = "Z shell - powerful command interpreter"
@@ -254,7 +294,7 @@ object AIAssistants {
             category = ToolCategory.SHELL_CUSTOMIZATION,
             yoloFlag = "",
             yoloLabel = "",
-            installCommand = AIAssistantLauncher.getBashInstallCommand(),
+            installCommand = ToolCommandProvider.getBashInstallCommand(),
             npmInstallCommand = null,
             websiteUrl = "https://www.gnu.org/software/bash/",
             description = "Bourne Again Shell"
@@ -266,10 +306,98 @@ object AIAssistants {
             category = ToolCategory.SHELL_CUSTOMIZATION,
             yoloFlag = "",
             yoloLabel = "",
-            installCommand = AIAssistantLauncher.getFishInstallCommand(),
+            installCommand = ToolCommandProvider.getFishInstallCommand(),
             npmInstallCommand = null,
             websiteUrl = "https://fishshell.com/",
             description = "Friendly Interactive Shell"
+        ),
+        // Package Managers
+        AIAssistantDefinition(
+            id = AIAssistantIds.BREW,
+            displayName = "Homebrew",
+            command = "brew",
+            category = ToolCategory.PACKAGE_MANAGER,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = ToolCommandProvider.getBrewInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://brew.sh/",
+            description = "The missing package manager for macOS and Linux"
+        ),
+        // Container Tools
+        AIAssistantDefinition(
+            id = AIAssistantIds.DOCKER,
+            displayName = "Docker",
+            command = "docker",
+            category = ToolCategory.CONTAINER_TOOLS,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = ToolCommandProvider.getDockerInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://www.docker.com/",
+            description = "Container platform for building and running applications"
+        ),
+        AIAssistantDefinition(
+            id = AIAssistantIds.KUBECTL,
+            displayName = "kubectl",
+            command = "kubectl",
+            category = ToolCategory.CONTAINER_TOOLS,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = ToolCommandProvider.getKubectlInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://kubernetes.io/docs/tasks/tools/",
+            description = "Kubernetes command-line tool"
+        ),
+        // Language Runtimes
+        AIAssistantDefinition(
+            id = AIAssistantIds.RUST,
+            displayName = "Rust",
+            command = "rustc",
+            category = ToolCategory.LANGUAGE_RUNTIME,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = ToolCommandProvider.getRustInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://www.rust-lang.org/",
+            description = "Rust programming language compiler"
+        ),
+        AIAssistantDefinition(
+            id = AIAssistantIds.CARGO,
+            displayName = "Cargo",
+            command = "cargo",
+            category = ToolCategory.LANGUAGE_RUNTIME,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = ToolCommandProvider.getRustInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://doc.rust-lang.org/cargo/",
+            description = "Rust package manager and build tool"
+        ),
+        // CLI Utilities
+        AIAssistantDefinition(
+            id = AIAssistantIds.TMUX,
+            displayName = "tmux",
+            command = "tmux",
+            category = ToolCategory.CLI_UTILITIES,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = ToolCommandProvider.getTmuxInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://github.com/tmux/tmux",
+            description = "Terminal multiplexer for managing multiple terminal sessions"
+        ),
+        AIAssistantDefinition(
+            id = AIAssistantIds.FZF,
+            displayName = "fzf",
+            command = "fzf",
+            category = ToolCategory.CLI_UTILITIES,
+            yoloFlag = "",
+            yoloLabel = "",
+            installCommand = ToolCommandProvider.getFzfInstallCommand(),
+            npmInstallCommand = null,
+            websiteUrl = "https://github.com/junegunn/fzf",
+            description = "Fuzzy finder for command-line"
         )
     )
 
@@ -291,6 +419,30 @@ object AIAssistants {
      */
     val VCS_TOOLS: List<AIAssistantDefinition>
         get() = ALL.filter { it.category == ToolCategory.VERSION_CONTROL }
+
+    /**
+     * Only package managers (brew, etc.)
+     */
+    val PACKAGE_MANAGERS: List<AIAssistantDefinition>
+        get() = ALL.filter { it.category == ToolCategory.PACKAGE_MANAGER }
+
+    /**
+     * Only container tools (docker, kubectl, k3d)
+     */
+    val CONTAINER_TOOLS: List<AIAssistantDefinition>
+        get() = ALL.filter { it.category == ToolCategory.CONTAINER_TOOLS }
+
+    /**
+     * Only language runtimes (rust, cargo, etc.)
+     */
+    val LANGUAGE_RUNTIMES: List<AIAssistantDefinition>
+        get() = ALL.filter { it.category == ToolCategory.LANGUAGE_RUNTIME }
+
+    /**
+     * Only CLI utilities (tmux, fzf, etc.)
+     */
+    val CLI_UTILITIES: List<AIAssistantDefinition>
+        get() = ALL.filter { it.category == ToolCategory.CLI_UTILITIES }
 
     private var _customAssistants: List<AIAssistantDefinition> = emptyList()
 

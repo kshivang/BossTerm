@@ -204,6 +204,7 @@ fun OnboardingWizard(
     var installationComplete by remember { mutableStateOf(false) }
     var ghInstalledDuringWizard by remember { mutableStateOf(false) }
     var adminPassword by remember { mutableStateOf("") }  // Admin password for sudo commands
+    var homebrewInstalling by remember { mutableStateOf(false) }  // Track homebrew installation state
 
     // Focus requester for primary action button (Get Started / Next)
     val primaryButtonFocusRequester = remember { FocusRequester() }
@@ -296,6 +297,9 @@ fun OnboardingWizard(
                                             installedTools = detectInstalledTools()
                                             isDetecting = false
                                         }
+                                    },
+                                    onInstallStateChange = { installing ->
+                                        homebrewInstalling = installing
                                     }
                                 )
                                 OnboardingStep.Password -> PasswordStep(
@@ -511,17 +515,23 @@ fun OnboardingWizard(
                             }
                             OnboardingStep.Prerequisites -> {
                                 // Prerequisites step on Windows and macOS - use normal navigation
+                                val canProceedFromPrereqs = !homebrewInstalling
                                 val goToNextFromPrereqs = {
-                                    val nextIndex = allSteps.indexOf(currentStep) + 1
-                                    if (nextIndex < allSteps.size) {
-                                        currentStep = allSteps[nextIndex]
+                                    if (canProceedFromPrereqs) {
+                                        val nextIndex = allSteps.indexOf(currentStep) + 1
+                                        if (nextIndex < allSteps.size) {
+                                            currentStep = allSteps[nextIndex]
+                                        }
                                     }
                                 }
                                 Button(
                                     onClick = { goToNextFromPrereqs() },
+                                    enabled = canProceedFromPrereqs,
                                     colors = ButtonDefaults.buttonColors(
                                         backgroundColor = AccentColor,
-                                        contentColor = Color.White
+                                        contentColor = Color.White,
+                                        disabledBackgroundColor = AccentColor.copy(alpha = 0.5f),
+                                        disabledContentColor = Color.White.copy(alpha = 0.5f)
                                     ),
                                     modifier = Modifier
                                         .focusRequester(primaryButtonFocusRequester)

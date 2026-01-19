@@ -2,7 +2,7 @@ package ai.rever.bossterm.compose.settings.sections
 
 import ai.rever.bossterm.compose.ai.AIAssistantDetector
 import ai.rever.bossterm.compose.ai.AIAssistantDefinition
-import ai.rever.bossterm.compose.ai.AIAssistantLauncher
+import ai.rever.bossterm.compose.ai.ToolCommandProvider
 import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.settings.AIAssistantConfigData
 import ai.rever.bossterm.compose.settings.CustomAIAssistantData
@@ -47,7 +47,7 @@ fun AIAssistantSettingsSection(
     modifier: Modifier = Modifier
 ) {
     val detector = remember { AIAssistantDetector() }
-    val launcher = remember { AIAssistantLauncher() }
+    val launcher = remember { ToolCommandProvider() }
     val installationStatus by detector.installationStatus.collectAsState()
     val coroutineScope = rememberCoroutineScope()
 

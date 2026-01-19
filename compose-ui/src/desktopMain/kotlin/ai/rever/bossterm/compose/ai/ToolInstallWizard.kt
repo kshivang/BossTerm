@@ -201,12 +201,10 @@ fun ToolInstallWizard(
                         } else {
                             emptyMap()
                         },
-                        onComplete = { success, exitCode ->
+                        onComplete = { success, _ ->
                             // For brew, check if binary actually exists (more reliable than exit code)
                             val effectiveSuccess = if (isBrewTool) {
-                                val brewExists = isBrewInstalled()
-                                println("DEBUG: ToolInstallWizard onComplete - exitCode=$exitCode, brewExists=$brewExists")
-                                brewExists
+                                isBrewInstalled()
                             } else {
                                 success
                             }
@@ -217,13 +215,9 @@ fun ToolInstallWizard(
                         },
                         // For brew: when success message detected, verify brew exists and advance immediately
                         onOutput = if (isBrewTool) { output ->
-                            if (output.contains("Homebrew installed and PATH configured!")) {
-                                val brewExists = isBrewInstalled()
-                                println("DEBUG: Detected brew success message - brewExists=$brewExists")
-                                if (brewExists) {
-                                    state.updateState { copy(installSuccess = true) }
-                                    state.next()
-                                }
+                            if (output.contains("Homebrew installed and PATH configured!") && isBrewInstalled()) {
+                                state.updateState { copy(installSuccess = true) }
+                                state.next()
                             }
                         } else null,
                         showNpmFallback = state.state.installSuccess == false && npmCommand != null && state.state.installMethod == InstallMethod.SCRIPT,

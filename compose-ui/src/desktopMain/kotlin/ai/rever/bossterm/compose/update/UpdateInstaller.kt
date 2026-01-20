@@ -251,6 +251,42 @@ object UpdateInstaller {
     }
 
     /**
+     * Validates Linux update environment (DISPLAY, pkexec/sudo availability).
+     * Returns null if validation passes, or an InstallResult.Error if validation fails.
+     */
+    private fun validateLinuxUpdateEnvironment(): InstallResult.Error? {
+        // Pre-flight validation: Check environment
+        val display = System.getenv("DISPLAY")
+        if (display.isNullOrBlank()) {
+            println("⚠️ WARNING: No DISPLAY set - pkexec may not be able to show authentication dialog")
+            return InstallResult.Error("No DISPLAY environment variable set. Cannot show authentication dialog.")
+        }
+        println("✅ DISPLAY is set: $display")
+
+        // Check if pkexec or sudo is available
+        val hasPkexec = try {
+            ProcessBuilder("which", "pkexec").start().waitFor() == 0
+        } catch (e: Exception) { false }
+
+        val hasSudo = try {
+            ProcessBuilder("which", "sudo").start().waitFor() == 0
+        } catch (e: Exception) { false }
+
+        if (!hasPkexec && !hasSudo) {
+            println("❌ ERROR: Neither pkexec nor sudo available")
+            return InstallResult.Error("Neither pkexec nor sudo is available for installation. Please install polkit or sudo.")
+        }
+
+        if (hasPkexec) {
+            println("✅ pkexec is available for authentication")
+        } else if (hasSudo) {
+            println("✅ sudo is available for authentication")
+        }
+
+        return null
+    }
+
+    /**
      * Install Linux Deb update using helper script pattern.
      */
     private suspend fun installLinuxDebUpdate(downloadFile: File): InstallResult {
@@ -259,33 +295,8 @@ object UpdateInstaller {
                 println("Starting Linux Deb update installation...")
                 validateDownloadFile(downloadFile, ".deb")
 
-                // Pre-flight validation: Check environment
-                val display = System.getenv("DISPLAY")
-                if (display.isNullOrBlank()) {
-                    println("⚠️ WARNING: No DISPLAY set - pkexec may not be able to show authentication dialog")
-                    return@withContext InstallResult.Error("No DISPLAY environment variable set. Cannot show authentication dialog.")
-                }
-                println("✅ DISPLAY is set: $display")
-
-                // Check if pkexec or sudo is available
-                val hasPkexec = try {
-                    ProcessBuilder("which", "pkexec").start().waitFor() == 0
-                } catch (e: Exception) { false }
-
-                val hasSudo = try {
-                    ProcessBuilder("which", "sudo").start().waitFor() == 0
-                } catch (e: Exception) { false }
-
-                if (!hasPkexec && !hasSudo) {
-                    println("❌ ERROR: Neither pkexec nor sudo available")
-                    return@withContext InstallResult.Error("Neither pkexec nor sudo is available for installation. Please install polkit or sudo.")
-                }
-
-                if (hasPkexec) {
-                    println("✅ pkexec is available for authentication")
-                } else if (hasSudo) {
-                    println("✅ sudo is available for authentication")
-                }
+                // Validate environment
+                validateLinuxUpdateEnvironment()?.let { return@withContext it }
 
                 val currentPid = ProcessHandle.current().pid()
                 val scriptFile = UpdateScriptGenerator.generateLinuxDebUpdateScript(
@@ -311,33 +322,8 @@ object UpdateInstaller {
                 println("Starting Linux RPM update installation...")
                 validateDownloadFile(downloadFile, ".rpm")
 
-                // Pre-flight validation: Check environment
-                val display = System.getenv("DISPLAY")
-                if (display.isNullOrBlank()) {
-                    println("⚠️ WARNING: No DISPLAY set - pkexec may not be able to show authentication dialog")
-                    return@withContext InstallResult.Error("No DISPLAY environment variable set. Cannot show authentication dialog.")
-                }
-                println("✅ DISPLAY is set: $display")
-
-                // Check if pkexec or sudo is available
-                val hasPkexec = try {
-                    ProcessBuilder("which", "pkexec").start().waitFor() == 0
-                } catch (e: Exception) { false }
-
-                val hasSudo = try {
-                    ProcessBuilder("which", "sudo").start().waitFor() == 0
-                } catch (e: Exception) { false }
-
-                if (!hasPkexec && !hasSudo) {
-                    println("❌ ERROR: Neither pkexec nor sudo available")
-                    return@withContext InstallResult.Error("Neither pkexec nor sudo is available for installation. Please install polkit or sudo.")
-                }
-
-                if (hasPkexec) {
-                    println("✅ pkexec is available for authentication")
-                } else if (hasSudo) {
-                    println("✅ sudo is available for authentication")
-                }
+                // Validate environment
+                validateLinuxUpdateEnvironment()?.let { return@withContext it }
 
                 val currentPid = ProcessHandle.current().pid()
                 val scriptFile = UpdateScriptGenerator.generateLinuxRpmUpdateScript(

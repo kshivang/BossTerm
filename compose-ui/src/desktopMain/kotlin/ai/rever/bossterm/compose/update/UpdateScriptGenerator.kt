@@ -331,51 +331,60 @@ ASKPASS_EOF
                 echo "⚠️ Installation failed, attempting to fix dependencies..."
                 if command -v sudo &> /dev/null; then
                     sudo apt-get install -f -y
+                    INSTALL_RESULT=${'$'}?
+                    echo "Dependency fix result: exit code ${'$'}INSTALL_RESULT"
                 fi
-                echo "Dependency fix completed"
-            else
+            fi
+
+            # Only proceed with post-installation steps if installation succeeded
+            if [ ${'$'}INSTALL_RESULT -eq 0 ]; then
                 echo "✅ Installation successful"
-            fi
 
-            echo ""
-            echo "[3/5] Fixing StartupWMClass in desktop file..."
-            DESKTOP_FILE="/usr/share/applications/bossterm-BossTerm.desktop"
-            if [ -f "${'$'}DESKTOP_FILE" ] && ! grep -q "StartupWMClass" "${'$'}DESKTOP_FILE"; then
-                if command -v sudo &> /dev/null; then
-                    echo "StartupWMClass=bossterm" | sudo tee -a "${'$'}DESKTOP_FILE" > /dev/null
+                echo ""
+                echo "[3/5] Fixing StartupWMClass in desktop file..."
+                DESKTOP_FILE="/usr/share/applications/bossterm-BossTerm.desktop"
+                if [ -f "${'$'}DESKTOP_FILE" ] && ! grep -q "StartupWMClass" "${'$'}DESKTOP_FILE"; then
+                    if command -v sudo &> /dev/null; then
+                        echo "StartupWMClass=bossterm" | sudo tee -a "${'$'}DESKTOP_FILE" > /dev/null
+                    fi
+                    echo "✅ Added StartupWMClass to desktop file"
+                else
+                    echo "ℹ️ StartupWMClass already present or desktop file not found"
                 fi
-                echo "✅ Added StartupWMClass to desktop file"
-            else
-                echo "ℹ️ StartupWMClass already present or desktop file not found"
-            fi
 
-            echo ""
-            echo "[4/5] Refreshing desktop database..."
-            if command -v update-desktop-database &> /dev/null; then
-                update-desktop-database /usr/share/applications 2>/dev/null || true
-                echo "✅ Desktop database refreshed"
-            else
-                echo "ℹ️ update-desktop-database not available, skipping"
-            fi
+                echo ""
+                echo "[4/5] Refreshing desktop database..."
+                if command -v update-desktop-database &> /dev/null; then
+                    update-desktop-database /usr/share/applications 2>/dev/null || true
+                    echo "✅ Desktop database refreshed"
+                else
+                    echo "ℹ️ update-desktop-database not available, skipping"
+                fi
 
-            echo ""
-            echo "[5/5] Launching BossTerm..."
-            if [ -x /opt/bossterm/bin/BossTerm ]; then
-                nohup /opt/bossterm/bin/BossTerm > /dev/null 2>&1 &
-                echo "✅ Launched from /opt/bossterm/bin/BossTerm"
-            elif [ -x /usr/bin/bossterm ]; then
-                nohup /usr/bin/bossterm > /dev/null 2>&1 &
-                echo "✅ Launched from /usr/bin/bossterm"
-            else
-                echo "⚠️ WARNING: Could not find BossTerm executable"
-            fi
+                echo ""
+                echo "[5/5] Launching BossTerm..."
+                if [ -x /opt/bossterm/bin/BossTerm ]; then
+                    nohup /opt/bossterm/bin/BossTerm > /dev/null 2>&1 &
+                    echo "✅ Launched from /opt/bossterm/bin/BossTerm"
+                elif [ -x /usr/bin/bossterm ]; then
+                    nohup /usr/bin/bossterm > /dev/null 2>&1 &
+                    echo "✅ Launched from /usr/bin/bossterm"
+                else
+                    echo "⚠️ WARNING: Could not find BossTerm executable"
+                fi
 
-            sleep 2
-            echo ""
-            echo "=== Update Script Completed Successfully ==="
-            echo "Log file: ${'$'}LOG_FILE"
-            rm -f "${'$'}0"
-            exit 0
+                sleep 2
+                echo ""
+                echo "=== Update Script Completed Successfully ==="
+                echo "Log file: ${'$'}LOG_FILE"
+                rm -f "${'$'}0"
+                exit 0
+            else
+                echo "❌ ERROR: Installation failed with exit code ${'$'}INSTALL_RESULT"
+                echo "Log file: ${'$'}LOG_FILE"
+                echo "You can manually install with: sudo dpkg -i $escapedDebPath"
+                exit 1
+            fi
         """.trimIndent()
 
         scriptFile.writeText(script)
@@ -496,51 +505,55 @@ ASKPASS_EOF
 
             echo "Installation result: exit code ${'$'}INSTALL_RESULT"
 
-            if [ ${'$'}INSTALL_RESULT -ne 0 ]; then
-                echo "❌ ERROR: RPM installation failed with exit code ${'$'}INSTALL_RESULT"
-            else
+            # Only proceed with post-installation steps if installation succeeded
+            if [ ${'$'}INSTALL_RESULT -eq 0 ]; then
                 echo "✅ Installation successful"
-            fi
 
-            echo ""
-            echo "[3/5] Fixing StartupWMClass in desktop file..."
-            DESKTOP_FILE="/usr/share/applications/bossterm-BossTerm.desktop"
-            if [ -f "${'$'}DESKTOP_FILE" ] && ! grep -q "StartupWMClass" "${'$'}DESKTOP_FILE"; then
-                if command -v sudo &> /dev/null; then
-                    echo "StartupWMClass=bossterm" | sudo tee -a "${'$'}DESKTOP_FILE" > /dev/null
+                echo ""
+                echo "[3/5] Fixing StartupWMClass in desktop file..."
+                DESKTOP_FILE="/usr/share/applications/bossterm-BossTerm.desktop"
+                if [ -f "${'$'}DESKTOP_FILE" ] && ! grep -q "StartupWMClass" "${'$'}DESKTOP_FILE"; then
+                    if command -v sudo &> /dev/null; then
+                        echo "StartupWMClass=bossterm" | sudo tee -a "${'$'}DESKTOP_FILE" > /dev/null
+                    fi
+                    echo "✅ Added StartupWMClass to desktop file"
+                else
+                    echo "ℹ️ StartupWMClass already present or desktop file not found"
                 fi
-                echo "✅ Added StartupWMClass to desktop file"
-            else
-                echo "ℹ️ StartupWMClass already present or desktop file not found"
-            fi
 
-            echo ""
-            echo "[4/5] Refreshing desktop database..."
-            if command -v update-desktop-database &> /dev/null; then
-                update-desktop-database /usr/share/applications 2>/dev/null || true
-                echo "✅ Desktop database refreshed"
-            else
-                echo "ℹ️ update-desktop-database not available, skipping"
-            fi
+                echo ""
+                echo "[4/5] Refreshing desktop database..."
+                if command -v update-desktop-database &> /dev/null; then
+                    update-desktop-database /usr/share/applications 2>/dev/null || true
+                    echo "✅ Desktop database refreshed"
+                else
+                    echo "ℹ️ update-desktop-database not available, skipping"
+                fi
 
-            echo ""
-            echo "[5/5] Launching BossTerm..."
-            if [ -x /opt/bossterm/bin/BossTerm ]; then
-                nohup /opt/bossterm/bin/BossTerm > /dev/null 2>&1 &
-                echo "✅ Launched from /opt/bossterm/bin/BossTerm"
-            elif [ -x /usr/bin/bossterm ]; then
-                nohup /usr/bin/bossterm > /dev/null 2>&1 &
-                echo "✅ Launched from /usr/bin/bossterm"
-            else
-                echo "⚠️ WARNING: Could not find BossTerm executable"
-            fi
+                echo ""
+                echo "[5/5] Launching BossTerm..."
+                if [ -x /opt/bossterm/bin/BossTerm ]; then
+                    nohup /opt/bossterm/bin/BossTerm > /dev/null 2>&1 &
+                    echo "✅ Launched from /opt/bossterm/bin/BossTerm"
+                elif [ -x /usr/bin/bossterm ]; then
+                    nohup /usr/bin/bossterm > /dev/null 2>&1 &
+                    echo "✅ Launched from /usr/bin/bossterm"
+                else
+                    echo "⚠️ WARNING: Could not find BossTerm executable"
+                fi
 
-            sleep 2
-            echo ""
-            echo "=== Update Script Completed Successfully ==="
-            echo "Log file: ${'$'}LOG_FILE"
-            rm -f "${'$'}0"
-            exit 0
+                sleep 2
+                echo ""
+                echo "=== Update Script Completed Successfully ==="
+                echo "Log file: ${'$'}LOG_FILE"
+                rm -f "${'$'}0"
+                exit 0
+            else
+                echo "❌ ERROR: RPM installation failed with exit code ${'$'}INSTALL_RESULT"
+                echo "Log file: ${'$'}LOG_FILE"
+                echo "You can manually install with: sudo rpm -U $escapedRpmPath"
+                exit 1
+            fi
         """.trimIndent()
 
         scriptFile.writeText(script)

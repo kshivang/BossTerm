@@ -181,7 +181,7 @@ private fun ReadyToInstallBanner(onInstall: () -> Unit) {
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    "Update ready to install",
+                    "Update ready to install - password prompt will appear",
                     color = Color.White,
                     fontSize = 12.sp
                 )
@@ -193,7 +193,7 @@ private fun ReadyToInstallBanner(onInstall: () -> Unit) {
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                 modifier = Modifier.height(28.dp)
             ) {
-                Text("Install Now", fontSize = 11.sp)
+                Text("Install Update", fontSize = 11.sp)
             }
         }
     }
@@ -219,7 +219,7 @@ private fun RestartRequiredBanner() {
             )
             Spacer(modifier = Modifier.width(6.dp))
             Text(
-                "Installing update... Please wait.",
+                "Installing update... App will relaunch automatically. Check /tmp/bossterm-updater/ for logs if needed.",
                 color = Color.White,
                 fontSize = 12.sp
             )
@@ -237,50 +237,60 @@ private fun ErrorBanner(
         modifier = Modifier.fillMaxWidth(),
         color = BannerBackground
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 12.dp, vertical = 6.dp)
         ) {
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    Icons.Default.Warning,
-                    contentDescription = "Error",
-                    tint = AccentRed,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    "Update error: $message",
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    maxLines = 1
-                )
-            }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        Icons.Default.Warning,
+                        contentDescription = "Error",
+                        tint = AccentRed,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        "Update error: $message",
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        maxLines = 2
+                    )
+                }
 
-            Row {
-                TextButton(
-                    onClick = onRetry,
-                    colors = ButtonDefaults.textButtonColors(contentColor = AccentBlue),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                    modifier = Modifier.height(28.dp)
-                ) {
-                    Text("Retry", fontSize = 11.sp)
-                }
-                TextButton(
-                    onClick = onDismiss,
-                    colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF808080)),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                    modifier = Modifier.height(28.dp)
-                ) {
-                    Text("Dismiss", fontSize = 11.sp)
+                Row {
+                    TextButton(
+                        onClick = onRetry,
+                        colors = ButtonDefaults.textButtonColors(contentColor = AccentBlue),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Text("Retry", fontSize = 11.sp)
+                    }
+                    TextButton(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF808080)),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Text("Dismiss", fontSize = 11.sp)
+                    }
                 }
             }
+            Text(
+                "Check logs: /tmp/bossterm-updater/update-*.log or /tmp/bossterm-update-debug-*.log",
+                color = Color(0xFF808080),
+                fontSize = 10.sp,
+                modifier = Modifier.padding(top = 2.dp, start = 22.dp)
+            )
         }
     }
 }

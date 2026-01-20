@@ -237,75 +237,143 @@ object UpdateScriptGenerator {
             #!/bin/bash
 
             # BossTerm Update Helper Script (Debian/Ubuntu)
+            LOG_FILE="/tmp/bossterm-update-debug-${'$'}(date +%s).log"
 
-            echo "BossTerm Update Helper started"
-            echo "Waiting for BossTerm to quit (PID: $appPid)..."
+            # Log everything
+            exec > >(tee -a "${'$'}LOG_FILE") 2>&1
 
+            echo "=== BossTerm Update Script Started ==="
+            echo "Timestamp: ${'$'}(date)"
+            echo "Script PID: ${'$'}${'$'}"
+            echo "User: ${'$'}(whoami)"
+            echo "DISPLAY: ${'$'}DISPLAY"
+            echo "XAUTHORITY: ${'$'}XAUTHORITY"
+            echo "Package: $escapedDebPath"
+            echo "Target PID: $appPid"
+            echo ""
+
+            echo "[1/5] Waiting for BossTerm to quit (PID: $appPid)..."
             WAIT_COUNT=0
             MAX_WAIT=30
             while kill -0 $appPid 2>/dev/null; do
                 sleep 1
                 WAIT_COUNT=${'$'}((WAIT_COUNT + 1))
                 if [ ${'$'}WAIT_COUNT -ge ${'$'}MAX_WAIT ]; then
-                    echo "Timeout waiting for app to quit"
+                    echo "❌ ERROR: Timeout waiting for app to quit after ${'$'}MAX_WAIT seconds"
                     exit 1
                 fi
             done
-
-            echo "BossTerm has quit. Starting installation..."
+            echo "✅ App quit detected after ${'$'}WAIT_COUNT seconds"
             sleep 2
 
-            echo "Installing Deb package: $escapedDebPath"
+            echo ""
+            echo "[2/5] Installing Deb package: $escapedDebPath"
 
-            # Try pkexec first (graphical sudo prompt)
-            if command -v pkexec &> /dev/null; then
-                pkexec dpkg -i $escapedDebPath
-                INSTALL_RESULT=${'$'}?
-            # Fall back to sudo if available
-            elif command -v sudo &> /dev/null; then
-                sudo dpkg -i $escapedDebPath
-                INSTALL_RESULT=${'$'}?
+            # Try pkexec first (works well in normal desktop sessions)
+            if command -v pkexec &> /dev/null && [ -n "${'$'}DISPLAY" ]; then
+                echo "Trying pkexec for installation..."
+                timeout 10 pkexec dpkg -i $escapedDebPath &
+                PKEXEC_PID=${'$'}!
+                sleep 2
+
+                # Check if pkexec is still running (waiting for auth)
+                if kill -0 ${'$'}PKEXEC_PID 2>/dev/null; then
+                    echo "✅ pkexec authentication dialog should be visible"
+                    wait ${'$'}PKEXEC_PID
+                    INSTALL_RESULT=${'$'}?
+                else
+                    echo "⚠️ pkexec exited immediately, trying sudo with graphical prompt..."
+                    INSTALL_RESULT=1
+                fi
             else
-                echo "Error: Neither pkexec nor sudo available for installation"
-                exit 1
+                echo "ℹ️ pkexec not available or no DISPLAY, will use sudo"
+                INSTALL_RESULT=1
             fi
+
+            # Fallback to sudo with graphical askpass if pkexec failed
+            if [ ${'$'}INSTALL_RESULT -ne 0 ]; then
+                ASKPASS_SCRIPT="/tmp/bossterm-askpass-${'$'}${'$'}.sh"
+                if command -v zenity &> /dev/null && [ -n "${'$'}DISPLAY" ]; then
+                    echo "Using sudo with zenity for graphical authentication..."
+                    cat > "${'$'}ASKPASS_SCRIPT" << 'ASKPASS_EOF'
+#!/bin/bash
+zenity --password --title="BossTerm Update Authentication" --text="Enter your password to install the BossTerm update:"
+ASKPASS_EOF
+                    chmod +x "${'$'}ASKPASS_SCRIPT"
+                    export SUDO_ASKPASS="${'$'}ASKPASS_SCRIPT"
+                    sudo -A dpkg -i $escapedDebPath
+                    INSTALL_RESULT=${'$'}?
+                    rm -f "${'$'}ASKPASS_SCRIPT"
+                elif command -v kdialog &> /dev/null && [ -n "${'$'}DISPLAY" ]; then
+                    echo "Using sudo with kdialog for graphical authentication..."
+                    cat > "${'$'}ASKPASS_SCRIPT" << 'ASKPASS_EOF'
+#!/bin/bash
+kdialog --password "Enter your password to install the BossTerm update:"
+ASKPASS_EOF
+                    chmod +x "${'$'}ASKPASS_SCRIPT"
+                    export SUDO_ASKPASS="${'$'}ASKPASS_SCRIPT"
+                    sudo -A dpkg -i $escapedDebPath
+                    INSTALL_RESULT=${'$'}?
+                    rm -f "${'$'}ASKPASS_SCRIPT"
+                elif command -v sudo &> /dev/null; then
+                    echo "Using sudo for installation..."
+                    sudo dpkg -i $escapedDebPath
+                    INSTALL_RESULT=${'$'}?
+                else
+                    echo "❌ ERROR: No elevation method available"
+                    exit 1
+                fi
+            fi
+
+            echo "Installation result: exit code ${'$'}INSTALL_RESULT"
 
             if [ ${'$'}INSTALL_RESULT -ne 0 ]; then
-                echo "Installation failed, trying to fix dependencies..."
-                if command -v pkexec &> /dev/null; then
-                    pkexec apt-get install -f -y
-                else
+                echo "⚠️ Installation failed, attempting to fix dependencies..."
+                if command -v sudo &> /dev/null; then
                     sudo apt-get install -f -y
                 fi
+                echo "Dependency fix completed"
+            else
+                echo "✅ Installation successful"
             fi
 
-            echo "Installation complete!"
-
-            # Fix StartupWMClass in .desktop file for proper icon/taskbar integration
+            echo ""
+            echo "[3/5] Fixing StartupWMClass in desktop file..."
             DESKTOP_FILE="/usr/share/applications/bossterm-BossTerm.desktop"
             if [ -f "${'$'}DESKTOP_FILE" ] && ! grep -q "StartupWMClass" "${'$'}DESKTOP_FILE"; then
-                if command -v pkexec &> /dev/null; then
-                    echo "StartupWMClass=bossterm" | pkexec tee -a "${'$'}DESKTOP_FILE" > /dev/null
-                elif command -v sudo &> /dev/null; then
+                if command -v sudo &> /dev/null; then
                     echo "StartupWMClass=bossterm" | sudo tee -a "${'$'}DESKTOP_FILE" > /dev/null
                 fi
-                echo "Added StartupWMClass to desktop file"
+                echo "✅ Added StartupWMClass to desktop file"
+            else
+                echo "ℹ️ StartupWMClass already present or desktop file not found"
             fi
 
-            # Refresh desktop database to pick up changes immediately
+            echo ""
+            echo "[4/5] Refreshing desktop database..."
             if command -v update-desktop-database &> /dev/null; then
                 update-desktop-database /usr/share/applications 2>/dev/null || true
+                echo "✅ Desktop database refreshed"
+            else
+                echo "ℹ️ update-desktop-database not available, skipping"
             fi
 
-            # Launch the updated app
-            echo "Launching BossTerm..."
+            echo ""
+            echo "[5/5] Launching BossTerm..."
             if [ -x /opt/bossterm/bin/BossTerm ]; then
                 nohup /opt/bossterm/bin/BossTerm > /dev/null 2>&1 &
+                echo "✅ Launched from /opt/bossterm/bin/BossTerm"
             elif [ -x /usr/bin/bossterm ]; then
                 nohup /usr/bin/bossterm > /dev/null 2>&1 &
+                echo "✅ Launched from /usr/bin/bossterm"
+            else
+                echo "⚠️ WARNING: Could not find BossTerm executable"
             fi
 
             sleep 2
+            echo ""
+            echo "=== Update Script Completed Successfully ==="
+            echo "Log file: ${'$'}LOG_FILE"
             rm -f "${'$'}0"
             exit 0
         """.trimIndent()
@@ -338,70 +406,139 @@ object UpdateScriptGenerator {
             #!/bin/bash
 
             # BossTerm Update Helper Script (Fedora/RHEL)
+            LOG_FILE="/tmp/bossterm-update-debug-${'$'}(date +%s).log"
 
-            echo "BossTerm Update Helper started"
-            echo "Waiting for BossTerm to quit (PID: $appPid)..."
+            # Log everything
+            exec > >(tee -a "${'$'}LOG_FILE") 2>&1
 
+            echo "=== BossTerm Update Script Started ==="
+            echo "Timestamp: ${'$'}(date)"
+            echo "Script PID: ${'$'}${'$'}"
+            echo "User: ${'$'}(whoami)"
+            echo "DISPLAY: ${'$'}DISPLAY"
+            echo "XAUTHORITY: ${'$'}XAUTHORITY"
+            echo "Package: $escapedRpmPath"
+            echo "Target PID: $appPid"
+            echo ""
+
+            echo "[1/5] Waiting for BossTerm to quit (PID: $appPid)..."
             WAIT_COUNT=0
             MAX_WAIT=30
             while kill -0 $appPid 2>/dev/null; do
                 sleep 1
                 WAIT_COUNT=${'$'}((WAIT_COUNT + 1))
                 if [ ${'$'}WAIT_COUNT -ge ${'$'}MAX_WAIT ]; then
-                    echo "Timeout waiting for app to quit"
+                    echo "❌ ERROR: Timeout waiting for app to quit after ${'$'}MAX_WAIT seconds"
                     exit 1
                 fi
             done
-
-            echo "BossTerm has quit. Starting installation..."
+            echo "✅ App quit detected after ${'$'}WAIT_COUNT seconds"
             sleep 2
 
-            echo "Installing RPM package: $escapedRpmPath"
+            echo ""
+            echo "[2/5] Installing RPM package: $escapedRpmPath"
 
-            # Try pkexec first (graphical sudo prompt)
-            if command -v pkexec &> /dev/null; then
-                pkexec rpm -U $escapedRpmPath
-                INSTALL_RESULT=${'$'}?
-            # Fall back to sudo if available
-            elif command -v sudo &> /dev/null; then
-                sudo rpm -U $escapedRpmPath
-                INSTALL_RESULT=${'$'}?
+            # Try pkexec first (works well in normal desktop sessions)
+            if command -v pkexec &> /dev/null && [ -n "${'$'}DISPLAY" ]; then
+                echo "Trying pkexec for installation..."
+                timeout 10 pkexec rpm -U $escapedRpmPath &
+                PKEXEC_PID=${'$'}!
+                sleep 2
+
+                # Check if pkexec is still running (waiting for auth)
+                if kill -0 ${'$'}PKEXEC_PID 2>/dev/null; then
+                    echo "✅ pkexec authentication dialog should be visible"
+                    wait ${'$'}PKEXEC_PID
+                    INSTALL_RESULT=${'$'}?
+                else
+                    echo "⚠️ pkexec exited immediately, trying sudo with graphical prompt..."
+                    INSTALL_RESULT=1
+                fi
             else
-                echo "Error: Neither pkexec nor sudo available for installation"
-                exit 1
+                echo "ℹ️ pkexec not available or no DISPLAY, will use sudo"
+                INSTALL_RESULT=1
             fi
+
+            # Fallback to sudo with graphical askpass if pkexec failed
+            if [ ${'$'}INSTALL_RESULT -ne 0 ]; then
+                ASKPASS_SCRIPT="/tmp/bossterm-askpass-${'$'}${'$'}.sh"
+                if command -v zenity &> /dev/null && [ -n "${'$'}DISPLAY" ]; then
+                    echo "Using sudo with zenity for graphical authentication..."
+                    cat > "${'$'}ASKPASS_SCRIPT" << 'ASKPASS_EOF'
+#!/bin/bash
+zenity --password --title="BossTerm Update Authentication" --text="Enter your password to install the BossTerm update:"
+ASKPASS_EOF
+                    chmod +x "${'$'}ASKPASS_SCRIPT"
+                    export SUDO_ASKPASS="${'$'}ASKPASS_SCRIPT"
+                    sudo -A rpm -U $escapedRpmPath
+                    INSTALL_RESULT=${'$'}?
+                    rm -f "${'$'}ASKPASS_SCRIPT"
+                elif command -v kdialog &> /dev/null && [ -n "${'$'}DISPLAY" ]; then
+                    echo "Using sudo with kdialog for graphical authentication..."
+                    cat > "${'$'}ASKPASS_SCRIPT" << 'ASKPASS_EOF'
+#!/bin/bash
+kdialog --password "Enter your password to install the BossTerm update:"
+ASKPASS_EOF
+                    chmod +x "${'$'}ASKPASS_SCRIPT"
+                    export SUDO_ASKPASS="${'$'}ASKPASS_SCRIPT"
+                    sudo -A rpm -U $escapedRpmPath
+                    INSTALL_RESULT=${'$'}?
+                    rm -f "${'$'}ASKPASS_SCRIPT"
+                elif command -v sudo &> /dev/null; then
+                    echo "Using sudo for installation..."
+                    sudo rpm -U $escapedRpmPath
+                    INSTALL_RESULT=${'$'}?
+                else
+                    echo "❌ ERROR: No elevation method available"
+                    exit 1
+                fi
+            fi
+
+            echo "Installation result: exit code ${'$'}INSTALL_RESULT"
 
             if [ ${'$'}INSTALL_RESULT -ne 0 ]; then
-                echo "RPM installation failed with exit code ${'$'}INSTALL_RESULT"
+                echo "❌ ERROR: RPM installation failed with exit code ${'$'}INSTALL_RESULT"
             else
-                echo "Installation complete!"
+                echo "✅ Installation successful"
             fi
 
-            # Fix StartupWMClass in .desktop file for proper icon/taskbar integration
+            echo ""
+            echo "[3/5] Fixing StartupWMClass in desktop file..."
             DESKTOP_FILE="/usr/share/applications/bossterm-BossTerm.desktop"
             if [ -f "${'$'}DESKTOP_FILE" ] && ! grep -q "StartupWMClass" "${'$'}DESKTOP_FILE"; then
-                if command -v pkexec &> /dev/null; then
-                    echo "StartupWMClass=bossterm" | pkexec tee -a "${'$'}DESKTOP_FILE" > /dev/null
-                elif command -v sudo &> /dev/null; then
+                if command -v sudo &> /dev/null; then
                     echo "StartupWMClass=bossterm" | sudo tee -a "${'$'}DESKTOP_FILE" > /dev/null
                 fi
-                echo "Added StartupWMClass to desktop file"
+                echo "✅ Added StartupWMClass to desktop file"
+            else
+                echo "ℹ️ StartupWMClass already present or desktop file not found"
             fi
 
-            # Refresh desktop database to pick up changes immediately
+            echo ""
+            echo "[4/5] Refreshing desktop database..."
             if command -v update-desktop-database &> /dev/null; then
                 update-desktop-database /usr/share/applications 2>/dev/null || true
+                echo "✅ Desktop database refreshed"
+            else
+                echo "ℹ️ update-desktop-database not available, skipping"
             fi
 
-            # Launch the updated app
-            echo "Launching BossTerm..."
+            echo ""
+            echo "[5/5] Launching BossTerm..."
             if [ -x /opt/bossterm/bin/BossTerm ]; then
                 nohup /opt/bossterm/bin/BossTerm > /dev/null 2>&1 &
+                echo "✅ Launched from /opt/bossterm/bin/BossTerm"
             elif [ -x /usr/bin/bossterm ]; then
                 nohup /usr/bin/bossterm > /dev/null 2>&1 &
+                echo "✅ Launched from /usr/bin/bossterm"
+            else
+                echo "⚠️ WARNING: Could not find BossTerm executable"
             fi
 
             sleep 2
+            echo ""
+            echo "=== Update Script Completed Successfully ==="
+            echo "Log file: ${'$'}LOG_FILE"
             rm -f "${'$'}0"
             exit 0
         """.trimIndent()
@@ -418,26 +555,45 @@ object UpdateScriptGenerator {
      */
     fun launchScript(scriptFile: File) {
         try {
+            val logDir = File("/tmp/bossterm-updater")
+            logDir.mkdirs()
+            val timestamp = System.currentTimeMillis()
+            val logFile = File(logDir, "update-${timestamp}.log")
+
             val command = when {
                 ShellCustomizationUtils.isMacOS() || ShellCustomizationUtils.isLinux() -> {
-                    listOf("nohup", "sh", scriptFile.absolutePath)
+                    listOf("nohup", "bash", scriptFile.absolutePath)
                 }
                 ShellCustomizationUtils.isWindows() -> {
                     listOf("cmd", "/c", "start", "/b", scriptFile.absolutePath)
                 }
                 else -> {
-                    listOf("sh", scriptFile.absolutePath)
+                    listOf("bash", scriptFile.absolutePath)
                 }
             }
 
             println("Launching update script: ${command.joinToString(" ")}")
+            println("Log file: ${logFile.absolutePath}")
 
             val processBuilder = ProcessBuilder(command)
-            processBuilder.redirectOutput(ProcessBuilder.Redirect.DISCARD)
-            processBuilder.redirectError(ProcessBuilder.Redirect.DISCARD)
-            processBuilder.start()
 
-            println("✅ Update script launched successfully")
+            // CRITICAL FIX: Redirect to log file instead of DISCARD
+            // This allows pkexec to communicate with authentication agent
+            processBuilder.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
+            processBuilder.redirectError(ProcessBuilder.Redirect.appendTo(logFile))
+
+            val process = processBuilder.start()
+
+            // Monitor process briefly
+            Thread.sleep(500)
+            if (!process.isAlive) {
+                val exitCode = process.exitValue()
+                println("WARNING: Update script exited immediately with code: $exitCode")
+                println("Check log: ${logFile.absolutePath}")
+            } else {
+                println("✅ Update script launched successfully")
+                println("💡 Monitor progress: tail -f ${logFile.absolutePath}")
+            }
         } catch (e: Exception) {
             println("❌ Failed to launch update script: ${e.message}")
             throw e

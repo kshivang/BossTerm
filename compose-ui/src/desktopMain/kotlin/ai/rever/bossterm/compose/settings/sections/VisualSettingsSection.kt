@@ -244,6 +244,7 @@ fun VisualSettingsSection(
                 Button(
                     onClick = {
                         onSettingsChange(settings.copy(useNativeTitleBar = pendingNativeTitleBarValue))
+                        onSettingsSave?.invoke()  // Force immediate save before restart
                         showRestartDialog = false
                         onRestartApp?.invoke()
                     },

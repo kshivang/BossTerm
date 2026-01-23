@@ -27,6 +27,7 @@ class SettingsManager(private val customSettingsPath: String? = null) {
     private val json = Json {
         prettyPrint = true
         ignoreUnknownKeys = true
+        encodeDefaults = true  // Ensure all fields are written, not just non-default ones
     }
 
     private val settingsDir: File by lazy {

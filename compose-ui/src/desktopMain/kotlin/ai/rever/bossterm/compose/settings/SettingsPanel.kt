@@ -342,6 +342,11 @@ private fun SettingsContent(
                 onSettingsChange = onSettingsChange,
                 onSettingsSave = onSettingsSave
             )
+            SettingsCategory.GLOBAL_HOTKEY -> GlobalHotkeySection(
+                settings = settings,
+                onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave
+            )
             SettingsCategory.ABOUT -> AboutSection()
         }
     }

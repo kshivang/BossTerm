@@ -42,6 +42,7 @@ fun WindowScope.CustomTitleBar(
     onFullscreen: () -> Unit,
     onMaximize: () -> Unit,
     backgroundColor: Color,
+    globalHotkeyHint: String? = null,
     modifier: Modifier = Modifier
 ) {
     WindowDraggableArea(
@@ -100,8 +101,20 @@ fun WindowScope.CustomTitleBar(
                 )
             }
 
-            // Spacer to balance the traffic lights
-            Spacer(modifier = Modifier.width(72.dp))
+            // Hotkey hint or spacer to balance the traffic lights
+            Box(
+                modifier = Modifier.width(72.dp),
+                contentAlignment = Alignment.CenterEnd
+            ) {
+                if (globalHotkeyHint != null) {
+                    Text(
+                        text = globalHotkeyHint,
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Normal
+                    )
+                }
+            }
         }
     }
 }

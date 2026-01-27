@@ -15,7 +15,11 @@ data class TerminalWindow(
     val id: String = UUID.randomUUID().toString(),
     val title: MutableState<String> = mutableStateOf("BossTerm"),
     val menuActions: MenuActions = MenuActions(),
-    val isWindowFocused: MutableState<Boolean> = mutableStateOf(true)
+    val isWindowFocused: MutableState<Boolean> = mutableStateOf(true),
+    /** AWT window reference for global hotkey toggle (set after Window composable renders) */
+    var awtWindow: java.awt.Window? = null,
+    /** Window number for global hotkey (1-9, or 0 if no hotkey assigned) */
+    val windowNumber: Int = 0
 )
 
 /**
@@ -33,9 +37,35 @@ object WindowManager {
     // Pending split state to transfer along with the tab
     var pendingSplitStateForNewWindow: SplitViewState? = null
 
+    // Callback for when a new window is created (for hotkey registration)
+    var onWindowCreated: ((TerminalWindow) -> Unit)? = null
+    // Callback for when a window is closed (for hotkey unregistration)
+    var onWindowClosed: ((TerminalWindow) -> Unit)? = null
+
+    /**
+     * Get the next available window number (1-9).
+     * Returns 0 if all numbers are taken.
+     */
+    private fun getNextWindowNumber(): Int {
+        val usedNumbers = _windows.map { it.windowNumber }.toSet()
+        for (i in 1..9) {
+            if (i !in usedNumbers) return i
+        }
+        return 0  // All numbers taken
+    }
+
+    /**
+     * Get a window by its number.
+     */
+    fun getWindowByNumber(number: Int): TerminalWindow? {
+        return _windows.find { it.windowNumber == number }
+    }
+
     fun createWindow(): TerminalWindow {
-        val window = TerminalWindow()
+        val windowNumber = getNextWindowNumber()
+        val window = TerminalWindow(windowNumber = windowNumber)
         _windows.add(window)
+        onWindowCreated?.invoke(window)
         return window
     }
 
@@ -53,7 +83,11 @@ object WindowManager {
     }
 
     fun closeWindow(id: String) {
-        _windows.removeAll { it.id == id }
+        val window = _windows.find { it.id == id }
+        if (window != null) {
+            onWindowClosed?.invoke(window)
+            _windows.removeAll { it.id == id }
+        }
     }
 
     fun hasWindows(): Boolean = _windows.isNotEmpty()

@@ -647,6 +647,40 @@ data class TerminalSettings(
      */
     val onboardingCompleted: Boolean = false,
 
+    // ===== Global Hotkey Settings =====
+
+    /**
+     * Enable global hotkey to summon BossTerm from anywhere.
+     * Default: Ctrl+` (backtick)
+     */
+    val globalHotkeyEnabled: Boolean = true,
+
+    /**
+     * Ctrl modifier for global hotkey.
+     */
+    val globalHotkeyCtrl: Boolean = true,
+
+    /**
+     * Alt modifier for global hotkey.
+     */
+    val globalHotkeyAlt: Boolean = false,
+
+    /**
+     * Shift modifier for global hotkey.
+     */
+    val globalHotkeyShift: Boolean = false,
+
+    /**
+     * Windows key modifier for global hotkey.
+     */
+    val globalHotkeyWin: Boolean = false,
+
+    /**
+     * Key for global hotkey.
+     * Valid values: "GRAVE" (`), "SPACE", "ESCAPE", A-Z, 0-9, F1-F12
+     */
+    val globalHotkeyKey: String = "GRAVE",
+
     /**
      * Automatically inject shell integration (OSC 133) into new terminal sessions.
      * When enabled, BossTerm hijacks shell environment variables (ZDOTDIR for zsh,

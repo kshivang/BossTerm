@@ -93,7 +93,9 @@ class SettingsManager(private val customSettingsPath: String? = null) {
     }
 
     /**
-     * Load settings from file
+     * Load settings from file.
+     * After loading, re-saves to ensure any new fields (added in updates) are persisted
+     * with their default values. This provides automatic settings migration.
      */
     fun loadFromFile() {
         try {
@@ -102,6 +104,10 @@ class SettingsManager(private val customSettingsPath: String? = null) {
                 val loadedSettings = json.decodeFromString<TerminalSettings>(jsonString)
                 _settings.value = loadedSettings
                 println("Settings loaded from: ${settingsFile.absolutePath}")
+
+                // Re-save to migrate settings file with any new fields added in updates
+                // This ensures new settings (like globalHotkey*) are written with defaults
+                saveToFile()
             } else {
                 println("No settings file found, using defaults")
                 // Save defaults on first run

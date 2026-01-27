@@ -83,6 +83,11 @@ enum class SettingsCategory(
         icon = Icons.Default.Face,
         description = "AI coding assistant integration"
     ),
+    GLOBAL_HOTKEY(
+        displayName = "Global Hotkey",
+        icon = Icons.Default.KeyboardArrowUp,
+        description = "System-wide hotkey to summon BossTerm"
+    ),
     ABOUT(
         displayName = "About",
         icon = Icons.Default.Favorite,

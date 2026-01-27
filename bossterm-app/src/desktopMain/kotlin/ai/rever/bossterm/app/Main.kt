@@ -4,6 +4,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.Text
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.*
@@ -22,7 +26,10 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.update.UpdateBanner
 import ai.rever.bossterm.compose.update.UpdateManager
 import ai.rever.bossterm.compose.window.CustomTitleBar
+import ai.rever.bossterm.compose.window.GlobalHotKeyManager
+import ai.rever.bossterm.compose.window.HotKeyConfig
 import ai.rever.bossterm.compose.window.WindowManager
+import ai.rever.bossterm.compose.window.WindowVisibilityController
 import ai.rever.bossterm.compose.window.configureWindowTransparency
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,6 +58,9 @@ fun main() {
 
     // Set WM_CLASS for Linux desktop integration (must be before any AWT init)
     setLinuxWMClass()
+
+    // Start global hotkey manager (Windows only)
+    startGlobalHotKeyManager()
 
     application {
         // Create initial window if none exist
@@ -163,6 +173,9 @@ fun main() {
                         // Set initial focus state
                         window.isWindowFocused.value = awtWindow.isFocused
 
+                        // Store AWT window reference for global hotkey toggle
+                        window.awtWindow = awtWindow
+
                         // Configure window transparency and blur (only for custom title bar mode)
                         if (!useNativeTitleBar) {
                             configureWindowTransparency(
@@ -174,6 +187,7 @@ fun main() {
 
                         onDispose {
                             awtWindow.removeWindowFocusListener(focusListener)
+                            window.awtWindow = null
                         }
                     }
 
@@ -520,6 +534,23 @@ fun main() {
                         shape = RoundedCornerShape(cornerRadius)
                     ) {
                         Box(modifier = Modifier.fillMaxSize()) {
+                            // Compute global hotkey hint (used for both title bar modes)
+                            val globalHotkeyHint = remember(
+                                windowSettings.globalHotkeyEnabled,
+                                windowSettings.globalHotkeyCtrl,
+                                windowSettings.globalHotkeyAlt,
+                                windowSettings.globalHotkeyShift,
+                                windowSettings.globalHotkeyWin,
+                                window.windowNumber
+                            ) {
+                                if (windowSettings.globalHotkeyEnabled && window.windowNumber in 1..9) {
+                                    val config = HotKeyConfig.fromSettings(windowSettings)
+                                    config.toWindowDisplayString(window.windowNumber, useMacSymbols = isMacOS)
+                                } else {
+                                    null
+                                }
+                            }
+
                             // Background layer: either image or glass blur effect
                             if (backgroundImage != null) {
                                 // Background image with blur
@@ -585,7 +616,8 @@ fun main() {
                                         },
                                         backgroundColor = windowSettings.defaultBackgroundColor.copy(
                                             alpha = (windowSettings.backgroundOpacity * 1.1f).coerceAtMost(1f)
-                                        )
+                                        ),
+                                        globalHotkeyHint = globalHotkeyHint
                                     )
                                 }
 
@@ -632,6 +664,23 @@ fun main() {
                                     isWindowFocused = { window.isWindowFocused.value },
                                     modifier = Modifier.fillMaxSize().weight(1f)
                                 )
+                            }
+
+                            // Hotkey hint overlay (top-right corner, like iTerm2)
+                            // Shows for native title bar; custom title bar shows it in the title bar itself
+                            if (useNativeTitleBar && globalHotkeyHint != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(top = 8.dp, end = 12.dp)
+                                ) {
+                                    Text(
+                                        text = globalHotkeyHint,
+                                        color = Color.White.copy(alpha = 0.5f),
+                                        fontSize = 11.sp,
+                                        fontWeight = androidx.compose.ui.text.font.FontWeight.Normal
+                                    )
+                                }
                             }
                         }
                     }
@@ -783,4 +832,59 @@ private fun configureGpuRendering() {
     // Log GPU configuration summary
     println("GPU: Acceleration=${settings.gpuAcceleration}, API=${settings.gpuRenderApi}, " +
             "Priority=${settings.gpuPriority}, VSync=${settings.gpuVsyncEnabled}, Cache=${settings.gpuCacheSizeMb}MB")
+}
+
+/**
+ * Start the global hotkey manager.
+ * Allows summoning specific BossTerm windows from anywhere with system-wide hotkeys.
+ * Each window gets a unique hotkey: Modifiers+1, Modifiers+2, etc.
+ */
+private fun startGlobalHotKeyManager() {
+    // Load settings
+    val settings = try {
+        ai.rever.bossterm.compose.settings.SettingsLoader.loadFromPathOrDefault(null)
+    } catch (e: Exception) {
+        System.err.println("Could not load settings for global hotkey: ${e.message}")
+        return
+    }
+
+    // Check if enabled
+    val config = HotKeyConfig.fromSettings(settings)
+    if (!config.enabled) {
+        println("GlobalHotKey: Disabled in settings")
+        return
+    }
+
+    // Validate configuration (need at least one modifier)
+    if (!(config.ctrl || config.alt || config.shift || config.win)) {
+        println("GlobalHotKey: Invalid configuration (no modifiers)")
+        return
+    }
+
+    // Start the manager with window-specific callback
+    GlobalHotKeyManager.start(config) { windowNumber ->
+        // Find the window with this number
+        val window = WindowManager.getWindowByNumber(windowNumber)
+        if (window != null) {
+            // Window exists - toggle its visibility
+            val awtWindow = window.awtWindow
+            if (awtWindow != null) {
+                WindowVisibilityController.toggleWindow(listOf(awtWindow))
+            }
+        } else {
+            // No window with this number - create one if it's window 1
+            if (windowNumber == 1) {
+                javax.swing.SwingUtilities.invokeLater {
+                    WindowManager.createWindow()
+                }
+            }
+        }
+    }
+
+    // Register shutdown hook to clean up
+    Runtime.getRuntime().addShutdownHook(Thread {
+        GlobalHotKeyManager.stop()
+    })
+
+    println("GlobalHotKey: Started with modifiers for windows 1-9")
 }

@@ -651,9 +651,11 @@ data class TerminalSettings(
 
     /**
      * Enable global hotkey to summon BossTerm from anywhere.
-     * Default: Ctrl+` (backtick)
+     * Default: Disabled on macOS and Linux (opt-in due to desktop environment conflicts).
+     *          Enabled on Windows.
+     * Hotkey: Configured via modifiers + 1-9 for window-specific summoning.
      */
-    val globalHotkeyEnabled: Boolean = true,
+    val globalHotkeyEnabled: Boolean = ShellCustomizationUtils.isWindows(),
 
     /**
      * Ctrl modifier for global hotkey.

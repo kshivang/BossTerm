@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.awt.event.KeyEvent
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import javax.swing.SwingUtilities
@@ -46,15 +47,15 @@ object GlobalHotKeyManager {
 
     // Platform-specific state
     private var winThreadId: Int = 0
-    private var macHotKeyRefs: MutableMap<Int, Pointer> = mutableMapOf()
+    private val macHotKeyRefs: MutableMap<Int, Pointer> = Collections.synchronizedMap(mutableMapOf())
     private var macEventHandlerRef: Pointer? = null
     private var macEventHandler: EventHandlerUPP? = null  // Keep reference to prevent GC
     private var macRunLoopMode: Pointer? = null
     private var linuxDisplay: Pointer? = null
-    private var linuxKeycodes: MutableMap<Int, Int> = mutableMapOf()
+    private val linuxKeycodes: MutableMap<Int, Int> = Collections.synchronizedMap(mutableMapOf())
 
-    // Track which window numbers have registered hotkeys
-    private val registeredWindows = mutableSetOf<Int>()
+    // Track which window numbers have registered hotkeys (accessed from multiple threads)
+    private val registeredWindows: MutableSet<Int> = Collections.synchronizedSet(mutableSetOf())
 
     private val _registrationStatus = MutableStateFlow(HotKeyRegistrationStatus.INACTIVE)
     val registrationStatus: StateFlow<HotKeyRegistrationStatus> = _registrationStatus.asStateFlow()
@@ -184,9 +185,9 @@ object GlobalHotKeyManager {
         baseConfig = null
         onWindowHotKeyPressed = null
         initializationLatch = null
-        macEventHandler = null
-        macEventHandlerRef = null
-        macRunLoopMode = null
+        // Note: macEventHandler, macEventHandlerRef, macRunLoopMode are cleared by cleanupMacOS()
+        // which runs in the handler thread's finally block. Don't clear them here to avoid
+        // race condition where CFString leaks if we null the reference before cleanup runs.
         registeredWindows.clear()
         _registrationStatus.value = HotKeyRegistrationStatus.INACTIVE
 
@@ -607,13 +608,28 @@ object GlobalHotKeyManager {
             api.XSelectInput(display, rootWindow, NativeLong(LinuxHotKeyApi.KeyPressMask))
             api.XFlush(display)
 
+            // Evaluate success: if more than half failed, mark as FAILED
+            val totalAttempted = 9
+            val successCount = registeredWindows.size
+            val successRate = successCount.toDouble() / totalAttempted
+
             if (failedWindows.isEmpty()) {
                 println("GlobalHotKeyManager: Registered Linux hotkeys for windows 1-9")
                 _registrationStatus.value = HotKeyRegistrationStatus.REGISTERED
+            } else if (successRate < 0.5) {
+                // More than half failed - this is effectively a failure
+                println("GlobalHotKeyManager: Failed to register most Linux hotkeys")
+                println("  Registered: ${registeredWindows.sorted()} (${successCount}/9)")
+                println("  Failed: ${failedWindows.sorted()} (likely conflicts with system hotkeys)")
+                println("  Try using different modifier keys in BossTerm settings")
+                _registrationStatus.value = HotKeyRegistrationStatus.FAILED
+                initializationLatch?.countDown()
+                return
             } else {
-                println("GlobalHotKeyManager: Registered Linux hotkeys for windows ${registeredWindows.sorted()}")
+                // At least half succeeded - partial success
+                println("GlobalHotKeyManager: Registered Linux hotkeys for windows ${registeredWindows.sorted()} (${successCount}/9)")
                 println("  Failed to register: ${failedWindows.sorted()} (likely conflicts with system hotkeys)")
-                // Still mark as REGISTERED since some work, but user is informed about failures
+                println("  Partial registration - some hotkeys unavailable")
                 _registrationStatus.value = HotKeyRegistrationStatus.REGISTERED
             }
 

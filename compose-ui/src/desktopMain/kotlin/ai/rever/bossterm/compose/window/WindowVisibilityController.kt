@@ -5,6 +5,7 @@ import com.sun.jna.Native
 import com.sun.jna.platform.win32.WinDef.HWND
 import java.awt.Frame
 import java.awt.Window
+import java.lang.reflect.InaccessibleObjectException
 import javax.swing.SwingUtilities
 
 /**
@@ -162,8 +163,14 @@ object WindowVisibilityController {
             } else {
                 null
             }
+        } catch (e: InaccessibleObjectException) {
+            // Java 16+ requires explicit module access
+            println("WindowVisibilityController: Reflection blocked by Java module system")
+            println("  Add JVM flag: --add-opens java.desktop/java.awt=ALL-UNNAMED")
+            println("  Window toggle will fall back to standard show/hide")
+            null
         } catch (e: Exception) {
-            // JNA or reflection failed - return null to use fallback
+            // Other reflection or JNA failures - return null to use fallback
             println("WindowVisibilityController: Failed to get HWND: ${e.javaClass.simpleName} - ${e.message}")
             null
         }

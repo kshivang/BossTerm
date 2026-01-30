@@ -739,6 +739,26 @@ fun main() {
 }
 
 /**
+ * Load BossTerm settings with error handling.
+ * Returns null if loading fails for optional features, default settings for critical features.
+ *
+ * @param context Description of what the settings are being loaded for
+ * @param allowNull If true, returns null on error; if false, returns default settings
+ */
+private fun loadSettings(
+    context: String = "general",
+    allowNull: Boolean = false
+): ai.rever.bossterm.compose.settings.TerminalSettings? {
+    return try {
+        ai.rever.bossterm.compose.settings.SettingsLoader.loadFromPathOrDefault(null)
+    } catch (e: Exception) {
+        System.err.println("Could not load settings for $context: ${e.message}")
+        if (!allowNull) e.printStackTrace()
+        if (allowNull) null else ai.rever.bossterm.compose.settings.TerminalSettings()
+    }
+}
+
+/**
  * Set WM_CLASS for proper Linux desktop integration.
  * Must be called before any windows are created.
  * Requires JVM arg: --add-opens java.desktop/sun.awt.X11=ALL-UNNAMED
@@ -773,14 +793,8 @@ private fun configureGpuRendering() {
     val isMacOS = ShellCustomizationUtils.isMacOS()
     val isWindows = ShellCustomizationUtils.isWindows()
 
-    // Load settings using SettingsLoader (handles JSON parsing and defaults)
-    val settings = try {
-        ai.rever.bossterm.compose.settings.SettingsLoader.loadFromPathOrDefault(null)
-    } catch (e: Exception) {
-        System.err.println("Could not load settings for GPU config, using defaults: ${e.message}")
-        e.printStackTrace()
-        ai.rever.bossterm.compose.settings.TerminalSettings()
-    }
+    // Load settings using helper function (returns defaults on failure)
+    val settings = loadSettings("GPU config", allowNull = false)!!
 
     // Configure render API
     val renderApi = if (!settings.gpuAcceleration) {
@@ -842,13 +856,8 @@ private fun configureGpuRendering() {
  * Each window gets a unique hotkey: Modifiers+1, Modifiers+2, etc.
  */
 private fun startGlobalHotKeyManager() {
-    // Load settings
-    val settings = try {
-        ai.rever.bossterm.compose.settings.SettingsLoader.loadFromPathOrDefault(null)
-    } catch (e: Exception) {
-        System.err.println("Could not load settings for global hotkey: ${e.message}")
-        return
-    }
+    // Load settings (returns null on error, skip initialization in that case)
+    val settings = loadSettings("global hotkey", allowNull = true) ?: return
 
     // Check if enabled
     val config = HotKeyConfig.fromSettings(settings)

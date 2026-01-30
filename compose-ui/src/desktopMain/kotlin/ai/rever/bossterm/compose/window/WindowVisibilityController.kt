@@ -169,6 +169,12 @@ object WindowVisibilityController {
             println("  Add JVM flag: --add-opens java.desktop/java.awt=ALL-UNNAMED")
             println("  Window toggle will fall back to standard show/hide")
             null
+        } catch (e: SecurityException) {
+            // SecurityManager denies reflection access
+            println("WindowVisibilityController: Reflection blocked by SecurityManager")
+            println("  Grant reflection permission or disable SecurityManager for window toggle")
+            println("  Window toggle will fall back to standard show/hide")
+            null
         } catch (e: Exception) {
             // Other reflection or JNA failures - return null to use fallback
             println("WindowVisibilityController: Failed to get HWND: ${e.javaClass.simpleName} - ${e.message}")

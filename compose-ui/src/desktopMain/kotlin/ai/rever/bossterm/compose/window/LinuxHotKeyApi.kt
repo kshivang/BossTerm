@@ -276,18 +276,22 @@ open class XEvent : Structure() {
      * Extract keycode from this XEvent if it's a key event.
      * Returns null if this is not a key press/release event.
      *
-     * This properly overlays the XKeyEvent structure on the XEvent union
-     * without relying on architecture-specific byte offsets.
+     * Reads directly from memory to avoid creating wrapper objects on every event.
      */
     fun getKeycode(): Int? {
         if (type != LinuxHotKeyApi.KeyPress && type != LinuxHotKeyApi.KeyRelease) {
             return null
         }
-        // Create XKeyEvent structure at the same memory location as this XEvent
-        // XEvent is a union, so XKeyEvent overlays it starting from byte 0
-        val keyEvent = Structure.newInstance(XKeyEvent::class.java, pointer) as XKeyEvent
-        keyEvent.read()
-        return keyEvent.keycode
+        // Calculate offset to keycode field in XKeyEvent structure
+        // XKeyEvent layout: type(4) + serial(NativeLong) + sendEvent(4) + display(Pointer) +
+        //                   window(NativeLong) + root(NativeLong) + subwindow(NativeLong) +
+        //                   time(NativeLong) + x(4) + y(4) + xRoot(4) + yRoot(4) + state(4) + keycode(4)
+        val pointerSize = Native.POINTER_SIZE
+        val nativeLongSize = Native.LONG_SIZE
+        val offset = 4 + nativeLongSize + 4 + pointerSize +
+                     nativeLongSize + nativeLongSize + nativeLongSize +
+                     nativeLongSize + 4 + 4 + 4 + 4 + 4
+        return pointer.getInt(offset.toLong())
     }
 }
 

@@ -39,6 +39,13 @@ enum class HotKeyRegistrationStatus {
 object GlobalHotKeyManager {
     private const val HOTKEY_SIGNATURE = 0x424F5353  // 'BOSS'
 
+    // Linux registration success threshold: if less than this fraction succeed,
+    // treat as overall failure. 50% threshold chosen because:
+    // - Allows 4-5 windows to work even if some hotkeys conflict
+    // - Provides clear feedback that something is wrong (not just 1-2 conflicts)
+    // - Matches user expectation that "most" should work for success
+    private const val LINUX_SUCCESS_THRESHOLD = 0.5
+
     private var handlerThread: Thread? = null
     @Volatile private var isRunning = false
     private var baseConfig: HotKeyConfig? = null
@@ -158,40 +165,52 @@ object GlobalHotKeyManager {
     @Synchronized
     fun stop() {
         if (!isRunning) return
-        isRunning = false
 
-        when {
-            ShellCustomizationUtils.isWindows() -> stopWindows()
-            ShellCustomizationUtils.isMacOS() -> stopMacOS()
-            ShellCustomizationUtils.isLinux() -> stopLinux()
-        }
+        // Save caller's interrupt status to restore it later
+        val wasInterrupted = Thread.interrupted()  // Returns and clears interrupt status
 
-        handlerThread?.let { thread ->
-            try {
-                // Wait up to 2 seconds for graceful shutdown
-                thread.join(2000)
-                if (thread.isAlive) {
-                    // Interrupt if still running
-                    thread.interrupt()
-                    // Give it another second to cleanup after interrupt
-                    thread.join(1000)
+        try {
+            isRunning = false
+
+            when {
+                ShellCustomizationUtils.isWindows() -> stopWindows()
+                ShellCustomizationUtils.isMacOS() -> stopMacOS()
+                ShellCustomizationUtils.isLinux() -> stopLinux()
+            }
+
+            handlerThread?.let { thread ->
+                try {
+                    // Wait up to 2 seconds for graceful shutdown
+                    thread.join(2000)
+                    if (thread.isAlive) {
+                        // Interrupt if still running
+                        thread.interrupt()
+                        // Give it another second to cleanup after interrupt
+                        thread.join(1000)
+                    }
+                } catch (e: InterruptedException) {
+                    // Handler thread join was interrupted - restore status and continue cleanup
+                    Thread.currentThread().interrupt()
                 }
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt() // Restore interrupt status
+            }
+
+            handlerThread = null
+            baseConfig = null
+            onWindowHotKeyPressed = null
+            initializationLatch = null
+            // Note: macEventHandler, macEventHandlerRef, macRunLoopMode are cleared by cleanupMacOS()
+            // which runs in the handler thread's finally block. Don't clear them here to avoid
+            // race condition where CFString leaks if we null the reference before cleanup runs.
+            registeredWindows.clear()
+            _registrationStatus.value = HotKeyRegistrationStatus.INACTIVE
+
+            println("GlobalHotKeyManager: Stopped")
+        } finally {
+            // Restore caller's original interrupt status
+            if (wasInterrupted) {
+                Thread.currentThread().interrupt()
             }
         }
-
-        handlerThread = null
-        baseConfig = null
-        onWindowHotKeyPressed = null
-        initializationLatch = null
-        // Note: macEventHandler, macEventHandlerRef, macRunLoopMode are cleared by cleanupMacOS()
-        // which runs in the handler thread's finally block. Don't clear them here to avoid
-        // race condition where CFString leaks if we null the reference before cleanup runs.
-        registeredWindows.clear()
-        _registrationStatus.value = HotKeyRegistrationStatus.INACTIVE
-
-        println("GlobalHotKeyManager: Stopped")
     }
 
     /**
@@ -510,9 +529,13 @@ object GlobalHotKeyManager {
         }
 
         // Release the run loop mode string
-        if (cfApi != null) {
+        // Capture the pointer locally to avoid race with concurrent access
+        val runLoopModeToRelease = macRunLoopMode
+        macRunLoopMode = null  // Clear reference first to prevent further use
+
+        if (cfApi != null && runLoopModeToRelease != null) {
             try {
-                macRunLoopMode?.let { cfApi.CFRelease(it) }
+                cfApi.CFRelease(runLoopModeToRelease)
             } catch (e: Exception) {
                 // Ignore
             }
@@ -521,7 +544,6 @@ object GlobalHotKeyManager {
         macHotKeyRefs.clear()
         macEventHandlerRef = null
         macEventHandler = null
-        macRunLoopMode = null
         registeredWindows.clear()
         _registrationStatus.value = HotKeyRegistrationStatus.INACTIVE
     }
@@ -608,7 +630,7 @@ object GlobalHotKeyManager {
             api.XSelectInput(display, rootWindow, NativeLong(LinuxHotKeyApi.KeyPressMask))
             api.XFlush(display)
 
-            // Evaluate success: if more than half failed, mark as FAILED
+            // Evaluate success based on threshold
             val totalAttempted = 9
             val successCount = registeredWindows.size
             val successRate = successCount.toDouble() / totalAttempted
@@ -616,20 +638,22 @@ object GlobalHotKeyManager {
             if (failedWindows.isEmpty()) {
                 println("GlobalHotKeyManager: Registered Linux hotkeys for windows 1-9")
                 _registrationStatus.value = HotKeyRegistrationStatus.REGISTERED
-            } else if (successRate < 0.5) {
-                // More than half failed - this is effectively a failure
-                println("GlobalHotKeyManager: Failed to register most Linux hotkeys")
+            } else if (successRate < LINUX_SUCCESS_THRESHOLD) {
+                // Below threshold - too many failures to be useful
+                val failurePercent = ((1.0 - successRate) * 100).toInt()
+                println("GlobalHotKeyManager: Failed to register most Linux hotkeys ($failurePercent% failed)")
                 println("  Registered: ${registeredWindows.sorted()} (${successCount}/9)")
-                println("  Failed: ${failedWindows.sorted()} (likely conflicts with system hotkeys)")
-                println("  Try using different modifier keys in BossTerm settings")
+                println("  Failed: ${failedWindows.sorted()} - likely conflicts with desktop environment hotkeys")
+                println("  Action required: Change modifier keys in BossTerm settings")
+                println("  Example: Try using Ctrl+Alt+Shift instead of just Ctrl+Alt")
                 _registrationStatus.value = HotKeyRegistrationStatus.FAILED
                 initializationLatch?.countDown()
                 return
             } else {
-                // At least half succeeded - partial success
+                // Above threshold - partial success is acceptable
                 println("GlobalHotKeyManager: Registered Linux hotkeys for windows ${registeredWindows.sorted()} (${successCount}/9)")
-                println("  Failed to register: ${failedWindows.sorted()} (likely conflicts with system hotkeys)")
-                println("  Partial registration - some hotkeys unavailable")
+                println("  Failed: ${failedWindows.sorted()} - likely conflicts with desktop environment")
+                println("  Tip: Some window numbers may not respond to hotkeys")
                 _registrationStatus.value = HotKeyRegistrationStatus.REGISTERED
             }
 
@@ -651,6 +675,7 @@ object GlobalHotKeyManager {
                     if (event.type == LinuxHotKeyApi.KeyPress) {
                         // Extract the actual keycode from the XEvent
                         // This properly handles the X11 union structure without hard-coded offsets
+                        // Note: getKeycode() creates a Java wrapper but doesn't allocate new native memory
                         val eventKeycode = event.getKeycode()
                         if (eventKeycode != null) {
                             // Find the matching window number by comparing keycodes

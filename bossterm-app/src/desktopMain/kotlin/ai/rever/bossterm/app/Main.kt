@@ -874,10 +874,16 @@ private fun startGlobalHotKeyManager() {
 
     // Set up window lifecycle callbacks for hotkey registration
     WindowManager.onWindowCreated = { window ->
-        GlobalHotKeyManager.registerWindow(window.windowNumber)
+        // Validate window number is in valid range before registering
+        if (window.windowNumber in 1..9) {
+            GlobalHotKeyManager.registerWindow(window.windowNumber)
+        }
     }
     WindowManager.onWindowClosed = { window ->
-        GlobalHotKeyManager.unregisterWindow(window.windowNumber)
+        // Validate window number is in valid range before unregistering
+        if (window.windowNumber in 1..9) {
+            GlobalHotKeyManager.unregisterWindow(window.windowNumber)
+        }
     }
 
     // Start the manager with window-specific callback

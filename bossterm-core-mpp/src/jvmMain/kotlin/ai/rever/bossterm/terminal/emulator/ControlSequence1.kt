@@ -205,6 +205,13 @@ class ControlSequence internal constructor(channel: TerminalDataStream) {
     val intermediateChars: String
         get() = myIntermediateChars?.toString() ?: ""
 
+    /**
+     * Check if this sequence had unhandled characters (private parameter prefixes
+     * like '<', '=' that aren't explicitly parsed).
+     * Used to distinguish e.g. CSI < u (Kitty keyboard pop) from CSI u (cursor restore).
+     */
+    fun hasUnhandledChars(): Boolean = myUnhandledChars?.isNotEmpty() == true
+
     val debugInfo: String
         get() {
             val sb = StringBuilder()

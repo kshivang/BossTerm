@@ -319,19 +319,30 @@ class ComposeTerminalDisplay : TerminalDisplay {
                         try {
                             when (request.priority) {
                                 RedrawPriority.IMMEDIATE -> {
+                                    // Re-check sync mode: a ?2026h may have arrived after this
+                                    // redraw was queued (e.g., rapid ?2026l/?2026h toggle by CLIs
+                                    // like "claude" that use synchronized output for spinner frames).
+                                    synchronized(syncUpdateLock) {
+                                        if (_synchronizedUpdateEnabled) {
+                                            _pendingRedrawDuringSync = true
+                                            null
+                                        } else Unit
+                                    } ?: continue
                                     actualRedraw()
                                 }
 
                                 RedrawPriority.NORMAL -> {
-                                    // Apply adaptive debouncing based on current mode
                                     val mode = detectAndUpdateMode()
-
-                                    // CRITICAL: Always wait before rendering to coalesce updates
-                                    // This prevents TUI flickering where clear+write sequences
-                                    // would otherwise render the intermediate "cleared" state.
-                                    // The CONFLATED channel ensures only ONE render after the delay,
-                                    // even if dozens of updates arrive during the wait.
                                     delay(mode.debounceMs)
+
+                                    // Re-check sync mode after debounce delay: a new ?2026h may
+                                    // have been processed by the emulator while we were waiting.
+                                    synchronized(syncUpdateLock) {
+                                        if (_synchronizedUpdateEnabled) {
+                                            _pendingRedrawDuringSync = true
+                                            null
+                                        } else Unit
+                                    } ?: continue
                                     actualRedraw()
                                 }
                             }
@@ -492,6 +503,14 @@ class ComposeTerminalDisplay : TerminalDisplay {
         // This ensures IMMEDIATE requests are never dropped during rapid initialization
         // MUST use Main dispatcher because actualRedraw() modifies Compose state
         redrawScope.launch(Dispatchers.Main) {
+            // Re-check sync mode: it may have been re-enabled between the check above
+            // and this coroutine executing on Main thread
+            synchronized(syncUpdateLock) {
+                if (_synchronizedUpdateEnabled) {
+                    _pendingRedrawDuringSync = true
+                    return@launch
+                }
+            }
             actualRedraw()
         }
 

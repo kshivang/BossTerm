@@ -156,7 +156,16 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
         when (ch) {
             '[' -> {
                 val args = ControlSequence(myDataStream)
-                if (!args.pushBackReordered(myDataStream)) {
+                if (args.hasUnhandledChars()) {
+                    // Sequence has private parameter prefixes (e.g., '<', '=') that we don't
+                    // recognize. Silently ignore the entire sequence instead of letting
+                    // pushBackReordered split it into a visible char + bare CSI sequence.
+                    // This prevents e.g. CSI < u (Kitty keyboard pop) from being split into
+                    // '<' (written to screen) + CSI u (cursor restore to stale position).
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("Ignoring CSI sequence with unhandled private params ({})", args.debugInfo)
+                    }
+                } else {
                     try {
                         val result = processControlSequence(args)
                         if (LOG.isDebugEnabled()) {

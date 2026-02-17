@@ -136,7 +136,8 @@ class TabbedTerminalState {
         settings: TerminalSettings,
         onLastTabClosed: () -> Unit,
         isWindowFocused: () -> Boolean,
-        onTabClose: ((tabId: String) -> Unit)? = null
+        onTabClose: ((tabId: String) -> Unit)? = null,
+        platformServices: PlatformServices = getPlatformServices()
     ) {
         if (initialized) return
         initialized = true
@@ -145,7 +146,8 @@ class TabbedTerminalState {
             settings = settings,
             onLastTabClosed = onLastTabClosed,
             isWindowFocused = isWindowFocused,
-            onTabClose = onTabClose
+            onTabClose = onTabClose,
+            services = platformServices
         )
     }
 

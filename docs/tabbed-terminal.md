@@ -64,7 +64,8 @@ fun TabbedTerminal(
     onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     settingsOverride: TerminalSettingsOverride? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    platformServices: PlatformServices = getPlatformServices()
 )
 ```
 
@@ -89,6 +90,7 @@ fun TabbedTerminal(
 | `settingsOverride` | `TerminalSettingsOverride?` | Per-instance settings overrides (see [Settings Override](#settings-override)) |
 | `hyperlinkRegistry` | `HyperlinkRegistry` | Custom hyperlink patterns for this instance (see [Custom Hyperlink Patterns](#custom-hyperlink-patterns)) |
 | `modifier` | `Modifier` | Compose modifier |
+| `platformServices` | `PlatformServices` | Custom platform services |
 
 ### MenuActions
 

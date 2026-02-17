@@ -61,7 +61,8 @@ fun TabbedTerminal(
     initialCommand: String? = null,
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     contextMenuItems: List<ContextMenuElement> = emptyList(),
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    platformServices: PlatformServices = getPlatformServices()
 )
 ```
 
@@ -80,6 +81,7 @@ fun TabbedTerminal(
 | `onLinkClick` | `(HyperlinkInfo) -> Boolean` | Custom link handler; return `true` if handled, `false` for default |
 | `hyperlinkRegistry` | `HyperlinkRegistry` | Custom hyperlink patterns (e.g., JIRA tickets) |
 | `contextMenuItems` | `List<ContextMenuElement>` | Custom context menu |
+| `platformServices` | `PlatformServices` | Custom platform services |
 
 ---
 

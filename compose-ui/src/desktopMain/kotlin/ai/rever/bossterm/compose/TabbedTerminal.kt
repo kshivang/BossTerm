@@ -132,6 +132,7 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  *                          Use this to add custom patterns (e.g., JIRA ticket IDs, custom URLs).
  *                          Default: global HyperlinkDetector.registry
  * @param modifier Compose modifier for the terminal container
+ * @param platformServices Custom platform services
  */
 @Composable
 fun TabbedTerminal(
@@ -154,7 +155,8 @@ fun TabbedTerminal(
     onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     settingsOverride: TerminalSettingsOverride? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    platformServices: PlatformServices = getPlatformServices()
 ) {
     // Settings integration
     val settingsManager = remember { SettingsManager.instance }
@@ -200,7 +202,8 @@ fun TabbedTerminal(
             settings = settings,
             onLastTabClosed = onExit,
             isWindowFocused = isWindowFocused,
-            onTabClose = onTabClose
+            onTabClose = onTabClose,
+            platformServices = platformServices
         )
     }
 
@@ -210,7 +213,8 @@ fun TabbedTerminal(
             settings = settings,
             onLastTabClosed = onExit,
             isWindowFocused = isWindowFocused,
-            onTabClose = onTabClose
+            onTabClose = onTabClose,
+            services = platformServices
         )
     }
 

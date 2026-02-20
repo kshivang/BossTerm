@@ -147,7 +147,7 @@ class TabbedTerminalState {
             onLastTabClosed = onLastTabClosed,
             isWindowFocused = isWindowFocused,
             onTabClose = onTabClose,
-            services = platformServices
+            platformServices = platformServices
         )
     }
 

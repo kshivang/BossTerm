@@ -575,7 +575,7 @@ class EmbeddableTerminalState {
                 initialCommand = initialCommand,
                 onInitialCommandComplete = onInitialCommandComplete,
                 onExit = onExit,
-                services = platformServices
+                platformServices = platformServices
             )
         }
     }
@@ -904,7 +904,7 @@ private suspend fun initializeProcess(
     initialCommand: String?,
     onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)?,
     onExit: ((Int) -> Unit)?,
-    services: PlatformServices = getPlatformServices()
+    platformServices: PlatformServices = getPlatformServices()
 ) {
     try {
         // Determine shell arguments (login shell)
@@ -943,7 +943,7 @@ private suspend fun initializeProcess(
         )
 
         // Spawn PTY process
-        val processHandle = services.getProcessService().spawnProcess(processConfig)
+        val processHandle = platformServices.getProcessService().spawnProcess(processConfig)
 
         if (processHandle == null) {
             session.connectionState.value = ConnectionState.Error("Failed to spawn process")

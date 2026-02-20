@@ -214,7 +214,7 @@ fun TabbedTerminal(
             onLastTabClosed = onExit,
             isWindowFocused = isWindowFocused,
             onTabClose = onTabClose,
-            services = platformServices
+            platformServices = platformServices
         )
     }
 

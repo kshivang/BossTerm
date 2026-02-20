@@ -53,7 +53,7 @@ class TabController(
     private val onLastTabClosed: () -> Unit,
     private val isWindowFocused: () -> Boolean = { true },
     private val onTabClose: ((tabId: String) -> Unit)? = null,
-    private val services: PlatformServices = getPlatformServices()
+    private val platformServices: PlatformServices = getPlatformServices()
 ) {
     /**
      * List of all terminal tabs (observable, triggers recomposition).
@@ -926,7 +926,7 @@ class TabController(
                 workingDirectory = config.workingDir ?: System.getProperty("user.home")
             )
 
-            val handle = services.getProcessService().spawnProcess(processConfig)
+            val handle = platformServices.getProcessService().spawnProcess(processConfig)
 
             if (handle == null) {
                 tab.connectionState.value = ConnectionState.Error(
@@ -1095,7 +1095,7 @@ class TabController(
                     workingDirectory = workingDir ?: System.getProperty("user.home")
                 )
 
-                val handle = services.getProcessService().spawnProcess(config)
+                val handle = platformServices.getProcessService().spawnProcess(config)
 
                 if (handle == null) {
                     tab.connectionState.value = ConnectionState.Error(

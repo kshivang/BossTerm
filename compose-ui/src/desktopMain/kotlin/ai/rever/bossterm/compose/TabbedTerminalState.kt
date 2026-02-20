@@ -8,11 +8,21 @@ import ai.rever.bossterm.compose.ai.ToolCommandProvider
 import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.ai.AIInstallDialogParams
 import ai.rever.bossterm.compose.search.RabinKarpSearch
+import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.compose.splits.NavigationDirection
+import ai.rever.bossterm.compose.splits.SplitOrientation
 import ai.rever.bossterm.compose.splits.SplitViewState
 import ai.rever.bossterm.compose.tabs.TabController
 import ai.rever.bossterm.compose.tabs.TerminalSessionListener
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * External state holder for TabbedTerminal that survives recomposition.
@@ -85,6 +95,21 @@ class TabbedTerminalState {
      */
     internal val splitStates: SnapshotStateMap<String, SplitViewState> = mutableStateMapOf()
 
+    // Flow infrastructure for reactive state bridges (T7)
+    private var flowScope: CoroutineScope? = null
+    private val _tabsFlow = MutableStateFlow<List<TerminalTabInfo>>(emptyList())
+    private val _activeTabIndexFlow = MutableStateFlow(0)
+
+    private fun TerminalTab.toTabInfo(): TerminalTabInfo {
+        return TerminalTabInfo(
+            id = this.id,
+            title = this.title.value,
+            isConnected = this.connectionState.value is ConnectionState.Connected,
+            workingDirectory = this.workingDirectory.value,
+            paneCount = splitStates[this.id]?.getAllPanes()?.size ?: 1
+        )
+    }
+
     /**
      * List of all terminal tabs (observable, triggers recomposition).
      */
@@ -147,6 +172,18 @@ class TabbedTerminalState {
             isWindowFocused = isWindowFocused,
             onTabClose = onTabClose
         )
+
+        // Wire up snapshotFlow bridges for reactive state (T7)
+        flowScope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { scope ->
+            scope.launch {
+                snapshotFlow { tabController?.tabs?.map { it.toTabInfo() } ?: emptyList() }
+                    .collect { _tabsFlow.value = it }
+            }
+            scope.launch {
+                snapshotFlow { tabController?.activeTabIndex ?: 0 }
+                    .collect { _activeTabIndexFlow.value = it }
+            }
+        }
     }
 
     /**
@@ -154,6 +191,11 @@ class TabbedTerminalState {
      * After disposal, this state can be reused by calling TabbedTerminal again.
      */
     fun dispose() {
+        // Cancel reactive flow bridges
+        flowScope?.cancel()
+        flowScope = null
+        _tabsFlow.value = emptyList()
+        _activeTabIndexFlow.value = 0
         // Dispose all split states
         splitStates.values.forEach { it.dispose() }
         splitStates.clear()
@@ -482,6 +524,243 @@ class TabbedTerminalState {
         tabController?.removeSessionListener(listener)
     }
 
+    // ========== Split Pane API ==========
+
+    /**
+     * Get or create a SplitViewState for a tab.
+     * Mirrors the logic from TabbedTerminal composable to ensure split state
+     * exists even if called before the composable renders the tab.
+     */
+    private fun getOrCreateSplitState(tabId: String): SplitViewState? {
+        val tab = tabController?.getTabById(tabId) as? TerminalTab ?: return null
+        val controller = tabController ?: return null
+        return splitStates.getOrPut(tabId) {
+            val state = SplitViewState(initialSession = tab)
+            tab.onProcessExit = {
+                if (state.isSinglePane) {
+                    val tabIndex = controller.tabs.indexOfFirst { it.id == tab.id }
+                    if (tabIndex != -1) {
+                        controller.closeTab(tabIndex)
+                    }
+                } else {
+                    state.getAllPanes()
+                        .find { it.session === tab }
+                        ?.let { pane -> state.closePane(pane.id) }
+                }
+            }
+            state
+        }
+    }
+
+    /**
+     * Resolve the target tab ID (uses active tab if null).
+     */
+    private fun resolveTabId(tabId: String?): String? {
+        return tabId ?: activeTabId
+    }
+
+    /**
+     * Split the focused pane vertically (left/right) in the specified tab.
+     *
+     * Creates a new terminal session and splits the currently focused pane.
+     * The new pane appears to the right of the focused pane.
+     *
+     * @param tabId Target tab ID. If null, uses the active tab.
+     * @return The session ID of the new pane, or null if the split failed
+     */
+    fun splitVertical(tabId: String? = null): String? {
+        return performSplit(SplitOrientation.VERTICAL, tabId)
+    }
+
+    /**
+     * Split the focused pane horizontally (top/bottom) in the specified tab.
+     *
+     * Creates a new terminal session and splits the currently focused pane.
+     * The new pane appears below the focused pane.
+     *
+     * @param tabId Target tab ID. If null, uses the active tab.
+     * @return The session ID of the new pane, or null if the split failed
+     */
+    fun splitHorizontal(tabId: String? = null): String? {
+        return performSplit(SplitOrientation.HORIZONTAL, tabId)
+    }
+
+    /**
+     * Internal helper to perform a split in the given orientation.
+     */
+    private fun performSplit(orientation: SplitOrientation, tabId: String?): String? {
+        val resolvedTabId = resolveTabId(tabId) ?: return null
+        val controller = tabController ?: return null
+        val tab = controller.getTabById(resolvedTabId) as? TerminalTab ?: return null
+        val splitState = getOrCreateSplitState(resolvedTabId) ?: return null
+        val settings = SettingsManager.instance.settings.value
+
+        val workingDir = if (settings.splitInheritWorkingDirectory) {
+            splitState.getFocusedSession()?.workingDirectory?.value
+        } else null
+
+        val newSession = controller.createSessionForSplit(
+            workingDir = workingDir
+        )
+        // Assign onProcessExit after creation so the lambda captures newSession directly,
+        // avoiding the fragile var-ref pattern where the lambda closes over a mutable var.
+        val newTab = newSession as? TerminalTab
+            ?: error("createSessionForSplit returned ${newSession::class.simpleName}, expected TerminalTab")
+        newTab.onProcessExit = {
+            if (splitState.isSinglePane) {
+                val tabIndex = controller.tabs.indexOfFirst { it.id == tab.id }
+                if (tabIndex != -1) {
+                    controller.closeTab(tabIndex)
+                }
+            } else {
+                splitState.getAllPanes()
+                    .find { it.session === newSession }
+                    ?.let { pane -> splitState.closePane(pane.id) }
+            }
+        }
+        return splitState.splitFocusedPane(orientation, newSession, settings.splitDefaultRatio)
+    }
+
+    /**
+     * Close the focused pane in the specified tab.
+     *
+     * If it's the last pane, the entire tab is closed instead.
+     *
+     * @param tabId Target tab ID. If null, uses the active tab.
+     * @return true if a pane was closed, false if the operation failed
+     */
+    fun closeFocusedPane(tabId: String? = null): Boolean {
+        val resolvedTabId = resolveTabId(tabId) ?: return false
+        val controller = tabController ?: return false
+        val splitState = splitStates[resolvedTabId]
+        // No split state or single pane — close the entire tab
+        if (splitState == null || splitState.isSinglePane) {
+            val tabIndex = controller.tabs.indexOfFirst { it.id == resolvedTabId }
+            if (tabIndex != -1) {
+                controller.closeTab(tabIndex)
+                return true
+            }
+            return false
+        }
+        return splitState.closeFocusedPane()
+    }
+
+    /**
+     * Navigate pane focus in the given direction using spatial navigation.
+     *
+     * @param direction The direction to navigate (UP, DOWN, LEFT, RIGHT)
+     * @param tabId Target tab ID. If null, uses the active tab.
+     */
+    fun navigatePaneFocus(direction: NavigationDirection, tabId: String? = null) {
+        val resolvedTabId = resolveTabId(tabId) ?: return
+        val splitState = splitStates[resolvedTabId] ?: return
+        splitState.navigateFocus(direction)
+    }
+
+    /**
+     * Navigate to the next pane (cycles through all panes).
+     *
+     * @param tabId Target tab ID. If null, uses the active tab.
+     */
+    fun navigateToNextPane(tabId: String? = null) {
+        val resolvedTabId = resolveTabId(tabId) ?: return
+        val splitState = splitStates[resolvedTabId] ?: return
+        splitState.navigateToNextPane()
+    }
+
+    /**
+     * Navigate to the previous pane (cycles through all panes).
+     *
+     * @param tabId Target tab ID. If null, uses the active tab.
+     */
+    fun navigateToPreviousPane(tabId: String? = null) {
+        val resolvedTabId = resolveTabId(tabId) ?: return
+        val splitState = splitStates[resolvedTabId] ?: return
+        splitState.navigateToPreviousPane()
+    }
+
+    /**
+     * Get the number of panes in the specified tab.
+     *
+     * @param tabId Target tab ID. If null, uses the active tab.
+     * @return The number of panes (1 if no splits, 0 if tab not found)
+     */
+    fun getPaneCount(tabId: String? = null): Int {
+        val resolvedTabId = resolveTabId(tabId) ?: return 0
+        val splitState = splitStates[resolvedTabId] ?: return 1
+        return splitState.getAllPanes().size
+    }
+
+    /**
+     * Check if the specified tab has split panes.
+     *
+     * @param tabId Target tab ID. If null, uses the active tab.
+     * @return true if the tab has more than one pane
+     */
+    fun hasSplitPanes(tabId: String? = null): Boolean {
+        val resolvedTabId = resolveTabId(tabId) ?: return false
+        val splitState = splitStates[resolvedTabId] ?: return false
+        return !splitState.isSinglePane
+    }
+
+    /**
+     * Get all session IDs in the specified tab's split tree.
+     *
+     * @param tabId Target tab ID. If null, uses the active tab.
+     * @return List of session IDs, or empty list if tab not found
+     */
+    fun getSplitSessionIds(tabId: String? = null): List<String> {
+        val resolvedTabId = resolveTabId(tabId) ?: return emptyList()
+        val splitState = splitStates[resolvedTabId] ?: return listOf(resolvedTabId)
+        return splitState.getAllSessions().map { it.id }
+    }
+
+    /**
+     * Get the focused session in the specified tab's split tree.
+     *
+     * @param tabId Target tab ID. If null, uses the active tab.
+     * @return The focused session, or null if tab not found
+     */
+    fun getFocusedSplitSession(tabId: String? = null): TerminalSession? {
+        val resolvedTabId = resolveTabId(tabId) ?: return null
+        val splitState = splitStates[resolvedTabId] ?: return null
+        return splitState.getFocusedSession()
+    }
+
+    /**
+     * Send text input to the focused pane of the specified tab.
+     *
+     * @param text Text to send
+     * @param tabId Target tab ID. If null, uses the active tab.
+     * @return true if the text was sent, false if tab/pane not found
+     */
+    fun writeToFocusedPane(text: String, tabId: String? = null): Boolean {
+        val session = getFocusedSplitSession(tabId) ?: return false
+        session.writeUserInput(text)
+        return true
+    }
+
+    // ========== Reactive State API ==========
+
+    /**
+     * Observable flow of tab information. Updates whenever tabs are added, removed,
+     * renamed, or their connection state changes.
+     *
+     * This bridges Compose snapshot state to Kotlin StateFlow for non-Compose consumers.
+     * Requires the state to be initialized.
+     */
+    val tabsFlow: StateFlow<List<TerminalTabInfo>> get() = _tabsFlow
+
+    /**
+     * Observable flow of the active tab index. Updates whenever the active tab changes.
+     */
+    val activeTabIndexFlow: StateFlow<Int> get() = _activeTabIndexFlow
+
+    /**
+     * Observable flow of terminal settings. Updates whenever settings are changed.
+     */
+    val settingsFlow: StateFlow<TerminalSettings> get() = SettingsManager.instance.settings
+
     // ========== AI Assistant Installation API ==========
 
     /**
@@ -734,6 +1013,27 @@ data class PatternMatch(
     val text: String,
     val row: Int,
     val column: Int
+)
+
+/**
+ * Lightweight DTO representing terminal tab information for reactive consumers.
+ *
+ * This is exposed via [TabbedTerminalState.tabsFlow] and provides a stable snapshot
+ * of tab metadata without holding references to internal Compose state.
+ *
+ * @property id Stable tab ID
+ * @property title Current tab title (from OSC 0/2 or default)
+ * @property isConnected Whether the tab's PTY process is connected
+ * @property workingDirectory Current working directory (from OSC 7), or null if not reported
+ * @property paneCount Number of panes in this tab (1 if no splits)
+ */
+@Immutable
+data class TerminalTabInfo(
+    val id: String,
+    val title: String,
+    val isConnected: Boolean,
+    val workingDirectory: String?,
+    val paneCount: Int
 )
 
 /**

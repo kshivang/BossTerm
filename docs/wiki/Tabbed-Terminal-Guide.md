@@ -36,6 +36,8 @@ fun MyApp() {
 - **Multiple Tabs** - Create, switch, and close tabs
 - **Tab Bar** - Visual tab bar (auto-hides with single tab)
 - **Split Panes** - Horizontal and vertical splits
+- **Split Pane API (T6)** - Programmatic split creation, navigation, and management
+- **Reactive State API (T7)** - Observable flows for tab/pane metadata
 - **State Persistence** - Preserve sessions across recomposition
 - **Working Directory Inheritance** - New tabs/splits inherit CWD
 - **Command Notifications** - System notifications for long commands
@@ -108,6 +110,9 @@ DisposableEffect(Unit) {
 | `tabCount` | `Int` | Number of tabs |
 | `activeTabIndex` | `Int` | Active tab index (0-based) |
 | `activeTab` | `TerminalTab?` | Currently active tab |
+| `tabsFlow` | `StateFlow<List<TerminalTabInfo>>` | Observable tab list (T7) |
+| `activeTabIndexFlow` | `StateFlow<Int>` | Observable active index (T7) |
+| `settingsFlow` | `StateFlow<TerminalSettings>` | Observable settings (T7) |
 
 ### TabbedTerminalState Methods
 
@@ -125,6 +130,17 @@ DisposableEffect(Unit) {
 | `sendCtrlC()` / `sendCtrlC(tabIndex)` | Send Ctrl+C (interrupt) |
 | `sendCtrlD()` / `sendCtrlD(tabIndex)` | Send Ctrl+D (EOF) |
 | `sendCtrlZ()` / `sendCtrlZ(tabIndex)` | Send Ctrl+Z (suspend) |
+| `splitVertical(tabId?)` | Split focused pane vertically (T6) |
+| `splitHorizontal(tabId?)` | Split focused pane horizontally (T6) |
+| `closeFocusedPane(tabId?)` | Close focused pane / close tab if last (T6) |
+| `navigatePaneFocus(direction, tabId?)` | Spatial pane navigation (T6) |
+| `navigateToNextPane(tabId?)` | Next pane sequentially (T6) |
+| `navigateToPreviousPane(tabId?)` | Previous pane sequentially (T6) |
+| `getPaneCount(tabId?)` | Number of panes in tab (T6) |
+| `hasSplitPanes(tabId?)` | Whether tab has multiple panes (T6) |
+| `getSplitSessionIds(tabId?)` | Session IDs of all panes (T6) |
+| `getFocusedSplitSession(tabId?)` | Get focused pane's session (T6) |
+| `writeToFocusedPane(text, tabId?)` | Write to focused pane (T6) |
 | `dispose()` | Cleanup all sessions |
 
 ---
@@ -241,6 +257,68 @@ TabbedTerminal(
 
 ---
 
+## Split Pane API (T6)
+
+Programmatic control over split panes. All methods accept an optional `tabId` — defaults to the active tab.
+
+```kotlin
+val state = rememberTabbedTerminalState()
+
+// Create splits
+state.splitVertical()     // Left/Right split
+state.splitHorizontal()   // Top/Bottom split
+
+// Navigate panes
+state.navigatePaneFocus(NavigationDirection.RIGHT)
+state.navigateToNextPane()
+
+// Query state
+state.getPaneCount()           // e.g., 3
+state.hasSplitPanes()          // true
+state.getSplitSessionIds()     // ["id1", "id2", "id3"]
+
+// Write to focused pane
+state.writeToFocusedPane("echo 'Hello!'\n")
+
+// Close focused pane (closes tab if last pane)
+state.closeFocusedPane()
+```
+
+---
+
+## Reactive State API (T7)
+
+Observable flows for building reactive UIs that update when tab/pane state changes.
+
+```kotlin
+@Composable
+fun StatusBar(state: TabbedTerminalState) {
+    val tabs by state.tabsFlow.collectAsState()
+    val activeIndex by state.activeTabIndexFlow.collectAsState()
+    val activeTab = tabs.getOrNull(activeIndex)
+
+    Row {
+        Text("${tabs.size} tabs")
+        activeTab?.let {
+            Text(" | ${it.title}")
+            if (it.paneCount > 1) Text(" | ${it.paneCount} panes")
+        }
+    }
+}
+```
+
+`TerminalTabInfo` provides tab metadata:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `String` | Stable tab ID |
+| `title` | `String` | Current tab title |
+| `isConnected` | `Boolean` | PTY process connected |
+| `workingDirectory` | `String?` | CWD from OSC 7 |
+| `paneCount` | `Int` | Number of panes (>= 1) |
+
+---
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
@@ -264,6 +342,8 @@ See the [tabbed-example](https://github.com/kshivang/BossTerm/tree/master/tabbed
 ```bash
 ./gradlew :tabbed-example:run
 ```
+
+The example includes an **API Demo** view with interactive controls for all Split Pane (T6) and Reactive State (T7) APIs, plus a reactive status bar.
 
 ---
 

@@ -3,9 +3,11 @@ package ai.rever.bossterm.tabbed
 import ai.rever.bossterm.compose.ContextMenuItem
 import ai.rever.bossterm.compose.ContextMenuSection
 import ai.rever.bossterm.compose.ContextMenuSubmenu
+import ai.rever.bossterm.compose.PlatformServices
 import ai.rever.bossterm.compose.TabbedTerminal
 import ai.rever.bossterm.compose.TabbedTerminalState
 import ai.rever.bossterm.compose.TerminalTabInfo
+import ai.rever.bossterm.compose.getPlatformServices
 import ai.rever.bossterm.compose.rememberTabbedTerminalState
 import ai.rever.bossterm.compose.menu.MenuActions
 import ai.rever.bossterm.compose.onboarding.OnboardingWizard
@@ -79,6 +81,37 @@ fun main() = application {
 }
 
 /**
+ * Custom PlatformServices wrapper that logs process spawn and notification events.
+ * Demonstrates the delegation pattern for overriding individual platform services
+ * while keeping all other services unchanged (e.g., clipboard, filesystem, browser).
+ *
+ * Use case: monitoring, auditing, or intercepting platform operations in custom integrations.
+ */
+private class LoggingPlatformServices(
+    private val defaults: PlatformServices = getPlatformServices(),
+    private val onLog: (String) -> Unit
+) : PlatformServices by defaults {
+    override fun getProcessService() = object : PlatformServices.ProcessService {
+        private val delegate = defaults.getProcessService()
+        override suspend fun spawnProcess(config: PlatformServices.ProcessService.ProcessConfig): PlatformServices.ProcessService.ProcessHandle? {
+            onLog("spawn: ${config.command} ${config.arguments.joinToString(" ")}")
+            return delegate.spawnProcess(config)
+        }
+    }
+    override fun getNotificationService() = object : PlatformServices.NotificationService {
+        private val delegate = defaults.getNotificationService()
+        override suspend fun showNotification(title: String, message: String) {
+            onLog("notification: $title - $message")
+            delegate.showNotification(title, message)
+        }
+        override fun beep() {
+            onLog("beep!")
+            delegate.beep()
+        }
+    }
+}
+
+/**
  * Available views in the application.
  * Demonstrates switching between views while preserving terminal state.
  */
@@ -120,6 +153,12 @@ private fun ApplicationScope.TabbedTerminalWindow(
         if (!settings.onboardingCompleted) {
             showWelcomeWizard = true
         }
+    }
+
+    // === Custom PlatformServices Demo (PR #245) ===
+    val platformLogs = remember { mutableStateListOf<String>() }
+    val customPlatformServices = remember {
+        LoggingPlatformServices(onLog = { platformLogs.add(it) })
     }
 
     // Track context menu opens (onContextMenuOpen demo)
@@ -331,14 +370,19 @@ private fun ApplicationScope.TabbedTerminalWindow(
                                     workingDirectory = "/tmp",
                                     // Initial command to run when terminal starts
                                     initialCommand = "echo 'TabbedTerminal ready!' && date",
-                                    modifier = Modifier.fillMaxSize()
+                                    modifier = Modifier.fillMaxSize(),
+                                    // === Custom PlatformServices Demo (PR #245) ===
+                                    // Wraps default services with logging to demonstrate the delegation pattern
+                                    platformServices = customPlatformServices
                                 )
                             }
                             AppView.API_DEMO -> {
                                 // Plugin API demo (T6 Split Pane + T7 Reactive State)
                                 PluginApiDemoPanel(
                                     terminalState = terminalState,
-                                    onSwitchToTerminal = { currentView = AppView.TERMINAL }
+                                    onSwitchToTerminal = { currentView = AppView.TERMINAL },
+                                    platformLogs = platformLogs,
+                                    onClearPlatformLogs = { platformLogs.clear() }
                                 )
                             }
                             AppView.SETTINGS -> {
@@ -474,7 +518,9 @@ private fun ViewSwitcherBar(
 @Composable
 private fun PluginApiDemoPanel(
     terminalState: TabbedTerminalState,
-    onSwitchToTerminal: () -> Unit
+    onSwitchToTerminal: () -> Unit,
+    platformLogs: List<String> = emptyList(),
+    onClearPlatformLogs: () -> Unit = {}
 ) {
     val scrollState = rememberScrollState()
     // Reactive state for live pane info
@@ -597,6 +643,69 @@ private fun PluginApiDemoPanel(
                 }
                 OutlinedButton(onClick = onSwitchToTerminal) {
                     Text("Switch to Terminal")
+                }
+            }
+
+            HorizontalDivider(color = Color(0xFF404040))
+
+            // === Custom PlatformServices Demo (PR #245) ===
+            Text(
+                text = "Platform Services (Custom)",
+                style = MaterialTheme.typography.titleMedium,
+                color = Color(0xFF80CBC4)
+            )
+            Text(
+                text = "LoggingPlatformServices wraps the default services using Kotlin's 'by' delegation. " +
+                    "Process spawn and notification events are logged below. " +
+                    "Create tabs or splits to see spawn events appear.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onClearPlatformLogs) {
+                    Text("Clear Log")
+                }
+                Text(
+                    text = "${platformLogs.size} event(s)",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.Gray,
+                    modifier = Modifier.align(Alignment.CenterVertically)
+                )
+            }
+
+            Surface(
+                color = Color(0xFF1A1A2E),
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 60.dp, max = 200.dp)
+            ) {
+                if (platformLogs.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "(no events yet - switch to Terminal view and open a tab or split)",
+                            color = Color(0xFF666688),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        platformLogs.forEachIndexed { index, log ->
+                            Text(
+                                text = "${index + 1}. $log",
+                                color = Color(0xFF90EE90),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
                 }
             }
         }

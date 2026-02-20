@@ -4,6 +4,8 @@ import ai.rever.bossterm.compose.ContextMenuItem
 import ai.rever.bossterm.compose.ContextMenuSection
 import ai.rever.bossterm.compose.ContextMenuSubmenu
 import ai.rever.bossterm.compose.EmbeddableTerminal
+import ai.rever.bossterm.compose.PlatformServices
+import ai.rever.bossterm.compose.getPlatformServices
 import ai.rever.bossterm.compose.rememberEmbeddableTerminalState
 import ai.rever.bossterm.compose.onboarding.OnboardingWizard
 import ai.rever.bossterm.compose.settings.SettingsManager
@@ -23,6 +25,23 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import kotlinx.coroutines.delay
+
+/**
+ * Custom PlatformServices wrapper that logs process spawn events.
+ * Demonstrates the delegation pattern for overriding platform services (PR #245).
+ */
+private class LoggingPlatformServices(
+    private val defaults: PlatformServices = getPlatformServices(),
+    private val onLog: (String) -> Unit
+) : PlatformServices by defaults {
+    override fun getProcessService() = object : PlatformServices.ProcessService {
+        private val delegate = defaults.getProcessService()
+        override suspend fun spawnProcess(config: PlatformServices.ProcessService.ProcessConfig): PlatformServices.ProcessService.ProcessHandle? {
+            onLog("[PlatformServices] spawn: ${config.command} ${config.arguments.joinToString(" ")}")
+            return delegate.spawnProcess(config)
+        }
+    }
+}
 
 /**
  * Example application demonstrating BossTerm embedded in a parent application.
@@ -52,6 +71,12 @@ fun EmbeddedExampleApp() {
     var bottomPanelExpanded by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("Ready") }
     var contextMenuOpenCount by remember { mutableStateOf(0) }
+
+    // === Custom PlatformServices Demo (PR #245) ===
+    val platformLogs = remember { mutableStateListOf<String>() }
+    val customPlatformServices = remember {
+        LoggingPlatformServices(onLog = { platformLogs.add(it) })
+    }
 
     // Welcome Wizard state
     val settingsManager = remember { SettingsManager.instance }
@@ -120,6 +145,8 @@ fun EmbeddedExampleApp() {
                             // Run a command automatically when terminal is ready
                             // Uses OSC 133 shell integration for proper timing if available
                             initialCommand = "echo 'Welcome to BossTerm Embedded Example!' && pwd",
+                            // === Custom PlatformServices Demo (PR #245) ===
+                            platformServices = customPlatformServices,
                             onExit = { exitCode ->
                                 statusMessage = "Terminal exited with code: $exitCode"
                             },
@@ -268,9 +295,10 @@ fun EmbeddedExampleApp() {
                         }
                     }
 
-                    // Status bar
+                    // Status bar with platform service log
                     StatusBar(
                         message = statusMessage,
+                        platformLog = platformLogs.lastOrNull(),
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -446,6 +474,7 @@ fun Toolbar(
 @Composable
 fun StatusBar(
     message: String,
+    platformLog: String? = null,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -461,13 +490,22 @@ fun StatusBar(
             Text(
                 text = message,
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.White
+                color = Color.White,
+                modifier = Modifier.weight(1f, fill = false)
             )
-            Text(
-                text = "Test: Right-click menu, then type",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.White.copy(alpha = 0.7f)
-            )
+            if (platformLog != null) {
+                Text(
+                    text = platformLog,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFB0FFB0)
+                )
+            } else {
+                Text(
+                    text = "Test: Right-click menu, then type",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.7f)
+                )
+            }
         }
     }
 }

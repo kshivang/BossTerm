@@ -599,25 +599,23 @@ class TabbedTerminalState {
             splitState.getFocusedSession()?.workingDirectory?.value
         } else null
 
-        var newSessionRef: TerminalSession? = null
         val newSession = controller.createSessionForSplit(
-            workingDir = workingDir,
-            onProcessExit = {
-                if (splitState.isSinglePane) {
-                    val tabIndex = controller.tabs.indexOfFirst { it.id == tab.id }
-                    if (tabIndex != -1) {
-                        controller.closeTab(tabIndex)
-                    }
-                } else {
-                    newSessionRef?.let { session ->
-                        splitState.getAllPanes()
-                            .find { it.session === session }
-                            ?.let { pane -> splitState.closePane(pane.id) }
-                    }
-                }
-            }
+            workingDir = workingDir
         )
-        newSessionRef = newSession
+        // Assign onProcessExit after creation so the lambda captures newSession directly,
+        // avoiding the fragile var-ref pattern where the lambda closes over a mutable var.
+        (newSession as? TerminalTab)?.onProcessExit = {
+            if (splitState.isSinglePane) {
+                val tabIndex = controller.tabs.indexOfFirst { it.id == tab.id }
+                if (tabIndex != -1) {
+                    controller.closeTab(tabIndex)
+                }
+            } else {
+                splitState.getAllPanes()
+                    .find { it.session === newSession }
+                    ?.let { pane -> splitState.closePane(pane.id) }
+            }
+        }
         return splitState.splitFocusedPane(orientation, newSession, settings.splitDefaultRatio)
     }
 
@@ -1026,6 +1024,7 @@ data class PatternMatch(
  * @property workingDirectory Current working directory (from OSC 7), or null if not reported
  * @property paneCount Number of panes in this tab (1 if no splits)
  */
+@Immutable
 data class TerminalTabInfo(
     val id: String,
     val title: String,

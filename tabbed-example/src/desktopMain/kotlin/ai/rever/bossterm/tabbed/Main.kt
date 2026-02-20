@@ -28,6 +28,7 @@ import androidx.compose.ui.window.*
 import java.awt.event.WindowEvent
 import java.awt.event.WindowFocusListener
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Example application demonstrating BossTerm's TabbedTerminal component.
@@ -208,7 +209,8 @@ private fun ApplicationScope.TabbedTerminalWindow(
                     ViewSwitcherBar(
                         currentView = currentView,
                         onViewChange = { currentView = it },
-                        terminalState = terminalState
+                        tabsFlow = terminalState.tabsFlow,
+                        activeTabIndexFlow = terminalState.activeTabIndexFlow
                     )
 
                     // Main content area
@@ -375,15 +377,19 @@ private fun ApplicationScope.TabbedTerminalWindow(
  * View switcher bar showing current view, tab count, and pane count.
  * Demonstrates that terminal state persists when switching views.
  * Uses reactive T7 flows to display live tab/pane info.
+ *
+ * Accepts minimal flow parameters rather than the full TabbedTerminalState
+ * to keep the composable decoupled and easier to test/reuse.
  */
 @Composable
 private fun ViewSwitcherBar(
     currentView: AppView,
     onViewChange: (AppView) -> Unit,
-    terminalState: TabbedTerminalState
+    tabsFlow: StateFlow<List<TerminalTabInfo>>,
+    activeTabIndexFlow: StateFlow<Int>
 ) {
-    val tabs by terminalState.tabsFlow.collectAsState()
-    val activeTabIndex by terminalState.activeTabIndexFlow.collectAsState()
+    val tabs by tabsFlow.collectAsState()
+    val activeTabIndex by activeTabIndexFlow.collectAsState()
     val activeTab = tabs.getOrNull(activeTabIndex)
     val paneCount = activeTab?.paneCount ?: 0
 

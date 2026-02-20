@@ -482,11 +482,31 @@ BossTerm is dual-licensed under:
 
 You may select either license at your option.
 
+## Authors
+
+**Shivang** — shivang@risalabs.ai
+
+## Open Source Origin and History
+
+BossTerm was originally inspired by [JediTerm](https://github.com/JetBrains/jediterm) by JetBrains (authored by Dmitry Trofimov dmitry.trofimov@jetbrains.com and Clément Poulain). The initial version of JediTerm was itself a reworked terminal emulator Gritty, which was in its own turn a reworked JCTerm terminal implementation.
+
+BossTerm has since been completely rewritten from the ground up in Kotlin with Compose Desktop — no JediTerm, Gritty, or JCTerm code remains. Everything was rewritten from scratch with a new rendering engine, new buffer implementation, and new UI framework. A lot of new features were added including split panes, inline images, AI assistant integration, custom platform services, and high-performance incremental snapshot rendering.
+
 ## Acknowledgments
 
-BossTerm is a fork of [JediTerm](https://github.com/JetBrains/jediterm) by JetBrains, completely rewritten with Kotlin and Compose Desktop.
+- [JediTerm](https://github.com/JetBrains/jediterm) by JetBrains — original inspiration for terminal emulation
+- [iTerm2](https://github.com/gnachman/iTerm2) — the beloved macOS terminal, inspiration for many UX features
+- [Pty4J](https://github.com/JetBrains/pty4j) — PTY library for local terminal sessions
+- [ICU4J](https://unicode-icu.github.io/icu/userguide/icu4j/) — Unicode and grapheme cluster support
 
-Inspired by [iTerm2](https://github.com/gnachman/iTerm2), the beloved macOS terminal.
+## References
+
+- [Terminal protocol description](http://invisible-island.net/xterm/ctlseqs/ctlseqs.html) — Xterm control sequences
+- [Terminal Character Set Terminology and Mechanics](http://www.columbia.edu/kermit/k95manual/iso2022.html) — ISO 2022 character sets
+- [VT420 Programmer Reference Manual](http://manx.classiccmp.org/collections/mds-199909/cd3/term/vt420rm2.pdf) — DEC terminal reference
+- [UTF-8 Demo](http://www.cl.cam.ac.uk/~mgk25/ucs/examples/UTF-8-demo.txt) — Unicode test file
+- [Control sequences visualization](http://www.gnu.org/software/teseq/) — GNU teseq
+- [Terminal protocol tests](http://invisible-island.net/vttest/) — vttest suite
 
 ---
 

@@ -81,7 +81,7 @@ fun TabbedTerminal(
 | `onLinkClick` | `(HyperlinkInfo) -> Boolean` | Custom link handler; return `true` if handled, `false` for default |
 | `hyperlinkRegistry` | `HyperlinkRegistry` | Custom hyperlink patterns (e.g., JIRA tickets) |
 | `contextMenuItems` | `List<ContextMenuElement>` | Custom context menu |
-| `platformServices` | `PlatformServices` | Custom platform services |
+| `platformServices` | `PlatformServices` | Custom platform services for process spawning, clipboard, etc. (see [Custom Platform Services](#custom-platform-services)) |
 
 ---
 
@@ -318,6 +318,37 @@ fun StatusBar(state: TabbedTerminalState) {
 | `isConnected` | `Boolean` | PTY process connected |
 | `workingDirectory` | `String?` | CWD from OSC 7 |
 | `paneCount` | `Int` | Number of panes (>= 1) |
+
+---
+
+## Custom Platform Services
+
+Override the default platform services to customize process spawning, clipboard, filesystem, and other platform-specific behavior. This is useful for remote terminal connections (e.g., SSH, custom protocols).
+
+```kotlin
+// Override only process spawning, keep defaults for everything else
+class RemotePlatformServices(
+    private val defaults: PlatformServices = getPlatformServices()
+) : PlatformServices by defaults {
+    override fun getProcessService(): PlatformServices.ProcessService {
+        return MyRemoteProcessService()  // Custom SSH/remote process spawning
+    }
+}
+
+TabbedTerminal(
+    onExit = { exitApplication() },
+    platformServices = RemotePlatformServices()
+)
+```
+
+| Service | Purpose |
+|---------|---------|
+| `getProcessService()` | PTY/process spawning and I/O |
+| `getClipboardService()` | Clipboard copy/paste |
+| `getFileSystemService()` | File operations and paths |
+| `getPlatformInfo()` | OS/platform detection |
+| `getBrowserService()` | URL opening |
+| `getNotificationService()` | System notifications |
 
 ---
 

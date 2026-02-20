@@ -169,6 +169,97 @@ DisposableEffect(Unit) { onDispose { terminalState.dispose() } }
 | `removeSessionListener(listener)` | Remove session listener |
 | `dispose()` | Dispose all sessions and cleanup |
 
+### Split Pane API (T6)
+
+Programmatic control over split panes within tabs. All methods accept an optional `tabId` parameter — if `null`, the active tab is used.
+
+| Method | Description |
+|--------|-------------|
+| `splitVertical(tabId?): String?` | Split focused pane vertically (left/right). Returns new session ID |
+| `splitHorizontal(tabId?): String?` | Split focused pane horizontally (top/bottom). Returns new session ID |
+| `closeFocusedPane(tabId?): Boolean` | Close the focused pane. Closes entire tab if it's the last pane |
+| `navigatePaneFocus(direction, tabId?)` | Move focus using spatial navigation (UP, DOWN, LEFT, RIGHT) |
+| `navigateToNextPane(tabId?)` | Move focus to the next pane (sequential) |
+| `navigateToPreviousPane(tabId?)` | Move focus to the previous pane (sequential) |
+| `getPaneCount(tabId?): Int` | Number of panes in the tab (1 if no splits) |
+| `hasSplitPanes(tabId?): Boolean` | Whether the tab has more than one pane |
+| `getSplitSessionIds(tabId?): List<String>` | Session IDs of all panes in the tab |
+| `writeToFocusedPane(text, tabId?): Boolean` | Send text to the focused pane specifically |
+
+```kotlin
+val state = rememberTabbedTerminalState()
+
+// Split the active tab
+val newPaneId = state.splitVertical()
+
+// Navigate between panes
+state.navigatePaneFocus(NavigationDirection.RIGHT)
+
+// Query pane state
+println("Panes: ${state.getPaneCount()}")
+
+// Write to the focused pane
+state.writeToFocusedPane("echo 'Hello from API!'\n")
+
+// Close focused pane (closes tab if last pane)
+state.closeFocusedPane()
+```
+
+### Reactive State API (T7)
+
+Observable flows for building reactive UIs that update automatically when tab/pane state changes.
+
+**Flows:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `tabsFlow` | `StateFlow<List<TerminalTabInfo>>` | Observable list of all tabs with metadata |
+| `activeTabIndexFlow` | `StateFlow<Int>` | Observable active tab index |
+| `settingsFlow` | `StateFlow<TerminalSettings>` | Observable terminal settings |
+
+**TerminalTabInfo:**
+
+```kotlin
+@Immutable
+data class TerminalTabInfo(
+    val id: String,              // Stable tab ID
+    val title: String,           // Current tab title
+    val isConnected: Boolean,    // PTY process is connected
+    val workingDirectory: String?, // CWD from OSC 7 (null if not reported)
+    val paneCount: Int           // Number of panes (always >= 1)
+)
+```
+
+**Example: Reactive Status Bar**
+
+```kotlin
+@Composable
+fun TerminalStatusBar(terminalState: TabbedTerminalState) {
+    val tabs by terminalState.tabsFlow.collectAsState()
+    val activeIndex by terminalState.activeTabIndexFlow.collectAsState()
+    val activeTab = tabs.getOrNull(activeIndex)
+
+    Row(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+        Text("Tabs: ${tabs.size}")
+        Spacer(Modifier.width(16.dp))
+        activeTab?.let { tab ->
+            Text(tab.title)
+            if (tab.paneCount > 1) {
+                Text(" (${tab.paneCount} panes)")
+            }
+        }
+    }
+}
+```
+
+**NavigationDirection:**
+
+```kotlin
+enum class NavigationDirection {
+    UP, DOWN, LEFT, RIGHT
+}
+```
+
 ## Keyboard Shortcuts
 
 TabbedTerminal includes built-in keyboard shortcuts:
@@ -799,6 +890,8 @@ See the [tabbed-example](../tabbed-example) module for a full working example wi
 - Window focus tracking
 - Settings panel overlay
 - **State persistence demo** (view switching)
+- **Plugin API demo** — interactive Split Pane (T6) and Reactive State (T7) controls
+- **Reactive status bar** — live tab/pane info powered by T7 flows
 
 Run the example:
 

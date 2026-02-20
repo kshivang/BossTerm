@@ -84,6 +84,8 @@ BossTerm is packed with features for modern terminal workflows.
 | **Settings UI** | Full GUI settings panel |
 | **JSON Config** | `~/.bossterm/settings.json` for advanced users |
 | **Embeddable** | Libraries for integrating into your Kotlin apps |
+| **Split Pane API** | Programmatic split creation, navigation, pane management |
+| **Reactive State API** | Observable flows for tab/pane metadata and settings |
 
 ---
 

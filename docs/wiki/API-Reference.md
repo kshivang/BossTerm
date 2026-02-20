@@ -120,14 +120,23 @@ fun rememberTabbedTerminalState(
 | `tabCount` | `Int` | Number of open tabs |
 | `activeTabIndex` | `Int` | Active tab index (0-based) |
 | `activeTab` | `TerminalTab?` | Currently active tab |
+| `activeTabId` | `String?` | Stable ID of active tab |
 | `isInitialized` | `Boolean` | State has been initialized |
 | `isDisposed` | `Boolean` | State has been disposed |
+
+#### Reactive Flows (T7)
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `tabsFlow` | `StateFlow<List<TerminalTabInfo>>` | Observable tab list with metadata |
+| `activeTabIndexFlow` | `StateFlow<Int>` | Observable active tab index |
+| `settingsFlow` | `StateFlow<TerminalSettings>` | Observable terminal settings |
 
 #### Methods
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `createTab` | `(workingDir?, initialCommand?)` | Create new tab |
+| `createTab` | `(workingDir?, initialCommand?, tabId?)` | Create new tab |
 | `closeTab` | `(index: Int)` | Close tab at index |
 | `closeActiveTab` | `()` | Close active tab |
 | `switchToTab` | `(index: Int)` | Switch to tab |
@@ -144,6 +153,23 @@ fun rememberTabbedTerminalState(
 | `addSessionListener` | `(listener)` | Add lifecycle listener |
 | `removeSessionListener` | `(listener)` | Remove listener |
 | `dispose` | `()` | Dispose all sessions |
+
+#### Split Pane Methods (T6)
+
+All accept optional `tabId: String?` — defaults to active tab.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `splitVertical` | `(tabId?): String?` | Split focused pane left/right |
+| `splitHorizontal` | `(tabId?): String?` | Split focused pane top/bottom |
+| `closeFocusedPane` | `(tabId?): Boolean` | Close focused pane (closes tab if last) |
+| `navigatePaneFocus` | `(direction, tabId?)` | Spatial navigation (UP/DOWN/LEFT/RIGHT) |
+| `navigateToNextPane` | `(tabId?)` | Next pane (sequential) |
+| `navigateToPreviousPane` | `(tabId?)` | Previous pane (sequential) |
+| `getPaneCount` | `(tabId?): Int` | Number of panes (1 if no splits) |
+| `hasSplitPanes` | `(tabId?): Boolean` | Whether tab has multiple panes |
+| `getSplitSessionIds` | `(tabId?): List<String>` | Session IDs of all panes |
+| `writeToFocusedPane` | `(text, tabId?): Boolean` | Write to focused pane specifically |
 
 ---
 
@@ -201,6 +227,35 @@ data class ContextMenuSubmenu(
     val label: String,
     val items: List<ContextMenuElement>
 ) : ContextMenuElement
+```
+
+---
+
+## Reactive State Types
+
+### TerminalTabInfo
+
+Immutable snapshot of tab metadata, emitted via `tabsFlow`.
+
+```kotlin
+@Immutable
+data class TerminalTabInfo(
+    val id: String,              // Stable tab ID
+    val title: String,           // Current tab title
+    val isConnected: Boolean,    // PTY process is connected
+    val workingDirectory: String?, // CWD from OSC 7
+    val paneCount: Int           // Number of panes (always >= 1)
+)
+```
+
+### NavigationDirection
+
+Direction for spatial pane navigation.
+
+```kotlin
+enum class NavigationDirection {
+    UP, DOWN, LEFT, RIGHT
+}
 ```
 
 ---

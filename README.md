@@ -484,9 +484,9 @@ You may select either license at your option.
 
 ## Acknowledgments
 
-BossTerm is a fork of [JediTerm](https://github.com/JetBrains/jediterm) by JetBrains, completely rewritten with Kotlin and Compose Desktop.
+BossTerm was originally inspired by [JediTerm](https://github.com/JetBrains/jediterm) by JetBrains. The codebase has since been completely rewritten from the ground up in Kotlin with Compose Desktop — no JediTerm code remains.
 
-Inspired by [iTerm2](https://github.com/gnachman/iTerm2), the beloved macOS terminal.
+Also inspired by [iTerm2](https://github.com/gnachman/iTerm2), the beloved macOS terminal.
 
 ---
 

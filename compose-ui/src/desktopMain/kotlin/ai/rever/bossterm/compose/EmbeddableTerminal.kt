@@ -195,6 +195,7 @@ data class ContextMenuSubmenu(
  *                          Use this to add custom patterns (e.g., JIRA ticket IDs, custom URLs).
  *                          Default: global HyperlinkDetector.registry
  * @param modifier Compose modifier for the terminal container
+ * @param platformServices Custom platform services
  */
 @Composable
 fun EmbeddableTerminal(
@@ -220,7 +221,8 @@ fun EmbeddableTerminal(
     settingsOverride: TerminalSettingsOverride? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     autoFocus: Boolean = false,  // Request focus after a delay (useful for dialogs)
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    platformServices: PlatformServices = getPlatformServices()
 ) {
     // Use provided state or create auto-disposing one
     val effectiveState = state ?: rememberEmbeddableTerminalState(autoDispose = true)
@@ -270,7 +272,8 @@ fun EmbeddableTerminal(
                 initialCommand = initialCommand,
                 onInitialCommandComplete = onInitialCommandComplete,
                 onOutput = onOutput,
-                onExit = onExit
+                onExit = onExit,
+                platformServices = platformServices
             )
         }
     }
@@ -552,7 +555,8 @@ class EmbeddableTerminalState {
         initialCommand: String?,
         onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)?,
         onOutput: ((String) -> Unit)?,
-        onExit: ((Int) -> Unit)?
+        onExit: ((Int) -> Unit)?,
+        platformServices: PlatformServices = getPlatformServices()
     ) {
         if (initialized) return
         initialized = true
@@ -570,7 +574,8 @@ class EmbeddableTerminalState {
                 environment = environment,
                 initialCommand = initialCommand,
                 onInitialCommandComplete = onInitialCommandComplete,
-                onExit = onExit
+                onExit = onExit,
+                platformServices = platformServices
             )
         }
     }
@@ -898,11 +903,10 @@ private suspend fun initializeProcess(
     environment: Map<String, String>?,
     initialCommand: String?,
     onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)?,
-    onExit: ((Int) -> Unit)?
+    onExit: ((Int) -> Unit)?,
+    platformServices: PlatformServices = getPlatformServices()
 ) {
     try {
-        val services = getPlatformServices()
-
         // Determine shell arguments (login shell)
         val args = if (command.endsWith("/zsh") || command.endsWith("/bash") ||
             command == "zsh" || command == "bash") {
@@ -939,7 +943,7 @@ private suspend fun initializeProcess(
         )
 
         // Spawn PTY process
-        val processHandle = services.getProcessService().spawnProcess(processConfig)
+        val processHandle = platformServices.getProcessService().spawnProcess(processConfig)
 
         if (processHandle == null) {
             session.connectionState.value = ConnectionState.Error("Failed to spawn process")

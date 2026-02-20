@@ -64,7 +64,8 @@ fun EmbeddableTerminal(
     contextMenuItems: List<ContextMenuElement> = emptyList(),
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    platformServices: PlatformServices = getPlatformServices()
 )
 ```
 
@@ -86,6 +87,7 @@ fun EmbeddableTerminal(
 | `contextMenuItems` | `List<ContextMenuElement>` | Custom context menu items |
 | `onLinkClick` | `(HyperlinkInfo) -> Boolean` | Custom link handler; return `true` if handled, `false` for default |
 | `hyperlinkRegistry` | `HyperlinkRegistry` | Custom hyperlink patterns (e.g., JIRA tickets) |
+| `platformServices` | `PlatformServices` | Custom platform services for process spawning, clipboard, etc. See [[Tabbed Terminal Guide#Custom Platform Services|Tabbed-Terminal-Guide#custom-platform-services]] |
 
 ---
 

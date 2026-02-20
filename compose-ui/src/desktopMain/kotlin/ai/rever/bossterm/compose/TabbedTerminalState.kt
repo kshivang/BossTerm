@@ -604,7 +604,9 @@ class TabbedTerminalState {
         )
         // Assign onProcessExit after creation so the lambda captures newSession directly,
         // avoiding the fragile var-ref pattern where the lambda closes over a mutable var.
-        (newSession as? TerminalTab)?.onProcessExit = {
+        val newTab = newSession as? TerminalTab
+            ?: error("createSessionForSplit returned ${newSession::class.simpleName}, expected TerminalTab")
+        newTab.onProcessExit = {
             if (splitState.isSinglePane) {
                 val tabIndex = controller.tabs.indexOfFirst { it.id == tab.id }
                 if (tabIndex != -1) {
@@ -629,9 +631,10 @@ class TabbedTerminalState {
      */
     fun closeFocusedPane(tabId: String? = null): Boolean {
         val resolvedTabId = resolveTabId(tabId) ?: return false
-        val splitState = splitStates[resolvedTabId] ?: return false
-        if (splitState.isSinglePane) {
-            val controller = tabController ?: return false
+        val controller = tabController ?: return false
+        val splitState = splitStates[resolvedTabId]
+        // No split state or single pane — close the entire tab
+        if (splitState == null || splitState.isSinglePane) {
             val tabIndex = controller.tabs.indexOfFirst { it.id == resolvedTabId }
             if (tabIndex != -1) {
                 controller.closeTab(tabIndex)

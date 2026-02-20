@@ -52,7 +52,8 @@ class TabController(
     private val settings: TerminalSettings,
     private val onLastTabClosed: () -> Unit,
     private val isWindowFocused: () -> Boolean = { true },
-    private val onTabClose: ((tabId: String) -> Unit)? = null
+    private val onTabClose: ((tabId: String) -> Unit)? = null,
+    private val platformServices: PlatformServices = getPlatformServices()
 ) {
     /**
      * List of all terminal tabs (observable, triggers recomposition).
@@ -889,8 +890,6 @@ class TabController(
         config: PreConnectConfig
     ) {
         try {
-            val services = getPlatformServices()
-
             // Ensure shell is started as login shell to get proper PATH from /etc/zprofile
             // This is critical for GUI apps that don't inherit terminal environment
             val effectiveArguments = if (config.arguments.isEmpty() &&
@@ -927,7 +926,7 @@ class TabController(
                 workingDirectory = config.workingDir ?: System.getProperty("user.home")
             )
 
-            val handle = services.getProcessService().spawnProcess(processConfig)
+            val handle = platformServices.getProcessService().spawnProcess(processConfig)
 
             if (handle == null) {
                 tab.connectionState.value = ConnectionState.Error(
@@ -1071,8 +1070,6 @@ class TabController(
     ) {
         tab.coroutineScope.launch(Dispatchers.IO) {
             try {
-                val services = getPlatformServices()
-
                 // Set TERM environment variables for TUI compatibility
                 val terminalEnvironment = buildMap {
                     putAll(filterEnvironmentVariables(System.getenv()))
@@ -1098,7 +1095,7 @@ class TabController(
                     workingDirectory = workingDir ?: System.getProperty("user.home")
                 )
 
-                val handle = services.getProcessService().spawnProcess(config)
+                val handle = platformServices.getProcessService().spawnProcess(config)
 
                 if (handle == null) {
                     tab.connectionState.value = ConnectionState.Error(

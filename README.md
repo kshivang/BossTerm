@@ -437,6 +437,21 @@ fun MyApp() {
     DisposableEffect(Unit) {
         onDispose { persistentState.dispose() }
     }
+
+    // Custom PlatformServices - override process spawning, notifications, etc.
+    // Uses Kotlin's 'by' delegation to wrap defaults while customizing specific services
+    val customServices = object : PlatformServices by getPlatformServices() {
+        val defaults = getPlatformServices()
+        override fun getProcessService() = object : PlatformServices.ProcessService {
+            private val delegate = defaults.getProcessService()
+            override suspend fun spawnProcess(config: PlatformServices.ProcessService.ProcessConfig)
+                : PlatformServices.ProcessService.ProcessHandle? {
+                println("Spawning: ${config.command}")
+                return delegate.spawnProcess(config)
+            }
+        }
+    }
+    EmbeddableTerminal(platformServices = customServices)
 }
 ```
 

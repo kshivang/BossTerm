@@ -29,7 +29,8 @@ fun EmbeddableTerminal(
     onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    platformServices: PlatformServices = getPlatformServices()
 )
 ```
 
@@ -95,7 +96,8 @@ fun TabbedTerminal(
     onContextMenuOpen: (() -> Unit)? = null,
     onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    platformServices: PlatformServices = getPlatformServices()
 )
 ```
 

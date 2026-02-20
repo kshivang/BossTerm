@@ -134,7 +134,12 @@ DisposableEffect(Unit) {
 | `splitHorizontal(tabId?)` | Split focused pane horizontally (T6) |
 | `closeFocusedPane(tabId?)` | Close focused pane / close tab if last (T6) |
 | `navigatePaneFocus(direction, tabId?)` | Spatial pane navigation (T6) |
+| `navigateToNextPane(tabId?)` | Next pane sequentially (T6) |
+| `navigateToPreviousPane(tabId?)` | Previous pane sequentially (T6) |
 | `getPaneCount(tabId?)` | Number of panes in tab (T6) |
+| `hasSplitPanes(tabId?)` | Whether tab has multiple panes (T6) |
+| `getSplitSessionIds(tabId?)` | Session IDs of all panes (T6) |
+| `getFocusedSplitSession(tabId?)` | Get focused pane's session (T6) |
 | `writeToFocusedPane(text, tabId?)` | Write to focused pane (T6) |
 | `dispose()` | Cleanup all sessions |
 

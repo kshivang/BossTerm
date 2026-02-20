@@ -169,6 +169,7 @@ All accept optional `tabId: String?` — defaults to active tab.
 | `getPaneCount` | `(tabId?): Int` | Number of panes (1 if no splits) |
 | `hasSplitPanes` | `(tabId?): Boolean` | Whether tab has multiple panes |
 | `getSplitSessionIds` | `(tabId?): List<String>` | Session IDs of all panes |
+| `getFocusedSplitSession` | `(tabId?): TerminalSession?` | Get focused pane's session |
 | `writeToFocusedPane` | `(text, tabId?): Boolean` | Write to focused pane specifically |
 
 ---

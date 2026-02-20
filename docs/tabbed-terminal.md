@@ -184,6 +184,7 @@ Programmatic control over split panes within tabs. All methods accept an optiona
 | `getPaneCount(tabId?): Int` | Number of panes in the tab (1 if no splits) |
 | `hasSplitPanes(tabId?): Boolean` | Whether the tab has more than one pane |
 | `getSplitSessionIds(tabId?): List<String>` | Session IDs of all panes in the tab |
+| `getFocusedSplitSession(tabId?): TerminalSession?` | Get the focused pane's session |
 | `writeToFocusedPane(text, tabId?): Boolean` | Send text to the focused pane specifically |
 
 ```kotlin

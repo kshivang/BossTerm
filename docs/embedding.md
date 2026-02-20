@@ -89,7 +89,7 @@ fun EmbeddableTerminal(
 | `settingsOverride` | `TerminalSettingsOverride?` | Per-instance settings overrides (see [Settings Override](#settings-override)) |
 | `hyperlinkRegistry` | `HyperlinkRegistry` | Custom hyperlink patterns for this instance (see [Custom Hyperlink Patterns](#custom-hyperlink-patterns)) |
 | `modifier` | `Modifier` | Compose modifier |
-| `platformServices` | `PlatformServices` | Custom platform services |
+| `platformServices` | `PlatformServices` | Custom platform services for process spawning, clipboard, etc. See [Custom Platform Services](tabbed-terminal.md#custom-platform-services) |
 
 ### EmbeddableTerminalState
 

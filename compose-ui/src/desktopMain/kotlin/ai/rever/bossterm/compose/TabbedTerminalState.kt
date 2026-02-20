@@ -172,7 +172,7 @@ class TabbedTerminalState {
             onLastTabClosed = onLastTabClosed,
             isWindowFocused = isWindowFocused,
             onTabClose = onTabClose,
-            services = platformServices
+            platformServices = platformServices
         )
 
         // Wire up snapshotFlow bridges for reactive state (T7)

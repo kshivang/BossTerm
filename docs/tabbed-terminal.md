@@ -90,7 +90,7 @@ fun TabbedTerminal(
 | `settingsOverride` | `TerminalSettingsOverride?` | Per-instance settings overrides (see [Settings Override](#settings-override)) |
 | `hyperlinkRegistry` | `HyperlinkRegistry` | Custom hyperlink patterns for this instance (see [Custom Hyperlink Patterns](#custom-hyperlink-patterns)) |
 | `modifier` | `Modifier` | Compose modifier |
-| `platformServices` | `PlatformServices` | Custom platform services |
+| `platformServices` | `PlatformServices` | Custom platform services for process spawning, clipboard, etc. (see [Custom Platform Services](#custom-platform-services)) |
 
 ### MenuActions
 
@@ -646,6 +646,48 @@ TerminalSettingsOverride(
     splitFocusBorderEnabled = false
 )
 ```
+
+## Custom Platform Services
+
+Override the default platform services to customize process spawning, clipboard, filesystem, and other platform-specific behavior. This is useful for remote terminal connections (e.g., SSH, custom protocols) where you need to send I/O to a remote server instead of spawning a local PTY.
+
+```kotlin
+import ai.rever.bossterm.compose.PlatformServices
+import ai.rever.bossterm.compose.getPlatformServices
+
+// Create custom services (e.g., override process spawning for remote connections)
+class RemotePlatformServices(
+    private val defaults: PlatformServices = getPlatformServices()
+) : PlatformServices by defaults {
+    override fun getProcessService(): PlatformServices.ProcessService {
+        return MyRemoteProcessService()  // Custom SSH/remote process spawning
+    }
+}
+
+// Use in TabbedTerminal
+TabbedTerminal(
+    onExit = { exitApplication() },
+    platformServices = RemotePlatformServices()
+)
+
+// Or in EmbeddableTerminal
+EmbeddableTerminal(
+    platformServices = RemotePlatformServices()
+)
+```
+
+The `PlatformServices` interface provides six services that can be individually overridden:
+
+| Service | Interface | Purpose |
+|---------|-----------|---------|
+| `getProcessService()` | `ProcessService` | PTY/process spawning and I/O |
+| `getClipboardService()` | `ClipboardService` | Clipboard copy/paste |
+| `getFileSystemService()` | `FileSystemService` | File operations and paths |
+| `getPlatformInfo()` | `PlatformInfo` | OS/platform detection |
+| `getBrowserService()` | `BrowserService` | URL opening |
+| `getNotificationService()` | `NotificationService` | System notifications |
+
+Use Kotlin's `by` delegation to override only the services you need while keeping defaults for the rest.
 
 ## State Persistence
 

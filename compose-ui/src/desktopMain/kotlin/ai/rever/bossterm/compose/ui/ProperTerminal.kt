@@ -705,7 +705,7 @@ fun ProperTerminal(
    * Drag-and-drop target for file path pasting (like iTerm2).
    * When files are dropped on the terminal, their paths are pasted with shell escaping.
    */
-  val dropTarget = remember {
+  val dropTarget = remember(tab) {
     object : DragAndDropTarget {
       override fun onDrop(event: DragAndDropEvent): Boolean {
         val transferable = event.awtTransferable

@@ -155,6 +155,23 @@ fun TabbedTerminal(
     onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     settingsOverride: TerminalSettingsOverride? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
+    /**
+     * Whether the terminal is currently "active" from the host's
+     * perspective — i.e. the surrounding panel/tab is the one the user
+     * is interacting with. Defaults to `true` for callers that don't
+     * differentiate (single-window, single-panel embedding).
+     *
+     * Toggling this to `false` when the host loses external focus and
+     * back to `true` on regain causes [ai.rever.bossterm.compose.ui.ProperTerminal]'s
+     * internal `LaunchedEffect(tab.id, isActiveTab)` to re-issue the
+     * focus requester for the focused pane — restoring keyboard input
+     * routing to the embedded terminal widget. Without this signal,
+     * external focus round-trips (clicking another panel and back) can
+     * leave the terminal visually present but unable to receive
+     * keystrokes until the user manually clicks a split or switches
+     * tabs.
+     */
+    isActive: Boolean = true,
     modifier: Modifier = Modifier,
     platformServices: PlatformServices = getPlatformServices()
 ) {
@@ -804,7 +821,7 @@ fun TabbedTerminal(
             SplitContainer(
                 splitState = splitState,
                 sharedFont = sharedFont,
-                isActiveTab = true,
+                isActiveTab = isActive,
                 onTabTitleChange = { newTitle ->
                     activeTab.title.value = newTitle
                 },

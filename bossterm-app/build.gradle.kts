@@ -57,6 +57,11 @@ kotlin {
                 implementation(compose.foundation)
                 implementation(compose.material)
                 implementation(compose.ui)
+
+                // SLF4J binding so logs from compose-ui (e.g. BossTermMcpManager,
+                // Ktor server) actually reach stderr instead of being dropped by
+                // the NOP logger.
+                runtimeOnly("org.slf4j:slf4j-simple:2.0.17")
             }
         }
     }

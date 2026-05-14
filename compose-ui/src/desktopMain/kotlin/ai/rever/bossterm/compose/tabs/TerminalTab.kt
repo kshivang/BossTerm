@@ -249,6 +249,19 @@ data class TerminalTab(
      */
     override val isVisible: MutableState<Boolean> = mutableStateOf(false)
 
+    /**
+     * Most recently completed shell command for this tab, populated by
+     * [ai.rever.bossterm.compose.mcp.LastCommandTracker] via OSC 133 events.
+     * `null` until at least one command has completed.
+     *
+     * Consumed by the in-process MCP server (`get_last_command` tool).
+     * Thread-safe: [kotlinx.coroutines.flow.MutableStateFlow] supports
+     * concurrent writes from listener callbacks (which may run off the UI
+     * thread) and concurrent reads from MCP request handlers.
+     */
+    val lastCommand: kotlinx.coroutines.flow.MutableStateFlow<ai.rever.bossterm.compose.mcp.LastCommand?> =
+        kotlinx.coroutines.flow.MutableStateFlow(null)
+
     // === Content-Anchored Selection ===
 
     /**

@@ -406,6 +406,12 @@ class TabController(
             modelListener = modelListener
         )
 
+        // Register MCP last-command tracker (OSC 133). Additive — does not
+        // affect the notification handler registered earlier.
+        terminal.addCommandStateListener(
+            ai.rever.bossterm.compose.mcp.LastCommandTracker(tab)
+        )
+
         // Complete debug collector initialization
         debugCollector?.let { collector ->
             // Set the tab reference now that tab is created
@@ -641,6 +647,12 @@ class TabController(
             modelListener = modelListener
         )
 
+        // Register MCP last-command tracker (OSC 133). Additive — does not
+        // affect the notification handler registered earlier.
+        terminal.addCommandStateListener(
+            ai.rever.bossterm.compose.mcp.LastCommandTracker(session)
+        )
+
         // Complete debug collector initialization
         debugCollector?.let { collector ->
             collector.setTab(session)
@@ -820,6 +832,12 @@ class TabController(
             typeAheadModel = null,  // Type-ahead configured after preConnect
             typeAheadManager = null,
             modelListener = modelListener
+        )
+
+        // Register MCP last-command tracker (OSC 133). Additive — does not
+        // affect the notification handler registered earlier.
+        terminal.addCommandStateListener(
+            ai.rever.bossterm.compose.mcp.LastCommandTracker(tab)
         )
 
         debugCollector?.let { collector ->

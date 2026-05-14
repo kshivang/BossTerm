@@ -735,6 +735,25 @@ data class TerminalSettings(
      */
     val alwaysShowTabBar: Boolean = false,
 
+    // ===== MCP Server Settings =====
+
+    /**
+     * Enable the in-process Model Context Protocol (MCP) server.
+     * When true, BossTerm exposes a streamable-HTTP MCP endpoint on localhost
+     * so external tools (e.g. AI assistants) can introspect and control the
+     * terminal. Defaults to false for opt-in safety - the server only starts
+     * when this flag is explicitly enabled.
+     */
+    val mcpEnabled: Boolean = false,
+
+    /**
+     * Localhost TCP port for the in-process MCP server's streamable-HTTP endpoint.
+     * Only used when mcpEnabled is true. Change this if the default port conflicts
+     * with another service on your machine.
+     * Default: 7676
+     */
+    val mcpPort: Int = 7676,
+
     // ===== AI Assistant Settings =====
 
     /**

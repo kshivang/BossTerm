@@ -16,8 +16,10 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import ai.rever.bossterm.compose.TabbedTerminal
+import ai.rever.bossterm.compose.rememberTabbedTerminalState
 import ai.rever.bossterm.compose.cli.CLIInstallDialog
 import ai.rever.bossterm.compose.cli.CLIInstaller
+import ai.rever.bossterm.compose.mcp.BossTermMcpManager
 import ai.rever.bossterm.compose.notification.NotificationService
 import ai.rever.bossterm.compose.onboarding.OnboardingWizard
 import ai.rever.bossterm.compose.settings.SettingsManager
@@ -160,6 +162,21 @@ fun main() {
                     val updateManager = remember { UpdateManager.instance }
                     val updateState by updateManager.updateState.collectAsState()
                     val scope = rememberCoroutineScope()
+
+                    // Hoist TabbedTerminalState so external integrations (MCP) can observe it.
+                    // autoDispose=true mirrors the prior internal-state lifecycle (sessions
+                    // are released when this Window composition leaves).
+                    val tabbedState = rememberTabbedTerminalState(autoDispose = true)
+
+                    // MCP server lifecycle: manager reads mcpEnabled from settings itself,
+                    // so we unconditionally start() and let it decide. stop() runs on dispose.
+                    val mcpManager = remember(tabbedState) {
+                        BossTermMcpManager(tabbedState, SettingsManager.instance, scope)
+                    }
+                    DisposableEffect(mcpManager) {
+                        mcpManager.start()
+                        onDispose { mcpManager.stop() }
+                    }
 
                     // Track window focus for command completion notifications
                     val awtWindow = this.window
@@ -649,6 +666,7 @@ fun main() {
 
                                 // Terminal content
                                 TabbedTerminal(
+                                    state = tabbedState,
                                     onExit = {
                                         WindowManager.closeWindow(window.id)
                                         if (!WindowManager.hasWindows()) {

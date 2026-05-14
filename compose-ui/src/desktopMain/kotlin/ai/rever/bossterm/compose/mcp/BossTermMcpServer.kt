@@ -1,0 +1,517 @@
+package ai.rever.bossterm.compose.mcp
+
+import ai.rever.bossterm.compose.TabbedTerminalState
+import ai.rever.bossterm.compose.tabs.TerminalTab
+import io.modelcontextprotocol.kotlin.sdk.server.Server
+import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
+import io.modelcontextprotocol.kotlin.sdk.types.Implementation
+import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
+import io.modelcontextprotocol.kotlin.sdk.types.TextContent
+import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
+
+/**
+ * Builds the in-process MCP server that exposes BossTerm tabs/terminals to
+ * external Model Context Protocol clients.
+ *
+ * This class is transport-agnostic — it only wires tool definitions and
+ * handlers onto a [Server] instance. Binding the server to a transport
+ * (e.g. Ktor + SSE/HTTP) is the caller's responsibility.
+ *
+ * Tool surface (all tools take a `tab_id` argument unless otherwise noted):
+ *   - `list_tabs`         — enumerate all open tabs.
+ *   - `get_active_tab`    — return the currently active tab, or null.
+ *   - `read_scrollback`   — read the last N lines from a tab's buffer.
+ *   - `search_output`     — regex-search a tab's buffer.
+ *   - `get_last_command`  — return the most recently completed OSC 133 command.
+ *   - `send_input`        — write raw text to a tab's stdin (queued).
+ *   - `send_signal`       — send ctrl_c / ctrl_d / ctrl_z to a tab (queued).
+ *
+ * Threading: tool handlers run on whatever coroutine context the MCP
+ * transport dispatches them on. All operations performed here are either
+ * thread-safe (buffer snapshots, [TabbedTerminalState] input queue) or
+ * read-only accesses to [TerminalTab] fields that are themselves
+ * thread-safe (`MutableState`, `MutableStateFlow`).
+ *
+ * @param state The live [TabbedTerminalState] to expose. The server holds a
+ *   strong reference for the lifetime of the registered tools.
+ */
+class BossTermMcpServer(
+    private val state: TabbedTerminalState
+) {
+
+    private val json: Json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+        explicitNulls = true
+    }
+
+    /**
+     * Build and return a fully configured [Server] with all BossTerm tools
+     * registered. Caller is responsible for connecting a transport.
+     */
+    fun createServer(): Server {
+        val server = Server(
+            serverInfo = Implementation(
+                name = SERVER_NAME,
+                version = SERVER_VERSION
+            ),
+            options = ServerOptions(
+                capabilities = ServerCapabilities(
+                    tools = ServerCapabilities.Tools(listChanged = true)
+                )
+            )
+        )
+
+        registerListTabs(server)
+        registerGetActiveTab(server)
+        registerReadScrollback(server)
+        registerSearchOutput(server)
+        registerGetLastCommand(server)
+        registerSendInput(server)
+        registerSendSignal(server)
+
+        return server
+    }
+
+    // -----------------------------------------------------------------
+    // Tool: list_tabs
+    // -----------------------------------------------------------------
+
+    private fun registerListTabs(server: Server) {
+        server.addTool(
+            name = "list_tabs",
+            description = "List all open terminal tabs with their id, title, working directory, " +
+                    "pid, and whether each is the active tab.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {},
+                required = emptyList()
+            )
+        ) { _ ->
+            val activeId = state.activeTabId
+            val infos = state.tabs.map { it.toTabInfo(activeId) }
+            val payload = ListTabsResult(tabs = infos, activeTabId = activeId)
+            successJson(json.encodeToString(ListTabsResult.serializer(), payload))
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Tool: get_active_tab
+    // -----------------------------------------------------------------
+
+    private fun registerGetActiveTab(server: Server) {
+        server.addTool(
+            name = "get_active_tab",
+            description = "Return information about the currently active tab, or null if no tab is active.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {},
+                required = emptyList()
+            )
+        ) { _ ->
+            val activeId = state.activeTabId
+            val info = state.activeTab?.toTabInfo(activeId)
+            val text = if (info == null) {
+                "null"
+            } else {
+                json.encodeToString(TabInfo.serializer(), info)
+            }
+            successJson(text)
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Tool: read_scrollback
+    // -----------------------------------------------------------------
+
+    private fun registerReadScrollback(server: Server) {
+        server.addTool(
+            name = "read_scrollback",
+            description = "Read the last N lines from a tab's terminal buffer (history + visible screen) " +
+                    "as plain UTF-8 text. Trailing whitespace per line is stripped.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("tab_id") {
+                        put("type", "string")
+                        put("description", "Stable tab id (see list_tabs).")
+                    }
+                    putJsonObject("lines") {
+                        put("type", "integer")
+                        put("description", "Maximum number of lines to return from the end. Default 200.")
+                        put("minimum", 1)
+                    }
+                },
+                required = listOf("tab_id")
+            )
+        ) { request ->
+            val args = request.arguments
+            val tabId = args.requireString("tab_id")
+                ?: return@addTool errorResult("Missing required argument: tab_id")
+            val requested = args.optionalInt("lines") ?: DEFAULT_SCROLLBACK_LINES
+            if (requested < 1) {
+                return@addTool errorResult("'lines' must be >= 1 (got $requested)")
+            }
+            val tab = state.getTabById(tabId)
+                ?: return@addTool errorResult("Unknown tab_id: $tabId")
+
+            val snapshot = tab.textBuffer.createSnapshot()
+            val totalAvailable = snapshot.historyLinesCount + snapshot.height
+            val take = minOf(requested, totalAvailable)
+
+            // Iterate the most recent `take` rows. Buffer row indices run from
+            // `-historyLinesCount` (oldest) through `height - 1` (bottom of screen).
+            val endExclusive = snapshot.height
+            val startInclusive = endExclusive - take
+            val lines = ArrayList<String>(take)
+            var row = startInclusive
+            while (row < endExclusive) {
+                val text = snapshot.getLine(row).text
+                lines.add(text.trimEnd())
+                row++
+            }
+
+            val payload = ReadScrollbackResult(lines = lines, totalAvailable = totalAvailable)
+            successJson(json.encodeToString(ReadScrollbackResult.serializer(), payload))
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Tool: search_output
+    // -----------------------------------------------------------------
+
+    private fun registerSearchOutput(server: Server) {
+        server.addTool(
+            name = "search_output",
+            description = "Regex-search the entire scrollback (history + screen) of a tab. " +
+                    "Returns matching rows with positional info. Row numbers follow buffer " +
+                    "convention: negative for history, 0..height-1 for screen.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("tab_id") {
+                        put("type", "string")
+                        put("description", "Stable tab id (see list_tabs).")
+                    }
+                    putJsonObject("pattern") {
+                        put("type", "string")
+                        put("description", "Regex pattern. Kotlin/Java regex syntax.")
+                    }
+                    putJsonObject("max_matches") {
+                        put("type", "integer")
+                        put("description", "Maximum matches to return before truncating. Default 50.")
+                        put("minimum", 1)
+                    }
+                    putJsonObject("ignore_case") {
+                        put("type", "boolean")
+                        put("description", "If true, perform case-insensitive matching. Default false.")
+                    }
+                },
+                required = listOf("tab_id", "pattern")
+            )
+        ) { request ->
+            val args = request.arguments
+            val tabId = args.requireString("tab_id")
+                ?: return@addTool errorResult("Missing required argument: tab_id")
+            val pattern = args.requireString("pattern")
+                ?: return@addTool errorResult("Missing required argument: pattern")
+            val maxMatches = args.optionalInt("max_matches") ?: DEFAULT_SEARCH_MAX_MATCHES
+            if (maxMatches < 1) {
+                return@addTool errorResult("'max_matches' must be >= 1 (got $maxMatches)")
+            }
+            val ignoreCase = args.optionalBoolean("ignore_case") ?: false
+            val tab = state.getTabById(tabId)
+                ?: return@addTool errorResult("Unknown tab_id: $tabId")
+
+            val options = if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()
+            val regex = try {
+                Regex(pattern, options)
+            } catch (e: Exception) {
+                return@addTool errorResult("Invalid regex: ${e.message ?: e::class.simpleName}")
+            }
+
+            val snapshot = tab.textBuffer.createSnapshot()
+            val matches = ArrayList<SearchMatch>()
+            var truncated = false
+
+            val firstRow = -snapshot.historyLinesCount
+            val lastRowExclusive = snapshot.height
+            var row = firstRow
+            outer@ while (row < lastRowExclusive) {
+                val lineText = snapshot.getLine(row).text
+                for (m in regex.findAll(lineText)) {
+                    if (matches.size >= maxMatches) {
+                        truncated = true
+                        break@outer
+                    }
+                    matches.add(
+                        SearchMatch(
+                            row = row,
+                            line = lineText.trimEnd(),
+                            matchStart = m.range.first,
+                            matchEnd = m.range.last + 1
+                        )
+                    )
+                }
+                row++
+            }
+
+            val payload = SearchOutputResult(matches = matches, truncated = truncated)
+            successJson(json.encodeToString(SearchOutputResult.serializer(), payload))
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Tool: get_last_command
+    // -----------------------------------------------------------------
+
+    private fun registerGetLastCommand(server: Server) {
+        server.addTool(
+            name = "get_last_command",
+            description = "Return the most recently completed shell command for a tab " +
+                    "(as captured via OSC 133), or null if no command has finished yet. " +
+                    "Requires shell integration — see shell-integration.md.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("tab_id") {
+                        put("type", "string")
+                        put("description", "Stable tab id (see list_tabs).")
+                    }
+                },
+                required = listOf("tab_id")
+            )
+        ) { request ->
+            val args = request.arguments
+            val tabId = args.requireString("tab_id")
+                ?: return@addTool errorResult("Missing required argument: tab_id")
+            val tab = state.getTabById(tabId)
+                ?: return@addTool errorResult("Unknown tab_id: $tabId")
+
+            val last = tab.lastCommand.value
+            val text = if (last == null) {
+                "null"
+            } else {
+                val dto = LastCommandDto(
+                    commandText = last.commandText,
+                    exitCode = last.exitCode,
+                    startedAtMs = last.startedAtMs,
+                    finishedAtMs = last.finishedAtMs,
+                    durationMs = last.finishedAtMs - last.startedAtMs,
+                    cwd = last.cwd
+                )
+                json.encodeToString(LastCommandDto.serializer(), dto)
+            }
+            successJson(text)
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Tool: send_input
+    // -----------------------------------------------------------------
+
+    private fun registerSendInput(server: Server) {
+        server.addTool(
+            name = "send_input",
+            description = "Write text to the tab's shell stdin. The caller is responsible for " +
+                    "appending a trailing '\\n' if they want a command to actually execute.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("tab_id") {
+                        put("type", "string")
+                        put("description", "Stable tab id (see list_tabs).")
+                    }
+                    putJsonObject("text") {
+                        put("type", "string")
+                        put("description", "Raw text to write. Include '\\n' to submit.")
+                    }
+                },
+                required = listOf("tab_id", "text")
+            )
+        ) { request ->
+            val args = request.arguments
+            val tabId = args.requireString("tab_id")
+                ?: return@addTool errorResult("Missing required argument: tab_id")
+            val text = args.requireString("text")
+                ?: return@addTool errorResult("Missing required argument: text")
+
+            val sent = state.write(text, tabId)
+            if (!sent) {
+                return@addTool errorResult("Unknown tab_id: $tabId")
+            }
+            successJson(json.encodeToString(OkResult.serializer(), OkResult(ok = true)))
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Tool: send_signal
+    // -----------------------------------------------------------------
+
+    private fun registerSendSignal(server: Server) {
+        server.addTool(
+            name = "send_signal",
+            description = "Send a control signal to the tab's shell. Allowed signals: " +
+                    "'ctrl_c' (interrupt), 'ctrl_d' (EOF), 'ctrl_z' (suspend).",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("tab_id") {
+                        put("type", "string")
+                        put("description", "Stable tab id (see list_tabs).")
+                    }
+                    putJsonObject("signal") {
+                        put("type", "string")
+                        put("description", "One of: ctrl_c, ctrl_d, ctrl_z.")
+                    }
+                },
+                required = listOf("tab_id", "signal")
+            )
+        ) { request ->
+            val args = request.arguments
+            val tabId = args.requireString("tab_id")
+                ?: return@addTool errorResult("Missing required argument: tab_id")
+            val signal = args.requireString("signal")
+                ?: return@addTool errorResult("Missing required argument: signal")
+
+            val delivered = when (signal.lowercase()) {
+                "ctrl_c" -> state.sendCtrlC(tabId)
+                "ctrl_d" -> state.sendInput(byteArrayOf(0x04), tabId)
+                "ctrl_z" -> state.sendInput(byteArrayOf(0x1A), tabId)
+                else -> return@addTool errorResult(
+                    "Unknown signal: '$signal'. Expected one of: ctrl_c, ctrl_d, ctrl_z."
+                )
+            }
+            if (!delivered) {
+                return@addTool errorResult("Unknown tab_id: $tabId")
+            }
+            successJson(json.encodeToString(OkResult.serializer(), OkResult(ok = true)))
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------
+
+    private fun TerminalTab.toTabInfo(activeId: String?): TabInfo {
+        return TabInfo(
+            id = id,
+            title = title.value,
+            cwd = workingDirectory.value,
+            pid = processHandle.value?.getPid(),
+            isActive = id == activeId
+        )
+    }
+
+    private fun successJson(text: String): CallToolResult {
+        return CallToolResult(
+            content = listOf(TextContent(text = text)),
+            isError = false,
+            structuredContent = null,
+            meta = null
+        )
+    }
+
+    private fun errorResult(message: String): CallToolResult {
+        val body = json.encodeToString(ErrorResult.serializer(), ErrorResult(error = message))
+        return CallToolResult(
+            content = listOf(TextContent(text = body)),
+            isError = true,
+            structuredContent = null,
+            meta = null
+        )
+    }
+
+    // -----------------------------------------------------------------
+    // Argument helpers (lenient on numeric/boolean string forms)
+    // -----------------------------------------------------------------
+
+    private fun JsonObject?.requireString(key: String): String? {
+        val el: JsonElement = this?.get(key) ?: return null
+        if (el is JsonNull) return null
+        val prim = el.jsonPrimitive
+        // For strings the SDK passes JsonPrimitive with isString=true; for raw values fall back to content.
+        return prim.content
+    }
+
+    private fun JsonObject?.optionalInt(key: String): Int? {
+        val el: JsonElement = this?.get(key) ?: return null
+        if (el is JsonNull) return null
+        val prim = el.jsonPrimitive
+        return prim.intOrNull ?: prim.content.toIntOrNull()
+    }
+
+    private fun JsonObject?.optionalBoolean(key: String): Boolean? {
+        val el: JsonElement = this?.get(key) ?: return null
+        if (el is JsonNull) return null
+        val prim = el.jsonPrimitive
+        return prim.booleanOrNull ?: prim.content.toBooleanStrictOrNull()
+    }
+
+    // -----------------------------------------------------------------
+    // Wire-format DTOs
+    // -----------------------------------------------------------------
+
+    @Serializable
+    data class TabInfo(
+        val id: String,
+        val title: String,
+        val cwd: String?,
+        val pid: Long?,
+        val isActive: Boolean
+    )
+
+    @Serializable
+    data class ListTabsResult(
+        val tabs: List<TabInfo>,
+        val activeTabId: String?
+    )
+
+    @Serializable
+    data class ReadScrollbackResult(
+        val lines: List<String>,
+        val totalAvailable: Int
+    )
+
+    @Serializable
+    data class SearchMatch(
+        val row: Int,
+        val line: String,
+        val matchStart: Int,
+        val matchEnd: Int
+    )
+
+    @Serializable
+    data class SearchOutputResult(
+        val matches: List<SearchMatch>,
+        val truncated: Boolean
+    )
+
+    @Serializable
+    data class LastCommandDto(
+        val commandText: String?,
+        val exitCode: Int,
+        val startedAtMs: Long,
+        val finishedAtMs: Long,
+        val durationMs: Long,
+        val cwd: String?
+    )
+
+    @Serializable
+    data class OkResult(val ok: Boolean)
+
+    @Serializable
+    data class ErrorResult(val error: String)
+
+    companion object {
+        private const val SERVER_NAME = "bossterm"
+        private const val SERVER_VERSION = "1.0"
+        private const val DEFAULT_SCROLLBACK_LINES = 200
+        private const val DEFAULT_SEARCH_MAX_MATCHES = 50
+    }
+}

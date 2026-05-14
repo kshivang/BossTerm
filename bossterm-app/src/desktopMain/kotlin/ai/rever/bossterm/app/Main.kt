@@ -20,6 +20,7 @@ import ai.rever.bossterm.compose.rememberTabbedTerminalState
 import ai.rever.bossterm.compose.cli.CLIInstallDialog
 import ai.rever.bossterm.compose.cli.CLIInstaller
 import ai.rever.bossterm.compose.mcp.BossTermMcpManager
+import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.notification.NotificationService
 import ai.rever.bossterm.compose.onboarding.OnboardingWizard
 import ai.rever.bossterm.compose.settings.SettingsManager
@@ -42,6 +43,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.WindowPlacement
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.awt.GraphicsEnvironment
 import java.awt.event.WindowAdapter
@@ -60,6 +65,22 @@ fun main() {
 
     // Set WM_CLASS for Linux desktop integration (must be before any AWT init)
     setLinuxWMClass()
+
+    // App-singleton MCP server. Constructed once before composition starts so
+    // its lifetime spans every Window. Windows register their TabbedTerminalState
+    // with McpTerminalRegistry; the manager exposes all tabs through a single
+    // endpoint. JVM shutdown hook tears it down on exit.
+    val mcpScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val mcpManager = BossTermMcpManager(
+        registry = McpTerminalRegistry,
+        settingsManager = SettingsManager.instance,
+        parentScope = mcpScope
+    )
+    mcpManager.start()
+    Runtime.getRuntime().addShutdownHook(Thread {
+        mcpManager.stop()
+        mcpScope.cancel()
+    })
 
     application {
         // Create initial window if none exist
@@ -168,14 +189,12 @@ fun main() {
                     // are released when this Window composition leaves).
                     val tabbedState = rememberTabbedTerminalState(autoDispose = true)
 
-                    // MCP server lifecycle: manager reads mcpEnabled from settings itself,
-                    // so we unconditionally start() and let it decide. stop() runs on dispose.
-                    val mcpManager = remember(tabbedState) {
-                        BossTermMcpManager(tabbedState, SettingsManager.instance, scope)
-                    }
-                    DisposableEffect(mcpManager) {
-                        mcpManager.start()
-                        onDispose { mcpManager.stop() }
+                    // Expose this Window's tabs to the app-singleton MCP server.
+                    // The manager itself is constructed in fun main(); here we
+                    // only join/leave the registry.
+                    DisposableEffect(tabbedState) {
+                        McpTerminalRegistry.register(tabbedState)
+                        onDispose { McpTerminalRegistry.unregister(tabbedState) }
                     }
 
                     // Track window focus for command completion notifications

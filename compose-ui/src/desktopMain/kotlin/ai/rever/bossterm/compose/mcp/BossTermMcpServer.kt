@@ -27,11 +27,16 @@ import kotlinx.serialization.json.putJsonObject
  *
  * This class is transport-agnostic — it only wires tool definitions and
  * handlers onto a [Server] instance. Binding the server to a transport
- * (e.g. Ktor + SSE/HTTP) is the caller's responsibility.
+ * (e.g. Ktor + SSE) is the caller's responsibility.
+ *
+ * The server aggregates tabs from every registered [TabbedTerminalState] via
+ * [McpTerminalRegistry], so a single MCP endpoint can expose all open
+ * Windows. Tab ids are UUIDs (globally unique), which lets tools resolve a
+ * tab back to its owning state without needing a window id.
  *
  * Tool surface (all tools take a `tab_id` argument unless otherwise noted):
- *   - `list_tabs`         — enumerate all open tabs.
- *   - `get_active_tab`    — return the currently active tab, or null.
+ *   - `list_tabs`         — enumerate all open tabs across all windows.
+ *   - `get_active_tab`    — return the active tab of the primary window.
  *   - `read_scrollback`   — read the last N lines from a tab's buffer.
  *   - `search_output`     — regex-search a tab's buffer.
  *   - `get_last_command`  — return the most recently completed OSC 133 command.
@@ -43,12 +48,9 @@ import kotlinx.serialization.json.putJsonObject
  * thread-safe (buffer snapshots, [TabbedTerminalState] input queue) or
  * read-only accesses to [TerminalTab] fields that are themselves
  * thread-safe (`MutableState`, `MutableStateFlow`).
- *
- * @param state The live [TabbedTerminalState] to expose. The server holds a
- *   strong reference for the lifetime of the registered tools.
  */
 class BossTermMcpServer(
-    private val state: TabbedTerminalState
+    private val registry: McpTerminalRegistry = McpTerminalRegistry
 ) {
 
     private val json: Json = Json {
@@ -92,16 +94,17 @@ class BossTermMcpServer(
     private fun registerListTabs(server: Server) {
         server.addTool(
             name = "list_tabs",
-            description = "List all open terminal tabs with their id, title, working directory, " +
-                    "pid, and whether each is the active tab.",
+            description = "List all open terminal tabs across all windows. Each tab includes " +
+                    "id, title, working directory, pid, and isActive (true if the tab is the " +
+                    "currently selected tab of its window).",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {},
                 required = emptyList()
             )
         ) { _ ->
-            val activeId = state.activeTabId
-            val infos = state.tabs.map { it.toTabInfo(activeId) }
-            val payload = ListTabsResult(tabs = infos, activeTabId = activeId)
+            val infos = registry.collectTabInfos()
+            val primaryActiveId = registry.primaryState()?.activeTabId
+            val payload = ListTabsResult(tabs = infos, activeTabId = primaryActiveId)
             successJson(json.encodeToString(ListTabsResult.serializer(), payload))
         }
     }
@@ -113,19 +116,19 @@ class BossTermMcpServer(
     private fun registerGetActiveTab(server: Server) {
         server.addTool(
             name = "get_active_tab",
-            description = "Return information about the currently active tab, or null if no tab is active.",
+            description = "Return the active tab of the primary window (the first window opened " +
+                    "that is still alive), or null if no tab is active.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {},
                 required = emptyList()
             )
         ) { _ ->
-            val activeId = state.activeTabId
-            val info = state.activeTab?.toTabInfo(activeId)
-            val text = if (info == null) {
-                "null"
-            } else {
-                json.encodeToString(TabInfo.serializer(), info)
-            }
+            val primary = registry.primaryState()
+            val activeId = primary?.activeTabId
+            val info = primary?.activeTab?.toTabInfo(activeId)
+            // The literal JSON `null` is valid output — clients calling
+            // JSON.parse get a real null. Cheaper than wrapping in `{tab: null}`.
+            val text = if (info == null) "null" else json.encodeToString(TabInfo.serializer(), info)
             successJson(text)
         }
     }
@@ -137,8 +140,8 @@ class BossTermMcpServer(
     private fun registerReadScrollback(server: Server) {
         server.addTool(
             name = "read_scrollback",
-            description = "Read the last N lines from a tab's terminal buffer (history + visible screen) " +
-                    "as plain UTF-8 text. Trailing whitespace per line is stripped.",
+            description = "Read the last N lines from a tab's terminal buffer (history + visible " +
+                    "screen) as plain UTF-8 text. Trailing whitespace per line is stripped.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("tab_id") {
@@ -161,7 +164,7 @@ class BossTermMcpServer(
             if (requested < 1) {
                 return@addTool errorResult("'lines' must be >= 1 (got $requested)")
             }
-            val tab = state.getTabById(tabId)
+            val tab = registry.findTab(tabId)
                 ?: return@addTool errorResult("Unknown tab_id: $tabId")
 
             val snapshot = tab.textBuffer.createSnapshot()
@@ -194,7 +197,9 @@ class BossTermMcpServer(
             name = "search_output",
             description = "Regex-search the entire scrollback (history + screen) of a tab. " +
                     "Returns matching rows with positional info. Row numbers follow buffer " +
-                    "convention: negative for history, 0..height-1 for screen.",
+                    "convention: negative for history (oldest = -historyLinesCount), 0..height-1 " +
+                    "for screen. The response also includes historyLinesCount and height so " +
+                    "clients can convert to 1-based line numbers if desired.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("tab_id") {
@@ -228,7 +233,7 @@ class BossTermMcpServer(
                 return@addTool errorResult("'max_matches' must be >= 1 (got $maxMatches)")
             }
             val ignoreCase = args.optionalBoolean("ignore_case") ?: false
-            val tab = state.getTabById(tabId)
+            val tab = registry.findTab(tabId)
                 ?: return@addTool errorResult("Unknown tab_id: $tabId")
 
             val options = if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()
@@ -264,7 +269,12 @@ class BossTermMcpServer(
                 row++
             }
 
-            val payload = SearchOutputResult(matches = matches, truncated = truncated)
+            val payload = SearchOutputResult(
+                matches = matches,
+                truncated = truncated,
+                historyLinesCount = snapshot.historyLinesCount,
+                height = snapshot.height
+            )
             successJson(json.encodeToString(SearchOutputResult.serializer(), payload))
         }
     }
@@ -278,7 +288,10 @@ class BossTermMcpServer(
             name = "get_last_command",
             description = "Return the most recently completed shell command for a tab " +
                     "(as captured via OSC 133), or null if no command has finished yet. " +
-                    "Requires shell integration — see shell-integration.md.",
+                    "Requires shell integration — see shell-integration.md. " +
+                    "Note: `commandText` is currently always null; only `exitCode`, `startedAtMs`, " +
+                    "`finishedAtMs`, `durationMs`, and `cwd` are populated. Capturing the typed " +
+                    "command text reliably is a follow-up.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("tab_id") {
@@ -292,10 +305,12 @@ class BossTermMcpServer(
             val args = request.arguments
             val tabId = args.requireString("tab_id")
                 ?: return@addTool errorResult("Missing required argument: tab_id")
-            val tab = state.getTabById(tabId)
+            val tab = registry.findTab(tabId)
                 ?: return@addTool errorResult("Unknown tab_id: $tabId")
 
             val last = tab.lastCommand.value
+            // Literal JSON `null` when no command has completed yet (same pattern
+            // as get_active_tab).
             val text = if (last == null) {
                 "null"
             } else {
@@ -342,9 +357,11 @@ class BossTermMcpServer(
             val text = args.requireString("text")
                 ?: return@addTool errorResult("Missing required argument: text")
 
+            val state = registry.findState(tabId)
+                ?: return@addTool errorResult("Unknown tab_id: $tabId")
             val sent = state.write(text, tabId)
             if (!sent) {
-                return@addTool errorResult("Unknown tab_id: $tabId")
+                return@addTool errorResult("Failed to write to tab_id: $tabId")
             }
             successJson(json.encodeToString(OkResult.serializer(), OkResult(ok = true)))
         }
@@ -379,6 +396,9 @@ class BossTermMcpServer(
             val signal = args.requireString("signal")
                 ?: return@addTool errorResult("Missing required argument: signal")
 
+            val state = registry.findState(tabId)
+                ?: return@addTool errorResult("Unknown tab_id: $tabId")
+
             val delivered = when (signal.lowercase()) {
                 "ctrl_c" -> state.sendCtrlC(tabId)
                 "ctrl_d" -> state.sendInput(byteArrayOf(0x04), tabId)
@@ -388,7 +408,7 @@ class BossTermMcpServer(
                 )
             }
             if (!delivered) {
-                return@addTool errorResult("Unknown tab_id: $tabId")
+                return@addTool errorResult("Failed to deliver signal to tab_id: $tabId")
             }
             successJson(json.encodeToString(OkResult.serializer(), OkResult(ok = true)))
         }
@@ -397,6 +417,13 @@ class BossTermMcpServer(
     // -----------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------
+
+    private fun McpTerminalRegistry.collectTabInfos(): List<TabInfo> {
+        return allTabs().map { tab ->
+            val owning = findState(tab.id)
+            tab.toTabInfo(owning?.activeTabId)
+        }
+    }
 
     private fun TerminalTab.toTabInfo(activeId: String?): TabInfo {
         return TabInfo(
@@ -435,7 +462,6 @@ class BossTermMcpServer(
         val el: JsonElement = this?.get(key) ?: return null
         if (el is JsonNull) return null
         val prim = el.jsonPrimitive
-        // For strings the SDK passes JsonPrimitive with isString=true; for raw values fall back to content.
         return prim.content
     }
 
@@ -489,7 +515,9 @@ class BossTermMcpServer(
     @Serializable
     data class SearchOutputResult(
         val matches: List<SearchMatch>,
-        val truncated: Boolean
+        val truncated: Boolean,
+        val historyLinesCount: Int,
+        val height: Int
     )
 
     @Serializable

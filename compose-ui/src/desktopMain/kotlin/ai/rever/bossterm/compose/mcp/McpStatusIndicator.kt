@@ -71,6 +71,7 @@ fun McpStatusIndicator(
     onHideRequest: () -> Unit = {},
     onAttachRequest: (McpAttachTarget) -> Unit = {},
     onShowSettings: () -> Unit = onClick,
+    onTurnOffRequest: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (!enabled) return
@@ -95,7 +96,8 @@ fun McpStatusIndicator(
         val items = buildIndicatorMenuItems(
             attached = attached,
             onAttachRequest = onAttachRequest,
-            onShowSettings = onShowSettings
+            onShowSettings = onShowSettings,
+            onTurnOffRequest = onTurnOffRequest
         )
         contextMenuController.showMenu(0f, 0f, items)
     }
@@ -155,15 +157,19 @@ fun McpStatusIndicator(
  *       Gemini CLI
  *     ✓ OpenCode
  *   MCP Settings…
+ *   ─────
+ *   Turn MCP off
  *
- * The "✓ " prefix marks CLIs already attached in this session. The
- * indicator can be hidden via the Settings panel toggle
- * ("Show Status Indicator in Tab Bar") — no longer in this menu.
+ * The "✓ " prefix marks CLIs already attached in this session.
+ * The indicator is only visible while MCP is on, so the toggle item is
+ * always "Turn MCP off"; the inverse direction is reachable via the
+ * Settings panel or the Tools menu.
  */
 private fun buildIndicatorMenuItems(
     attached: Set<McpAttachTarget>,
     onAttachRequest: (McpAttachTarget) -> Unit,
-    onShowSettings: () -> Unit
+    onShowSettings: () -> Unit,
+    onTurnOffRequest: () -> Unit
 ): List<ContextMenuController.MenuElement> {
     val attachSubmenuItems: List<ContextMenuController.MenuElement> =
         McpAttachTarget.entries.map { target ->
@@ -186,7 +192,14 @@ private fun buildIndicatorMenuItems(
         enabled = true,
         action = onShowSettings
     )
-    return listOf(attachSubmenu, settings)
+    val separator = ContextMenuController.MenuSeparator(id = "mcp_indicator_sep")
+    val turnOff = ContextMenuController.MenuItem(
+        id = "mcp_turn_off",
+        label = "Turn MCP off",
+        enabled = true,
+        action = onTurnOffRequest
+    )
+    return listOf(attachSubmenu, settings, separator, turnOff)
 }
 
 /**

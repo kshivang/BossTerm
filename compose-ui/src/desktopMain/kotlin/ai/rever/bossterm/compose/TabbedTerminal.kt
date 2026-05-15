@@ -1125,7 +1125,12 @@ fun TabbedTerminal(
                                 copy(mcpShowStatusIndicator = false)
                             }
                         },
-                        onAttachRequest = fireMcpAttach
+                        onAttachRequest = fireMcpAttach,
+                        onTurnOffRequest = {
+                            SettingsManager.instance.updateSetting {
+                                copy(mcpEnabled = false)
+                            }
+                        }
                     )
                 }
                 attachStatus?.let { status ->

@@ -10,11 +10,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -22,6 +25,25 @@ import androidx.compose.ui.unit.sp
 private val McpOnColor = Color(0xFF4CAF50) // green
 private val McpOnGlow = Color(0x33_4C_AF_50) // 20% green halo
 private val McpLabelColor = Color(0xFFCFEFD4)
+private val McpToastBg = Color(0xCC_1E_1E_1E)
+private val McpToastTextColor = Color(0xFFE0E0E0)
+private val McpToastSuccessColor = Color(0xFF4CAF50)
+private val McpToastWarnColor = Color(0xFFFFC107)
+
+/**
+ * Lifecycle state of a one-click attach attempt, used by [AttachToast] to
+ * surface progress and result inline in the window (cross-platform, unlike
+ * [ai.rever.bossterm.compose.notification.NotificationService] which is
+ * macOS-only).
+ */
+sealed class AttachStatus {
+    abstract val target: McpAttachTarget
+
+    data class Pending(override val target: McpAttachTarget) : AttachStatus()
+    data class Done(val result: McpAttachResult) : AttachStatus() {
+        override val target: McpAttachTarget get() = result.target
+    }
+}
 
 /**
  * Small clickable "MCP on" pill in the top-right overlay layer. The green
@@ -81,5 +103,46 @@ fun McpStatusIndicator(
                 fontSize = 11.sp
             )
         }
+    }
+}
+
+/**
+ * Small inline pill rendered next to the [McpStatusIndicator] while an
+ * attach attempt is in flight or has just completed. Cross-platform — the
+ * `NotificationService` system-notification path only fires on macOS, but
+ * this toast works everywhere because it lives in the Compose tree.
+ *
+ * The hosting composable is responsible for clearing the status after a
+ * delay; this composable just renders whatever's passed in.
+ */
+@Composable
+fun AttachToast(
+    status: AttachStatus,
+    modifier: Modifier = Modifier
+) {
+    val (text, color) = when (status) {
+        is AttachStatus.Pending ->
+            "Attaching ${status.target.displayName}…" to McpToastTextColor
+        is AttachStatus.Done -> when (val r = status.result) {
+            is McpAttachResult.Success -> {
+                val tail = if (r.detail.isNotEmpty()) " — ${r.detail.take(80)}" else ""
+                "✓ ${r.target.displayName} attached$tail" to McpToastSuccessColor
+            }
+            is McpAttachResult.CopiedToClipboard ->
+                "${r.target.displayName}: ${r.reason}" to McpToastWarnColor
+        }
+    }
+    Box(
+        modifier = modifier
+            .widthIn(max = 360.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(McpToastBg)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+    ) {
+        Text(
+            text = text,
+            color = color,
+            fontSize = 11.sp
+        )
     }
 }

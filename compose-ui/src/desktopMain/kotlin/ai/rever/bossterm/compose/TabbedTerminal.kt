@@ -1024,14 +1024,29 @@ fun TabbedTerminal(
         // not just when the user toggled mcpEnabled. The dot reflects reality.
         val mcpRunningPort by ai.rever.bossterm.compose.mcp.McpTerminalRegistry
             .runningPort.collectAsState()
+        // Hoisted state so an in-flight attach survives a brief unmount of
+        // the indicator (e.g. settings toggling mcpShowStatusIndicator off).
+        val mcpScope = rememberCoroutineScope()
+        var attachStatus by remember {
+            mutableStateOf<ai.rever.bossterm.compose.mcp.AttachStatus?>(null)
+        }
+        // Auto-dismiss the toast a few seconds after completion.
+        LaunchedEffect(attachStatus) {
+            val s = attachStatus
+            if (s is ai.rever.bossterm.compose.mcp.AttachStatus.Done) {
+                kotlinx.coroutines.delay(5000)
+                if (attachStatus === s) attachStatus = null
+            }
+        }
         if (mcpRunningPort != null && settings.mcpShowStatusIndicator) {
-            val mcpScope = rememberCoroutineScope()
             val mcpServerName = ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig
                 .current?.serverName ?: "bossterm"
-            Box(
+            Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(top = 4.dp, end = 8.dp)
+                    .padding(top = 4.dp, end = 8.dp),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 ai.rever.bossterm.compose.mcp.McpStatusIndicator(
                     enabled = true,
@@ -1043,20 +1058,17 @@ fun TabbedTerminal(
                     },
                     onAttachRequest = { target ->
                         val port = mcpRunningPort ?: return@McpStatusIndicator
+                        attachStatus = ai.rever.bossterm.compose.mcp.AttachStatus.Pending(target)
                         mcpScope.launch {
                             val result = ai.rever.bossterm.compose.mcp
                                 .McpCliAttacher.attach(target, mcpServerName, port)
-                            val (title, message) = when (result) {
-                                is ai.rever.bossterm.compose.mcp.McpAttachResult.Success ->
-                                    "MCP attached" to "${result.target.displayName}: ${result.detail.ifEmpty { "ok" }}"
-                                is ai.rever.bossterm.compose.mcp.McpAttachResult.CopiedToClipboard ->
-                                    "MCP attach: clipboard" to "${result.target.displayName}: ${result.reason}"
-                            }
-                            ai.rever.bossterm.compose.notification.NotificationService
-                                .showNotification(title = title, message = message, withSound = false)
+                            attachStatus = ai.rever.bossterm.compose.mcp.AttachStatus.Done(result)
                         }
                     }
                 )
+                attachStatus?.let { status ->
+                    ai.rever.bossterm.compose.mcp.AttachToast(status = status)
+                }
             }
         }
     }

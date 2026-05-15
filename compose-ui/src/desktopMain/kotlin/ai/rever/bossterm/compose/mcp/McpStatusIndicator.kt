@@ -2,11 +2,15 @@ package ai.rever.bossterm.compose.mcp
 
 import androidx.compose.foundation.ContextMenuArea
 import androidx.compose.foundation.ContextMenuItem
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.TooltipArea
+import androidx.compose.foundation.TooltipPlacement
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -20,6 +24,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -53,6 +59,7 @@ sealed class AttachStatus {
  * Settings dialog at the MCP category so users can inspect the endpoint
  * or turn it off.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun McpStatusIndicator(
     enabled: Boolean,
@@ -69,6 +76,7 @@ fun McpStatusIndicator(
     // The host wires onAttachRequest to McpCliAttacher and onHideRequest to
     // flip mcpShowStatusIndicator.
     val attached = McpTerminalRegistry.attachedTargets.collectAsState().value
+    val runningPort = McpTerminalRegistry.runningPort.collectAsState().value
     ContextMenuArea(
         items = {
             McpAttachTarget.entries.map { target ->
@@ -77,35 +85,97 @@ fun McpStatusIndicator(
             } + ContextMenuItem("Hide MCP Indicator") { onHideRequest() }
         }
     ) {
-        Row(
-            modifier = modifier
-                .clickable(onClick = onClick)
-                .padding(horizontal = 6.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        TooltipArea(
+            tooltip = { McpStatusTooltip(runningPort = runningPort, attached = attached) },
+            delayMillis = 350,
+            tooltipPlacement = TooltipPlacement.CursorPoint(
+                offset = DpOffset(0.dp, 16.dp)
+            )
         ) {
-            Box(
-                modifier = Modifier.size(16.dp),
-                contentAlignment = Alignment.Center
+            Row(
+                modifier = modifier
+                    .clickable(onClick = onClick)
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // Soft halo for a "live" look without being distracting.
                 Box(
-                    modifier = Modifier
-                        .size(16.dp)
-                        .background(McpOnGlow, CircleShape)
-                )
-                Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .background(McpOnColor, CircleShape)
-                        .border(1.dp, Color(0xFF388E3C), CircleShape)
+                    modifier = Modifier.size(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // Soft halo for a "live" look without being distracting.
+                    Box(
+                        modifier = Modifier
+                            .size(16.dp)
+                            .background(McpOnGlow, CircleShape)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .background(McpOnColor, CircleShape)
+                            .border(1.dp, Color(0xFF388E3C), CircleShape)
+                    )
+                }
+                Text(
+                    text = "MCP on",
+                    color = McpLabelColor,
+                    fontSize = 11.sp
                 )
             }
+        }
+    }
+}
+
+/**
+ * Hover tooltip body for [McpStatusIndicator]. Surfaces the bound endpoint
+ * URL and the list of CLIs that this session has attached so far. Always
+ * shown via [TooltipArea]; rendered as a small dark rounded card.
+ */
+@Composable
+private fun McpStatusTooltip(
+    runningPort: Int?,
+    attached: Set<McpAttachTarget>
+) {
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(McpToastBg)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+            .widthIn(max = 380.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            text = "MCP server running",
+            color = McpToastSuccessColor,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        if (runningPort != null) {
             Text(
-                text = "MCP on",
-                color = McpLabelColor,
+                text = "Endpoint: http://127.0.0.1:$runningPort/mcp",
+                color = McpToastTextColor,
                 fontSize = 11.sp
             )
+        }
+        if (attached.isEmpty()) {
+            Text(
+                text = "No CLIs attached yet — right-click to attach.",
+                color = McpToastTextColor,
+                fontSize = 11.sp
+            )
+        } else {
+            Text(
+                text = "Attached this session:",
+                color = McpToastTextColor,
+                fontSize = 11.sp
+            )
+            McpAttachTarget.entries.filter { it in attached }.forEach { target ->
+                Text(
+                    text = "  ✓ ${target.displayName}",
+                    color = McpToastSuccessColor,
+                    fontSize = 11.sp
+                )
+            }
         }
     }
 }

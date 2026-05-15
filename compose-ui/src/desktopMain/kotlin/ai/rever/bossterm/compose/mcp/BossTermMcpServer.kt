@@ -19,6 +19,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.intOrNull
@@ -67,7 +68,12 @@ class BossTermMcpServer(
     private val json: Json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
-        explicitNulls = true
+        // Omit null-valued fields from the wire format. Saves 7–12 bytes per
+        // null per record. The one place we intentionally emit a literal JSON
+        // `null` is get_active_tab's "no active tab" case, which is hand-built
+        // (`if (info == null) "null" else …`), not via a serializer — so this
+        // flip doesn't affect it.
+        explicitNulls = false
     }
 
     /** Returns the built-in tool name with the embedder's configured prefix applied. */
@@ -323,7 +329,27 @@ class BossTermMcpServer(
             }
 
             val payload = ReadScrollbackResult(lines = lines, totalAvailable = totalAvailable)
-            successJson(json.encodeToString(ReadScrollbackResult.serializer(), payload))
+            val full = json.encodeToString(ReadScrollbackResult.serializer(), payload)
+            // Progressive fallbacks. Most callers want recent context, so the
+            // first fallback keeps the tail; the final form gives the agent
+            // enough to refine the next call (smaller `lines`).
+            val fallbacks = listOf<() -> String>(
+                {
+                    val tail = lines.takeLast(20)
+                    buildJsonObject {
+                        put("lines", buildJsonArray { for (l in tail) add(JsonPrimitive(l)) })
+                        put("totalAvailable", totalAvailable)
+                        put("shortened", "tail: last ${tail.size} of ${lines.size} requested lines")
+                    }.toString()
+                },
+                {
+                    buildJsonObject {
+                        put("totalAvailable", totalAvailable)
+                        put("shortened", "totals only; retry with a smaller `lines` value")
+                    }.toString()
+                }
+            )
+            successJson(shorten(full, fallbacks))
         }
     }
 
@@ -434,7 +460,58 @@ class BossTermMcpServer(
                 historyLinesCount = snapshot.historyLinesCount,
                 height = snapshot.height
             )
-            successJson(json.encodeToString(SearchOutputResult.serializer(), payload))
+            val full = json.encodeToString(SearchOutputResult.serializer(), payload)
+            // Progressive fallbacks (in decreasing detail) for when `full`
+            // blows past mcpMaxAnswerChars. Each factory returns valid JSON.
+            //
+            //   1. drop SearchMatch.line text (positions only) — usually
+            //      cuts the response by 60–80%.
+            //   2. per-row hit counts — `{rowCounts: {row: n}, totalMatches}`.
+            //   3. just the totals.
+            val fallbacks = listOf<() -> String>(
+                {
+                    val positions = buildJsonArray {
+                        for (m in matches) add(
+                            buildJsonObject {
+                                put("row", m.row)
+                                put("matchStart", m.matchStart)
+                                put("matchEnd", m.matchEnd)
+                            }
+                        )
+                    }
+                    buildJsonObject {
+                        put("matches", positions)
+                        put("truncated", truncated)
+                        put("historyLinesCount", snapshot.historyLinesCount)
+                        put("height", snapshot.height)
+                        put("shortened", "matches: positions only (no line text)")
+                    }.toString()
+                },
+                {
+                    val counts = buildJsonObject {
+                        val perRow = matches.groupingBy { it.row }.eachCount()
+                        for ((r, n) in perRow) put(r.toString(), n)
+                    }
+                    buildJsonObject {
+                        put("rowCounts", counts)
+                        put("totalMatches", matches.size)
+                        put("truncated", truncated)
+                        put("historyLinesCount", snapshot.historyLinesCount)
+                        put("height", snapshot.height)
+                        put("shortened", "rowCounts: hit counts per row")
+                    }.toString()
+                },
+                {
+                    buildJsonObject {
+                        put("totalMatches", matches.size)
+                        put("truncated", truncated)
+                        put("historyLinesCount", snapshot.historyLinesCount)
+                        put("height", snapshot.height)
+                        put("shortened", "totals only")
+                    }.toString()
+                }
+            )
+            successJson(shorten(full, fallbacks))
         }
     }
 
@@ -813,7 +890,36 @@ class BossTermMcpServer(
             )
 
             val payload = ReadDebugConsoleResult(chunks = resultChunks, stats = statsDto)
-            successJson(json.encodeToString(ReadDebugConsoleResult.serializer(), payload))
+            val full = json.encodeToString(ReadDebugConsoleResult.serializer(), payload)
+            // Fallbacks for the bytes-dominate case. `data` is the bulk of any
+            // ReadDebugConsoleResult; dropping it preserves the chunk indexing
+            // info the agent uses to poll and refine.
+            val fallbacks = listOf<() -> String>(
+                {
+                    val metadataChunks = buildJsonArray {
+                        for (c in resultChunks) add(
+                            buildJsonObject {
+                                put("index", c.index)
+                                put("timestamp", c.timestamp)
+                                put("source", c.source)
+                            }
+                        )
+                    }
+                    buildJsonObject {
+                        put("chunks", metadataChunks)
+                        put("stats", json.encodeToJsonElement(DebugConsoleStats.serializer(), statsDto))
+                        put("shortened", "chunks: metadata only (data omitted)")
+                    }.toString()
+                },
+                {
+                    buildJsonObject {
+                        put("stats", json.encodeToJsonElement(DebugConsoleStats.serializer(), statsDto))
+                        put("chunksReturned", resultChunks.size)
+                        put("shortened", "stats only; retry with a smaller `max_chunks` or narrower `sources`")
+                    }.toString()
+                }
+            )
+            successJson(shorten(full, fallbacks))
         }
     }
 
@@ -938,6 +1044,36 @@ class BossTermMcpServer(
             isError = true,
             structuredContent = null,
             meta = null
+        )
+    }
+
+    /**
+     * Progressive shortening for responses that can grow unboundedly.
+     * Mirrors Serena's `_limit_length` pattern (tools_base.py:267-297).
+     *
+     * If [full] fits under the configured `mcpMaxAnswerChars`, it's returned.
+     * Otherwise [fallbacks] are tried in order — each is a factory producing
+     * a progressively smaller (but still well-formed JSON) summary; the first
+     * one that fits wins. If nothing fits, returns a JSON error suggesting
+     * the caller refine the query.
+     *
+     * Each fallback factory MUST return valid JSON the client can parse —
+     * never a truncated prefix of [full]. The goal is "smaller well-formed
+     * answer the agent can reason about", not "truncated blob".
+     */
+    private fun shorten(
+        full: String,
+        fallbacks: List<() -> String>
+    ): String {
+        val cap = settingsManager.settings.value.mcpMaxAnswerChars
+        if (cap <= 0 || full.length <= cap) return full
+        for (factory in fallbacks) {
+            val short = factory()
+            if (short.length <= cap) return short
+        }
+        return json.encodeToString(
+            ErrorResult.serializer(),
+            ErrorResult(error = "Response too large (>$cap chars) and no fallback fit; refine the query.")
         )
     }
 

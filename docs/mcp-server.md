@@ -326,6 +326,7 @@ and are persisted to `~/.bossterm/settings.json`.
 | `mcpDefaultSplitRatio`    | `Float`             | `0.3`       | Default new-pane size for `run_in_panel` splits when `split_ratio` is omitted. Range `0.05..0.95`.     |
 | `mcpAttachedTo`           | `Set<String>`       | `{}`        | Stable `persistenceKey`s (e.g. `"CLAUDE_CODE"`) of attached AI CLIs. Used for silent re-attach.        |
 | `disabledMcpTools`        | `Set<String>`       | `{}`        | Unprefixed built-in tool names hidden from clients. Edited via the UI or `manage_tools`.               |
+| `mcpMaxAnswerChars`       | `Int`               | `150_000`   | Soft ceiling on tool response size. When exceeded, the tool returns a progressively smaller summary instead of the full payload — see [Response shortening](#response-shortening). Advanced; no UI control. |
 | `mcpConfigured`           | `Boolean`           | `false`     | Internal first-launch marker. Once `true`, embedder defaults no longer override the user's choice.     |
 
 ## Embedder integration
@@ -527,6 +528,42 @@ A short-circuit in `BossTermMcpServer.applyDisabledSet(...)` performs the
 add/remove against the SDK's live `Server` under an internal lock, so
 concurrent toggles from the UI and a `manage_tools` call don't corrupt the
 tool registry.
+
+## Response shortening
+
+Three built-in tools can return unbounded responses — `search_output`,
+`read_scrollback`, and `read_debug_console` — so each runs its full payload
+through a per-tool fallback ladder. If the full JSON would exceed
+`settings.mcpMaxAnswerChars` (default `150_000`), the server returns a
+progressively smaller well-formed JSON instead. The agent never sees a
+truncated mid-response blob; it sees a smaller object with a `"shortened"`
+key explaining what was dropped, and refines the next call accordingly.
+
+Each shortened response includes a `"shortened"` string describing the
+projection so clients can detect they're looking at a summary. Common
+shortened shapes:
+
+`search_output`
+- **positions only** — `matches` keeps `row`, `matchStart`, `matchEnd`; the
+  matched line text is dropped. Usually 60–80% smaller than full.
+- **row counts** — `{rowCounts: {row: hits}, totalMatches}` instead of per-match
+  records.
+- **totals only** — `{totalMatches, truncated, historyLinesCount, height}`.
+
+`read_scrollback`
+- **tail** — keeps the last 20 lines and reports the requested count.
+- **totals only** — `{totalAvailable}` with a "retry with smaller `lines`"
+  hint.
+
+`read_debug_console`
+- **metadata only** — chunks keep `index`, `timestamp`, `source`; the `data`
+  byte payload is dropped. Great for polling "any new chunks since N".
+- **stats only** — drops the chunks list entirely; agent narrows by
+  `since_index`, `sources`, or `max_chunks` on the next call.
+
+Reduce `mcpMaxAnswerChars` (e.g. to `50_000`) if you want the fallbacks to
+trigger more aggressively in agent loops. Raise it (or set to `0` to
+disable) if you have a custom client that handles large payloads natively.
 
 ## Troubleshooting
 

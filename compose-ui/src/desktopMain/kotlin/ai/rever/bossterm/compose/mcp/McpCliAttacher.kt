@@ -86,9 +86,21 @@ enum class McpAttachTarget(
     CLAUDE_CODE(
         displayName = "Claude Code",
         persistenceKey = "CLAUDE_CODE",
+        // `--scope user` is critical: without it, `claude mcp add` writes
+        // to the LOCAL (project-cwd) scope, so the entry only works when
+        // Claude Code is launched from the BossTerm directory. With user
+        // scope the entry lives in ~/.claude.json's userScope block and
+        // applies in every project. `claude mcp remove` without --scope
+        // finds the entry regardless of where it lives, so this also
+        // cleans up legacy local-scope entries from before this fix.
         removeCommand = listOf("claude", "mcp", "remove", "{NAME}"),
-        addCommand = listOf("claude", "mcp", "add", "--transport", "sse", "{NAME}", "{URL}"),
-        clipboardFallback = "claude mcp add --transport sse {NAME} {URL}"
+        addCommand = listOf(
+            "claude", "mcp", "add",
+            "--scope", "user",
+            "--transport", "sse",
+            "{NAME}", "{URL}"
+        ),
+        clipboardFallback = "claude mcp add --scope user --transport sse {NAME} {URL}"
     ),
     CODEX(
         displayName = "Codex",

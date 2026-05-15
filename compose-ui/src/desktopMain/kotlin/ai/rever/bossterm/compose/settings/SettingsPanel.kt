@@ -41,9 +41,13 @@ fun SettingsPanel(
     onSettingsSave: (() -> Unit)? = null,
     onResetToDefaults: () -> Unit,
     onRestartApp: (() -> Unit)? = null,
+    /** Initial category. Null falls back to [SettingsCategory.default]. */
+    initialCategory: SettingsCategory? = null,
     modifier: Modifier = Modifier
 ) {
-    var selectedCategory by remember { mutableStateOf(SettingsCategory.default) }
+    var selectedCategory by remember(initialCategory) {
+        mutableStateOf(initialCategory ?: SettingsCategory.default)
+    }
     var showResetConfirmation by remember { mutableStateOf(false) }
 
     Row(

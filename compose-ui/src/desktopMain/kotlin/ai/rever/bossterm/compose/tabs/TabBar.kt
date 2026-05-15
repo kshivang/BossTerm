@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.tabs
 
 import ai.rever.bossterm.compose.features.ContextMenuController
+import ai.rever.bossterm.compose.mcp.McpStatusIndicator
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -42,6 +43,8 @@ fun TabBar(
     onTabClosed: (Int) -> Unit,
     onNewTab: () -> Unit,
     onTabMoveToNewWindow: (Int) -> Unit = {},
+    mcpEnabled: Boolean = false,
+    onMcpIndicatorClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     // Context menu controller for tab right-click menu
@@ -116,6 +119,13 @@ fun TabBar(
                     tint = Color.White
                 )
             }
+
+            // MCP server status — small green dot when the in-process MCP
+            // server is bound. Click opens Settings at the MCP category.
+            McpStatusIndicator(
+                enabled = mcpEnabled,
+                onClick = onMcpIndicatorClick
+            )
         }
     }
 }

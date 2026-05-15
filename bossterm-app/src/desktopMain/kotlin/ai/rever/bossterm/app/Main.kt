@@ -103,6 +103,11 @@ fun main() {
                 val windowState = rememberWindowState()
                 // Settings dialog state (declared before Window for onPreviewKeyEvent access)
                 var showSettingsDialog by remember { mutableStateOf(false) }
+                // Optional initial category — set by deep links (e.g. MCP status indicator).
+                // Cleared on dismiss so the next open falls back to the default category.
+                var initialSettingsCategory by remember {
+                    mutableStateOf<ai.rever.bossterm.compose.settings.SettingsCategory?>(null)
+                }
                 // CLI install dialog state
                 var showCLIInstallDialog by remember { mutableStateOf(false) }
                 var isFirstRun by remember { mutableStateOf(false) }
@@ -715,6 +720,11 @@ fun main() {
                                         WindowManager.createWindow()
                                     },
                                     onShowSettings = { showSettingsDialog = true },
+                                    onShowMcpSettings = {
+                                        initialSettingsCategory =
+                                            ai.rever.bossterm.compose.settings.SettingsCategory.MCP
+                                        showSettingsDialog = true
+                                    },
                                     onShowWelcomeWizard = { showOnboardingWizard = true },
                                     menuActions = window.menuActions,
                                     isWindowFocused = { window.isWindowFocused.value },
@@ -744,13 +754,18 @@ fun main() {
                     // Settings dialog
                     SettingsWindow(
                         visible = showSettingsDialog,
-                        onDismiss = { showSettingsDialog = false },
+                        onDismiss = {
+                            showSettingsDialog = false
+                            initialSettingsCategory = null
+                        },
                         onRestartApp = {
                             // Close this window and create a new one with updated settings
                             showSettingsDialog = false
+                            initialSettingsCategory = null
                             WindowManager.closeWindow(window.id)
                             WindowManager.createWindow()
-                        }
+                        },
+                        initialCategory = initialSettingsCategory
                     )
 
                     // CLI install dialog

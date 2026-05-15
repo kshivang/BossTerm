@@ -142,6 +142,7 @@ fun TabbedTerminal(
     onWindowTitleChange: (String) -> Unit = {},
     onNewWindow: () -> Unit = {},
     onShowSettings: () -> Unit = {},
+    onShowMcpSettings: () -> Unit = onShowSettings,
     onShowWelcomeWizard: (() -> Unit)? = null,
     menuActions: MenuActions? = null,
     isWindowFocused: () -> Boolean = { true },
@@ -698,8 +699,9 @@ fun TabbedTerminal(
     // Tab UI layout with focus overlay support
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Tab bar at top (show when multiple tabs or alwaysShowTabBar setting is enabled)
-            if (tabController.tabs.size > 1 || settings.alwaysShowTabBar) {
+            // Tab bar at top (show when multiple tabs, alwaysShowTabBar is set,
+            // or the MCP server is on — the bar hosts the MCP status indicator).
+            if (tabController.tabs.size > 1 || settings.alwaysShowTabBar || settings.mcpEnabled) {
             TabBar(
                 tabs = tabController.tabs,
                 activeTabIndex = tabController.activeTabIndex,
@@ -719,7 +721,9 @@ fun TabbedTerminal(
                     val extractedTab = tabController.extractTab(index) ?: return@TabBar
                     // Create new window and transfer both tab and split state
                     WindowManager.createWindowWithTab(extractedTab, splitState)
-                }
+                },
+                mcpEnabled = settings.mcpEnabled,
+                onMcpIndicatorClick = onShowMcpSettings
             )
         }
 

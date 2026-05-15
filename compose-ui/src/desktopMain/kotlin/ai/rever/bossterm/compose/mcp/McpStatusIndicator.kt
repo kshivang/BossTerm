@@ -95,8 +95,7 @@ fun McpStatusIndicator(
         val items = buildIndicatorMenuItems(
             attached = attached,
             onAttachRequest = onAttachRequest,
-            onShowSettings = onShowSettings,
-            onHideRequest = onHideRequest
+            onShowSettings = onShowSettings
         )
         contextMenuController.showMenu(0f, 0f, items)
     }
@@ -156,16 +155,15 @@ fun McpStatusIndicator(
  *       Gemini CLI
  *     ✓ OpenCode
  *   MCP Settings…
- *   ─────
- *   Hide MCP Indicator
  *
- * The "✓ " prefix marks CLIs already attached in this session.
+ * The "✓ " prefix marks CLIs already attached in this session. The
+ * indicator can be hidden via the Settings panel toggle
+ * ("Show Status Indicator in Tab Bar") — no longer in this menu.
  */
 private fun buildIndicatorMenuItems(
     attached: Set<McpAttachTarget>,
     onAttachRequest: (McpAttachTarget) -> Unit,
-    onShowSettings: () -> Unit,
-    onHideRequest: () -> Unit
+    onShowSettings: () -> Unit
 ): List<ContextMenuController.MenuElement> {
     val attachSubmenuItems: List<ContextMenuController.MenuElement> =
         McpAttachTarget.entries.map { target ->
@@ -188,14 +186,7 @@ private fun buildIndicatorMenuItems(
         enabled = true,
         action = onShowSettings
     )
-    val separator = ContextMenuController.MenuSeparator(id = "mcp_indicator_sep")
-    val hide = ContextMenuController.MenuItem(
-        id = "mcp_hide_indicator",
-        label = "Hide MCP Indicator",
-        enabled = true,
-        action = onHideRequest
-    )
-    return listOf(attachSubmenu, settings, separator, hide)
+    return listOf(attachSubmenu, settings)
 }
 
 /**

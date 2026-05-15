@@ -160,8 +160,10 @@ class BossTermMcpServer(
     private fun registerReadScrollback(server: Server) {
         server.addTool(
             name = toolName("read_scrollback"),
-            description = "Read the last N lines from a tab's terminal buffer (history + visible " +
-                    "screen) as plain UTF-8 text. Trailing whitespace per line is stripped.",
+            description = "Read the last N lines from a tab/pane's terminal buffer " +
+                    "(history + visible screen) as plain UTF-8 text. Trailing whitespace per " +
+                    "line is stripped. When `pane_id` is supplied, reads the specific split " +
+                    "pane (returned by run_in_panel); otherwise reads the focused pane.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("tab_id") {
@@ -172,6 +174,11 @@ class BossTermMcpServer(
                         put("type", "integer")
                         put("description", "Maximum number of lines to return from the end. Default 200.")
                         put("minimum", 1)
+                    }
+                    putJsonObject("pane_id") {
+                        put("type", "string")
+                        put("description", "Optional specific pane within the tab " +
+                                "(returned by run_in_panel). Omit to read the focused pane.")
                     }
                 },
                 required = listOf("tab_id")
@@ -184,10 +191,16 @@ class BossTermMcpServer(
             if (requested < 1) {
                 return@addTool errorResult("'lines' must be >= 1 (got $requested)")
             }
-            val tab = registry.findTab(tabId)
+            val paneId = args.requireString("pane_id")
+            val state = registry.findState(tabId)
                 ?: return@addTool errorResult("Unknown tab_id: $tabId")
+            val session = state.findSession(tabId, paneId)
+                ?: return@addTool errorResult(
+                    if (paneId != null) "Unknown pane_id '$paneId' in tab '$tabId'"
+                    else "No session for tab_id: $tabId"
+                )
 
-            val snapshot = tab.textBuffer.createSnapshot()
+            val snapshot = session.textBuffer.createSnapshot()
             val totalAvailable = snapshot.historyLinesCount + snapshot.height
             val take = minOf(requested, totalAvailable)
 
@@ -215,11 +228,12 @@ class BossTermMcpServer(
     private fun registerSearchOutput(server: Server) {
         server.addTool(
             name = toolName("search_output"),
-            description = "Regex-search the entire scrollback (history + screen) of a tab. " +
+            description = "Regex-search the entire scrollback (history + screen) of a tab/pane. " +
                     "Returns matching rows with positional info. Row numbers follow buffer " +
                     "convention: negative for history (oldest = -historyLinesCount), 0..height-1 " +
                     "for screen. The response also includes historyLinesCount and height so " +
-                    "clients can convert to 1-based line numbers if desired.",
+                    "clients can convert to 1-based line numbers if desired. When `pane_id` is " +
+                    "supplied, searches that specific split pane; otherwise the focused pane.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("tab_id") {
@@ -239,6 +253,11 @@ class BossTermMcpServer(
                         put("type", "boolean")
                         put("description", "If true, perform case-insensitive matching. Default false.")
                     }
+                    putJsonObject("pane_id") {
+                        put("type", "string")
+                        put("description", "Optional specific pane within the tab " +
+                                "(returned by run_in_panel). Omit to search the focused pane.")
+                    }
                 },
                 required = listOf("tab_id", "pattern")
             )
@@ -253,8 +272,14 @@ class BossTermMcpServer(
                 return@addTool errorResult("'max_matches' must be >= 1 (got $maxMatches)")
             }
             val ignoreCase = args.optionalBoolean("ignore_case") ?: false
-            val tab = registry.findTab(tabId)
+            val paneId = args.requireString("pane_id")
+            val state = registry.findState(tabId)
                 ?: return@addTool errorResult("Unknown tab_id: $tabId")
+            val session = state.findSession(tabId, paneId)
+                ?: return@addTool errorResult(
+                    if (paneId != null) "Unknown pane_id '$paneId' in tab '$tabId'"
+                    else "No session for tab_id: $tabId"
+                )
 
             val options = if (ignoreCase) setOf(RegexOption.IGNORE_CASE) else emptySet()
             val regex = try {
@@ -263,7 +288,7 @@ class BossTermMcpServer(
                 return@addTool errorResult("Invalid regex: ${e.message ?: e::class.simpleName}")
             }
 
-            val snapshot = tab.textBuffer.createSnapshot()
+            val snapshot = session.textBuffer.createSnapshot()
             val matches = ArrayList<SearchMatch>()
             var truncated = false
 
@@ -355,8 +380,10 @@ class BossTermMcpServer(
     private fun registerSendInput(server: Server) {
         server.addTool(
             name = toolName("send_input"),
-            description = "Write text to the tab's shell stdin. The caller is responsible for " +
-                    "appending a trailing '\\n' if they want a command to actually execute.",
+            description = "Write text to a tab's shell stdin. The caller is responsible for " +
+                    "appending a trailing '\\n' if they want a command to actually execute. " +
+                    "When `pane_id` is supplied (e.g. the value returned by run_in_panel), " +
+                    "writes go to that specific split; otherwise to the tab's primary session.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("tab_id") {
@@ -367,6 +394,11 @@ class BossTermMcpServer(
                         put("type", "string")
                         put("description", "Raw text to write. Include '\\n' to submit.")
                     }
+                    putJsonObject("pane_id") {
+                        put("type", "string")
+                        put("description", "Optional specific pane within the tab " +
+                                "(returned by run_in_panel). Omit to target the tab's primary session.")
+                    }
                 },
                 required = listOf("tab_id", "text")
             )
@@ -376,13 +408,16 @@ class BossTermMcpServer(
                 ?: return@addTool errorResult("Missing required argument: tab_id")
             val text = args.requireString("text")
                 ?: return@addTool errorResult("Missing required argument: text")
+            val paneId = args.requireString("pane_id")
 
             val state = registry.findState(tabId)
                 ?: return@addTool errorResult("Unknown tab_id: $tabId")
-            val sent = state.write(text, tabId)
-            if (!sent) {
-                return@addTool errorResult("Failed to write to tab_id: $tabId")
-            }
+            val session = state.findSession(tabId, paneId)
+                ?: return@addTool errorResult(
+                    if (paneId != null) "Unknown pane_id '$paneId' in tab '$tabId'"
+                    else "No session for tab_id: $tabId"
+                )
+            session.writeUserInput(text)
             successJson(json.encodeToString(OkResult.serializer(), OkResult(ok = true)))
         }
     }
@@ -394,8 +429,10 @@ class BossTermMcpServer(
     private fun registerSendSignal(server: Server) {
         server.addTool(
             name = toolName("send_signal"),
-            description = "Send a control signal to the tab's shell. Allowed signals: " +
-                    "'ctrl_c' (interrupt), 'ctrl_d' (EOF), 'ctrl_z' (suspend).",
+            description = "Send a control signal to a tab's shell. Allowed signals: " +
+                    "'ctrl_c' (interrupt), 'ctrl_d' (EOF), 'ctrl_z' (suspend). When `pane_id` " +
+                    "is supplied, the signal targets that specific split; otherwise the tab's " +
+                    "primary session.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("tab_id") {
@@ -406,6 +443,11 @@ class BossTermMcpServer(
                         put("type", "string")
                         put("description", "One of: ctrl_c, ctrl_d, ctrl_z.")
                     }
+                    putJsonObject("pane_id") {
+                        put("type", "string")
+                        put("description", "Optional specific pane within the tab " +
+                                "(returned by run_in_panel).")
+                    }
                 },
                 required = listOf("tab_id", "signal")
             )
@@ -415,21 +457,33 @@ class BossTermMcpServer(
                 ?: return@addTool errorResult("Missing required argument: tab_id")
             val signal = args.requireString("signal")
                 ?: return@addTool errorResult("Missing required argument: signal")
+            val paneId = args.requireString("pane_id")
 
             val state = registry.findState(tabId)
                 ?: return@addTool errorResult("Unknown tab_id: $tabId")
+            val session = state.findSession(tabId, paneId)
+                ?: return@addTool errorResult(
+                    if (paneId != null) "Unknown pane_id '$paneId' in tab '$tabId'"
+                    else "No session for tab_id: $tabId"
+                )
 
-            val delivered = when (signal.lowercase()) {
-                "ctrl_c" -> state.sendCtrlC(tabId)
-                "ctrl_d" -> state.sendInput(byteArrayOf(0x04), tabId)
-                "ctrl_z" -> state.sendInput(byteArrayOf(0x1A), tabId)
+            val bytes = when (signal.lowercase()) {
+                "ctrl_c" -> byteArrayOf(0x03)
+                "ctrl_d" -> byteArrayOf(0x04)
+                "ctrl_z" -> byteArrayOf(0x1A)
                 else -> return@addTool errorResult(
                     "Unknown signal: '$signal'. Expected one of: ctrl_c, ctrl_d, ctrl_z."
                 )
             }
-            if (!delivered) {
-                return@addTool errorResult("Failed to deliver signal to tab_id: $tabId")
-            }
+            // TerminalSession interface doesn't surface writeRawBytes; cast
+            // to the concrete TerminalTab implementation (the only one in
+            // tree — both primary tabs and split-created sessions are
+            // TerminalTab instances).
+            val tab = session as? TerminalTab
+                ?: return@addTool errorResult(
+                    "Session does not support raw byte writes (signal delivery requires TerminalTab)"
+                )
+            tab.writeRawBytes(bytes)
             successJson(json.encodeToString(OkResult.serializer(), OkResult(ok = true)))
         }
     }

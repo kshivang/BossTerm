@@ -740,6 +740,34 @@ class TabbedTerminalState {
      * @param tabId Target tab ID. If null, uses the active tab.
      * @return The focused session, or null if tab not found
      */
+    /**
+     * Locate a [TerminalSession] within a tab by its session/pane id.
+     *
+     * @param tabId The tab to search in.
+     * @param paneId Specific pane to find. When non-null, searches the
+     *   tab's split tree for a pane whose `session.id` equals this value.
+     *   When null, returns the tab's focused pane (if it's split) or the
+     *   tab's primary session (if it's not).
+     * @return The matching session, or null if `tabId` is unknown or
+     *   `paneId` was provided but not found within that tab.
+     *
+     * Use this when an MCP / external caller has a pane id from
+     * `run_in_panel` and wants to address that specific pane in a
+     * follow-up tool call (send_input, read_scrollback, etc).
+     */
+    fun findSession(tabId: String, paneId: String? = null): TerminalSession? {
+        val tab = getTabById(tabId) ?: return null
+        val splitState = splitStates[tabId]
+        if (paneId == null) {
+            return splitState?.getFocusedSession() ?: tab
+        }
+        if (splitState != null) {
+            return splitState.getAllPanes().firstOrNull { it.session.id == paneId }?.session
+        }
+        // Single-pane tab: paneId only matches if it's the tab's own session id.
+        return if (tab.id == paneId) tab else null
+    }
+
     fun getFocusedSplitSession(tabId: String? = null): TerminalSession? {
         val resolvedTabId = resolveTabId(tabId) ?: return null
         val splitState = splitStates[resolvedTabId] ?: return null

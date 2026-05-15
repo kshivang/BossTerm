@@ -110,7 +110,7 @@ class BossTermMcpManager(
 
         watcherJob = parentScope.launch {
             settingsManager.settings
-                .map { McpConfig(enabled = it.mcpEnabled, port = it.mcpPort) }
+                .map { McpRuntimeConfig(enabled = it.mcpEnabled, port = it.mcpPort) }
                 .distinctUntilChanged()
                 .collect { desired -> reconcile(desired) }
         }
@@ -130,7 +130,7 @@ class BossTermMcpManager(
         }
     }
 
-    private suspend fun reconcile(desired: McpConfig) {
+    private suspend fun reconcile(desired: McpRuntimeConfig) {
         mutex.withLock {
             val currentPort = runningPort
             val currentlyRunning = runningEngine != null
@@ -222,7 +222,7 @@ class BossTermMcpManager(
         }
     }
 
-    private data class McpConfig(val enabled: Boolean, val port: Int)
+    private data class McpRuntimeConfig(val enabled: Boolean, val port: Int)
 
     private companion object {
         private const val HOST = "127.0.0.1"

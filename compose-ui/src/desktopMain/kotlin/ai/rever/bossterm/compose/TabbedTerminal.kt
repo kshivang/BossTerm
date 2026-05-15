@@ -1026,6 +1026,8 @@ fun TabbedTerminal(
             .runningPort.collectAsState()
         if (mcpRunningPort != null && settings.mcpShowStatusIndicator) {
             val mcpScope = rememberCoroutineScope()
+            val mcpServerName = ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig
+                .current?.serverName ?: "bossterm"
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -1040,14 +1042,10 @@ fun TabbedTerminal(
                         }
                     },
                     onAttachRequest = { target ->
-                        // Same shell-out + clipboard fallback path the
-                        // Settings panel's buttons use. Surface result via
-                        // a system notification so the user gets feedback
-                        // even though they're not looking at Settings.
                         val port = mcpRunningPort ?: return@McpStatusIndicator
                         mcpScope.launch {
                             val result = ai.rever.bossterm.compose.mcp
-                                .McpCliAttacher.attach(target, port)
+                                .McpCliAttacher.attach(target, mcpServerName, port)
                             val (title, message) = when (result) {
                                 is ai.rever.bossterm.compose.mcp.McpAttachResult.Success ->
                                     "MCP attached" to "${result.target.displayName}: ${result.detail.ifEmpty { "ok" }}"

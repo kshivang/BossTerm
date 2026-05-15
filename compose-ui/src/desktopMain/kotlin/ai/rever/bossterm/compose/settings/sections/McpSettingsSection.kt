@@ -101,7 +101,8 @@ fun McpSettingsSection(
 
         AttachToCliSection(
             port = settings.mcpPort,
-            enabled = settings.mcpEnabled
+            enabled = settings.mcpEnabled,
+            serverName = cfg?.serverName ?: "bossterm"
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -135,7 +136,8 @@ fun McpSettingsSection(
 @Composable
 private fun AttachToCliSection(
     port: Int,
-    enabled: Boolean
+    enabled: Boolean,
+    serverName: String
 ) {
     val scope = rememberCoroutineScope()
     // Last-attempt status per target so each button can show its own
@@ -166,7 +168,7 @@ private fun AttachToCliSection(
                         lastResult = null
                         scope.launch {
                             try {
-                                lastResult = McpCliAttacher.attach(target, port)
+                                lastResult = McpCliAttacher.attach(target, serverName, port)
                             } finally {
                                 inFlight = null
                             }

@@ -34,6 +34,12 @@ import java.util.concurrent.TimeUnit
  */
 enum class McpAttachTarget(
     val displayName: String,
+    /**
+     * Stable string written into settings.json's `mcpAttachedTo` set.
+     * Keep these values frozen across enum renames — old persisted state
+     * depends on them. New targets must pick a fresh, non-colliding key.
+     */
+    val persistenceKey: String,
     /** Command run first to remove any existing entry. Errors ignored. `{NAME}` is replaced. */
     private val removeCommand: List<String>?,
     /** Primary command. `{URL}` and `{NAME}` get replaced at call time. */
@@ -43,12 +49,14 @@ enum class McpAttachTarget(
 ) {
     CLAUDE_CODE(
         displayName = "Claude Code",
+        persistenceKey = "CLAUDE_CODE",
         removeCommand = listOf("claude", "mcp", "remove", "{NAME}"),
         addCommand = listOf("claude", "mcp", "add", "--transport", "sse", "{NAME}", "{URL}"),
         clipboardFallback = "claude mcp add --transport sse {NAME} {URL}"
     ),
     CODEX(
         displayName = "Codex",
+        persistenceKey = "CODEX",
         removeCommand = listOf("codex", "mcp", "remove", "{NAME}"),
         addCommand = listOf("codex", "mcp", "add", "{NAME}", "--transport", "sse", "{URL}"),
         clipboardFallback = """
@@ -60,6 +68,7 @@ enum class McpAttachTarget(
     ),
     GEMINI(
         displayName = "Gemini CLI",
+        persistenceKey = "GEMINI",
         removeCommand = listOf("gemini", "mcp", "remove", "{NAME}"),
         addCommand = listOf("gemini", "mcp", "add", "{NAME}", "--transport", "sse", "{URL}"),
         clipboardFallback = """
@@ -75,6 +84,7 @@ enum class McpAttachTarget(
     ),
     OPENCODE(
         displayName = "OpenCode",
+        persistenceKey = "OPENCODE",
         removeCommand = listOf("opencode", "mcp", "remove", "{NAME}"),
         addCommand = listOf("opencode", "mcp", "add", "{NAME}", "--transport", "sse", "{URL}"),
         clipboardFallback = """
@@ -98,6 +108,12 @@ enum class McpAttachTarget(
 
     fun resolvedClipboard(name: String, url: String): String =
         clipboardFallback.replace("{NAME}", name).replace("{URL}", url)
+
+    companion object {
+        /** Look up a target by its stable [persistenceKey]. Null if unknown. */
+        fun fromPersistenceKey(key: String): McpAttachTarget? =
+            entries.firstOrNull { it.persistenceKey == key }
+    }
 }
 
 /**

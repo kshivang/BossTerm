@@ -95,10 +95,12 @@ object McpTerminalRegistry {
     // attach succeeds; read by the Settings panel and the right-click menus
     // to surface "✓ attached" status.
     //
-    // Process-wide and in-memory (no settings persistence): the CLI's own
-    // config file is the canonical record. This flow just remembers what
-    // *we* asked the CLI to do during this session so the UI can stop
-    // pretending every click is the first one. Cleared on app restart.
+    // Persisted across runs via [TerminalSettings.mcpAttachedTo] so the
+    // next session's auto-reattach has the right targets. The CLI's own
+    // config file remains the canonical record; this flow is the manager's
+    // mirror of it. Persisted as the stable [McpAttachTarget.persistenceKey]
+    // strings (not the raw enum names) so future enum renames don't drop
+    // saved state.
     // -----------------------------------------------------------------
 
     private val _attachedTargets = MutableStateFlow<Set<McpAttachTarget>>(emptySet())
@@ -114,10 +116,8 @@ object McpTerminalRegistry {
      *   correct ✓ marks immediately and the manager's auto-reattach loop
      *   has the right targets to refresh.
      */
-    internal fun hydrate(persistedNames: Set<String>) {
-        val targets = persistedNames.mapNotNull { name ->
-            runCatching { McpAttachTarget.valueOf(name) }.getOrNull()
-        }.toSet()
+    internal fun hydrate(persistedKeys: Set<String>) {
+        val targets = persistedKeys.mapNotNull { McpAttachTarget.fromPersistenceKey(it) }.toSet()
         _attachedTargets.value = targets
     }
 
@@ -140,7 +140,13 @@ object McpTerminalRegistry {
     }
 
     private fun persist(targets: Set<McpAttachTarget>) {
-        val names = targets.map { it.name }.toSet()
-        SettingsManager.instance.updateSetting { copy(mcpAttachedTo = names) }
+        // Sort by enum-declaration order so settings.json is deterministic
+        // across saves (kotlinx.serialization writes whatever the Set
+        // iterator yields, which isn't ordering-stable for HashSet).
+        val keys = McpAttachTarget.entries
+            .filter { it in targets }
+            .map { it.persistenceKey }
+            .toSet()
+        SettingsManager.instance.updateSetting { copy(mcpAttachedTo = keys) }
     }
 }

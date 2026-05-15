@@ -18,6 +18,9 @@ import io.modelcontextprotocol.kotlin.sdk.server.mcp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -223,8 +226,20 @@ class BossTermMcpManager(
         if (targets.isEmpty()) return
         log.info("Auto-reattaching {} CLI(s) to new endpoint…", targets.size)
         parentScope.launch(Dispatchers.IO) {
-            targets.forEach { target ->
-                val result = McpCliAttacher.attach(target, config.serverName, port, quiet = true)
+            // Fan out: each CLI's mcp add/remove operates on its own config
+            // file, so they're independent. Running sequentially used to add
+            // up to ~5-10s for four targets; parallel keeps total time bound
+            // by the slowest one (~1-2s).
+            val outcomes = coroutineScope {
+                targets.map { target ->
+                    async {
+                        target to McpCliAttacher.attach(
+                            target, config.serverName, port, quiet = true
+                        )
+                    }
+                }.awaitAll()
+            }
+            outcomes.forEach { (target, result) ->
                 if (result is McpAttachResult.CopiedToClipboard) {
                     log.warn(
                         "Auto-reattach failed for {}: {}; dropping from persisted set",

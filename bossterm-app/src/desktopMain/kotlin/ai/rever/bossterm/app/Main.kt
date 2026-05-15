@@ -19,7 +19,9 @@ import ai.rever.bossterm.compose.TabbedTerminal
 import ai.rever.bossterm.compose.rememberTabbedTerminalState
 import ai.rever.bossterm.compose.cli.CLIInstallDialog
 import ai.rever.bossterm.compose.cli.CLIInstaller
+import ai.rever.bossterm.compose.mcp.BossTermMcpConfig
 import ai.rever.bossterm.compose.mcp.BossTermMcpManager
+import ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig
 import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.notification.NotificationService
 import ai.rever.bossterm.compose.onboarding.OnboardingWizard
@@ -70,11 +72,21 @@ fun main() {
     // its lifetime spans every Window. Windows register their TabbedTerminalState
     // with McpTerminalRegistry; the manager exposes all tabs through a single
     // endpoint. JVM shutdown hook tears it down on exit.
+    //
+    // The explicit BossTermMcpConfig here brands the server as "bossterm";
+    // other applications that embed compose-ui as a library pass their own
+    // BossTermMcpConfig with their app name, version, and any additional
+    // tools they want to expose. See BossTermMcpConfig kdoc for the contract.
+    val mcpConfig = BossTermMcpConfig(
+        serverName = "bossterm",
+        serverVersion = "1.0"
+    )
     val mcpScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val mcpManager = BossTermMcpManager(
         registry = McpTerminalRegistry,
         settingsManager = SettingsManager.instance,
-        parentScope = mcpScope
+        parentScope = mcpScope,
+        config = mcpConfig
     )
     mcpManager.start()
     Runtime.getRuntime().addShutdownHook(Thread {
@@ -83,6 +95,10 @@ fun main() {
     })
 
     application {
+        // Expose the embedder's MCP config to the in-app settings UI so it
+        // can adapt its labels and visibility. bossterm-app provides the
+        // default; other host applications would provide their own.
+        CompositionLocalProvider(LocalBossTermMcpConfig provides mcpConfig) {
         // Create initial window if none exist
         if (WindowManager.windows.isEmpty()) {
             WindowManager.createWindow()
@@ -435,20 +451,27 @@ fun main() {
                                 )
                             }
                             // MCP server submenu — quick toggle plus deep-link into settings.
-                            Menu("MCP Server") {
-                                CheckboxItem(
-                                    "Enable MCP Server",
-                                    checked = windowSettings.mcpEnabled,
-                                    onCheckedChange = { enabled ->
-                                        settingsManagerForWindow.updateSetting {
-                                            copy(mcpEnabled = enabled)
+                            // Embedders that set showInSettingsUi=false hide it entirely.
+                            if (mcpConfig.showInSettingsUi) {
+                                Menu("MCP Server") {
+                                    CheckboxItem(
+                                        "Enable MCP Server",
+                                        checked = windowSettings.mcpEnabled,
+                                        onCheckedChange = { enabled ->
+                                            settingsManagerForWindow.updateSetting {
+                                                copy(mcpEnabled = enabled)
+                                            }
                                         }
-                                    }
-                                )
-                                Item(
-                                    "Settings…",
-                                    onClick = { showSettingsDialog = true }
-                                )
+                                    )
+                                    Item(
+                                        "Settings…",
+                                        onClick = {
+                                            initialSettingsCategory =
+                                                ai.rever.bossterm.compose.settings.SettingsCategory.MCP
+                                            showSettingsDialog = true
+                                        }
+                                    )
+                                }
                             }
                             Separator()
                             // Git submenu - conditional based on repo status
@@ -803,6 +826,7 @@ fun main() {
                 }
             }
         }
+        } // end CompositionLocalProvider(LocalBossTermMcpConfig)
     }
 }
 

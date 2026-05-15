@@ -45,9 +45,21 @@ fun SettingsPanel(
     initialCategory: SettingsCategory? = null,
     modifier: Modifier = Modifier
 ) {
-    var selectedCategory by remember(initialCategory) {
-        mutableStateOf(initialCategory ?: SettingsCategory.default)
+    // Embedder may have hidden the MCP category. When that happens we drop it
+    // from the nav rail and refuse to honor it as the initial category.
+    val mcpCfg = ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig.current
+    val hiddenCategories: Set<SettingsCategory> = remember(mcpCfg) {
+        if (mcpCfg?.showInSettingsUi == false) setOf(SettingsCategory.MCP) else emptySet()
     }
+    val visibleCategories = remember(hiddenCategories) {
+        SettingsCategory.entries.filter { it !in hiddenCategories }
+    }
+    val resolvedInitial = if (initialCategory != null && initialCategory !in hiddenCategories) {
+        initialCategory
+    } else {
+        SettingsCategory.default
+    }
+    var selectedCategory by remember(resolvedInitial) { mutableStateOf(resolvedInitial) }
     var showResetConfirmation by remember { mutableStateOf(false) }
 
     Row(
@@ -57,6 +69,7 @@ fun SettingsPanel(
     ) {
         // Left navigation rail
         NavigationRail(
+            categories = visibleCategories,
             selectedCategory = selectedCategory,
             onCategorySelected = { selectedCategory = it },
             modifier = Modifier
@@ -178,6 +191,7 @@ fun SettingsPanel(
  */
 @Composable
 private fun NavigationRail(
+    categories: List<SettingsCategory>,
     selectedCategory: SettingsCategory,
     onCategorySelected: (SettingsCategory) -> Unit,
     modifier: Modifier = Modifier
@@ -190,7 +204,7 @@ private fun NavigationRail(
             .verticalScroll(scrollState)
             .padding(vertical = 8.dp)
     ) {
-        SettingsCategory.entries.forEach { category ->
+        categories.forEach { category ->
             val isSelected = category == selectedCategory
             NavigationRailItem(
                 category = category,

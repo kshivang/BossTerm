@@ -1,24 +1,40 @@
 package ai.rever.bossterm.compose.settings.sections
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.SettingsNumberInput
 import ai.rever.bossterm.compose.settings.components.SettingsSection
 import ai.rever.bossterm.compose.settings.components.SettingsToggle
-import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 
 /**
  * MCP server settings: toggle the in-process Model Context Protocol server
  * and pick a localhost port. Endpoint is always `http://127.0.0.1:<port>/mcp`
  * over SSE; the server only binds when enabled. Off by default so the port
  * isn't opened until the user opts in.
+ *
+ * When an embedder has provided a [ai.rever.bossterm.compose.mcp.BossTermMcpConfig]
+ * via [LocalBossTermMcpConfig], the inline endpoint note surfaces the configured
+ * server name. When the composition local is null (no manager was constructed
+ * by the host application), the section renders a short note pointing at the
+ * docs so users understand why toggling has no effect.
  */
 @Composable
 fun McpSettingsSection(
@@ -26,7 +42,19 @@ fun McpSettingsSection(
     onSettingsChange: (TerminalSettings) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val cfg = LocalBossTermMcpConfig.current
+
     Column(modifier = modifier) {
+
+        // No-manager banner: shown when the embedder hasn't wired
+        // BossTermMcpManager in their fun main(). Toggles below still render
+        // so users see what would be available — the manager is what actually
+        // binds the port.
+        if (cfg == null) {
+            ConfigurationBanner()
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
         SettingsSection(title = "MCP Server") {
             SettingsToggle(
                 label = "Enable MCP Server",
@@ -59,16 +87,68 @@ fun McpSettingsSection(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Inline endpoint + security note. Kept in the section instead of as
-        // a toggle description so it can update with the port value.
+        // Inline endpoint + security note. Includes the embedder's configured
+        // server name when available so users know how the server identifies
+        // itself to clients.
+        val serverIdLine = cfg?.let { "Server identifier: ${it.serverName} v${it.serverVersion}\n" } ?: ""
         Text(
-            text = "Endpoint when enabled: http://127.0.0.1:${settings.mcpPort}/mcp\n" +
+            text = serverIdLine +
+                    "Endpoint when enabled: http://127.0.0.1:${settings.mcpPort}/mcp\n" +
                     "Server binds loopback only and rejects non-loopback Host headers (403). " +
-                    "Tools include both read access (scrollback, search, last command) and " +
-                    "write access (send_input, send_signal). Any process running as your " +
-                    "user can reach the endpoint while it is enabled.",
+                    "Tools include read access (scrollback, search, last command)" +
+                    (if (cfg?.allowWriteTools != false) " and write access (send_input, send_signal)" else "") +
+                    ". Any process running as your user can reach the endpoint while it is enabled.",
             color = TextMuted,
             fontSize = 12.sp
+        )
+    }
+}
+
+/**
+ * Banner rendered inside [McpSettingsSection] when no [BossTermMcpConfig] is
+ * provided by the host. Explains the embedding contract in a single short
+ * code snippet so a developer running someone else's app knows where to look.
+ */
+@Composable
+private fun ConfigurationBanner() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color(0x33_FF_C1_07)) // soft amber tint
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            text = "MCP is not wired up in this build.",
+            color = TextPrimary,
+            fontSize = 13.sp
+        )
+        Text(
+            text = "The settings below persist, but no Ktor server is bound because the host " +
+                    "application has not constructed a BossTermMcpManager. To enable it, call " +
+                    "the snippet below in your fun main():",
+            color = TextMuted,
+            fontSize = 12.sp
+        )
+        Text(
+            text = "val mcpScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)\n" +
+                    "val mcpConfig = BossTermMcpConfig(serverName = \"yourapp\")\n" +
+                    "val mcpManager = BossTermMcpManager(\n" +
+                    "    registry = McpTerminalRegistry,\n" +
+                    "    settingsManager = SettingsManager.instance,\n" +
+                    "    parentScope = mcpScope,\n" +
+                    "    config = mcpConfig\n" +
+                    ")\n" +
+                    "mcpManager.start()\n" +
+                    "application {\n" +
+                    "    CompositionLocalProvider(LocalBossTermMcpConfig provides mcpConfig) {\n" +
+                    "        // your TabbedTerminal tree\n" +
+                    "    }\n" +
+                    "}",
+            color = TextPrimary,
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace
         )
     }
 }

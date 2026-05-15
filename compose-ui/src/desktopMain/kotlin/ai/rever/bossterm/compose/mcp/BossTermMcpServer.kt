@@ -50,7 +50,8 @@ import kotlinx.serialization.json.putJsonObject
  * thread-safe (`MutableState`, `MutableStateFlow`).
  */
 class BossTermMcpServer(
-    private val registry: McpTerminalRegistry = McpTerminalRegistry
+    private val registry: McpTerminalRegistry = McpTerminalRegistry,
+    private val config: BossTermMcpConfig = BossTermMcpConfig()
 ) {
 
     private val json: Json = Json {
@@ -59,6 +60,9 @@ class BossTermMcpServer(
         explicitNulls = true
     }
 
+    /** Returns the built-in tool name with the embedder's configured prefix applied. */
+    private fun toolName(builtin: String): String = config.toolNamePrefix + builtin
+
     /**
      * Build and return a fully configured [Server] with all BossTerm tools
      * registered. Caller is responsible for connecting a transport.
@@ -66,8 +70,8 @@ class BossTermMcpServer(
     fun createServer(): Server {
         val server = Server(
             serverInfo = Implementation(
-                name = SERVER_NAME,
-                version = SERVER_VERSION
+                name = config.serverName,
+                version = config.serverVersion
             ),
             options = ServerOptions(
                 capabilities = ServerCapabilities(
@@ -81,8 +85,14 @@ class BossTermMcpServer(
         registerReadScrollback(server)
         registerSearchOutput(server)
         registerGetLastCommand(server)
-        registerSendInput(server)
-        registerSendSignal(server)
+        if (config.allowWriteTools) {
+            registerSendInput(server)
+            registerSendSignal(server)
+        }
+
+        // Embedder hook: register app-specific tools after built-ins. Names
+        // are NOT prefixed — embedder owns them.
+        config.additionalTools(server)
 
         return server
     }
@@ -93,7 +103,7 @@ class BossTermMcpServer(
 
     private fun registerListTabs(server: Server) {
         server.addTool(
-            name = "list_tabs",
+            name = toolName("list_tabs"),
             description = "List all open terminal tabs across all windows. Each tab includes " +
                     "id, title, working directory, pid, and isActive (true if the tab is the " +
                     "currently selected tab of its window).",
@@ -115,7 +125,7 @@ class BossTermMcpServer(
 
     private fun registerGetActiveTab(server: Server) {
         server.addTool(
-            name = "get_active_tab",
+            name = toolName("get_active_tab"),
             description = "Return the active tab of the primary window (the first window opened " +
                     "that is still alive), or null if no tab is active.",
             inputSchema = ToolSchema(
@@ -139,7 +149,7 @@ class BossTermMcpServer(
 
     private fun registerReadScrollback(server: Server) {
         server.addTool(
-            name = "read_scrollback",
+            name = toolName("read_scrollback"),
             description = "Read the last N lines from a tab's terminal buffer (history + visible " +
                     "screen) as plain UTF-8 text. Trailing whitespace per line is stripped.",
             inputSchema = ToolSchema(
@@ -194,7 +204,7 @@ class BossTermMcpServer(
 
     private fun registerSearchOutput(server: Server) {
         server.addTool(
-            name = "search_output",
+            name = toolName("search_output"),
             description = "Regex-search the entire scrollback (history + screen) of a tab. " +
                     "Returns matching rows with positional info. Row numbers follow buffer " +
                     "convention: negative for history (oldest = -historyLinesCount), 0..height-1 " +
@@ -285,7 +295,7 @@ class BossTermMcpServer(
 
     private fun registerGetLastCommand(server: Server) {
         server.addTool(
-            name = "get_last_command",
+            name = toolName("get_last_command"),
             description = "Return the most recently completed shell command for a tab " +
                     "(as captured via OSC 133), or null if no command has finished yet. " +
                     "Requires shell integration — see shell-integration.md. " +
@@ -334,7 +344,7 @@ class BossTermMcpServer(
 
     private fun registerSendInput(server: Server) {
         server.addTool(
-            name = "send_input",
+            name = toolName("send_input"),
             description = "Write text to the tab's shell stdin. The caller is responsible for " +
                     "appending a trailing '\\n' if they want a command to actually execute.",
             inputSchema = ToolSchema(
@@ -373,7 +383,7 @@ class BossTermMcpServer(
 
     private fun registerSendSignal(server: Server) {
         server.addTool(
-            name = "send_signal",
+            name = toolName("send_signal"),
             description = "Send a control signal to the tab's shell. Allowed signals: " +
                     "'ctrl_c' (interrupt), 'ctrl_d' (EOF), 'ctrl_z' (suspend).",
             inputSchema = ToolSchema(
@@ -537,8 +547,6 @@ class BossTermMcpServer(
     data class ErrorResult(val error: String)
 
     companion object {
-        private const val SERVER_NAME = "bossterm"
-        private const val SERVER_VERSION = "1.0"
         private const val DEFAULT_SCROLLBACK_LINES = 200
         private const val DEFAULT_SEARCH_MAX_MATCHES = 50
     }

@@ -61,7 +61,8 @@ import java.net.BindException
 class BossTermMcpManager(
     private val registry: McpTerminalRegistry,
     private val settingsManager: SettingsManager,
-    private val parentScope: CoroutineScope
+    private val parentScope: CoroutineScope,
+    private val config: BossTermMcpConfig = BossTermMcpConfig()
 ) {
 
     private val log = LoggerFactory.getLogger(BossTermMcpManager::class.java)
@@ -78,11 +79,27 @@ class BossTermMcpManager(
     /** Begin observing settings. Idempotent. Safe to call multiple times. */
     fun start() {
         if (watcherJob?.isActive == true) return
+
+        // First-launch reconciliation: if this install has never seen the
+        // MCP defaults, write the embedder's chosen values and mark
+        // configured. Runs at most once per install — after the flag flips,
+        // the user owns mcpEnabled / mcpPort.
+        val current = settingsManager.settings.value
+        if (!current.mcpConfigured) {
+            settingsManager.updateSetting {
+                copy(
+                    mcpEnabled = config.defaultEnabled,
+                    mcpPort = config.defaultPort,
+                    mcpConfigured = true
+                )
+            }
+        }
+
         watcherJob = parentScope.launch {
             settingsManager.settings
                 .map { McpConfig(enabled = it.mcpEnabled, port = it.mcpPort) }
                 .distinctUntilChanged()
-                .collect { config -> reconcile(config) }
+                .collect { desired -> reconcile(desired) }
         }
     }
 
@@ -124,7 +141,7 @@ class BossTermMcpManager(
     }
 
     private fun startEngineLocked(port: Int) {
-        val mcpServer = BossTermMcpServer(registry).createServer()
+        val mcpServer = BossTermMcpServer(registry, config).createServer()
         val allowedHosts = setOf("127.0.0.1", "localhost", "127.0.0.1:$port", "localhost:$port")
         try {
             log.info("Starting BossTerm MCP server on http://{}:{}{}", HOST, port, PATH)

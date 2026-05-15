@@ -762,6 +762,16 @@ data class TerminalSettings(
      */
     val mcpShowStatusIndicator: Boolean = true,
 
+    /**
+     * Set to `true` the first time [ai.rever.bossterm.compose.mcp.BossTermMcpManager]
+     * starts so that embedder-supplied first-launch defaults
+     * (`BossTermMcpConfig.defaultEnabled` / `defaultPort`) are applied
+     * exactly once. After this flag flips to true, the user's `mcpEnabled`
+     * / `mcpPort` choices are authoritative and embedder defaults no longer
+     * override them.
+     */
+    val mcpConfigured: Boolean = false,
+
     // ===== AI Assistant Settings =====
 
     /**

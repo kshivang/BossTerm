@@ -108,8 +108,11 @@ kotlin {
                 implementation("io.ktor:ktor-client-content-negotiation:$ktorVersion")
                 implementation("io.ktor:ktor-serialization-kotlinx-json:$ktorVersion")
 
-                // MCP (Model Context Protocol) server + Ktor CIO server backend
-                implementation("io.modelcontextprotocol:kotlin-sdk-server:0.8.3")
+                // MCP (Model Context Protocol) server + Ktor CIO server backend.
+                // `api` for the SDK because BossTermMcpConfig's additionalTools
+                // hook exposes the SDK's Server type to embedders, which would
+                // otherwise be inaccessible from a downstream module.
+                api("io.modelcontextprotocol:kotlin-sdk-server:0.8.3")
                 implementation("io.ktor:ktor-server-cio:3.2.3")
             }
         }

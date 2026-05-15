@@ -9,6 +9,35 @@ import java.awt.datatransfer.StringSelection
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
+// Node one-liners that edit ~/.config/opencode/opencode.json directly —
+// OpenCode's own `mcp add` is an interactive TUI prompt with no scripted
+// form. Each script takes argv positional[s]: NAME (and URL for the add
+// variant). Node is guaranteed to be on PATH wherever `opencode` is
+// installed (OpenCode ships as an npm package), so the dependency is
+// essentially free.
+//
+// Kept as top-level file-private constants because Kotlin enum entries
+// can't reference their own companion-object members at construction
+// time — the companion initializes after the entries.
+private const val OPENCODE_ADD_SCRIPT = "" +
+    "const fs=require('fs'),os=require('os'),p=require('path');" +
+    "const f=os.homedir()+'/.config/opencode/opencode.json';" +
+    "fs.mkdirSync(p.dirname(f),{recursive:true});" +
+    "const c=fs.existsSync(f)&&fs.statSync(f).size>0?JSON.parse(fs.readFileSync(f,'utf8')):{};" +
+    "c.mcp=c.mcp||{};" +
+    "c.mcp[process.argv[1]]={type:'remote',url:process.argv[2],enabled:true};" +
+    "fs.writeFileSync(f,JSON.stringify(c,null,2));" +
+    "console.log('Wrote '+f);"
+
+private const val OPENCODE_REMOVE_SCRIPT = "" +
+    "const fs=require('fs'),os=require('os');" +
+    "const f=os.homedir()+'/.config/opencode/opencode.json';" +
+    "if(!fs.existsSync(f))process.exit(0);" +
+    "const c=JSON.parse(fs.readFileSync(f,'utf8')||'{}');" +
+    "if(!c.mcp||!c.mcp[process.argv[1]])process.exit(0);" +
+    "delete c.mcp[process.argv[1]];" +
+    "fs.writeFileSync(f,JSON.stringify(c,null,2));"
+
 /**
  * One-click attach helper that registers this BossTerm MCP endpoint with a
  * third-party AI CLI via the CLI's native `mcp` subcommand. Falls back to
@@ -111,20 +140,27 @@ enum class McpAttachTarget(
     OPENCODE(
         displayName = "OpenCode",
         persistenceKey = "OPENCODE",
-        // opencode 0.x's `mcp add` is an interactive TUI prompt with no
-        // positional / flag form — running it from a non-tty parent just
-        // prints help and exits 1. Mark addCommand = null so the attacher
-        // skips the shell-out and goes straight to clipboard. removeCommand
-        // is set to null for symmetry (we shouldn't try to invoke it either).
-        removeCommand = null,
-        addCommand = null,
+        // opencode 1.x's `mcp add` is an interactive TUI prompt with no
+        // scriptable form. Workaround: edit `~/.config/opencode/opencode.json`
+        // directly via a tiny node one-liner. node is guaranteed to be on
+        // PATH whenever `opencode` is installed (opencode ships as an npm
+        // package), so the dependency is essentially free.
+        removeCommand = listOf(
+            "node", "-e", OPENCODE_REMOVE_SCRIPT,
+            "{NAME}"
+        ),
+        addCommand = listOf(
+            "node", "-e", OPENCODE_ADD_SCRIPT,
+            "{NAME}", "{URL}"
+        ),
         clipboardFallback = """
             // Merge into ~/.config/opencode/opencode.json
             {
               "mcp": {
                 "{NAME}": {
                   "type": "remote",
-                  "url": "{URL}"
+                  "url": "{URL}",
+                  "enabled": true
                 }
               }
             }

@@ -568,10 +568,17 @@ class TabbedTerminalState {
      * The new pane appears to the right of the focused pane.
      *
      * @param tabId Target tab ID. If null, uses the active tab.
+     * @param ratio Optional size of the new pane as a fraction of the
+     *   parent's width. When null, falls back to
+     *   `settings.splitDefaultRatio`. Clamped to 0.05..0.95.
      * @return The session ID of the new pane, or null if the split failed
      */
-    fun splitVertical(tabId: String? = null): String? {
-        return performSplit(SplitOrientation.VERTICAL, tabId)
+    fun splitVertical(
+        tabId: String? = null,
+        ratio: Float? = null,
+        initialCommand: String? = null
+    ): String? {
+        return performSplit(SplitOrientation.VERTICAL, tabId, ratio, initialCommand)
     }
 
     /**
@@ -581,16 +588,32 @@ class TabbedTerminalState {
      * The new pane appears below the focused pane.
      *
      * @param tabId Target tab ID. If null, uses the active tab.
+     * @param ratio Optional size of the new pane as a fraction of the
+     *   parent's height. When null, falls back to
+     *   `settings.splitDefaultRatio`. Clamped to 0.05..0.95.
      * @return The session ID of the new pane, or null if the split failed
      */
-    fun splitHorizontal(tabId: String? = null): String? {
-        return performSplit(SplitOrientation.HORIZONTAL, tabId)
+    fun splitHorizontal(
+        tabId: String? = null,
+        ratio: Float? = null,
+        initialCommand: String? = null
+    ): String? {
+        return performSplit(SplitOrientation.HORIZONTAL, tabId, ratio, initialCommand)
     }
 
     /**
      * Internal helper to perform a split in the given orientation.
+     *
+     * @param initialCommand Optional command to run in the new pane once its shell is ready
+     *   (OSC 133;A or fallback delay). Held by the session bootstrap so the bytes are not
+     *   eaten by shell startup output (banner, rc-file sourcing, prompt draw).
      */
-    private fun performSplit(orientation: SplitOrientation, tabId: String?): String? {
+    private fun performSplit(
+        orientation: SplitOrientation,
+        tabId: String?,
+        ratio: Float? = null,
+        initialCommand: String? = null
+    ): String? {
         val resolvedTabId = resolveTabId(tabId) ?: return null
         val controller = tabController ?: return null
         val tab = controller.getTabById(resolvedTabId) as? TerminalTab ?: return null
@@ -602,7 +625,8 @@ class TabbedTerminalState {
         } else null
 
         val newSession = controller.createSessionForSplit(
-            workingDir = workingDir
+            workingDir = workingDir,
+            initialCommand = initialCommand
         )
         // Assign onProcessExit after creation so the lambda captures newSession directly,
         // avoiding the fragile var-ref pattern where the lambda closes over a mutable var.
@@ -620,7 +644,14 @@ class TabbedTerminalState {
                     ?.let { pane -> splitState.closePane(pane.id) }
             }
         }
-        return splitState.splitFocusedPane(orientation, newSession, settings.splitDefaultRatio)
+        // splitFocusedPane's `ratio` is "fraction of the ORIGINAL pane"
+        // (per SplitNode.kt:32,43). Our public ratio param is "fraction of
+        // the NEW pane" because that's how the UI / MCP describe it.
+        // Invert here so callers don't have to. Default 0.5 is symmetric
+        // either way, so the UI's keyboard-shortcut splits keep their
+        // existing behavior.
+        val newPaneRatio = (ratio ?: settings.splitDefaultRatio).coerceIn(0.05f, 0.95f)
+        return splitState.splitFocusedPane(orientation, newSession, 1f - newPaneRatio)
     }
 
     /**
@@ -723,6 +754,40 @@ class TabbedTerminalState {
      * @param tabId Target tab ID. If null, uses the active tab.
      * @return The focused session, or null if tab not found
      */
+    /**
+     * Locate a [TerminalSession] within a tab by its session/pane id.
+     *
+     * @param tabId The tab to search in.
+     * @param paneId Specific pane to find. When non-null, searches the
+     *   tab's split tree for a pane whose `session.id` equals this value.
+     *   When null, returns the tab's focused pane (if it's split) or the
+     *   tab's primary session (if it's not).
+     * @return The matching session, or null if `tabId` is unknown or
+     *   `paneId` was provided but not found within that tab.
+     *
+     * Use this when an MCP / external caller has a pane id from
+     * `run_in_panel` and wants to address that specific pane in a
+     * follow-up tool call (send_input, read_scrollback, etc).
+     */
+    fun findSession(tabId: String, paneId: String? = null): TerminalSession? {
+        val tab = getTabById(tabId) ?: return null
+        val splitState = splitStates[tabId]
+        if (paneId == null) {
+            return splitState?.getFocusedSession() ?: tab
+        }
+        if (splitState != null) {
+            // Match either the wrapping SplitNode.Pane.id (what
+            // splitFocusedPane / run_in_panel return) or the underlying
+            // TerminalSession.id (what individual tabs are identified by).
+            // The two are distinct UUIDs even for the same logical pane.
+            return splitState.getAllPanes()
+                .firstOrNull { it.id == paneId || it.session.id == paneId }
+                ?.session
+        }
+        // Single-pane tab: paneId only matches if it's the tab's own session id.
+        return if (tab.id == paneId) tab else null
+    }
+
     fun getFocusedSplitSession(tabId: String? = null): TerminalSession? {
         val resolvedTabId = resolveTabId(tabId) ?: return null
         val splitState = splitStates[resolvedTabId] ?: return null

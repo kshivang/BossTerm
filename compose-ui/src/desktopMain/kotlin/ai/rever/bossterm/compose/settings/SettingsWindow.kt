@@ -26,7 +26,9 @@ private const val SETTINGS_DEBOUNCE_MS = 100L
 fun SettingsWindow(
     visible: Boolean,
     onDismiss: () -> Unit,
-    onRestartApp: (() -> Unit)? = null
+    onRestartApp: (() -> Unit)? = null,
+    /** Optional category to open the panel at. Null falls back to [SettingsCategory.default]. */
+    initialCategory: SettingsCategory? = null
 ) {
     if (!visible) return
 
@@ -77,7 +79,8 @@ fun SettingsWindow(
             onResetToDefaults = {
                 settingsManager.resetToDefaults()
             },
-            onRestartApp = onRestartApp
+            onRestartApp = onRestartApp,
+            initialCategory = initialCategory
         )
     }
 }

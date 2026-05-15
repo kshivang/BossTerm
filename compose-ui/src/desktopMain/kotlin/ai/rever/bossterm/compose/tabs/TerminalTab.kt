@@ -240,7 +240,19 @@ data class TerminalTab(
      * hours of tab create/close cycles, eventually causing memory pressure
      * and exceptions when references to disposed displays are invoked.
      */
-    val modelListener: ai.rever.bossterm.terminal.model.TerminalModelListener? = null
+    val modelListener: ai.rever.bossterm.terminal.model.TerminalModelListener? = null,
+
+    /**
+     * Command-state listeners we registered against [terminal] in the controller
+     * (e.g. CommandNotificationHandler, LastCommandTracker). Removed in [dispose]
+     * so listeners don't accumulate over hours of tab create/close cycles.
+     *
+     * Same rationale as [modelListener] — anonymous listeners holding references
+     * to a tab's display / state become memory pressure when the terminal itself
+     * outlives the tab (e.g. while we're tearing down asynchronously) and a
+     * source of late callbacks against disposed UI.
+     */
+    val commandStateListeners: MutableList<ai.rever.bossterm.terminal.model.CommandStateListener> = mutableListOf()
 ) : TerminalSession {
     /**
      * Whether this tab is currently rendering to the UI.
@@ -248,6 +260,19 @@ data class TerminalTab(
      * Thread-safe: Uses MutableState for safe access from multiple coroutines.
      */
     override val isVisible: MutableState<Boolean> = mutableStateOf(false)
+
+    /**
+     * Most recently completed shell command for this tab, populated by
+     * [ai.rever.bossterm.compose.mcp.LastCommandTracker] via OSC 133 events.
+     * `null` until at least one command has completed.
+     *
+     * Consumed by the in-process MCP server (`get_last_command` tool).
+     * Thread-safe: [kotlinx.coroutines.flow.MutableStateFlow] supports
+     * concurrent writes from listener callbacks (which may run off the UI
+     * thread) and concurrent reads from MCP request handlers.
+     */
+    val lastCommand: kotlinx.coroutines.flow.MutableStateFlow<ai.rever.bossterm.compose.mcp.LastCommand?> =
+        kotlinx.coroutines.flow.MutableStateFlow(null)
 
     // === Content-Anchored Selection ===
 
@@ -366,6 +391,19 @@ data class TerminalTab(
                 textBuffer.removeModelListener(it)
             } catch (e: Exception) {
                 System.err.println("WARN: Failed to remove model listener: ${e.message}")
+            }
+        }
+
+        // Remove the command-state listeners the controller registered for us.
+        // Same memory-pressure rationale as modelListener above: anonymous OSC 133
+        // listeners (CommandNotificationHandler, LastCommandTracker) would otherwise
+        // remain attached to `terminal` and keep this tab's state reachable until
+        // the terminal itself is collected.
+        for (listener in commandStateListeners) {
+            try {
+                terminal.removeCommandStateListener(listener)
+            } catch (e: Exception) {
+                System.err.println("WARN: Failed to remove command-state listener: ${e.message}")
             }
         }
 

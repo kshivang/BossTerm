@@ -24,6 +24,20 @@ class SettingsManager(private val customSettingsPath: String? = null) {
      */
     val settings: StateFlow<TerminalSettings> = _settings.asStateFlow()
 
+    /**
+     * `true` if the settings file did not exist when [loadFromFile] last ran
+     * (i.e. this process started against a brand-new install). `false` if a
+     * settings file was already on disk (the common upgrade path). Initially
+     * `false`; set inside [loadFromFile].
+     *
+     * Used by [ai.rever.bossterm.compose.mcp.BossTermMcpManager] to decide
+     * whether to apply embedder-supplied first-launch defaults: applying them
+     * to an existing user's settings on upgrade would silently overwrite
+     * their saved choices.
+     */
+    var wasFreshInstall: Boolean = false
+        private set
+
     private val json = Json {
         prettyPrint = true
         ignoreUnknownKeys = true
@@ -100,6 +114,7 @@ class SettingsManager(private val customSettingsPath: String? = null) {
     fun loadFromFile() {
         try {
             if (settingsFile.exists()) {
+                wasFreshInstall = false
                 val jsonString = settingsFile.readText()
                 val loadedSettings = json.decodeFromString<TerminalSettings>(jsonString)
                 _settings.value = loadedSettings
@@ -109,6 +124,7 @@ class SettingsManager(private val customSettingsPath: String? = null) {
                 // This ensures new settings (like globalHotkey*) are written with defaults
                 saveToFile()
             } else {
+                wasFreshInstall = true
                 println("No settings file found, using defaults")
                 // Save defaults on first run
                 saveToFile()

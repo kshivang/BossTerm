@@ -16,8 +16,13 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import ai.rever.bossterm.compose.TabbedTerminal
+import ai.rever.bossterm.compose.rememberTabbedTerminalState
 import ai.rever.bossterm.compose.cli.CLIInstallDialog
 import ai.rever.bossterm.compose.cli.CLIInstaller
+import ai.rever.bossterm.compose.mcp.BossTermMcpConfig
+import ai.rever.bossterm.compose.mcp.BossTermMcpManager
+import ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig
+import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.notification.NotificationService
 import ai.rever.bossterm.compose.onboarding.OnboardingWizard
 import ai.rever.bossterm.compose.settings.SettingsManager
@@ -40,6 +45,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.WindowPlacement
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.awt.GraphicsEnvironment
 import java.awt.event.WindowAdapter
@@ -59,7 +68,37 @@ fun main() {
     // Set WM_CLASS for Linux desktop integration (must be before any AWT init)
     setLinuxWMClass()
 
+    // App-singleton MCP server. Constructed once before composition starts so
+    // its lifetime spans every Window. Windows register their TabbedTerminalState
+    // with McpTerminalRegistry; the manager exposes all tabs through a single
+    // endpoint. JVM shutdown hook tears it down on exit.
+    //
+    // The explicit BossTermMcpConfig here brands the server as "bossterm";
+    // other applications that embed compose-ui as a library pass their own
+    // BossTermMcpConfig with their app name, version, and any additional
+    // tools they want to expose. See BossTermMcpConfig kdoc for the contract.
+    val mcpConfig = BossTermMcpConfig(
+        serverName = "bossterm",
+        serverVersion = "1.0"
+    )
+    val mcpScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val mcpManager = BossTermMcpManager(
+        registry = McpTerminalRegistry,
+        settingsManager = SettingsManager.instance,
+        parentScope = mcpScope,
+        config = mcpConfig
+    )
+    mcpManager.start()
+    Runtime.getRuntime().addShutdownHook(Thread {
+        mcpManager.stop()
+        mcpScope.cancel()
+    })
+
     application {
+        // Expose the embedder's MCP config to the in-app settings UI so it
+        // can adapt its labels and visibility. bossterm-app provides the
+        // default; other host applications would provide their own.
+        CompositionLocalProvider(LocalBossTermMcpConfig provides mcpConfig) {
         // Create initial window if none exist
         if (WindowManager.windows.isEmpty()) {
             WindowManager.createWindow()
@@ -80,6 +119,11 @@ fun main() {
                 val windowState = rememberWindowState()
                 // Settings dialog state (declared before Window for onPreviewKeyEvent access)
                 var showSettingsDialog by remember { mutableStateOf(false) }
+                // Optional initial category — set by deep links (e.g. MCP status indicator).
+                // Cleared on dismiss so the next open falls back to the default category.
+                var initialSettingsCategory by remember {
+                    mutableStateOf<ai.rever.bossterm.compose.settings.SettingsCategory?>(null)
+                }
                 // CLI install dialog state
                 var showCLIInstallDialog by remember { mutableStateOf(false) }
                 var isFirstRun by remember { mutableStateOf(false) }
@@ -160,6 +204,19 @@ fun main() {
                     val updateManager = remember { UpdateManager.instance }
                     val updateState by updateManager.updateState.collectAsState()
                     val scope = rememberCoroutineScope()
+
+                    // Hoist TabbedTerminalState so external integrations (MCP) can observe it.
+                    // autoDispose=true mirrors the prior internal-state lifecycle (sessions
+                    // are released when this Window composition leaves).
+                    val tabbedState = rememberTabbedTerminalState(autoDispose = true)
+
+                    // Expose this Window's tabs to the app-singleton MCP server.
+                    // The manager itself is constructed in fun main(); here we
+                    // only join/leave the registry.
+                    DisposableEffect(tabbedState) {
+                        McpTerminalRegistry.register(tabbedState)
+                        onDispose { McpTerminalRegistry.unregister(tabbedState) }
+                    }
 
                     // Track window focus for command completion notifications
                     val awtWindow = this.window
@@ -393,6 +450,29 @@ fun main() {
                                     onClick = { window.menuActions.onLaunchOpenCode?.invoke() }
                                 )
                             }
+                            // MCP server submenu — quick toggle plus deep-link into settings.
+                            // Embedders that set showInSettingsUi=false hide it entirely.
+                            if (mcpConfig.showInSettingsUi) {
+                                Menu("MCP Server") {
+                                    CheckboxItem(
+                                        "Enable MCP Server",
+                                        checked = windowSettings.mcpEnabled,
+                                        onCheckedChange = { enabled ->
+                                            settingsManagerForWindow.updateSetting {
+                                                copy(mcpEnabled = enabled)
+                                            }
+                                        }
+                                    )
+                                    Item(
+                                        "Settings…",
+                                        onClick = {
+                                            initialSettingsCategory =
+                                                ai.rever.bossterm.compose.settings.SettingsCategory.MCP
+                                            showSettingsDialog = true
+                                        }
+                                    )
+                                }
+                            }
                             Separator()
                             // Git submenu - conditional based on repo status
                             Menu("Git") {
@@ -537,16 +617,20 @@ fun main() {
                         shape = RoundedCornerShape(cornerRadius)
                     ) {
                         Box(modifier = Modifier.fillMaxSize()) {
-                            // Compute global hotkey hint (used for both title bar modes)
+                            // Compute global hotkey hint (used for both title bar modes).
+                            // Returns null when the user has hidden the hint via
+                            // showGlobalHotkeyHint, so the render sites' null-check
+                            // skips both the overlay and the title-bar slot.
                             val globalHotkeyHint = remember(
                                 windowSettings.globalHotkeyEnabled,
+                                windowSettings.showGlobalHotkeyHint,
                                 windowSettings.globalHotkeyCtrl,
                                 windowSettings.globalHotkeyAlt,
                                 windowSettings.globalHotkeyShift,
                                 windowSettings.globalHotkeyWin,
                                 window.windowNumber
                             ) {
-                                if (windowSettings.globalHotkeyEnabled && window.windowNumber in 1..9) {
+                                if (windowSettings.globalHotkeyEnabled && windowSettings.showGlobalHotkeyHint && window.windowNumber in 1..9) {
                                     val config = HotKeyConfig.fromSettings(windowSettings)
                                     config.toWindowDisplayString(window.windowNumber, useMacSymbols = isMacOS)
                                 } else {
@@ -649,6 +733,7 @@ fun main() {
 
                                 // Terminal content
                                 TabbedTerminal(
+                                    state = tabbedState,
                                     onExit = {
                                         WindowManager.closeWindow(window.id)
                                         if (!WindowManager.hasWindows()) {
@@ -662,6 +747,11 @@ fun main() {
                                         WindowManager.createWindow()
                                     },
                                     onShowSettings = { showSettingsDialog = true },
+                                    onShowMcpSettings = {
+                                        initialSettingsCategory =
+                                            ai.rever.bossterm.compose.settings.SettingsCategory.MCP
+                                        showSettingsDialog = true
+                                    },
                                     onShowWelcomeWizard = { showOnboardingWizard = true },
                                     menuActions = window.menuActions,
                                     isWindowFocused = { window.isWindowFocused.value },
@@ -691,13 +781,18 @@ fun main() {
                     // Settings dialog
                     SettingsWindow(
                         visible = showSettingsDialog,
-                        onDismiss = { showSettingsDialog = false },
+                        onDismiss = {
+                            showSettingsDialog = false
+                            initialSettingsCategory = null
+                        },
                         onRestartApp = {
                             // Close this window and create a new one with updated settings
                             showSettingsDialog = false
+                            initialSettingsCategory = null
                             WindowManager.closeWindow(window.id)
                             WindowManager.createWindow()
-                        }
+                        },
+                        initialCategory = initialSettingsCategory
                     )
 
                     // CLI install dialog
@@ -735,6 +830,7 @@ fun main() {
                 }
             }
         }
+        } // end CompositionLocalProvider(LocalBossTermMcpConfig)
     }
 }
 

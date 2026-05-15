@@ -69,6 +69,16 @@ fun GlobalHotkeySection(
                     isMacOS = isMacOS
                 )
             }
+
+            SettingsToggle(
+                label = "Show Hotkey Hint in Window",
+                checked = settings.showGlobalHotkeyHint,
+                onCheckedChange = { onSettingsChange(settings.copy(showGlobalHotkeyHint = it)) },
+                description = "Display a small dim label (e.g. \"⌘1\") in the top-right of each " +
+                        "window showing its assigned global hotkey. Off by default — the hint is " +
+                        "only useful if you actively use global hotkeys.",
+                enabled = settings.globalHotkeyEnabled
+            )
         }
 
         Spacer(modifier = Modifier.height(24.dp))

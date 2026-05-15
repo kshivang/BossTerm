@@ -735,6 +735,81 @@ data class TerminalSettings(
      */
     val alwaysShowTabBar: Boolean = false,
 
+    /**
+     * Show the small dim "Cmd+1"/"Ctrl+1" hotkey hint label in the top-right
+     * of each window (native title bar mode) or in the trailing slot of the
+     * custom title bar. Hidden by default since global hotkeys are advanced
+     * and the hint adds visual clutter for users who don't use them.
+     */
+    val showGlobalHotkeyHint: Boolean = false,
+
+    // ===== MCP Server Settings =====
+
+    /**
+     * Enable the in-process Model Context Protocol (MCP) server.
+     * When true, BossTerm exposes a streamable-HTTP MCP endpoint on localhost
+     * so external tools (e.g. AI assistants) can introspect and control the
+     * terminal. Defaults to false for opt-in safety - the server only starts
+     * when this flag is explicitly enabled.
+     */
+    val mcpEnabled: Boolean = false,
+
+    /**
+     * Localhost TCP port for the in-process MCP server's streamable-HTTP endpoint.
+     * Only used when mcpEnabled is true. Change this if the default port conflicts
+     * with another service on your machine.
+     * Default: 7676
+     */
+    val mcpPort: Int = 7676,
+
+    /**
+     * Show the small green status indicator in the tab bar while the MCP
+     * server is running. Has no effect when mcpEnabled is false. Turning
+     * this off also stops forcing the tab bar to render in single-tab mode
+     * for the indicator's sake.
+     */
+    val mcpShowStatusIndicator: Boolean = true,
+
+    /**
+     * Default size of the new pane (as a fraction of the parent's
+     * dimension) when MCP `run_in_panel` opens a horizontal or vertical
+     * split and the caller hasn't supplied `split_ratio` explicitly.
+     * Range: 0.1..0.9. Default 0.3 — large enough for an `htop` / `tail`,
+     * small enough to keep the agent's primary workspace visible.
+     */
+    val mcpDefaultSplitRatio: Float = 0.3f,
+
+    /**
+     * Names (enum `.name`) of [ai.rever.bossterm.compose.mcp.McpAttachTarget]s
+     * that this BossTerm endpoint is registered with via the user's
+     * AI CLIs. Persisted across runs so the manager can silently
+     * re-run `<cli> mcp add` on next startup — refreshing the URL if
+     * the port changed and surfacing the ✓ marks in the UI immediately.
+     * Unknown / removed enum names are silently ignored at load.
+     */
+    val mcpAttachedTo: Set<String> = emptySet(),
+
+    /**
+     * Unprefixed built-in names of BossTerm MCP tools that should NOT be exposed
+     * to clients (e.g. "send_input", "run_in_panel"). Default: empty (all tools
+     * exposed). Edited via the settings UI or the `manage_tools` MCP tool;
+     * changes apply live without restarting the server.
+     *
+     * Note: `manage_tools` is always exposed and cannot be added to this set —
+     * disabling it would leave no way to re-enable other tools from MCP.
+     */
+    val disabledMcpTools: Set<String> = emptySet(),
+
+    /**
+     * Set to `true` the first time [ai.rever.bossterm.compose.mcp.BossTermMcpManager]
+     * starts so that embedder-supplied first-launch defaults
+     * (`BossTermMcpConfig.defaultEnabled` / `defaultPort`) are applied
+     * exactly once. After this flag flips to true, the user's `mcpEnabled`
+     * / `mcpPort` choices are authoritative and embedder defaults no longer
+     * override them.
+     */
+    val mcpConfigured: Boolean = false,
+
     // ===== AI Assistant Settings =====
 
     /**

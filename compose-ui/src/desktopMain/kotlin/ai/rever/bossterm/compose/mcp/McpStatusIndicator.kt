@@ -70,6 +70,7 @@ fun McpStatusIndicator(
     onClick: () -> Unit,
     onHideRequest: () -> Unit = {},
     onAttachRequest: (McpAttachTarget) -> Unit = {},
+    onShowSettings: () -> Unit = onClick,
     modifier: Modifier = Modifier
 ) {
     if (!enabled) return
@@ -102,6 +103,7 @@ fun McpStatusIndicator(
                         val items = buildIndicatorMenuItems(
                             attached = attached,
                             onAttachRequest = onAttachRequest,
+                            onShowSettings = onShowSettings,
                             onHideRequest = onHideRequest
                         )
                         contextMenuController.showMenu(0f, 0f, items)
@@ -139,24 +141,46 @@ fun McpStatusIndicator(
 
 /**
  * Build the dark-themed right-click menu for the [McpStatusIndicator].
- * Same item set foundation's ContextMenuArea used to produce, expressed as
- * [ContextMenuController.MenuItem]s so the project's native JPopupMenu
- * renderer can style them like the rest of the terminal context menus.
+ *
+ * Layout:
+ *   Attach ▸
+ *     ✓ Claude Code
+ *       Codex
+ *       Gemini CLI
+ *     ✓ OpenCode
+ *   MCP Settings…
+ *   ─────
+ *   Hide MCP Indicator
+ *
+ * The "✓ " prefix marks CLIs already attached in this session.
  */
 private fun buildIndicatorMenuItems(
     attached: Set<McpAttachTarget>,
     onAttachRequest: (McpAttachTarget) -> Unit,
+    onShowSettings: () -> Unit,
     onHideRequest: () -> Unit
 ): List<ContextMenuController.MenuElement> {
-    val attachItems = McpAttachTarget.entries.map { target ->
-        val prefix = if (target in attached) "✓ " else ""
-        ContextMenuController.MenuItem(
-            id = "mcp_attach_${target.name}",
-            label = "${prefix}Attach ${target.displayName}",
-            enabled = true,
-            action = { onAttachRequest(target) }
-        )
-    }
+    val attachSubmenuItems: List<ContextMenuController.MenuElement> =
+        McpAttachTarget.entries.map { target ->
+            val prefix = if (target in attached) "✓ " else ""
+            ContextMenuController.MenuItem(
+                id = "mcp_attach_${target.name}",
+                label = "${prefix}${target.displayName}",
+                enabled = true,
+                action = { onAttachRequest(target) }
+            )
+        }
+    val attachSubmenu = ContextMenuController.MenuSubmenu(
+        id = "mcp_attach_submenu",
+        label = "Attach",
+        items = attachSubmenuItems
+    )
+    val settings = ContextMenuController.MenuItem(
+        id = "mcp_settings",
+        label = "MCP Settings…",
+        enabled = true,
+        action = onShowSettings
+    )
     val separator = ContextMenuController.MenuSeparator(id = "mcp_indicator_sep")
     val hide = ContextMenuController.MenuItem(
         id = "mcp_hide_indicator",
@@ -164,7 +188,7 @@ private fun buildIndicatorMenuItems(
         enabled = true,
         action = onHideRequest
     )
-    return attachItems + separator + hide
+    return listOf(attachSubmenu, settings, separator, hide)
 }
 
 /**

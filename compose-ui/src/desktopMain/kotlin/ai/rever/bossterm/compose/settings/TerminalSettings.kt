@@ -771,6 +771,16 @@ data class TerminalSettings(
     val mcpShowStatusIndicator: Boolean = true,
 
     /**
+     * Names (enum `.name`) of [ai.rever.bossterm.compose.mcp.McpAttachTarget]s
+     * that this BossTerm endpoint is registered with via the user's
+     * AI CLIs. Persisted across runs so the manager can silently
+     * re-run `<cli> mcp add` on next startup — refreshing the URL if
+     * the port changed and surfacing the ✓ marks in the UI immediately.
+     * Unknown / removed enum names are silently ignored at load.
+     */
+    val mcpAttachedTo: Set<String> = emptySet(),
+
+    /**
      * Set to `true` the first time [ai.rever.bossterm.compose.mcp.BossTermMcpManager]
      * starts so that embedder-supplied first-launch defaults
      * (`BossTermMcpConfig.defaultEnabled` / `defaultPort`) are applied

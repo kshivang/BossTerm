@@ -79,6 +79,11 @@ class BossTermMcpManager(
     fun start() {
         if (watcherJob?.isActive == true) return
 
+        // Hydrate the runtime attached-targets set from persisted settings so
+        // the indicator/menu reflect prior-session state immediately, and
+        // the auto-reattach loop below has the right targets to refresh.
+        registry.hydrate(settingsManager.settings.value.mcpAttachedTo)
+
         // First-launch reconciliation. Two distinct cases share the
         // `mcpConfigured = false` state:
         //   1) Brand-new install — apply the embedder's defaults.
@@ -191,6 +196,7 @@ class BossTermMcpManager(
                 "BossTerm MCP server ready: http://{}:{}{} (SSE transport, {} state(s) registered)",
                 HOST, port, PATH, registry.stateCount()
             )
+            launchAutoReattach(port)
         } catch (e: BindException) {
             log.warn(
                 "BossTerm MCP server failed to bind {}:{} (port in use?): {}",
@@ -202,6 +208,31 @@ class BossTermMcpManager(
             log.error("BossTerm MCP server failed to start on {}:{}", HOST, port, e)
             runningEngine = null
             runningPort = null
+        }
+    }
+
+    /**
+     * Re-run `<cli> mcp add` (quiet mode) for every CLI in the persisted
+     * attached-targets set. Lets a user's saved attachments survive port
+     * changes between launches — and fixes them silently. If a CLI's
+     * binary is missing now (uninstalled since last run), we drop it from
+     * the persisted set instead of polluting the clipboard.
+     */
+    private fun launchAutoReattach(port: Int) {
+        val targets = registry.attachedTargets.value
+        if (targets.isEmpty()) return
+        log.info("Auto-reattaching {} CLI(s) to new endpoint…", targets.size)
+        parentScope.launch(Dispatchers.IO) {
+            targets.forEach { target ->
+                val result = McpCliAttacher.attach(target, config.serverName, port, quiet = true)
+                if (result is McpAttachResult.CopiedToClipboard) {
+                    log.warn(
+                        "Auto-reattach failed for {}: {}; dropping from persisted set",
+                        target.displayName, result.reason
+                    )
+                    registry.markDetached(target)
+                }
+            }
         }
     }
 

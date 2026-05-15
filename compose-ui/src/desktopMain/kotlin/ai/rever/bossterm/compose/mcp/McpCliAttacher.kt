@@ -138,8 +138,16 @@ object McpCliAttacher {
      * @param serverName MCP identifier the third-party CLI will use. Pass
      *   `BossTermMcpConfig.serverName` so embedders' brand is honored.
      * @param port loopback port the server is bound to.
+     * @param quiet when true, failures don't write the clipboard fallback
+     *   (used by the manager's auto-reattach on startup so a missing CLI
+     *   doesn't pollute the user's clipboard at launch).
      */
-    suspend fun attach(target: McpAttachTarget, serverName: String, port: Int): McpAttachResult =
+    suspend fun attach(
+        target: McpAttachTarget,
+        serverName: String,
+        port: Int,
+        quiet: Boolean = false
+    ): McpAttachResult =
         withContext(Dispatchers.IO) {
             val url = "http://127.0.0.1:$port/mcp"
             try {
@@ -169,9 +177,11 @@ object McpCliAttacher {
                     } else {
                         "exit ${result.exitCode}"
                     }
-                    log.warn("Attach for {} failed ({}); copying fallback to clipboard", target.displayName, reason)
-                    copyToClipboard(target.resolvedClipboard(serverName, url))
-                    McpAttachResult.CopiedToClipboard(target, "$reason — config copied to clipboard")
+                    log.warn("Attach for {} failed ({}); {}", target.displayName, reason,
+                        if (quiet) "quiet mode — clipboard untouched" else "copying fallback to clipboard")
+                    if (!quiet) copyToClipboard(target.resolvedClipboard(serverName, url))
+                    val suffix = if (quiet) "" else " — config copied to clipboard"
+                    McpAttachResult.CopiedToClipboard(target, "$reason$suffix")
                 }
             } catch (e: CancellationException) {
                 // Coroutine cancellation must propagate untouched — never
@@ -179,13 +189,16 @@ object McpCliAttacher {
                 throw e
             } catch (e: IOException) {
                 // Binary not on PATH is the most common cause.
-                log.warn("Could not spawn {} ({}); copying fallback to clipboard", target.displayName, e.message)
-                copyToClipboard(target.resolvedClipboard(serverName, url))
-                McpAttachResult.CopiedToClipboard(target, "CLI not found — config copied to clipboard")
+                log.warn("Could not spawn {} ({}); {}", target.displayName, e.message,
+                    if (quiet) "quiet mode — clipboard untouched" else "copying fallback to clipboard")
+                if (!quiet) copyToClipboard(target.resolvedClipboard(serverName, url))
+                val suffix = if (quiet) "" else " — config copied to clipboard"
+                McpAttachResult.CopiedToClipboard(target, "CLI not found$suffix")
             } catch (e: Exception) {
                 log.warn("Unexpected error attaching {}: {}", target.displayName, e.message)
-                copyToClipboard(target.resolvedClipboard(serverName, url))
-                McpAttachResult.CopiedToClipboard(target, "${e::class.simpleName} — config copied to clipboard")
+                if (!quiet) copyToClipboard(target.resolvedClipboard(serverName, url))
+                val suffix = if (quiet) "" else " — config copied to clipboard"
+                McpAttachResult.CopiedToClipboard(target, "${e::class.simpleName}$suffix")
             }
         }
 

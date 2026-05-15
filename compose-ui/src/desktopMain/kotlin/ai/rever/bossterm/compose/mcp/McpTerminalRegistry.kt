@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.mcp
 
 import ai.rever.bossterm.compose.TabbedTerminalState
+import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -102,16 +103,44 @@ object McpTerminalRegistry {
 
     private val _attachedTargets = MutableStateFlow<Set<McpAttachTarget>>(emptySet())
 
-    /** Set of CLIs we've successfully attached this BossTerm endpoint to in this session. */
+    /** Set of CLIs this BossTerm endpoint is registered with. Hydrated from
+     *  TerminalSettings.mcpAttachedTo on manager start; persisted back on
+     *  every mark*. */
     val attachedTargets: StateFlow<Set<McpAttachTarget>> = _attachedTargets.asStateFlow()
 
-    /** @suppress Internal — recorded by attach callers on Success. */
-    internal fun markAttached(target: McpAttachTarget) {
-        _attachedTargets.value = _attachedTargets.value + target
+    /**
+     * @suppress Manager-only. Replace the runtime set with the persisted
+     *   names from settings. Called once on app start so the UI shows the
+     *   correct ✓ marks immediately and the manager's auto-reattach loop
+     *   has the right targets to refresh.
+     */
+    internal fun hydrate(persistedNames: Set<String>) {
+        val targets = persistedNames.mapNotNull { name ->
+            runCatching { McpAttachTarget.valueOf(name) }.getOrNull()
+        }.toSet()
+        _attachedTargets.value = targets
     }
 
-    /** @suppress Internal — recorded when a future detach action runs (no UI yet). */
+    /** @suppress Internal — recorded by attach callers on Success. Persists to settings. */
+    internal fun markAttached(target: McpAttachTarget) {
+        val next = _attachedTargets.value + target
+        if (next != _attachedTargets.value) {
+            _attachedTargets.value = next
+            persist(next)
+        }
+    }
+
+    /** @suppress Internal — recorded when an attach fails (auto-reattach) or user detaches. */
     internal fun markDetached(target: McpAttachTarget) {
-        _attachedTargets.value = _attachedTargets.value - target
+        val next = _attachedTargets.value - target
+        if (next != _attachedTargets.value) {
+            _attachedTargets.value = next
+            persist(next)
+        }
+    }
+
+    private fun persist(targets: Set<McpAttachTarget>) {
+        val names = targets.map { it.name }.toSet()
+        SettingsManager.instance.updateSetting { copy(mcpAttachedTo = names) }
     }
 }

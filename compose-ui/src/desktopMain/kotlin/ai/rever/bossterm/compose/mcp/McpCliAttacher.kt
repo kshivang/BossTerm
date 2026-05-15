@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.mcp
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
@@ -172,6 +173,10 @@ object McpCliAttacher {
                     copyToClipboard(target.resolvedClipboard(serverName, url))
                     McpAttachResult.CopiedToClipboard(target, "$reason — config copied to clipboard")
                 }
+            } catch (e: CancellationException) {
+                // Coroutine cancellation must propagate untouched — never
+                // swallow it into a CopiedToClipboard result.
+                throw e
             } catch (e: IOException) {
                 // Binary not on PATH is the most common cause.
                 log.warn("Could not spawn {} ({}); copying fallback to clipboard", target.displayName, e.message)
@@ -192,34 +197,58 @@ object McpCliAttacher {
      * stdout — so a hung CLI gets killed by destroyForcibly instead of
      * stalling our read forever. The caller decides how to interpret
      * non-zero exits / timeouts.
+     *
+     * Coroutine-cancellation-aware: if the dispatcher interrupts the thread
+     * mid-wait (e.g. the user closed the window), the child process is
+     * destroyForcibly'd before the InterruptedException is rethrown, so we
+     * don't leave a `claude mcp add` zombie running after dispose.
      */
     private fun runProcess(cmd: List<String>): ProcessOutcome {
         val process = ProcessBuilder(cmd).redirectErrorStream(true).start()
-        // Signal EOF to any CLI that might be waiting on stdin.
         try {
-            process.outputStream.close()
-        } catch (_: Throwable) {
-            // ignore
-        }
-        val finished = process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        if (!finished) {
-            process.destroyForcibly()
-            // Drain whatever the child already wrote, but cap so we don't
-            // sit on a giant buffer.
-            val partial = try {
-                process.inputStream.bufferedReader().readText().take(160)
+            // Signal EOF to any CLI that might be waiting on stdin.
+            try {
+                process.outputStream.close()
+            } catch (_: Throwable) {
+                // ignore
+            }
+            val finished = try {
+                process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            } catch (e: InterruptedException) {
+                // Coroutine cancelled while we waited; rethrow as cancellation
+                // so callers don't mistake it for a CLI failure.
+                Thread.currentThread().interrupt()
+                throw CancellationException("Attach process interrupted").also { it.initCause(e) }
+            }
+            if (!finished) {
+                process.destroyForcibly()
+                // Drain whatever the child already wrote, but cap so we don't
+                // sit on a giant buffer.
+                val partial = try {
+                    process.inputStream.bufferedReader().readText().take(160)
+                } catch (_: Throwable) {
+                    ""
+                }
+                return ProcessOutcome(exitCode = -1, output = partial, timedOut = true)
+            }
+            // Process is done; read is bounded.
+            val output = try {
+                process.inputStream.bufferedReader().readText()
             } catch (_: Throwable) {
                 ""
             }
-            return ProcessOutcome(exitCode = -1, output = partial, timedOut = true)
+            return ProcessOutcome(exitCode = process.exitValue(), output = output, timedOut = false)
+        } finally {
+            // Defense in depth: never leak a child process if anything above
+            // throws (cancellation, I/O failure, etc).
+            if (process.isAlive) {
+                try {
+                    process.destroyForcibly()
+                } catch (_: Throwable) {
+                    // ignore
+                }
+            }
         }
-        // Process is done; read is bounded.
-        val output = try {
-            process.inputStream.bufferedReader().readText()
-        } catch (_: Throwable) {
-            ""
-        }
-        return ProcessOutcome(exitCode = process.exitValue(), output = output, timedOut = false)
     }
 
     private fun copyToClipboard(text: String) {

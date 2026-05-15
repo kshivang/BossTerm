@@ -580,12 +580,15 @@ class BossTermMcpServer(
                     } else {
                         state.splitVertical(targetTabId, ratio = effectiveRatio)
                     } ?: return@addTool errorResult("Split failed (terminal too small?)")
-                    // After splitFocusedPane the focus moves to the new pane,
-                    // so writeToFocusedPane targets it.
-                    val wrote = state.writeToFocusedPane(script, targetTabId)
-                    if (!wrote) {
-                        return@addTool errorResult("Split succeeded but write to new pane failed")
-                    }
+                    // Write directly to the new pane via its id rather than
+                    // relying on focused-pane state. Avoids any timing race
+                    // where user input or UI re-focuses between splitFocusedPane
+                    // and the write call.
+                    val newSession = state.findSession(targetTabId, paneId)
+                        ?: return@addTool errorResult(
+                            "Split returned paneId '$paneId' but the pane could not be located"
+                        )
+                    newSession.writeUserInput(script)
                     val payload = RunInPanelResult(ok = true, tabId = targetTabId, paneId = paneId)
                     successJson(json.encodeToString(RunInPanelResult.serializer(), payload))
                 }

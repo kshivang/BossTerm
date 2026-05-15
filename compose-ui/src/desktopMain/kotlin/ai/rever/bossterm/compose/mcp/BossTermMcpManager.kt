@@ -12,7 +12,6 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.host
 import io.ktor.server.request.httpMethod
 import io.ktor.server.response.respondText
-import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.server.sse.SSE
 import io.modelcontextprotocol.kotlin.sdk.server.mcp
@@ -176,10 +175,12 @@ class BossTermMcpManager(
                         return@intercept
                     }
                 }
+                // Use the Routing.mcp(path, ...) overload, not Route.mcp{}.
+                // SDK 0.8.3's Route.mcp ignores the parent route's path and
+                // mounts at the application root; the Routing overload
+                // honors the requested path correctly.
                 routing {
-                    route(PATH) {
-                        mcp { mcpServer }
-                    }
+                    mcp(path = PATH) { mcpServer }
                 }
             }
             engine.start(wait = false)

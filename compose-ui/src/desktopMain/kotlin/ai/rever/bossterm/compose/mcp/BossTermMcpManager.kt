@@ -80,18 +80,32 @@ class BossTermMcpManager(
     fun start() {
         if (watcherJob?.isActive == true) return
 
-        // First-launch reconciliation: if this install has never seen the
-        // MCP defaults, write the embedder's chosen values and mark
-        // configured. Runs at most once per install — after the flag flips,
-        // the user owns mcpEnabled / mcpPort.
+        // First-launch reconciliation. Two distinct cases share the
+        // `mcpConfigured = false` state:
+        //   1) Brand-new install — apply the embedder's defaults.
+        //   2) Existing user upgrading from a build that didn't yet have
+        //      the mcpConfigured field — preserve their saved mcpEnabled /
+        //      mcpPort and just flip the marker so future launches no-op.
+        // We tell the two apart via SettingsManager.wasFreshInstall, which
+        // is true only when no settings.json existed at load time.
         val current = settingsManager.settings.value
         if (!current.mcpConfigured) {
-            settingsManager.updateSetting {
-                copy(
-                    mcpEnabled = config.defaultEnabled,
-                    mcpPort = config.defaultPort,
-                    mcpConfigured = true
+            if (settingsManager.wasFreshInstall) {
+                log.info(
+                    "MCP first-launch defaults applied: enabled={}, port={}",
+                    config.defaultEnabled, config.defaultPort
                 )
+                settingsManager.updateSetting {
+                    copy(
+                        mcpEnabled = config.defaultEnabled,
+                        mcpPort = config.defaultPort,
+                        mcpConfigured = true
+                    )
+                }
+            } else {
+                // Upgrade path: do not touch the user's mcpEnabled / mcpPort.
+                log.info("MCP marker absent on existing install; preserving user settings")
+                settingsManager.updateSetting { copy(mcpConfigured = true) }
             }
         }
 
@@ -171,6 +185,7 @@ class BossTermMcpManager(
             engine.start(wait = false)
             runningEngine = engine
             runningPort = port
+            registry.setRunning(port)
             log.info(
                 "BossTerm MCP server ready: http://{}:{}{} (SSE transport, {} state(s) registered)",
                 HOST, port, PATH, registry.stateCount()
@@ -202,6 +217,7 @@ class BossTermMcpManager(
         } finally {
             runningEngine = null
             runningPort = null
+            registry.setStopped()
         }
     }
 

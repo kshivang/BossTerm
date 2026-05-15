@@ -701,7 +701,15 @@ fun TabbedTerminal(
         Column(modifier = Modifier.fillMaxSize()) {
             // Tab bar at top (show when multiple tabs, alwaysShowTabBar is set,
             // or the MCP indicator is on — the bar hosts the MCP status indicator).
-            val showMcpIndicator = settings.mcpEnabled && settings.mcpShowStatusIndicator
+            //
+            // The MCP indicator only shows when the manager has *actually* bound
+            // the port (runningPort != null) — not just when the user toggled
+            // mcpEnabled. Prevents a false-positive dot in embedder builds that
+            // forgot to construct BossTermMcpManager, and in cases where the
+            // bind failed (e.g. port already in use).
+            val mcpRunningPort by ai.rever.bossterm.compose.mcp.McpTerminalRegistry
+                .runningPort.collectAsState()
+            val showMcpIndicator = mcpRunningPort != null && settings.mcpShowStatusIndicator
             if (tabController.tabs.size > 1 || settings.alwaysShowTabBar || showMcpIndicator) {
             TabBar(
                 tabs = tabController.tabs,

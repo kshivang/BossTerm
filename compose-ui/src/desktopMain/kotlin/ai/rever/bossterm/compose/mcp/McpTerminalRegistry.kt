@@ -2,6 +2,9 @@ package ai.rever.bossterm.compose.mcp
 
 import ai.rever.bossterm.compose.TabbedTerminalState
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -59,4 +62,30 @@ object McpTerminalRegistry {
 
     /** Total registered state count. Useful for diagnostics/tests. */
     fun stateCount(): Int = states.size
+
+    // -----------------------------------------------------------------
+    // Server running state — owned by BossTermMcpManager, read by UI.
+    // -----------------------------------------------------------------
+
+    private val _runningPort = MutableStateFlow<Int?>(null)
+
+    /**
+     * Port the MCP Ktor engine is currently bound to, or `null` when no
+     * server is running. Used by the in-app status indicator so the dot
+     * only lights up when the manager has successfully bound — never just
+     * because the user toggled the setting. Reflects reality, not intent.
+     *
+     * Updated by [BossTermMcpManager] on successful start / on stop.
+     */
+    val runningPort: StateFlow<Int?> = _runningPort.asStateFlow()
+
+    /** @suppress Manager-only. Mark the server as running on [port]. */
+    internal fun setRunning(port: Int) {
+        _runningPort.value = port
+    }
+
+    /** @suppress Manager-only. Mark the server as stopped. */
+    internal fun setStopped() {
+        _runningPort.value = null
+    }
 }

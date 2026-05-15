@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.mcp
 
 import ai.rever.bossterm.compose.TabbedTerminalState
+import ai.rever.bossterm.compose.debug.ChunkSource
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
@@ -11,6 +12,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -35,13 +37,17 @@ import kotlinx.serialization.json.putJsonObject
  * tab back to its owning state without needing a window id.
  *
  * Tool surface (all tools take a `tab_id` argument unless otherwise noted):
- *   - `list_tabs`         — enumerate all open tabs across all windows.
- *   - `get_active_tab`    — return the active tab of the primary window.
- *   - `read_scrollback`   — read the last N lines from a tab's buffer.
- *   - `search_output`     — regex-search a tab's buffer.
- *   - `get_last_command`  — return the most recently completed OSC 133 command.
- *   - `send_input`        — write raw text to a tab's stdin (queued).
- *   - `send_signal`       — send ctrl_c / ctrl_d / ctrl_z to a tab (queued).
+ *   - `list_tabs`           — enumerate all open tabs across all windows.
+ *   - `get_active_tab`      — return the active tab of the primary window.
+ *   - `read_scrollback`     — read the last N lines from a tab's buffer.
+ *   - `search_output`       — regex-search a tab's buffer.
+ *   - `get_last_command`    — return the most recently completed OSC 133 command.
+ *   - `read_debug_console`  — read recent entries from a tab's debug-data buffer.
+ *
+ * Write tools (gated by `BossTermMcpConfig.allowWriteTools`):
+ *   - `send_input`          — write raw text to a tab's stdin (queued).
+ *   - `send_signal`         — send ctrl_c / ctrl_d / ctrl_z to a tab (queued).
+ *   - `run_in_panel`        — open a new tab / split pane and run a script in it.
  *
  * Threading: tool handlers run on whatever coroutine context the MCP
  * transport dispatches them on. All operations performed here are either
@@ -85,9 +91,11 @@ class BossTermMcpServer(
         registerReadScrollback(server)
         registerSearchOutput(server)
         registerGetLastCommand(server)
+        registerReadDebugConsole(server)
         if (config.allowWriteTools) {
             registerSendInput(server)
             registerSendSignal(server)
+            registerRunInPanel(server)
         }
 
         // Embedder hook: register app-specific tools after built-ins. Names
@@ -425,6 +433,177 @@ class BossTermMcpServer(
     }
 
     // -----------------------------------------------------------------
+    // Tool: run_in_panel
+    // -----------------------------------------------------------------
+
+    private fun registerRunInPanel(server: Server) {
+        server.addTool(
+            name = toolName("run_in_panel"),
+            description = "Open a new terminal panel and write a script to it. Modes: " +
+                    "'new_tab' (fresh tab with initialCommand), 'horizontal_split' (split " +
+                    "below focused pane), 'vertical_split' (split beside focused pane). The " +
+                    "caller appends '\\n' to script if they want it to execute.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("panel") {
+                        put("type", "string")
+                        put("description", "One of: new_tab, horizontal_split, vertical_split.")
+                    }
+                    putJsonObject("script") {
+                        put("type", "string")
+                        put("description", "Raw text to write to the new panel's shell. Include '\\n' to submit.")
+                    }
+                    putJsonObject("tab_id") {
+                        put("type", "string")
+                        put("description", "Optional source tab id. Required for splits; " +
+                                "defaults to the primary window's active tab.")
+                    }
+                    putJsonObject("working_dir") {
+                        put("type", "string")
+                        put("description", "Optional working directory for the new panel. " +
+                                "For splits, defaults to the inherited cwd via OSC 7.")
+                    }
+                },
+                required = listOf("panel", "script")
+            )
+        ) { request ->
+            val args = request.arguments
+            val panel = args.requireString("panel")?.lowercase()
+                ?: return@addTool errorResult("Missing required argument: panel")
+            val script = args.requireString("script")
+                ?: return@addTool errorResult("Missing required argument: script")
+            val requestedTabId = args.requireString("tab_id")
+            val workingDir = args.requireString("working_dir")
+
+            // Resolve the target state. If tab_id given, find the state that
+            // owns it. Otherwise use the primary registered window.
+            val state: TabbedTerminalState = if (requestedTabId != null) {
+                registry.findState(requestedTabId)
+                    ?: return@addTool errorResult("Unknown tab_id: $requestedTabId")
+            } else {
+                registry.primaryState()
+                    ?: return@addTool errorResult("No registered terminal window")
+            }
+
+            when (panel) {
+                "new_tab" -> {
+                    val newId = state.createTab(
+                        workingDir = workingDir,
+                        initialCommand = script
+                    ) ?: return@addTool errorResult("Failed to create tab")
+                    val payload = RunInPanelResult(ok = true, tabId = newId, paneId = null)
+                    successJson(json.encodeToString(RunInPanelResult.serializer(), payload))
+                }
+                "horizontal_split", "vertical_split" -> {
+                    val targetTabId = requestedTabId
+                        ?: state.activeTabId
+                        ?: return@addTool errorResult("No active tab to split")
+                    val paneId = if (panel == "horizontal_split") {
+                        state.splitHorizontal(targetTabId)
+                    } else {
+                        state.splitVertical(targetTabId)
+                    } ?: return@addTool errorResult("Split failed (terminal too small?)")
+                    // After splitFocusedPane the focus moves to the new pane,
+                    // so writeToFocusedPane targets it.
+                    val wrote = state.writeToFocusedPane(script, targetTabId)
+                    if (!wrote) {
+                        return@addTool errorResult("Split succeeded but write to new pane failed")
+                    }
+                    val payload = RunInPanelResult(ok = true, tabId = targetTabId, paneId = paneId)
+                    successJson(json.encodeToString(RunInPanelResult.serializer(), payload))
+                }
+                else -> errorResult(
+                    "Unknown panel: '$panel'. Expected one of: new_tab, horizontal_split, vertical_split."
+                )
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Tool: read_debug_console
+    // -----------------------------------------------------------------
+
+    private fun registerReadDebugConsole(server: Server) {
+        server.addTool(
+            name = toolName("read_debug_console"),
+            description = "Read recent entries from a tab's debug-data buffer (PTY output, " +
+                    "user input, console-log entries). Per-tab circular buffer; cap is " +
+                    "settings.debugMaxChunks (default 1000). Supports incremental polling via " +
+                    "since_index and filtering via sources.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("tab_id") {
+                        put("type", "string")
+                        put("description", "Stable tab id (see list_tabs).")
+                    }
+                    putJsonObject("max_chunks") {
+                        put("type", "integer")
+                        put("description", "Maximum entries to return. Default 100, clamped to 1..1000.")
+                        put("minimum", 1)
+                    }
+                    putJsonObject("since_index") {
+                        put("type", "integer")
+                        put("description", "Return only chunks with index > since_index. " +
+                                "Use the previous response's stats.newestIndex for polling.")
+                    }
+                    putJsonObject("sources") {
+                        put("type", "array")
+                        put(
+                            "description",
+                            "Filter to a subset of sources: PTY_OUTPUT, USER_INPUT, " +
+                                    "EMULATOR_GENERATED, CONSOLE_LOG. Unknown names are " +
+                                    "silently ignored."
+                        )
+                    }
+                },
+                required = listOf("tab_id")
+            )
+        ) { request ->
+            val args = request.arguments
+            val tabId = args.requireString("tab_id")
+                ?: return@addTool errorResult("Missing required argument: tab_id")
+            val tab = registry.findTab(tabId)
+                ?: return@addTool errorResult("Unknown tab_id: $tabId")
+            val collector = tab.debugCollector
+                ?: return@addTool errorResult("Debug collector not initialized for this tab")
+
+            val maxChunks = (args.optionalInt("max_chunks") ?: DEFAULT_DEBUG_CHUNKS)
+                .coerceIn(1, MAX_DEBUG_CHUNKS)
+            val sinceIndex = args.optionalInt("since_index")?.coerceAtLeast(0)
+            val sourcesFilter: Set<ChunkSource>? = (args?.get("sources") as? JsonArray)
+                ?.mapNotNull { item ->
+                    runCatching { ChunkSource.valueOf(item.jsonPrimitive.content) }.getOrNull()
+                }
+                ?.toSet()
+                ?.takeUnless { it.isEmpty() }
+
+            var seq = collector.getDebugChunks().asSequence()
+            if (sinceIndex != null) seq = seq.filter { it.index > sinceIndex }
+            if (sourcesFilter != null) seq = seq.filter { it.source in sourcesFilter }
+            val resultChunks = seq.toList().takeLast(maxChunks).map { chunk ->
+                DebugConsoleChunk(
+                    index = chunk.index,
+                    timestamp = chunk.timestamp,
+                    source = chunk.source.name,
+                    data = String(chunk.data)
+                )
+            }
+
+            val rawStats = collector.getStats()
+            val statsDto = DebugConsoleStats(
+                totalChunks = rawStats.totalChunksRecorded,
+                chunksStored = rawStats.chunksStored,
+                oldestIndex = rawStats.earliestChunkIndex,
+                newestIndex = rawStats.latestChunkIndex,
+                debugEnabled = tab.debugEnabled.value
+            )
+
+            val payload = ReadDebugConsoleResult(chunks = resultChunks, stats = statsDto)
+            successJson(json.encodeToString(ReadDebugConsoleResult.serializer(), payload))
+        }
+    }
+
+    // -----------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------
 
@@ -546,8 +725,41 @@ class BossTermMcpServer(
     @Serializable
     data class ErrorResult(val error: String)
 
+    @Serializable
+    data class RunInPanelResult(
+        val ok: Boolean,
+        val tabId: String,
+        /** Non-null only for split modes — the new pane's session id. */
+        val paneId: String?
+    )
+
+    @Serializable
+    data class DebugConsoleChunk(
+        val index: Int,
+        val timestamp: Long,
+        val source: String,
+        val data: String
+    )
+
+    @Serializable
+    data class DebugConsoleStats(
+        val totalChunks: Int,
+        val chunksStored: Int,
+        val oldestIndex: Int?,
+        val newestIndex: Int?,
+        val debugEnabled: Boolean
+    )
+
+    @Serializable
+    data class ReadDebugConsoleResult(
+        val chunks: List<DebugConsoleChunk>,
+        val stats: DebugConsoleStats
+    )
+
     companion object {
         private const val DEFAULT_SCROLLBACK_LINES = 200
         private const val DEFAULT_SEARCH_MAX_MATCHES = 50
+        private const val DEFAULT_DEBUG_CHUNKS = 100
+        private const val MAX_DEBUG_CHUNKS = 1000
     }
 }

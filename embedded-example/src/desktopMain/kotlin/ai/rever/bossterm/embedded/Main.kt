@@ -155,6 +155,13 @@ fun main() {
 
 @Composable
 fun EmbeddedExampleApp() {
+    // Note: this example uses EmbeddableTerminal (single-terminal component),
+    // whose state cannot be registered with McpTerminalRegistry — the registry
+    // only accepts TabbedTerminalState. As a consequence, `list_tabs` and
+    // the other tab-scoped MCP tools return empty here. The custom
+    // `embedded_example_app_info` tool wired in main() still works because
+    // it doesn't need tab visibility. For a host that wants MCP clients to
+    // see tabs, use TabbedTerminal + TabbedTerminalState (see tabbed-example).
     val terminalState = rememberEmbeddableTerminalState()
     val compactTerminalState = rememberEmbeddableTerminalState()
     var sidebarExpanded by remember { mutableStateOf(true) }

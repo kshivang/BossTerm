@@ -22,6 +22,7 @@ Welcome to the **BossTerm** wiki! BossTerm is a modern, high-performance termina
 |---------|-------------|
 | [[Embedding-Guide]] | Embed a single terminal in your app |
 | [[Tabbed-Terminal-Guide]] | Full-featured tabbed terminal embedding |
+| [[MCP-Server]] | Expose tabs to MCP clients (Claude Code, Codex, Gemini, OpenCode) |
 | [[API-Reference]] | Complete API documentation |
 | [[Troubleshooting]] | Common issues and solutions |
 

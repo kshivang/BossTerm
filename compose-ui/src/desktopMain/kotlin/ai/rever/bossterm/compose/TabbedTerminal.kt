@@ -28,6 +28,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import ai.rever.bossterm.compose.ContextMenuElement
+import ai.rever.bossterm.compose.ContextMenuItem
+import ai.rever.bossterm.compose.ContextMenuSection
+import ai.rever.bossterm.compose.ContextMenuSubmenu
 import ai.rever.bossterm.compose.ai.AIAssistantDefinition
 import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.ai.AICommandInterceptor
@@ -696,6 +699,37 @@ fun TabbedTerminal(
         }
     }
 
+    // Shared MCP attach plumbing — used by both the indicator's right-click
+    // context menu and the terminal canvas's right-click menu. Hoisted to
+    // TabbedTerminal scope so the in-flight Pending → Done toast state is
+    // a single source of truth across both entry points.
+    val mcpRunningPort by ai.rever.bossterm.compose.mcp.McpTerminalRegistry
+        .runningPort.collectAsState()
+    val mcpScope = rememberCoroutineScope()
+    var attachStatus by remember {
+        mutableStateOf<ai.rever.bossterm.compose.mcp.AttachStatus?>(null)
+    }
+    LaunchedEffect(attachStatus) {
+        val s = attachStatus
+        if (s is ai.rever.bossterm.compose.mcp.AttachStatus.Done) {
+            kotlinx.coroutines.delay(5000)
+            if (attachStatus === s) attachStatus = null
+        }
+    }
+    val mcpServerName = ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig
+        .current?.serverName ?: "bossterm"
+    val fireMcpAttach: (ai.rever.bossterm.compose.mcp.McpAttachTarget) -> Unit = { target ->
+        val port = ai.rever.bossterm.compose.mcp.McpTerminalRegistry.runningPort.value
+        if (port != null) {
+            attachStatus = ai.rever.bossterm.compose.mcp.AttachStatus.Pending(target)
+            mcpScope.launch {
+                val result = ai.rever.bossterm.compose.mcp
+                    .McpCliAttacher.attach(target, mcpServerName, port)
+                attachStatus = ai.rever.bossterm.compose.mcp.AttachStatus.Done(result)
+            }
+        }
+    }
+
     // Tab UI layout with focus overlay support
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -971,6 +1005,28 @@ fun TabbedTerminal(
                     )
                     items = items + shellItems
 
+                    // MCP attach submenu — only shown when the Ktor server
+                    // is actually bound. Each entry fires the shared
+                    // fireMcpAttach so the AttachToast surfaces the result
+                    // in the same place the indicator's right-click does.
+                    if (ai.rever.bossterm.compose.mcp.McpTerminalRegistry.runningPort.value != null) {
+                        val mcpAttachItems: List<ContextMenuElement> = listOf(
+                            ContextMenuSection(id = "mcp_section", label = "MCP"),
+                            ContextMenuSubmenu(
+                                id = "mcp_attach_submenu",
+                                label = "Attach MCP to…",
+                                items = ai.rever.bossterm.compose.mcp.McpAttachTarget.entries.map { target ->
+                                    ContextMenuItem(
+                                        id = "mcp_attach_${target.name}",
+                                        label = target.displayName,
+                                        action = { fireMcpAttach(target) }
+                                    )
+                                }
+                            )
+                        )
+                        items = items + mcpAttachItems
+                    }
+
                     items
                 },
                 onContextMenuOpen = onContextMenuOpen,
@@ -1017,30 +1073,14 @@ fun TabbedTerminal(
             )
         }
 
-        // MCP status indicator — floats over the top-right of the content
-        // area (same slot the global-hotkey hint uses), so it's visible
+        // MCP status indicator + toast — floats over the top-right of the
+        // content area (same slot the global-hotkey hint uses), visible
         // regardless of whether the tab bar is shown. Only renders when the
         // Ktor server has actually bound the port (registry.runningPort != null),
         // not just when the user toggled mcpEnabled. The dot reflects reality.
-        val mcpRunningPort by ai.rever.bossterm.compose.mcp.McpTerminalRegistry
-            .runningPort.collectAsState()
-        // Hoisted state so an in-flight attach survives a brief unmount of
-        // the indicator (e.g. settings toggling mcpShowStatusIndicator off).
-        val mcpScope = rememberCoroutineScope()
-        var attachStatus by remember {
-            mutableStateOf<ai.rever.bossterm.compose.mcp.AttachStatus?>(null)
-        }
-        // Auto-dismiss the toast a few seconds after completion.
-        LaunchedEffect(attachStatus) {
-            val s = attachStatus
-            if (s is ai.rever.bossterm.compose.mcp.AttachStatus.Done) {
-                kotlinx.coroutines.delay(5000)
-                if (attachStatus === s) attachStatus = null
-            }
-        }
+        // Both right-click paths (indicator's own menu + the terminal canvas's
+        // menu) drive attachStatus, which the AttachToast surfaces here.
         if (mcpRunningPort != null && settings.mcpShowStatusIndicator) {
-            val mcpServerName = ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig
-                .current?.serverName ?: "bossterm"
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -1056,15 +1096,7 @@ fun TabbedTerminal(
                             copy(mcpShowStatusIndicator = false)
                         }
                     },
-                    onAttachRequest = { target ->
-                        val port = mcpRunningPort ?: return@McpStatusIndicator
-                        attachStatus = ai.rever.bossterm.compose.mcp.AttachStatus.Pending(target)
-                        mcpScope.launch {
-                            val result = ai.rever.bossterm.compose.mcp
-                                .McpCliAttacher.attach(target, mcpServerName, port)
-                            attachStatus = ai.rever.bossterm.compose.mcp.AttachStatus.Done(result)
-                        }
-                    }
+                    onAttachRequest = fireMcpAttach
                 )
                 attachStatus?.let { status ->
                     ai.rever.bossterm.compose.mcp.AttachToast(status = status)

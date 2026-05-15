@@ -735,6 +735,14 @@ data class TerminalSettings(
      */
     val alwaysShowTabBar: Boolean = false,
 
+    /**
+     * Show the small dim "Cmd+1"/"Ctrl+1" hotkey hint label in the top-right
+     * of each window (native title bar mode) or in the trailing slot of the
+     * custom title bar. Hidden by default since global hotkeys are advanced
+     * and the hint adds visual clutter for users who don't use them.
+     */
+    val showGlobalHotkeyHint: Boolean = false,
+
     // ===== MCP Server Settings =====
 
     /**

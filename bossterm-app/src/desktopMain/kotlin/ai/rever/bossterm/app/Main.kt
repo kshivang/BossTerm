@@ -617,16 +617,20 @@ fun main() {
                         shape = RoundedCornerShape(cornerRadius)
                     ) {
                         Box(modifier = Modifier.fillMaxSize()) {
-                            // Compute global hotkey hint (used for both title bar modes)
+                            // Compute global hotkey hint (used for both title bar modes).
+                            // Returns null when the user has hidden the hint via
+                            // showGlobalHotkeyHint, so the render sites' null-check
+                            // skips both the overlay and the title-bar slot.
                             val globalHotkeyHint = remember(
                                 windowSettings.globalHotkeyEnabled,
+                                windowSettings.showGlobalHotkeyHint,
                                 windowSettings.globalHotkeyCtrl,
                                 windowSettings.globalHotkeyAlt,
                                 windowSettings.globalHotkeyShift,
                                 windowSettings.globalHotkeyWin,
                                 window.windowNumber
                             ) {
-                                if (windowSettings.globalHotkeyEnabled && window.windowNumber in 1..9) {
+                                if (windowSettings.globalHotkeyEnabled && windowSettings.showGlobalHotkeyHint && window.windowNumber in 1..9) {
                                     val config = HotKeyConfig.fromSettings(windowSettings)
                                     config.toWindowDisplayString(window.windowNumber, useMacSymbols = isMacOS)
                                 } else {

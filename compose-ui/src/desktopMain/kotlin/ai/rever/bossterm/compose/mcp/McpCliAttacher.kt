@@ -44,9 +44,14 @@ enum class McpAttachTarget(
     val persistenceKey: String,
     /** Command run first to remove any existing entry. Errors ignored. `{NAME}` is replaced. */
     private val removeCommand: List<String>?,
-    /** Primary command. `{URL}` and `{NAME}` get replaced at call time. */
-    private val addCommand: List<String>,
-    /** Help text + ready-to-paste config when the shell-out fails. */
+    /**
+     * Primary command. `{URL}` and `{NAME}` get replaced at call time. `null`
+     * marks the CLI as having no non-interactive `mcp add` form — the attach
+     * helper skips the shell-out entirely and goes straight to the clipboard
+     * fallback. (Currently OpenCode, which only exposes a TUI prompt.)
+     */
+    private val addCommand: List<String>?,
+    /** Help text + ready-to-paste config when the shell-out fails or is skipped. */
     private val clipboardFallback: String
 ) {
     CLAUDE_CODE(
@@ -106,8 +111,13 @@ enum class McpAttachTarget(
     OPENCODE(
         displayName = "OpenCode",
         persistenceKey = "OPENCODE",
-        removeCommand = listOf("opencode", "mcp", "remove", "{NAME}"),
-        addCommand = listOf("opencode", "mcp", "add", "{NAME}", "--transport", "sse", "{URL}"),
+        // opencode 0.x's `mcp add` is an interactive TUI prompt with no
+        // positional / flag form — running it from a non-tty parent just
+        // prints help and exits 1. Mark addCommand = null so the attacher
+        // skips the shell-out and goes straight to clipboard. removeCommand
+        // is set to null for symmetry (we shouldn't try to invoke it either).
+        removeCommand = null,
+        addCommand = null,
         clipboardFallback = """
             // Merge into ~/.config/opencode/opencode.json
             {
@@ -121,8 +131,8 @@ enum class McpAttachTarget(
         """.trimIndent()
     );
 
-    fun resolvedAddCommand(name: String, url: String): List<String> =
-        addCommand.map { it.replace("{NAME}", name).replace("{URL}", url) }
+    fun resolvedAddCommand(name: String, url: String): List<String>? =
+        addCommand?.map { it.replace("{NAME}", name).replace("{URL}", url) }
 
     fun resolvedRemoveCommand(name: String): List<String>? =
         removeCommand?.map { it.replace("{NAME}", name) }
@@ -206,6 +216,22 @@ object McpCliAttacher {
                 }
 
                 val cmd = target.resolvedAddCommand(serverName, url)
+                if (cmd == null) {
+                    // CLI has no non-interactive `mcp add` (e.g. OpenCode TUI
+                    // prompt). Skip the shell-out and drop the config snippet
+                    // on the clipboard so the user can paste it manually.
+                    log.info(
+                        "{} has no scriptable `mcp add` — {}",
+                        target.displayName,
+                        if (quiet) "skipping (quiet mode)" else "copying fallback to clipboard"
+                    )
+                    if (!quiet) copyToClipboard(target.resolvedClipboard(serverName, url))
+                    val suffix = if (quiet) "" else " — config copied to clipboard"
+                    return@withContext McpAttachResult.CopiedToClipboard(
+                        target,
+                        "manual setup required (no scriptable `mcp add`)$suffix"
+                    )
+                }
                 log.info("Attaching {} via: {}", target.displayName, cmd.joinToString(" "))
                 val result = runProcess(cmd)
                 if (result.exitCode == 0) {

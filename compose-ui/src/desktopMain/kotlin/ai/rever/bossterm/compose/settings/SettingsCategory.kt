@@ -88,6 +88,11 @@ enum class SettingsCategory(
         icon = Icons.Default.KeyboardArrowUp,
         description = "System-wide hotkey to summon BossTerm"
     ),
+    MCP(
+        displayName = "MCP Server",
+        icon = Icons.Default.Share,
+        description = "In-process Model Context Protocol endpoint for AI clients"
+    ),
     ABOUT(
         displayName = "About",
         icon = Icons.Default.Favorite,

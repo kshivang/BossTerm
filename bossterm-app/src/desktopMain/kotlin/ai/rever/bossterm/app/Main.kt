@@ -429,6 +429,22 @@ fun main() {
                                     onClick = { window.menuActions.onLaunchOpenCode?.invoke() }
                                 )
                             }
+                            // MCP server submenu — quick toggle plus deep-link into settings.
+                            Menu("MCP Server") {
+                                CheckboxItem(
+                                    "Enable MCP Server",
+                                    checked = windowSettings.mcpEnabled,
+                                    onCheckedChange = { enabled ->
+                                        settingsManagerForWindow.updateSetting {
+                                            copy(mcpEnabled = enabled)
+                                        }
+                                    }
+                                )
+                                Item(
+                                    "Settings…",
+                                    onClick = { showSettingsDialog = true }
+                                )
+                            }
                             Separator()
                             // Git submenu - conditional based on repo status
                             Menu("Git") {

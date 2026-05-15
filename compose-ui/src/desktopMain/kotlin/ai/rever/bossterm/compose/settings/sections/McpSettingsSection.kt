@@ -46,6 +46,15 @@ fun McpSettingsSection(
                         "Changing while enabled will rebind to the new port.",
                 enabled = settings.mcpEnabled
             )
+
+            SettingsToggle(
+                label = "Show Status Indicator in Tab Bar",
+                checked = settings.mcpShowStatusIndicator,
+                onCheckedChange = { onSettingsChange(settings.copy(mcpShowStatusIndicator = it)) },
+                description = "Display a small green dot in the tab bar while the MCP server " +
+                        "is running. Click the dot to jump to this settings page.",
+                enabled = settings.mcpEnabled
+            )
         }
 
         Spacer(modifier = Modifier.height(16.dp))

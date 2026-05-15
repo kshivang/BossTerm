@@ -754,6 +754,14 @@ data class TerminalSettings(
      */
     val mcpPort: Int = 7676,
 
+    /**
+     * Show the small green status indicator in the tab bar while the MCP
+     * server is running. Has no effect when mcpEnabled is false. Turning
+     * this off also stops forcing the tab bar to render in single-tab mode
+     * for the indicator's sake.
+     */
+    val mcpShowStatusIndicator: Boolean = true,
+
     // ===== AI Assistant Settings =====
 
     /**

@@ -700,8 +700,9 @@ fun TabbedTerminal(
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Tab bar at top (show when multiple tabs, alwaysShowTabBar is set,
-            // or the MCP server is on — the bar hosts the MCP status indicator).
-            if (tabController.tabs.size > 1 || settings.alwaysShowTabBar || settings.mcpEnabled) {
+            // or the MCP indicator is on — the bar hosts the MCP status indicator).
+            val showMcpIndicator = settings.mcpEnabled && settings.mcpShowStatusIndicator
+            if (tabController.tabs.size > 1 || settings.alwaysShowTabBar || showMcpIndicator) {
             TabBar(
                 tabs = tabController.tabs,
                 activeTabIndex = tabController.activeTabIndex,
@@ -722,7 +723,7 @@ fun TabbedTerminal(
                     // Create new window and transfer both tab and split state
                     WindowManager.createWindowWithTab(extractedTab, splitState)
                 },
-                mcpEnabled = settings.mcpEnabled,
+                mcpEnabled = showMcpIndicator,
                 onMcpIndicatorClick = onShowMcpSettings
             )
         }

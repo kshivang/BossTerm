@@ -188,12 +188,50 @@ class BossTermMcpManager(
         }
     }
 
-    private fun startEngineLocked(port: Int) {
+    private fun startEngineLocked(desiredPort: Int) {
+        // Try the user's configured port first, then walk sequential ports up to
+        // MAX_PORT_FALLBACK_ATTEMPTS - 1 more. Only `BindException` (port in use)
+        // triggers fallback; other failures stay hard errors so config bugs aren't
+        // silently masked. The persisted `mcpPort` is NOT updated — the next
+        // restart still tries the original first in case the conflicting process
+        // exited.
+        for (offset in 0 until MAX_PORT_FALLBACK_ATTEMPTS) {
+            val port = desiredPort + offset
+            if (port > MAX_TCP_PORT) {
+                log.error(
+                    "BossTerm MCP port fallback exhausted (last tried {} > {}); giving up",
+                    port, MAX_TCP_PORT
+                )
+                return
+            }
+            if (tryStartOnPort(port, desiredPort)) return
+        }
+        log.error(
+            "BossTerm MCP server failed to bind any port in [{},{}]; giving up",
+            desiredPort, desiredPort + MAX_PORT_FALLBACK_ATTEMPTS - 1
+        )
+    }
+
+    /**
+     * One bind attempt. Returns true on success (state fields are set), false
+     * if [port] was busy (caller should try the next port). Hard failures
+     * (everything other than [BindException]) clear state and return true so
+     * the loop stops — there's no point retrying e.g. an SDK initialization
+     * error on a different port.
+     */
+    private fun tryStartOnPort(port: Int, desiredPort: Int): Boolean {
         val mcpServerWrapper = BossTermMcpServer(registry, config, settingsManager)
         val mcpServer = mcpServerWrapper.createServer()
         val allowedHosts = setOf("127.0.0.1", "localhost", "127.0.0.1:$port", "localhost:$port")
         try {
-            log.info("Starting BossTerm MCP server on http://{}:{}{}", HOST, port, PATH)
+            if (port == desiredPort) {
+                log.info("Starting BossTerm MCP server on http://{}:{}{}", HOST, port, PATH)
+            } else {
+                log.info(
+                    "Starting BossTerm MCP server on http://{}:{}{} (fallback from configured port {})",
+                    HOST, port, PATH, desiredPort
+                )
+            }
             val engine = embeddedServer(CIO, host = HOST, port = port) {
                 install(SSE)
                 // DNS-rebinding defense: only accept Host headers that name a
@@ -232,6 +270,7 @@ class BossTermMcpManager(
                 HOST, port, PATH, registry.stateCount()
             )
             launchAutoReattach(port)
+            return true
         } catch (e: BindException) {
             log.warn(
                 "BossTerm MCP server failed to bind {}:{} (port in use?): {}",
@@ -241,12 +280,15 @@ class BossTermMcpManager(
             runningEngine = null
             runningPort = null
             runningServer = null
+            return false
         } catch (e: Throwable) {
             log.error("BossTerm MCP server failed to start on {}:{}", HOST, port, e)
             mcpServerWrapper.detachServer()
             runningEngine = null
             runningPort = null
             runningServer = null
+            // Stop the loop — this isn't a "try the next port" condition.
+            return true
         }
     }
 
@@ -318,5 +360,18 @@ class BossTermMcpManager(
         private const val PATH = "/"
         private const val STOP_GRACE_MS = 500L
         private const val STOP_TIMEOUT_MS = 1500L
+
+        /**
+         * How many sequential ports to try when the user's configured `mcpPort`
+         * is busy. The first attempt is the configured port; subsequent attempts
+         * walk +1, +2, ... A small range so we don't wander off into ephemeral
+         * port territory or run for too long on each (re)start. Each attempt
+         * is a separate Ktor bind, so this also bounds startup latency in the
+         * worst case (~10 × the bind timeout).
+         */
+        private const val MAX_PORT_FALLBACK_ATTEMPTS = 10
+
+        /** Upper bound on TCP port numbers; we never wrap past this. */
+        private const val MAX_TCP_PORT = 65535
     }
 }

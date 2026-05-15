@@ -45,7 +45,10 @@ The server is constructed in
 and binds via Ktor:
 
 - Host: `127.0.0.1` (never `0.0.0.0`).
-- Port: `settings.mcpPort` (default `7676`).
+- Port: `settings.mcpPort` (default `7676`). If that port is busy, the
+  manager automatically falls back to the next free port in a 10-port
+  window. The configured setting is not modified; the next restart still
+  tries the original first. See [Troubleshooting](#troubleshooting).
 - Path: `/` (root). The SDK 0.8.3 quirk re-mounts SSE/POST at the application
   root regardless of any wrapping path, so the endpoint URL is the
   authoritative pointer.
@@ -530,10 +533,28 @@ tool registry.
 
 ## Troubleshooting
 
-**The server won't bind on the chosen port.** Another process is already on
-that port. The startup logs surface `BossTerm MCP server failed to bind
-127.0.0.1:7676 (port in use?)`. Pick a different port in Settings; the
-manager rebinds automatically.
+**The server bound to a different port than I configured.** Another process
+is already on the configured port. The manager automatically walks up to
+the next 9 sequential ports on `BindException` (so configured `7676` may end
+up bound on `7677` if `7676` is busy). Look for one of these in the
+startup logs:
+
+```
+INFO  BossTermMcpManager - Starting BossTerm MCP server on http://127.0.0.1:7677/ (fallback from configured port 7676)
+INFO  BossTermMcpManager - BossTerm MCP server ready: http://127.0.0.1:7677/ ...
+```
+
+The user-configured `mcpPort` setting is NOT updated by fallback — the next
+restart still tries the original first, in case the conflicting process has
+exited. The status pill's hover tooltip and the silent CLI auto-reattach
+both use the actual running port, so registered AI CLIs follow along
+automatically.
+
+**The server won't bind any port at all.** All 10 attempted ports were busy,
+or the very first attempt hit a non-bind error (config bug, permission
+denied, etc.). Check the startup logs for `BossTerm MCP server failed to
+bind any port in [...]` or `BossTerm MCP server failed to start on ...`.
+Pick a different starting port in Settings.
 
 **The status pill says "BossTerm MCP on" but clients see no tabs.** The
 window's `TabbedTerminalState` / `EmbeddableTerminalState` isn't registered

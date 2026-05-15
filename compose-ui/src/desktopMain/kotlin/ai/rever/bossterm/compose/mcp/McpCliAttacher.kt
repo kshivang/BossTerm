@@ -141,18 +141,24 @@ object McpCliAttacher {
     suspend fun attach(target: McpAttachTarget, serverName: String, port: Int): McpAttachResult =
         withContext(Dispatchers.IO) {
             val url = "http://127.0.0.1:$port/mcp"
-
-            // First, best-effort remove. Many CLIs' `mcp add` is not
-            // idempotent — this turns "already exists" errors into a
-            // silent no-op so a re-click of the button just works.
-            target.resolvedRemoveCommand(serverName)?.let { removeCmd ->
-                runProcess(removeCmd, allowFailure = true)
-            }
-
-            val cmd = target.resolvedAddCommand(serverName, url)
-            log.info("Attaching {} via: {}", target.displayName, cmd.joinToString(" "))
             try {
-                val result = runProcess(cmd, allowFailure = false)
+                // First, best-effort remove. Many CLIs' `mcp add` is not
+                // idempotent — this turns "already exists" errors into a
+                // silent no-op so a re-click of the button just works.
+                // Wrapped in its own try so a missing binary on remove
+                // doesn't short-circuit the whole attempt (although the
+                // outer catch would still reach a CopiedToClipboard).
+                target.resolvedRemoveCommand(serverName)?.let { removeCmd ->
+                    try {
+                        runProcess(removeCmd)
+                    } catch (_: Throwable) {
+                        // ignore: idempotency convenience only
+                    }
+                }
+
+                val cmd = target.resolvedAddCommand(serverName, url)
+                log.info("Attaching {} via: {}", target.displayName, cmd.joinToString(" "))
+                val result = runProcess(cmd)
                 if (result.exitCode == 0) {
                     log.info("Attach succeeded for {}", target.displayName)
                     McpAttachResult.Success(target, result.output.trim().take(160))
@@ -184,13 +190,10 @@ object McpCliAttacher {
      * Run [cmd] with a hard 15s timeout. Closes the child's stdin immediately
      * to defuse interactive prompts, and waits for the process before reading
      * stdout — so a hung CLI gets killed by destroyForcibly instead of
-     * stalling our read forever.
-     *
-     * If [allowFailure], non-zero exit and timeouts are returned as-is
-     * (caller decides what to do). Otherwise the caller treats anything
-     * non-zero as failure.
+     * stalling our read forever. The caller decides how to interpret
+     * non-zero exits / timeouts.
      */
-    private fun runProcess(cmd: List<String>, allowFailure: Boolean): ProcessOutcome {
+    private fun runProcess(cmd: List<String>): ProcessOutcome {
         val process = ProcessBuilder(cmd).redirectErrorStream(true).start()
         // Signal EOF to any CLI that might be waiting on stdin.
         try {

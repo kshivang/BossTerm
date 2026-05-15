@@ -150,7 +150,8 @@ private fun AttachToCliSection(
     SettingsSection(title = "Attach to AI CLI") {
         Text(
             text = "Register this BossTerm MCP endpoint with your favorite AI CLI. " +
-                    "Each button shells out to the CLI's `mcp add` command. " +
+                    "Each button removes any existing entry of the same name, then runs " +
+                    "the CLI's `mcp add` command — so repeated clicks are safe. " +
                     "If the CLI isn't installed (or the command fails), the right " +
                     "config snippet is copied to your clipboard.",
             color = TextMuted,

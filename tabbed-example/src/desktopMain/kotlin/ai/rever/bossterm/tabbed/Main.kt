@@ -282,6 +282,16 @@ private fun ApplicationScope.TabbedTerminalWindow(
         }
     }
 
+    // Expose this window's tabs to the app-singleton MCP server. Without
+    // this, MCP clients can't see any tabs (list_tabs returns empty and
+    // every other tab-scoped tool errors with "Unknown tab_id"). The
+    // app-level BossTermMcpManager constructed in main() handles the
+    // server lifecycle; here we only join/leave the registry.
+    DisposableEffect(terminalState) {
+        McpTerminalRegistry.register(terminalState)
+        onDispose { McpTerminalRegistry.unregister(terminalState) }
+    }
+
     Window(
         onCloseRequest = onCloseRequest,
         title = if (totalWindows > 1) "$windowTitle (Window ${windowIndex + 1})" else windowTitle,

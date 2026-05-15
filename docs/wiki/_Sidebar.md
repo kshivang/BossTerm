@@ -15,6 +15,7 @@
 
 - [[Embedding Guide|Embedding-Guide]]
 - [[Tabbed Terminal Guide|Tabbed-Terminal-Guide]]
+- [[BossTerm MCP Server|MCP-Server]]
 - [[API Reference|API-Reference]]
 
 ### Help

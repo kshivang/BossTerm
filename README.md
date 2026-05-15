@@ -455,6 +455,86 @@ fun MyApp() {
 }
 ```
 
+## BossTerm MCP
+
+BossTerm ships an in-process [Model Context Protocol](https://modelcontextprotocol.io)
+server that exposes the running terminal to MCP-aware clients (Claude Code,
+Codex, Gemini CLI, OpenCode). Clients can enumerate tabs, read scrollback,
+search output, capture the last completed command, and — when write tools
+are enabled — drive shells, send signals, and open new splits.
+
+- **Endpoint**: `http://127.0.0.1:7676/` over Server-Sent Events, configurable
+  via Settings → BossTerm MCP → Port.
+- **Loopback-only**: the server binds `127.0.0.1` and rejects non-loopback
+  `Host` headers (DNS-rebinding defense). Any local process running as your
+  user can reach it while it is enabled.
+- **Opt-in**: disabled by default. Toggle on under Settings → BossTerm MCP.
+
+### Turning it on (as a user)
+
+1. Open Settings → **BossTerm MCP** and toggle **Enable BossTerm MCP Server**.
+   A green "BossTerm MCP on" pill appears in the tab bar.
+2. (Optional) Under **Exposed Tools**, untick any built-in tool you don't
+   want clients to call — toggles apply live.
+3. Under **Attach to AI CLI**, click the button for each AI CLI you want to
+   register the endpoint with. Re-attachment is idempotent and happens
+   silently on subsequent launches.
+
+### Embedding it (as a developer)
+
+```kotlin
+import ai.rever.bossterm.compose.mcp.BossTermMcpConfig
+import ai.rever.bossterm.compose.mcp.BossTermMcpManager
+import ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig
+import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
+import ai.rever.bossterm.compose.settings.SettingsManager
+
+fun main() {
+    val mcpConfig = BossTermMcpConfig(serverName = "myapp", serverVersion = "1.0")
+    val mcpScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val mcpManager = BossTermMcpManager(
+        registry = McpTerminalRegistry,
+        settingsManager = SettingsManager.instance,
+        parentScope = mcpScope,
+        config = mcpConfig
+    )
+    mcpManager.start()
+    Runtime.getRuntime().addShutdownHook(Thread {
+        mcpManager.stop()
+        mcpScope.cancel()
+    })
+
+    application {
+        CompositionLocalProvider(LocalBossTermMcpConfig provides mcpConfig) {
+            // Each window that uses TabbedTerminalState must also register
+            // it with McpTerminalRegistry so the server can see its tabs:
+            //
+            //   DisposableEffect(tabbedState) {
+            //       McpTerminalRegistry.register(tabbedState)
+            //       onDispose { McpTerminalRegistry.unregister(tabbedState) }
+            //   }
+            //
+            // Apps built on the single-terminal EmbeddableTerminal can still
+            // run the MCP server and register custom tools via additionalTools,
+            // but the tab-scoped built-ins (list_tabs, send_input, etc.) won't
+            // see any tabs. See docs/mcp-server.md for the full contract.
+            MyAppWindows()
+        }
+    }
+}
+```
+
+Common knobs on `BossTermMcpConfig`: `toolNamePrefix` to namespace built-in
+tools, `allowWriteTools = false` for an observe-only build, `additionalTools`
+to register app-specific MCP tools, and `customToolDescriptions` to override
+descriptions of individual built-ins. The
+[`embedded-example`](embedded-example/) and [`tabbed-example`](tabbed-example/)
+modules demonstrate both hooks.
+
+See [docs/mcp-server.md](docs/mcp-server.md) for the full reference —
+every built-in tool's JSON schema, the `manage_tools` meta-tool, the
+`BossTermMcpConfig` field-by-field table, and troubleshooting.
+
 ## Technology Stack
 
 - **Kotlin** - Modern JVM language
@@ -466,6 +546,7 @@ fun MyApp() {
 
 - [Embedding Guide](docs/embedding.md) - Embed a single terminal with custom context menus
 - [Tabbed Terminal Guide](docs/tabbed-terminal.md) - Full-featured tabbed terminal with splits
+- [BossTerm MCP Server](docs/mcp-server.md) - Expose tabs to MCP clients (Claude Code, Codex, Gemini, OpenCode)
 - [Onboarding Wizard](docs/onboarding.md) - First-time setup wizard for users
 - [Troubleshooting Guide](docs/troubleshooting.md) - Common issues and solutions
 - [Release Notes](docs/release-notes/) - Detailed changelog for each version

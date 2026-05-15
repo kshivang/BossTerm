@@ -1073,14 +1073,15 @@ fun TabbedTerminal(
             )
         }
 
-        // MCP status indicator + toast — floats over the top-right of the
-        // content area (same slot the global-hotkey hint uses), visible
-        // regardless of whether the tab bar is shown. Only renders when the
-        // Ktor server has actually bound the port (registry.runningPort != null),
-        // not just when the user toggled mcpEnabled. The dot reflects reality.
-        // Both right-click paths (indicator's own menu + the terminal canvas's
-        // menu) drive attachStatus, which the AttachToast surfaces here.
-        if (mcpRunningPort != null && settings.mcpShowStatusIndicator) {
+        // MCP status indicator + toast overlay. Lives in the top-right slot
+        // when MCP is bound. Two independent visibility gates:
+        //   - indicator pill: requires settings.mcpShowStatusIndicator (user
+        //     can hide it without disabling MCP).
+        //   - toast: shown whenever attachStatus is non-null, regardless of
+        //     whether the indicator is visible — so a user who hid the pill
+        //     and triggered an attach from the terminal canvas's right-click
+        //     still gets feedback.
+        if (mcpRunningPort != null) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -1088,16 +1089,18 @@ fun TabbedTerminal(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                ai.rever.bossterm.compose.mcp.McpStatusIndicator(
-                    enabled = true,
-                    onClick = onShowMcpSettings,
-                    onHideRequest = {
-                        SettingsManager.instance.updateSetting {
-                            copy(mcpShowStatusIndicator = false)
-                        }
-                    },
-                    onAttachRequest = fireMcpAttach
-                )
+                if (settings.mcpShowStatusIndicator) {
+                    ai.rever.bossterm.compose.mcp.McpStatusIndicator(
+                        enabled = true,
+                        onClick = onShowMcpSettings,
+                        onHideRequest = {
+                            SettingsManager.instance.updateSetting {
+                                copy(mcpShowStatusIndicator = false)
+                            }
+                        },
+                        onAttachRequest = fireMcpAttach
+                    )
+                }
                 attachStatus?.let { status ->
                     ai.rever.bossterm.compose.mcp.AttachToast(status = status)
                 }

@@ -14,6 +14,7 @@ import androidx.compose.material.ButtonDefaults
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -29,6 +30,7 @@ import ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig
 import ai.rever.bossterm.compose.mcp.McpAttachResult
 import ai.rever.bossterm.compose.mcp.McpAttachTarget
 import ai.rever.bossterm.compose.mcp.McpCliAttacher
+import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.TerminalSettings
@@ -140,9 +142,9 @@ private fun AttachToCliSection(
     serverName: String
 ) {
     val scope = rememberCoroutineScope()
-    // Last-attempt status per target so each button can show its own
-    // success/fallback line without clobbering the others.
-    var lastResult by remember { mutableStateOf<McpAttachResult?>(null) }
+    // Per-target status so clicking different buttons in sequence preserves
+    // each line — without this every click clobbers the others.
+    val lastResults = remember { mutableStateMapOf<McpAttachTarget, McpAttachResult>() }
     var inFlight by remember { mutableStateOf<McpAttachTarget?>(null) }
 
     SettingsSection(title = "Attach to AI CLI") {
@@ -165,10 +167,10 @@ private fun AttachToCliSection(
                 Button(
                     onClick = {
                         inFlight = target
-                        lastResult = null
+                        lastResults.remove(target)
                         scope.launch {
                             try {
-                                lastResult = McpCliAttacher.attach(target, serverName, port)
+                                lastResults[target] = McpCliAttacher.attach(target, serverName, port)
                             } finally {
                                 inFlight = null
                             }
@@ -176,7 +178,7 @@ private fun AttachToCliSection(
                     },
                     enabled = enabled && inFlight == null,
                     colors = ButtonDefaults.buttonColors(
-                        backgroundColor = Color(0xFF2D6CDF),
+                        backgroundColor = AccentColor,
                         contentColor = Color.White,
                         disabledBackgroundColor = Color(0xFF3A3A3A),
                         disabledContentColor = Color(0xFF888888)
@@ -190,7 +192,11 @@ private fun AttachToCliSection(
             }
         }
 
-        lastResult?.let { result ->
+        // Per-target status lines, one per attempted target. Stack vertically
+        // so a user who clicks several buttons in sequence can see the
+        // outcome for each.
+        McpAttachTarget.entries.forEach { target ->
+            val result = lastResults[target] ?: return@forEach
             val (label, color) = when (result) {
                 is McpAttachResult.Success ->
                     "✓ ${result.target.displayName} attached" +

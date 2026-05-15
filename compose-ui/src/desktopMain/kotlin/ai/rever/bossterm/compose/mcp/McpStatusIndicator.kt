@@ -1,7 +1,5 @@
 package ai.rever.bossterm.compose.mcp
 
-import androidx.compose.foundation.ContextMenuArea
-import androidx.compose.foundation.ContextMenuItem
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.TooltipPlacement
@@ -20,14 +18,20 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerButton
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ai.rever.bossterm.compose.features.ContextMenuController
 
 private val McpOnColor = Color(0xFF4CAF50) // green
 private val McpOnGlow = Color(0x33_4C_AF_50) // 20% green halo
@@ -59,7 +63,7 @@ sealed class AttachStatus {
  * Settings dialog at the MCP category so users can inspect the endpoint
  * or turn it off.
  */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun McpStatusIndicator(
     enabled: Boolean,
@@ -75,55 +79,92 @@ fun McpStatusIndicator(
     // CLIs get a "✓ " prefix so the user can see status at a glance.
     // The host wires onAttachRequest to McpCliAttacher and onHideRequest to
     // flip mcpShowStatusIndicator.
+    //
+    // Uses the project's ContextMenuController (renders a dark Swing
+    // JPopupMenu) instead of foundation's ContextMenuArea so the styling
+    // matches the terminal canvas's own right-click menu.
     val attached = McpTerminalRegistry.attachedTargets.collectAsState().value
     val runningPort = McpTerminalRegistry.runningPort.collectAsState().value
-    ContextMenuArea(
-        items = {
-            McpAttachTarget.entries.map { target ->
-                val prefix = if (target in attached) "✓ " else ""
-                ContextMenuItem("${prefix}Attach ${target.displayName}") { onAttachRequest(target) }
-            } + ContextMenuItem("Hide MCP Indicator") { onHideRequest() }
-        }
+    val contextMenuController = remember { ContextMenuController() }
+
+    TooltipArea(
+        tooltip = { McpStatusTooltip(runningPort = runningPort, attached = attached) },
+        delayMillis = 350,
+        tooltipPlacement = TooltipPlacement.CursorPoint(
+            offset = DpOffset(0.dp, 16.dp)
+        )
     ) {
-        TooltipArea(
-            tooltip = { McpStatusTooltip(runningPort = runningPort, attached = attached) },
-            delayMillis = 350,
-            tooltipPlacement = TooltipPlacement.CursorPoint(
-                offset = DpOffset(0.dp, 16.dp)
-            )
-        ) {
-            Row(
-                modifier = modifier
-                    .clickable(onClick = onClick)
-                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Box(
-                    modifier = Modifier.size(16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    // Soft halo for a "live" look without being distracting.
-                    Box(
-                        modifier = Modifier
-                            .size(16.dp)
-                            .background(McpOnGlow, CircleShape)
-                    )
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .background(McpOnColor, CircleShape)
-                            .border(1.dp, Color(0xFF388E3C), CircleShape)
-                    )
+        Row(
+            modifier = modifier
+                .clickable(onClick = onClick)
+                .onPointerEvent(PointerEventType.Press) { event ->
+                    if (event.button == PointerButton.Secondary) {
+                        val items = buildIndicatorMenuItems(
+                            attached = attached,
+                            onAttachRequest = onAttachRequest,
+                            onHideRequest = onHideRequest
+                        )
+                        contextMenuController.showMenu(0f, 0f, items)
+                    }
                 }
-                Text(
-                    text = "MCP on",
-                    color = McpLabelColor,
-                    fontSize = 11.sp
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Box(
+                modifier = Modifier.size(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                // Soft halo for a "live" look without being distracting.
+                Box(
+                    modifier = Modifier
+                        .size(16.dp)
+                        .background(McpOnGlow, CircleShape)
+                )
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .background(McpOnColor, CircleShape)
+                        .border(1.dp, Color(0xFF388E3C), CircleShape)
                 )
             }
+            Text(
+                text = "MCP on",
+                color = McpLabelColor,
+                fontSize = 11.sp
+            )
         }
     }
+}
+
+/**
+ * Build the dark-themed right-click menu for the [McpStatusIndicator].
+ * Same item set foundation's ContextMenuArea used to produce, expressed as
+ * [ContextMenuController.MenuItem]s so the project's native JPopupMenu
+ * renderer can style them like the rest of the terminal context menus.
+ */
+private fun buildIndicatorMenuItems(
+    attached: Set<McpAttachTarget>,
+    onAttachRequest: (McpAttachTarget) -> Unit,
+    onHideRequest: () -> Unit
+): List<ContextMenuController.MenuElement> {
+    val attachItems = McpAttachTarget.entries.map { target ->
+        val prefix = if (target in attached) "✓ " else ""
+        ContextMenuController.MenuItem(
+            id = "mcp_attach_${target.name}",
+            label = "${prefix}Attach ${target.displayName}",
+            enabled = true,
+            action = { onAttachRequest(target) }
+        )
+    }
+    val separator = ContextMenuController.MenuSeparator(id = "mcp_indicator_sep")
+    val hide = ContextMenuController.MenuItem(
+        id = "mcp_hide_indicator",
+        label = "Hide MCP Indicator",
+        enabled = true,
+        action = onHideRequest
+    )
+    return attachItems + separator + hide
 }
 
 /**

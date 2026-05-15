@@ -212,16 +212,25 @@ object McpCliAttacher {
                     log.info("Attach succeeded for {}", target.displayName)
                     McpAttachResult.Success(target, result.output.trim().take(160))
                 } else {
-                    val reason = if (result.timedOut) {
+                    val baseReason = if (result.timedOut) {
                         "timed out after ${PROCESS_TIMEOUT_SECONDS}s"
                     } else {
                         "exit ${result.exitCode}"
                     }
-                    log.warn("Attach for {} failed ({}); {}", target.displayName, reason,
+                    // Surface the CLI's own last error line so the user can
+                    // tell e.g. "MCP is disabled by your administrator" apart
+                    // from generic "exit 1" failures.
+                    val cliMessage = result.output.lastErrorLine()
+                    val combinedReason = if (cliMessage.isNullOrEmpty()) {
+                        baseReason
+                    } else {
+                        "$baseReason: $cliMessage"
+                    }
+                    log.warn("Attach for {} failed ({}); {}", target.displayName, combinedReason,
                         if (quiet) "quiet mode — clipboard untouched" else "copying fallback to clipboard")
                     if (!quiet) copyToClipboard(target.resolvedClipboard(serverName, url))
                     val suffix = if (quiet) "" else " — config copied to clipboard"
-                    McpAttachResult.CopiedToClipboard(target, "$reason$suffix")
+                    McpAttachResult.CopiedToClipboard(target, "$combinedReason$suffix")
                 }
             } catch (e: CancellationException) {
                 // Coroutine cancellation must propagate untouched — never
@@ -303,6 +312,22 @@ object McpCliAttacher {
             }
         }
     }
+
+    /**
+     * Pull the last non-blank line from a CLI's combined stdout+stderr so we
+     * can include it in the toast / log when a shell-out fails. Trims to a
+     * reasonable length and strips ANSI sequences that some CLIs leak.
+     */
+    private fun String.lastErrorLine(): String? {
+        if (isBlank()) return null
+        val stripped = replace(ANSI_ESCAPE_REGEX, "")
+        return stripped.lineSequence()
+            .map { it.trim() }
+            .lastOrNull { it.isNotEmpty() }
+            ?.take(160)
+    }
+
+    private val ANSI_ESCAPE_REGEX = Regex("\\[[;\\d]*[a-zA-Z]")
 
     private fun copyToClipboard(text: String) {
         try {

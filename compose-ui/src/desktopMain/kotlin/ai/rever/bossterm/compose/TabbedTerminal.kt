@@ -699,18 +699,8 @@ fun TabbedTerminal(
     // Tab UI layout with focus overlay support
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Tab bar at top (show when multiple tabs, alwaysShowTabBar is set,
-            // or the MCP indicator is on — the bar hosts the MCP status indicator).
-            //
-            // The MCP indicator only shows when the manager has *actually* bound
-            // the port (runningPort != null) — not just when the user toggled
-            // mcpEnabled. Prevents a false-positive dot in embedder builds that
-            // forgot to construct BossTermMcpManager, and in cases where the
-            // bind failed (e.g. port already in use).
-            val mcpRunningPort by ai.rever.bossterm.compose.mcp.McpTerminalRegistry
-                .runningPort.collectAsState()
-            val showMcpIndicator = mcpRunningPort != null && settings.mcpShowStatusIndicator
-            if (tabController.tabs.size > 1 || settings.alwaysShowTabBar || showMcpIndicator) {
+            // Tab bar at top (show when multiple tabs or alwaysShowTabBar is set).
+            if (tabController.tabs.size > 1 || settings.alwaysShowTabBar) {
             TabBar(
                 tabs = tabController.tabs,
                 activeTabIndex = tabController.activeTabIndex,
@@ -730,9 +720,7 @@ fun TabbedTerminal(
                     val extractedTab = tabController.extractTab(index) ?: return@TabBar
                     // Create new window and transfer both tab and split state
                     WindowManager.createWindowWithTab(extractedTab, splitState)
-                },
-                mcpEnabled = showMcpIndicator,
-                onMcpIndicatorClick = onShowMcpSettings
+                }
             )
         }
 
@@ -1027,6 +1015,26 @@ fun TabbedTerminal(
                     .fillMaxSize()
                     .background(Color.White.copy(alpha = 0.15f))
             )
+        }
+
+        // MCP status indicator — floats over the top-right of the content
+        // area (same slot the global-hotkey hint uses), so it's visible
+        // regardless of whether the tab bar is shown. Only renders when the
+        // Ktor server has actually bound the port (registry.runningPort != null),
+        // not just when the user toggled mcpEnabled. The dot reflects reality.
+        val mcpRunningPort by ai.rever.bossterm.compose.mcp.McpTerminalRegistry
+            .runningPort.collectAsState()
+        if (mcpRunningPort != null && settings.mcpShowStatusIndicator) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 4.dp, end = 8.dp)
+            ) {
+                ai.rever.bossterm.compose.mcp.McpStatusIndicator(
+                    enabled = true,
+                    onClick = onShowMcpSettings
+                )
+            }
         }
     }
 

@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose.mcp
 
+import androidx.compose.foundation.ContextMenuArea
+import androidx.compose.foundation.ContextMenuItem
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -32,38 +34,50 @@ private val McpLabelColor = Color(0xFFCFEFD4)
 fun McpStatusIndicator(
     enabled: Boolean,
     onClick: () -> Unit,
+    onHideRequest: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (!enabled) return
 
-    Row(
-        modifier = modifier
-            .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        Box(
-            modifier = Modifier.size(16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            // Soft halo for a "live" look without being distracting.
-            Box(
-                modifier = Modifier
-                    .size(16.dp)
-                    .background(McpOnGlow, CircleShape)
-            )
-            Box(
-                modifier = Modifier
-                    .size(10.dp)
-                    .background(McpOnColor, CircleShape)
-                    .border(1.dp, Color(0xFF388E3C), CircleShape)
+    // Right-click → "Hide MCP Indicator". Driven by ContextMenuArea so the
+    // menu uses the same native popup as text fields elsewhere in Compose
+    // Desktop. The host wires onHideRequest to flip mcpShowStatusIndicator.
+    ContextMenuArea(
+        items = {
+            listOf(
+                ContextMenuItem("Hide MCP Indicator") { onHideRequest() }
             )
         }
-        Text(
-            text = "MCP on",
-            color = McpLabelColor,
-            fontSize = 11.sp
-        )
+    ) {
+        Row(
+            modifier = modifier
+                .clickable(onClick = onClick)
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Box(
+                modifier = Modifier.size(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                // Soft halo for a "live" look without being distracting.
+                Box(
+                    modifier = Modifier
+                        .size(16.dp)
+                        .background(McpOnGlow, CircleShape)
+                )
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .background(McpOnColor, CircleShape)
+                        .border(1.dp, Color(0xFF388E3C), CircleShape)
+                )
+            }
+            Text(
+                text = "MCP on",
+                color = McpLabelColor,
+                fontSize = 11.sp
+            )
+        }
     }
 }

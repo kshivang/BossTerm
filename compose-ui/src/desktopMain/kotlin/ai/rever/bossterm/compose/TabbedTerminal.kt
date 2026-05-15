@@ -1032,7 +1032,12 @@ fun TabbedTerminal(
             ) {
                 ai.rever.bossterm.compose.mcp.McpStatusIndicator(
                     enabled = true,
-                    onClick = onShowMcpSettings
+                    onClick = onShowMcpSettings,
+                    onHideRequest = {
+                        SettingsManager.instance.updateSetting {
+                            copy(mcpShowStatusIndicator = false)
+                        }
+                    }
                 )
             }
         }

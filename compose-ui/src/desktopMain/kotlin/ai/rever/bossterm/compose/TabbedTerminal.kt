@@ -29,7 +29,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import ai.rever.bossterm.compose.ContextMenuElement
 import ai.rever.bossterm.compose.ContextMenuItem
-import ai.rever.bossterm.compose.ContextMenuSection
 import ai.rever.bossterm.compose.ContextMenuSubmenu
 import ai.rever.bossterm.compose.mcp.AttachStatus
 import ai.rever.bossterm.compose.mcp.AttachToast
@@ -987,6 +986,28 @@ fun TabbedTerminal(
                         items = items + aiItems
                     }
 
+                    // MCP attach submenu — sits directly under the AI Assistants
+                    // group so users find it near related tooling. Only rendered
+                    // when the Ktor server is actually bound. Each entry fires
+                    // the shared fireMcpAttach so the AttachToast surfaces the
+                    // result in the same place the indicator's right-click does.
+                    if (McpTerminalRegistry.runningPort.value != null) {
+                        val mcpAttachItems: List<ContextMenuElement> = listOf(
+                            ContextMenuSubmenu(
+                                id = "mcp_attach_submenu",
+                                label = "Attach MCP to…",
+                                items = McpAttachTarget.entries.map { target ->
+                                    ContextMenuItem(
+                                        id = "mcp_attach_${target.name}",
+                                        label = target.displayName,
+                                        action = { fireMcpAttach(target) }
+                                    )
+                                }
+                            )
+                        )
+                        items = items + mcpAttachItems
+                    }
+
                     // Add Version Control menu items
                     val terminalWriter: (String) -> Unit = { text ->
                         splitState.getFocusedSession()?.writeUserInput(text)
@@ -1024,28 +1045,6 @@ fun TabbedTerminal(
                         }
                     )
                     items = items + shellItems
-
-                    // MCP attach submenu — only shown when the Ktor server
-                    // is actually bound. Each entry fires the shared
-                    // fireMcpAttach so the AttachToast surfaces the result
-                    // in the same place the indicator's right-click does.
-                    if (McpTerminalRegistry.runningPort.value != null) {
-                        val mcpAttachItems: List<ContextMenuElement> = listOf(
-                            ContextMenuSection(id = "mcp_section", label = "MCP"),
-                            ContextMenuSubmenu(
-                                id = "mcp_attach_submenu",
-                                label = "Attach MCP to…",
-                                items = McpAttachTarget.entries.map { target ->
-                                    ContextMenuItem(
-                                        id = "mcp_attach_${target.name}",
-                                        label = target.displayName,
-                                        action = { fireMcpAttach(target) }
-                                    )
-                                }
-                            )
-                        )
-                        items = items + mcpAttachItems
-                    }
 
                     items
                 },

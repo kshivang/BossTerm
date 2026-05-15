@@ -88,6 +88,19 @@ fun McpStatusIndicator(
     val runningPort = McpTerminalRegistry.runningPort.collectAsState().value
     val contextMenuController = remember { ContextMenuController() }
 
+    // Both left- and right-click open the same dark popup. Settings has
+    // moved into the popup as "MCP Settings…" — the pill itself is a pure
+    // menu launcher now.
+    val openMenu: () -> Unit = {
+        val items = buildIndicatorMenuItems(
+            attached = attached,
+            onAttachRequest = onAttachRequest,
+            onShowSettings = onShowSettings,
+            onHideRequest = onHideRequest
+        )
+        contextMenuController.showMenu(0f, 0f, items)
+    }
+
     TooltipArea(
         tooltip = { McpStatusTooltip(runningPort = runningPort, attached = attached) },
         delayMillis = 350,
@@ -97,16 +110,10 @@ fun McpStatusIndicator(
     ) {
         Row(
             modifier = modifier
-                .clickable(onClick = onClick)
+                .clickable(onClick = openMenu)
                 .onPointerEvent(PointerEventType.Press) { event ->
                     if (event.button == PointerButton.Secondary) {
-                        val items = buildIndicatorMenuItems(
-                            attached = attached,
-                            onAttachRequest = onAttachRequest,
-                            onShowSettings = onShowSettings,
-                            onHideRequest = onHideRequest
-                        )
-                        contextMenuController.showMenu(0f, 0f, items)
+                        openMenu()
                     }
                 }
                 .padding(horizontal = 6.dp, vertical = 4.dp),

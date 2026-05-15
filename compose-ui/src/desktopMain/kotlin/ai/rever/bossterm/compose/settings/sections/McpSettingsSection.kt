@@ -98,6 +98,20 @@ fun McpSettingsSection(
                         "is running. Click the dot to jump to this settings page.",
                 enabled = settings.mcpEnabled
             )
+
+            ai.rever.bossterm.compose.settings.components.SettingsSlider(
+                label = "Default Split Size for `run_in_panel`",
+                value = settings.mcpDefaultSplitRatio,
+                onValueChange = { onSettingsChange(settings.copy(mcpDefaultSplitRatio = it)) },
+                valueRange = 0.1f..0.9f,
+                steps = 15, // 0.1, 0.15, 0.2, ..., 0.9 = 17 stops, 15 internal steps
+                valueDisplay = { "${(it * 100).toInt()}%" },
+                description = "When an MCP agent opens a split via `run_in_panel` without " +
+                        "specifying split_ratio, the new pane gets this fraction of the " +
+                        "parent's size. Smaller values (~30%) keep the agent's main pane " +
+                        "visible; larger values give the script more real estate.",
+                enabled = settings.mcpEnabled
+            )
         }
 
         Spacer(modifier = Modifier.height(16.dp))

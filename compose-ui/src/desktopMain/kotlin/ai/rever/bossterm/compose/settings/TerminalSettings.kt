@@ -771,6 +771,15 @@ data class TerminalSettings(
     val mcpShowStatusIndicator: Boolean = true,
 
     /**
+     * Default size of the new pane (as a fraction of the parent's
+     * dimension) when MCP `run_in_panel` opens a horizontal or vertical
+     * split and the caller hasn't supplied `split_ratio` explicitly.
+     * Range: 0.1..0.9. Default 0.3 — large enough for an `htop` / `tail`,
+     * small enough to keep the agent's primary workspace visible.
+     */
+    val mcpDefaultSplitRatio: Float = 0.3f,
+
+    /**
      * Names (enum `.name`) of [ai.rever.bossterm.compose.mcp.McpAttachTarget]s
      * that this BossTerm endpoint is registered with via the user's
      * AI CLIs. Persisted across runs so the manager can silently

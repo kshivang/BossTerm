@@ -568,10 +568,13 @@ class TabbedTerminalState {
      * The new pane appears to the right of the focused pane.
      *
      * @param tabId Target tab ID. If null, uses the active tab.
+     * @param ratio Optional size of the new pane as a fraction of the
+     *   parent's width. When null, falls back to
+     *   `settings.splitDefaultRatio`. Clamped to 0.05..0.95.
      * @return The session ID of the new pane, or null if the split failed
      */
-    fun splitVertical(tabId: String? = null): String? {
-        return performSplit(SplitOrientation.VERTICAL, tabId)
+    fun splitVertical(tabId: String? = null, ratio: Float? = null): String? {
+        return performSplit(SplitOrientation.VERTICAL, tabId, ratio)
     }
 
     /**
@@ -581,16 +584,23 @@ class TabbedTerminalState {
      * The new pane appears below the focused pane.
      *
      * @param tabId Target tab ID. If null, uses the active tab.
+     * @param ratio Optional size of the new pane as a fraction of the
+     *   parent's height. When null, falls back to
+     *   `settings.splitDefaultRatio`. Clamped to 0.05..0.95.
      * @return The session ID of the new pane, or null if the split failed
      */
-    fun splitHorizontal(tabId: String? = null): String? {
-        return performSplit(SplitOrientation.HORIZONTAL, tabId)
+    fun splitHorizontal(tabId: String? = null, ratio: Float? = null): String? {
+        return performSplit(SplitOrientation.HORIZONTAL, tabId, ratio)
     }
 
     /**
      * Internal helper to perform a split in the given orientation.
      */
-    private fun performSplit(orientation: SplitOrientation, tabId: String?): String? {
+    private fun performSplit(
+        orientation: SplitOrientation,
+        tabId: String?,
+        ratio: Float? = null
+    ): String? {
         val resolvedTabId = resolveTabId(tabId) ?: return null
         val controller = tabController ?: return null
         val tab = controller.getTabById(resolvedTabId) as? TerminalTab ?: return null
@@ -620,7 +630,8 @@ class TabbedTerminalState {
                     ?.let { pane -> splitState.closePane(pane.id) }
             }
         }
-        return splitState.splitFocusedPane(orientation, newSession, settings.splitDefaultRatio)
+        val effectiveRatio = (ratio ?: settings.splitDefaultRatio).coerceIn(0.05f, 0.95f)
+        return splitState.splitFocusedPane(orientation, newSession, effectiveRatio)
     }
 
     /**

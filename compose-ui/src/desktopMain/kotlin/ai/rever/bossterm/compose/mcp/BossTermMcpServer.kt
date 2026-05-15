@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.mcp
 
 import ai.rever.bossterm.compose.TabbedTerminalState
 import ai.rever.bossterm.compose.debug.ChunkSource
+import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
@@ -18,6 +19,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -463,6 +465,13 @@ class BossTermMcpServer(
                         put("description", "Optional working directory for the new panel. " +
                                 "For splits, defaults to the inherited cwd via OSC 7.")
                     }
+                    putJsonObject("split_ratio") {
+                        put("type", "number")
+                        put("description", "Optional split size (0.05..0.95) — fraction of " +
+                                "the parent's dimension the NEW pane gets. Only meaningful " +
+                                "for horizontal_split / vertical_split. Defaults to the " +
+                                "user-configured `mcpDefaultSplitRatio` setting (typically 0.3).")
+                    }
                 },
                 required = listOf("panel", "script")
             )
@@ -498,10 +507,14 @@ class BossTermMcpServer(
                     val targetTabId = requestedTabId
                         ?: state.activeTabId
                         ?: return@addTool errorResult("No active tab to split")
+                    // Resolve effective ratio: per-call override > user setting > 0.3 fallback.
+                    val configuredDefault = SettingsManager.instance.settings.value.mcpDefaultSplitRatio
+                    val requestedRatio = args.optionalFloat("split_ratio")
+                    val effectiveRatio = (requestedRatio ?: configuredDefault).coerceIn(0.05f, 0.95f)
                     val paneId = if (panel == "horizontal_split") {
-                        state.splitHorizontal(targetTabId)
+                        state.splitHorizontal(targetTabId, ratio = effectiveRatio)
                     } else {
-                        state.splitVertical(targetTabId)
+                        state.splitVertical(targetTabId, ratio = effectiveRatio)
                     } ?: return@addTool errorResult("Split failed (terminal too small?)")
                     // After splitFocusedPane the focus moves to the new pane,
                     // so writeToFocusedPane targets it.
@@ -666,6 +679,13 @@ class BossTermMcpServer(
         if (el is JsonNull) return null
         val prim = el.jsonPrimitive
         return prim.booleanOrNull ?: prim.content.toBooleanStrictOrNull()
+    }
+
+    private fun JsonObject?.optionalFloat(key: String): Float? {
+        val el: JsonElement = this?.get(key) ?: return null
+        if (el is JsonNull) return null
+        val prim = el.jsonPrimitive
+        return prim.floatOrNull ?: prim.content.toFloatOrNull()
     }
 
     // -----------------------------------------------------------------

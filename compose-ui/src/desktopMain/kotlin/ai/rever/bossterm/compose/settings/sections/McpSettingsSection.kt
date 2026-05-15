@@ -55,6 +55,7 @@ import ai.rever.bossterm.compose.settings.components.SettingsToggle
 fun McpSettingsSection(
     settings: TerminalSettings,
     onSettingsChange: (TerminalSettings) -> Unit,
+    onSettingsSave: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val cfg = LocalBossTermMcpConfig.current
@@ -103,6 +104,7 @@ fun McpSettingsSection(
                 label = "Default Split Size for `run_in_panel`",
                 value = settings.mcpDefaultSplitRatio,
                 onValueChange = { onSettingsChange(settings.copy(mcpDefaultSplitRatio = it)) },
+                onValueChangeFinished = onSettingsSave,
                 valueRange = 0.1f..0.9f,
                 steps = 15, // 0.1, 0.15, 0.2, ..., 0.9 = 17 stops, 15 internal steps
                 valueDisplay = { "${(it * 100).toInt()}%" },

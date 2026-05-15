@@ -443,8 +443,12 @@ class BossTermMcpServer(
             name = toolName("run_in_panel"),
             description = "Open a new terminal panel and write a script to it. Modes: " +
                     "'new_tab' (fresh tab with initialCommand), 'horizontal_split' (split " +
-                    "below focused pane), 'vertical_split' (split beside focused pane). The " +
-                    "caller appends '\\n' to script if they want it to execute.",
+                    "below focused pane), 'vertical_split' (split beside focused pane). " +
+                    "Include '\\n' in the script to submit it as a command. " +
+                    "Note: in 'new_tab' mode, the response returns as soon as the tab is " +
+                    "created; the shell may still be initializing for ~1s before the script " +
+                    "actually runs. Use list_tabs / read_scrollback after a short delay if " +
+                    "you need to observe results.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("panel") {
@@ -496,9 +500,15 @@ class BossTermMcpServer(
 
             when (panel) {
                 "new_tab" -> {
+                    // TabController.createTab auto-appends '\n' to
+                    // initialCommand, while the split path uses raw
+                    // writeUserInput (no auto-newline). Normalize a single
+                    // trailing newline so the tool's `\n means submit`
+                    // contract is consistent across all three modes.
+                    val normalizedScript = script.removeSuffix("\n")
                     val newId = state.createTab(
                         workingDir = workingDir,
-                        initialCommand = script
+                        initialCommand = normalizedScript.ifEmpty { null }
                     ) ?: return@addTool errorResult("Failed to create tab")
                     val payload = RunInPanelResult(ok = true, tabId = newId, paneId = null)
                     successJson(json.encodeToString(RunInPanelResult.serializer(), payload))
@@ -580,12 +590,20 @@ class BossTermMcpServer(
             val collector = tab.debugCollector
                 ?: return@addTool errorResult("Debug collector not initialized for this tab")
 
+            // Cap to the user's configured buffer size — bumping
+            // `settings.debugMaxChunks` should actually let MCP read the
+            // deeper history they opted into.
+            val maxAllowed = SettingsManager.instance.settings.value
+                .debugMaxChunks.coerceAtLeast(1)
             val maxChunks = (args.optionalInt("max_chunks") ?: DEFAULT_DEBUG_CHUNKS)
-                .coerceIn(1, MAX_DEBUG_CHUNKS)
+                .coerceIn(1, maxAllowed)
             val sinceIndex = args.optionalInt("since_index")?.coerceAtLeast(0)
             val sourcesFilter: Set<ChunkSource>? = (args?.get("sources") as? JsonArray)
                 ?.mapNotNull { item ->
-                    runCatching { ChunkSource.valueOf(item.jsonPrimitive.content) }.getOrNull()
+                    val raw = item.jsonPrimitive.content
+                    // Case-insensitive lookup — agents writing "pty_output"
+                    // shouldn't silently see zero results.
+                    ChunkSource.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) }
                 }
                 ?.toSet()
                 ?.takeUnless { it.isEmpty() }
@@ -780,6 +798,5 @@ class BossTermMcpServer(
         private const val DEFAULT_SCROLLBACK_LINES = 200
         private const val DEFAULT_SEARCH_MAX_MATCHES = 50
         private const val DEFAULT_DEBUG_CHUNKS = 100
-        private const val MAX_DEBUG_CHUNKS = 1000
     }
 }

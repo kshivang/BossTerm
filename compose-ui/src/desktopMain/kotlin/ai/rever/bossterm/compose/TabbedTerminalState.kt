@@ -630,8 +630,14 @@ class TabbedTerminalState {
                     ?.let { pane -> splitState.closePane(pane.id) }
             }
         }
-        val effectiveRatio = (ratio ?: settings.splitDefaultRatio).coerceIn(0.05f, 0.95f)
-        return splitState.splitFocusedPane(orientation, newSession, effectiveRatio)
+        // splitFocusedPane's `ratio` is "fraction of the ORIGINAL pane"
+        // (per SplitNode.kt:32,43). Our public ratio param is "fraction of
+        // the NEW pane" because that's how the UI / MCP describe it.
+        // Invert here so callers don't have to. Default 0.5 is symmetric
+        // either way, so the UI's keyboard-shortcut splits keep their
+        // existing behavior.
+        val newPaneRatio = (ratio ?: settings.splitDefaultRatio).coerceIn(0.05f, 0.95f)
+        return splitState.splitFocusedPane(orientation, newSession, 1f - newPaneRatio)
     }
 
     /**

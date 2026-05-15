@@ -367,7 +367,8 @@ private fun SettingsContent(
             )
             SettingsCategory.MCP -> McpSettingsSection(
                 settings = settings,
-                onSettingsChange = onSettingsChange
+                onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave
             )
             SettingsCategory.ABOUT -> AboutSection()
         }

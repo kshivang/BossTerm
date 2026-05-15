@@ -183,12 +183,15 @@ class BossTermMcpManager(
                         return@intercept
                     }
                 }
-                // Use the Routing.mcp(path, ...) overload, not Route.mcp{}.
-                // SDK 0.8.3's Route.mcp ignores the parent route's path and
-                // mounts at the application root; the Routing overload
-                // honors the requested path correctly.
+                // SDK 0.8.3 quirk: both `Route.mcp { ... }` and
+                // `Routing.mcp(path, ...) { ... }` end up mounting SSE +
+                // POST at the application root regardless of any wrapping
+                // route, because the path overload's inner lambda re-invokes
+                // mcp(routing, block) against the original Routing. So we
+                // mount at root directly and advertise the URL as
+                // http://127.0.0.1:<port>/ — clients register that URL.
                 routing {
-                    mcp(path = PATH) { mcpServer }
+                    mcp { mcpServer }
                 }
             }
             engine.start(wait = false)
@@ -272,7 +275,8 @@ class BossTermMcpManager(
 
     private companion object {
         private const val HOST = "127.0.0.1"
-        private const val PATH = "/mcp"
+        /** Path the SSE/POST endpoints are reachable at. SDK 0.8.3 only honors root. */
+        private const val PATH = "/"
         private const val STOP_GRACE_MS = 500L
         private const val STOP_TIMEOUT_MS = 1500L
     }

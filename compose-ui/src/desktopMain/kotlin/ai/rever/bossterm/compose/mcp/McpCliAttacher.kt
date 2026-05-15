@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit
  * The `{NAME}` placeholder in command/clipboard templates is filled with
  * the embedder's `BossTermMcpConfig.serverName` (or `"bossterm"` for the
  * default app), and `{URL}` with the resolved
- * `http://127.0.0.1:<port>/mcp` endpoint.
+ * `http://127.0.0.1:<port>` endpoint.
  *
  * Tested CLI shapes (last verified May 2026):
  *  - Claude Code:  `claude mcp add --transport sse <name> <url>` (verified)
@@ -165,7 +165,10 @@ object McpCliAttacher {
         quiet: Boolean = false
     ): McpAttachResult =
         withContext(Dispatchers.IO) {
-            val url = "http://127.0.0.1:$port/mcp"
+            // SDK 0.8.3 mounts SSE+POST at the application root; the path
+            // overload is broken (see BossTermMcpManager kdoc). So the URL
+            // we register with each CLI is loopback + port, no path suffix.
+            val url = "http://127.0.0.1:$port"
             try {
                 // First, best-effort remove. Many CLIs' `mcp add` is not
                 // idempotent — this turns "already exists" errors into a

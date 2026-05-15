@@ -266,7 +266,7 @@ private fun McpStatusTooltip(
             fontWeight = FontWeight.SemiBold
         )
         Text(
-            text = "Endpoint: http://127.0.0.1:$runningPort/mcp",
+            text = "Endpoint: http://127.0.0.1:$runningPort",
             color = McpToastTextColor,
             fontSize = 11.sp
         )

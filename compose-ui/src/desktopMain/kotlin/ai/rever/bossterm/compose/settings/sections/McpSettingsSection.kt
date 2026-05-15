@@ -41,7 +41,7 @@ import ai.rever.bossterm.compose.settings.components.SettingsToggle
 
 /**
  * MCP server settings: toggle the in-process Model Context Protocol server
- * and pick a localhost port. Endpoint is always `http://127.0.0.1:<port>/mcp`
+ * and pick a localhost port. Endpoint is always `http://127.0.0.1:<port>`
  * over SSE; the server only binds when enabled. Off by default so the port
  * isn't opened until the user opts in.
  *
@@ -116,7 +116,7 @@ fun McpSettingsSection(
         val serverIdLine = cfg?.let { "Server identifier: ${it.serverName} v${it.serverVersion}\n" } ?: ""
         Text(
             text = serverIdLine +
-                    "Endpoint when enabled: http://127.0.0.1:${settings.mcpPort}/mcp\n" +
+                    "Endpoint when enabled: http://127.0.0.1:${settings.mcpPort}\n" +
                     "Server binds loopback only and rejects non-loopback Host headers (403). " +
                     "Tools include read access (scrollback, search, last command)" +
                     (if (cfg?.allowWriteTools != false) " and write access (send_input, send_signal)" else "") +

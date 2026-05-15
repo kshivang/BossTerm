@@ -78,8 +78,20 @@ enum class McpAttachTarget(
     GEMINI(
         displayName = "Gemini CLI",
         persistenceKey = "GEMINI",
+        // Verified against `gemini mcp add --help` (gemini-cli 0.28.x):
+        //   Usage: gemini mcp add [options] <name> <commandOrUrl> [args...]
+        // The previous "{NAME} --transport sse {URL}" order had Gemini
+        // parse "--transport" as the commandOrUrl positional → exit 52.
+        // `--scope user` writes to the user-global config file rather
+        // than the project-local one, matching the behavior of the
+        // other CLIs' `mcp add` defaults.
         removeCommand = listOf("gemini", "mcp", "remove", "{NAME}"),
-        addCommand = listOf("gemini", "mcp", "add", "{NAME}", "--transport", "sse", "{URL}"),
+        addCommand = listOf(
+            "gemini", "mcp", "add",
+            "{NAME}", "{URL}",
+            "--transport", "sse",
+            "--scope", "user"
+        ),
         clipboardFallback = """
             // Merge into ~/.gemini/settings.json
             {

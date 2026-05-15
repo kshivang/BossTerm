@@ -3,20 +3,32 @@ package ai.rever.bossterm.compose.settings.sections
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.Button
+import androidx.compose.material.ButtonDefaults
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 import ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig
+import ai.rever.bossterm.compose.mcp.McpAttachResult
+import ai.rever.bossterm.compose.mcp.McpAttachTarget
+import ai.rever.bossterm.compose.mcp.McpCliAttacher
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.TerminalSettings
@@ -87,6 +99,13 @@ fun McpSettingsSection(
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        AttachToCliSection(
+            port = settings.mcpPort,
+            enabled = settings.mcpEnabled
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
         // Inline endpoint + security note. Includes the embedder's configured
         // server name when available so users know how the server identifies
         // itself to clients.
@@ -101,6 +120,99 @@ fun McpSettingsSection(
             color = TextMuted,
             fontSize = 12.sp
         )
+    }
+}
+
+/**
+ * One-click attach buttons for the four AI CLIs that ship with BossTerm's
+ * AI Assistants menu. Each button tries the CLI's native `mcp add`
+ * subcommand; on failure (binary missing, command not supported, non-zero
+ * exit) the relevant config snippet is copied to the clipboard.
+ *
+ * Buttons disable themselves when MCP is off — attaching is pointless
+ * before the server is bound.
+ */
+@Composable
+private fun AttachToCliSection(
+    port: Int,
+    enabled: Boolean
+) {
+    val scope = rememberCoroutineScope()
+    // Last-attempt status per target so each button can show its own
+    // success/fallback line without clobbering the others.
+    var lastResult by remember { mutableStateOf<McpAttachResult?>(null) }
+    var inFlight by remember { mutableStateOf<McpAttachTarget?>(null) }
+
+    SettingsSection(title = "Attach to AI CLI") {
+        Text(
+            text = "Register this BossTerm MCP endpoint with your favorite AI CLI. " +
+                    "Each button shells out to the CLI's `mcp add` command. " +
+                    "If the CLI isn't installed (or the command fails), the right " +
+                    "config snippet is copied to your clipboard.",
+            color = TextMuted,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            McpAttachTarget.entries.forEach { target ->
+                Button(
+                    onClick = {
+                        inFlight = target
+                        lastResult = null
+                        scope.launch {
+                            try {
+                                lastResult = McpCliAttacher.attach(target, port)
+                            } finally {
+                                inFlight = null
+                            }
+                        }
+                    },
+                    enabled = enabled && inFlight == null,
+                    colors = ButtonDefaults.buttonColors(
+                        backgroundColor = Color(0xFF2D6CDF),
+                        contentColor = Color.White,
+                        disabledBackgroundColor = Color(0xFF3A3A3A),
+                        disabledContentColor = Color(0xFF888888)
+                    )
+                ) {
+                    Text(
+                        text = if (inFlight == target) "Attaching…" else "Attach ${target.displayName}",
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+
+        lastResult?.let { result ->
+            val (label, color) = when (result) {
+                is McpAttachResult.Success ->
+                    "✓ ${result.target.displayName} attached" +
+                        (if (result.detail.isNotEmpty()) " — ${result.detail}" else "") to
+                        Color(0xFF4CAF50)
+                is McpAttachResult.CopiedToClipboard ->
+                    "${result.target.displayName}: ${result.reason}" to Color(0xFFFFC107)
+            }
+            Text(
+                text = label,
+                color = color,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
+
+        if (!enabled) {
+            Text(
+                text = "Turn on the MCP server above to enable these buttons.",
+                color = TextMuted,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
     }
 }
 

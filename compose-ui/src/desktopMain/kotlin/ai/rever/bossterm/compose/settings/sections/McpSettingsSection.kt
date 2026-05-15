@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import ai.rever.bossterm.compose.mcp.BossTermMcpServer
 import ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig
 import ai.rever.bossterm.compose.mcp.McpAttachResult
 import ai.rever.bossterm.compose.mcp.McpAttachTarget
@@ -71,9 +72,9 @@ fun McpSettingsSection(
             Spacer(modifier = Modifier.height(16.dp))
         }
 
-        SettingsSection(title = "MCP Server") {
+        SettingsSection(title = "BossTerm MCP Server") {
             SettingsToggle(
-                label = "Enable MCP Server",
+                label = "Enable BossTerm MCP Server",
                 checked = settings.mcpEnabled,
                 onCheckedChange = { onSettingsChange(settings.copy(mcpEnabled = it)) },
                 description = "Bind an in-process Model Context Protocol server on " +
@@ -95,7 +96,7 @@ fun McpSettingsSection(
                 label = "Show Status Indicator in Tab Bar",
                 checked = settings.mcpShowStatusIndicator,
                 onCheckedChange = { onSettingsChange(settings.copy(mcpShowStatusIndicator = it)) },
-                description = "Display a small green dot in the tab bar while the MCP server " +
+                description = "Display a small green dot in the tab bar while the BossTerm MCP server " +
                         "is running. Click the dot to jump to this settings page.",
                 enabled = settings.mcpEnabled
             )
@@ -115,6 +116,14 @@ fun McpSettingsSection(
                 enabled = settings.mcpEnabled
             )
         }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        ExposedToolsSection(
+            settings = settings,
+            onSettingsChange = onSettingsChange,
+            allowWriteTools = cfg?.allowWriteTools != false
+        )
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -141,6 +150,102 @@ fun McpSettingsSection(
             fontSize = 12.sp
         )
     }
+}
+
+/**
+ * Per-tool toggles that control which built-in BossTerm MCP tools are exposed
+ * to clients. Reads/writes the same `disabledMcpTools` setting that the
+ * `manage_tools` MCP tool edits, so toggling here is identical to a remote
+ * agent calling `manage_tools` with `disable` / `enable`. Changes apply live
+ * (no server restart needed).
+ *
+ * Write tools (send_input, send_signal, run_in_panel) only render when the
+ * embedder's config allows write tools at all — otherwise they're never
+ * registered regardless of this toggle, so showing them would mislead.
+ */
+@Composable
+private fun ExposedToolsSection(
+    settings: TerminalSettings,
+    onSettingsChange: (TerminalSettings) -> Unit,
+    allowWriteTools: Boolean
+) {
+    val disabled = settings.disabledMcpTools
+
+    fun setEnabled(toolName: String, enable: Boolean) {
+        val next = disabled.toMutableSet()
+        if (enable) next.remove(toolName) else next.add(toolName)
+        onSettingsChange(settings.copy(disabledMcpTools = next))
+    }
+
+    SettingsSection(title = "Exposed Tools") {
+        Text(
+            text = "Pick which built-in BossTerm MCP tools clients can call. Toggling here " +
+                    "is equivalent to calling the `manage_tools` MCP tool — both update the " +
+                    "same setting and apply live without restarting the server. The " +
+                    "`manage_tools` tool itself is always exposed so disabling everything " +
+                    "leaves a way back.",
+            color = TextMuted,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+
+        ToolGroupLabel("Read tools")
+        BossTermMcpServer.BUILT_IN_READ_TOOLS.forEach { name ->
+            SettingsToggle(
+                label = name,
+                checked = name !in disabled,
+                onCheckedChange = { setEnabled(name, it) },
+                description = toolDescription(name),
+                enabled = settings.mcpEnabled
+            )
+        }
+
+        if (allowWriteTools) {
+            Spacer(modifier = Modifier.height(8.dp))
+            ToolGroupLabel("Write tools")
+            BossTermMcpServer.BUILT_IN_WRITE_TOOLS.forEach { name ->
+                SettingsToggle(
+                    label = name,
+                    checked = name !in disabled,
+                    onCheckedChange = { setEnabled(name, it) },
+                    description = toolDescription(name),
+                    enabled = settings.mcpEnabled
+                )
+            }
+        } else {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Write tools are disabled by this build's configuration (allowWriteTools=false).",
+                color = TextMuted,
+                fontSize = 11.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun ToolGroupLabel(text: String) {
+    Text(
+        text = text,
+        color = TextPrimary,
+        fontSize = 12.sp,
+        modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+    )
+}
+
+/** Short, user-facing one-liner for each tool. Kept terse — the MCP tool descriptions
+ *  in BossTermMcpServer carry the full schema details for clients. */
+private fun toolDescription(name: String): String = when (name) {
+    "list_tabs" -> "Enumerate every open terminal tab across all windows."
+    "get_active_tab" -> "Return the active tab of the primary window."
+    "read_scrollback" -> "Read the last N lines from a tab/pane's buffer."
+    "search_output" -> "Regex-search a tab/pane's scrollback for matches."
+    "get_last_command" -> "Return the most recently completed OSC 133 command."
+    "read_debug_console" -> "Read recent entries from a tab's debug-data buffer."
+    "send_input" -> "Write raw text (including newlines) to a tab/pane's stdin."
+    "send_signal" -> "Send ctrl_c / ctrl_d / ctrl_z to a tab/pane."
+    "run_in_panel" -> "Open a new tab or split pane and run a script in it."
+    else -> name
 }
 
 /**
@@ -259,7 +364,7 @@ private fun AttachToCliSection(
 
         if (!enabled) {
             Text(
-                text = "Turn on the MCP server above to enable these buttons.",
+                text = "Turn on the BossTerm MCP server above to enable these buttons.",
                 color = TextMuted,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(top = 6.dp)
@@ -284,7 +389,7 @@ private fun ConfigurationBanner() {
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         Text(
-            text = "MCP is not wired up in this build.",
+            text = "BossTerm MCP is not wired up in this build.",
             color = TextPrimary,
             fontSize = 13.sp
         )

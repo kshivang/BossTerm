@@ -17,6 +17,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.floatOrNull
@@ -59,7 +60,8 @@ import kotlinx.serialization.json.putJsonObject
  */
 class BossTermMcpServer(
     private val registry: McpTerminalRegistry = McpTerminalRegistry,
-    private val config: BossTermMcpConfig = BossTermMcpConfig()
+    private val config: BossTermMcpConfig = BossTermMcpConfig(),
+    private val settingsManager: SettingsManager = SettingsManager.instance
 ) {
 
     private val json: Json = Json {
@@ -70,6 +72,58 @@ class BossTermMcpServer(
 
     /** Returns the built-in tool name with the embedder's configured prefix applied. */
     private fun toolName(builtin: String): String = config.toolNamePrefix + builtin
+
+    /**
+     * Returns the description an embedder has supplied for [builtin] via
+     * [BossTermMcpConfig.customToolDescriptions], or [default] when none is set.
+     * Lookup uses the unprefixed built-in name so embedders write
+     * `customToolDescriptions = mapOf("list_tabs" to "…")` regardless of any
+     * configured tool-name prefix.
+     */
+    private fun describe(builtin: String, default: String): String =
+        config.customToolDescriptions[builtin] ?: default
+
+    // Name-indexed registration functions. Defined here (not inline in createServer) so
+    // manage_tools / applyDisabledSet can re-register a previously-disabled tool against
+    // the live Server without rebuilding the whole instance. Names mirror
+    // BUILT_IN_READ_TOOLS / BUILT_IN_WRITE_TOOLS so the settings UI can render toggles
+    // without duplicating the list.
+    private val readToolRegistrations: Map<String, (Server) -> Unit> = mapOf(
+        "list_tabs" to ::registerListTabs,
+        "get_active_tab" to ::registerGetActiveTab,
+        "read_scrollback" to ::registerReadScrollback,
+        "search_output" to ::registerSearchOutput,
+        "get_last_command" to ::registerGetLastCommand,
+        "read_debug_console" to ::registerReadDebugConsole
+    )
+    private val writeToolRegistrations: Map<String, (Server) -> Unit> = mapOf(
+        "send_input" to ::registerSendInput,
+        "send_signal" to ::registerSendSignal,
+        "run_in_panel" to ::registerRunInPanel
+    )
+
+    /** Reserved tools that callers cannot disable. */
+    private val undisablableTools: Set<String> = UNDISABLABLE_TOOLS
+
+    // Hold the live Server so applyDisabledSet can mutate it.
+    private var serverRef: Server? = null
+
+    // Serializes concurrent applyDisabledSet callers. Two paths invoke it: the
+    // manage_tools MCP handler (no external lock) and the BossTermMcpManager
+    // settings watcher (holds the manager's mutex, but that mutex doesn't cover
+    // the MCP-handler path). The MCP SDK's Server.tools is a plain MutableMap
+    // without documented thread-safety, so a containsKey → addTool/removeTool
+    // sequence on two threads could otherwise double-register or corrupt state.
+    private val toolsLock = Any()
+
+    /**
+     * Names of every built-in tool the current config could expose (write tools are
+     * excluded when [BossTermMcpConfig.allowWriteTools] is false). Stable order:
+     * reads first, then writes.
+     */
+    fun availableToolNames(): List<String> =
+        readToolRegistrations.keys.toList() +
+            if (config.allowWriteTools) writeToolRegistrations.keys.toList() else emptyList()
 
     /**
      * Build and return a fully configured [Server] with all BossTerm tools
@@ -87,24 +141,53 @@ class BossTermMcpServer(
                 )
             )
         )
+        serverRef = server
 
-        registerListTabs(server)
-        registerGetActiveTab(server)
-        registerReadScrollback(server)
-        registerSearchOutput(server)
-        registerGetLastCommand(server)
-        registerReadDebugConsole(server)
-        if (config.allowWriteTools) {
-            registerSendInput(server)
-            registerSendSignal(server)
-            registerRunInPanel(server)
+        val disabled = settingsManager.settings.value.disabledMcpTools
+        for ((name, register) in readToolRegistrations) {
+            if (name !in disabled) register(server)
         }
+        if (config.allowWriteTools) {
+            for ((name, register) in writeToolRegistrations) {
+                if (name !in disabled) register(server)
+            }
+        }
+        // manage_tools is always registered — without it there's no way to
+        // re-enable other tools from MCP after they've been disabled.
+        registerManageTools(server)
 
         // Embedder hook: register app-specific tools after built-ins. Names
         // are NOT prefixed — embedder owns them.
         config.additionalTools(server)
 
         return server
+    }
+
+    /**
+     * Sync the live server's exposed tool set to match [disabled]. Adds back any
+     * available tool not in the set; removes any tool that is. No-op if no server
+     * has been built yet.
+     *
+     * Safe to call from any thread; the body runs under [toolsLock] so concurrent
+     * callers (the manage_tools MCP handler and the settings watcher in
+     * BossTermMcpManager) are serialized. Without this, the containsKey →
+     * addTool/removeTool sequence could double-register a tool against the SDK's
+     * non-thread-safe Server.tools map.
+     */
+    fun applyDisabledSet(disabled: Set<String>) {
+        val server = serverRef ?: return
+        synchronized(toolsLock) {
+            for (name in availableToolNames()) {
+                val prefixed = toolName(name)
+                val present = server.tools.containsKey(prefixed)
+                val shouldBeExposed = name !in disabled
+                if (shouldBeExposed && !present) {
+                    (readToolRegistrations[name] ?: writeToolRegistrations[name])?.invoke(server)
+                } else if (!shouldBeExposed && present) {
+                    server.removeTool(prefixed)
+                }
+            }
+        }
     }
 
     // -----------------------------------------------------------------
@@ -114,9 +197,12 @@ class BossTermMcpServer(
     private fun registerListTabs(server: Server) {
         server.addTool(
             name = toolName("list_tabs"),
-            description = "List all open terminal tabs across all windows. Each tab includes " +
-                    "id, title, working directory, pid, and isActive (true if the tab is the " +
-                    "currently selected tab of its window).",
+            description = describe(
+                "list_tabs",
+                "List all open terminal tabs across all windows. Each tab includes " +
+                        "id, title, working directory, pid, and isActive (true if the tab is the " +
+                        "currently selected tab of its window)."
+            ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {},
                 required = emptyList()
@@ -136,8 +222,11 @@ class BossTermMcpServer(
     private fun registerGetActiveTab(server: Server) {
         server.addTool(
             name = toolName("get_active_tab"),
-            description = "Return the active tab of the primary window (the first window opened " +
-                    "that is still alive), or null if no tab is active.",
+            description = describe(
+                "get_active_tab",
+                "Return the active tab of the primary window (the first window opened " +
+                        "that is still alive), or null if no tab is active."
+            ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {},
                 required = emptyList()
@@ -160,10 +249,13 @@ class BossTermMcpServer(
     private fun registerReadScrollback(server: Server) {
         server.addTool(
             name = toolName("read_scrollback"),
-            description = "Read the last N lines from a tab/pane's terminal buffer " +
-                    "(history + visible screen) as plain UTF-8 text. Trailing whitespace per " +
-                    "line is stripped. When `pane_id` is supplied, reads the specific split " +
-                    "pane (returned by run_in_panel); otherwise reads the focused pane.",
+            description = describe(
+                "read_scrollback",
+                "Read the last N lines from a tab/pane's terminal buffer " +
+                        "(history + visible screen) as plain UTF-8 text. Trailing whitespace per " +
+                        "line is stripped. When `pane_id` is supplied, reads the specific split " +
+                        "pane (returned by run_in_panel); otherwise reads the focused pane."
+            ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("tab_id") {
@@ -228,12 +320,15 @@ class BossTermMcpServer(
     private fun registerSearchOutput(server: Server) {
         server.addTool(
             name = toolName("search_output"),
-            description = "Regex-search the entire scrollback (history + screen) of a tab/pane. " +
-                    "Returns matching rows with positional info. Row numbers follow buffer " +
-                    "convention: negative for history (oldest = -historyLinesCount), 0..height-1 " +
-                    "for screen. The response also includes historyLinesCount and height so " +
-                    "clients can convert to 1-based line numbers if desired. When `pane_id` is " +
-                    "supplied, searches that specific split pane; otherwise the focused pane.",
+            description = describe(
+                "search_output",
+                "Regex-search the entire scrollback (history + screen) of a tab/pane. " +
+                        "Returns matching rows with positional info. Row numbers follow buffer " +
+                        "convention: negative for history (oldest = -historyLinesCount), 0..height-1 " +
+                        "for screen. The response also includes historyLinesCount and height so " +
+                        "clients can convert to 1-based line numbers if desired. When `pane_id` is " +
+                        "supplied, searches that specific split pane; otherwise the focused pane."
+            ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("tab_id") {
@@ -331,12 +426,15 @@ class BossTermMcpServer(
     private fun registerGetLastCommand(server: Server) {
         server.addTool(
             name = toolName("get_last_command"),
-            description = "Return the most recently completed shell command for a tab " +
-                    "(as captured via OSC 133), or null if no command has finished yet. " +
-                    "Requires shell integration — see shell-integration.md. " +
-                    "Note: `commandText` is currently always null; only `exitCode`, `startedAtMs`, " +
-                    "`finishedAtMs`, `durationMs`, and `cwd` are populated. Capturing the typed " +
-                    "command text reliably is a follow-up.",
+            description = describe(
+                "get_last_command",
+                "Return the most recently completed shell command for a tab " +
+                        "(as captured via OSC 133), or null if no command has finished yet. " +
+                        "Requires shell integration — see shell-integration.md. " +
+                        "Note: `commandText` is currently always null; only `exitCode`, `startedAtMs`, " +
+                        "`finishedAtMs`, `durationMs`, and `cwd` are populated. Capturing the typed " +
+                        "command text reliably is a follow-up."
+            ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("tab_id") {
@@ -380,10 +478,13 @@ class BossTermMcpServer(
     private fun registerSendInput(server: Server) {
         server.addTool(
             name = toolName("send_input"),
-            description = "Write text to a tab's shell stdin. The caller is responsible for " +
-                    "appending a trailing '\\n' if they want a command to actually execute. " +
-                    "When `pane_id` is supplied (e.g. the value returned by run_in_panel), " +
-                    "writes go to that specific split; otherwise to the tab's primary session.",
+            description = describe(
+                "send_input",
+                "Write text to a tab's shell stdin. The caller is responsible for " +
+                        "appending a trailing '\\n' if they want a command to actually execute. " +
+                        "When `pane_id` is supplied (e.g. the value returned by run_in_panel), " +
+                        "writes go to that specific split; otherwise to the tab's primary session."
+            ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("tab_id") {
@@ -429,10 +530,13 @@ class BossTermMcpServer(
     private fun registerSendSignal(server: Server) {
         server.addTool(
             name = toolName("send_signal"),
-            description = "Send a control signal to a tab's shell. Allowed signals: " +
-                    "'ctrl_c' (interrupt), 'ctrl_d' (EOF), 'ctrl_z' (suspend). When `pane_id` " +
-                    "is supplied, the signal targets that specific split; otherwise the tab's " +
-                    "primary session.",
+            description = describe(
+                "send_signal",
+                "Send a control signal to a tab's shell. Allowed signals: " +
+                        "'ctrl_c' (interrupt), 'ctrl_d' (EOF), 'ctrl_z' (suspend). When `pane_id` " +
+                        "is supplied, the signal targets that specific split; otherwise the tab's " +
+                        "primary session."
+            ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("tab_id") {
@@ -495,14 +599,16 @@ class BossTermMcpServer(
     private fun registerRunInPanel(server: Server) {
         server.addTool(
             name = toolName("run_in_panel"),
-            description = "Open a new terminal panel and write a script to it. Modes: " +
-                    "'new_tab' (fresh tab with initialCommand), 'horizontal_split' (split " +
-                    "below focused pane), 'vertical_split' (split beside focused pane). " +
-                    "Include '\\n' in the script to submit it as a command. " +
-                    "Note: in 'new_tab' mode, the response returns as soon as the tab is " +
-                    "created; the shell may still be initializing for ~1s before the script " +
-                    "actually runs. Use list_tabs / read_scrollback after a short delay if " +
-                    "you need to observe results.",
+            description = describe(
+                "run_in_panel",
+                "Open a new terminal panel and write a script to it. Modes: " +
+                        "'new_tab' (fresh tab with initialCommand), 'horizontal_split' (split " +
+                        "below focused pane), 'vertical_split' (split beside focused pane). " +
+                        "Include '\\n' in the script to submit it as a command. " +
+                        "All three modes wait for the shell's OSC 133;A prompt-ready signal " +
+                        "(or the configured fallback delay) before sending the script, so the " +
+                        "command runs cleanly rather than racing with shell startup."
+            ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("panel") {
@@ -554,11 +660,9 @@ class BossTermMcpServer(
 
             when (panel) {
                 "new_tab" -> {
-                    // TabController.createTab auto-appends '\n' to
-                    // initialCommand, while the split path uses raw
-                    // writeUserInput (no auto-newline). Normalize a single
-                    // trailing newline so the tool's `\n means submit`
-                    // contract is consistent across all three modes.
+                    // Both createTab and the split path (createSessionForSplit) hold
+                    // initialCommand until OSC 133;A and auto-append '\n', so strip
+                    // any caller-provided trailing newline for a consistent contract.
                     val normalizedScript = script.removeSuffix("\n")
                     val newId = state.createTab(
                         workingDir = workingDir,
@@ -575,20 +679,15 @@ class BossTermMcpServer(
                     val configuredDefault = SettingsManager.instance.settings.value.mcpDefaultSplitRatio
                     val requestedRatio = args.optionalFloat("split_ratio")
                     val effectiveRatio = (requestedRatio ?: configuredDefault).coerceIn(0.05f, 0.95f)
+                    // Normalize the trailing newline: createSessionForSplit's initialCommand
+                    // path auto-appends '\n', matching the new_tab branch. An empty script
+                    // means "just split, don't run anything".
+                    val normalizedScript = script.removeSuffix("\n").ifEmpty { null }
                     val paneId = if (panel == "horizontal_split") {
-                        state.splitHorizontal(targetTabId, ratio = effectiveRatio)
+                        state.splitHorizontal(targetTabId, ratio = effectiveRatio, initialCommand = normalizedScript)
                     } else {
-                        state.splitVertical(targetTabId, ratio = effectiveRatio)
+                        state.splitVertical(targetTabId, ratio = effectiveRatio, initialCommand = normalizedScript)
                     } ?: return@addTool errorResult("Split failed (terminal too small?)")
-                    // Write directly to the new pane via its id rather than
-                    // relying on focused-pane state. Avoids any timing race
-                    // where user input or UI re-focuses between splitFocusedPane
-                    // and the write call.
-                    val newSession = state.findSession(targetTabId, paneId)
-                        ?: return@addTool errorResult(
-                            "Split returned paneId '$paneId' but the pane could not be located"
-                        )
-                    newSession.writeUserInput(script)
                     val payload = RunInPanelResult(ok = true, tabId = targetTabId, paneId = paneId)
                     successJson(json.encodeToString(RunInPanelResult.serializer(), payload))
                 }
@@ -606,10 +705,13 @@ class BossTermMcpServer(
     private fun registerReadDebugConsole(server: Server) {
         server.addTool(
             name = toolName("read_debug_console"),
-            description = "Read recent entries from a tab's debug-data buffer (PTY output, " +
-                    "user input, console-log entries). Per-tab circular buffer; cap is " +
-                    "settings.debugMaxChunks (default 1000). Supports incremental polling via " +
-                    "since_index and filtering via sources.",
+            description = describe(
+                "read_debug_console",
+                "Read recent entries from a tab's debug-data buffer (PTY output, " +
+                        "user input, console-log entries). Per-tab circular buffer; cap is " +
+                        "settings.debugMaxChunks (default 1000). Supports incremental polling via " +
+                        "since_index and filtering via sources."
+            ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("tab_id") {
@@ -692,6 +794,90 @@ class BossTermMcpServer(
     }
 
     // -----------------------------------------------------------------
+    // Tool: manage_tools
+    // -----------------------------------------------------------------
+
+    private fun registerManageTools(server: Server) {
+        server.addTool(
+            name = toolName("manage_tools"),
+            description = "Manage which BossTerm MCP built-in tools are exposed to clients. " +
+                    "Operation 'list' returns every available built-in with its current enabled " +
+                    "state. 'enable' / 'disable' take a 'names' array of unprefixed built-in " +
+                    "names (e.g. 'send_input'); changes apply live (the tool list updates without " +
+                    "restarting the server) and persist to settings.json. 'manage_tools' itself " +
+                    "cannot be disabled.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("operation") {
+                        put("type", "string")
+                        put("description", "One of: list, enable, disable.")
+                    }
+                    putJsonObject("names") {
+                        put("type", "array")
+                        put(
+                            "description",
+                            "Unprefixed built-in tool names. Required for 'enable' and 'disable'."
+                        )
+                    }
+                },
+                required = listOf("operation")
+            )
+        ) { request ->
+            val args = request.arguments
+            val operation = args.requireString("operation")?.lowercase()
+                ?: return@addTool errorResult("Missing required argument: operation")
+
+            when (operation) {
+                "list" -> {
+                    val currentDisabled = settingsManager.settings.value.disabledMcpTools
+                    val items = availableToolNames().map { name ->
+                        ManageToolItem(name = name, enabled = name !in currentDisabled)
+                    }
+                    successJson(
+                        json.encodeToString(
+                            ManageToolsListResult.serializer(),
+                            ManageToolsListResult(tools = items)
+                        )
+                    )
+                }
+                "enable", "disable" -> {
+                    val names = args.optionalStringList("names")
+                        ?: return@addTool errorResult("Missing required argument: names")
+                    if (names.isEmpty()) {
+                        return@addTool errorResult("'names' must contain at least one tool name")
+                    }
+                    val available = availableToolNames().toSet()
+                    val unknown = names.filter { it !in available }
+                    if (unknown.isNotEmpty()) {
+                        return@addTool errorResult(
+                            "Unknown tool name(s): ${unknown.joinToString()}. " +
+                                "Available: ${available.joinToString()}"
+                        )
+                    }
+                    if (operation == "disable") {
+                        val reserved = names.filter { it in undisablableTools }
+                        if (reserved.isNotEmpty()) {
+                            return@addTool errorResult(
+                                "Cannot disable reserved tool(s): ${reserved.joinToString()}"
+                            )
+                        }
+                    }
+                    settingsManager.updateSetting {
+                        val next = disabledMcpTools.toMutableSet()
+                        if (operation == "enable") next.removeAll(names.toSet()) else next.addAll(names)
+                        copy(disabledMcpTools = next)
+                    }
+                    applyDisabledSet(settingsManager.settings.value.disabledMcpTools)
+                    successJson(json.encodeToString(OkResult.serializer(), OkResult(ok = true)))
+                }
+                else -> errorResult(
+                    "Unknown operation '$operation'. Expected: list, enable, disable."
+                )
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------
 
@@ -761,6 +947,13 @@ class BossTermMcpServer(
         if (el is JsonNull) return null
         val prim = el.jsonPrimitive
         return prim.floatOrNull ?: prim.content.toFloatOrNull()
+    }
+
+    private fun JsonObject?.optionalStringList(key: String): List<String>? {
+        val el: JsonElement = this?.get(key) ?: return null
+        if (el is JsonNull) return null
+        val arr = el as? JsonArray ?: return null
+        return arr.mapNotNull { (it as? JsonPrimitive)?.content }
     }
 
     // -----------------------------------------------------------------
@@ -851,9 +1044,43 @@ class BossTermMcpServer(
         val stats: DebugConsoleStats
     )
 
+    @Serializable
+    data class ManageToolItem(val name: String, val enabled: Boolean)
+
+    @Serializable
+    data class ManageToolsListResult(val tools: List<ManageToolItem>)
+
     companion object {
         private const val DEFAULT_SCROLLBACK_LINES = 200
         private const val DEFAULT_SEARCH_MAX_MATCHES = 50
         private const val DEFAULT_DEBUG_CHUNKS = 100
+
+        /**
+         * Unprefixed built-in read tool names, in display order. Single source of
+         * truth shared with the settings UI so toggle rows can't drift from the
+         * tools actually registered.
+         */
+        val BUILT_IN_READ_TOOLS: List<String> = listOf(
+            "list_tabs",
+            "get_active_tab",
+            "read_scrollback",
+            "search_output",
+            "get_last_command",
+            "read_debug_console"
+        )
+
+        /** Unprefixed built-in write tool names, in display order. */
+        val BUILT_IN_WRITE_TOOLS: List<String> = listOf(
+            "send_input",
+            "send_signal",
+            "run_in_panel"
+        )
+
+        /**
+         * Tools that may never be disabled. `manage_tools` is the only escape hatch
+         * once everything else has been turned off, so disabling it would brick the
+         * MCP surface.
+         */
+        val UNDISABLABLE_TOOLS: Set<String> = setOf("manage_tools")
     }
 }

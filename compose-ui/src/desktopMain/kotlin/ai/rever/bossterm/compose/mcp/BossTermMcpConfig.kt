@@ -94,7 +94,19 @@ data class BossTermMcpConfig(
      * embedder add app-specific tools (`server.addTool(...)`). Defaults to a
      * no-op.
      */
-    val additionalTools: ServerToolRegistrar = {}
+    val additionalTools: ServerToolRegistrar = {},
+    /**
+     * Per-tool description overrides for built-in BossTerm MCP tools. Keys are
+     * unprefixed built-in names (e.g. `"list_tabs"`, `"send_input"`); values
+     * replace the default description string advertised to MCP clients.
+     *
+     * Useful when the embedder wants to clarify behavior in their host app —
+     * e.g. "lists tabs in `MyIDE`'s integrated terminal" rather than the
+     * generic default. Unknown keys are silently ignored; tool names that
+     * aren't overridden keep their built-in description. Empty map means
+     * "no overrides".
+     */
+    val customToolDescriptions: Map<String, String> = emptyMap()
 )
 
 /**

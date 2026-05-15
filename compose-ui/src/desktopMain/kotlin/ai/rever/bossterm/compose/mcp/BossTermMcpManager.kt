@@ -76,7 +76,13 @@ class BossTermMcpManager(
     private var runningEngine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     private var runningPort: Int? = null
 
+    // Holds the live BossTermMcpServer wrapper so the disabled-tools watcher
+    // can call applyDisabledSet() against the same instance the transport is bound to.
+    // Null when no engine is running.
+    private var runningServer: BossTermMcpServer? = null
+
     private var watcherJob: Job? = null
+    private var disabledToolsWatcherJob: Job? = null
 
     /** Begin observing settings. Idempotent. Safe to call multiple times. */
     fun start() {
@@ -122,6 +128,25 @@ class BossTermMcpManager(
                 .distinctUntilChanged()
                 .collect { desired -> reconcile(desired) }
         }
+
+        // Independent watcher: settings-UI toggles of disabledMcpTools push add/remove
+        // to whatever live server is currently bound. No-op when the engine is stopped
+        // (applyDisabledSet returns early if no server has been built).
+        //
+        // `mutex.withLock` here only guards the read of [runningServer] against engine
+        // start/stop (which also holds the mutex). The actual SDK-mutation race is
+        // serialized internally by BossTermMcpServer.applyDisabledSet via its own
+        // toolsLock — that's what makes the concurrent manage_tools-handler path safe.
+        disabledToolsWatcherJob = parentScope.launch {
+            settingsManager.settings
+                .map { it.disabledMcpTools }
+                .distinctUntilChanged()
+                .collect { disabled ->
+                    mutex.withLock {
+                        runningServer?.applyDisabledSet(disabled)
+                    }
+                }
+        }
     }
 
     /**
@@ -131,6 +156,8 @@ class BossTermMcpManager(
     fun stop() {
         watcherJob?.cancel()
         watcherJob = null
+        disabledToolsWatcherJob?.cancel()
+        disabledToolsWatcherJob = null
         // Async shutdown so callers (including Compose onDispose on the UI
         // thread) don't block waiting for Ktor's grace period.
         parentScope.launch(Dispatchers.IO) {
@@ -162,7 +189,8 @@ class BossTermMcpManager(
     }
 
     private fun startEngineLocked(port: Int) {
-        val mcpServer = BossTermMcpServer(registry, config).createServer()
+        val mcpServerWrapper = BossTermMcpServer(registry, config, settingsManager)
+        val mcpServer = mcpServerWrapper.createServer()
         val allowedHosts = setOf("127.0.0.1", "localhost", "127.0.0.1:$port", "localhost:$port")
         try {
             log.info("Starting BossTerm MCP server on http://{}:{}{}", HOST, port, PATH)
@@ -197,6 +225,7 @@ class BossTermMcpManager(
             engine.start(wait = false)
             runningEngine = engine
             runningPort = port
+            runningServer = mcpServerWrapper
             registry.setRunning(port)
             log.info(
                 "BossTerm MCP server ready: http://{}:{}{} (SSE transport, {} state(s) registered)",
@@ -210,10 +239,12 @@ class BossTermMcpManager(
             )
             runningEngine = null
             runningPort = null
+            runningServer = null
         } catch (e: Throwable) {
             log.error("BossTerm MCP server failed to start on {}:{}", HOST, port, e)
             runningEngine = null
             runningPort = null
+            runningServer = null
         }
     }
 
@@ -267,6 +298,7 @@ class BossTermMcpManager(
         } finally {
             runningEngine = null
             runningPort = null
+            runningServer = null
             registry.setStopped()
         }
     }

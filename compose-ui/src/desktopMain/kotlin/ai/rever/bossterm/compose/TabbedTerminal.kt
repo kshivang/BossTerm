@@ -1002,7 +1002,7 @@ fun TabbedTerminal(
                         val mcpAttachItems: List<ContextMenuElement> = listOf(
                             ContextMenuSubmenu(
                                 id = "mcp_attach_submenu",
-                                label = "Attach MCP to…",
+                                label = "Attach BossTerm MCP to…",
                                 items = McpAttachTarget.entries.map { target ->
                                     val prefix = if (target in attached) "✓ " else ""
                                     ContextMenuItem(

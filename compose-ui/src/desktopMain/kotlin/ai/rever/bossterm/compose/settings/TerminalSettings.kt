@@ -790,6 +790,17 @@ data class TerminalSettings(
     val mcpAttachedTo: Set<String> = emptySet(),
 
     /**
+     * Unprefixed built-in names of BossTerm MCP tools that should NOT be exposed
+     * to clients (e.g. "send_input", "run_in_panel"). Default: empty (all tools
+     * exposed). Edited via the settings UI or the `manage_tools` MCP tool;
+     * changes apply live without restarting the server.
+     *
+     * Note: `manage_tools` is always exposed and cannot be added to this set —
+     * disabling it would leave no way to re-enable other tools from MCP.
+     */
+    val disabledMcpTools: Set<String> = emptySet(),
+
+    /**
      * Set to `true` the first time [ai.rever.bossterm.compose.mcp.BossTermMcpManager]
      * starts so that embedder-supplied first-launch defaults
      * (`BossTermMcpConfig.defaultEnabled` / `defaultPort`) are applied

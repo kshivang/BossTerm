@@ -8,6 +8,10 @@ import ai.rever.bossterm.compose.TabbedTerminal
 import ai.rever.bossterm.compose.TabbedTerminalState
 import ai.rever.bossterm.compose.TerminalTabInfo
 import ai.rever.bossterm.compose.getPlatformServices
+import ai.rever.bossterm.compose.mcp.BossTermMcpConfig
+import ai.rever.bossterm.compose.mcp.BossTermMcpManager
+import ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig
+import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.rememberTabbedTerminalState
 import ai.rever.bossterm.compose.menu.MenuActions
 import ai.rever.bossterm.compose.onboarding.OnboardingWizard
@@ -28,10 +32,20 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.*
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
+import io.modelcontextprotocol.kotlin.sdk.types.TextContent
+import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import java.awt.event.WindowEvent
 import java.awt.event.WindowFocusListener
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Example application demonstrating BossTerm's TabbedTerminal component.
@@ -50,33 +64,117 @@ import kotlinx.coroutines.flow.StateFlow
  *
  * Run with: ./gradlew :tabbed-example:run
  */
-fun main() = application {
-    // Track all open windows
-    val windows = remember { mutableStateListOf(WindowState()) }
-
-    // Create new window
-    fun createWindow() {
-        windows.add(WindowState())
-    }
-
-    // Close window
-    fun closeWindow(index: Int) {
-        if (windows.size > 1) {
-            windows.removeAt(index)
-        } else {
-            exitApplication()
+fun main() {
+    // === BossTerm MCP setup ============================================
+    // Demonstrates two embedder hooks on BossTermMcpConfig:
+    //   1. customToolDescriptions — override individual built-in tool descriptions
+    //      so MCP clients see context-specific wording (e.g. "tabs in TabbedTerminal
+    //      windows of the Tabbed Example").
+    //   2. additionalTools — register app-specific MCP tools. Names here are NOT
+    //      prefixed; the embedder owns the namespace.
+    val mcpScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val mcpConfig = BossTermMcpConfig(
+        serverName = "bossterm-tabbed-example",
+        // `defaultEnabled` is honored only on the very first BossTerm launch on this
+        // machine (gated by the global `mcpConfigured` flag in ~/.bossterm/settings.json).
+        // If you've already run another BossTerm-based app on this machine, the setting
+        // here is ignored and the user's persisted mcpEnabled value wins. Toggle MCP
+        // on/off in Settings → BossTerm MCP if needed.
+        defaultEnabled = true,
+        customToolDescriptions = mapOf(
+            "list_tabs" to "List terminal tabs across every TabbedTerminal window in " +
+                    "the BossTerm Tabbed Example. Each window has its own tab bar and " +
+                    "split state; this returns the union, with isActive flagging the " +
+                    "currently selected tab per window."
+        ),
+        additionalTools = { server ->
+            // Custom tool: snapshot of every registered window's tab + pane count.
+            // Returns an array so MCP clients can iterate over windows even though
+            // get_active_tab only returns the primary window's active tab.
+            server.addTool(
+                name = "tabbed_example_window_overview",
+                description = "Return a window-by-window snapshot of the BossTerm Tabbed " +
+                        "Example: per window, the number of tabs and the active tab's id. " +
+                        "Useful when the host has multiple windows open and a client needs " +
+                        "to enumerate them.",
+                inputSchema = ToolSchema(
+                    properties = buildJsonObject {},
+                    required = emptyList()
+                )
+            ) { _ ->
+                val states = McpTerminalRegistry.allStates()
+                val body = buildJsonObject {
+                    put("appName", "BossTerm Tabbed Example")
+                    put("windowCount", states.size)
+                    put(
+                        "windows",
+                        buildJsonArray {
+                            states.forEachIndexed { index, state ->
+                                add(
+                                    buildJsonObject {
+                                        put("index", index)
+                                        put("tabCount", state.tabCount)
+                                        put("activeTabId", state.activeTabId ?: "")
+                                    }
+                                )
+                            }
+                        }
+                    )
+                }
+                CallToolResult(
+                    content = listOf(TextContent(text = body.toString())),
+                    isError = false,
+                    structuredContent = null,
+                    meta = null
+                )
+            }
         }
-    }
+    )
+    val mcpManager = BossTermMcpManager(
+        registry = McpTerminalRegistry,
+        settingsManager = SettingsManager.instance,
+        parentScope = mcpScope,
+        config = mcpConfig
+    )
+    mcpManager.start()
 
-    // Render all windows
-    windows.forEachIndexed { index, windowState ->
-        TabbedTerminalWindow(
-            windowState = windowState,
-            windowIndex = index,
-            totalWindows = windows.size,
-            onCloseRequest = { closeWindow(index) },
-            onNewWindow = { createWindow() }
-        )
+    try {
+        application {
+            // Track all open windows
+            val windows = remember { mutableStateListOf(WindowState()) }
+
+            // Create new window
+            fun createWindow() {
+                windows.add(WindowState())
+            }
+
+            // Close window
+            fun closeWindow(index: Int) {
+                if (windows.size > 1) {
+                    windows.removeAt(index)
+                } else {
+                    exitApplication()
+                }
+            }
+
+            // Expose the config to the settings UI so it can show the embedder's
+            // server name in the endpoint note and honor showInSettingsUi.
+            CompositionLocalProvider(LocalBossTermMcpConfig provides mcpConfig) {
+                // Render all windows
+                windows.forEachIndexed { index, windowState ->
+                    TabbedTerminalWindow(
+                        windowState = windowState,
+                        windowIndex = index,
+                        totalWindows = windows.size,
+                        onCloseRequest = { closeWindow(index) },
+                        onNewWindow = { createWindow() }
+                    )
+                }
+            }
+        }
+    } finally {
+        mcpManager.stop()
+        mcpScope.cancel()
     }
 }
 

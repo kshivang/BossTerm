@@ -573,8 +573,12 @@ class TabbedTerminalState {
      *   `settings.splitDefaultRatio`. Clamped to 0.05..0.95.
      * @return The session ID of the new pane, or null if the split failed
      */
-    fun splitVertical(tabId: String? = null, ratio: Float? = null): String? {
-        return performSplit(SplitOrientation.VERTICAL, tabId, ratio)
+    fun splitVertical(
+        tabId: String? = null,
+        ratio: Float? = null,
+        initialCommand: String? = null
+    ): String? {
+        return performSplit(SplitOrientation.VERTICAL, tabId, ratio, initialCommand)
     }
 
     /**
@@ -589,17 +593,26 @@ class TabbedTerminalState {
      *   `settings.splitDefaultRatio`. Clamped to 0.05..0.95.
      * @return The session ID of the new pane, or null if the split failed
      */
-    fun splitHorizontal(tabId: String? = null, ratio: Float? = null): String? {
-        return performSplit(SplitOrientation.HORIZONTAL, tabId, ratio)
+    fun splitHorizontal(
+        tabId: String? = null,
+        ratio: Float? = null,
+        initialCommand: String? = null
+    ): String? {
+        return performSplit(SplitOrientation.HORIZONTAL, tabId, ratio, initialCommand)
     }
 
     /**
      * Internal helper to perform a split in the given orientation.
+     *
+     * @param initialCommand Optional command to run in the new pane once its shell is ready
+     *   (OSC 133;A or fallback delay). Held by the session bootstrap so the bytes are not
+     *   eaten by shell startup output (banner, rc-file sourcing, prompt draw).
      */
     private fun performSplit(
         orientation: SplitOrientation,
         tabId: String?,
-        ratio: Float? = null
+        ratio: Float? = null,
+        initialCommand: String? = null
     ): String? {
         val resolvedTabId = resolveTabId(tabId) ?: return null
         val controller = tabController ?: return null
@@ -612,7 +625,8 @@ class TabbedTerminalState {
         } else null
 
         val newSession = controller.createSessionForSplit(
-            workingDir = workingDir
+            workingDir = workingDir,
+            initialCommand = initialCommand
         )
         // Assign onProcessExit after creation so the lambda captures newSession directly,
         // avoiding the fragile var-ref pattern where the lambda closes over a mutable var.

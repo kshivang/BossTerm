@@ -89,7 +89,7 @@ enum class SettingsCategory(
         description = "System-wide hotkey to summon BossTerm"
     ),
     MCP(
-        displayName = "MCP Server",
+        displayName = "BossTerm MCP",
         icon = Icons.Default.Share,
         description = "In-process Model Context Protocol endpoint for AI clients"
     ),

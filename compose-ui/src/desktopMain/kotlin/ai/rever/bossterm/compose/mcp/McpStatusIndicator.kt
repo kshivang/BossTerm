@@ -151,7 +151,7 @@ fun McpStatusIndicator(
                 )
             }
             Text(
-                text = if (isRunning) "MCP on" else "MCP off",
+                text = if (isRunning) "BossTerm MCP on" else "BossTerm MCP off",
                 color = labelColor,
                 fontSize = 11.sp
             )
@@ -204,7 +204,7 @@ private fun buildIndicatorMenuItems(
     )
     val settings = ContextMenuController.MenuItem(
         id = "mcp_settings",
-        label = "MCP Settings…",
+        label = "BossTerm MCP Settings…",
         enabled = true,
         action = onShowSettings
     )
@@ -212,14 +212,14 @@ private fun buildIndicatorMenuItems(
     val toggle = if (isUserEnabled) {
         ContextMenuController.MenuItem(
             id = "mcp_turn_off",
-            label = "Turn MCP off",
+            label = "Turn BossTerm MCP off",
             enabled = true,
             action = onTurnOffRequest
         )
     } else {
         ContextMenuController.MenuItem(
             id = "mcp_turn_on",
-            label = "Turn MCP on",
+            label = "Turn BossTerm MCP on",
             enabled = true,
             action = onTurnOnRequest
         )
@@ -247,20 +247,20 @@ private fun McpStatusTooltip(
     ) {
         if (runningPort == null) {
             Text(
-                text = "MCP server is off",
+                text = "BossTerm MCP server is off",
                 color = McpOffLabelColor,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold
             )
             Text(
-                text = "Click the pill to turn it on, or open MCP Settings…",
+                text = "Click the pill to turn it on, or open BossTerm MCP Settings…",
                 color = McpToastTextColor,
                 fontSize = 11.sp
             )
             return@Column
         }
         Text(
-            text = "MCP server running",
+            text = "BossTerm MCP server running",
             color = McpToastSuccessColor,
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold

@@ -64,6 +64,14 @@ object McpTerminalRegistry {
     /** Total registered state count. Useful for diagnostics/tests. */
     fun stateCount(): Int = states.size
 
+    /**
+     * Snapshot of every currently-registered [TabbedTerminalState], in
+     * registration order. Returned as a defensive copy — mutating the result
+     * does not affect the registry. Embedders use this from their
+     * `additionalTools` blocks to iterate windows when defining custom MCP tools.
+     */
+    fun allStates(): List<TabbedTerminalState> = states.toList()
+
     // -----------------------------------------------------------------
     // Server running state — owned by BossTermMcpManager, read by UI.
     // -----------------------------------------------------------------

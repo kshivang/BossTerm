@@ -6,6 +6,10 @@ import ai.rever.bossterm.compose.ContextMenuSubmenu
 import ai.rever.bossterm.compose.EmbeddableTerminal
 import ai.rever.bossterm.compose.PlatformServices
 import ai.rever.bossterm.compose.getPlatformServices
+import ai.rever.bossterm.compose.mcp.BossTermMcpConfig
+import ai.rever.bossterm.compose.mcp.BossTermMcpManager
+import ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig
+import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.rememberEmbeddableTerminalState
 import ai.rever.bossterm.compose.onboarding.OnboardingWizard
 import ai.rever.bossterm.compose.settings.SettingsManager
@@ -24,7 +28,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
+import io.modelcontextprotocol.kotlin.sdk.types.TextContent
+import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Custom PlatformServices wrapper that logs process spawn events.
@@ -51,15 +64,92 @@ private class LoggingPlatformServices(
  * - Focus transitions between parent UI and terminal
  * - Multiple embedded terminals
  */
-fun main() = application {
-    val windowState = rememberWindowState(width = 1200.dp, height = 800.dp)
+fun main() {
+    // === BossTerm MCP setup ============================================
+    // Demonstrates two embedder hooks on BossTermMcpConfig:
+    //   1. customToolDescriptions — replace the default description of a built-in
+    //      tool so MCP clients see app-specific wording. Keys are unprefixed
+    //      built-in names (e.g. "list_tabs"). Unmentioned tools keep their default.
+    //   2. additionalTools — register app-specific MCP tools alongside the built-ins.
+    //      The lambda receives the live `Server` so the embedder can call
+    //      `server.addTool(...)` directly. Tool names here are NOT prefixed —
+    //      the embedder owns the namespace.
+    // The user still has to toggle "Enable BossTerm MCP Server" in settings for
+    // the Ktor endpoint to bind (defaultEnabled = true below skips that on a
+    // fresh install).
+    val mcpScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val mcpConfig = BossTermMcpConfig(
+        serverName = "bossterm-embedded-example",
+        // `defaultEnabled` is honored only on the very first BossTerm launch on this
+        // machine (gated by the global `mcpConfigured` flag in ~/.bossterm/settings.json).
+        // If you've already run another BossTerm-based app on this machine, the setting
+        // here is ignored and the user's persisted mcpEnabled value wins. Toggle MCP
+        // on/off in Settings → BossTerm MCP if needed.
+        defaultEnabled = true,
+        customToolDescriptions = mapOf(
+            "list_tabs" to "List terminal tabs hosted by the BossTerm Embedded Example app. " +
+                    "This host embeds a single primary tab plus an optional compact bottom-panel " +
+                    "tab when the user opens it from the sidebar."
+        ),
+        additionalTools = { server ->
+            // Custom tool: returns metadata about the host app. Demonstrates the
+            // minimum boilerplate for an embedder-defined MCP tool — zero-arg
+            // schema, JSON text content, no error path.
+            server.addTool(
+                name = "embedded_example_app_info",
+                description = "Return metadata about the host application " +
+                        "(BossTerm Embedded Example): app name, build flavor, and a " +
+                        "short usage hint. Demonstrates embedder-registered tools.",
+                inputSchema = ToolSchema(
+                    properties = buildJsonObject {},
+                    required = emptyList()
+                )
+            ) { _ ->
+                val body = buildJsonObject {
+                    put("appName", "BossTerm Embedded Example")
+                    put("flavor", "single-window, two-terminal demo")
+                    put(
+                        "hint",
+                        "The sidebar's buttons drive the primary terminal directly; " +
+                                "the compact bottom-panel terminal is opened on demand."
+                    )
+                }
+                CallToolResult(
+                    content = listOf(TextContent(text = body.toString())),
+                    isError = false,
+                    structuredContent = null,
+                    meta = null
+                )
+            }
+        }
+    )
+    val mcpManager = BossTermMcpManager(
+        registry = McpTerminalRegistry,
+        settingsManager = SettingsManager.instance,
+        parentScope = mcpScope,
+        config = mcpConfig
+    )
+    mcpManager.start()
 
-    Window(
-        onCloseRequest = ::exitApplication,
-        title = "BossTerm Embedded Example",
-        state = windowState
-    ) {
-        EmbeddedExampleApp()
+    try {
+        application {
+            val windowState = rememberWindowState(width = 1200.dp, height = 800.dp)
+
+            // Expose the config to the settings UI so it can render the embedder's
+            // server name in the endpoint note and respect showInSettingsUi.
+            CompositionLocalProvider(LocalBossTermMcpConfig provides mcpConfig) {
+                Window(
+                    onCloseRequest = ::exitApplication,
+                    title = "BossTerm Embedded Example",
+                    state = windowState
+                ) {
+                    EmbeddedExampleApp()
+                }
+            }
+        }
+    } finally {
+        mcpManager.stop()
+        mcpScope.cancel()
     }
 }
 

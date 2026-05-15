@@ -488,7 +488,8 @@ class TabController(
         arguments: List<String> = emptyList(),
         sessionTitle: String = "Split",
         onProcessExit: (() -> Unit)? = null,
-        tabId: String? = null
+        tabId: String? = null,
+        initialCommand: String? = null
     ): TerminalSession {
         // Validate tab ID uniqueness if custom ID provided
         // Note: We check against tabs list for consistency, even though split sessions
@@ -680,9 +681,11 @@ class TabController(
             textBuffer.endBatch()
         }
 
-        // Initialize the terminal session (spawn PTY, start coroutines)
-        // Note: We don't pass onProcessExit since split pane lifecycle is managed separately
-        initializeTerminalSession(session, workingDir, effectiveCommand, effectiveArguments)
+        // Initialize the terminal session (spawn PTY, start coroutines).
+        // Note: onProcessExit is wired on the TerminalTab itself (line 630), not passed here.
+        // initialCommand is held until OSC 133;A (or the fallback delay) so the shell is
+        // ready before bytes go down the PTY — same contract as createTab.
+        initializeTerminalSession(session, workingDir, effectiveCommand, effectiveArguments, initialCommand)
 
         return session
     }
@@ -1129,6 +1132,22 @@ class TabController(
                 // Connect terminal output to PTY for bidirectional communication
                 tab.terminal.setTerminalOutput(ProcessTerminalOutput(handle, tab))
 
+                // Pre-register the OSC 133;A (prompt-started) listener BEFORE the
+                // emulator/PTY-reader coroutines start. Otherwise a fast shell can
+                // print its prompt and the emulator can dispatch onPromptStarted()
+                // before the (originally-inline) registration coroutine runs —
+                // causing the deferred to time out on `initialCommandDelayMs`
+                // instead of firing on the actual signal.
+                val initialPromptReady: CompletableDeferred<Unit>? =
+                    if (initialCommand != null) CompletableDeferred() else null
+                val initialPromptListener: CommandStateListener? = initialPromptReady?.let { ready ->
+                    object : CommandStateListener {
+                        override fun onPromptStarted() {
+                            ready.complete(Unit)
+                        }
+                    }.also { tab.terminal.addCommandStateListener(it) }
+                }
+
                 // Start emulator processing coroutine
                 // Note: Initial prompt will display via ModelListener → requestImmediateRedraw()
                 // when buffer content changes. No need for premature redraw here.
@@ -1171,22 +1190,15 @@ class TabController(
                     }
                 }
 
-                // Send initial command if provided (after terminal is ready)
-                // Uses OSC 133;A (prompt started) signal for proper synchronization,
-                // with configurable fallback delay for shells without OSC 133 support
+                // Send initial command if provided (after terminal is ready).
+                // The OSC 133;A listener was already registered above (before the
+                // emulator loop launched) so we can't miss the prompt-started signal.
+                // This coroutine just waits on the pre-registered deferred and writes
+                // the command when the shell is ready (or after the fallback delay).
                 if (initialCommand != null) {
+                    val promptReady = checkNotNull(initialPromptReady)
+                    val promptListener = checkNotNull(initialPromptListener)
                     launch(Dispatchers.IO) {
-                        // Create a deferred that will be completed when first prompt appears
-                        val promptReady = CompletableDeferred<Unit>()
-
-                        // Add a temporary listener to detect OSC 133;A (prompt started)
-                        val promptListener = object : CommandStateListener {
-                            override fun onPromptStarted() {
-                                promptReady.complete(Unit)
-                            }
-                        }
-                        tab.terminal.addCommandStateListener(promptListener)
-
                         try {
                             // Wait for either OSC 133;A signal OR fallback timeout
                             val result = withTimeoutOrNull(settings.initialCommandDelayMs.toLong()) {
@@ -1236,7 +1248,7 @@ class TabController(
                             // Send the command followed by newline
                             handle.write(initialCommand + "\n")
                         } finally {
-                            // Clean up the temporary listener
+                            // Clean up the pre-registered listener
                             tab.terminal.removeCommandStateListener(promptListener)
                         }
                     }

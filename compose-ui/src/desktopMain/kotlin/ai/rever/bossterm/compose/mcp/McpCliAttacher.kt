@@ -21,16 +21,18 @@ import java.util.concurrent.TimeUnit
  * `http://127.0.0.1:<port>` endpoint.
  *
  * Tested CLI shapes (last verified May 2026):
- *  - Claude Code:  `claude mcp add --transport sse <name> <url>` (verified)
- *  - Codex:        `codex mcp add <name> --transport sse <url>` (best-effort; falls back to ~/.codex/config.toml snippet)
- *  - Gemini CLI:   `gemini mcp add <name> --transport sse <url>` (best-effort; falls back to ~/.gemini/settings.json snippet)
- *  - OpenCode:     `opencode mcp add <name> --transport sse <url>` (best-effort; falls back to ~/.config/opencode/opencode.json snippet)
+ *  - Claude Code: `claude mcp add --transport sse <name> <url>` (verified)
+ *  - Codex 0.130: `codex mcp add <name> --url <url>` (registers OK, but
+ *      Codex only speaks streamable HTTP — runtime connection to BossTerm's
+ *      current SSE-only SDK will fail until the SDK is upgraded)
+ *  - Gemini 0.28: `gemini mcp add <name> --transport sse <url>` (verified)
+ *  - OpenCode 1.1: `opencode mcp add` is interactive in this version, no
+ *      flags accepted — will exit non-zero, clipboard fallback fires.
  *
- * If any of the best-effort commands turn out to have a different
- * subcommand in your installed version, the clipboard fallback path
- * handles it gracefully — the only visual symptom is the amber
- * "exit N — config copied to clipboard" status instead of the green
- * success line.
+ * If any best-effort command turns out to have a different subcommand
+ * in your installed version, the clipboard fallback path handles it
+ * gracefully — visual symptom is the amber "exit N — config copied to
+ * clipboard" status.
  */
 enum class McpAttachTarget(
     val displayName: String,
@@ -57,12 +59,19 @@ enum class McpAttachTarget(
     CODEX(
         displayName = "Codex",
         persistenceKey = "CODEX",
+        // codex-cli 0.130 uses `--url <url>` and only supports streamable
+        // HTTP (no SSE client). The registration will succeed but at
+        // runtime Codex won't actually connect to BossTerm's SDK-0.8.3
+        // SSE endpoint — that needs an SDK upgrade to expose streamable
+        // HTTP transport. Tracked as a follow-up.
         removeCommand = listOf("codex", "mcp", "remove", "{NAME}"),
-        addCommand = listOf("codex", "mcp", "add", "{NAME}", "--transport", "sse", "{URL}"),
+        addCommand = listOf("codex", "mcp", "add", "{NAME}", "--url", "{URL}"),
         clipboardFallback = """
             # Append to ~/.codex/config.toml
+            # Note: codex only speaks streamable HTTP; BossTerm currently
+            # serves SSE so the runtime connection will fail until the SDK
+            # is upgraded.
             [mcp_servers.{NAME}]
-            type = "sse"
             url = "{URL}"
         """.trimIndent()
     ),

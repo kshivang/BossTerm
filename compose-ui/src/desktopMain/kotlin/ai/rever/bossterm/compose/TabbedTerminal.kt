@@ -33,6 +33,7 @@ import ai.rever.bossterm.compose.ContextMenuSubmenu
 import ai.rever.bossterm.compose.mcp.AttachStatus
 import ai.rever.bossterm.compose.mcp.AttachToast
 import ai.rever.bossterm.compose.mcp.LocalBossTermMcpConfig
+import ai.rever.bossterm.compose.mcp.McpAttachResult
 import ai.rever.bossterm.compose.mcp.McpAttachTarget
 import ai.rever.bossterm.compose.mcp.McpCliAttacher
 import ai.rever.bossterm.compose.mcp.McpStatusIndicator
@@ -740,6 +741,9 @@ fun TabbedTerminal(
                 mcpScope.launch {
                     try {
                         val result = McpCliAttacher.attach(target, mcpServerName, port)
+                        if (result is McpAttachResult.Success) {
+                            McpTerminalRegistry.markAttached(target)
+                        }
                         attachStatus = AttachStatus.Done(result)
                     } finally {
                         mcpAttaching = false
@@ -991,15 +995,19 @@ fun TabbedTerminal(
                     // when the Ktor server is actually bound. Each entry fires
                     // the shared fireMcpAttach so the AttachToast surfaces the
                     // result in the same place the indicator's right-click does.
+                    // Already-attached CLIs get a "✓ " prefix in their label so
+                    // the user can see at a glance what's wired up.
                     if (McpTerminalRegistry.runningPort.value != null) {
+                        val attached = McpTerminalRegistry.attachedTargets.value
                         val mcpAttachItems: List<ContextMenuElement> = listOf(
                             ContextMenuSubmenu(
                                 id = "mcp_attach_submenu",
                                 label = "Attach MCP to…",
                                 items = McpAttachTarget.entries.map { target ->
+                                    val prefix = if (target in attached) "✓ " else ""
                                     ContextMenuItem(
                                         id = "mcp_attach_${target.name}",
-                                        label = target.displayName,
+                                        label = "$prefix${target.displayName}",
                                         action = { fireMcpAttach(target) }
                                     )
                                 }

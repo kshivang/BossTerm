@@ -13,6 +13,7 @@ import androidx.compose.material.Button
 import androidx.compose.material.ButtonDefaults
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -146,6 +147,10 @@ private fun AttachToCliSection(
     // each line — without this every click clobbers the others.
     val lastResults = remember { mutableStateMapOf<McpAttachTarget, McpAttachResult>() }
     var inFlight by remember { mutableStateOf<McpAttachTarget?>(null) }
+    // Process-wide attached set, shared with the right-click menus so the
+    // Settings panel agrees with what the indicator shows.
+    val attached by ai.rever.bossterm.compose.mcp.McpTerminalRegistry
+        .attachedTargets.collectAsState()
 
     SettingsSection(title = "Attach to AI CLI") {
         Text(
@@ -165,13 +170,19 @@ private fun AttachToCliSection(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             McpAttachTarget.entries.forEach { target ->
+                val isAttached = target in attached
                 Button(
                     onClick = {
                         inFlight = target
                         lastResults.remove(target)
                         scope.launch {
                             try {
-                                lastResults[target] = McpCliAttacher.attach(target, serverName, port)
+                                val result = McpCliAttacher.attach(target, serverName, port)
+                                if (result is McpAttachResult.Success) {
+                                    ai.rever.bossterm.compose.mcp.McpTerminalRegistry
+                                        .markAttached(target)
+                                }
+                                lastResults[target] = result
                             } finally {
                                 inFlight = null
                             }
@@ -185,33 +196,49 @@ private fun AttachToCliSection(
                         disabledContentColor = Color(0xFF888888)
                     )
                 ) {
-                    Text(
-                        text = if (inFlight == target) "Attaching…" else "Attach ${target.displayName}",
-                        fontSize = 12.sp
-                    )
+                    val label = when {
+                        inFlight == target -> "Attaching…"
+                        isAttached -> "✓ ${target.displayName} (re-attach)"
+                        else -> "Attach ${target.displayName}"
+                    }
+                    Text(text = label, fontSize = 12.sp)
                 }
             }
         }
 
-        // Per-target status lines, one per attempted target. Stack vertically
-        // so a user who clicks several buttons in sequence can see the
-        // outcome for each.
+        // Per-target status. Two stacked lines per target when relevant:
+        //   - Persistent attached state from the process-wide registry
+        //     (survives the transient lastResults clear).
+        //   - Last-attempt result with detail / clipboard fallback reason.
         McpAttachTarget.entries.forEach { target ->
-            val result = lastResults[target] ?: return@forEach
-            val (label, color) = when (result) {
-                is McpAttachResult.Success ->
-                    "✓ ${result.target.displayName} attached" +
-                        (if (result.detail.isNotEmpty()) " — ${result.detail}" else "") to
-                        Color(0xFF4CAF50)
-                is McpAttachResult.CopiedToClipboard ->
-                    "${result.target.displayName}: ${result.reason}" to Color(0xFFFFC107)
+            val isAttached = target in attached
+            val result = lastResults[target]
+            if (!isAttached && result == null) return@forEach
+
+            if (isAttached) {
+                Text(
+                    text = "✓ ${target.displayName} is currently attached",
+                    color = Color(0xFF4CAF50),
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
             }
-            Text(
-                text = label,
-                color = color,
-                fontSize = 12.sp,
-                modifier = Modifier.padding(top = 8.dp)
-            )
+            if (result != null) {
+                val (label, color) = when (result) {
+                    is McpAttachResult.Success ->
+                        "Last attempt: ✓ ${result.target.displayName} attached" +
+                            (if (result.detail.isNotEmpty()) " — ${result.detail}" else "") to
+                            Color(0xFF4CAF50)
+                    is McpAttachResult.CopiedToClipboard ->
+                        "Last attempt: ${result.target.displayName}: ${result.reason}" to Color(0xFFFFC107)
+                }
+                Text(
+                    text = label,
+                    color = color,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
         }
 
         if (!enabled) {

@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -63,13 +64,16 @@ fun McpStatusIndicator(
     if (!enabled) return
 
     // Right-click → quick attach buttons + hide. Same set of CLIs as the
-    // Settings panel's "Attach to AI CLI" section. The host wires
-    // onAttachRequest to McpCliAttacher and onHideRequest to flip
-    // mcpShowStatusIndicator.
+    // Settings panel's "Attach to AI CLI" section. Items for already-attached
+    // CLIs get a "✓ " prefix so the user can see status at a glance.
+    // The host wires onAttachRequest to McpCliAttacher and onHideRequest to
+    // flip mcpShowStatusIndicator.
+    val attached = McpTerminalRegistry.attachedTargets.collectAsState().value
     ContextMenuArea(
         items = {
             McpAttachTarget.entries.map { target ->
-                ContextMenuItem("Attach ${target.displayName}") { onAttachRequest(target) }
+                val prefix = if (target in attached) "✓ " else ""
+                ContextMenuItem("${prefix}Attach ${target.displayName}") { onAttachRequest(target) }
             } + ContextMenuItem("Hide MCP Indicator") { onHideRequest() }
         }
     ) {

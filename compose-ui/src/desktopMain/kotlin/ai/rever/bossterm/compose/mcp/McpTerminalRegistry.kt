@@ -88,4 +88,30 @@ object McpTerminalRegistry {
     internal fun setStopped() {
         _runningPort.value = null
     }
+
+    // -----------------------------------------------------------------
+    // Attached-CLI tracking — written by McpCliAttacher's callers when an
+    // attach succeeds; read by the Settings panel and the right-click menus
+    // to surface "✓ attached" status.
+    //
+    // Process-wide and in-memory (no settings persistence): the CLI's own
+    // config file is the canonical record. This flow just remembers what
+    // *we* asked the CLI to do during this session so the UI can stop
+    // pretending every click is the first one. Cleared on app restart.
+    // -----------------------------------------------------------------
+
+    private val _attachedTargets = MutableStateFlow<Set<McpAttachTarget>>(emptySet())
+
+    /** Set of CLIs we've successfully attached this BossTerm endpoint to in this session. */
+    val attachedTargets: StateFlow<Set<McpAttachTarget>> = _attachedTargets.asStateFlow()
+
+    /** @suppress Internal — recorded by attach callers on Success. */
+    internal fun markAttached(target: McpAttachTarget) {
+        _attachedTargets.value = _attachedTargets.value + target
+    }
+
+    /** @suppress Internal — recorded when a future detach action runs (no UI yet). */
+    internal fun markDetached(target: McpAttachTarget) {
+        _attachedTargets.value = _attachedTargets.value - target
+    }
 }

@@ -762,7 +762,13 @@ class TabbedTerminalState {
             return splitState?.getFocusedSession() ?: tab
         }
         if (splitState != null) {
-            return splitState.getAllPanes().firstOrNull { it.session.id == paneId }?.session
+            // Match either the wrapping SplitNode.Pane.id (what
+            // splitFocusedPane / run_in_panel return) or the underlying
+            // TerminalSession.id (what individual tabs are identified by).
+            // The two are distinct UUIDs even for the same logical pane.
+            return splitState.getAllPanes()
+                .firstOrNull { it.id == paneId || it.session.id == paneId }
+                ?.session
         }
         // Single-pane tab: paneId only matches if it's the tab's own session id.
         return if (tab.id == paneId) tab else null

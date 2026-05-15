@@ -36,8 +36,6 @@ import ai.rever.bossterm.compose.features.ContextMenuController
 private val McpOnColor = Color(0xFF4CAF50) // green
 private val McpOnGlow = Color(0x33_4C_AF_50) // 20% green halo
 private val McpOnLabelColor = Color(0xFFCFEFD4)
-// Keep label naming back-compat for AttachToast usages.
-private val McpLabelColor = McpOnLabelColor
 private val McpOffColor = Color(0xFFE57373) // red
 private val McpOffGlow = Color(0x33_E5_73_73) // 20% red halo
 private val McpOffLabelColor = Color(0xFFF2C9C9)

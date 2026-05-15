@@ -174,9 +174,23 @@ class BossTermMcpServer(
      * addTool/removeTool sequence could double-register a tool against the SDK's
      * non-thread-safe Server.tools map.
      */
-    fun applyDisabledSet(disabled: Set<String>) {
-        val server = serverRef ?: return
+    /**
+     * Signal that the live [Server] this wrapper was bound to has been torn down
+     * (engine stop or app shutdown). Subsequent [applyDisabledSet] calls become
+     * no-ops. The wrapper itself is not reusable after this — a new instance is
+     * created for each engine start in [BossTermMcpManager].
+     */
+    fun detachServer() {
         synchronized(toolsLock) {
+            serverRef = null
+        }
+    }
+
+    fun applyDisabledSet(disabled: Set<String>) {
+        synchronized(toolsLock) {
+            // Read the ref inside the lock so a concurrent detachServer() can't
+            // null it between the check and the mutations.
+            val server = serverRef ?: return
             for (name in availableToolNames()) {
                 val prefixed = toolName(name)
                 val present = server.tools.containsKey(prefixed)
@@ -383,7 +397,12 @@ class BossTermMcpServer(
                 return@addTool errorResult("Invalid regex: ${e.message ?: e::class.simpleName}")
             }
 
-            val snapshot = session.textBuffer.createSnapshot()
+            // Use the lock-free incremental snapshot for the full-scrollback scan
+            // — matches the codebase's stated 94%-lock-reduction pattern (CLAUDE.md),
+            // and search_output can touch the entire history so the savings matter.
+            // read_scrollback above stays on createSnapshot() because it caps at
+            // the most recent N lines and the lock window is trivially short.
+            val snapshot = session.textBuffer.createIncrementalSnapshot()
             val matches = ArrayList<SearchMatch>()
             var truncated = false
 
@@ -734,7 +753,9 @@ class BossTermMcpServer(
                             "description",
                             "Filter to a subset of sources: PTY_OUTPUT, USER_INPUT, " +
                                     "EMULATOR_GENERATED, CONSOLE_LOG. Unknown names are " +
-                                    "silently ignored."
+                                    "silently dropped. Omit the key entirely to get every " +
+                                    "source; an empty array (or one containing only unknown " +
+                                    "names) returns no chunks."
                         )
                     }
                 },
@@ -757,6 +778,10 @@ class BossTermMcpServer(
             val maxChunks = (args.optionalInt("max_chunks") ?: DEFAULT_DEBUG_CHUNKS)
                 .coerceIn(1, maxAllowed)
             val sinceIndex = args.optionalInt("since_index")?.coerceAtLeast(0)
+            // null only when the caller omitted `sources` entirely (or it wasn't
+            // an array). A supplied-but-empty filter is honored strictly: the
+            // caller explicitly asked for nothing, so return nothing rather than
+            // silently dropping the filter and surprising them with all chunks.
             val sourcesFilter: Set<ChunkSource>? = (args?.get("sources") as? JsonArray)
                 ?.mapNotNull { item ->
                     val raw = item.jsonPrimitive.content
@@ -765,7 +790,6 @@ class BossTermMcpServer(
                     ChunkSource.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) }
                 }
                 ?.toSet()
-                ?.takeUnless { it.isEmpty() }
 
             var seq = collector.getDebugChunks().asSequence()
             if (sinceIndex != null) seq = seq.filter { it.index > sinceIndex }

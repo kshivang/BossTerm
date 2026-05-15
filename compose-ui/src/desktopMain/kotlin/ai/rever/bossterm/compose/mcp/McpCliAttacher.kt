@@ -348,6 +348,13 @@ object McpCliAttacher {
             } catch (_: Throwable) {
                 // ignore
             }
+            // We waitFor() before reading stdout. This is safe because `mcp add`
+            // output is at most a few lines of status text — far below the OS
+            // pipe buffer (~64 KB on Linux, ~8 KB on small Windows shells). If a
+            // future CLI ever spams more than that without exiting, it would
+            // block on its write and we'd hit the 15 s timeout instead of a
+            // clean read. If that becomes a problem, drain inputStream on a
+            // worker thread alongside the waitFor.
             val finished = try {
                 process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             } catch (e: InterruptedException) {
@@ -401,7 +408,10 @@ object McpCliAttacher {
             ?.take(160)
     }
 
-    private val ANSI_ESCAPE_REGEX = Regex("\\[[;\\d]*[a-zA-Z]")
+    // CSI-form ANSI escapes: ESC '[' params* final. Covers SGR / cursor
+    // sequences a CLI typically emits in `mcp add` output. Does not cover
+    // OSC / DCS / single-char escapes — those don't appear in CLI status text.
+    private val ANSI_ESCAPE_REGEX = Regex("\\u001B\\[[;\\d]*[a-zA-Z]")
 
     private fun copyToClipboard(text: String) {
         try {

@@ -321,7 +321,9 @@ class TabController(
             }
         })
 
-        // Register command state listener for notifications (OSC 133 shell integration)
+        // Register command state listener for notifications (OSC 133 shell integration).
+        // Also captured in `tab.commandStateListeners` after construction so dispose()
+        // can remove it (see TerminalTab.commandStateListeners docs).
         val notificationHandler = CommandNotificationHandler(
             settings = settings,
             isWindowFocused = isWindowFocused,
@@ -407,10 +409,13 @@ class TabController(
         )
 
         // Register MCP last-command tracker (OSC 133). Additive — does not
-        // affect the notification handler registered earlier.
-        terminal.addCommandStateListener(
-            ai.rever.bossterm.compose.mcp.LastCommandTracker(tab)
-        )
+        // affect the notification handler registered earlier. Both listeners
+        // are recorded on `tab.commandStateListeners` so dispose() can remove
+        // them when the tab closes.
+        val lastCommandTracker = ai.rever.bossterm.compose.mcp.LastCommandTracker(tab)
+        terminal.addCommandStateListener(lastCommandTracker)
+        tab.commandStateListeners.add(notificationHandler)
+        tab.commandStateListeners.add(lastCommandTracker)
 
         // Complete debug collector initialization
         debugCollector?.let { collector ->
@@ -649,10 +654,13 @@ class TabController(
         )
 
         // Register MCP last-command tracker (OSC 133). Additive — does not
-        // affect the notification handler registered earlier.
-        terminal.addCommandStateListener(
-            ai.rever.bossterm.compose.mcp.LastCommandTracker(session)
-        )
+        // affect the notification handler registered earlier. Both listeners
+        // are recorded on the session so dispose() can remove them when the
+        // pane closes.
+        val lastCommandTracker = ai.rever.bossterm.compose.mcp.LastCommandTracker(session)
+        terminal.addCommandStateListener(lastCommandTracker)
+        session.commandStateListeners.add(notificationHandler)
+        session.commandStateListeners.add(lastCommandTracker)
 
         // Complete debug collector initialization
         debugCollector?.let { collector ->
@@ -838,10 +846,12 @@ class TabController(
         )
 
         // Register MCP last-command tracker (OSC 133). Additive — does not
-        // affect the notification handler registered earlier.
-        terminal.addCommandStateListener(
-            ai.rever.bossterm.compose.mcp.LastCommandTracker(tab)
-        )
+        // affect the notification handler registered earlier. Both listeners
+        // are recorded on the tab so dispose() can remove them.
+        val lastCommandTracker = ai.rever.bossterm.compose.mcp.LastCommandTracker(tab)
+        terminal.addCommandStateListener(lastCommandTracker)
+        tab.commandStateListeners.add(notificationHandler)
+        tab.commandStateListeners.add(lastCommandTracker)
 
         debugCollector?.let { collector ->
             collector.setTab(tab)

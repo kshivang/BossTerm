@@ -106,8 +106,11 @@ fun McpSettingsSection(
                 value = settings.mcpDefaultSplitRatio,
                 onValueChange = { onSettingsChange(settings.copy(mcpDefaultSplitRatio = it)) },
                 onValueChangeFinished = onSettingsSave,
-                valueRange = 0.1f..0.9f,
-                steps = 15, // 0.1, 0.15, 0.2, ..., 0.9 = 17 stops, 15 internal steps
+                // Range matches run_in_panel's per-call split_ratio clamp
+                // (0.05..0.95) so any value an agent might send is also
+                // representable in the UI. Step size 0.05.
+                valueRange = 0.05f..0.95f,
+                steps = 17, // 0.05, 0.10, ..., 0.95 = 19 stops, 17 internal steps
                 valueDisplay = { "${(it * 100).toInt()}%" },
                 description = "When an MCP agent opens a split via `run_in_panel` without " +
                         "specifying split_ratio, the new pane gets this fraction of the " +

@@ -237,11 +237,13 @@ class BossTermMcpManager(
                 "BossTerm MCP server failed to bind {}:{} (port in use?): {}",
                 HOST, port, e.message
             )
+            mcpServerWrapper.detachServer()
             runningEngine = null
             runningPort = null
             runningServer = null
         } catch (e: Throwable) {
             log.error("BossTerm MCP server failed to start on {}:{}", HOST, port, e)
+            mcpServerWrapper.detachServer()
             runningEngine = null
             runningPort = null
             runningServer = null
@@ -296,6 +298,11 @@ class BossTermMcpManager(
         } catch (e: Throwable) {
             log.warn("Error while stopping BossTerm MCP server on port {}: {}", port, e.message)
         } finally {
+            // Detach the wrapper first so any in-flight manage_tools handler
+            // (or a stray applyDisabledSet from the watcher) becomes a no-op
+            // instead of mutating a Server that's no longer bound to any
+            // transport.
+            runningServer?.detachServer()
             runningEngine = null
             runningPort = null
             runningServer = null

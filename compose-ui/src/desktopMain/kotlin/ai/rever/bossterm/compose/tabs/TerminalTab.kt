@@ -240,7 +240,19 @@ data class TerminalTab(
      * hours of tab create/close cycles, eventually causing memory pressure
      * and exceptions when references to disposed displays are invoked.
      */
-    val modelListener: ai.rever.bossterm.terminal.model.TerminalModelListener? = null
+    val modelListener: ai.rever.bossterm.terminal.model.TerminalModelListener? = null,
+
+    /**
+     * Command-state listeners we registered against [terminal] in the controller
+     * (e.g. CommandNotificationHandler, LastCommandTracker). Removed in [dispose]
+     * so listeners don't accumulate over hours of tab create/close cycles.
+     *
+     * Same rationale as [modelListener] — anonymous listeners holding references
+     * to a tab's display / state become memory pressure when the terminal itself
+     * outlives the tab (e.g. while we're tearing down asynchronously) and a
+     * source of late callbacks against disposed UI.
+     */
+    val commandStateListeners: MutableList<ai.rever.bossterm.terminal.model.CommandStateListener> = mutableListOf()
 ) : TerminalSession {
     /**
      * Whether this tab is currently rendering to the UI.
@@ -379,6 +391,19 @@ data class TerminalTab(
                 textBuffer.removeModelListener(it)
             } catch (e: Exception) {
                 System.err.println("WARN: Failed to remove model listener: ${e.message}")
+            }
+        }
+
+        // Remove the command-state listeners the controller registered for us.
+        // Same memory-pressure rationale as modelListener above: anonymous OSC 133
+        // listeners (CommandNotificationHandler, LastCommandTracker) would otherwise
+        // remain attached to `terminal` and keep this tab's state reachable until
+        // the terminal itself is collected.
+        for (listener in commandStateListeners) {
+            try {
+                terminal.removeCommandStateListener(listener)
+            } catch (e: Exception) {
+                System.err.println("WARN: Failed to remove command-state listener: ${e.message}")
             }
         }
 

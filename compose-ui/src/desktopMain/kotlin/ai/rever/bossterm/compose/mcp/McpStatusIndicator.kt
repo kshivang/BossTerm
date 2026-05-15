@@ -35,7 +35,13 @@ import ai.rever.bossterm.compose.features.ContextMenuController
 
 private val McpOnColor = Color(0xFF4CAF50) // green
 private val McpOnGlow = Color(0x33_4C_AF_50) // 20% green halo
-private val McpLabelColor = Color(0xFFCFEFD4)
+private val McpOnLabelColor = Color(0xFFCFEFD4)
+// Keep label naming back-compat for AttachToast usages.
+private val McpLabelColor = McpOnLabelColor
+private val McpOffColor = Color(0xFFE57373) // red
+private val McpOffGlow = Color(0x33_E5_73_73) // 20% red halo
+private val McpOffLabelColor = Color(0xFFF2C9C9)
+private val McpOffBorderColor = Color(0xFFB71C1C)
 private val McpToastBg = Color(0xCC_1E_1E_1E)
 private val McpToastTextColor = Color(0xFFE0E0E0)
 private val McpToastSuccessColor = Color(0xFF4CAF50)
@@ -72,32 +78,35 @@ fun McpStatusIndicator(
     onAttachRequest: (McpAttachTarget) -> Unit = {},
     onShowSettings: () -> Unit = onClick,
     onTurnOffRequest: () -> Unit = {},
+    onTurnOnRequest: () -> Unit = {},
+    /** User's `settings.mcpEnabled` (intent) — drives the toggle menu label. */
+    isUserEnabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     if (!enabled) return
 
-    // Right-click → quick attach buttons + hide. Same set of CLIs as the
-    // Settings panel's "Attach to AI CLI" section. Items for already-attached
-    // CLIs get a "✓ " prefix so the user can see status at a glance.
-    // The host wires onAttachRequest to McpCliAttacher and onHideRequest to
-    // flip mcpShowStatusIndicator.
+    // Right-click (or left-click — same dark popup) → attach submenu,
+    // settings, and a state-aware toggle. The visual state (green/on vs
+    // red/off) reflects actual binding via runningPort; the menu's toggle
+    // label uses isUserEnabled so an "intent is on but bind failed" case
+    // still offers a meaningful action ("Turn MCP off" to reset, then on).
     //
-    // Uses the project's ContextMenuController (renders a dark Swing
-    // JPopupMenu) instead of foundation's ContextMenuArea so the styling
-    // matches the terminal canvas's own right-click menu.
+    // Uses the project's ContextMenuController so the popup style matches
+    // the terminal canvas's own right-click menu.
     val attached = McpTerminalRegistry.attachedTargets.collectAsState().value
     val runningPort = McpTerminalRegistry.runningPort.collectAsState().value
+    val isRunning = runningPort != null
     val contextMenuController = remember { ContextMenuController() }
 
-    // Both left- and right-click open the same dark popup. Settings has
-    // moved into the popup as "MCP Settings…" — the pill itself is a pure
-    // menu launcher now.
     val openMenu: () -> Unit = {
         val items = buildIndicatorMenuItems(
             attached = attached,
+            isRunning = isRunning,
+            isUserEnabled = isUserEnabled,
             onAttachRequest = onAttachRequest,
             onShowSettings = onShowSettings,
-            onTurnOffRequest = onTurnOffRequest
+            onTurnOffRequest = onTurnOffRequest,
+            onTurnOnRequest = onTurnOnRequest
         )
         contextMenuController.showMenu(0f, 0f, items)
     }
@@ -121,26 +130,29 @@ fun McpStatusIndicator(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            val dotColor = if (isRunning) McpOnColor else McpOffColor
+            val haloColor = if (isRunning) McpOnGlow else McpOffGlow
+            val borderColor = if (isRunning) Color(0xFF388E3C) else McpOffBorderColor
+            val labelColor = if (isRunning) McpOnLabelColor else McpOffLabelColor
             Box(
                 modifier = Modifier.size(16.dp),
                 contentAlignment = Alignment.Center
             ) {
-                // Soft halo for a "live" look without being distracting.
                 Box(
                     modifier = Modifier
                         .size(16.dp)
-                        .background(McpOnGlow, CircleShape)
+                        .background(haloColor, CircleShape)
                 )
                 Box(
                     modifier = Modifier
                         .size(10.dp)
-                        .background(McpOnColor, CircleShape)
-                        .border(1.dp, Color(0xFF388E3C), CircleShape)
+                        .background(dotColor, CircleShape)
+                        .border(1.dp, borderColor, CircleShape)
                 )
             }
             Text(
-                text = "MCP on",
-                color = McpLabelColor,
+                text = if (isRunning) "MCP on" else "MCP off",
+                color = labelColor,
                 fontSize = 11.sp
             )
         }
@@ -150,26 +162,30 @@ fun McpStatusIndicator(
 /**
  * Build the dark-themed right-click menu for the [McpStatusIndicator].
  *
- * Layout:
- *   Attach ▸
- *     ✓ Claude Code
- *       Codex
- *       Gemini CLI
- *     ✓ OpenCode
+ * Layout (running):
+ *   Attach ▸ (4 CLIs, "✓ " prefix for attached)
  *   MCP Settings…
  *   ─────
  *   Turn MCP off
  *
- * The "✓ " prefix marks CLIs already attached in this session.
- * The indicator is only visible while MCP is on, so the toggle item is
- * always "Turn MCP off"; the inverse direction is reachable via the
- * Settings panel or the Tools menu.
+ * Layout (off):
+ *   Attach ▸                ← disabled (no server to point CLIs at)
+ *   MCP Settings…
+ *   ─────
+ *   Turn MCP on
+ *
+ * The toggle label uses `isUserEnabled` (intent) rather than `isRunning`
+ * so a bind-failure state ("intent on, but port busy") still offers a
+ * meaningful action — toggle off to reset.
  */
 private fun buildIndicatorMenuItems(
     attached: Set<McpAttachTarget>,
+    isRunning: Boolean,
+    isUserEnabled: Boolean,
     onAttachRequest: (McpAttachTarget) -> Unit,
     onShowSettings: () -> Unit,
-    onTurnOffRequest: () -> Unit
+    onTurnOffRequest: () -> Unit,
+    onTurnOnRequest: () -> Unit
 ): List<ContextMenuController.MenuElement> {
     val attachSubmenuItems: List<ContextMenuController.MenuElement> =
         McpAttachTarget.entries.map { target ->
@@ -177,7 +193,7 @@ private fun buildIndicatorMenuItems(
             ContextMenuController.MenuItem(
                 id = "mcp_attach_${target.name}",
                 label = "${prefix}${target.displayName}",
-                enabled = true,
+                enabled = isRunning,
                 action = { onAttachRequest(target) }
             )
         }
@@ -193,13 +209,22 @@ private fun buildIndicatorMenuItems(
         action = onShowSettings
     )
     val separator = ContextMenuController.MenuSeparator(id = "mcp_indicator_sep")
-    val turnOff = ContextMenuController.MenuItem(
-        id = "mcp_turn_off",
-        label = "Turn MCP off",
-        enabled = true,
-        action = onTurnOffRequest
-    )
-    return listOf(attachSubmenu, settings, separator, turnOff)
+    val toggle = if (isUserEnabled) {
+        ContextMenuController.MenuItem(
+            id = "mcp_turn_off",
+            label = "Turn MCP off",
+            enabled = true,
+            action = onTurnOffRequest
+        )
+    } else {
+        ContextMenuController.MenuItem(
+            id = "mcp_turn_on",
+            label = "Turn MCP on",
+            enabled = true,
+            action = onTurnOnRequest
+        )
+    }
+    return listOf(attachSubmenu, settings, separator, toggle)
 }
 
 /**
@@ -220,19 +245,31 @@ private fun McpStatusTooltip(
             .widthIn(max = 380.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
+        if (runningPort == null) {
+            Text(
+                text = "MCP server is off",
+                color = McpOffLabelColor,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = "Click the pill to turn it on, or open MCP Settings…",
+                color = McpToastTextColor,
+                fontSize = 11.sp
+            )
+            return@Column
+        }
         Text(
             text = "MCP server running",
             color = McpToastSuccessColor,
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold
         )
-        if (runningPort != null) {
-            Text(
-                text = "Endpoint: http://127.0.0.1:$runningPort/mcp",
-                color = McpToastTextColor,
-                fontSize = 11.sp
-            )
-        }
+        Text(
+            text = "Endpoint: http://127.0.0.1:$runningPort/mcp",
+            color = McpToastTextColor,
+            fontSize = 11.sp
+        )
         if (attached.isEmpty()) {
             Text(
                 text = "No CLIs attached yet — right-click to attach.",

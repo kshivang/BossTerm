@@ -1100,15 +1100,14 @@ fun TabbedTerminal(
             )
         }
 
-        // MCP status indicator + toast overlay. Lives in the top-right slot
-        // when MCP is bound. Two independent visibility gates:
-        //   - indicator pill: requires settings.mcpShowStatusIndicator (user
-        //     can hide it without disabling MCP).
-        //   - toast: shown whenever attachStatus is non-null, regardless of
-        //     whether the indicator is visible — so a user who hid the pill
-        //     and triggered an attach from the terminal canvas's right-click
-        //     still gets feedback.
-        if (mcpRunningPort != null) {
+        // MCP status indicator + toast overlay. Top-right slot.
+        //   - Indicator pill renders whenever the user has not hidden it
+        //     (`mcpShowStatusIndicator`). When MCP is bound it shows green
+        //     "MCP on"; when off, red "MCP off". The right-click menu adapts.
+        //   - Toast renders whenever attachStatus is non-null. Attaches
+        //     can't happen when MCP is off, so toast naturally stays
+        //     dormant in that state.
+        if (settings.mcpShowStatusIndicator || attachStatus != null) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -1130,7 +1129,13 @@ fun TabbedTerminal(
                             SettingsManager.instance.updateSetting {
                                 copy(mcpEnabled = false)
                             }
-                        }
+                        },
+                        onTurnOnRequest = {
+                            SettingsManager.instance.updateSetting {
+                                copy(mcpEnabled = true)
+                            }
+                        },
+                        isUserEnabled = settings.mcpEnabled
                     )
                 }
                 attachStatus?.let { status ->

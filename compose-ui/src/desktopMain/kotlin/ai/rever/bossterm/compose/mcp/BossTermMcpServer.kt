@@ -65,6 +65,8 @@ class BossTermMcpServer(
     private val settingsManager: SettingsManager = SettingsManager.instance
 ) {
 
+    private val log = org.slf4j.LoggerFactory.getLogger(BossTermMcpServer::class.java)
+
     private val json: Json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -224,15 +226,43 @@ class BossTermMcpServer(
                         "currently selected tab of its window)."
             ),
             inputSchema = ToolSchema(
-                properties = buildJsonObject {},
+                properties = buildJsonObject {
+                    putJsonObject("include_fields") {
+                        put("type", "array")
+                        put("description", "Optional allow-list over TabInfo fields: " +
+                                "id, title, cwd, pid, isActive. Omit to get every field. " +
+                                "Useful when you only need a subset (e.g. `[\"id\",\"isActive\"]`).")
+                    }
+                },
                 required = emptyList()
             )
-        ) { _ ->
+        ) { request ->
+            val args = request.arguments
+            val includeFields = args.optionalStringSet("include_fields")
             val infos = registry.collectTabInfos()
             val primaryActiveId = registry.primaryState()?.activeTabId
-            val payload = ListTabsResult(tabs = infos, activeTabId = primaryActiveId)
-            successJson(json.encodeToString(ListTabsResult.serializer(), payload))
+            val text = if (includeFields == null) {
+                val payload = ListTabsResult(tabs = infos, activeTabId = primaryActiveId)
+                json.encodeToString(ListTabsResult.serializer(), payload)
+            } else {
+                buildJsonObject {
+                    put("tabs", buildJsonArray {
+                        for (info in infos) add(tabInfoToJson(info, includeFields))
+                    })
+                    if (primaryActiveId != null) put("activeTabId", primaryActiveId)
+                }.toString()
+            }
+            successJson(text)
         }
+    }
+
+    /** Projects a [TabInfo] onto the given field allow-list. Empty set = no fields. */
+    private fun tabInfoToJson(info: TabInfo, fields: Set<String>): JsonObject = buildJsonObject {
+        if ("id" in fields) put("id", info.id)
+        if ("title" in fields) put("title", info.title)
+        if ("cwd" in fields && info.cwd != null) put("cwd", info.cwd)
+        if ("pid" in fields && info.pid != null) put("pid", info.pid)
+        if ("isActive" in fields) put("isActive", info.isActive)
     }
 
     // -----------------------------------------------------------------
@@ -248,16 +278,28 @@ class BossTermMcpServer(
                         "that is still alive), or null if no tab is active."
             ),
             inputSchema = ToolSchema(
-                properties = buildJsonObject {},
+                properties = buildJsonObject {
+                    putJsonObject("include_fields") {
+                        put("type", "array")
+                        put("description", "Optional allow-list over TabInfo fields: " +
+                                "id, title, cwd, pid, isActive. Omit to get every field.")
+                    }
+                },
                 required = emptyList()
             )
-        ) { _ ->
+        ) { request ->
+            val args = request.arguments
+            val includeFields = args.optionalStringSet("include_fields")
             val primary = registry.primaryState()
             val activeId = primary?.activeTabId
             val info = primary?.activeTab?.toTabInfo(activeId)
             // The literal JSON `null` is valid output — clients calling
             // JSON.parse get a real null. Cheaper than wrapping in `{tab: null}`.
-            val text = if (info == null) "null" else json.encodeToString(TabInfo.serializer(), info)
+            val text = when {
+                info == null -> "null"
+                includeFields == null -> json.encodeToString(TabInfo.serializer(), info)
+                else -> tabInfoToJson(info, includeFields).toString()
+            }
             successJson(text)
         }
     }
@@ -333,7 +375,8 @@ class BossTermMcpServer(
             // Progressive fallbacks. Most callers want recent context, so the
             // first fallback keeps the tail; the final form gives the agent
             // enough to refine the next call (smaller `lines`).
-            val fallbacks = listOf<() -> String>(
+            successJson(shorten(
+                full,
                 {
                     val tail = lines.takeLast(20)
                     buildJsonObject {
@@ -348,8 +391,7 @@ class BossTermMcpServer(
                         put("shortened", "totals only; retry with a smaller `lines` value")
                     }.toString()
                 }
-            )
-            successJson(shorten(full, fallbacks))
+            ))
         }
     }
 
@@ -393,6 +435,12 @@ class BossTermMcpServer(
                         put("description", "Optional specific pane within the tab " +
                                 "(returned by run_in_panel). Omit to search the focused pane.")
                     }
+                    putJsonObject("include_line_text") {
+                        put("type", "boolean")
+                        put("description", "If false, each match returns only row+matchStart+matchEnd " +
+                                "(no line text). Cuts response size by 60–80% on typical scrollback " +
+                                "searches. Default true.")
+                    }
                 },
                 required = listOf("tab_id", "pattern")
             )
@@ -407,6 +455,7 @@ class BossTermMcpServer(
                 return@addTool errorResult("'max_matches' must be >= 1 (got $maxMatches)")
             }
             val ignoreCase = args.optionalBoolean("ignore_case") ?: false
+            val includeLineText = args.optionalBoolean("include_line_text") ?: true
             val paneId = args.requireString("pane_id")
             val state = registry.findState(tabId)
                 ?: return@addTool errorResult("Unknown tab_id: $tabId")
@@ -454,64 +503,70 @@ class BossTermMcpServer(
                 row++
             }
 
-            val payload = SearchOutputResult(
-                matches = matches,
-                truncated = truncated,
-                historyLinesCount = snapshot.historyLinesCount,
-                height = snapshot.height
-            )
-            val full = json.encodeToString(SearchOutputResult.serializer(), payload)
-            // Progressive fallbacks (in decreasing detail) for when `full`
-            // blows past mcpMaxAnswerChars. Each factory returns valid JSON.
-            //
-            //   1. drop SearchMatch.line text (positions only) — usually
-            //      cuts the response by 60–80%.
-            //   2. per-row hit counts — `{rowCounts: {row: n}, totalMatches}`.
-            //   3. just the totals.
-            val fallbacks = listOf<() -> String>(
-                {
-                    val positions = buildJsonArray {
-                        for (m in matches) add(
-                            buildJsonObject {
-                                put("row", m.row)
-                                put("matchStart", m.matchStart)
-                                put("matchEnd", m.matchEnd)
-                            }
-                        )
-                    }
-                    buildJsonObject {
-                        put("matches", positions)
-                        put("truncated", truncated)
-                        put("historyLinesCount", snapshot.historyLinesCount)
-                        put("height", snapshot.height)
-                        put("shortened", "matches: positions only (no line text)")
-                    }.toString()
-                },
-                {
-                    val counts = buildJsonObject {
-                        val perRow = matches.groupingBy { it.row }.eachCount()
-                        for ((r, n) in perRow) put(r.toString(), n)
-                    }
-                    buildJsonObject {
-                        put("rowCounts", counts)
-                        put("totalMatches", matches.size)
-                        put("truncated", truncated)
-                        put("historyLinesCount", snapshot.historyLinesCount)
-                        put("height", snapshot.height)
-                        put("shortened", "rowCounts: hit counts per row")
-                    }.toString()
-                },
-                {
-                    buildJsonObject {
-                        put("totalMatches", matches.size)
-                        put("truncated", truncated)
-                        put("historyLinesCount", snapshot.historyLinesCount)
-                        put("height", snapshot.height)
-                        put("shortened", "totals only")
-                    }.toString()
+            // Build the "positions only" form once; it's the response when
+            // `include_line_text=false`, and the first shortening fallback
+            // when the full payload exceeds the cap.
+            val positionsOnlyJson: () -> String = {
+                val positions = buildJsonArray {
+                    for (m in matches) add(
+                        buildJsonObject {
+                            put("row", m.row)
+                            put("matchStart", m.matchStart)
+                            put("matchEnd", m.matchEnd)
+                        }
+                    )
                 }
+                buildJsonObject {
+                    put("matches", positions)
+                    put("truncated", truncated)
+                    put("historyLinesCount", snapshot.historyLinesCount)
+                    put("height", snapshot.height)
+                    if (!includeLineText) put("includeLineText", false)
+                    else put("shortened", "matches: positions only (no line text)")
+                }.toString()
+            }
+            val rowCountsJson: () -> String = {
+                val counts = buildJsonObject {
+                    val perRow = matches.groupingBy { it.row }.eachCount()
+                    for ((r, n) in perRow) put(r.toString(), n)
+                }
+                buildJsonObject {
+                    put("rowCounts", counts)
+                    put("totalMatches", matches.size)
+                    put("truncated", truncated)
+                    put("historyLinesCount", snapshot.historyLinesCount)
+                    put("height", snapshot.height)
+                    put("shortened", "rowCounts: hit counts per row")
+                }.toString()
+            }
+            val totalsJson: () -> String = {
+                buildJsonObject {
+                    put("totalMatches", matches.size)
+                    put("truncated", truncated)
+                    put("historyLinesCount", snapshot.historyLinesCount)
+                    put("height", snapshot.height)
+                    put("shortened", "totals only")
+                }.toString()
+            }
+
+            val full: String = if (includeLineText) {
+                val payload = SearchOutputResult(
+                    matches = matches,
+                    truncated = truncated,
+                    historyLinesCount = snapshot.historyLinesCount,
+                    height = snapshot.height
+                )
+                json.encodeToString(SearchOutputResult.serializer(), payload)
+            } else {
+                // Caller pre-opted-out of line text; skip the redundant
+                // "drop line text" fallback in the ladder.
+                positionsOnlyJson()
+            }
+
+            successJson(
+                if (includeLineText) shorten(full, positionsOnlyJson, rowCountsJson, totalsJson)
+                else shorten(full, rowCountsJson, totalsJson)
             )
-            successJson(shorten(full, fallbacks))
         }
     }
 
@@ -835,6 +890,12 @@ class BossTermMcpServer(
                                     "names) returns no chunks."
                         )
                     }
+                    putJsonObject("omit_data") {
+                        put("type", "boolean")
+                        put("description", "If true, each chunk returns only index+timestamp+source " +
+                                "(no `data` payload). Use for cheap polling — `data` is the bulk of " +
+                                "every chunk. Default false.")
+                    }
                 },
                 required = listOf("tab_id")
             )
@@ -855,6 +916,7 @@ class BossTermMcpServer(
             val maxChunks = (args.optionalInt("max_chunks") ?: DEFAULT_DEBUG_CHUNKS)
                 .coerceIn(1, maxAllowed)
             val sinceIndex = args.optionalInt("since_index")?.coerceAtLeast(0)
+            val omitData = args.optionalBoolean("omit_data") ?: false
             // null only when the caller omitted `sources` entirely (or it wasn't
             // an array). A supplied-but-empty filter is honored strictly: the
             // caller explicitly asked for nothing, so return nothing rather than
@@ -889,37 +951,45 @@ class BossTermMcpServer(
                 debugEnabled = tab.debugEnabled.value
             )
 
-            val payload = ReadDebugConsoleResult(chunks = resultChunks, stats = statsDto)
-            val full = json.encodeToString(ReadDebugConsoleResult.serializer(), payload)
-            // Fallbacks for the bytes-dominate case. `data` is the bulk of any
-            // ReadDebugConsoleResult; dropping it preserves the chunk indexing
-            // info the agent uses to poll and refine.
-            val fallbacks = listOf<() -> String>(
-                {
-                    val metadataChunks = buildJsonArray {
-                        for (c in resultChunks) add(
-                            buildJsonObject {
-                                put("index", c.index)
-                                put("timestamp", c.timestamp)
-                                put("source", c.source)
-                            }
-                        )
-                    }
-                    buildJsonObject {
-                        put("chunks", metadataChunks)
-                        put("stats", json.encodeToJsonElement(DebugConsoleStats.serializer(), statsDto))
-                        put("shortened", "chunks: metadata only (data omitted)")
-                    }.toString()
-                },
-                {
-                    buildJsonObject {
-                        put("stats", json.encodeToJsonElement(DebugConsoleStats.serializer(), statsDto))
-                        put("chunksReturned", resultChunks.size)
-                        put("shortened", "stats only; retry with a smaller `max_chunks` or narrower `sources`")
-                    }.toString()
+            // Build the "metadata only" form once; it's the response when
+            // `omit_data=true`, and the first shortening fallback when the
+            // full payload exceeds the cap.
+            val metadataOnlyJson: () -> String = {
+                val metadataChunks = buildJsonArray {
+                    for (c in resultChunks) add(
+                        buildJsonObject {
+                            put("index", c.index)
+                            put("timestamp", c.timestamp)
+                            put("source", c.source)
+                        }
+                    )
                 }
+                buildJsonObject {
+                    put("chunks", metadataChunks)
+                    put("stats", json.encodeToJsonElement(DebugConsoleStats.serializer(), statsDto))
+                    if (omitData) put("omitData", true)
+                    else put("shortened", "chunks: metadata only (data omitted)")
+                }.toString()
+            }
+            val statsOnlyJson: () -> String = {
+                buildJsonObject {
+                    put("stats", json.encodeToJsonElement(DebugConsoleStats.serializer(), statsDto))
+                    put("chunksReturned", resultChunks.size)
+                    put("shortened", "stats only; retry with a smaller `max_chunks` or narrower `sources`")
+                }.toString()
+            }
+
+            val full: String = if (omitData) {
+                metadataOnlyJson()
+            } else {
+                val payload = ReadDebugConsoleResult(chunks = resultChunks, stats = statsDto)
+                json.encodeToString(ReadDebugConsoleResult.serializer(), payload)
+            }
+
+            successJson(
+                if (omitData) shorten(full, statsOnlyJson)
+                else shorten(full, metadataOnlyJson, statsOnlyJson)
             )
-            successJson(shorten(full, fallbacks))
         }
     }
 
@@ -1063,14 +1133,29 @@ class BossTermMcpServer(
      */
     private fun shorten(
         full: String,
-        fallbacks: List<() -> String>
+        vararg fallbacks: () -> String
     ): String {
         val cap = settingsManager.settings.value.mcpMaxAnswerChars
         if (cap <= 0 || full.length <= cap) return full
-        for (factory in fallbacks) {
+        for ((i, factory) in fallbacks.withIndex()) {
             val short = factory()
-            if (short.length <= cap) return short
+            if (short.length <= cap) {
+                log.debug(
+                    "mcp shortening: cap={} full={} fallback#{}={} ({}% reduction)",
+                    cap,
+                    full.length,
+                    i,
+                    short.length,
+                    if (full.isEmpty()) 0 else 100 - (short.length * 100 / full.length)
+                )
+                return short
+            }
         }
+        log.debug(
+            "mcp shortening: cap={} full={} ran out of fallbacks; returning error result",
+            cap,
+            full.length
+        )
         return json.encodeToString(
             ErrorResult.serializer(),
             ErrorResult(error = "Response too large (>$cap chars) and no fallback fit; refine the query.")
@@ -1115,6 +1200,9 @@ class BossTermMcpServer(
         val arr = el as? JsonArray ?: return null
         return arr.mapNotNull { (it as? JsonPrimitive)?.content }
     }
+
+    private fun JsonObject?.optionalStringSet(key: String): Set<String>? =
+        optionalStringList(key)?.toSet()
 
     // -----------------------------------------------------------------
     // Wire-format DTOs

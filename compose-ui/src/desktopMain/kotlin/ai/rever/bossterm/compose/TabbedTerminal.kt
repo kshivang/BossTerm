@@ -1025,6 +1025,7 @@ fun TabbedTerminal(
         val mcpRunningPort by ai.rever.bossterm.compose.mcp.McpTerminalRegistry
             .runningPort.collectAsState()
         if (mcpRunningPort != null && settings.mcpShowStatusIndicator) {
+            val mcpScope = rememberCoroutineScope()
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -1036,6 +1037,25 @@ fun TabbedTerminal(
                     onHideRequest = {
                         SettingsManager.instance.updateSetting {
                             copy(mcpShowStatusIndicator = false)
+                        }
+                    },
+                    onAttachRequest = { target ->
+                        // Same shell-out + clipboard fallback path the
+                        // Settings panel's buttons use. Surface result via
+                        // a system notification so the user gets feedback
+                        // even though they're not looking at Settings.
+                        val port = mcpRunningPort ?: return@McpStatusIndicator
+                        mcpScope.launch {
+                            val result = ai.rever.bossterm.compose.mcp
+                                .McpCliAttacher.attach(target, port)
+                            val (title, message) = when (result) {
+                                is ai.rever.bossterm.compose.mcp.McpAttachResult.Success ->
+                                    "MCP attached" to "${result.target.displayName}: ${result.detail.ifEmpty { "ok" }}"
+                                is ai.rever.bossterm.compose.mcp.McpAttachResult.CopiedToClipboard ->
+                                    "MCP attach: clipboard" to "${result.target.displayName}: ${result.reason}"
+                            }
+                            ai.rever.bossterm.compose.notification.NotificationService
+                                .showNotification(title = title, message = message, withSound = false)
                         }
                     }
                 )

@@ -35,18 +35,20 @@ fun McpStatusIndicator(
     enabled: Boolean,
     onClick: () -> Unit,
     onHideRequest: () -> Unit = {},
+    onAttachRequest: (McpAttachTarget) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (!enabled) return
 
-    // Right-click → "Hide MCP Indicator". Driven by ContextMenuArea so the
-    // menu uses the same native popup as text fields elsewhere in Compose
-    // Desktop. The host wires onHideRequest to flip mcpShowStatusIndicator.
+    // Right-click → quick attach buttons + hide. Same set of CLIs as the
+    // Settings panel's "Attach to AI CLI" section. The host wires
+    // onAttachRequest to McpCliAttacher and onHideRequest to flip
+    // mcpShowStatusIndicator.
     ContextMenuArea(
         items = {
-            listOf(
-                ContextMenuItem("Hide MCP Indicator") { onHideRequest() }
-            )
+            McpAttachTarget.entries.map { target ->
+                ContextMenuItem("Attach ${target.displayName}") { onAttachRequest(target) }
+            } + ContextMenuItem("Hide MCP Indicator") { onHideRequest() }
         }
     ) {
         Row(

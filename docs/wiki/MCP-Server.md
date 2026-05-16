@@ -551,11 +551,11 @@ the UI and a `manage_tools` call don't corrupt the tool registry.
 
 ## Troubleshooting
 
-**The server bound to a different port than I configured.** Another process
-is already on the configured port. The manager automatically walks up to
-the next 9 sequential ports on `BindException` (so configured `7676` may
-end up bound on `7677` if `7676` is busy). Look for one of these in the
-startup logs:
+**The server bound to a different port than I configured.** Another
+process is already on the configured port. The manager automatically
+walks up to the next 9 sequential ports on `EADDRINUSE` (so configured
+`7676` may end up bound on `7677` if `7676` is busy). Look for one of
+these in the startup logs:
 
 ```
 INFO  BossTermMcpManager - Starting BossTerm MCP server on http://127.0.0.1:7677/ (fallback from configured port 7676)
@@ -568,11 +568,29 @@ process has exited. The status pill's hover tooltip and the silent CLI
 auto-reattach both use the actual running port, so registered AI CLIs
 follow along automatically.
 
-**The server won't bind any port at all.** All 10 attempted ports were
-busy, or the very first attempt hit a non-bind error (config bug,
-permission denied, etc.). Check the startup logs for `BossTerm MCP server
-failed to bind any port in [...]` or `BossTerm MCP server failed to start
-on ...`. Pick a different starting port in Settings.
+> **Heads-up: CLI auto-reattach runs on every successful bind, not just
+> on port changes.** If your configured port flaps (7676 busy → 7677 →
+> 7676 next launch), the persisted CLI configs (`claude mcp add …`,
+> `gemini mcp add …`, etc.) get silently rewritten to follow each
+> launch's actual port. This is intentional, but it does mean any
+> out-of-band edit you make to those CLI configs while BossTerm is
+> running is liable to be clobbered on the next start.
+
+**The server won't bind any port at all.** Either (a) all 10 attempted
+ports were busy, (b) the configured port was rejected for a reason other
+than "address in use" — e.g. permission denied on a privileged port
+(`<1024` on Linux/macOS when not running as root), or (c) the very first
+attempt hit a non-bind error. The manager treats permission-denied as a
+hard failure (not a "try the next port" condition) so it doesn't walk up
+a privileged range futilely. Check the startup logs for one of:
+
+```
+ERROR BossTermMcpManager - BossTerm MCP server cannot bind 127.0.0.1:80 (permission denied); giving up: ...
+ERROR BossTermMcpManager - BossTerm MCP server failed to bind any port in [7676,7685]; giving up
+ERROR BossTermMcpManager - BossTerm MCP server failed to start on 127.0.0.1:7676: ...
+```
+
+Pick a different starting port in Settings.
 
 **The status pill says "BossTerm MCP on" but clients see no tabs.** The
 window's `TabbedTerminalState` / `EmbeddableTerminalState` isn't registered

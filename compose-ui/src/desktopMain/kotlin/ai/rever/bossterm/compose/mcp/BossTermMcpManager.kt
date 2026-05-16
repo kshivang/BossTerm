@@ -188,23 +188,47 @@ class BossTermMcpManager(
         }
     }
 
+    /**
+     * Outcome of a single bind attempt. Distinguishes "port is busy, try the
+     * next one" from "stop trying, something is structurally wrong" so the
+     * caller doesn't have to know which return value means what.
+     */
+    private enum class StartOutcome {
+        /** Bound successfully; manager state fields are set. */
+        Started,
+
+        /** Port was in use (EADDRINUSE). State is cleared; caller should try the next port. */
+        PortBusy,
+
+        /**
+         * Bind failed for a reason that won't be fixed by trying another port —
+         * EACCES on a privileged port, an SDK initialization error, etc. State is
+         * cleared; caller should stop the fallback loop.
+         */
+        HardFailed,
+    }
+
     private fun startEngineLocked(desiredPort: Int) {
         // Try the user's configured port first, then walk sequential ports up to
-        // MAX_PORT_FALLBACK_ATTEMPTS - 1 more. Only `BindException` (port in use)
-        // triggers fallback; other failures stay hard errors so config bugs aren't
-        // silently masked. The persisted `mcpPort` is NOT updated — the next
-        // restart still tries the original first in case the conflicting process
-        // exited.
+        // MAX_PORT_FALLBACK_ATTEMPTS - 1 more. EADDRINUSE triggers fallback;
+        // EACCES (permission denied — privileged ports on Linux/macOS), other
+        // BindException causes, and unrelated Throwables stay hard failures so
+        // config bugs aren't silently masked by walking up a privileged range.
+        // The persisted `mcpPort` is NOT updated — the next restart still
+        // tries the original first in case the conflicting process exited.
         for (offset in 0 until MAX_PORT_FALLBACK_ATTEMPTS) {
             val port = desiredPort + offset
             if (port > MAX_TCP_PORT) {
                 log.error(
-                    "BossTerm MCP port fallback exhausted (last tried {} > {}); giving up",
+                    "BossTerm MCP port fallback exhausted (would-be next port {} exceeds {}); giving up",
                     port, MAX_TCP_PORT
                 )
                 return
             }
-            if (tryStartOnPort(port, desiredPort)) return
+            when (tryStartOnPort(port, desiredPort)) {
+                StartOutcome.Started, StartOutcome.HardFailed -> return
+                StartOutcome.PortBusy -> continue
+            }
         }
         log.error(
             "BossTerm MCP server failed to bind any port in [{},{}]; giving up",
@@ -213,13 +237,17 @@ class BossTermMcpManager(
     }
 
     /**
-     * One bind attempt. Returns true on success (state fields are set), false
-     * if [port] was busy (caller should try the next port). Hard failures
-     * (everything other than [BindException]) clear state and return true so
-     * the loop stops — there's no point retrying e.g. an SDK initialization
-     * error on a different port.
+     * One bind attempt. See [StartOutcome] for the return semantics.
+     *
+     * The EACCES detection inspects [BindException.message] rather than a more
+     * specific exception type because OpenJDK throws plain `BindException` for
+     * both EADDRINUSE and EACCES; only the message string distinguishes them
+     * (see `sun.nio.ch.Net.bind0` → `handleSocketError`). It's brittle — a
+     * non-English locale or a future JDK could rephrase the text — but the
+     * worst-case failure is "fall back through a privileged range and waste
+     * ~10 quick binds before giving up," which is the pre-fix behavior.
      */
-    private fun tryStartOnPort(port: Int, desiredPort: Int): Boolean {
+    private fun tryStartOnPort(port: Int, desiredPort: Int): StartOutcome {
         val mcpServerWrapper = BossTermMcpServer(registry, config, settingsManager)
         val mcpServer = mcpServerWrapper.createServer()
         val allowedHosts = setOf("127.0.0.1", "localhost", "127.0.0.1:$port", "localhost:$port")
@@ -270,25 +298,40 @@ class BossTermMcpManager(
                 HOST, port, PATH, registry.stateCount()
             )
             launchAutoReattach(port)
-            return true
+            return StartOutcome.Started
         } catch (e: BindException) {
-            log.warn(
-                "BossTerm MCP server failed to bind {}:{} (port in use?): {}",
-                HOST, port, e.message
-            )
             mcpServerWrapper.detachServer()
             runningEngine = null
             runningPort = null
             runningServer = null
-            return false
+            val msg = e.message.orEmpty()
+            // Heuristic: if the JDK distinguished EACCES from EADDRINUSE only
+            // via message text, "permission" / "denied" / "not permitted" /
+            // "access" is the signature. Treat as hard failure to avoid
+            // walking up a privileged range (e.g. configured 80 → 81..89).
+            val looksLikePermissionDenied = msg.contains("permission", ignoreCase = true) ||
+                    msg.contains("denied", ignoreCase = true) ||
+                    msg.contains("not permitted", ignoreCase = true)
+            return if (looksLikePermissionDenied) {
+                log.error(
+                    "BossTerm MCP server cannot bind {}:{} (permission denied); giving up: {}",
+                    HOST, port, msg
+                )
+                StartOutcome.HardFailed
+            } else {
+                log.warn(
+                    "BossTerm MCP server failed to bind {}:{} (port in use?): {}",
+                    HOST, port, msg
+                )
+                StartOutcome.PortBusy
+            }
         } catch (e: Throwable) {
             log.error("BossTerm MCP server failed to start on {}:{}", HOST, port, e)
             mcpServerWrapper.detachServer()
             runningEngine = null
             runningPort = null
             runningServer = null
-            // Stop the loop — this isn't a "try the next port" condition.
-            return true
+            return StartOutcome.HardFailed
         }
     }
 

@@ -769,6 +769,43 @@ class TabbedTerminalState {
      * `run_in_panel` and wants to address that specific pane in a
      * follow-up tool call (send_input, read_scrollback, etc).
      */
+    /**
+     * Snapshot of every pane in [tabId], suitable for MCP exposure. A tab
+     * without splits returns a single entry whose `id` and `sessionId` both
+     * equal the tab's id and whose `isFocused` is `true`. For a split tab,
+     * each entry carries the wrapping `SplitNode.Pane.id` (what
+     * `splitHorizontal`/`splitVertical`/`run_in_panel` return), the
+     * underlying `TerminalSession.id`, the session's current title/cwd, and
+     * the focus state derived from `SplitViewState.focusedPaneId`.
+     *
+     * Returns an empty list if the tab id is unknown.
+     */
+    fun getPaneSnapshots(tabId: String): List<PaneSnapshot> {
+        val tab = getTabById(tabId) ?: return emptyList()
+        val splitState = splitStates[tabId]
+        if (splitState == null) {
+            return listOf(
+                PaneSnapshot(
+                    id = tab.id,
+                    sessionId = tab.id,
+                    title = tab.title.value,
+                    cwd = tab.workingDirectory.value,
+                    isFocused = true
+                )
+            )
+        }
+        val focusedId = splitState.focusedPaneId
+        return splitState.getAllPanes().map { pane ->
+            PaneSnapshot(
+                id = pane.id,
+                sessionId = pane.session.id,
+                title = pane.session.title.value,
+                cwd = pane.session.workingDirectory.value,
+                isFocused = pane.id == focusedId
+            )
+        }
+    }
+
     fun findSession(tabId: String, paneId: String? = null): TerminalSession? {
         val tab = getTabById(tabId) ?: return null
         val splitState = splitStates[tabId]
@@ -1101,6 +1138,29 @@ data class TerminalTabInfo(
     val isConnected: Boolean,
     val workingDirectory: String?,
     val paneCount: Int
+)
+
+/**
+ * Snapshot of a single pane within a tab. Returned by
+ * [TabbedTerminalState.getPaneSnapshots], exposed by the MCP `list_panes` tool.
+ *
+ * @property id The wrapping `SplitNode.Pane.id` — the value `run_in_panel`,
+ *   `splitHorizontal`, and `splitVertical` return, and the one accepted as
+ *   `pane_id` by other MCP tools. For a tab without splits, equals [sessionId].
+ * @property sessionId The underlying `TerminalSession.id`. Distinct from [id]
+ *   for split panes — preserved here so callers can correlate against any
+ *   API that surfaces session ids directly.
+ * @property title Current pane title (mutates with OSC 0/2; snapshotted at call time).
+ * @property cwd Current working directory (from OSC 7), or null if not reported.
+ * @property isFocused True for the pane that currently has keyboard focus.
+ */
+@Immutable
+data class PaneSnapshot(
+    val id: String,
+    val sessionId: String,
+    val title: String,
+    val cwd: String?,
+    val isFocused: Boolean
 )
 
 /**

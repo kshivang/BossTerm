@@ -104,6 +104,37 @@ tab is active.
 - Arguments: none.
 - Returns: a `TabInfo` object (same shape as in `list_tabs`) or `null`.
 
+### `list_panes`
+
+Enumerate the panes inside a tab. Call this when you need to address a split
+you didn't create yourself (any split the user opened with the keyboard or via
+the UI), or when you've lost track of a pane id returned by an earlier
+`run_in_panel` call.
+
+- Required: `tab_id` (string).
+- Returns:
+  ```json
+  {
+    "panes": [
+      {
+        "id": "<paneId>",
+        "sessionId": "<sessionId>",
+        "title": "<string>",
+        "cwd": "<string>",
+        "isFocused": true
+      }
+    ],
+    "focusedPaneId": "<paneId>"
+  }
+  ```
+- A tab without splits returns a single entry whose `id` equals the
+  `tab_id`. For a split tab, `id` is the wrapping `SplitNode.Pane.id` — the
+  value to pass back as `pane_id` to `send_input`, `send_signal`,
+  `read_scrollback`, etc. `sessionId` is preserved separately so callers
+  can correlate against APIs that surface session ids directly. Closing a
+  pane is `send_signal` with `signal=ctrl_d` and the pane's `id` —
+  the shell exits and the pane disposes itself.
+
 ### `read_scrollback`
 
 Read the last N lines from a tab or split pane's buffer (history + visible

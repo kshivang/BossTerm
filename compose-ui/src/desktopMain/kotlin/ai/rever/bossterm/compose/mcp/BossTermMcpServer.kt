@@ -91,6 +91,7 @@ class BossTermMcpServer(
     private val readToolRegistrations: Map<String, (Server) -> Unit> = mapOf(
         "list_tabs" to ::registerListTabs,
         "get_active_tab" to ::registerGetActiveTab,
+        "list_panes" to ::registerListPanes,
         "read_scrollback" to ::registerReadScrollback,
         "search_output" to ::registerSearchOutput,
         "get_last_command" to ::registerGetLastCommand,
@@ -253,6 +254,54 @@ class BossTermMcpServer(
             // JSON.parse get a real null. Cheaper than wrapping in `{tab: null}`.
             val text = if (info == null) "null" else json.encodeToString(TabInfo.serializer(), info)
             successJson(text)
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Tool: list_panes
+    // -----------------------------------------------------------------
+
+    private fun registerListPanes(server: Server) {
+        server.addTool(
+            name = toolName("list_panes"),
+            description = describe(
+                "list_panes",
+                "Enumerate the panes inside a tab. A tab without splits returns " +
+                        "a single entry whose id equals the tab id. For a split tab, each " +
+                        "entry carries the pane id (the value to pass back as `pane_id` to " +
+                        "other tools), the underlying session id, the pane's current title " +
+                        "and cwd, and whether it currently has keyboard focus. Use this " +
+                        "before send_input / send_signal / read_scrollback when you need to " +
+                        "target a specific split pane and didn't create it via run_in_panel."
+            ),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("tab_id") {
+                        put("type", "string")
+                        put("description", "Stable tab id (see list_tabs).")
+                    }
+                },
+                required = listOf("tab_id")
+            )
+        ) { request ->
+            val args = request.arguments
+            val tabId = args.requireString("tab_id")
+                ?: return@addTool errorResult("Missing required argument: tab_id")
+            val state = registry.findState(tabId)
+                ?: return@addTool errorResult("Unknown tab_id: $tabId")
+            val snapshots = state.getPaneSnapshots(tabId)
+            val panes = snapshots.map { s ->
+                PaneInfo(
+                    id = s.id,
+                    sessionId = s.sessionId,
+                    title = s.title,
+                    cwd = s.cwd,
+                    isFocused = s.isFocused
+                )
+            }
+            val focusedId = snapshots.firstOrNull { it.isFocused }?.id
+            val payload = ListPanesResult(panes = panes, focusedPaneId = focusedId)
+            successJson(json.encodeToString(ListPanesResult.serializer(), payload))
         }
     }
 
@@ -1000,6 +1049,21 @@ class BossTermMcpServer(
     )
 
     @Serializable
+    data class PaneInfo(
+        val id: String,
+        val sessionId: String,
+        val title: String,
+        val cwd: String?,
+        val isFocused: Boolean
+    )
+
+    @Serializable
+    data class ListPanesResult(
+        val panes: List<PaneInfo>,
+        val focusedPaneId: String?
+    )
+
+    @Serializable
     data class ReadScrollbackResult(
         val lines: List<String>,
         val totalAvailable: Int
@@ -1087,6 +1151,7 @@ class BossTermMcpServer(
         val BUILT_IN_READ_TOOLS: List<String> = listOf(
             "list_tabs",
             "get_active_tab",
+            "list_panes",
             "read_scrollback",
             "search_output",
             "get_last_command",

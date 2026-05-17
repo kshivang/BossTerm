@@ -24,6 +24,11 @@ GITHUB_REPO="kshivang/BossTerm"
 GITHUB_RELEASE_URL="https://github.com/${GITHUB_REPO}/releases/download"
 GITHUB_API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
 HOMEBREW_TAP="kshivang/bossterm"
+# Raw URL base for fetching canonical CLI resources from the repo.
+# install_cli / install_manpage download from here instead of embedding
+# inline copies — keeps the canonical script (`cli-resources/bossterm`) the
+# single source of truth.
+RAW_BASE_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/master/cli-resources"
 
 # Installation paths
 MACOS_APP_PATH="/Applications/BossTerm.app"
@@ -31,6 +36,12 @@ LINUX_OPT_PATH="/opt/bossterm"
 LINUX_JAR_PATH="/opt/bossterm/bossterm.jar"
 CLI_SYSTEM_PATH="/usr/local/bin/bossterm"
 CLI_USER_PATH="${HOME}/.local/bin/bossterm"
+# Companion Python helper for MCP-backed CLI subcommands. Must sit next to
+# the bossterm script so it can find it via $SCRIPT_DIR.
+MCP_HELPER_SYSTEM_PATH="/usr/local/bin/bossterm-mcp.py"
+MCP_HELPER_USER_PATH="${HOME}/.local/bin/bossterm-mcp.py"
+MAN_SYSTEM_PATH="/usr/local/share/man/man1/bossterm.1"
+MAN_USER_PATH="${HOME}/.local/share/man/man1/bossterm.1"
 CONFIG_PATH="${HOME}/.bossterm"
 
 # Script version
@@ -612,263 +623,37 @@ install_linux() {
 install_cli() {
     local os="$1"
     local cli_path
-    local cli_content
+    local helper_path
 
     info "Installing CLI launcher..."
 
-    # Determine installation path
+    # Determine installation paths. The Python helper sits next to the script
+    # so `bossterm` can find it via its own script directory.
     if has_sudo; then
         cli_path="$CLI_SYSTEM_PATH"
+        helper_path="$MCP_HELPER_SYSTEM_PATH"
     else
         cli_path="$CLI_USER_PATH"
+        helper_path="$MCP_HELPER_USER_PATH"
         mkdir -p "$(dirname "$cli_path")"
     fi
 
-    # Generate CLI script based on OS
-    case "$os" in
-        darwin)
-            cli_content='#!/usr/bin/env bash
-#
-# BossTerm CLI Launcher Script
-# Version: 1.0.0
-#
+    # Download the canonical scripts from raw.githubusercontent so install.sh
+    # doesn't carry an inline copy that drifts from cli-resources/bossterm.
+    # Same trust model as install.sh itself (which is curl-piped from there).
+    local cli_url="${RAW_BASE_URL}/bossterm"
+    local helper_url="${RAW_BASE_URL}/bossterm-mcp.py"
 
-APP_PATH="/Applications/BossTerm.app"
-APP_NAME="BossTerm"
-VERSION="1.0.0"
+    install_file_with_perms "$cli_url" "$cli_path" 755 || {
+        warn "Failed to download CLI from $cli_url"
+        return 1
+    }
+    install_file_with_perms "$helper_url" "$helper_path" 755 || {
+        warn "Failed to download MCP helper from $helper_url; MCP-backed CLI subcommands will not work"
+    }
 
-check_app() {
-    if [ ! -d "$APP_PATH" ]; then
-        echo "Error: BossTerm.app not found at $APP_PATH"
-        echo "Run: curl -fsSL https://raw.githubusercontent.com/kshivang/BossTerm/master/install.sh | bash"
-        exit 1
-    fi
-}
-
-open_bossterm() {
-    open -a "$APP_NAME" "$@"
-}
-
-expand_path() {
-    local path="$1"
-    path="${path/#\~/$HOME}"
-    if [[ ! "$path" =~ ^/ ]]; then
-        path="$(cd "$path" 2>/dev/null && pwd || echo "$(pwd)/$path")"
-    fi
-    echo "$path"
-}
-
-show_help() {
-    cat <<EOF
-BossTerm - Modern Terminal Emulator
-Version: $VERSION
-
-Usage:
-  bossterm                      Open BossTerm
-  bossterm <path>               Open in directory (if path exists)
-  bossterm -d <path>            Open in specified directory
-  bossterm --new-window         Open a new window
-
-Options:
-  -d, --directory <path>   Start in specified directory
-  -n, --new-window         Force open a new window
-  -v, --version            Show version information
-  -h, --help               Show this help message
-
-EOF
-}
-
-main() {
-    check_app
-
-    if [ $# -eq 0 ]; then
-        open_bossterm
-        exit 0
-    fi
-
-    case "$1" in
-        -h|--help) show_help; exit 0 ;;
-        -v|--version) echo "BossTerm CLI version $VERSION"; exit 0 ;;
-        -n|--new-window) open_bossterm -n; exit 0 ;;
-        -d|--directory)
-            [ -z "$2" ] && { echo "Error: Directory path required"; exit 1; }
-            dir_path=$(expand_path "$2")
-            [ ! -d "$dir_path" ] && { echo "Error: Directory not found: $dir_path"; exit 1; }
-            BOSSTERM_CWD="$dir_path" open_bossterm
-            exit 0
-            ;;
-        -*)
-            echo "Error: Unknown option: $1"
-            echo "Run '\''bossterm --help'\'' for usage"
-            exit 1
-            ;;
-        *)
-            path=$(expand_path "$1")
-            if [ -d "$path" ]; then
-                BOSSTERM_CWD="$path" open_bossterm
-            elif [ -f "$path" ]; then
-                BOSSTERM_CWD="$(dirname "$path")" open_bossterm
-            else
-                echo "Error: Path not found: $1"
-                exit 1
-            fi
-            ;;
-    esac
-}
-
-main "$@"
-'
-            ;;
-        linux)
-            cli_content='#!/usr/bin/env bash
-#
-# BossTerm CLI Launcher Script (Linux)
-# Version: 1.0.0
-#
-
-VERSION="1.0.0"
-
-find_bossterm() {
-    local locations=(
-        "/opt/bossterm/bin/BossTerm"
-        "/usr/local/bin/BossTerm"
-        "/usr/bin/BossTerm"
-        "$HOME/.local/share/bossterm/bin/BossTerm"
-        "/snap/bossterm/current/bin/bossterm"
-    )
-
-    for loc in "${locations[@]}"; do
-        if [ -x "$loc" ]; then
-            echo "$loc"
-            return 0
-        fi
-    done
-
-    # Check JAR installation
-    if [ -f "/opt/bossterm/bossterm.jar" ] && command -v java >/dev/null 2>&1; then
-        echo "jar:/opt/bossterm/bossterm.jar"
-        return 0
-    fi
-    if [ -f "$HOME/.local/share/bossterm/bossterm.jar" ] && command -v java >/dev/null 2>&1; then
-        echo "jar:$HOME/.local/share/bossterm/bossterm.jar"
-        return 0
-    fi
-
-    # Check snap
-    if [ -n "$SNAP" ]; then
-        echo "$SNAP/bin/bossterm"
-        return 0
-    fi
-
-    return 1
-}
-
-APP_PATH=$(find_bossterm)
-
-check_app() {
-    if [ -z "$APP_PATH" ]; then
-        echo "Error: BossTerm not found"
-        echo ""
-        echo "Install with: curl -fsSL https://raw.githubusercontent.com/kshivang/BossTerm/master/install.sh | bash"
-        exit 1
-    fi
-}
-
-open_bossterm() {
-    if [ -n "$BOSSTERM_CWD" ]; then
-        cd "$BOSSTERM_CWD" || exit 1
-    fi
-
-    if [[ "$APP_PATH" == jar:* ]]; then
-        local jar_path="${APP_PATH#jar:}"
-        nohup java -jar "$jar_path" "$@" >/dev/null 2>&1 &
-    else
-        nohup "$APP_PATH" "$@" >/dev/null 2>&1 &
-    fi
-    disown
-}
-
-expand_path() {
-    local path="$1"
-    path="${path/#\~/$HOME}"
-    if [[ ! "$path" =~ ^/ ]]; then
-        path="$(cd "$path" 2>/dev/null && pwd || echo "$(pwd)/$path")"
-    fi
-    echo "$path"
-}
-
-show_help() {
-    cat <<EOF
-BossTerm - Modern Terminal Emulator
-Version: $VERSION
-
-Usage:
-  bossterm                      Open BossTerm
-  bossterm <path>               Open in directory (if path exists)
-  bossterm -d <path>            Open in specified directory
-  bossterm --new-window         Open a new window
-
-Options:
-  -d, --directory <path>   Start in specified directory
-  -n, --new-window         Force open a new window
-  -v, --version            Show version information
-  -h, --help               Show this help message
-
-EOF
-}
-
-main() {
-    check_app
-
-    if [ $# -eq 0 ]; then
-        open_bossterm
-        exit 0
-    fi
-
-    case "$1" in
-        -h|--help) show_help; exit 0 ;;
-        -v|--version) echo "BossTerm CLI version $VERSION"; exit 0 ;;
-        -n|--new-window) open_bossterm --new-window; exit 0 ;;
-        -d|--directory)
-            [ -z "$2" ] && { echo "Error: Directory path required"; exit 1; }
-            dir_path=$(expand_path "$2")
-            [ ! -d "$dir_path" ] && { echo "Error: Directory not found: $dir_path"; exit 1; }
-            BOSSTERM_CWD="$dir_path" open_bossterm
-            exit 0
-            ;;
-        -*)
-            echo "Error: Unknown option: $1"
-            echo "Run '\''bossterm --help'\'' for usage"
-            exit 1
-            ;;
-        *)
-            path=$(expand_path "$1")
-            if [ -d "$path" ]; then
-                BOSSTERM_CWD="$path" open_bossterm
-            elif [ -f "$path" ]; then
-                BOSSTERM_CWD="$(dirname "$path")" open_bossterm
-            else
-                echo "Error: Path not found: $1"
-                exit 1
-            fi
-            ;;
-    esac
-}
-
-main "$@"
-'
-            ;;
-    esac
-
-    # Install the CLI script
-    if has_sudo && [ "$cli_path" = "$CLI_SYSTEM_PATH" ]; then
-        echo "$cli_content" | sudo tee "$cli_path" >/dev/null
-        sudo chmod +x "$cli_path"
-    else
-        echo "$cli_content" > "$cli_path"
-        chmod +x "$cli_path"
-
-        # Check if ~/.local/bin is in PATH
+    # If the user-scope path was used, nag about PATH.
+    if [ "$cli_path" = "$CLI_USER_PATH" ]; then
         if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
             warn "\$HOME/.local/bin is not in your PATH"
             warn "Add this to your shell profile:"
@@ -877,6 +662,48 @@ main "$@"
     fi
 
     success "CLI launcher installed to $cli_path"
+}
+
+# Download a URL and install it at `dest` with the given file mode.
+# Uses sudo + tee for system paths, plain redirect for user paths.
+install_file_with_perms() {
+    local url="$1"
+    local dest="$2"
+    local mode="$3"
+    local tmp
+    tmp="$(mktemp)" || return 1
+    if ! curl -fsSL "$url" -o "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if has_sudo && [[ "$dest" == /usr/* || "$dest" == /opt/* ]]; then
+        sudo install -m "$mode" "$tmp" "$dest"
+    else
+        install -m "$mode" "$tmp" "$dest"
+    fi
+    local rc=$?
+    rm -f "$tmp"
+    return $rc
+}
+
+install_manpage() {
+    local man_path
+    if has_sudo; then
+        man_path="$MAN_SYSTEM_PATH"
+    else
+        man_path="$MAN_USER_PATH"
+    fi
+    mkdir -p "$(dirname "$man_path")" 2>/dev/null || sudo mkdir -p "$(dirname "$man_path")"
+
+    info "Installing man page..."
+    local man_url="${RAW_BASE_URL}/man/man1/bossterm.1"
+    if install_file_with_perms "$man_url" "$man_path" 644; then
+        success "Man page installed to $man_path"
+        info "  Try: man bossterm"
+    else
+        warn "Failed to download man page from $man_url"
+        return 1
+    fi
 }
 
 # ============================================================================
@@ -899,20 +726,33 @@ uninstall() {
             ;;
     esac
 
-    # Remove CLI launcher
-    if [ -f "$CLI_SYSTEM_PATH" ]; then
-        info "Removing CLI launcher from $CLI_SYSTEM_PATH..."
-        if has_sudo; then
-            sudo rm -f "$CLI_SYSTEM_PATH"
-        else
-            warn "Cannot remove $CLI_SYSTEM_PATH without sudo"
+    # Remove CLI launcher + companion files (helper, man page).
+    local cleanup_paths_system=(
+        "$CLI_SYSTEM_PATH"
+        "$MCP_HELPER_SYSTEM_PATH"
+        "$MAN_SYSTEM_PATH"
+    )
+    local cleanup_paths_user=(
+        "$CLI_USER_PATH"
+        "$MCP_HELPER_USER_PATH"
+        "$MAN_USER_PATH"
+    )
+    for p in "${cleanup_paths_system[@]}"; do
+        if [ -f "$p" ]; then
+            info "Removing $p..."
+            if has_sudo; then
+                sudo rm -f "$p"
+            else
+                warn "Cannot remove $p without sudo"
+            fi
         fi
-    fi
-
-    if [ -f "$CLI_USER_PATH" ]; then
-        info "Removing CLI launcher from $CLI_USER_PATH..."
-        rm -f "$CLI_USER_PATH"
-    fi
+    done
+    for p in "${cleanup_paths_user[@]}"; do
+        if [ -f "$p" ]; then
+            info "Removing $p..."
+            rm -f "$p"
+        fi
+    done
 
     # Remove config (ask first)
     if [ -d "$CONFIG_PATH" ]; then
@@ -1016,6 +856,7 @@ Options:
   -m, --method METHOD     Force installation method
   -u, --uninstall         Uninstall BossTerm
   --no-cli                Skip CLI launcher installation
+  --no-manpage            Skip man page installation
   --dry-run               Show what would be done without executing
   --force                 Force reinstall even if already installed
 
@@ -1051,6 +892,7 @@ main() {
     local method="auto"
     local do_uninstall=false
     local install_cli_flag=true
+    local install_manpage_flag=true
     local dry_run=false
     local force=false
 
@@ -1075,6 +917,10 @@ main() {
                 ;;
             --no-cli)
                 install_cli_flag=false
+                shift
+                ;;
+            --no-manpage)
+                install_manpage_flag=false
                 shift
                 ;;
             --dry-run)
@@ -1170,6 +1016,12 @@ main() {
     if [ "$install_cli_flag" = true ]; then
         echo ""
         install_cli "$os"
+    fi
+
+    # Install man page
+    if [ "$install_manpage_flag" = true ]; then
+        echo ""
+        install_manpage
     fi
 
     # Success message

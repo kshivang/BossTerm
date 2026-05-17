@@ -91,8 +91,14 @@ compose.desktop {
             vendor = "risalabs.ai"
             copyright = "© 2025 risalabs.ai. All rights reserved."
 
-            // Include CLI script in app resources
-            appResourcesRootDir.set(rootProject.file("cli-resources"))
+            // Include CLI script + Python MCP helper + man page in app resources.
+            // We point at `build/cli-resources/` rather than the raw source dir
+            // so the `processCliResources` task can substitute `@@BOSSTERM_VERSION@@`
+            // in the canonical script with the real project version before bundling.
+            // The source files live under `cli-resources/` in the repo with symlinks
+            // (macos/bossterm → ../bossterm) so editors only have to maintain one
+            // canonical file; the task expands those symlinks while substituting.
+            appResourcesRootDir.set(layout.buildDirectory.dir("cli-resources").get().asFile)
 
             macOS {
                 iconFile.set(rootProject.file("BossTerm.icns"))
@@ -169,6 +175,39 @@ compose.desktop {
             }
         }
     }
+}
+
+// Stage the CLI resources under build/cli-resources with @@BOSSTERM_VERSION@@
+// substituted. The source tree keeps `cli-resources/macos/bossterm` and
+// `cli-resources/linux/bossterm` as symlinks pointing at the canonical
+// `cli-resources/bossterm` script — so editors only maintain one file. This
+// task expands those symlinks while substituting, producing real per-platform
+// files for Compose Desktop's `appResourcesRootDir` to pick up.
+val cliVersion = project.version.toString().removeSuffix("-SNAPSHOT")
+
+tasks.register<Sync>("processCliResources") {
+    description = "Stage cli-resources/ with @@BOSSTERM_VERSION@@ substituted to project.version"
+    group = "build"
+
+    inputs.property("cliVersion", cliVersion)
+    from(rootProject.file("cli-resources"))
+    into(layout.buildDirectory.dir("cli-resources"))
+    // Substitute the version placeholder in the canonical script. Filter
+    // ONLY the script — applying line-based filter to the Python helper or
+    // the troff man page would mangle their hashbang/preamble pickup-by-line
+    // semantics (and runs the filter through their whole bodies for no gain).
+    filesMatching("bossterm") {
+        filter { line: String ->
+            line.replace("@@BOSSTERM_VERSION@@", cliVersion)
+        }
+    }
+}
+
+// `appResourcesRootDir` points at the staged dir, so prepareAppResources (the
+// gradle.plugin.compose Desktop task that copies into the bundle) depends on
+// processCliResources.
+tasks.matching { it.name == "prepareAppResources" }.configureEach {
+    dependsOn("processCliResources")
 }
 
 // Sign PTY4J native binaries with hardened runtime for macOS notarization

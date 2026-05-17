@@ -1,0 +1,219 @@
+.TH BOSSTERM 1 "May 2026" "BossTerm" "User Commands"
+.SH NAME
+bossterm \- launcher and command companion for the BossTerm terminal emulator
+.SH SYNOPSIS
+.B bossterm
+.RI [ subcommand ]
+.RI [ args... ]
+.PP
+.B bossterm
+.RI [ path ]
+.br
+.B bossterm
+.B \-\-help
+.B |
+.B \-\-version
+.SH DESCRIPTION
+.B bossterm
+is a thin command-line wrapper around the BossTerm terminal emulator. With no
+arguments it launches the GUI; with a positional path it opens the GUI focused
+on that working directory.
+.PP
+The MCP-backed subcommands
+.RB ( new-tab ,
+.BR run ,
+.BR send ,
+.BR logs ,
+.BR "mcp tools" )
+talk to a running BossTerm via the in-process Model Context Protocol server
+exposed on
+.IR http://127.0.0.1:<port>/ .
+They require an instance to be running and MCP to be enabled
+.RB ( "bossterm mcp on" ).
+The other subcommands
+.RB ( config ,
+.BR attach ,
+.BR "mcp status" ,
+.BR "mcp on" ,
+.BR "mcp off" )
+work without a running instance: they read or write
+.I ~/.bossterm/settings.json
+or shell out to an AI CLI directly.
+.SH SUBCOMMANDS
+.TP
+.B (no subcommand)
+Launch the GUI.
+.TP
+.BI "<path>"
+Launch the GUI with the working directory set to
+.I <path>
+(or its parent if
+.I <path>
+is a file).
+.TP
+.B new
+Open a new BossTerm window (alias:
+.BR \-n ,
+.BR \-\-new\-window ).
+.TP
+.B new-tab
+Open a new tab in a running BossTerm. Requires MCP.
+.TP
+.BI "run [--split=h|v] " "<command>..."
+Open a new tab (or horizontal/vertical split) and run
+.IR <command> .
+The script auto-appends a newline so the shell executes the line. Requires MCP.
+.TP
+.BI "send " "<text>..."
+Send raw text to the focused pane of the active tab. Use a trailing
+.B \\n
+in the text to submit. Requires MCP.
+.TP
+.B "logs [--tab <id>] [--lines <N>]"
+Dump scrollback lines from a tab (default: the active tab; default N: 200).
+Requires MCP.
+.TP
+.BI "attach " "claude|codex|gemini|opencode"
+Re-register the running BossTerm with the named AI CLI's MCP config. This
+runs the CLI's own
+.B "mcp add"
+subcommand (or, for OpenCode, edits its JSON config directly) with the actual
+running port as the URL.
+.TP
+.B mcp status
+Print the configured port, whether MCP is enabled, whether the server is
+reachable, and the endpoint URL if it is.
+.TP
+.B mcp on
+Set
+.B mcpEnabled = true
+in
+.IR ~/.bossterm/settings.json .
+A running BossTerm picks up the change live; otherwise the next launch reads
+the new value.
+.TP
+.B mcp off
+Set
+.B mcpEnabled = false
+in the same way.
+.TP
+.B mcp endpoint
+Print the running server URL on a single line. Suitable for piping into
+shell expansions.
+.TP
+.B mcp tools
+Print the list of MCP tools the server exposes with their enabled state
+(invokes the
+.B manage_tools
+tool with
+.BR operation=list ).
+.TP
+.B "config [--path|--edit]"
+With no flag or
+.BR \-\-path :
+print the absolute path of the settings file
+.RI ( ~/.bossterm/settings.json ).
+With
+.BR \-\-edit :
+open the file in
+.B $EDITOR
+.RB ( "$VISUAL " "or " vi
+fallback). Creates the file if missing.
+.SH OPTIONS
+.TP
+.B \-h, \-\-help
+Show a short help summary.
+.TP
+.B \-v, \-\-version
+Print the CLI version.
+.TP
+.BI "\-d, \-\-directory " "<path>"
+Legacy form: launch the GUI with working directory
+.IR <path> .
+The positional path form
+.RB ( "bossterm <path>" )
+is preferred.
+.TP
+.B \-n, \-\-new-window
+Equivalent to
+.BR "bossterm new" .
+.SH ENVIRONMENT
+.TP
+.B BOSSTERM_CWD
+Set by the script when launching with a positional path; consumed by the app
+to seed the initial working directory.
+.TP
+.B EDITOR
+Used by
+.BR "bossterm config --edit" .
+Falls back to
+.B $VISUAL
+then
+.BR vi .
+.SH FILES
+.TP
+.I ~/.bossterm/settings.json
+User configuration. Persists MCP enabled/port, theme, font, attached AI CLIs,
+and per-tool MCP enablement.
+.TP
+.I /usr/local/bin/bossterm
+Standard system install path (when installed with sudo).
+.TP
+.I ~/.local/bin/bossterm
+User install path (when installed without sudo).
+.TP
+.I /usr/local/share/man/man1/bossterm.1
+This man page.
+.SH EXAMPLES
+.TP
+Launch in a project directory:
+.B bossterm ~/Projects/foo
+.TP
+Open a new tab in the running BossTerm and tail logs:
+.B bossterm run -- tail -f /var/log/system.log
+.TP
+Send Ctrl-L to the focused pane (newline + clear):
+.B bossterm send $'\\fL'
+.TP
+Re-attach Claude Code after the MCP port changed:
+.B bossterm attach claude
+.TP
+Toggle MCP off temporarily:
+.B bossterm mcp off
+.TP
+Inspect which MCP tools are currently exposed:
+.B bossterm mcp tools
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Invalid usage or expected failure (e.g. unknown CLI in
+.BR attach ,
+malformed args).
+.TP
+.B 2
+MCP server unreachable when an MCP-backed subcommand needed it.
+.TP
+.B 127
+A required helper
+.RB ( python3 ,
+.BR claude ,
+.BR codex ,
+.BR gemini ,
+.BR node )
+is not on
+.BR PATH .
+.SH SEE ALSO
+.TP
+docs/mcp-server.md
+The full BossTerm MCP server reference. Tools, security model, embedder API.
+.TP
+docs/embedding.md
+Embedding BossTerm in another Compose Desktop application.
+.TP
+https://github.com/kshivang/BossTerm
+Source.
+.SH AUTHOR
+BossTerm is built by Risa Labs Inc and the BossTerm contributors.

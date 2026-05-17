@@ -801,6 +801,22 @@ data class TerminalSettings(
     val disabledMcpTools: Set<String> = emptySet(),
 
     /**
+     * Soft ceiling (in characters) on a single BossTerm MCP tool response.
+     * When a response would exceed this, the tool returns a progressively
+     * smaller summary (e.g. matches-only for `search_output`, metadata-only
+     * for `read_debug_console`, last-N-lines for `read_scrollback`) instead
+     * of the full payload — the agent sees a well-formed JSON it can reason
+     * about and refine, never a truncated mid-response blob.
+     *
+     * Default `150_000` mirrors Serena's `default_max_tool_answer_chars` and
+     * is well above typical responses; it really only kicks in for
+     * pathological cases (regex matching thousands of rows, a giant debug
+     * buffer dump). Lower it to ~50_000 if you want a tighter guardrail.
+     * Advanced setting — no UI control, edit settings.json directly.
+     */
+    val mcpMaxAnswerChars: Int = 150_000,
+
+    /**
      * Set to `true` the first time [ai.rever.bossterm.compose.mcp.BossTermMcpManager]
      * starts so that embedder-supplied first-launch defaults
      * (`BossTermMcpConfig.defaultEnabled` / `defaultPort`) are applied

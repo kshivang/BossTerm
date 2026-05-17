@@ -77,7 +77,11 @@ embedder's `BossTermMcpConfig.allowWriteTools = true`.
 List all open terminal tabs across every window registered with the
 `McpTerminalRegistry`.
 
-- Arguments: none.
+- Arguments:
+  - `include_fields` (optional array) — allow-list over TabInfo fields
+    (`id`, `title`, `cwd`, `pid`, `isActive`). Omit to get every field;
+    pass e.g. `["id", "isActive"]` for a minimal response when listing
+    many tabs.
 - Returns:
   ```json
   {
@@ -101,7 +105,8 @@ List all open terminal tabs across every window registered with the
 Return the active tab of the primary window, or the literal JSON `null` if no
 tab is active.
 
-- Arguments: none.
+- Arguments:
+  - `include_fields` (optional array) — same allow-list as `list_tabs`.
 - Returns: a `TabInfo` object (same shape as in `list_tabs`) or `null`.
 
 ### `list_panes`
@@ -160,6 +165,9 @@ Regex-search the entire scrollback (history + screen) of a tab or pane.
     many matches; `truncated` in the response indicates it was hit.
   - `ignore_case` (boolean, default `false`).
   - `pane_id` (string).
+  - `include_line_text` (boolean, default `true`) — if false, each match
+    returns only `row`, `matchStart`, `matchEnd` (no line text). Cuts the
+    response by 60–80% on typical scrollback searches.
 - Returns:
   ```json
   {
@@ -184,7 +192,6 @@ OSC 133). Requires shell integration — see
 - Returns either `null` (no command completed yet) or:
   ```json
   {
-    "commandText": null,
     "exitCode": 0,
     "startedAtMs": 1700000000000,
     "finishedAtMs": 1700000000123,
@@ -192,8 +199,9 @@ OSC 133). Requires shell integration — see
     "cwd": "/home/me"
   }
   ```
-- `commandText` is currently always `null`; capturing the typed command text
-  reliably is a follow-up.
+- `commandText` is omitted from the response — capturing the typed command
+  text reliably is a follow-up. (Null fields are omitted from every
+  BossTerm MCP response; see [Wire format notes](#wire-format-notes).)
 
 ### `read_debug_console`
 
@@ -211,6 +219,9 @@ collection is enabled for the tab. Supports incremental polling via
     `PTY_OUTPUT`, `USER_INPUT`, `EMULATOR_GENERATED`, `CONSOLE_LOG`. Omit the
     key entirely to get every source; an empty array (or one containing only
     unknown names) returns no chunks.
+  - `omit_data` (boolean, default `false`) — if true, each chunk returns
+    only `index`, `timestamp`, `source` (no `data` payload). Use for cheap
+    polling since `data` is the bulk of every chunk.
 - Returns:
   ```json
   {
@@ -360,6 +371,7 @@ and are persisted to `~/.bossterm/settings.json`.
 | `mcpDefaultSplitRatio`    | `Float`             | `0.3`       | Default new-pane size for `run_in_panel` splits when `split_ratio` is omitted. Range `0.05..0.95`.     |
 | `mcpAttachedTo`           | `Set<String>`       | `{}`        | Stable `persistenceKey`s (e.g. `"CLAUDE_CODE"`) of attached AI CLIs. Used for silent re-attach.        |
 | `disabledMcpTools`        | `Set<String>`       | `{}`        | Unprefixed built-in tool names hidden from clients. Edited via the UI or `manage_tools`.               |
+| `mcpMaxAnswerChars`       | `Int`               | `150_000`   | Soft ceiling on tool response size. When exceeded, the tool returns a progressively smaller summary instead of the full payload — see [Response shortening](#response-shortening). Advanced; no UI control. |
 | `mcpConfigured`           | `Boolean`           | `false`     | Internal first-launch marker. Once `true`, embedder defaults no longer override the user's choice.     |
 
 ## Embedder integration
@@ -561,6 +573,71 @@ A short-circuit in `BossTermMcpServer.applyDisabledSet(...)` performs the
 add/remove against the SDK's live `Server` under an internal lock, so
 concurrent toggles from the UI and a `manage_tools` call don't corrupt the
 tool registry.
+
+## Wire format notes
+
+**Null-valued fields are omitted from every response.** The server's JSON
+encoder runs with `explicitNulls = false`, so a `TabInfo` with no working
+directory comes back as `{id, title, isActive}` rather than
+`{id, title, cwd: null, pid: null, isActive}`. A `LastCommandDto` never
+carries the always-null `commandText`. Same for any other optional field on
+any DTO.
+
+For most clients this is transparent — JSON parsers return the same
+implicit `null` / `undefined` / `None` whether the key is absent or
+explicitly `null`. The only place it bites is code that probes
+*presence* rather than value:
+
+```js
+'commandText' in response  // was true, now false
+Object.hasOwn(response, 'cwd')  // was true, now false when cwd is null
+response.commandText === null  // was true; now undefined
+```
+
+If your client relies on presence semantics, switch to value checks
+(`response.cwd == null` instead of `'cwd' in response`). Set
+`mcpMaxAnswerChars = 0` (no effect on null omission — that's a separate
+encoder setting) if you want everything else big-and-explicit too.
+
+The one place the server intentionally emits a literal top-level JSON
+`null` is `get_active_tab` when there is no active tab — that's hand-built
+outside the encoder and is unaffected by the setting.
+
+## Response shortening
+
+Three built-in tools can return unbounded responses — `search_output`,
+`read_scrollback`, and `read_debug_console` — so each runs its full payload
+through a per-tool fallback ladder. If the full JSON would exceed
+`settings.mcpMaxAnswerChars` (default `150_000`), the server returns a
+progressively smaller well-formed JSON instead. The agent never sees a
+truncated mid-response blob; it sees a smaller object with a `"shortened"`
+key explaining what was dropped, and refines the next call accordingly.
+
+Each shortened response includes a `"shortened"` string describing the
+projection so clients can detect they're looking at a summary. Common
+shortened shapes:
+
+`search_output`
+- **positions only** — `matches` keeps `row`, `matchStart`, `matchEnd`; the
+  matched line text is dropped. Usually 60–80% smaller than full.
+- **row counts** — `{rowCounts: {row: hits}, totalMatches}` instead of per-match
+  records.
+- **totals only** — `{totalMatches, truncated, historyLinesCount, height}`.
+
+`read_scrollback`
+- **tail** — keeps the last 20 lines and reports the requested count.
+- **totals only** — `{totalAvailable}` with a "retry with smaller `lines`"
+  hint.
+
+`read_debug_console`
+- **metadata only** — chunks keep `index`, `timestamp`, `source`; the `data`
+  byte payload is dropped. Great for polling "any new chunks since N".
+- **stats only** — drops the chunks list entirely; agent narrows by
+  `since_index`, `sources`, or `max_chunks` on the next call.
+
+Reduce `mcpMaxAnswerChars` (e.g. to `50_000`) if you want the fallbacks to
+trigger more aggressively in agent loops. Raise it (or set to `0` to
+disable) if you have a custom client that handles large payloads natively.
 
 ## Troubleshooting
 

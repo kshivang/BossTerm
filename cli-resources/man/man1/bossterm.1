@@ -172,8 +172,11 @@ Launch in a project directory:
 Open a new tab in the running BossTerm and tail logs:
 .B bossterm run -- tail -f /var/log/system.log
 .TP
-Send Ctrl-L to the focused pane (newline + clear):
-.B bossterm send $'\\fL'
+Type "hello" into the focused pane (no newline — won't execute):
+.B bossterm send hello
+.TP
+Run \fIdate\fR in a horizontal split below the focused pane:
+.B bossterm run --split=h date
 .TP
 Re-attach Claude Code after the MCP port changed:
 .B bossterm attach claude

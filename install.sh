@@ -28,7 +28,21 @@ HOMEBREW_TAP="kshivang/bossterm"
 # install_cli / install_manpage download from here instead of embedding
 # inline copies — keeps the canonical script (`cli-resources/bossterm`) the
 # single source of truth.
-RAW_BASE_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/master/cli-resources"
+#
+# `raw_base_url <version>` returns the per-version base URL. When `<version>`
+# is empty or "latest", falls back to master with a warning — the user has
+# opted out of version-pinning so master-tip is the best we can do.
+raw_base_url() {
+    local v="$1"
+    if [ -z "$v" ] || [ "$v" = "latest" ]; then
+        warn "No version pin for CLI resources; falling back to master." >&2
+        echo "https://raw.githubusercontent.com/${GITHUB_REPO}/master/cli-resources"
+    else
+        # Tag names in this repo are unprefixed ("1.1.95"). If a caller passes
+        # the leading "v" we strip it; if they pass without, we still resolve.
+        echo "https://raw.githubusercontent.com/${GITHUB_REPO}/${v#v}/cli-resources"
+    fi
+}
 
 # Installation paths
 MACOS_APP_PATH="/Applications/BossTerm.app"
@@ -622,6 +636,7 @@ install_linux() {
 
 install_cli() {
     local os="$1"
+    local version="${2:-}"
     local cli_path
     local helper_path
 
@@ -641,8 +656,12 @@ install_cli() {
     # Download the canonical scripts from raw.githubusercontent so install.sh
     # doesn't carry an inline copy that drifts from cli-resources/bossterm.
     # Same trust model as install.sh itself (which is curl-piped from there).
-    local cli_url="${RAW_BASE_URL}/bossterm"
-    local helper_url="${RAW_BASE_URL}/bossterm-mcp.py"
+    # The URL is version-pinned so a `--version 1.0.93` install gets the
+    # CLI that matches the same app revision, not master-tip.
+    local raw_base
+    raw_base="$(raw_base_url "$version")"
+    local cli_url="${raw_base}/bossterm"
+    local helper_url="${raw_base}/bossterm-mcp.py"
 
     install_file_with_perms "$cli_url" "$cli_path" 755 || {
         warn "Failed to download CLI from $cli_url"
@@ -687,6 +706,7 @@ install_file_with_perms() {
 }
 
 install_manpage() {
+    local version="${1:-}"
     local man_path
     if has_sudo; then
         man_path="$MAN_SYSTEM_PATH"
@@ -696,7 +716,9 @@ install_manpage() {
     mkdir -p "$(dirname "$man_path")" 2>/dev/null || sudo mkdir -p "$(dirname "$man_path")"
 
     info "Installing man page..."
-    local man_url="${RAW_BASE_URL}/man/man1/bossterm.1"
+    local raw_base
+    raw_base="$(raw_base_url "$version")"
+    local man_url="${raw_base}/man/man1/bossterm.1"
     if install_file_with_perms "$man_url" "$man_path" 644; then
         success "Man page installed to $man_path"
         info "  Try: man bossterm"
@@ -1015,13 +1037,13 @@ main() {
     # Install CLI launcher
     if [ "$install_cli_flag" = true ]; then
         echo ""
-        install_cli "$os"
+        install_cli "$os" "$version"
     fi
 
     # Install man page
     if [ "$install_manpage_flag" = true ]; then
         echo ""
-        install_manpage
+        install_manpage "$version"
     fi
 
     # Success message

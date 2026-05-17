@@ -104,12 +104,13 @@ class SseReader(threading.Thread):
             self.queue.put(("__error__", self.error))
 
     def close(self) -> None:
+        # Only flip the stop flag. Closing the urllib HTTPResponse from a
+        # different thread isn't documented as safe — on CPython it tends
+        # to work because of the GIL, but the standard library makes no
+        # promise. The reader thread is daemonic and will be torn down at
+        # process exit; for one-shot CLI invocations the cleanup latency
+        # is bounded by the bash script's own exit.
         self._stop.set()
-        try:
-            if self._resp is not None:
-                self._resp.close()
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------

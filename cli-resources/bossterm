@@ -229,16 +229,23 @@ mcp_configured_port() {
     echo "${p:-7676}"
 }
 
-# Probe whether port responds as an MCP server. Returns 0/1.
+# Probe whether port responds as a BossTerm MCP server (not just any HTTP
+# server). Returns 0/1. We check `/sse` with `Accept: text/event-stream` and
+# require both 200 status AND `text/event-stream` Content-Type — Ktor's MCP
+# SDK 0.8.3 answers GET /sse exactly that way; a wayward web service on the
+# same port almost never will.
+#
+# Worst-case 2s per port × 10 ports in the fallback walk = ~20s for an
+# unreachable BossTerm. Acceptable for a "where is it?" probe.
 mcp_probe_port() {
     local port="$1"
-    # The SSE GET should return a stream; we just want to know "is there
-    # something listening that accepts our Host header." A 2xx-or-anything
-    # response other than connection-refused is good enough.
-    curl --connect-timeout 1 --max-time 2 -sS -o /dev/null \
+    local meta
+    meta="$(curl --connect-timeout 1 --max-time 2 -sS -o /dev/null \
         -H "Host: 127.0.0.1" \
-        "http://127.0.0.1:$port/" \
-        >/dev/null 2>&1
+        -H "Accept: text/event-stream" \
+        -w "%{http_code} %{content_type}" \
+        "http://127.0.0.1:$port/sse" 2>/dev/null)" || return 1
+    [[ "$meta" == 200\ text/event-stream* ]]
 }
 
 # Resolve the actual running port (configured first, then the +0..+9
@@ -260,19 +267,37 @@ mcp_running_port() {
 
 # Run an MCP tool call. Args: tool_name, json_args (may be "{}"). Prints raw
 # tool result (the `text` field of the first TextContent) to stdout.
+#
+# Probes the running port itself. Subcommands that need to call multiple
+# tools should resolve the port once via `mcp_resolve_port_or_die` and then
+# use `mcp_call_with_port` to avoid the ~2s × 10-port walk on every call.
 mcp_call() {
-    local tool="$1"
-    local args_json="${2:-{}}"
-    require_python3
-    if [ ! -f "$MCP_HELPER" ]; then
-        echo "Error: MCP helper not found at $MCP_HELPER" >&2
-        exit 1
-    fi
+    local port; port="$(mcp_resolve_port_or_die)"
+    mcp_call_with_port "$port" "$1" "${2:-{}}"
+}
+
+# Resolve the running port; emit a clean error + exit 2 if not reachable.
+# Stdout is the port number on success. Use as: `port="$(mcp_resolve_port_or_die)"`.
+mcp_resolve_port_or_die() {
     local port
     if ! port="$(mcp_running_port)"; then
         echo "Error: BossTerm MCP server is not reachable. Is the app running with MCP enabled?" >&2
         echo "  Hint: 'bossterm mcp status' to check, 'bossterm mcp on' to enable." >&2
         exit 2
+    fi
+    echo "$port"
+}
+
+# Call a tool against a known port. Bypasses the port-probe walk; pair with
+# mcp_resolve_port_or_die when the caller will make multiple tool calls.
+mcp_call_with_port() {
+    local port="$1"
+    local tool="$2"
+    local args_json="${3:-{}}"
+    require_python3
+    if [ ! -f "$MCP_HELPER" ]; then
+        echo "Error: MCP helper not found at $MCP_HELPER" >&2
+        exit 1
     fi
     python3 "$MCP_HELPER" call "$port" "$tool" "$args_json"
 }
@@ -379,9 +404,11 @@ cmd_send() {
     fi
     require_python3
     local text="$*"
+    # Resolve the port once and reuse — `mcp_call_with_port` skips the walk.
+    local port; port="$(mcp_resolve_port_or_die)"
     # The active tab is the implicit target. Use list_tabs to find its id.
     local tab_id
-    tab_id="$(python3 "$MCP_HELPER" call "$(mcp_running_port)" list_tabs '{}' \
+    tab_id="$(mcp_call_with_port "$port" list_tabs '{}' \
               | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("activeTabId",""))')"
     if [ -z "$tab_id" ]; then
         echo "Error: no active tab to send to." >&2
@@ -389,7 +416,7 @@ cmd_send() {
     fi
     local args
     args="$(python3 -c 'import json,sys; print(json.dumps({"tab_id":sys.argv[1],"text":sys.argv[2]}))' "$tab_id" "$text")"
-    mcp_call send_input "$args" >/dev/null
+    mcp_call_with_port "$port" send_input "$args" >/dev/null
 }
 
 cmd_attach() {
@@ -482,8 +509,9 @@ cmd_logs() {
         esac
     done
     require_python3
+    local port; port="$(mcp_resolve_port_or_die)"
     if [ -z "$tab_id" ]; then
-        tab_id="$(python3 "$MCP_HELPER" call "$(mcp_running_port)" list_tabs '{}' \
+        tab_id="$(mcp_call_with_port "$port" list_tabs '{}' \
                   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("activeTabId",""))')"
     fi
     if [ -z "$tab_id" ]; then
@@ -492,7 +520,7 @@ cmd_logs() {
     fi
     local args
     args="$(python3 -c 'import json,sys; print(json.dumps({"tab_id":sys.argv[1],"lines":int(sys.argv[2])}))' "$tab_id" "$lines")"
-    mcp_call read_scrollback "$args" | python3 -c '
+    mcp_call_with_port "$port" read_scrollback "$args" | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
 for line in data.get("lines", []):

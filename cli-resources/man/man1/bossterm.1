@@ -90,6 +90,18 @@ Close a pane. Equivalent to
 in a tab closes the tab (and the window, if it was the last). Requires
 MCP.
 .TP
+.B "panes [--tab <id>] [--json]"
+List the panes inside a tab. Default: the active tab.
+.B \-\-tab
+overrides;
+.B \-\-json
+prints the raw MCP \fIlist_panes\fR response instead of a human-readable
+table. The PANE ID column is the value to pass back as
+.B \-\-pane <id>
+to
+.BR send ", " signal ", or " close .
+Requires MCP.
+.TP
 .B "logs [--tab <id>] [--lines <N>]"
 Dump scrollback lines from a tab (default: the active tab; default N: 200).
 Requires MCP.

@@ -69,7 +69,20 @@ VERSION="$(resolve_version)"
 # Co-located Python helper. `install.sh` and `CLIInstaller.kt` drop both
 # files in the same directory (`/usr/local/bin` or `~/.local/bin`) so this
 # resolves cleanly via the script's own location.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+#
+# Resolve symlinks so a wrapper symlink (the repo-root `./bossterm` →
+# `cli-resources/bossterm`, or `/usr/local/bin/bossterm` if a packager set
+# it up that way) doesn't make us look for the helper alongside the link
+# instead of alongside the real file. Plain `dirname "${BASH_SOURCE[0]}"`
+# would; this loop walks the chain. Portable; no `readlink -f` (macOS
+# lacks it).
+_BT_SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [ -L "$_BT_SCRIPT_PATH" ]; do
+    _BT_LINK_DIR="$(cd "$(dirname "$_BT_SCRIPT_PATH")" && pwd)"
+    _BT_SCRIPT_PATH="$(readlink "$_BT_SCRIPT_PATH")"
+    [[ "$_BT_SCRIPT_PATH" != /* ]] && _BT_SCRIPT_PATH="$_BT_LINK_DIR/$_BT_SCRIPT_PATH"
+done
+SCRIPT_DIR="$(cd "$(dirname "$_BT_SCRIPT_PATH")" && pwd)"
 MCP_HELPER="$SCRIPT_DIR/bossterm-mcp.py"
 
 SETTINGS_PATH="$HOME/.bossterm/settings.json"
@@ -235,23 +248,28 @@ mcp_configured_port() {
     echo "${p:-7676}"
 }
 
-# Probe whether port responds as a BossTerm MCP server (not just any HTTP
-# server). Returns 0/1. We check `/sse` with `Accept: text/event-stream` and
-# require both 200 status AND `text/event-stream` Content-Type — Ktor's MCP
-# SDK 0.8.3 answers GET /sse exactly that way; a wayward web service on the
-# same port almost never will.
+# Probe whether port responds as a BossTerm MCP server. Returns 0/1.
 #
-# Loopback is fast, so the connect + max time are tight. Each probe caps at
-# ~0.5s, which keeps `bossterm mcp status` snappy even in the fallback walk.
+# Two earlier attempts didn't work:
+#   - `curl GET /` 2xx-any-response was too loose (any HTTP server matched).
+#   - `curl GET /sse` was wrong (the Kotlin MCP SDK 0.8.3 mounts the SSE
+#     endpoint at root, not /sse) and also `curl … -o /dev/null` on an
+#     infinite SSE stream doesn't emit the -w format before the timeout.
+#
+# Now: delegate to the bundled Python helper's `ping` subcommand, which
+# does a real MCP handshake (open SSE → wait for `endpoint` event →
+# initialize). Exit 0 ⇔ MCP is up. Each probe is ~150ms on loopback so
+# the worst-case 10-port walk caps around ~1.5s.
 mcp_probe_port() {
     local port="$1"
-    local meta
-    meta="$(curl --connect-timeout 1 --max-time 1 -sS -o /dev/null \
-        -H "Host: 127.0.0.1" \
-        -H "Accept: text/event-stream" \
-        -w "%{http_code} %{content_type}" \
-        "http://127.0.0.1:$port/sse" 2>/dev/null)" || return 1
-    [[ "$meta" == 200\ text/event-stream* ]]
+    # If Python or the helper is missing, fall back to a connect-only
+    # probe — better than no probe at all. Won't distinguish BossTerm MCP
+    # from a random HTTP server, but the next real call will fail clearly.
+    if ! command -v python3 >/dev/null 2>&1 || [ ! -f "$MCP_HELPER" ]; then
+        nc -z -G 1 127.0.0.1 "$port" >/dev/null 2>&1
+        return $?
+    fi
+    python3 "$MCP_HELPER" ping "$port" >/dev/null 2>&1
 }
 
 # Resolve the actual running port (configured first, then the +0..+9

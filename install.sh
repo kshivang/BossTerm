@@ -708,13 +708,17 @@ install_file_with_perms() {
 # relative to cli-resources/ (so "bossterm" or "man/man1/bossterm.1").
 install_file_versioned() {
     local version="$1" path_in_repo="$2" dest="$3" mode="$4"
-    local primary="$(raw_base_url "$version")/${path_in_repo}"
+    # SC2155: declare-then-assign so `raw_base_url`'s exit code isn't masked
+    # by the `local` builtin's own exit code (which is always 0).
+    local primary
+    primary="$(raw_base_url "$version")/${path_in_repo}"
     if install_file_with_perms "$primary" "$dest" "$mode"; then
         return 0
     fi
     if [ -n "$version" ] && [ "$version" != "latest" ]; then
         warn "Couldn't fetch ${path_in_repo} from tag ${version}; falling back to master"
-        local fallback="$(raw_base_url "")/${path_in_repo}"
+        local fallback
+        fallback="$(raw_base_url "")/${path_in_repo}"
         install_file_with_perms "$fallback" "$dest" "$mode"
     else
         return 1

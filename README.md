@@ -569,6 +569,13 @@ bossterm --help                       # Full usage
 
 Run `man bossterm` after installation for the complete reference.
 
+> **Note on local dev usage:** the repo-root `./bossterm` is a symlink into
+> `cli-resources/bossterm`, so `./bossterm --version` works from a clean
+> `git clone`. GitHub's "Download ZIP" link does **not** preserve symlinks
+> (the file materializes as plain text containing the link target). If
+> you've downloaded a zip rather than cloned, run
+> `cli-resources/bossterm` directly, or `git clone` the repo.
+
 ## Documentation
 
 - [Embedding Guide](docs/embedding.md) - Embed a single terminal with custom context menus

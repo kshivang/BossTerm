@@ -707,13 +707,18 @@ install_file_with_perms() {
 
 install_manpage() {
     local version="${1:-}"
+    local os="${2:-}"
     local man_path
+    # Same branch shape as install_cli: explicit sudo path for system,
+    # plain mkdir for user. The previous `mkdir … 2>/dev/null || sudo mkdir`
+    # dance silently masked real errors in the unprivileged path.
     if has_sudo; then
         man_path="$MAN_SYSTEM_PATH"
+        sudo mkdir -p "$(dirname "$man_path")"
     else
         man_path="$MAN_USER_PATH"
+        mkdir -p "$(dirname "$man_path")"
     fi
-    mkdir -p "$(dirname "$man_path")" 2>/dev/null || sudo mkdir -p "$(dirname "$man_path")"
 
     info "Installing man page..."
     local raw_base
@@ -721,6 +726,16 @@ install_manpage() {
     local man_url="${raw_base}/man/man1/bossterm.1"
     if install_file_with_perms "$man_url" "$man_path" 644; then
         success "Man page installed to $man_path"
+        # Best-effort man-db refresh on Linux so `man bossterm` finds the
+        # new entry without the user having to run mandb manually. macOS
+        # doesn't use man-db; the man tool re-scans on each invocation.
+        if [ "$os" = "linux" ] && command -v mandb >/dev/null 2>&1; then
+            if has_sudo; then
+                sudo mandb -q >/dev/null 2>&1 || true
+            else
+                mandb -q -u >/dev/null 2>&1 || true
+            fi
+        fi
         info "  Try: man bossterm"
     else
         warn "Failed to download man page from $man_url"
@@ -1043,7 +1058,7 @@ main() {
     # Install man page
     if [ "$install_manpage_flag" = true ]; then
         echo ""
-        install_manpage "$version"
+        install_manpage "$version" "$os"
     fi
 
     # Success message

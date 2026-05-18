@@ -1,0 +1,677 @@
+#!/usr/bin/env bash
+#
+# BossTerm CLI launcher + command companion
+#
+# Source of truth lives at `cli-resources/bossterm`. The `processCliResources`
+# Gradle task in `bossterm-app/build.gradle.kts` stages this file under
+# `build/cli-resources/` with `@@BOSSTERM_VERSION@@` substituted to
+# `project.version`, and `appResourcesRootDir` bundles that into the .app /
+# .deb / .rpm. `install.sh` and `CLIInstaller.kt` both pull this same file.
+#
+# Subcommands that talk to a running BossTerm (`new-tab`, `run`, `send`,
+# `logs`, `mcp tools`) require the in-process MCP server to be enabled
+# (Settings → BossTerm MCP → Enable, or `bossterm mcp on`). They route
+# through the bundled Python helper `bossterm-mcp.py`. The other commands
+# (`config`, `mcp status/on/off/endpoint`, `attach`) work without a running
+# instance — they read/write `~/.bossterm/settings.json` or shell out to
+# the relevant AI CLI.
+#
+# See `man bossterm` (or `cli-resources/man/man1/bossterm.1`) for the full
+# reference.
+#
+
+# Build-time substitution. If the placeholder is still present we're running
+# from a repo checkout — fall back to the VERSION file at the repo root.
+VERSION_STRING="@@BOSSTERM_VERSION@@"
+
+# ---------------------------------------------------------------------------
+# Platform detect
+# ---------------------------------------------------------------------------
+
+case "$(uname -s)" in
+    Darwin) PLATFORM="macos" ;;
+    Linux)  PLATFORM="linux" ;;
+    *)      PLATFORM="unknown" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Version resolution
+# ---------------------------------------------------------------------------
+
+resolve_version() {
+    # The substitution token below uses adjacent-string concat so the build
+    # filter doesn't replace the comparison literal too (which would make
+    # this conditional always-false in packaged builds).
+    if [[ "$VERSION_STRING" != "@@"* ]]; then
+        echo "$VERSION_STRING"
+        return
+    fi
+    # Dev mode: walk up from the script's location looking for VERSION.
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local dir="$script_dir"
+    while [ "$dir" != "/" ]; do
+        if [ -f "$dir/VERSION" ]; then
+            echo "dev ($(cat "$dir/VERSION"))"
+            return
+        fi
+        dir="$(dirname "$dir")"
+    done
+    echo "dev"
+}
+
+VERSION="$(resolve_version)"
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+# Co-located Python helper. `install.sh` and `CLIInstaller.kt` drop both
+# files in the same directory (`/usr/local/bin` or `~/.local/bin`) so this
+# resolves cleanly via the script's own location.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MCP_HELPER="$SCRIPT_DIR/bossterm-mcp.py"
+
+SETTINGS_PATH="$HOME/.bossterm/settings.json"
+
+# ---------------------------------------------------------------------------
+# App discovery (per platform)
+# ---------------------------------------------------------------------------
+
+APP_NAME="BossTerm"
+
+discover_app() {
+    case "$PLATFORM" in
+        macos)
+            if [ -d "/Applications/BossTerm.app" ]; then
+                echo "/Applications/BossTerm.app"
+                return 0
+            fi
+            return 1
+            ;;
+        linux)
+            local locations=(
+                "/opt/bossterm/bin/BossTerm"
+                "/usr/local/bin/BossTerm"
+                "/usr/bin/BossTerm"
+                "$HOME/.local/share/bossterm/bin/BossTerm"
+                "/snap/bossterm/current/bin/bossterm"
+                "$HOME/Applications/BossTerm*.AppImage"
+                "$HOME/.local/bin/BossTerm*.AppImage"
+            )
+            for loc in "${locations[@]}"; do
+                for expanded in $loc; do
+                    if [ -x "$expanded" ]; then
+                        echo "$expanded"
+                        return 0
+                    fi
+                done
+            done
+            [ -n "$SNAP" ] && echo "$SNAP/bin/bossterm" && return 0
+            return 1
+            ;;
+    esac
+    return 1
+}
+
+check_app() {
+    if ! discover_app >/dev/null; then
+        echo "Error: BossTerm not found" >&2
+        case "$PLATFORM" in
+            macos)
+                echo "  Install: drop BossTerm.app into /Applications, or run install.sh from the repo." >&2
+                ;;
+            linux)
+                echo "  Install via your package manager (snap/apt/dnf) or AppImage. See https://github.com/kshivang/BossTerm." >&2
+                ;;
+        esac
+        exit 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Launch the app
+# ---------------------------------------------------------------------------
+
+launch_app() {
+    case "$PLATFORM" in
+        macos)
+            open -a "$APP_NAME" "$@"
+            ;;
+        linux)
+            local app
+            app="$(discover_app)"
+            nohup "$app" "$@" >/dev/null 2>&1 &
+            disown
+            ;;
+        *)
+            echo "Error: unsupported platform" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# Expand `~`, `.`, `..`, and relative paths.
+expand_path() {
+    local path="$1"
+    path="${path/#\~/$HOME}"
+    if [[ ! "$path" =~ ^/ ]]; then
+        path="$(cd "$path" 2>/dev/null && pwd || echo "$(pwd)/$path")"
+    fi
+    echo "$path"
+}
+
+# ---------------------------------------------------------------------------
+# Settings.json read/write (no jq dependency; uses Python or sed fallbacks)
+# ---------------------------------------------------------------------------
+
+# Read a top-level string/boolean/number value. Prints empty on miss.
+settings_get() {
+    local key="$1"
+    [ -f "$SETTINGS_PATH" ] || return 0
+    python3 - "$SETTINGS_PATH" "$key" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    v = data.get(sys.argv[2])
+    if v is None:
+        sys.exit(0)
+    if isinstance(v, bool):
+        print("true" if v else "false")
+    else:
+        print(v)
+except Exception:
+    sys.exit(0)
+PY
+}
+
+# Set a top-level value. The value is encoded as JSON literal (`true`,
+# `false`, `7676`, or a JSON string). Creates the file if missing.
+# Exits non-zero (and complains loudly) on any write failure so callers
+# don't report success after silent failure.
+settings_set() {
+    local key="$1"
+    local raw_value="$2"
+    require_python3
+    mkdir -p "$(dirname "$SETTINGS_PATH")"
+    if ! python3 - "$SETTINGS_PATH" "$key" "$raw_value" <<'PY'
+import json, os, sys
+path, key, raw = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    data = json.load(open(path)) if os.path.exists(path) else {}
+except Exception:
+    data = {}
+try:
+    value = json.loads(raw)
+except Exception:
+    value = raw
+data[key] = value
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+    then
+        echo "Error: failed to write $SETTINGS_PATH" >&2
+        return 1
+    fi
+}
+
+require_python3() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "Error: python3 is required for this subcommand but was not found in PATH." >&2
+        exit 127
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# MCP plumbing
+# ---------------------------------------------------------------------------
+
+# Print the configured port (settings.mcpPort, default 7676).
+mcp_configured_port() {
+    local p
+    p="$(settings_get mcpPort)"
+    echo "${p:-7676}"
+}
+
+# Probe whether port responds as a BossTerm MCP server (not just any HTTP
+# server). Returns 0/1. We check `/sse` with `Accept: text/event-stream` and
+# require both 200 status AND `text/event-stream` Content-Type — Ktor's MCP
+# SDK 0.8.3 answers GET /sse exactly that way; a wayward web service on the
+# same port almost never will.
+#
+# Loopback is fast, so the connect + max time are tight. Each probe caps at
+# ~0.5s, which keeps `bossterm mcp status` snappy even in the fallback walk.
+mcp_probe_port() {
+    local port="$1"
+    local meta
+    meta="$(curl --connect-timeout 1 --max-time 1 -sS -o /dev/null \
+        -H "Host: 127.0.0.1" \
+        -H "Accept: text/event-stream" \
+        -w "%{http_code} %{content_type}" \
+        "http://127.0.0.1:$port/sse" 2>/dev/null)" || return 1
+    [[ "$meta" == 200\ text/event-stream* ]]
+}
+
+# Resolve the actual running port (configured first, then the +0..+9
+# fallback range introduced by PR #255).
+mcp_running_port() {
+    local configured base
+    configured="$(mcp_configured_port)"
+    base="$configured"
+    local i
+    for i in 0 1 2 3 4 5 6 7 8 9; do
+        local p=$((base + i))
+        if mcp_probe_port "$p"; then
+            echo "$p"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Run an MCP tool call. Args: tool_name, json_args (may be "{}"). Prints raw
+# tool result (the `text` field of the first TextContent) to stdout.
+#
+# Probes the running port itself. Subcommands that need to call multiple
+# tools should resolve the port once via `mcp_resolve_port_or_die` and then
+# use `mcp_call_with_port` to avoid the ~2s × 10-port walk on every call.
+mcp_call() {
+    local port; port="$(mcp_resolve_port_or_die)" || exit $?
+    local args="${2-}"
+    [ -z "$args" ] && args='{}'
+    mcp_call_with_port "$port" "$1" "$args"
+}
+
+# Resolve the running port; emit a clean error and return 2 if not reachable.
+# Stdout is the port number on success. Callers MUST propagate failure:
+#
+#   local port; port="$(mcp_resolve_port_or_die)" || exit $?
+#
+# (A bare `exit 2` inside this function only exits the command-substitution
+# subshell, so the parent assignment would silently become `port=""` and the
+# downstream Python call would crash with a confusing argparse error.)
+mcp_resolve_port_or_die() {
+    local port
+    if ! port="$(mcp_running_port)"; then
+        echo "Error: BossTerm MCP server is not reachable. Is the app running with MCP enabled?" >&2
+        echo "  Hint: 'bossterm mcp status' to check, 'bossterm mcp on' to enable." >&2
+        return 2
+    fi
+    echo "$port"
+}
+
+# Call a tool against a known port. Bypasses the port-probe walk; pair with
+# mcp_resolve_port_or_die when the caller will make multiple tool calls.
+mcp_call_with_port() {
+    local port="$1"
+    local tool="$2"
+    # Use an empty JSON object (`{}`) when no args are passed. Spelled out
+    # rather than `${3:-{}}` because the brace-default form trips
+    # shellcheck's SC1083/SC1009 and a few non-bash shells choke on the
+    # nested braces.
+    local args_json="${3-}"
+    [ -z "$args_json" ] && args_json='{}'
+    require_python3
+    if [ ! -f "$MCP_HELPER" ]; then
+        echo "Error: MCP helper not found at $MCP_HELPER" >&2
+        exit 1
+    fi
+    python3 "$MCP_HELPER" call "$port" "$tool" "$args_json"
+}
+
+# ---------------------------------------------------------------------------
+# AI CLI attach (mirrors compose-ui/.../mcp/McpCliAttacher.kt:86-180)
+# ---------------------------------------------------------------------------
+#
+# Keep templates in sync with the Kotlin source. The bash dispatch is
+# data-driven the same way: substitute {NAME} and {URL}.
+
+cli_attach() {
+    local target="$1"
+    local server_name="bossterm"
+    local port
+    if ! port="$(mcp_running_port)"; then
+        echo "Error: BossTerm MCP server is not reachable. Start the app and enable MCP first." >&2
+        exit 2
+    fi
+    local url="http://127.0.0.1:$port/"
+    case "$target" in
+        claude|claude-code)
+            command -v claude >/dev/null 2>&1 || { echo "Error: 'claude' not on PATH." >&2; exit 127; }
+            claude mcp remove "$server_name" >/dev/null 2>&1 || true
+            claude mcp add --scope user --transport sse "$server_name" "$url"
+            ;;
+        codex)
+            command -v codex >/dev/null 2>&1 || { echo "Error: 'codex' not on PATH." >&2; exit 127; }
+            codex mcp remove "$server_name" >/dev/null 2>&1 || true
+            codex mcp add "$server_name" --url "$url"
+            ;;
+        gemini)
+            command -v gemini >/dev/null 2>&1 || { echo "Error: 'gemini' not on PATH." >&2; exit 127; }
+            gemini mcp remove "$server_name" >/dev/null 2>&1 || true
+            gemini mcp add "$server_name" "$url" --transport sse --scope user
+            ;;
+        opencode)
+            command -v node >/dev/null 2>&1 || { echo "Error: 'node' required for OpenCode attach." >&2; exit 127; }
+            local config="$HOME/.config/opencode/opencode.json"
+            mkdir -p "$(dirname "$config")"
+            python3 - "$config" "$server_name" "$url" <<'PY'
+import json, os, sys
+path, name, url = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    data = json.load(open(path)) if os.path.exists(path) else {}
+except Exception:
+    data = {}
+data.setdefault("mcp", {})[name] = {"type": "remote", "url": url, "enabled": True}
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+            echo "Updated $config (OpenCode has no scriptable 'mcp add'; wrote config directly)."
+            ;;
+        *)
+            echo "Error: unknown CLI '$target'. Expected: claude, codex, gemini, opencode." >&2
+            exit 1
+            ;;
+    esac
+    echo "✓ Attached $target to $url"
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand implementations
+# ---------------------------------------------------------------------------
+
+cmd_new() {
+    check_app
+    case "$PLATFORM" in
+        macos)
+            # `open -n` asks LaunchServices for a fresh app instance, which
+            # macOS turns into a new BossTerm window.
+            launch_app -n
+            ;;
+        linux)
+            # TODO: route through `--new-window` once the app parses CLI
+            # args (see bossterm-app/src/desktopMain/.../Main.kt:main()).
+            # Today the binary ignores any args, so we just spawn a second
+            # JVM — that's "a new window" only because Linux doesn't
+            # enforce single-instance by default. Documented in man bossterm.
+            launch_app
+            ;;
+    esac
+}
+
+cmd_new_tab() {
+    mcp_call run_in_panel '{"panel":"new_tab","script":""}' >/dev/null
+    echo "Opened new tab."
+}
+
+cmd_run() {
+    local panel="new_tab"
+    if [ "$1" = "--split=h" ] || [ "$1" = "--split=horizontal" ]; then
+        panel="horizontal_split"; shift
+    elif [ "$1" = "--split=v" ] || [ "$1" = "--split=vertical" ]; then
+        panel="vertical_split"; shift
+    fi
+    if [ $# -eq 0 ]; then
+        echo "Usage: bossterm run [--split=h|v] <command...>" >&2
+        exit 1
+    fi
+    local script="$*"
+    # Auto-append newline so the shell actually executes the line.
+    require_python3
+    local args
+    args="$(python3 -c 'import json,sys; print(json.dumps({"panel":sys.argv[1],"script":sys.argv[2]+"\n"}))' "$panel" "$script")"
+    mcp_call run_in_panel "$args" >/dev/null
+    echo "Ran: $script"
+}
+
+cmd_send() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: bossterm send <text...>" >&2
+        exit 1
+    fi
+    require_python3
+    local text="$*"
+    # Resolve the port once and reuse — `mcp_call_with_port` skips the walk.
+    # `|| exit $?` is load-bearing: `return 2` inside the function only exits
+    # the command-substitution subshell, so without this the parent would
+    # continue with port="" and confuse the Python helper downstream.
+    local port; port="$(mcp_resolve_port_or_die)" || exit $?
+    # The active tab is the implicit target. Use list_tabs to find its id.
+    local tab_id
+    tab_id="$(mcp_call_with_port "$port" list_tabs '{}' \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("activeTabId",""))')"
+    if [ -z "$tab_id" ]; then
+        echo "Error: no active tab to send to." >&2
+        exit 2
+    fi
+    local args
+    args="$(python3 -c 'import json,sys; print(json.dumps({"tab_id":sys.argv[1],"text":sys.argv[2]}))' "$tab_id" "$text")"
+    mcp_call_with_port "$port" send_input "$args" >/dev/null
+}
+
+cmd_attach() {
+    local target="${1:-}"
+    if [ -z "$target" ]; then
+        echo "Usage: bossterm attach <claude|codex|gemini|opencode>" >&2
+        exit 1
+    fi
+    cli_attach "$target"
+}
+
+cmd_mcp() {
+    local sub="${1:-status}"
+    case "$sub" in
+        status)
+            local enabled port running endpoint
+            enabled="$(settings_get mcpEnabled)"
+            port="$(mcp_configured_port)"
+            if running="$(mcp_running_port)"; then
+                endpoint="http://127.0.0.1:$running/"
+                if [ "$running" = "$port" ]; then
+                    echo "MCP server: running on configured port"
+                else
+                    echo "MCP server: running on fallback port (configured $port, bound $running)"
+                fi
+            else
+                endpoint=""
+                echo "MCP server: not running"
+            fi
+            echo "  configured port: $port"
+            echo "  enabled setting: ${enabled:-false}"
+            if [ -n "$endpoint" ]; then
+                echo "  endpoint:        $endpoint"
+            fi
+            return 0
+            ;;
+        on)
+            settings_set mcpEnabled true || exit 1
+            echo "Set mcpEnabled=true in $SETTINGS_PATH"
+            # Best-effort poll: the running app's settings watcher picks up
+            # the change asynchronously. Wait up to ~2s for the SSE endpoint
+            # to actually answer before returning, so chained commands like
+            # `bossterm mcp on && bossterm run …` don't race the bind.
+            local i
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+                if mcp_running_port >/dev/null 2>&1; then
+                    echo "  (server is up and listening)"
+                    return 0
+                fi
+                sleep 0.2
+            done
+            echo "(Setting persisted, but the server didn't come up in ~2s. " \
+                 "If BossTerm is running, give it a moment; otherwise start the app.)"
+            ;;
+        off)
+            settings_set mcpEnabled false || exit 1
+            echo "Set mcpEnabled=false in $SETTINGS_PATH"
+            ;;
+        endpoint)
+            local running
+            if ! running="$(mcp_running_port)"; then
+                echo "Error: MCP server not running" >&2
+                exit 2
+            fi
+            echo "http://127.0.0.1:$running/"
+            ;;
+        tools)
+            mcp_call manage_tools '{"operation":"list"}'
+            ;;
+        *)
+            echo "Usage: bossterm mcp <status|on|off|endpoint|tools>" >&2
+            exit 1
+            ;;
+    esac
+}
+
+cmd_config() {
+    case "${1:-}" in
+        ""|--path)
+            echo "$SETTINGS_PATH"
+            ;;
+        --edit)
+            local editor="${EDITOR:-${VISUAL:-vi}}"
+            mkdir -p "$(dirname "$SETTINGS_PATH")"
+            [ -f "$SETTINGS_PATH" ] || echo "{}" > "$SETTINGS_PATH"
+            "$editor" "$SETTINGS_PATH"
+            ;;
+        *)
+            echo "Usage: bossterm config [--path|--edit]" >&2
+            exit 1
+            ;;
+    esac
+}
+
+cmd_logs() {
+    local tab_id=""
+    local lines=200
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --tab)   tab_id="$2"; shift 2 ;;
+            --lines) lines="$2"; shift 2 ;;
+            *)       echo "Usage: bossterm logs [--tab <id>] [--lines <N>]" >&2; exit 1 ;;
+        esac
+    done
+    require_python3
+    local port; port="$(mcp_resolve_port_or_die)" || exit $?
+    if [ -z "$tab_id" ]; then
+        tab_id="$(mcp_call_with_port "$port" list_tabs '{}' \
+                  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("activeTabId",""))')"
+    fi
+    if [ -z "$tab_id" ]; then
+        echo "Error: no active tab; pass --tab <id>" >&2
+        exit 2
+    fi
+    local args
+    args="$(python3 -c 'import json,sys; print(json.dumps({"tab_id":sys.argv[1],"lines":int(sys.argv[2])}))' "$tab_id" "$lines")"
+    mcp_call_with_port "$port" read_scrollback "$args" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+for line in data.get("lines", []):
+    print(line)
+'
+}
+
+# ---------------------------------------------------------------------------
+# Help + version
+# ---------------------------------------------------------------------------
+
+show_help() {
+    cat <<EOF
+BossTerm — terminal emulator launcher + command companion
+Version: $VERSION
+
+USAGE
+  bossterm                          Launch the app
+  bossterm <path>                   Launch in <path> (file → its parent dir)
+  bossterm new                      Open a new BossTerm window
+  bossterm new-tab                  Open a new tab in a running BossTerm (MCP)
+  bossterm run [--split=h|v] <cmd>  Open a new tab/split and run <cmd>     (MCP)
+  bossterm send <text>              Send text to the focused pane          (MCP)
+  bossterm logs [--tab id] [--lines N]
+                                    Dump recent scrollback                 (MCP)
+
+  bossterm attach <claude|codex|gemini|opencode>
+                                    Re-register this BossTerm with an AI CLI
+
+  bossterm mcp status               Show MCP enabled/port/running state
+  bossterm mcp on | off             Toggle settings.mcpEnabled
+  bossterm mcp endpoint             Print the running URL
+  bossterm mcp tools                List the exposed MCP tools
+
+  bossterm config [--path|--edit]   settings.json path; --edit opens \$EDITOR
+
+  bossterm --version | -v           Print version
+  bossterm --help    | -h           Print this help
+
+NOTES
+  MCP-backed subcommands (new-tab, run, send, logs, mcp tools) require a
+  running BossTerm with MCP enabled. Run 'bossterm mcp on' once if needed.
+
+  See 'man bossterm' for the full reference and examples.
+
+EOF
+}
+
+show_version() {
+    echo "BossTerm CLI $VERSION"
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+main() {
+    # No args → launch GUI.
+    if [ $# -eq 0 ]; then
+        check_app
+        launch_app
+        exit 0
+    fi
+
+    case "$1" in
+        -h|--help|help)         show_help ;;
+        -v|--version|version)   show_version ;;
+        -n|--new-window|new)    shift; cmd_new "$@" ;;
+        new-tab)                shift; cmd_new_tab "$@" ;;
+        run)                    shift; cmd_run "$@" ;;
+        send)                   shift; cmd_send "$@" ;;
+        attach)                 shift; cmd_attach "$@" ;;
+        mcp)                    shift; cmd_mcp "$@" ;;
+        config)                 shift; cmd_config "$@" ;;
+        logs)                   shift; cmd_logs "$@" ;;
+        -d|--directory)
+            # Legacy: open the app pointed at a directory.
+            if [ -z "${2:-}" ]; then
+                echo "Error: directory required" >&2; exit 1
+            fi
+            dir_path="$(expand_path "$2")"
+            if [ ! -d "$dir_path" ]; then
+                echo "Error: directory not found: $dir_path" >&2; exit 1
+            fi
+            check_app
+            BOSSTERM_CWD="$dir_path" launch_app
+            ;;
+        -*)
+            echo "Error: unknown option: $1" >&2
+            echo "Run 'bossterm --help' for usage." >&2
+            exit 1
+            ;;
+        *)
+            # Smart path detection — positional path.
+            path="$(expand_path "$1")"
+            check_app
+            if [ -d "$path" ]; then
+                BOSSTERM_CWD="$path" launch_app
+            elif [ -f "$path" ]; then
+                BOSSTERM_CWD="$(dirname "$path")" launch_app
+            else
+                echo "Error: path not found: $1" >&2; exit 1
+            fi
+            ;;
+    esac
+}
+
+main "$@"

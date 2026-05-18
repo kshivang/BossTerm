@@ -91,8 +91,14 @@ compose.desktop {
             vendor = "risalabs.ai"
             copyright = "© 2025 risalabs.ai. All rights reserved."
 
-            // Include CLI script in app resources
-            appResourcesRootDir.set(rootProject.file("cli-resources"))
+            // Include CLI script + Python MCP helper + man page in app resources.
+            // We point at `build/cli-resources/` rather than the raw source dir
+            // so the `processCliResources` task can substitute `@@BOSSTERM_VERSION@@`
+            // in the canonical script with the real project version before bundling.
+            // The source files live under `cli-resources/` in the repo with symlinks
+            // (macos/bossterm → ../bossterm) so editors only have to maintain one
+            // canonical file; the task expands those symlinks while substituting.
+            appResourcesRootDir.set(layout.buildDirectory.dir("cli-resources").get().asFile)
 
             macOS {
                 iconFile.set(rootProject.file("BossTerm.icns"))
@@ -169,6 +175,39 @@ compose.desktop {
             }
         }
     }
+}
+
+// Stage the CLI resources under build/cli-resources with @@BOSSTERM_VERSION@@
+// substituted to project.version. The canonical script lives flat at
+// `cli-resources/bossterm` (the script detects darwin/linux at runtime, so
+// there's no per-platform variant). The Python helper and the troff man
+// page ride along untouched. Compose Desktop's `appResourcesRootDir` (set
+// above) bundles the staged dir into the .app / .deb / .rpm.
+val cliVersion = project.version.toString().removeSuffix("-SNAPSHOT")
+
+tasks.register<Sync>("processCliResources") {
+    description = "Stage cli-resources/ with @@BOSSTERM_VERSION@@ substituted to project.version"
+    group = "build"
+
+    inputs.property("cliVersion", cliVersion)
+    from(rootProject.file("cli-resources"))
+    into(layout.buildDirectory.dir("cli-resources"))
+    // Substitute the version placeholder in the canonical script only.
+    // bossterm-mcp.py and bossterm.1 don't carry the token; filtering them
+    // would be wasted work (and a line-based filter on the troff source
+    // happens to be safe but isn't free).
+    filesMatching("bossterm") {
+        filter { line: String ->
+            line.replace("@@BOSSTERM_VERSION@@", cliVersion)
+        }
+    }
+}
+
+// `appResourcesRootDir` points at the staged dir, so prepareAppResources (the
+// gradle.plugin.compose Desktop task that copies into the bundle) depends on
+// processCliResources.
+tasks.matching { it.name == "prepareAppResources" }.configureEach {
+    dependsOn("processCliResources")
 }
 
 // Sign PTY4J native binaries with hardened runtime for macOS notarization

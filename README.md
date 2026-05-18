@@ -542,11 +542,46 @@ every built-in tool's JSON schema, the `manage_tools` meta-tool, the
 - **Pty4J** - PTY support for local terminal sessions
 - **ICU4J** - Unicode/grapheme cluster support
 
+## Command-Line Interface
+
+`install.sh` installs a `bossterm` CLI launcher (and a Python helper +
+man page) under `/usr/local/bin/` or `~/.local/bin/`. With no arguments it
+launches the GUI; with a positional path it opens that directory.
+
+Beyond launching, the CLI has subcommands that talk to a running BossTerm
+through the in-process MCP server:
+
+```bash
+bossterm                              # Launch the GUI
+bossterm ~/Projects/foo               # Launch in a directory
+bossterm new                          # New window
+bossterm new-tab                      # New tab in the running BossTerm  (MCP)
+bossterm run npm test                 # Run a command in a new tab        (MCP)
+bossterm run --split=h tail -f log    # Open a horizontal split and tail  (MCP)
+bossterm send $'ls\n'                 # Send to the focused pane           (MCP)
+bossterm logs --lines 50              # Dump the last 50 scrollback lines  (MCP)
+bossterm attach claude                # Re-register with Claude Code
+bossterm mcp status                   # Inspect MCP enabled/port/state
+bossterm mcp on | off                 # Toggle settings.mcpEnabled
+bossterm config                       # Print path to ~/.bossterm/settings.json
+bossterm --help                       # Full usage
+```
+
+Run `man bossterm` after installation for the complete reference.
+
+> **Note on local dev usage:** the repo-root `./bossterm` is a symlink into
+> `cli-resources/bossterm`, so `./bossterm --version` works from a clean
+> `git clone`. GitHub's "Download ZIP" link does **not** preserve symlinks
+> (the file materializes as plain text containing the link target). If
+> you've downloaded a zip rather than cloned, run
+> `cli-resources/bossterm` directly, or `git clone` the repo.
+
 ## Documentation
 
 - [Embedding Guide](docs/embedding.md) - Embed a single terminal with custom context menus
 - [Tabbed Terminal Guide](docs/tabbed-terminal.md) - Full-featured tabbed terminal with splits
 - [BossTerm MCP Server](docs/mcp-server.md) - Expose tabs to MCP clients (Claude Code, Codex, Gemini, OpenCode)
+- [BossTerm CLI](docs/bossterm.1) - `man bossterm` reference (troff)
 - [Onboarding Wizard](docs/onboarding.md) - First-time setup wizard for users
 - [Troubleshooting Guide](docs/troubleshooting.md) - Common issues and solutions
 - [Release Notes](docs/release-notes/) - Detailed changelog for each version

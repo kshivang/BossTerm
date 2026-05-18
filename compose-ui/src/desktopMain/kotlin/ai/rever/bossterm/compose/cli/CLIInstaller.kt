@@ -74,10 +74,12 @@ object CLIInstaller {
     }
 
     /**
-     * Get current CLI version from embedded resource
+     * Current CLI version. Set by the build via `-Dbossterm.version=<ver>`
+     * (see `bossterm-app/build.gradle.kts`); falls back to "dev" when running
+     * from an IDE / unpackaged.
      */
     fun getCurrentVersion(): String {
-        return "1.0.0" // TODO: Read from build config
+        return System.getProperty("bossterm.version") ?: "dev"
     }
 
     /**
@@ -85,8 +87,12 @@ object CLIInstaller {
      */
     fun install(): InstallResult {
         return try {
-            // Extract CLI script from resources
+            // Extract CLI script from resources.
             val scriptContent = getCLIScript()
+                ?: return InstallResult.Error(
+                    "Couldn't find the canonical bossterm script in the app bundle. " +
+                            "Run install.sh from the repo instead, or reinstall BossTerm."
+                )
 
             // Windows: Install to AppData (no admin needed)
             if (isWindows) {
@@ -101,11 +107,42 @@ object CLIInstaller {
 
             // Try to write directly (might work if user has permissions)
             val targetFile = File(getInstallPath())
+            val mcpHelperContent = getMcpHelperScript()  // may be null on Windows-only setups
+            val manPageContent = getManPageContent()     // may be null on Windows
             try {
                 FileOutputStream(targetFile).use { out ->
                     out.write(scriptContent.toByteArray())
                 }
                 targetFile.setExecutable(true, false)
+                // Best-effort install of the MCP helper next to the script
+                // so `bossterm run` / `send` / `logs` work. The bash script
+                // discovers the helper via $SCRIPT_DIR/bossterm-mcp.py.
+                if (mcpHelperContent != null) {
+                    try {
+                        val helper = File(installDir, "bossterm-mcp.py")
+                        FileOutputStream(helper).use { out ->
+                            out.write(mcpHelperContent.toByteArray())
+                        }
+                        helper.setExecutable(true, false)
+                    } catch (_: Exception) {
+                        // Non-fatal: MCP-backed subcommands won't work
+                        // until the user installs it themselves, but the
+                        // launcher itself is in place.
+                    }
+                }
+                // Best-effort install of the man page. Lands in the
+                // user-scope `~/.local/share/man/man1` dir to avoid needing
+                // sudo for this single side-installer; install.sh handles
+                // the /usr/local/share/man path when run with sudo.
+                if (manPageContent != null) {
+                    try {
+                        installManPage(manPageContent)
+                    } catch (_: Exception) {
+                        // Non-fatal: `man bossterm` won't work but the
+                        // script does. User can re-run install.sh for the
+                        // system-wide path.
+                    }
+                }
                 InstallResult.Success
             } catch (e: SecurityException) {
                 // Need sudo - use AppleScript to request admin privileges
@@ -325,28 +362,98 @@ object CLIInstaller {
     /**
      * Get the CLI script content for the current platform
      */
-    private fun getCLIScript(): String {
-        // Determine platform-specific resource path
-        val resourcePath = when {
-            isWindows -> "windows/bossterm.cmd"
-            isMacOS -> "macos/bossterm"
-            isLinux -> "linux/bossterm"
-            else -> "macos/bossterm" // fallback
-        }
+    /**
+     * Locate the canonical `bossterm` script content for the current
+     * platform. Returns null if no source is available — callers must
+     * propagate that as an error rather than installing a stale stub.
+     *
+     * Lookup order (mac/Linux):
+     *   1. `compose.application.resources.dir` / `bossterm` — Compose
+     *      Desktop's runtime resources dir inside a packaged
+     *      .app/.deb/.rpm. The right answer at runtime.
+     *   2. Classpath resource `bossterm` — for hosts that route the file
+     *      through the standard resources path.
+     *   3. Repo checkout — walk up from `user.dir` looking for a VERSION
+     *      sentinel + `cli-resources/bossterm`. Lets a developer running
+     *      from an IDE / `./gradlew :bossterm-app:run` test the in-app
+     *      installer against the working tree.
+     *   4. null — caller surfaces a useful error.
+     *
+     * Windows keeps its own embedded `.cmd` because the canonical bash
+     * script doesn't cover it; that's tracked separately.
+     */
+    private fun getCLIScript(): String? {
+        if (isWindows) return EMBEDDED_WINDOWS_CLI_SCRIPT
+        return findCliResource("bossterm")
+    }
 
-        // Try to load from resources first
-        val resourceStream = CLIInstaller::class.java.classLoader?.getResourceAsStream(resourcePath)
-        if (resourceStream != null) {
-            return resourceStream.bufferedReader().readText()
-        }
+    /**
+     * Companion Python helper for MCP-backed CLI subcommands. Same lookup
+     * order as [getCLIScript]. Returns null if not bundled — callers can
+     * still install the bash script, but MCP-backed subcommands won't work
+     * until the user installs the helper separately (e.g. via install.sh).
+     */
+    private fun getMcpHelperScript(): String? {
+        if (isWindows) return null  // Helper is mac/Linux only.
+        return findCliResource("bossterm-mcp.py")
+    }
 
-        // Fallback: for Windows, return embedded Windows script
-        if (isWindows) {
-            return EMBEDDED_WINDOWS_CLI_SCRIPT
-        }
+    /**
+     * Troff man page source. Installed to `~/.local/share/man/man1`
+     * (user-scope; no sudo) so `man bossterm` works on Linux after a
+     * Help → Install CLI flow, matching install.sh's user-scope path.
+     * macOS doesn't use man-db, but the file still lands in `MANPATH` for
+     * users who configured one. install.sh handles the system-wide path
+     * `/usr/local/share/man/man1` when run with sudo.
+     */
+    private fun getManPageContent(): String? {
+        if (isWindows) return null
+        return findCliResource("man/man1/bossterm.1")
+    }
 
-        // Fallback to embedded script (macOS version)
-        return EMBEDDED_CLI_SCRIPT
+    private fun installManPage(content: String) {
+        val home = System.getProperty("user.home") ?: return
+        val dir = File("$home/.local/share/man/man1")
+        if (!dir.exists() && !dir.mkdirs()) return
+        val target = File(dir, "bossterm.1")
+        FileOutputStream(target).use { out ->
+            out.write(content.toByteArray())
+        }
+    }
+
+    /**
+     * Shared lookup for any file under `cli-resources/`. See [getCLIScript]
+     * for the lookup order; this helper just centralizes the three paths
+     * so a future addition (e.g. shell completion scripts) doesn't drift
+     * from the existing two.
+     */
+    private fun findCliResource(relativePath: String): String? {
+        // 1. Compose Desktop's runtime resources dir.
+        System.getProperty("compose.application.resources.dir")?.let { dir ->
+            val candidate = File(dir, relativePath)
+            if (candidate.isFile) return candidate.readText()
+        }
+        // 2. Classpath fallback. Replace path separators just in case the
+        //    OS we're running on rejects forward slashes; the JAR side
+        //    accepts the / form universally.
+        CLIInstaller::class.java.classLoader?.getResourceAsStream(relativePath)?.use {
+            return it.bufferedReader().readText()
+        }
+        // 3. Dev / IDE fallback: walk up from the JVM's working directory
+        //    looking for the repo root (VERSION sentinel + cli-resources/).
+        //    This lets a developer running `./gradlew :bossterm-app:run`
+        //    exercise the in-app installer without a packaged .app.
+        var dir: File? = File(System.getProperty("user.dir") ?: ".")
+        repeat(6) {
+            val cur = dir ?: return@repeat
+            if (File(cur, "VERSION").isFile && File(cur, "cli-resources").isDirectory) {
+                val candidate = File(cur, "cli-resources/$relativePath")
+                if (candidate.isFile) return candidate.readText()
+                return null
+            }
+            dir = cur.parentFile
+        }
+        return null
     }
 
     sealed class InstallResult {
@@ -356,127 +463,6 @@ object CLIInstaller {
         data class Error(val message: String) : InstallResult()
     }
 
-    // Embedded CLI script (fallback if resource not found)
-    private val EMBEDDED_CLI_SCRIPT = """
-#!/usr/bin/env bash
-#
-# BossTerm CLI Launcher Script
-# Version: 1.0.0
-#
-
-APP_PATH="/Applications/BossTerm.app"
-APP_NAME="BossTerm"
-VERSION="1.0.0"
-
-check_app() {
-    if [ ! -d "${'$'}APP_PATH" ]; then
-        echo "Error: BossTerm.app not found at ${'$'}APP_PATH"
-        exit 1
-    fi
-}
-
-open_bossterm() {
-    open -a "${'$'}APP_NAME" "${'$'}@"
-}
-
-expand_path() {
-    local path="${'$'}1"
-    path="${'$'}{path/#\~/${'$'}HOME}"
-    if [[ ! "${'$'}path" =~ ^/ ]]; then
-        path="${'$'}(cd "${'$'}path" 2>/dev/null && pwd || echo "${'$'}(pwd)/${'$'}path")"
-    fi
-    echo "${'$'}{path}"
-}
-
-show_help() {
-    cat <<EOF
-BossTerm - Modern Terminal Emulator
-Version: ${'$'}VERSION
-
-Usage:
-  bossterm                      Open BossTerm
-  bossterm <path>               Open BossTerm in directory
-  bossterm -d <path>            Open BossTerm in specified directory
-  bossterm -c <command>         Execute command (coming soon)
-  bossterm --new-window         Open a new window
-
-Options:
-  -d, --directory <path>   Start in specified directory
-  -c, --command <cmd>      Execute command after opening
-  -n, --new-window         Force open a new window
-  -v, --version            Show version information
-  -h, --help               Show this help message
-
-EOF
-}
-
-main() {
-    check_app
-
-    if [ ${'$'}# -eq 0 ]; then
-        open_bossterm
-        exit 0
-    fi
-
-    case "${'$'}1" in
-        -h|--help|help)
-            show_help
-            exit 0
-            ;;
-        -v|--version|version)
-            echo "BossTerm CLI version ${'$'}VERSION"
-            exit 0
-            ;;
-        -n|--new-window)
-            open_bossterm -n
-            exit 0
-            ;;
-        -d|--directory)
-            if [ -z "${'$'}2" ]; then
-                echo "Error: Directory path required"
-                exit 1
-            fi
-            dir_path=${'$'}(expand_path "${'$'}2")
-            if [ ! -d "${'$'}dir_path" ]; then
-                echo "Error: Directory not found: ${'$'}dir_path"
-                exit 1
-            fi
-            BOSSTERM_CWD="${'$'}dir_path" open_bossterm
-            exit 0
-            ;;
-        -c|--command)
-            if [ -z "${'$'}2" ]; then
-                echo "Error: Command required"
-                exit 1
-            fi
-            echo "Note: Command execution coming soon"
-            open_bossterm
-            exit 0
-            ;;
-        -*)
-            echo "Error: Unknown option: ${'$'}1"
-            echo "Run 'bossterm --help' for usage"
-            exit 1
-            ;;
-        *)
-            path=${'$'}(expand_path "${'$'}1")
-            if [ -d "${'$'}path" ]; then
-                BOSSTERM_CWD="${'$'}path" open_bossterm
-                exit 0
-            elif [ -f "${'$'}path" ]; then
-                parent_dir=${'$'}(dirname "${'$'}path")
-                BOSSTERM_CWD="${'$'}parent_dir" open_bossterm
-                exit 0
-            else
-                echo "Error: Path not found: ${'$'}1"
-                exit 1
-            fi
-            ;;
-    esac
-}
-
-main "${'$'}@"
-    """.trimIndent()
 
     // Embedded Windows CLI script (fallback if resource not found)
     private val EMBEDDED_WINDOWS_CLI_SCRIPT = """

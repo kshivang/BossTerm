@@ -482,6 +482,51 @@ cmd_send() {
     mcp_call_with_port "$port" send_input "$args" >/dev/null
 }
 
+cmd_signal() {
+    local sig="${1:-}"
+    case "$sig" in
+        ctrl_c|ctrl_d|ctrl_z) ;;
+        *)
+            echo "Usage: bossterm signal <ctrl_c|ctrl_d|ctrl_z> [--pane <id>]" >&2
+            exit 1
+            ;;
+    esac
+    shift
+    local pane_id=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --pane)   pane_id="$2"; shift 2 ;;
+            --pane=*) pane_id="${1#--pane=}"; shift ;;
+            *)        echo "Unknown arg: $1" >&2; exit 1 ;;
+        esac
+    done
+    require_python3
+    local port; port="$(mcp_resolve_port_or_die)" || exit $?
+    local tab_id
+    tab_id="$(mcp_call_with_port "$port" list_tabs '{}' \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("activeTabId",""))')"
+    if [ -z "$tab_id" ]; then
+        echo "Error: no active tab" >&2
+        exit 2
+    fi
+    local args
+    if [ -n "$pane_id" ]; then
+        args="$(python3 -c 'import json,sys; print(json.dumps({"tab_id":sys.argv[1],"pane_id":sys.argv[2],"signal":sys.argv[3]}))' \
+                "$tab_id" "$pane_id" "$sig")"
+    else
+        args="$(python3 -c 'import json,sys; print(json.dumps({"tab_id":sys.argv[1],"signal":sys.argv[2]}))' \
+                "$tab_id" "$sig")"
+    fi
+    mcp_call_with_port "$port" send_signal "$args" >/dev/null
+}
+
+# Close the focused pane (or a specific one) by sending EOF to its shell.
+# Once the shell exits, the pane disposes itself via onProcessExit. Killing
+# the last pane of a tab closes the tab (and the window, if it was the last).
+cmd_close() {
+    cmd_signal ctrl_d "$@"
+}
+
 cmd_attach() {
     local target="${1:-}"
     if [ -z "$target" ]; then
@@ -620,6 +665,9 @@ USAGE
   bossterm new-tab                  Open a new tab in a running BossTerm (MCP)
   bossterm run [--split=h|v] <cmd>  Open a new tab/split and run <cmd>     (MCP)
   bossterm send <text>              Send text to the focused pane          (MCP)
+  bossterm signal <ctrl_c|ctrl_d|ctrl_z> [--pane id]
+                                    Send a control signal                  (MCP)
+  bossterm close [--pane id]        Close a pane (Ctrl-D to its shell)     (MCP)
   bossterm logs [--tab id] [--lines N]
                                     Dump recent scrollback                 (MCP)
 
@@ -708,6 +756,8 @@ main() {
         new-tab)                shift; cmd_new_tab "$@" ;;
         run)                    shift; cmd_run "$@" ;;
         send)                   shift; cmd_send "$@" ;;
+        signal)                 shift; cmd_signal "$@" ;;
+        close)                  shift; cmd_close "$@" ;;
         attach)                 shift; cmd_attach "$@" ;;
         mcp)                    shift; cmd_mcp "$@" ;;
         config)                 shift; cmd_config "$@" ;;

@@ -142,6 +142,15 @@ Equivalent to
 .BR "bossterm new" .
 .SH ENVIRONMENT
 .TP
+.B BOSSTERM_MCP_PORT
+Override the MCP server port the CLI talks to. When set, the CLI probes
+this single port instead of walking the configured port + the +1..+9
+fallback range. Useful when multiple BossTerm instances are running and
+you want to target a specific one (e.g. a packaged install on 7676 and
+an IDE debug session on 7677). The global
+.B \-\-port \fI<N>\fR
+flag sets the same variable for one invocation.
+.TP
 .B BOSSTERM_CWD
 Set by the script when launching with a positional path. The app does not
 currently consume this variable at startup — it remains exported so that

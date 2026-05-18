@@ -272,9 +272,21 @@ mcp_probe_port() {
     python3 "$MCP_HELPER" ping "$port" >/dev/null 2>&1
 }
 
-# Resolve the actual running port (configured first, then the +0..+9
-# fallback range introduced by PR #255).
+# Resolve the actual running port. Order:
+#   1. `$BOSSTERM_MCP_PORT` if set — explicit override; probe that single
+#      port and either return it or fail. Useful when multiple BossTerms
+#      are running (e.g. a packaged install + an IDE debug session) and
+#      you need to address a specific one.
+#   2. Configured port from settings.json (default 7676).
+#   3. Configured+1 .. configured+9 (the fallback range PR #255 walks).
 mcp_running_port() {
+    if [ -n "${BOSSTERM_MCP_PORT:-}" ]; then
+        if mcp_probe_port "$BOSSTERM_MCP_PORT"; then
+            echo "$BOSSTERM_MCP_PORT"
+            return 0
+        fi
+        return 1
+    fi
     local configured base
     configured="$(mcp_configured_port)"
     base="$configured"
@@ -624,6 +636,18 @@ USAGE
   bossterm --version | -v           Print version
   bossterm --help    | -h           Print this help
 
+GLOBAL FLAGS
+  --port <N>                        Target the MCP server on port <N> instead of
+                                    auto-discovering. Useful when multiple
+                                    BossTerm instances are running (e.g. a
+                                    packaged install + an IDE debug session).
+                                    Equivalent to setting BOSSTERM_MCP_PORT.
+
+ENVIRONMENT
+  BOSSTERM_MCP_PORT                 Same as --port. The CLI probes only this
+                                    port instead of walking the configured
+                                    port + the +1..+9 fallback range.
+
 NOTES
   MCP-backed subcommands (new-tab, run, send, logs, mcp tools) require a
   running BossTerm with MCP enabled. Run 'bossterm mcp on' once if needed.
@@ -642,6 +666,34 @@ show_version() {
 # ---------------------------------------------------------------------------
 
 main() {
+    # Pre-pass: extract global `--port=N` / `--port N` and export it as
+    # BOSSTERM_MCP_PORT so the MCP plumbing picks it up. Done before the
+    # subcommand dispatch so the flag works in any position (and so the
+    # subcommands' own arg parsers don't have to know about it). Sets
+    # BOSSTERM_MCP_PORT only when the flag was supplied — env-var sets
+    # from the user's shell continue to work unchanged.
+    local _bt_argv=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --port=*)
+                export BOSSTERM_MCP_PORT="${1#--port=}"
+                shift
+                ;;
+            --port)
+                if [ -z "${2:-}" ]; then
+                    echo "Error: --port requires a value" >&2; exit 1
+                fi
+                export BOSSTERM_MCP_PORT="$2"
+                shift 2
+                ;;
+            *)
+                _bt_argv+=("$1")
+                shift
+                ;;
+        esac
+    done
+    set -- "${_bt_argv[@]+"${_bt_argv[@]}"}"
+
     # No args → launch GUI.
     if [ $# -eq 0 ]; then
         check_app

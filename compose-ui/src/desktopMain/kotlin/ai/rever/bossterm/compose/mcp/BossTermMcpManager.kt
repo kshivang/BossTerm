@@ -216,6 +216,14 @@ class BossTermMcpManager(
         // config bugs aren't silently masked by walking up a privileged range.
         // The persisted `mcpPort` is NOT updated — the next restart still
         // tries the original first in case the conflicting process exited.
+        //
+        // Each iteration pre-flights the port with a synchronous ServerSocket
+        // bind. Ktor CIO's `engine.start(wait = false)` returns immediately
+        // (success) and the real accept-loop bind runs asynchronously — when
+        // that async bind fails it wraps the BindException in a
+        // JobCancellationException which our synchronous try/catch can't see
+        // reliably. Pre-flighting moves the fallback decision out of the async
+        // path and avoids the wrap-in-coroutine problem entirely.
         for (offset in 0 until MAX_PORT_FALLBACK_ATTEMPTS) {
             val port = desiredPort + offset
             if (port > MAX_TCP_PORT) {
@@ -224,6 +232,24 @@ class BossTermMcpManager(
                     port, MAX_TCP_PORT
                 )
                 return
+            }
+            val probe = preflightPort(port)
+            when (probe) {
+                PortProbe.Available -> { /* fall through to tryStartOnPort */ }
+                PortProbe.InUse -> {
+                    log.warn(
+                        "Port {}:{} appears in use (pre-flight); trying next",
+                        HOST, port
+                    )
+                    continue
+                }
+                PortProbe.PermissionDenied -> {
+                    log.error(
+                        "BossTerm MCP server cannot bind {}:{} (permission denied at pre-flight); giving up",
+                        HOST, port
+                    )
+                    return
+                }
             }
             when (tryStartOnPort(port, desiredPort)) {
                 StartOutcome.Started, StartOutcome.HardFailed -> return
@@ -235,6 +261,44 @@ class BossTermMcpManager(
             desiredPort, desiredPort + MAX_PORT_FALLBACK_ATTEMPTS - 1
         )
     }
+
+    /**
+     * Synchronous pre-flight: try to bind a ServerSocket on the loopback
+     * address and immediately close it. Lets us classify the port before
+     * handing it to Ktor's async accept loop, where a real bind failure
+     * gets wrapped in a JobCancellationException and is awkward to catch.
+     *
+     * Has a small TOCTOU window (the port could become busy between the
+     * probe close and Ktor's bind). Acceptable: we're talking about
+     * loopback in a single-user session, and `tryStartOnPort`'s catch
+     * still handles whatever Ktor surfaces.
+     */
+    private fun preflightPort(port: Int): PortProbe {
+        return try {
+            java.net.ServerSocket().use { sock ->
+                sock.reuseAddress = false  // mirror Ktor; don't quietly steal a TIME_WAIT
+                sock.bind(java.net.InetSocketAddress(HOST, port))
+                PortProbe.Available
+            }
+        } catch (e: BindException) {
+            val msg = e.message.orEmpty()
+            if (looksLikePermissionDenied(msg)) PortProbe.PermissionDenied
+            else PortProbe.InUse
+        } catch (e: java.io.IOException) {
+            // Other I/O — treat as "in use" so the loop tries the next port.
+            // If it's a config-level problem (e.g. binding outside loopback),
+            // the user will hit the same error on every port and we'll
+            // eventually run out and give up cleanly.
+            PortProbe.InUse
+        }
+    }
+
+    private enum class PortProbe { Available, InUse, PermissionDenied }
+
+    private fun looksLikePermissionDenied(msg: String): Boolean =
+        msg.contains("permission", ignoreCase = true) ||
+            msg.contains("denied", ignoreCase = true) ||
+            msg.contains("not permitted", ignoreCase = true)
 
     /**
      * One bind attempt. See [StartOutcome] for the return semantics.
@@ -299,38 +363,40 @@ class BossTermMcpManager(
             )
             launchAutoReattach(port)
             return StartOutcome.Started
-        } catch (e: BindException) {
-            mcpServerWrapper.detachServer()
-            runningEngine = null
-            runningPort = null
-            runningServer = null
-            val msg = e.message.orEmpty()
-            // Heuristic: if the JDK distinguished EACCES from EADDRINUSE only
-            // via message text, "permission" / "denied" / "not permitted" /
-            // "access" is the signature. Treat as hard failure to avoid
-            // walking up a privileged range (e.g. configured 80 → 81..89).
-            val looksLikePermissionDenied = msg.contains("permission", ignoreCase = true) ||
-                    msg.contains("denied", ignoreCase = true) ||
-                    msg.contains("not permitted", ignoreCase = true)
-            return if (looksLikePermissionDenied) {
-                log.error(
-                    "BossTerm MCP server cannot bind {}:{} (permission denied); giving up: {}",
-                    HOST, port, msg
-                )
-                StartOutcome.HardFailed
-            } else {
-                log.warn(
-                    "BossTerm MCP server failed to bind {}:{} (port in use?): {}",
-                    HOST, port, msg
-                )
-                StartOutcome.PortBusy
-            }
         } catch (e: Throwable) {
-            log.error("BossTerm MCP server failed to start on {}:{}", HOST, port, e)
             mcpServerWrapper.detachServer()
             runningEngine = null
             runningPort = null
             runningServer = null
+
+            // Ktor CIO wraps the bind-time BindException in a
+            // JobCancellationException (the async accept loop's parent
+            // coroutine gets cancelled). Unwrap the cause chain so the
+            // fallback decision is right whether the JDK threw bind directly
+            // or it bubbled through a coroutine. The pre-flight in
+            // startEngineLocked usually catches this earlier, but a TOCTOU
+            // window remains.
+            val bind = generateSequence(e as Throwable?) { it.cause }
+                .filterIsInstance<BindException>()
+                .firstOrNull()
+            if (bind != null) {
+                val msg = bind.message.orEmpty()
+                return if (looksLikePermissionDenied(msg)) {
+                    log.error(
+                        "BossTerm MCP server cannot bind {}:{} (permission denied); giving up: {}",
+                        HOST, port, msg
+                    )
+                    StartOutcome.HardFailed
+                } else {
+                    log.warn(
+                        "BossTerm MCP server failed to bind {}:{} (port in use?): {}",
+                        HOST, port, msg
+                    )
+                    StartOutcome.PortBusy
+                }
+            }
+
+            log.error("BossTerm MCP server failed to start on {}:{}", HOST, port, e)
             return StartOutcome.HardFailed
         }
     }

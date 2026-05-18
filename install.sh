@@ -657,18 +657,15 @@ install_cli() {
     # doesn't carry an inline copy that drifts from cli-resources/bossterm.
     # Same trust model as install.sh itself (which is curl-piped from there).
     # The URL is version-pinned so a `--version 1.0.93` install gets the
-    # CLI that matches the same app revision, not master-tip.
-    local raw_base
-    raw_base="$(raw_base_url "$version")"
-    local cli_url="${raw_base}/bossterm"
-    local helper_url="${raw_base}/bossterm-mcp.py"
-
-    install_file_with_perms "$cli_url" "$cli_path" 755 || {
-        warn "Failed to download CLI from $cli_url"
+    # CLI that matches the same app revision; install_file_versioned falls
+    # back to master with a warning when the tagged URL 404s (e.g. for tags
+    # cut before cli-resources/ existed).
+    install_file_versioned "$version" "bossterm" "$cli_path" 755 || {
+        warn "Failed to download CLI launcher"
         return 1
     }
-    install_file_with_perms "$helper_url" "$helper_path" 755 || {
-        warn "Failed to download MCP helper from $helper_url; MCP-backed CLI subcommands will not work"
+    install_file_versioned "$version" "bossterm-mcp.py" "$helper_path" 755 || {
+        warn "Failed to download MCP helper; MCP-backed CLI subcommands will not work"
     }
 
     # If the user-scope path was used, nag about PATH.
@@ -705,6 +702,25 @@ install_file_with_perms() {
     return $rc
 }
 
+# Try to fetch + install a file at <relative-path-in-cli-resources>. If the
+# version-pinned URL 404s (e.g. installing an older tag predating this PR's
+# cli-resources/ layout), retry against master and warn. `path_in_repo` is
+# relative to cli-resources/ (so "bossterm" or "man/man1/bossterm.1").
+install_file_versioned() {
+    local version="$1" path_in_repo="$2" dest="$3" mode="$4"
+    local primary="$(raw_base_url "$version")/${path_in_repo}"
+    if install_file_with_perms "$primary" "$dest" "$mode"; then
+        return 0
+    fi
+    if [ -n "$version" ] && [ "$version" != "latest" ]; then
+        warn "Couldn't fetch ${path_in_repo} from tag ${version}; falling back to master"
+        local fallback="$(raw_base_url "")/${path_in_repo}"
+        install_file_with_perms "$fallback" "$dest" "$mode"
+    else
+        return 1
+    fi
+}
+
 install_manpage() {
     local version="${1:-}"
     local os="${2:-}"
@@ -721,10 +737,7 @@ install_manpage() {
     fi
 
     info "Installing man page..."
-    local raw_base
-    raw_base="$(raw_base_url "$version")"
-    local man_url="${raw_base}/man/man1/bossterm.1"
-    if install_file_with_perms "$man_url" "$man_path" 644; then
+    if install_file_versioned "$version" "man/man1/bossterm.1" "$man_path" 644; then
         success "Man page installed to $man_path"
         # Best-effort man-db refresh on Linux so `man bossterm` finds the
         # new entry without the user having to run mandb manually. macOS
@@ -736,9 +749,19 @@ install_manpage() {
                 mandb -q -u >/dev/null 2>&1 || true
             fi
         fi
+        # When we used the user-scope path, `man bossterm` only resolves if
+        # the user's MANPATH or manpath(1) configuration includes
+        # ~/.local/share/man. Don't try to detect that — just nudge if the
+        # destination isn't in the system default MANPATH.
+        if [ "$man_path" = "$MAN_USER_PATH" ] && \
+           ! manpath 2>/dev/null | tr ':' '\n' | grep -q "$HOME/.local/share/man"; then
+            warn "\$HOME/.local/share/man is not in your MANPATH"
+            warn "  Add to your shell profile, then re-source:"
+            warn "    export MANPATH=\"\$HOME/.local/share/man:\${MANPATH:-}\""
+        fi
         info "  Try: man bossterm"
     else
-        warn "Failed to download man page from $man_url"
+        warn "Failed to download man page"
         return 1
     fi
 }

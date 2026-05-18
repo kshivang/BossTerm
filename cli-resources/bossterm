@@ -278,18 +278,26 @@ mcp_running_port() {
 # tools should resolve the port once via `mcp_resolve_port_or_die` and then
 # use `mcp_call_with_port` to avoid the ~2s × 10-port walk on every call.
 mcp_call() {
-    local port; port="$(mcp_resolve_port_or_die)"
-    mcp_call_with_port "$port" "$1" "${2:-{}}"
+    local port; port="$(mcp_resolve_port_or_die)" || exit $?
+    local args="${2-}"
+    [ -z "$args" ] && args='{}'
+    mcp_call_with_port "$port" "$1" "$args"
 }
 
-# Resolve the running port; emit a clean error + exit 2 if not reachable.
-# Stdout is the port number on success. Use as: `port="$(mcp_resolve_port_or_die)"`.
+# Resolve the running port; emit a clean error and return 2 if not reachable.
+# Stdout is the port number on success. Callers MUST propagate failure:
+#
+#   local port; port="$(mcp_resolve_port_or_die)" || exit $?
+#
+# (A bare `exit 2` inside this function only exits the command-substitution
+# subshell, so the parent assignment would silently become `port=""` and the
+# downstream Python call would crash with a confusing argparse error.)
 mcp_resolve_port_or_die() {
     local port
     if ! port="$(mcp_running_port)"; then
         echo "Error: BossTerm MCP server is not reachable. Is the app running with MCP enabled?" >&2
         echo "  Hint: 'bossterm mcp status' to check, 'bossterm mcp on' to enable." >&2
-        exit 2
+        return 2
     fi
     echo "$port"
 }
@@ -299,10 +307,12 @@ mcp_resolve_port_or_die() {
 mcp_call_with_port() {
     local port="$1"
     local tool="$2"
-    # Bash brace-default `${3:-{}}` — if $3 is empty/unset, use the literal
-    # two-char string `{}` (an empty JSON object) so the helper always has
-    # a valid arguments payload.
-    local args_json="${3:-{}}"
+    # Use an empty JSON object (`{}`) when no args are passed. Spelled out
+    # rather than `${3:-{}}` because the brace-default form trips
+    # shellcheck's SC1083/SC1009 and a few non-bash shells choke on the
+    # nested braces.
+    local args_json="${3-}"
+    [ -z "$args_json" ] && args_json='{}'
     require_python3
     if [ ! -f "$MCP_HELPER" ]; then
         echo "Error: MCP helper not found at $MCP_HELPER" >&2
@@ -382,12 +392,11 @@ cmd_new() {
             launch_app -n
             ;;
         linux)
-            # The bossterm binary doesn't currently parse a `--new-window`
-            # flag, so we just spawn a second process. On a typical Linux
-            # desktop that gives you a second BossTerm window (a separate
-            # JVM); on single-instance setups it may no-op. Documented in
-            # man bossterm and known-not-great until app-side --new-window
-            # parsing lands.
+            # TODO: route through `--new-window` once the app parses CLI
+            # args (see bossterm-app/src/desktopMain/.../Main.kt:main()).
+            # Today the binary ignores any args, so we just spawn a second
+            # JVM — that's "a new window" only because Linux doesn't
+            # enforce single-instance by default. Documented in man bossterm.
             launch_app
             ;;
     esac
@@ -426,7 +435,10 @@ cmd_send() {
     require_python3
     local text="$*"
     # Resolve the port once and reuse — `mcp_call_with_port` skips the walk.
-    local port; port="$(mcp_resolve_port_or_die)"
+    # `|| exit $?` is load-bearing: `return 2` inside the function only exits
+    # the command-substitution subshell, so without this the parent would
+    # continue with port="" and confuse the Python helper downstream.
+    local port; port="$(mcp_resolve_port_or_die)" || exit $?
     # The active tab is the implicit target. Use list_tabs to find its id.
     local tab_id
     tab_id="$(mcp_call_with_port "$port" list_tabs '{}' \
@@ -543,7 +555,7 @@ cmd_logs() {
         esac
     done
     require_python3
-    local port; port="$(mcp_resolve_port_or_die)"
+    local port; port="$(mcp_resolve_port_or_die)" || exit $?
     if [ -z "$tab_id" ]; then
         tab_id="$(mcp_call_with_port "$port" list_tabs '{}' \
                   | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("activeTabId",""))')"

@@ -178,11 +178,11 @@ compose.desktop {
 }
 
 // Stage the CLI resources under build/cli-resources with @@BOSSTERM_VERSION@@
-// substituted. The source tree keeps `cli-resources/macos/bossterm` and
-// `cli-resources/linux/bossterm` as symlinks pointing at the canonical
-// `cli-resources/bossterm` script — so editors only maintain one file. This
-// task expands those symlinks while substituting, producing real per-platform
-// files for Compose Desktop's `appResourcesRootDir` to pick up.
+// substituted to project.version. The canonical script lives flat at
+// `cli-resources/bossterm` (the script detects darwin/linux at runtime, so
+// there's no per-platform variant). The Python helper and the troff man
+// page ride along untouched. Compose Desktop's `appResourcesRootDir` (set
+// above) bundles the staged dir into the .app / .deb / .rpm.
 val cliVersion = project.version.toString().removeSuffix("-SNAPSHOT")
 
 tasks.register<Sync>("processCliResources") {
@@ -192,10 +192,10 @@ tasks.register<Sync>("processCliResources") {
     inputs.property("cliVersion", cliVersion)
     from(rootProject.file("cli-resources"))
     into(layout.buildDirectory.dir("cli-resources"))
-    // Substitute the version placeholder in the canonical script. Filter
-    // ONLY the script — applying line-based filter to the Python helper or
-    // the troff man page would mangle their hashbang/preamble pickup-by-line
-    // semantics (and runs the filter through their whole bodies for no gain).
+    // Substitute the version placeholder in the canonical script only.
+    // bossterm-mcp.py and bossterm.1 don't carry the token; filtering them
+    // would be wasted work (and a line-based filter on the troff source
+    // happens to be safe but isn't free).
     filesMatching("bossterm") {
         filter { line: String ->
             line.replace("@@BOSSTERM_VERSION@@", cliVersion)

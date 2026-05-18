@@ -2,11 +2,11 @@
 #
 # BossTerm CLI launcher + command companion
 #
-# Source of truth lives at `cli-resources/bossterm`. The macOS and Linux
-# packagings (`cli-resources/macos/bossterm`, `cli-resources/linux/bossterm`)
-# and the inline copy embedded in `install.sh` are derived from this file by
-# a Gradle task — see `bossterm-app/build.gradle.kts` for the substitution
-# of `@@BOSSTERM_VERSION@@` at build time.
+# Source of truth lives at `cli-resources/bossterm`. The `processCliResources`
+# Gradle task in `bossterm-app/build.gradle.kts` stages this file under
+# `build/cli-resources/` with `@@BOSSTERM_VERSION@@` substituted to
+# `project.version`, and `appResourcesRootDir` bundles that into the .app /
+# .deb / .rpm. `install.sh` and `CLIInstaller.kt` both pull this same file.
 #
 # Subcommands that talk to a running BossTerm (`new-tab`, `run`, `send`,
 # `logs`, `mcp tools`) require the in-process MCP server to be enabled
@@ -66,9 +66,9 @@ VERSION="$(resolve_version)"
 # Paths
 # ---------------------------------------------------------------------------
 
-# Co-located Python helper. Built copies live next to the script in each
-# platform's `cli-resources/<plat>/` dir; system installs put both files in
-# the same parent dir.
+# Co-located Python helper. `install.sh` and `CLIInstaller.kt` drop both
+# files in the same directory (`/usr/local/bin` or `~/.local/bin`) so this
+# resolves cleanly via the script's own location.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MCP_HELPER="$SCRIPT_DIR/bossterm-mcp.py"
 
@@ -188,18 +188,20 @@ PY
 
 # Set a top-level value. The value is encoded as JSON literal (`true`,
 # `false`, `7676`, or a JSON string). Creates the file if missing.
+# Exits non-zero (and complains loudly) on any write failure so callers
+# don't report success after silent failure.
 settings_set() {
     local key="$1"
     local raw_value="$2"
+    require_python3
     mkdir -p "$(dirname "$SETTINGS_PATH")"
-    python3 - "$SETTINGS_PATH" "$key" "$raw_value" <<'PY'
+    if ! python3 - "$SETTINGS_PATH" "$key" "$raw_value" <<'PY'
 import json, os, sys
 path, key, raw = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     data = json.load(open(path)) if os.path.exists(path) else {}
 except Exception:
     data = {}
-# Interpret the raw value: prefer JSON parse, else treat as string.
 try:
     value = json.loads(raw)
 except Exception:
@@ -209,6 +211,10 @@ with open(path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
 PY
+    then
+        echo "Error: failed to write $SETTINGS_PATH" >&2
+        return 1
+    fi
 }
 
 require_python3() {
@@ -235,12 +241,12 @@ mcp_configured_port() {
 # SDK 0.8.3 answers GET /sse exactly that way; a wayward web service on the
 # same port almost never will.
 #
-# Worst-case 2s per port × 10 ports in the fallback walk = ~20s for an
-# unreachable BossTerm. Acceptable for a "where is it?" probe.
+# Loopback is fast, so the connect + max time are tight. Each probe caps at
+# ~0.5s, which keeps `bossterm mcp status` snappy even in the fallback walk.
 mcp_probe_port() {
     local port="$1"
     local meta
-    meta="$(curl --connect-timeout 1 --max-time 2 -sS -o /dev/null \
+    meta="$(curl --connect-timeout 1 --max-time 1 -sS -o /dev/null \
         -H "Host: 127.0.0.1" \
         -H "Accept: text/event-stream" \
         -w "%{http_code} %{content_type}" \
@@ -293,6 +299,9 @@ mcp_resolve_port_or_die() {
 mcp_call_with_port() {
     local port="$1"
     local tool="$2"
+    # Bash brace-default `${3:-{}}` — if $3 is empty/unset, use the literal
+    # two-char string `{}` (an empty JSON object) so the helper always has
+    # a valid arguments payload.
     local args_json="${3:-{}}"
     require_python3
     if [ ! -f "$MCP_HELPER" ]; then
@@ -367,8 +376,20 @@ PY
 cmd_new() {
     check_app
     case "$PLATFORM" in
-        macos) launch_app -n ;;
-        linux) launch_app --new-window ;;
+        macos)
+            # `open -n` asks LaunchServices for a fresh app instance, which
+            # macOS turns into a new BossTerm window.
+            launch_app -n
+            ;;
+        linux)
+            # The bossterm binary doesn't currently parse a `--new-window`
+            # flag, so we just spawn a second process. On a typical Linux
+            # desktop that gives you a second BossTerm window (a separate
+            # JVM); on single-instance setups it may no-op. Documented in
+            # man bossterm and known-not-great until app-side --new-window
+            # parsing lands.
+            launch_app
+            ;;
     esac
 }
 
@@ -454,12 +475,25 @@ cmd_mcp() {
             return 0
             ;;
         on)
-            settings_set mcpEnabled true
+            settings_set mcpEnabled true || exit 1
             echo "Set mcpEnabled=true in $SETTINGS_PATH"
-            echo "(Running app will pick up the change live; otherwise next launch.)"
+            # Best-effort poll: the running app's settings watcher picks up
+            # the change asynchronously. Wait up to ~2s for the SSE endpoint
+            # to actually answer before returning, so chained commands like
+            # `bossterm mcp on && bossterm run …` don't race the bind.
+            local i
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+                if mcp_running_port >/dev/null 2>&1; then
+                    echo "  (server is up and listening)"
+                    return 0
+                fi
+                sleep 0.2
+            done
+            echo "(Setting persisted, but the server didn't come up in ~2s. " \
+                 "If BossTerm is running, give it a moment; otherwise start the app.)"
             ;;
         off)
-            settings_set mcpEnabled false
+            settings_set mcpEnabled false || exit 1
             echo "Set mcpEnabled=false in $SETTINGS_PATH"
             ;;
         endpoint)

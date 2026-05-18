@@ -65,9 +65,12 @@ Open a new tab (or horizontal/vertical split) and run
 The script auto-appends a newline so the shell executes the line. Requires MCP.
 .TP
 .BI "send " "<text>..."
-Send raw text to the focused pane of the active tab. Use a trailing
-.B \\n
-in the text to submit. Requires MCP.
+Send raw text to the focused pane of the active tab. The text is sent
+verbatim — no escape interpretation. To submit a line you must include a
+real newline character; bash's ANSI-C quoting works:
+.B bossterm send $'ls\\en'
+\&. A regular double-quoted backslash-n is two literal characters and does
+not submit. Requires MCP.
 .TP
 .B "logs [--tab <id>] [--lines <N>]"
 Dump scrollback lines from a tab (default: the active tab; default N: 200).
@@ -140,8 +143,11 @@ Equivalent to
 .SH ENVIRONMENT
 .TP
 .B BOSSTERM_CWD
-Set by the script when launching with a positional path; consumed by the app
-to seed the initial working directory.
+Set by the script when launching with a positional path. The app does not
+currently consume this variable at startup — it remains exported so that
+shell integration (or a future BossTerm release that does parse it) can
+pick it up. To open a new pane in a specific directory in a running
+BossTerm today, use \fBbossterm run --split=h\fR with a \fBcd\fR command.
 .TP
 .B EDITOR
 Used by

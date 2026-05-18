@@ -558,7 +558,7 @@ bossterm new                          # New window
 bossterm new-tab                      # New tab in the running BossTerm  (MCP)
 bossterm run npm test                 # Run a command in a new tab        (MCP)
 bossterm run --split=h tail -f log    # Open a horizontal split and tail  (MCP)
-bossterm send "ls\n"                  # Send to the focused pane           (MCP)
+bossterm send $'ls\n'                 # Send to the focused pane           (MCP)
 bossterm logs --lines 50              # Dump the last 50 scrollback lines  (MCP)
 bossterm attach claude                # Re-register with Claude Code
 bossterm mcp status                   # Inspect MCP enabled/port/state

@@ -527,6 +527,63 @@ cmd_close() {
     cmd_signal ctrl_d "$@"
 }
 
+# List panes in a tab. Default: active tab, tabular human-readable output.
+# `--tab <id>` overrides; `--json` prints the raw MCP response. The PANE ID
+# column is the value to pass back as `--pane <id>` to send/signal/close.
+cmd_panes() {
+    local tab_id=""
+    local json_out=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --tab)    tab_id="$2"; shift 2 ;;
+            --tab=*)  tab_id="${1#--tab=}"; shift ;;
+            --json)   json_out=true; shift ;;
+            *)        echo "Usage: bossterm panes [--tab <id>] [--json]" >&2; exit 1 ;;
+        esac
+    done
+    require_python3
+    local port; port="$(mcp_resolve_port_or_die)" || exit $?
+    if [ -z "$tab_id" ]; then
+        tab_id="$(mcp_call_with_port "$port" list_tabs '{}' \
+                  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("activeTabId",""))')"
+    fi
+    if [ -z "$tab_id" ]; then
+        echo "Error: no active tab; pass --tab <id>" >&2
+        exit 2
+    fi
+    local args
+    args="$(python3 -c 'import json,sys; print(json.dumps({"tab_id":sys.argv[1]}))' "$tab_id")"
+    local raw rc
+    raw="$(mcp_call_with_port "$port" list_panes "$args")"; rc=$?
+    if [ $rc -ne 0 ]; then
+        # The Python helper prints the server's error text on stdout when a
+        # tool call fails. Surface that to the user instead of letting the
+        # JSON parser choke on it below.
+        echo "Error: list_panes failed${raw:+: $raw}" >&2
+        exit $rc
+    fi
+    if [ "$json_out" = true ]; then
+        echo "$raw"
+        return 0
+    fi
+    echo "$raw" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+panes = data.get("panes", [])
+if not panes:
+    print("(no panes)")
+    sys.exit(0)
+# Plain %-formatting — f-strings disallow backslashes, and the header
+# row needed escaped quotes which was tripping the parser.
+print("%-37s %-3s %-24s %s" % ("PANE ID", "FOC", "TITLE", "CWD"))
+for p in panes:
+    foc = "*" if p.get("isFocused") else ""
+    title = (p.get("title") or "")[:24]
+    cwd = p.get("cwd") or ""
+    print("%-37s %-3s %-24s %s" % (p["id"], foc, title, cwd))
+'
+}
+
 cmd_attach() {
     local target="${1:-}"
     if [ -z "$target" ]; then
@@ -668,6 +725,8 @@ USAGE
   bossterm signal <ctrl_c|ctrl_d|ctrl_z> [--pane id]
                                     Send a control signal                  (MCP)
   bossterm close [--pane id]        Close a pane (Ctrl-D to its shell)     (MCP)
+  bossterm panes [--tab id] [--json]
+                                    List panes in a tab                    (MCP)
   bossterm logs [--tab id] [--lines N]
                                     Dump recent scrollback                 (MCP)
 
@@ -758,6 +817,7 @@ main() {
         send)                   shift; cmd_send "$@" ;;
         signal)                 shift; cmd_signal "$@" ;;
         close)                  shift; cmd_close "$@" ;;
+        panes)                  shift; cmd_panes "$@" ;;
         attach)                 shift; cmd_attach "$@" ;;
         mcp)                    shift; cmd_mcp "$@" ;;
         config)                 shift; cmd_config "$@" ;;

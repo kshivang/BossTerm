@@ -72,6 +72,36 @@ real newline character; bash's ANSI-C quoting works:
 \&. A regular double-quoted backslash-n is two literal characters and does
 not submit. Requires MCP.
 .TP
+.BI "signal " "<ctrl_c|ctrl_d|ctrl_z> " "[--pane <id>]"
+Send a control signal to a pane's shell. Defaults to the focused pane of
+the active tab;
+.B \-\-pane
+targets a specific split (see
+.BR "list_panes" ).
+\fBctrl_c\fR sends SIGINT (interrupt the running command), \fBctrl_d\fR
+sends EOF (the shell exits and the pane disposes itself), \fBctrl_z\fR
+sends SIGTSTP (suspend). Requires MCP.
+.TP
+.B "close [--pane <id>]"
+Close a pane. Equivalent to
+.BR "signal ctrl_d"
+— sends EOF to the shell which then exits, after which the pane's
+\fIonProcessExit\fR callback disposes the pane. Closing the only pane
+in a tab closes the tab (and the window, if it was the last). Requires
+MCP.
+.TP
+.B "panes [--tab <id>] [--json]"
+List the panes inside a tab. Default: the active tab.
+.B \-\-tab
+overrides;
+.B \-\-json
+prints the raw MCP \fIlist_panes\fR response instead of a human-readable
+table. The PANE ID column is the value to pass back as
+.B \-\-pane <id>
+to
+.BR send ", " signal ", or " close .
+Requires MCP.
+.TP
 .B "logs [--tab <id>] [--lines <N>]"
 Dump scrollback lines from a tab (default: the active tab; default N: 200).
 Requires MCP.
@@ -141,6 +171,15 @@ is preferred.
 Equivalent to
 .BR "bossterm new" .
 .SH ENVIRONMENT
+.TP
+.B BOSSTERM_MCP_PORT
+Override the MCP server port the CLI talks to. When set, the CLI probes
+this single port instead of walking the configured port + the +1..+9
+fallback range. Useful when multiple BossTerm instances are running and
+you want to target a specific one (e.g. a packaged install on 7676 and
+an IDE debug session on 7677). The global
+.B \-\-port \fI<N>\fR
+flag sets the same variable for one invocation.
 .TP
 .B BOSSTERM_CWD
 Set by the script when launching with a positional path. The app does not

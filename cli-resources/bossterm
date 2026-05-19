@@ -69,7 +69,20 @@ VERSION="$(resolve_version)"
 # Co-located Python helper. `install.sh` and `CLIInstaller.kt` drop both
 # files in the same directory (`/usr/local/bin` or `~/.local/bin`) so this
 # resolves cleanly via the script's own location.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+#
+# Resolve symlinks so a wrapper symlink (the repo-root `./bossterm` →
+# `cli-resources/bossterm`, or `/usr/local/bin/bossterm` if a packager set
+# it up that way) doesn't make us look for the helper alongside the link
+# instead of alongside the real file. Plain `dirname "${BASH_SOURCE[0]}"`
+# would; this loop walks the chain. Portable; no `readlink -f` (macOS
+# lacks it).
+_BT_SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [ -L "$_BT_SCRIPT_PATH" ]; do
+    _BT_LINK_DIR="$(cd "$(dirname "$_BT_SCRIPT_PATH")" && pwd)"
+    _BT_SCRIPT_PATH="$(readlink "$_BT_SCRIPT_PATH")"
+    [[ "$_BT_SCRIPT_PATH" != /* ]] && _BT_SCRIPT_PATH="$_BT_LINK_DIR/$_BT_SCRIPT_PATH"
+done
+SCRIPT_DIR="$(cd "$(dirname "$_BT_SCRIPT_PATH")" && pwd)"
 MCP_HELPER="$SCRIPT_DIR/bossterm-mcp.py"
 
 SETTINGS_PATH="$HOME/.bossterm/settings.json"
@@ -235,28 +248,45 @@ mcp_configured_port() {
     echo "${p:-7676}"
 }
 
-# Probe whether port responds as a BossTerm MCP server (not just any HTTP
-# server). Returns 0/1. We check `/sse` with `Accept: text/event-stream` and
-# require both 200 status AND `text/event-stream` Content-Type — Ktor's MCP
-# SDK 0.8.3 answers GET /sse exactly that way; a wayward web service on the
-# same port almost never will.
+# Probe whether port responds as a BossTerm MCP server. Returns 0/1.
 #
-# Loopback is fast, so the connect + max time are tight. Each probe caps at
-# ~0.5s, which keeps `bossterm mcp status` snappy even in the fallback walk.
+# Two earlier attempts didn't work:
+#   - `curl GET /` 2xx-any-response was too loose (any HTTP server matched).
+#   - `curl GET /sse` was wrong (the Kotlin MCP SDK 0.8.3 mounts the SSE
+#     endpoint at root, not /sse) and also `curl … -o /dev/null` on an
+#     infinite SSE stream doesn't emit the -w format before the timeout.
+#
+# Now: delegate to the bundled Python helper's `ping` subcommand, which
+# does a real MCP handshake (open SSE → wait for `endpoint` event →
+# initialize). Exit 0 ⇔ MCP is up. Each probe is ~150ms on loopback so
+# the worst-case 10-port walk caps around ~1.5s.
 mcp_probe_port() {
     local port="$1"
-    local meta
-    meta="$(curl --connect-timeout 1 --max-time 1 -sS -o /dev/null \
-        -H "Host: 127.0.0.1" \
-        -H "Accept: text/event-stream" \
-        -w "%{http_code} %{content_type}" \
-        "http://127.0.0.1:$port/sse" 2>/dev/null)" || return 1
-    [[ "$meta" == 200\ text/event-stream* ]]
+    # If Python or the helper is missing, fall back to a connect-only
+    # probe — better than no probe at all. Won't distinguish BossTerm MCP
+    # from a random HTTP server, but the next real call will fail clearly.
+    if ! command -v python3 >/dev/null 2>&1 || [ ! -f "$MCP_HELPER" ]; then
+        nc -z -G 1 127.0.0.1 "$port" >/dev/null 2>&1
+        return $?
+    fi
+    python3 "$MCP_HELPER" ping "$port" >/dev/null 2>&1
 }
 
-# Resolve the actual running port (configured first, then the +0..+9
-# fallback range introduced by PR #255).
+# Resolve the actual running port. Order:
+#   1. `$BOSSTERM_MCP_PORT` if set — explicit override; probe that single
+#      port and either return it or fail. Useful when multiple BossTerms
+#      are running (e.g. a packaged install + an IDE debug session) and
+#      you need to address a specific one.
+#   2. Configured port from settings.json (default 7676).
+#   3. Configured+1 .. configured+9 (the fallback range PR #255 walks).
 mcp_running_port() {
+    if [ -n "${BOSSTERM_MCP_PORT:-}" ]; then
+        if mcp_probe_port "$BOSSTERM_MCP_PORT"; then
+            echo "$BOSSTERM_MCP_PORT"
+            return 0
+        fi
+        return 1
+    fi
     local configured base
     configured="$(mcp_configured_port)"
     base="$configured"
@@ -452,6 +482,108 @@ cmd_send() {
     mcp_call_with_port "$port" send_input "$args" >/dev/null
 }
 
+cmd_signal() {
+    local sig="${1:-}"
+    case "$sig" in
+        ctrl_c|ctrl_d|ctrl_z) ;;
+        *)
+            echo "Usage: bossterm signal <ctrl_c|ctrl_d|ctrl_z> [--pane <id>]" >&2
+            exit 1
+            ;;
+    esac
+    shift
+    local pane_id=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --pane)   pane_id="$2"; shift 2 ;;
+            --pane=*) pane_id="${1#--pane=}"; shift ;;
+            *)        echo "Unknown arg: $1" >&2; exit 1 ;;
+        esac
+    done
+    require_python3
+    local port; port="$(mcp_resolve_port_or_die)" || exit $?
+    local tab_id
+    tab_id="$(mcp_call_with_port "$port" list_tabs '{}' \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("activeTabId",""))')"
+    if [ -z "$tab_id" ]; then
+        echo "Error: no active tab" >&2
+        exit 2
+    fi
+    local args
+    if [ -n "$pane_id" ]; then
+        args="$(python3 -c 'import json,sys; print(json.dumps({"tab_id":sys.argv[1],"pane_id":sys.argv[2],"signal":sys.argv[3]}))' \
+                "$tab_id" "$pane_id" "$sig")"
+    else
+        args="$(python3 -c 'import json,sys; print(json.dumps({"tab_id":sys.argv[1],"signal":sys.argv[2]}))' \
+                "$tab_id" "$sig")"
+    fi
+    mcp_call_with_port "$port" send_signal "$args" >/dev/null
+}
+
+# Close the focused pane (or a specific one) by sending EOF to its shell.
+# Once the shell exits, the pane disposes itself via onProcessExit. Killing
+# the last pane of a tab closes the tab (and the window, if it was the last).
+cmd_close() {
+    cmd_signal ctrl_d "$@"
+}
+
+# List panes in a tab. Default: active tab, tabular human-readable output.
+# `--tab <id>` overrides; `--json` prints the raw MCP response. The PANE ID
+# column is the value to pass back as `--pane <id>` to send/signal/close.
+cmd_panes() {
+    local tab_id=""
+    local json_out=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --tab)    tab_id="$2"; shift 2 ;;
+            --tab=*)  tab_id="${1#--tab=}"; shift ;;
+            --json)   json_out=true; shift ;;
+            *)        echo "Usage: bossterm panes [--tab <id>] [--json]" >&2; exit 1 ;;
+        esac
+    done
+    require_python3
+    local port; port="$(mcp_resolve_port_or_die)" || exit $?
+    if [ -z "$tab_id" ]; then
+        tab_id="$(mcp_call_with_port "$port" list_tabs '{}' \
+                  | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("activeTabId",""))')"
+    fi
+    if [ -z "$tab_id" ]; then
+        echo "Error: no active tab; pass --tab <id>" >&2
+        exit 2
+    fi
+    local args
+    args="$(python3 -c 'import json,sys; print(json.dumps({"tab_id":sys.argv[1]}))' "$tab_id")"
+    local raw rc
+    raw="$(mcp_call_with_port "$port" list_panes "$args")"; rc=$?
+    if [ $rc -ne 0 ]; then
+        # The Python helper prints the server's error text on stdout when a
+        # tool call fails. Surface that to the user instead of letting the
+        # JSON parser choke on it below.
+        echo "Error: list_panes failed${raw:+: $raw}" >&2
+        exit $rc
+    fi
+    if [ "$json_out" = true ]; then
+        echo "$raw"
+        return 0
+    fi
+    echo "$raw" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+panes = data.get("panes", [])
+if not panes:
+    print("(no panes)")
+    sys.exit(0)
+# Plain %-formatting — f-strings disallow backslashes, and the header
+# row needed escaped quotes which was tripping the parser.
+print("%-37s %-3s %-24s %s" % ("PANE ID", "FOC", "TITLE", "CWD"))
+for p in panes:
+    foc = "*" if p.get("isFocused") else ""
+    title = (p.get("title") or "")[:24]
+    cwd = p.get("cwd") or ""
+    print("%-37s %-3s %-24s %s" % (p["id"], foc, title, cwd))
+'
+}
+
 cmd_attach() {
     local target="${1:-}"
     if [ -z "$target" ]; then
@@ -590,6 +722,11 @@ USAGE
   bossterm new-tab                  Open a new tab in a running BossTerm (MCP)
   bossterm run [--split=h|v] <cmd>  Open a new tab/split and run <cmd>     (MCP)
   bossterm send <text>              Send text to the focused pane          (MCP)
+  bossterm signal <ctrl_c|ctrl_d|ctrl_z> [--pane id]
+                                    Send a control signal                  (MCP)
+  bossterm close [--pane id]        Close a pane (Ctrl-D to its shell)     (MCP)
+  bossterm panes [--tab id] [--json]
+                                    List panes in a tab                    (MCP)
   bossterm logs [--tab id] [--lines N]
                                     Dump recent scrollback                 (MCP)
 
@@ -605,6 +742,18 @@ USAGE
 
   bossterm --version | -v           Print version
   bossterm --help    | -h           Print this help
+
+GLOBAL FLAGS
+  --port <N>                        Target the MCP server on port <N> instead of
+                                    auto-discovering. Useful when multiple
+                                    BossTerm instances are running (e.g. a
+                                    packaged install + an IDE debug session).
+                                    Equivalent to setting BOSSTERM_MCP_PORT.
+
+ENVIRONMENT
+  BOSSTERM_MCP_PORT                 Same as --port. The CLI probes only this
+                                    port instead of walking the configured
+                                    port + the +1..+9 fallback range.
 
 NOTES
   MCP-backed subcommands (new-tab, run, send, logs, mcp tools) require a
@@ -624,6 +773,34 @@ show_version() {
 # ---------------------------------------------------------------------------
 
 main() {
+    # Pre-pass: extract global `--port=N` / `--port N` and export it as
+    # BOSSTERM_MCP_PORT so the MCP plumbing picks it up. Done before the
+    # subcommand dispatch so the flag works in any position (and so the
+    # subcommands' own arg parsers don't have to know about it). Sets
+    # BOSSTERM_MCP_PORT only when the flag was supplied — env-var sets
+    # from the user's shell continue to work unchanged.
+    local _bt_argv=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --port=*)
+                export BOSSTERM_MCP_PORT="${1#--port=}"
+                shift
+                ;;
+            --port)
+                if [ -z "${2:-}" ]; then
+                    echo "Error: --port requires a value" >&2; exit 1
+                fi
+                export BOSSTERM_MCP_PORT="$2"
+                shift 2
+                ;;
+            *)
+                _bt_argv+=("$1")
+                shift
+                ;;
+        esac
+    done
+    set -- "${_bt_argv[@]+"${_bt_argv[@]}"}"
+
     # No args → launch GUI.
     if [ $# -eq 0 ]; then
         check_app
@@ -638,6 +815,9 @@ main() {
         new-tab)                shift; cmd_new_tab "$@" ;;
         run)                    shift; cmd_run "$@" ;;
         send)                   shift; cmd_send "$@" ;;
+        signal)                 shift; cmd_signal "$@" ;;
+        close)                  shift; cmd_close "$@" ;;
+        panes)                  shift; cmd_panes "$@" ;;
         attach)                 shift; cmd_attach "$@" ;;
         mcp)                    shift; cmd_mcp "$@" ;;
         config)                 shift; cmd_config "$@" ;;

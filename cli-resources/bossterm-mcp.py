@@ -16,8 +16,10 @@ Subcommands:
       port (initialize handshake completes), 1 otherwise.
 
 Transport summary (SDK 0.8.3 quirk):
-  - GET /sse with Accept: text/event-stream → server emits an `endpoint`
-    SSE event whose data line is the session-scoped POST URL.
+  - GET / with Accept: text/event-stream → server emits an `endpoint`
+    SSE event whose data line is the session-scoped POST URL. (The Kotlin
+    MCP SDK 0.8.3 mounts the SSE endpoint at the application root, not
+    `/sse`, due to a path-overload quirk in the SDK.)
   - POST that URL with JSON-RPC `initialize` → response arrives on the SSE
     stream as a `message` event.
   - POST `notifications/initialized` (no response expected).
@@ -178,7 +180,8 @@ def wait_for_response(
 
 def open_session(port: int) -> tuple[SseReader, str]:
     """Open the SSE stream and grab the session-scoped POST endpoint URL."""
-    sse_url = f"http://127.0.0.1:{port}/sse"
+    # SDK 0.8.3 mounts the SSE endpoint at root, not /sse.
+    sse_url = f"http://127.0.0.1:{port}/"
     reader = SseReader(sse_url)
     reader.start()
     try:

@@ -22,6 +22,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -1015,7 +1017,7 @@ class BossTermMcpServer(
                 .coerceIn(MIN_RUN_COMMAND_TIMEOUT_MS, MAX_RUN_COMMAND_TIMEOUT_MS)
             val timeoutMs = (args.optionalInt("timeout_ms") ?: defaultTimeoutMs)
                 .coerceIn(MIN_RUN_COMMAND_TIMEOUT_MS, MAX_RUN_COMMAND_TIMEOUT_MS)
-            val maxOutputBytes = userSettings.mcpRunCommandMaxOutputBytes.coerceAtLeast(1024)
+            val maxOutputChars = userSettings.mcpRunCommandMaxOutputChars.coerceAtLeast(1024)
             val shellReadyTimeoutMs = userSettings.mcpRunCommandShellReadyTimeoutMs
                 .coerceAtLeast(0).toLong()
 
@@ -1044,6 +1046,12 @@ class BossTermMcpServer(
             var session: TerminalSession? = null
             var paneId: String? = null
             var freshlyCreated = false
+            // Tracks where the resolved pane ACTUALLY lives. Stays as the
+            // input `tabId` for explicit-pane and cache-hit / split-create
+            // paths; switches to the new tab's id when the cache-miss path
+            // resolves `panel: "new_tab"` (the pane is in the new tab, not
+            // the original).
+            var resolvedTabId = tabId
 
             if (explicitPaneId != null) {
                 session = state.findSession(tabId, explicitPaneId)
@@ -1061,7 +1069,12 @@ class BossTermMcpServer(
                     if (cached != null) {
                         val cachedSession = state.findSession(tabId, cached)
                         if (cachedSession != null) {
-                            return@withLock PaneResolution.Hit(cached, cachedSession, fresh = false)
+                            return@withLock PaneResolution.Hit(
+                                tabId = tabId,
+                                paneId = cached,
+                                session = cachedSession,
+                                fresh = false
+                            )
                         }
                         // Stale entry (user closed the pane). Drop cache + per-pane mutex.
                         registry.clearScratchPane(tabId, paneId = cached)
@@ -1083,7 +1096,7 @@ class BossTermMcpServer(
                         "horizontal_split"
                     }
                     val effectivePanel = if (panel == "reuse") defaultPanel else panel
-                    val newPaneId = when (effectivePanel) {
+                    val newId = when (effectivePanel) {
                         "horizontal_split" -> state.splitHorizontal(
                             tabId = tabId,
                             ratio = effectiveRatio,
@@ -1100,17 +1113,45 @@ class BossTermMcpServer(
                         )
                         else -> return@withLock PaneResolution.BadPanel(effectivePanel)
                     } ?: return@withLock PaneResolution.CreateFailed
-                    val newSession = state.findSession(tabId, newPaneId)
-                        ?: state.findSession(newPaneId)
-                        ?: return@withLock PaneResolution.Unresolvable(newPaneId)
-                    registry.setScratchPane(tabId, newPaneId)
-                    PaneResolution.Hit(newPaneId, newSession, fresh = true)
+
+                    // `state.createTab` returns a TAB id; the splits return a
+                    // pane id within the existing tab. Disambiguate so the
+                    // cache write + response use the right (tabId, paneId)
+                    // pair — caching under the original tab id with the new
+                    // tab's id as the "pane id" would miss every subsequent
+                    // call (the id isn't in origTab's split tree) and the
+                    // response's tabId would point at the wrong tab.
+                    val effectiveTabId: String
+                    val effectivePaneId: String
+                    val newSession: TerminalSession
+                    if (effectivePanel == "new_tab") {
+                        // Freshly created tab: single-pane, so pane id == tab id
+                        // (PaneSnapshot for an unsplit tab uses tab.id for both).
+                        effectiveTabId = newId
+                        effectivePaneId = newId
+                        newSession = state.findSession(newId, newId)
+                            ?: state.findSession(newId)
+                            ?: return@withLock PaneResolution.Unresolvable(newId)
+                    } else {
+                        effectiveTabId = tabId
+                        effectivePaneId = newId
+                        newSession = state.findSession(tabId, newId)
+                            ?: return@withLock PaneResolution.Unresolvable(newId)
+                    }
+                    registry.setScratchPane(effectiveTabId, effectivePaneId)
+                    PaneResolution.Hit(
+                        tabId = effectiveTabId,
+                        paneId = effectivePaneId,
+                        session = newSession,
+                        fresh = true
+                    )
                 }
                 when (resolveResult) {
                     is PaneResolution.Hit -> {
                         paneId = resolveResult.paneId
                         session = resolveResult.session
                         freshlyCreated = resolveResult.fresh
+                        resolvedTabId = resolveResult.tabId
                     }
                     is PaneResolution.BadPanel -> return@addTool errorResult(
                         "Unknown panel: '${resolveResult.value}'. Expected one of: reuse, " +
@@ -1141,14 +1182,14 @@ class BossTermMcpServer(
                     timeoutMs = timeoutMs,
                     freshlyCreated = freshlyCreated,
                     shellReadyTimeoutMs = shellReadyTimeoutMs,
-                    maxOutputBytes = maxOutputBytes
+                    maxOutputChars = maxOutputChars
                 )
             }
             val durationMs = System.currentTimeMillis() - startTimeMs
 
             val result = RunCommandResult(
                 ok = outcome.error == null,
-                tabId = tabId,
+                tabId = resolvedTabId,
                 paneId = resolvedPaneId,
                 exitCode = outcome.exitCode,
                 durationMs = durationMs,
@@ -1176,17 +1217,32 @@ class BossTermMcpServer(
         timeoutMs: Int,
         freshlyCreated: Boolean,
         shellReadyTimeoutMs: Long,
-        maxOutputBytes: Int
+        maxOutputChars: Int
     ): RunOutcome {
         val terminal = session.terminal
         val textBuffer = session.textBuffer
 
         val promptReadySignal = CompletableDeferred<Unit>()
         val finishedSignal = CompletableDeferred<CommandFinish>()
-        // Snapshotted in onCommandStarted. -1 sentinel = "B never fired"; falls
-        // back to (historyAtSend, cursorYAtSend) sampled right before write.
-        var historyAtB = -1
-        var cursorYAtB = -1
+        // Snapshotted on the FIRST onCommandStarted that fires after our
+        // writeUserInput. -1 sentinel = "no B observed for our command yet";
+        // falls back to (historyAtSend, cursorYAtSend) sampled right before
+        // write. The "first-B" gate covers both:
+        //  - compound scripts (multi-statement, embedded \n) — keep the
+        //    start mark anchored at our command's FIRST B, don't let later
+        //    statements' B events stomp it.
+        //  - prior pane activity — `weHaveWritten` is flipped right before
+        //    we send, so any B/D events from a prior writer (run_in_panel,
+        //    send_input, user typing) are ignored.
+        //
+        // Atomic primitives because the listener fires on the emulator
+        // thread while our coroutine writes from a Dispatcher worker;
+        // captured `var`s would be a kotlin.jvm.internal.Ref whose `element`
+        // field isn't volatile, no JMM ordering guarantees.
+        val historyAtB = AtomicInteger(-1)
+        val cursorYAtB = AtomicInteger(-1)
+        val weHaveWritten = AtomicBoolean(false)
+        val ourCommandStarted = AtomicBoolean(false)
 
         val listener = object : CommandStateListener {
             override fun onPromptStarted() {
@@ -1195,10 +1251,13 @@ class BossTermMcpServer(
                 if (!promptReadySignal.isCompleted) promptReadySignal.complete(Unit)
             }
             override fun onCommandStarted() {
-                historyAtB = textBuffer.historyLinesCount
-                cursorYAtB = terminal.cursorY - 1
+                if (!weHaveWritten.get()) return    // prior writer's B
+                if (!ourCommandStarted.compareAndSet(false, true)) return // later statement
+                historyAtB.set(textBuffer.historyLinesCount)
+                cursorYAtB.set(terminal.cursorY - 1)
             }
             override fun onCommandFinished(exitCode: Int) {
+                if (!ourCommandStarted.get()) return // D from a prior writer's command
                 if (!finishedSignal.isCompleted) {
                     finishedSignal.complete(CommandFinish.Done(exitCode))
                 }
@@ -1229,6 +1288,12 @@ class BossTermMcpServer(
             val cursorYAtSend = terminal.cursorY - 1
 
             val toWrite = if (script.endsWith("\n")) script else script + "\n"
+            // Flip the gate BEFORE the write so the listener counts the next
+            // B as ours. Tiny race window: a stdin byte the user types in the
+            // microsecond between this write and the shell consuming it could
+            // be misattributed. Acceptable — the alternative (post-write flip)
+            // would lose B events for very-fast shells.
+            weHaveWritten.set(true)
             session.writeUserInput(toWrite)
 
             val finish = withTimeoutOrNull(timeoutMs.toLong()) {
@@ -1255,8 +1320,10 @@ class BossTermMcpServer(
 
             val historyAtEnd = textBuffer.historyLinesCount
             val cursorYAtEnd = terminal.cursorY - 1
-            val startHistory = if (historyAtB >= 0) historyAtB else historyAtSend
-            val startCursorY = if (cursorYAtB >= 0) cursorYAtB else cursorYAtSend
+            val bSnapHistory = historyAtB.get()
+            val bSnapCursorY = cursorYAtB.get()
+            val startHistory = if (bSnapHistory >= 0) bSnapHistory else historyAtSend
+            val startCursorY = if (bSnapCursorY >= 0) bSnapCursorY else cursorYAtSend
 
             when (finish) {
                 null -> {
@@ -1266,7 +1333,7 @@ class BossTermMcpServer(
                         startCursorY = startCursorY,
                         endHistory = historyAtEnd,
                         endCursorY = cursorYAtEnd,
-                        maxOutputBytes = maxOutputBytes
+                        maxOutputChars = maxOutputChars
                     )
                     RunOutcome(
                         exitCode = null,
@@ -1291,7 +1358,7 @@ class BossTermMcpServer(
                         startCursorY = startCursorY,
                         endHistory = historyAtEnd,
                         endCursorY = cursorYAtEnd,
-                        maxOutputBytes = maxOutputBytes
+                        maxOutputChars = maxOutputChars
                     )
                     RunOutcome(
                         exitCode = finish.exitCode,
@@ -1325,7 +1392,7 @@ class BossTermMcpServer(
         startCursorY: Int,
         endHistory: Int,
         endCursorY: Int,
-        maxOutputBytes: Int
+        maxOutputChars: Int
     ): SlicedOutput {
         val snapshot = textBuffer.createSnapshot()
         val historyDelta = endHistory - startHistory
@@ -1346,7 +1413,7 @@ class BossTermMcpServer(
         while (row <= endRowInclusive) {
             val line = snapshot.getLine(row).text.trimEnd()
             // +1 for the newline that joins lines.
-            if (sb.length + line.length + 1 > maxOutputBytes) {
+            if (sb.length + line.length + 1 > maxOutputChars) {
                 truncated = true
                 break
             }
@@ -1374,9 +1441,15 @@ class BossTermMcpServer(
      * session or one of the discrete failure modes the caller needs to
      * translate into MCP error responses. Sealed so the `when` in the
      * caller is exhaustive — no silent fall-through.
+     *
+     * [Hit.tabId] is the EFFECTIVE tab id — equals the input `tab_id` for
+     * cache-hits and split-create paths, but for `panel: "new_tab"` it's
+     * the freshly-created tab's id so the response and cache writes line
+     * up with the tab the pane actually lives in.
      */
     private sealed class PaneResolution {
         data class Hit(
+            val tabId: String,
             val paneId: String,
             val session: TerminalSession,
             val fresh: Boolean

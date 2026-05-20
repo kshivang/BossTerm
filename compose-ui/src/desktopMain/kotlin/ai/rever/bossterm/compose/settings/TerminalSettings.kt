@@ -794,21 +794,30 @@ data class TerminalSettings(
     val mcpRunCommandDefaultTimeoutMs: Int = 120_000,
 
     /**
-     * Cap on the captured `output` field returned by `run_command`. Beyond
-     * this, output is truncated and the response carries `truncated: true`.
+     * Cap on the captured `output` field returned by `run_command`, in
+     * UTF-16 chars (Kotlin String length). Beyond this, output is truncated
+     * and the response carries `truncated: true`.
      *
-     * Default `120_000` (~120 KB) is sized to fit under `mcpMaxAnswerChars`
-     * (`150_000` soft response cap) with headroom for the JSON wrapper, so
-     * a maxed-out `run_command` reply never trips the response-shortening
-     * ladder. Raise it (and `mcpMaxAnswerChars`) together for tooling that
-     * emits very large dumps; lower it for tight-context clients.
+     * Default `120_000` is sized to fit under `mcpMaxAnswerChars`
+     * (`150_000` soft response cap, also UTF-16 chars) with headroom for
+     * the JSON wrapper, so a maxed-out `run_command` reply never trips the
+     * response-shortening ladder. Raise it (and `mcpMaxAnswerChars`)
+     * together for tooling that emits very large dumps; lower it for
+     * tight-context clients.
      *
-     * Minimum enforced: `1024` bytes — smaller values are silently raised
+     * Unit choice: UTF-16 chars (not UTF-8 bytes) so the comparison against
+     * `mcpMaxAnswerChars` is apples-to-apples. For ASCII-heavy output 1
+     * char ≈ 1 byte; for emoji/CJK the byte count can be up to ~4x the
+     * char count, so the real network payload for an emoji-heavy command
+     * could exceed the value here. Tighten further if your transport
+     * cares about bytes.
+     *
+     * Minimum enforced: `1024` chars — smaller values are silently raised
      * so a single typical output line still fits.
      *
      * Advanced setting — no UI control, edit settings.json directly.
      */
-    val mcpRunCommandMaxOutputBytes: Int = 120_000,
+    val mcpRunCommandMaxOutputChars: Int = 120_000,
 
     /**
      * Fallback delay `run_command` waits for OSC 133;A on a freshly-created

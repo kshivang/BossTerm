@@ -364,7 +364,12 @@ Requires OSC 133 shell integration on the user's shell. See
 [`.claude/rules/shell-integration.md`](../.claude/rules/shell-integration.md).
 
 - Required:
-  - `script` (string) — shell command. A trailing newline is added if absent.
+  - `script` (string) — shell command. A trailing newline is added if
+    absent. **Avoid embedded `\n`** for multi-statement scripts (the shell
+    fires multiple OSC 133;B/D cycles; the response carries the FIRST D's
+    exit code and the slice covers from the first B onward). Use
+    `bash -lc '…'` or `sh -c '…'` to bundle compound logic into a single
+    shell command — that emits a single B/D pair.
 - Optional:
   - `pane_id` (string) — reuse a specific MCP pane. Defaults to the pane this
     tool last created for `tab_id`; if none, a new pane is created.
@@ -511,9 +516,13 @@ marker="$HOME/.bossterm/mcp.port"
 [ -f "$marker" ] || exit 0
 port=$(cat "$marker" 2>/dev/null) || exit 0
 case "$port" in ''|*[!0-9]*) exit 0 ;; esac
-if command -v nc >/dev/null 2>&1; then
-    nc -z 127.0.0.1 "$port" >/dev/null 2>&1 || exit 0
+# Fail closed (let Bash through) if nc is unavailable — without a probe we
+# can't verify the marker isn't stale, and routing Claude to a dead port
+# is worse than skipping the routing entirely.
+if ! command -v nc >/dev/null 2>&1; then
+    exit 0
 fi
+nc -z 127.0.0.1 "$port" >/dev/null 2>&1 || exit 0
 cat <<'JSON'
 {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"BossTerm MCP is attached. Use mcp__bossterm__run_command instead of Bash. Pass back pane_id from a prior call to reuse the pane."}}
 JSON
@@ -582,7 +591,7 @@ and are persisted to `~/.bossterm/settings.json`.
 | `mcpShowStatusIndicator`  | `Boolean`           | `true`      | Show the green "BossTerm MCP on" pill in the tab bar.                                                  |
 | `mcpDefaultSplitRatio`    | `Float`             | `0.3`       | Default new-pane size for `run_in_panel` / `run_command` splits when `split_ratio` is omitted. Range `0.05..0.95`. |
 | `mcpRunCommandDefaultTimeoutMs` | `Int`         | `120_000`   | Default hard timeout for `run_command` when the caller doesn't pass `timeout_ms`. Clamped per-call to `100..600_000`. |
-| `mcpRunCommandMaxOutputBytes`   | `Int`         | `120_000`   | Cap on the captured `output` field returned by `run_command`. Beyond it, output is truncated and `truncated: true` is set. Sized to fit under `mcpMaxAnswerChars` (150_000) with JSON-wrapper headroom; raise both together for tooling that emits very large dumps. Minimum enforced: 1024. Advanced; no UI control. |
+| `mcpRunCommandMaxOutputChars`   | `Int`         | `120_000`   | Cap on the captured `output` field returned by `run_command`, in UTF-16 chars. Beyond it, output is truncated and `truncated: true` is set. Sized to fit under `mcpMaxAnswerChars` (150_000, also chars) with JSON-wrapper headroom; raise both together for tooling that emits very large dumps. Minimum enforced: 1024. Advanced; no UI control. |
 | `mcpRunCommandShellReadyTimeoutMs` | `Int`      | `1_500`     | Fallback delay `run_command` waits for OSC 133;A on a freshly-created pane before sending anyway. Set `0` to skip the wait entirely. Advanced; no UI control. |
 | `mcpRunCommandDefaultPanel`     | `String`      | `"horizontal_split"` | Panel mode `run_command` uses when it has to create a new MCP scratch pane and the caller passed `panel: "reuse"` (or omitted it). One of `horizontal_split`, `vertical_split`, `new_tab`. |
 | `mcpAttachedTo`           | `Set<String>`       | `{}`        | Stable `persistenceKey`s (e.g. `"CLAUDE_CODE"`) of attached AI CLIs. Used for silent re-attach.        |

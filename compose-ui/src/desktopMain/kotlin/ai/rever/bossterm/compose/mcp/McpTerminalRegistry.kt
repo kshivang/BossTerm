@@ -174,7 +174,47 @@ object McpTerminalRegistry {
     /** Record [paneId] as the active MCP scratch pane for [tabId]. */
     internal fun setScratchPane(tabId: String, paneId: String) {
         mcpScratchPanes[tabId] = paneId
+        // Opportunistic GC: shed paneMutex entries for panes / sessions that
+        // no longer exist anywhere in the registry. Without this the mutex
+        // map grows unbounded — clearScratchPane only sheds entries on the
+        // cache-miss-with-stale-pane path, so a user who closes the cached
+        // pane and never re-runs against that tab leaks a Mutex forever.
+        // Triggered from setScratchPane because it runs on every successful
+        // new-pane creation, naturally batching the sweep behind real work.
+        if (paneMutexes.size > MCP_MUTEX_GC_THRESHOLD) {
+            gcStalePaneMutexes()
+        }
     }
+
+    /**
+     * Walk every registered state's tabs + split-tree pane snapshots,
+     * collect all live ids (tab id, pane id, session id), and evict any
+     * [paneMutexes] entries that aren't in that set. Also sweeps stale
+     * [mcpScratchPanes] entries pointing at dead panes — they'd be
+     * lazy-cleared on next read anyway, but better to drop them now while
+     * the sweep is hot.
+     */
+    private fun gcStalePaneMutexes() {
+        val live = HashSet<String>()
+        for (state in states) {
+            for (tab in state.tabs) {
+                live.add(tab.id)
+                for (snapshot in state.getPaneSnapshots(tab.id)) {
+                    live.add(snapshot.id)
+                    live.add(snapshot.sessionId)
+                }
+            }
+        }
+        paneMutexes.keys.removeIf { it !in live }
+        mcpScratchPanes.entries.removeIf { (k, v) -> k !in live || v !in live }
+    }
+
+    /**
+     * Sweep threshold for the opportunistic [gcStalePaneMutexes]. Picked to
+     * comfortably exceed the realistic pane-creation count in a single
+     * session while still bounding map growth for very long-lived ones.
+     */
+    private const val MCP_MUTEX_GC_THRESHOLD = 32
 
     /**
      * Drop the recorded scratch pane for [tabId] (called when the pane is gone).

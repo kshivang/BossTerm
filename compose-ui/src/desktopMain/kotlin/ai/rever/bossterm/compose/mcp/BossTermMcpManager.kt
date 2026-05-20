@@ -28,7 +28,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
+import java.io.IOException
 import java.net.BindException
+import java.net.InetSocketAddress
+import java.net.ServerSocket
 
 /**
  * Lifecycle wrapper that brings up the BossTerm in-process MCP server on a
@@ -275,16 +278,16 @@ class BossTermMcpManager(
      */
     private fun preflightPort(port: Int): PortProbe {
         return try {
-            java.net.ServerSocket().use { sock ->
+            ServerSocket().use { sock ->
                 sock.reuseAddress = false  // mirror Ktor; don't quietly steal a TIME_WAIT
-                sock.bind(java.net.InetSocketAddress(HOST, port))
+                sock.bind(InetSocketAddress(HOST, port))
                 PortProbe.Available
             }
         } catch (e: BindException) {
             val msg = e.message.orEmpty()
             if (looksLikePermissionDenied(msg)) PortProbe.PermissionDenied
             else PortProbe.InUse
-        } catch (e: java.io.IOException) {
+        } catch (e: IOException) {
             // Other I/O — treat as "in use" so the loop tries the next port.
             // If it's a config-level problem (e.g. binding outside loopback),
             // the user will hit the same error on every port and we'll

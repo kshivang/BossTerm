@@ -4,6 +4,7 @@ This directory contains detailed release notes for each version of BossTerm.
 
 ## Releases
 
+- [v1.1.96](v1.1.96.md) - 2026-05-20
 - [v1.1.95](v1.1.95.md) - 2026-05-15
 - [v1.0.93](v1.0.93.md) - 2026-05-08
 - [v1.0.92](v1.0.92.md) - 2026-02-20

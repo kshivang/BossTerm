@@ -802,6 +802,20 @@ fun ProperTerminal(
             // forwarded to terminal applications (like nvim with mouse reporting)
             onPaneFocus()
 
+            // Restore keyboard focus on every press. Required when the press is
+            // forwarded to a mouse-reporting TUI (claude, vim, htop, nvim, ...)
+            // via the early-return below and the previous focus owner was a
+            // sibling Compose element (e.g. a Button in an embedder's sidebar).
+            // Without this the cursor looks focused but PTY input is dropped.
+            // Mirrors the delay(50) pattern at the LaunchedEffect above and the
+            // search-close handler — lets recomposition / focus release settle
+            // before requesting. Idempotent with the requestFocus() calls in
+            // the click branches further down.
+            scope.launch {
+              delay(50)
+              focusRequester.requestFocus()
+            }
+
             // Check if mouse event should be forwarded to terminal application
             // NOTE: Exclude right-click (Secondary) from forwarding so context menu always works
             val shiftPressed = event.isShiftPressed()

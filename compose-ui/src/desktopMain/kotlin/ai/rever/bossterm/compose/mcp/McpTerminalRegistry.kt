@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Process-wide registry of live [TabbedTerminalState] instances exposed to the
@@ -198,6 +199,50 @@ object McpTerminalRegistry {
      */
     internal fun tabCacheLock(tabId: String): Mutex =
         tabCacheLocks.computeIfAbsent(tabId) { Mutex() }
+
+    // -----------------------------------------------------------------
+    // Caller-window resolution — pick the window an MCP client is
+    // running INSIDE (via process-tree walk in ProcessAncestry) so tools
+    // that default to "the primary window" target the window the calling
+    // client lives in, not whichever window happened to register first.
+    //
+    // Updated by the Ktor interceptor in BossTermMcpManager on each
+    // incoming request; read by tool handlers in BossTermMcpServer that
+    // previously called primaryState() directly.
+    //
+    // Race: in a multi-client multi-window setup, concurrent requests
+    // from different clients write here last-writer-wins. Acceptable —
+    // the single-client case (the common one) is consistent; the rare
+    // multi-client race may target one client's window for another's
+    // call for a single request, never permanently.
+    // -----------------------------------------------------------------
+
+    private val lastResolvedClient = AtomicReference<TabbedTerminalState?>(null)
+
+    /**
+     * Most recently resolved "calling-client window", or null if no
+     * request has been resolved yet OR the resolved state has been
+     * unregistered (window closed). Lazy invalidation: stale entries
+     * are detected on read and cleared.
+     */
+    internal fun lastResolvedClientWindow(): TabbedTerminalState? {
+        val cached = lastResolvedClient.get() ?: return null
+        if (cached !in states) {
+            lastResolvedClient.compareAndSet(cached, null)
+            return null
+        }
+        return cached
+    }
+
+    /**
+     * Manager-only. Pass a resolved state to record it as the most-recent
+     * caller window. Null is a no-op — a non-resolving request (client
+     * running outside any BossTerm pane) shouldn't blow away the prior
+     * resolution from a request that DID resolve.
+     */
+    internal fun setLastResolvedClientWindow(state: TabbedTerminalState?) {
+        if (state != null) lastResolvedClient.set(state)
+    }
 
     private fun persist(targets: Set<McpAttachTarget>) {
         // Sort by enum-declaration order so settings.json is deterministic

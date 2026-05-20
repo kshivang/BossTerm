@@ -309,7 +309,11 @@ class BossTermMcpServer(
         ) { request ->
             val args = request.arguments
             val includeFields = args.optionalStringSet("include_fields")
-            val primary = registry.primaryState()
+            // Prefer the window the calling client lives in (process-tree
+            // walk in ProcessAncestry, populated by BossTermMcpManager's
+            // Ktor interceptor). Falls back to first-registered when no
+            // ancestor matches a tracked pane.
+            val primary = registry.lastResolvedClientWindow() ?: registry.primaryState()
             val activeId = primary?.activeTabId
             val info = primary?.activeTab?.toTabInfo(activeId)
             // The literal JSON `null` is valid output — clients calling
@@ -867,12 +871,15 @@ class BossTermMcpServer(
             val workingDir = args.requireString("working_dir")
 
             // Resolve the target state. If tab_id given, find the state that
-            // owns it. Otherwise use the primary registered window.
+            // owns it. Otherwise prefer the window the calling client lives
+            // in (process-tree walk via ProcessAncestry); fall back to
+            // first-registered if the client can't be traced to any pane.
             val state: TabbedTerminalState = if (requestedTabId != null) {
                 registry.findState(requestedTabId)
                     ?: return@addTool errorResult("Unknown tab_id: $requestedTabId")
             } else {
-                registry.primaryState()
+                registry.lastResolvedClientWindow()
+                    ?: registry.primaryState()
                     ?: return@addTool errorResult("No registered terminal window")
             }
 
@@ -994,7 +1001,11 @@ class BossTermMcpServer(
                 registry.findState(requestedTabId)
                     ?: return@addTool errorResult("Unknown tab_id: $requestedTabId")
             } else {
-                registry.primaryState()
+                // Prefer the window the calling client lives in (process-
+                // tree walk via ProcessAncestry); fall back to first-
+                // registered when no ancestor matches a tracked pane.
+                registry.lastResolvedClientWindow()
+                    ?: registry.primaryState()
                     ?: return@addTool errorResult("No registered terminal window")
             }
             val tabId = requestedTabId

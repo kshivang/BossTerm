@@ -346,6 +346,23 @@ class BossTermMcpManager(
                         finish()
                         return@intercept
                     }
+
+                    // Resolve which BossTerm window the calling client lives in
+                    // (process-tree walk from the client's PID) and record it
+                    // so tools that default to "primary window" target the
+                    // caller's window rather than first-registered. Failure
+                    // here is silent — the resolver returns null and the
+                    // server keeps using the prior resolution (or
+                    // primaryState() if there is none). This runs only
+                    // AFTER the rebinding check passes, so we never spawn
+                    // lsof for a hostile request.
+                    val remotePort = call.request.local.remotePort
+                    val resolved = try {
+                        ProcessAncestry.resolveClientWindow(remotePort, registry)
+                    } catch (_: Throwable) {
+                        null
+                    }
+                    registry.setLastResolvedClientWindow(resolved)
                 }
                 // SDK 0.8.3 quirk: both `Route.mcp { ... }` and
                 // `Routing.mcp(path, ...) { ... }` end up mounting SSE +

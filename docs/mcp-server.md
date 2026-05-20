@@ -74,6 +74,40 @@ instead of an HTTP request with a timeout.
 The marker is an optimization, not a security boundary. Any local user
 process can already reach the loopback endpoint while it's running.
 
+### Caller-window resolution
+
+For tools that default to "the primary window" — `get_active_tab` with no
+`tab_id`, `run_in_panel` / `run_command` with no `tab_id` — the server
+picks the window the **calling client is running inside**, not whichever
+window happened to register first.
+
+Mechanism: a Ktor interceptor on every incoming MCP request looks up the
+PID owning the loopback TCP socket on the client side, walks the parent
+process tree, and matches the first ancestor PID against the shell PIDs
+of every tracked pane. The match identifies the client's pane and
+therefore its window.
+
+Behavior across scenarios:
+
+- Single BossTerm window: identical to before.
+- Multiple windows, Claude Code running in window B: tools without
+  `tab_id` target window B.
+- Multiple windows, Claude Desktop / external Inspector / a CI script
+  (no BossTerm pane in the client's ancestry): falls back to whichever
+  window most recently resolved successfully, or to first-registered if
+  none ever has.
+
+Platform support: macOS (via `lsof` + `ps`) and Linux (via
+`/proc/net/tcp` + `/proc/<pid>/status`). Cost: roughly 50–150 ms per
+request on macOS, 5–15 ms on Linux. Windows and other platforms skip
+the resolver and fall back to first-registered. All failure modes log
+at DEBUG and degrade — never crash a tool call.
+
+Concurrent multi-client racing: if two clients in different windows
+issue requests simultaneously, the resolved window is last-writer-wins
+for that single window of time. Both windows are still individually
+addressable via explicit `tab_id`.
+
 ### Initialize-time instructions
 
 The server's `initialize` response includes an MCP-spec `instructions` string

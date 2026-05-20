@@ -36,6 +36,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.compose.settings.components.SettingsDropdown
 import ai.rever.bossterm.compose.settings.components.SettingsNumberInput
 import ai.rever.bossterm.compose.settings.components.SettingsSection
 import ai.rever.bossterm.compose.settings.components.SettingsToggle
@@ -102,7 +103,7 @@ fun McpSettingsSection(
             )
 
             ai.rever.bossterm.compose.settings.components.SettingsSlider(
-                label = "Default Split Size for `run_in_panel`",
+                label = "Default Split Size for `run_in_panel` / `run_command`",
                 value = settings.mcpDefaultSplitRatio,
                 onValueChange = { onSettingsChange(settings.copy(mcpDefaultSplitRatio = it)) },
                 onValueChangeFinished = onSettingsSave,
@@ -112,10 +113,37 @@ fun McpSettingsSection(
                 valueRange = 0.05f..0.95f,
                 steps = 17, // 0.05, 0.10, ..., 0.95 = 19 stops, 17 internal steps
                 valueDisplay = { "${(it * 100).toInt()}%" },
-                description = "When an MCP agent opens a split via `run_in_panel` without " +
-                        "specifying split_ratio, the new pane gets this fraction of the " +
-                        "parent's size. Smaller values (~30%) keep the agent's main pane " +
-                        "visible; larger values give the script more real estate.",
+                description = "When an MCP agent opens a split without specifying split_ratio, " +
+                        "the new pane gets this fraction of the parent's size. Smaller values " +
+                        "(~30%) keep the agent's main pane visible; larger values give the " +
+                        "script more real estate.",
+                enabled = settings.mcpEnabled
+            )
+
+            SettingsDropdown(
+                label = "Default Panel Mode for `run_command`",
+                options = listOf("horizontal_split", "vertical_split", "new_tab"),
+                selectedOption = settings.mcpRunCommandDefaultPanel,
+                onOptionSelected = {
+                    onSettingsChange(settings.copy(mcpRunCommandDefaultPanel = it))
+                },
+                description = "Where `run_command` creates its scratch pane on the first call " +
+                        "in a tab. Subsequent calls reuse that pane regardless of this setting. " +
+                        "`horizontal_split` puts a strip below the agent's pane; `vertical_split` " +
+                        "puts it beside; `new_tab` opens a fresh tab.",
+                enabled = settings.mcpEnabled
+            )
+
+            SettingsNumberInput(
+                label = "Default `run_command` Timeout (ms)",
+                value = settings.mcpRunCommandDefaultTimeoutMs,
+                onValueChange = {
+                    onSettingsChange(settings.copy(mcpRunCommandDefaultTimeoutMs = it))
+                },
+                range = 100..600_000,
+                description = "Hard timeout `run_command` uses when the caller doesn't pass " +
+                        "`timeout_ms` explicitly. 120000 = 2 minutes (default). Range " +
+                        "100..600000. Per-call values from the agent still override this.",
                 enabled = settings.mcpEnabled
             )
         }
@@ -184,9 +212,10 @@ private fun ExposedToolsSection(
         Text(
             text = "Pick which built-in BossTerm MCP tools clients can call. Toggling here " +
                     "is equivalent to calling the `manage_tools` MCP tool — both update the " +
-                    "same setting and apply live without restarting the server. The " +
-                    "`manage_tools` tool itself is always exposed so disabling everything " +
-                    "leaves a way back.",
+                    "same setting and apply live without restarting the server. Two tools " +
+                    "are always exposed and cannot be disabled: `manage_tools` (so there's " +
+                    "always a way to re-enable the others from MCP), and `run_command` (the " +
+                    "Claude Code PreToolUse hook depends on routing Bash to it).",
             color = TextMuted,
             fontSize = 12.sp,
             modifier = Modifier.padding(bottom = 8.dp)
@@ -207,12 +236,17 @@ private fun ExposedToolsSection(
             Spacer(modifier = Modifier.height(8.dp))
             ToolGroupLabel("Write tools")
             BossTermMcpServer.BUILT_IN_WRITE_TOOLS.forEach { name ->
+                // Reserved tools (run_command) cannot be disabled — the Claude
+                // Code PreToolUse hook routes Bash to it, so taking it off the
+                // wire would brick that integration. Show the row so users
+                // know it exists, but gate the toggle.
+                val reserved = name in BossTermMcpServer.UNDISABLABLE_TOOLS
                 SettingsToggle(
                     label = name,
                     checked = name !in disabled,
                     onCheckedChange = { setEnabled(name, it) },
                     description = toolDescription(name),
-                    enabled = settings.mcpEnabled
+                    enabled = settings.mcpEnabled && !reserved
                 )
             }
         } else {
@@ -223,6 +257,18 @@ private fun ExposedToolsSection(
                 fontSize = 11.sp
             )
         }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            // Always-exposed meta-tool isn't in BUILT_IN_READ_TOOLS or
+            // BUILT_IN_WRITE_TOOLS, so the loops above never render it.
+            // Surface its existence here so users know it's there.
+            text = "Plus the always-exposed meta-tool `manage_tools` — lets clients " +
+                    "enable/disable the tools above at runtime. It cannot be hidden from " +
+                    "this surface.",
+            color = TextMuted,
+            fontSize = 11.sp
+        )
     }
 }
 
@@ -247,7 +293,10 @@ private fun toolDescription(name: String): String = when (name) {
     "read_debug_console" -> "Read recent entries from a tab's debug-data buffer."
     "send_input" -> "Write raw text (including newlines) to a tab/pane's stdin."
     "send_signal" -> "Send ctrl_c / ctrl_d / ctrl_z to a tab/pane."
-    "run_in_panel" -> "Open a new tab or split pane and run a script in it."
+    "run_in_panel" -> "Open a new tab or split pane and run a script in it (fire-and-forget)."
+    "run_command" ->
+        "Run a shell command in a visible pane and return its output + exit code. " +
+            "Reserved — cannot be disabled (the Claude Code PreToolUse hook depends on it)."
     else -> name
 }
 

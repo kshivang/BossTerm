@@ -6,6 +6,8 @@ import ai.rever.bossterm.compose.tabs.TerminalTab
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -146,6 +148,56 @@ object McpTerminalRegistry {
             persist(next)
         }
     }
+
+    // -----------------------------------------------------------------
+    // run_command pane reuse — cache the "MCP scratch pane" per tab so
+    // consecutive run_command calls stack into one visible split instead
+    // of spawning a new one each time. Eviction is lazy: the cache holds
+    // a hint, and run_command verifies the paneId still resolves via
+    // state.findSession before reusing. No listener wiring needed.
+    //
+    // Per-pane Mutex serializes concurrent run_command calls hitting the
+    // same pane — without it, two pipelined calls would interleave their
+    // scripts in the shell's stdin buffer. Stale entries accumulate when
+    // panes close (unbounded by paneId UUIDs) but the leak is bounded by
+    // pane-creation rate, which is human-scale.
+    // -----------------------------------------------------------------
+
+    private val mcpScratchPanes = ConcurrentHashMap<String /*tabId*/, String /*paneId*/>()
+    private val paneMutexes = ConcurrentHashMap<String /*paneId*/, Mutex>()
+    private val tabCacheLocks = ConcurrentHashMap<String /*tabId*/, Mutex>()
+
+    /** Most recent MCP scratch pane recorded for [tabId], or null if none. */
+    internal fun getScratchPane(tabId: String): String? = mcpScratchPanes[tabId]
+
+    /** Record [paneId] as the active MCP scratch pane for [tabId]. */
+    internal fun setScratchPane(tabId: String, paneId: String) {
+        mcpScratchPanes[tabId] = paneId
+    }
+
+    /**
+     * Drop the recorded scratch pane for [tabId] (called when the pane is gone).
+     * Pass [paneId] to also evict the stale per-pane mutex, preventing the
+     * mutex map from accumulating entries over long-lived sessions.
+     */
+    internal fun clearScratchPane(tabId: String, paneId: String? = null) {
+        mcpScratchPanes.remove(tabId)
+        if (paneId != null) paneMutexes.remove(paneId)
+    }
+
+    /** Per-pane mutex; created on first use. */
+    internal fun paneMutex(paneId: String): Mutex =
+        paneMutexes.computeIfAbsent(paneId) { Mutex() }
+
+    /**
+     * Per-tab lock that guards the scratch-pane read-or-create-and-cache
+     * critical section. Without this, two concurrent run_command calls with
+     * the same tabId can each miss the cache, each create a fresh pane, and
+     * orphan one of them. Created on first use; held briefly so contention
+     * is low.
+     */
+    internal fun tabCacheLock(tabId: String): Mutex =
+        tabCacheLocks.computeIfAbsent(tabId) { Mutex() }
 
     private fun persist(targets: Set<McpAttachTarget>) {
         // Sort by enum-declaration order so settings.json is deterministic

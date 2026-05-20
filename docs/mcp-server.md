@@ -62,6 +62,29 @@ The full advertised URL is logged at startup:
 INFO  BossTermMcpManager - BossTerm MCP server ready: http://127.0.0.1:7676/ (SSE transport, N state(s) registered)
 ```
 
+### `~/.bossterm/mcp.port` marker file
+
+Every successful bind atomically writes the **bound** port (after fallback,
+not the configured one) to `~/.bossterm/mcp.port`. It's deleted on a clean
+stop. The marker exists so external tooling — primarily the user-global
+Claude Code PreToolUse hook described below — can decide whether BossTerm
+MCP is reachable with a stat + cheap TCP probe (`nc -z 127.0.0.1 <port>`),
+instead of an HTTP request with a timeout.
+
+The marker is an optimization, not a security boundary. Any local user
+process can already reach the loopback endpoint while it's running.
+
+### Initialize-time instructions
+
+The server's `initialize` response includes an MCP-spec `instructions` string
+telling the client to prefer `run_command` over its built-in shell tool.
+Claude Code and Codex both surface MCP server instructions in the model's
+system prompt at session start, so the preference is communicated
+out-of-band — no per-project config required for it to take effect.
+
+The full string is the `BOSSTERM_MCP_INSTRUCTIONS` constant in
+[`BossTermMcpServer.kt`](../compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/mcp/BossTermMcpServer.kt).
+
 ## Built-in tools
 
 Tool names are unprefixed below. If the embedder sets
@@ -282,6 +305,65 @@ with shell startup.
   `paneId` is `null` for `new_tab`; for splits it's the new pane's session
   id, which you can pass back as `pane_id` to other tools.
 
+### `run_command` (write tool)
+
+Blocking variant of `run_in_panel`: runs a shell command in a visible BossTerm
+pane and waits for OSC 133;D before returning the **exit code, captured
+stdout/stderr, and duration**. Consecutive calls in the same tab reuse one
+"MCP scratch pane" so the UI doesn't accumulate splits.
+
+This is the tool to prefer over your client's built-in shell tool when the
+BossTerm MCP is attached — the user sees commands run in their actual
+terminal *and* the output still comes back to the agent. The server
+advertises that preference in its [initialize-time instructions](#initialize-time-instructions).
+
+Requires OSC 133 shell integration on the user's shell. See
+[`.claude/rules/shell-integration.md`](../.claude/rules/shell-integration.md).
+
+- Required:
+  - `script` (string) — shell command. A trailing newline is added if absent.
+- Optional:
+  - `pane_id` (string) — reuse a specific MCP pane. Defaults to the pane this
+    tool last created for `tab_id`; if none, a new pane is created.
+  - `tab_id` (string) — source tab. Defaults to the primary window's active
+    tab.
+  - `panel` — panel mode used **only when creating a new pane**: `"reuse"`
+    (default; behaves as `horizontal_split` for the first call),
+    `"horizontal_split"`, `"vertical_split"`, or `"new_tab"`.
+  - `split_ratio` (number, `0.05..0.95`) — only used on the first call that
+    creates the pane. Defaults to `mcpDefaultSplitRatio`.
+  - `working_dir` (string) — only used when creating a new pane.
+  - `timeout_ms` (integer, `100..600_000`) — hard timeout. Default `120_000`.
+- Returns:
+  ```json
+  {
+    "ok": true,
+    "tabId": "<uuid>",
+    "paneId": "<uuid>",
+    "exitCode": 0,
+    "durationMs": 42,
+    "output": "captured stdout/stderr (ANSI-stripped)",
+    "truncated": false,
+    "error": null
+  }
+  ```
+  - `exitCode` is `null` on timeout, TUI detection, or shell-integration
+    missing (no OSC 133;D ever arrived).
+  - `output` is capped at 200 KB; `truncated` becomes `true` when the cap is
+    hit *or* the command timed out.
+  - `error` is set when `ok` is `false`. Notable values:
+    - `"TUI detected (alternate screen entered). Use send_input + read_scrollback ..."`
+      — the command entered an alternate-screen program (`vim`, `less`,
+      `htop`, `git commit` without `-m`, etc.). The pane stays alive so the
+      caller can drive it via `send_input` + `read_scrollback`. **Do not
+      retry the same call** — it will time out the same way.
+    - `"Timed out after Nms ..."` — `timeout_ms` elapsed before OSC 133;D
+      arrived. Partial output is still captured.
+
+Concurrent calls on the same `pane_id` are serialized FIFO (per-pane mutex)
+so two pipelined commands cannot interleave their input in the shell's stdin
+buffer.
+
 ## `manage_tools` meta-tool
 
 Always exposed. Use it to introspect or change which built-in tools are
@@ -305,7 +387,8 @@ omitted when `allowWriteTools = false`).
     { "name": "read_debug_console",  "enabled": true },
     { "name": "send_input",          "enabled": false },
     { "name": "send_signal",         "enabled": true },
-    { "name": "run_in_panel",        "enabled": true }
+    { "name": "run_in_panel",        "enabled": true },
+    { "name": "run_command",         "enabled": true }
   ]
 }
 ```
@@ -324,8 +407,16 @@ Response:
 { "ok": true }
 ```
 
-Unknown names error out before any change is written. `manage_tools` itself
-is reserved and cannot be disabled — that would brick the surface.
+Unknown names error out before any change is written. Two tools are reserved
+and cannot be disabled:
+
+- `manage_tools` — disabling it would brick the surface (no way to re-enable
+  anything from MCP).
+- `run_command` — the user-global Claude Code PreToolUse hook
+  (`~/.claude/hooks/prefer-bossterm.sh`, see
+  [Using as Claude Code's default shell](#using-as-claude-codes-default-shell))
+  routes `Bash` calls to it. Disabling it would leave Claude facing a
+  "use run_command instead" message with no `run_command` on the wire.
 
 ## Attaching to AI CLIs
 
@@ -357,6 +448,84 @@ under the button. **Codex caveat**: registration succeeds with codex-cli 0.130,
 but Codex currently speaks streamable HTTP only, so the runtime connection
 will fail against the SSE endpoint until BossTerm's MCP SDK is upgraded.
 
+## Using as Claude Code's default shell
+
+`run_command` plus the initialize-time `instructions` field steer Claude Code
+toward the MCP tool whenever the BossTerm MCP is attached. For a stronger
+guarantee — Claude *can't* fall back to its built-in `Bash` when BossTerm
+is running — wire up a user-global `PreToolUse` hook. The hook reads the
+[`~/.bossterm/mcp.port` marker](#bosstermmcpport-marker-file) to decide
+whether to enforce; if the file is missing or the port isn't listening, it
+exits silently so non-BossTerm sessions are unaffected.
+
+**1. Hook script** at `~/.claude/hooks/prefer-bossterm.sh` (chmod +x):
+
+```sh
+#!/bin/sh
+set -e
+cat >/dev/null 2>&1 || true  # discard the stdin payload Claude sends
+marker="$HOME/.bossterm/mcp.port"
+[ -f "$marker" ] || exit 0
+port=$(cat "$marker" 2>/dev/null) || exit 0
+case "$port" in ''|*[!0-9]*) exit 0 ;; esac
+if command -v nc >/dev/null 2>&1; then
+    nc -z 127.0.0.1 "$port" >/dev/null 2>&1 || exit 0
+fi
+cat <<'JSON'
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"BossTerm MCP is attached. Use mcp__bossterm__run_command instead of Bash. Pass back pane_id from a prior call to reuse the pane."}}
+JSON
+```
+
+**2. Register it** in `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "$HOME/.claude/hooks/prefer-bossterm.sh" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**3. Optional `~/.claude/CLAUDE.md` addendum** (advisory, anchors the
+preference even before the hook fires on the first attempt):
+
+```markdown
+### Shell execution
+
+If `mcp__bossterm__run_command` is available, prefer it over `Bash`.
+Reuse the same pane by passing the prior call's `pane_id`. If it returns
+`error: "TUI detected"`, switch to `send_input` + `read_scrollback`.
+```
+
+Behavior with all three pieces in place:
+
+- BossTerm closed → marker absent → hook exits silently → Claude uses
+  `Bash` normally in every project.
+- BossTerm open with MCP enabled → hook denies `Bash` calls with the routing
+  reason → Claude retries with `mcp__bossterm__run_command` → command runs
+  in a visible pane and output returns to Claude.
+- BossTerm killed mid-session → marker file disappears → next `Bash` call
+  passes through (degrades gracefully without restarting Claude).
+
+Caveats:
+
+- **Claude and BossTerm must run as the same OS user.** The hook reads
+  `$HOME/.bossterm/mcp.port`; BossTerm writes to `${user.home}/.bossterm/mcp.port`.
+  Under `sudo claude` or `su` those resolve to different paths, the hook
+  finds no marker, and routing degrades to no-op (Bash still works — it
+  just doesn't go through BossTerm).
+- **`nc` must be available** on the user's `PATH` for the probe step. The
+  hook fails closed (lets Bash through) when `nc` is missing, since it
+  can't verify the marker isn't stale. macOS and most Linux distributions
+  ship `nc` by default; minimal Alpine containers don't.
+
 ## Settings reference
 
 All MCP-related fields live in
@@ -368,9 +537,13 @@ and are persisted to `~/.bossterm/settings.json`.
 | `mcpEnabled`              | `Boolean`           | `false`     | Bind the MCP server. Toggles the engine on/off live.                                                   |
 | `mcpPort`                 | `Int`               | `7676`      | Localhost TCP port. Changing while enabled performs stop-then-start.                                   |
 | `mcpShowStatusIndicator`  | `Boolean`           | `true`      | Show the green "BossTerm MCP on" pill in the tab bar.                                                  |
-| `mcpDefaultSplitRatio`    | `Float`             | `0.3`       | Default new-pane size for `run_in_panel` splits when `split_ratio` is omitted. Range `0.05..0.95`.     |
+| `mcpDefaultSplitRatio`    | `Float`             | `0.3`       | Default new-pane size for `run_in_panel` / `run_command` splits when `split_ratio` is omitted. Range `0.05..0.95`. |
+| `mcpRunCommandDefaultTimeoutMs` | `Int`         | `120_000`   | Default hard timeout for `run_command` when the caller doesn't pass `timeout_ms`. Clamped per-call to `100..600_000`. |
+| `mcpRunCommandMaxOutputBytes`   | `Int`         | `120_000`   | Cap on the captured `output` field returned by `run_command`. Beyond it, output is truncated and `truncated: true` is set. Sized to fit under `mcpMaxAnswerChars` (150_000) with JSON-wrapper headroom; raise both together for tooling that emits very large dumps. Minimum enforced: 1024. Advanced; no UI control. |
+| `mcpRunCommandShellReadyTimeoutMs` | `Int`      | `1_500`     | Fallback delay `run_command` waits for OSC 133;A on a freshly-created pane before sending anyway. Set `0` to skip the wait entirely. Advanced; no UI control. |
+| `mcpRunCommandDefaultPanel`     | `String`      | `"horizontal_split"` | Panel mode `run_command` uses when it has to create a new MCP scratch pane and the caller passed `panel: "reuse"` (or omitted it). One of `horizontal_split`, `vertical_split`, `new_tab`. |
 | `mcpAttachedTo`           | `Set<String>`       | `{}`        | Stable `persistenceKey`s (e.g. `"CLAUDE_CODE"`) of attached AI CLIs. Used for silent re-attach.        |
-| `disabledMcpTools`        | `Set<String>`       | `{}`        | Unprefixed built-in tool names hidden from clients. Edited via the UI or `manage_tools`.               |
+| `disabledMcpTools`        | `Set<String>`       | `{}`        | Unprefixed built-in tool names hidden from clients. Edited via the UI or `manage_tools`. `manage_tools` and `run_command` are reserved and ignored if added by hand. |
 | `mcpMaxAnswerChars`       | `Int`               | `150_000`   | Soft ceiling on tool response size. When exceeded, the tool returns a progressively smaller summary instead of the full payload — see [Response shortening](#response-shortening). Advanced; no UI control. |
 | `mcpConfigured`           | `Boolean`           | `false`     | Internal first-launch marker. Once `true`, embedder defaults no longer override the user's choice.     |
 
@@ -705,3 +878,9 @@ auto-refreshes once the SDK is upgraded.
 **Port stuck after Force-Quit.** The 1.5 s Ktor shutdown grace is normally
 enough, but a `kill -9` leaves the port in `TIME_WAIT`. Wait ~30 s or change
 the port temporarily.
+
+**Multiple BossTerm processes at once.** Unsupported. Each process writes
+`~/.bossterm/mcp.port` on bind; the last writer wins. Older instances are
+still reachable on their own ports, but the Claude Code PreToolUse hook
+(and anything else reading the marker) only ever sees one of them. Close
+extras before relying on the routing.

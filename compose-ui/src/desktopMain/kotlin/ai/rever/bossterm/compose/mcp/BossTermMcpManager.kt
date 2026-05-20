@@ -28,10 +28,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
+import java.io.File
 import java.io.IOException
 import java.net.BindException
 import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * Lifecycle wrapper that brings up the BossTerm in-process MCP server on a
@@ -360,6 +363,7 @@ class BossTermMcpManager(
             runningPort = port
             runningServer = mcpServerWrapper
             registry.setRunning(port)
+            writePortMarker(port)
             log.info(
                 "BossTerm MCP server ready: http://{}:{}{} (SSE transport, {} state(s) registered)",
                 HOST, port, PATH, registry.stateCount()
@@ -461,8 +465,50 @@ class BossTermMcpManager(
             runningPort = null
             runningServer = null
             registry.setStopped()
+            deletePortMarker()
         }
     }
+
+    /**
+     * Atomic write of the bound port to `~/.bossterm/mcp.port` so the user-global
+     * Claude Code `PreToolUse` hook can decide whether to route `Bash` through
+     * `mcp__bossterm__run_command` with a single stat + `nc -z` instead of an
+     * HTTP probe (~5ms vs ~300ms worst case per Bash call).
+     *
+     * Reflects the *actual* bound port, including the 7676→7685 fallback range,
+     * so the hook doesn't need to know about fallback. Best-effort: any I/O
+     * failure is logged at WARN and ignored — the marker is an optimization,
+     * not a correctness lever.
+     */
+    private fun writePortMarker(port: Int) {
+        try {
+            val target = mcpPortMarkerFile()
+            target.parentFile?.mkdirs()
+            val tmp = File(target.parentFile, ".mcp.port.tmp")
+            tmp.writeText(port.toString())
+            // ATOMIC_MOVE so concurrent hook reads never see a partial file.
+            Files.move(
+                tmp.toPath(), target.toPath(),
+                StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING
+            )
+        } catch (e: Throwable) {
+            log.warn("Failed to write MCP port marker: {}", e.message)
+        }
+    }
+
+    private fun deletePortMarker() {
+        try {
+            val target = mcpPortMarkerFile()
+            if (target.exists() && !target.delete()) {
+                log.warn("Failed to delete MCP port marker at {}", target)
+            }
+        } catch (e: Throwable) {
+            log.warn("Error while deleting MCP port marker: {}", e.message)
+        }
+    }
+
+    private fun mcpPortMarkerFile(): File =
+        File(System.getProperty("user.home"), ".bossterm/mcp.port")
 
     private data class McpRuntimeConfig(val enabled: Boolean, val port: Int)
 

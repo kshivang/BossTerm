@@ -1,9 +1,12 @@
 package ai.rever.bossterm.compose.mcp
 
 import ai.rever.bossterm.compose.TabbedTerminalState
+import ai.rever.bossterm.compose.TerminalSession
 import ai.rever.bossterm.compose.debug.ChunkSource
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import ai.rever.bossterm.terminal.model.CommandStateListener
+import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
@@ -11,6 +14,13 @@ import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -108,7 +118,8 @@ class BossTermMcpServer(
     private val writeToolRegistrations: Map<String, (Server) -> Unit> = mapOf(
         "send_input" to ::registerSendInput,
         "send_signal" to ::registerSendSignal,
-        "run_in_panel" to ::registerRunInPanel
+        "run_in_panel" to ::registerRunInPanel,
+        "run_command" to ::registerRunCommand
     )
 
     /** Reserved tools that callers cannot disable. */
@@ -148,7 +159,8 @@ class BossTermMcpServer(
                 capabilities = ServerCapabilities(
                     tools = ServerCapabilities.Tools(listChanged = true)
                 )
-            )
+            ),
+            instructions = BOSSTERM_MCP_INSTRUCTIONS
         )
         serverRef = server
 
@@ -200,10 +212,16 @@ class BossTermMcpServer(
             // Read the ref inside the lock so a concurrent detachServer() can't
             // null it between the check and the mutations.
             val server = serverRef ?: return
+            // Defense in depth: even if settings.json is hand-edited to put
+            // `manage_tools` or `run_command` in `disabledMcpTools`, never
+            // actually take them off the wire. `manage_tools` handler already
+            // refuses these names, but applyDisabledSet trusts the persisted
+            // set blindly — the filter here covers the hand-edit path.
+            val effectiveDisabled = disabled - undisablableTools
             for (name in availableToolNames()) {
                 val prefixed = toolName(name)
                 val present = server.tools.containsKey(prefixed)
-                val shouldBeExposed = name !in disabled
+                val shouldBeExposed = name !in effectiveDisabled
                 if (shouldBeExposed && !present) {
                     (readToolRegistrations[name] ?: writeToolRegistrations[name])?.invoke(server)
                 } else if (!shouldBeExposed && present) {
@@ -899,6 +917,445 @@ class BossTermMcpServer(
     }
 
     // -----------------------------------------------------------------
+    // Tool: run_command
+    // -----------------------------------------------------------------
+
+    private fun registerRunCommand(server: Server) {
+        server.addTool(
+            name = toolName("run_command"),
+            description = describe(
+                "run_command",
+                "Run a shell command in a visible BossTerm pane and return its stdout/stderr, " +
+                        "exit code, and duration. Reuses the same pane across calls within a tab — " +
+                        "pass back the `pane_id` from a prior call to keep using the same pane. " +
+                        "Requires OSC 133 shell integration on the user's shell. Use this instead " +
+                        "of your built-in shell tool when the BossTerm MCP is attached. For TUIs " +
+                        "(vim, less, htop, git commit without -m), returns `error: \"TUI detected\"`; " +
+                        "switch to send_input / read_scrollback to drive those."
+            ),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("script") {
+                        put("type", "string")
+                        put("description", "Shell command to run. A trailing newline is added if absent.")
+                    }
+                    putJsonObject("pane_id") {
+                        put("type", "string")
+                        put("description", "Optional MCP pane to reuse. Defaults to the pane this " +
+                                "tool last created for `tab_id`; if none, a new pane is created.")
+                    }
+                    putJsonObject("tab_id") {
+                        put("type", "string")
+                        put("description", "Source tab. Defaults to the primary window's active tab.")
+                    }
+                    putJsonObject("panel") {
+                        put("type", "string")
+                        put("description", "Panel mode when creating a new pane: reuse (default), " +
+                                "horizontal_split, vertical_split, new_tab.")
+                    }
+                    putJsonObject("split_ratio") {
+                        put("type", "number")
+                        put("description", "Fraction of parent dimension the NEW pane gets " +
+                                "(0.05..0.95). Defaults to `mcpDefaultSplitRatio`.")
+                    }
+                    putJsonObject("working_dir") {
+                        put("type", "string")
+                        put("description", "Working directory for the new pane. Splits inherit " +
+                                "cwd via OSC 7 by default.")
+                    }
+                    putJsonObject("timeout_ms") {
+                        put("type", "integer")
+                        put("description", "Hard timeout in milliseconds. Default 120000, max 600000.")
+                    }
+                },
+                required = listOf("script")
+            )
+        ) { request ->
+            val args = request.arguments
+            val script = args.requireString("script")
+                ?: return@addTool errorResult("Missing required argument: script")
+            if (script.isEmpty()) {
+                return@addTool errorResult("'script' must not be empty")
+            }
+            val explicitPaneId = args.requireString("pane_id")
+            val requestedTabId = args.requireString("tab_id")
+            val panel = (args.requireString("panel") ?: "reuse").lowercase()
+            val workingDir = args.requireString("working_dir")
+            val userSettings = settingsManager.settings.value
+            val defaultTimeoutMs = userSettings.mcpRunCommandDefaultTimeoutMs
+                .coerceIn(MIN_RUN_COMMAND_TIMEOUT_MS, MAX_RUN_COMMAND_TIMEOUT_MS)
+            val timeoutMs = (args.optionalInt("timeout_ms") ?: defaultTimeoutMs)
+                .coerceIn(MIN_RUN_COMMAND_TIMEOUT_MS, MAX_RUN_COMMAND_TIMEOUT_MS)
+            val maxOutputBytes = userSettings.mcpRunCommandMaxOutputBytes.coerceAtLeast(1024)
+            val shellReadyTimeoutMs = userSettings.mcpRunCommandShellReadyTimeoutMs
+                .coerceAtLeast(0).toLong()
+
+            val state = if (requestedTabId != null) {
+                registry.findState(requestedTabId)
+                    ?: return@addTool errorResult("Unknown tab_id: $requestedTabId")
+            } else {
+                registry.primaryState()
+                    ?: return@addTool errorResult("No registered terminal window")
+            }
+            val tabId = requestedTabId
+                ?: state.activeTabId
+                ?: return@addTool errorResult("No active tab")
+
+            // Resolve target pane in priority order: explicit > cached > newly-created.
+            // freshlyCreated controls whether we wait for OSC 133;A before sending.
+            //
+            // The cached-or-create path runs under the per-tab cache lock so two
+            // concurrent calls with the same tabId can't both miss the cache and
+            // both create new panes (orphaning one). Explicit pane_id skips the
+            // lock — it doesn't read or mutate the cache.
+            var session: TerminalSession? = null
+            var paneId: String? = null
+            var freshlyCreated = false
+
+            if (explicitPaneId != null) {
+                session = state.findSession(tabId, explicitPaneId)
+                    ?: return@addTool errorResult(
+                        "Unknown pane_id '$explicitPaneId' in tab '$tabId'"
+                    )
+                paneId = explicitPaneId
+                // Keep the cache in sync with explicit use so later `panel:
+                // "reuse"` calls return the same pane the user is already
+                // driving. Idempotent under concurrent explicit calls.
+                registry.setScratchPane(tabId, explicitPaneId)
+            } else {
+                val resolveResult = registry.tabCacheLock(tabId).withLock {
+                    val cached = registry.getScratchPane(tabId)
+                    if (cached != null) {
+                        val cachedSession = state.findSession(tabId, cached)
+                        if (cachedSession != null) {
+                            return@withLock PaneResolution.Hit(cached, cachedSession, fresh = false)
+                        }
+                        // Stale entry (user closed the pane). Drop cache + per-pane mutex.
+                        registry.clearScratchPane(tabId, paneId = cached)
+                    }
+
+                    // Cache-miss path: create a new pane, cache it, return it.
+                    val configuredDefault = userSettings.mcpDefaultSplitRatio
+                    val requestedRatio = args.optionalFloat("split_ratio")
+                    val effectiveRatio = (requestedRatio ?: configuredDefault)
+                        .coerceIn(0.05f, 0.95f)
+                    // The setting only controls what `panel: "reuse"` decays
+                    // to on first creation; invalid setting values quietly
+                    // fall back to "horizontal_split" so users don't get an
+                    // error referring to their own setting as the bad value.
+                    val configuredPanel = userSettings.mcpRunCommandDefaultPanel.lowercase()
+                    val defaultPanel = if (configuredPanel in VALID_RUN_COMMAND_PANELS) {
+                        configuredPanel
+                    } else {
+                        "horizontal_split"
+                    }
+                    val effectivePanel = if (panel == "reuse") defaultPanel else panel
+                    val newPaneId = when (effectivePanel) {
+                        "horizontal_split" -> state.splitHorizontal(
+                            tabId = tabId,
+                            ratio = effectiveRatio,
+                            initialCommand = null
+                        )
+                        "vertical_split" -> state.splitVertical(
+                            tabId = tabId,
+                            ratio = effectiveRatio,
+                            initialCommand = null
+                        )
+                        "new_tab" -> state.createTab(
+                            workingDir = workingDir,
+                            initialCommand = null
+                        )
+                        else -> return@withLock PaneResolution.BadPanel(effectivePanel)
+                    } ?: return@withLock PaneResolution.CreateFailed
+                    val newSession = state.findSession(tabId, newPaneId)
+                        ?: state.findSession(newPaneId)
+                        ?: return@withLock PaneResolution.Unresolvable(newPaneId)
+                    registry.setScratchPane(tabId, newPaneId)
+                    PaneResolution.Hit(newPaneId, newSession, fresh = true)
+                }
+                when (resolveResult) {
+                    is PaneResolution.Hit -> {
+                        paneId = resolveResult.paneId
+                        session = resolveResult.session
+                        freshlyCreated = resolveResult.fresh
+                    }
+                    is PaneResolution.BadPanel -> return@addTool errorResult(
+                        "Unknown panel: '${resolveResult.value}'. Expected one of: reuse, " +
+                            "horizontal_split, vertical_split, new_tab. Check your `panel` " +
+                            "argument or the `mcpRunCommandDefaultPanel` setting."
+                    )
+                    PaneResolution.CreateFailed -> return@addTool errorResult(
+                        "Failed to create pane (terminal too small?)"
+                    )
+                    is PaneResolution.Unresolvable -> return@addTool errorResult(
+                        "Created pane ${resolveResult.paneId} but cannot resolve session"
+                    )
+                }
+            }
+
+            val resolvedPaneId = paneId!!
+            val resolvedSession = session!!
+
+            // Per-pane mutex queues concurrent calls FIFO. MCP transport allows
+            // overlapping JSON-RPC requests on one session, so without this two
+            // pipelined calls would interleave their scripts in the shell's stdin.
+            val mutex = registry.paneMutex(resolvedPaneId)
+            val startTimeMs = System.currentTimeMillis()
+            val outcome = mutex.withLock {
+                executeInPane(
+                    session = resolvedSession,
+                    script = script,
+                    timeoutMs = timeoutMs,
+                    freshlyCreated = freshlyCreated,
+                    shellReadyTimeoutMs = shellReadyTimeoutMs,
+                    maxOutputBytes = maxOutputBytes
+                )
+            }
+            val durationMs = System.currentTimeMillis() - startTimeMs
+
+            val result = RunCommandResult(
+                ok = outcome.error == null,
+                tabId = tabId,
+                paneId = resolvedPaneId,
+                exitCode = outcome.exitCode,
+                durationMs = durationMs,
+                output = outcome.output,
+                truncated = outcome.truncated,
+                error = outcome.error
+            )
+            successJson(json.encodeToString(RunCommandResult.serializer(), result))
+        }
+    }
+
+    /**
+     * Drive a single command on [session]: register an OSC 133 listener, wait
+     * for the prompt (only on freshly-created panes), write the script, then
+     * suspend until OSC 133;D OR the terminal enters the alternate buffer (TUI)
+     * OR [timeoutMs] elapses. Slices the captured output via absolute history
+     * line tracking so it survives scrollback wraparound during the command.
+     *
+     * Caller MUST hold the per-pane mutex; concurrent calls on the same pane
+     * would interleave writes to the shell's stdin.
+     */
+    private suspend fun executeInPane(
+        session: TerminalSession,
+        script: String,
+        timeoutMs: Int,
+        freshlyCreated: Boolean,
+        shellReadyTimeoutMs: Long,
+        maxOutputBytes: Int
+    ): RunOutcome {
+        val terminal = session.terminal
+        val textBuffer = session.textBuffer
+
+        val promptReadySignal = CompletableDeferred<Unit>()
+        val finishedSignal = CompletableDeferred<CommandFinish>()
+        // Snapshotted in onCommandStarted. -1 sentinel = "B never fired"; falls
+        // back to (historyAtSend, cursorYAtSend) sampled right before write.
+        var historyAtB = -1
+        var cursorYAtB = -1
+
+        val listener = object : CommandStateListener {
+            override fun onPromptStarted() {
+                // SDK uses a one-shot deferred; subsequent A events (the next
+                // prompt that fires right after D) are ignored.
+                if (!promptReadySignal.isCompleted) promptReadySignal.complete(Unit)
+            }
+            override fun onCommandStarted() {
+                historyAtB = textBuffer.historyLinesCount
+                cursorYAtB = terminal.cursorY - 1
+            }
+            override fun onCommandFinished(exitCode: Int) {
+                if (!finishedSignal.isCompleted) {
+                    finishedSignal.complete(CommandFinish.Done(exitCode))
+                }
+            }
+        }
+        terminal.addCommandStateListener(listener)
+
+        return try {
+            // Freshly-created panes haven't seen their first prompt yet.
+            // Reused panes already received A from PROMPT_COMMAND after the
+            // previous D, so our listener wouldn't see another A — skip the wait.
+            if (freshlyCreated && shellReadyTimeoutMs > 0) {
+                val ready = withTimeoutOrNull(shellReadyTimeoutMs) {
+                    promptReadySignal.await()
+                }
+                if (ready == null) {
+                    log.debug(
+                        "run_command: OSC 133;A not seen within {} ms on fresh pane; " +
+                                "sending script anyway (shell integration may be missing)",
+                        shellReadyTimeoutMs
+                    )
+                }
+            }
+
+            // Fallback start mark, in case B never fires (shell-integration missing
+            // or a degenerate command path).
+            val historyAtSend = textBuffer.historyLinesCount
+            val cursorYAtSend = terminal.cursorY - 1
+
+            val toWrite = if (script.endsWith("\n")) script else script + "\n"
+            session.writeUserInput(toWrite)
+
+            val finish = withTimeoutOrNull(timeoutMs.toLong()) {
+                coroutineScope {
+                    // Alternate-screen poll runs alongside the OSC 133;D wait.
+                    // Whichever fires first completes finishedSignal. TUI detection
+                    // doesn't kill the process — the user can still send_input.
+                    val tuiPoller = launch {
+                        while (isActive) {
+                            if (textBuffer.isUsingAlternateBuffer) {
+                                if (!finishedSignal.isCompleted) {
+                                    finishedSignal.complete(CommandFinish.TuiDetected)
+                                }
+                                break
+                            }
+                            delay(TUI_POLL_INTERVAL_MS)
+                        }
+                    }
+                    val outcome = finishedSignal.await()
+                    tuiPoller.cancel()
+                    outcome
+                }
+            }
+
+            val historyAtEnd = textBuffer.historyLinesCount
+            val cursorYAtEnd = terminal.cursorY - 1
+            val startHistory = if (historyAtB >= 0) historyAtB else historyAtSend
+            val startCursorY = if (cursorYAtB >= 0) cursorYAtB else cursorYAtSend
+
+            when (finish) {
+                null -> {
+                    val sliced = sliceCommandOutput(
+                        textBuffer = textBuffer,
+                        startHistory = startHistory,
+                        startCursorY = startCursorY,
+                        endHistory = historyAtEnd,
+                        endCursorY = cursorYAtEnd,
+                        maxOutputBytes = maxOutputBytes
+                    )
+                    RunOutcome(
+                        exitCode = null,
+                        output = sliced.text,
+                        truncated = true,
+                        error = "Timed out after ${timeoutMs}ms waiting for command to finish. " +
+                                "Partial output captured."
+                    )
+                }
+                is CommandFinish.TuiDetected -> RunOutcome(
+                    exitCode = null,
+                    output = "",
+                    truncated = false,
+                    error = "TUI detected (alternate screen entered). Use send_input + " +
+                            "read_scrollback to drive the program, or rerun with " +
+                            "non-interactive flags."
+                )
+                is CommandFinish.Done -> {
+                    val sliced = sliceCommandOutput(
+                        textBuffer = textBuffer,
+                        startHistory = startHistory,
+                        startCursorY = startCursorY,
+                        endHistory = historyAtEnd,
+                        endCursorY = cursorYAtEnd,
+                        maxOutputBytes = maxOutputBytes
+                    )
+                    RunOutcome(
+                        exitCode = finish.exitCode,
+                        output = sliced.text,
+                        truncated = sliced.truncated,
+                        error = null
+                    )
+                }
+            }
+        } finally {
+            terminal.removeCommandStateListener(listener)
+        }
+    }
+
+    /**
+     * Capture the buffer slice covering the most-recent command's output.
+     *
+     * Coordinate system: absolute "history-line" numbers, captured as
+     * `historyLinesCount + cursorY-0-indexed` at B-time and D-time. Translating
+     * back to current-snapshot row indices uses the delta between historyAtB
+     * and historyAtEnd, so the slice stays correct when output scrolls into
+     * history during the command.
+     *
+     * Falls back to "last visible screen" if the start mark scrolled past the
+     * history cap (very long outputs). Caps total bytes at [MAX_OUTPUT_BYTES]
+     * and reports `truncated=true` in that case.
+     */
+    private fun sliceCommandOutput(
+        textBuffer: TerminalTextBuffer,
+        startHistory: Int,
+        startCursorY: Int,
+        endHistory: Int,
+        endCursorY: Int,
+        maxOutputBytes: Int
+    ): SlicedOutput {
+        val snapshot = textBuffer.createSnapshot()
+        val historyDelta = endHistory - startHistory
+        // First output row at end-snapshot time. May be negative (in history).
+        var startRow = startCursorY - historyDelta
+        // Last output row inclusive. cursorYAtEnd is the row where the *next*
+        // prompt will be drawn (after the final newline), so the last output
+        // line is one row above it.
+        val endRowInclusive = endCursorY - 1
+
+        val oldestAvailableRow = -snapshot.historyLinesCount
+        if (startRow < oldestAvailableRow) startRow = oldestAvailableRow
+        if (endRowInclusive < startRow) return SlicedOutput("", false)
+
+        val sb = StringBuilder()
+        var truncated = false
+        var row = startRow
+        while (row <= endRowInclusive) {
+            val line = snapshot.getLine(row).text.trimEnd()
+            // +1 for the newline that joins lines.
+            if (sb.length + line.length + 1 > maxOutputBytes) {
+                truncated = true
+                break
+            }
+            if (sb.isNotEmpty()) sb.append('\n')
+            sb.append(line)
+            row++
+        }
+        return SlicedOutput(sb.toString(), truncated)
+    }
+
+    private data class RunOutcome(
+        val exitCode: Int?,
+        val output: String,
+        val truncated: Boolean,
+        val error: String?
+    )
+
+    private sealed class CommandFinish {
+        data class Done(val exitCode: Int) : CommandFinish()
+        object TuiDetected : CommandFinish()
+    }
+
+    /**
+     * Result of the cache-locked pane resolution. Carries either a usable
+     * session or one of the discrete failure modes the caller needs to
+     * translate into MCP error responses. Sealed so the `when` in the
+     * caller is exhaustive — no silent fall-through.
+     */
+    private sealed class PaneResolution {
+        data class Hit(
+            val paneId: String,
+            val session: TerminalSession,
+            val fresh: Boolean
+        ) : PaneResolution()
+        data class BadPanel(val value: String) : PaneResolution()
+        object CreateFailed : PaneResolution()
+        data class Unresolvable(val paneId: String) : PaneResolution()
+    }
+
+    private data class SlicedOutput(val text: String, val truncated: Boolean)
+
+    // -----------------------------------------------------------------
     // Tool: read_debug_console
     // -----------------------------------------------------------------
 
@@ -1334,6 +1791,22 @@ class BossTermMcpServer(
     )
 
     @Serializable
+    data class RunCommandResult(
+        val ok: Boolean,
+        val tabId: String,
+        val paneId: String,
+        /** Process exit code from OSC 133;D, or null on timeout / TUI / shell-integration missing. */
+        val exitCode: Int?,
+        val durationMs: Long,
+        /** Captured stdout/stderr, ANSI-stripped per the emulator's per-line `.text`. */
+        val output: String,
+        /** True when output was capped at MAX_OUTPUT_BYTES or the command timed out. */
+        val truncated: Boolean,
+        /** Non-null on timeout, TUI detection, or other recoverable failures. */
+        val error: String?
+    )
+
+    @Serializable
     data class DebugConsoleChunk(
         val index: Int,
         val timestamp: Long,
@@ -1368,6 +1841,33 @@ class BossTermMcpServer(
         private const val DEFAULT_DEBUG_CHUNKS = 100
 
         /**
+         * Per-call clamp on `timeout_ms`. Even if a user sets
+         * `mcpRunCommandDefaultTimeoutMs` outside these bounds, every call is
+         * still coerced into `[MIN, MAX]` — protects against typos in
+         * settings.json and against agents passing absurd values.
+         */
+        private const val MIN_RUN_COMMAND_TIMEOUT_MS = 100
+        /** Upper bound — a single MCP request that hogs the pane for >10 min is suspect. */
+        private const val MAX_RUN_COMMAND_TIMEOUT_MS = 600_000
+
+        /**
+         * How often `run_command` checks `isUsingAlternateBuffer` while waiting
+         * for OSC 133;D. 100ms is the typical human-perception threshold and
+         * cheap relative to the surrounding wait. Not user-tunable — exposing
+         * it would invite agents to set it sky-high and lose TUI detection.
+         */
+        private const val TUI_POLL_INTERVAL_MS = 100L
+
+        /**
+         * Valid values for `mcpRunCommandDefaultPanel`. Excludes "reuse"
+         * intentionally — `reuse` only makes sense as a per-call argument
+         * that defers to this setting. If a user puts `reuse` here we fall
+         * back silently to `horizontal_split`.
+         */
+        private val VALID_RUN_COMMAND_PANELS: Set<String> =
+            setOf("horizontal_split", "vertical_split", "new_tab")
+
+        /**
          * Unprefixed built-in read tool names, in display order. Single source of
          * truth shared with the settings UI so toggle rows can't drift from the
          * tools actually registered.
@@ -1386,14 +1886,40 @@ class BossTermMcpServer(
         val BUILT_IN_WRITE_TOOLS: List<String> = listOf(
             "send_input",
             "send_signal",
-            "run_in_panel"
+            "run_in_panel",
+            "run_command"
         )
 
         /**
          * Tools that may never be disabled. `manage_tools` is the only escape hatch
          * once everything else has been turned off, so disabling it would brick the
-         * MCP surface.
+         * MCP surface. `run_command` is the tool the user-global PreToolUse hook
+         * (~/.claude/hooks/prefer-bossterm.sh) routes Bash calls to, so disabling
+         * it would leave Claude staring at a "deny: use run_command" message with
+         * no run_command on the wire.
          */
-        val UNDISABLABLE_TOOLS: Set<String> = setOf("manage_tools")
+        val UNDISABLABLE_TOOLS: Set<String> = setOf("manage_tools", "run_command")
+
+        /**
+         * Surfaced to clients in the MCP `initialize` response so they see this
+         * preference in their system prompt without any user-side config.
+         *
+         * The Kotlin MCP SDK 0.8.3 puts the string here into [io.modelcontextprotocol
+         * .kotlin.sdk.server.ServerSession.instructions], which the spec says
+         * clients SHOULD surface to the LLM as system-prompt guidance. Both
+         * Claude Code and Codex do.
+         */
+        @Suppress("ConstPropertyName")
+        const val BOSSTERM_MCP_INSTRUCTIONS: String =
+            "The `run_command` tool runs a shell command in a visible BossTerm pane and " +
+                "returns its stdout/stderr, exit code, and duration. Prefer it over your " +
+                "built-in shell tool when this server is attached — the user sees commands " +
+                "run in their actual terminal, output is still returned to you, and " +
+                "consecutive calls reuse the same pane so the UI stays clean. Pass back " +
+                "the `pane_id` from a prior call to keep using the same pane. Use " +
+                "`run_in_panel` only when you explicitly want a fire-and-forget visible " +
+                "action (long-running dev servers, REPLs). If `run_command` returns " +
+                "`error: \"TUI detected\"`, switch to `send_input` + `read_scrollback` to " +
+                "drive the program — do not retry the same command."
     }
 }

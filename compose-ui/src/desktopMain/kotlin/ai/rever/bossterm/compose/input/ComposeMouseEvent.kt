@@ -81,6 +81,19 @@ fun PointerEvent.isAltPressed(): Boolean {
 }
 
 /**
+ * Checks if Ctrl OR Cmd/Meta key is pressed in a PointerEvent — the hyperlink
+ * interaction modifier (Cmd on macOS, Ctrl elsewhere). Reads directly off the
+ * AWT event so it stays correct regardless of which Compose element currently
+ * holds keyboard focus (unlike state tracked via onPreviewKeyEvent, which only
+ * updates while the canvas is focused).
+ */
+fun PointerEvent.isCtrlOrMetaPressed(): Boolean {
+    val flags = toMouseModifierFlags()
+    return (flags and MouseButtonModifierFlags.MOUSE_BUTTON_CTRL_FLAG) != 0 ||
+        (flags and MouseButtonModifierFlags.MOUSE_BUTTON_META_FLAG) != 0
+}
+
+/**
  * Creates a BossTerm MouseEvent from a Compose PointerEvent.
  *
  * @param event The Compose pointer event

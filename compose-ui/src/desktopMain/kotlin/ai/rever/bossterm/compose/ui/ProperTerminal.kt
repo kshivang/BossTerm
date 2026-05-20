@@ -94,6 +94,7 @@ import ai.rever.bossterm.compose.input.createMouseEvent
 import ai.rever.bossterm.compose.input.toMouseModifierFlags
 import ai.rever.bossterm.compose.input.isShiftPressed
 import ai.rever.bossterm.compose.input.isAltPressed
+import ai.rever.bossterm.compose.input.isCtrlOrMetaPressed
 import ai.rever.bossterm.core.typeahead.TerminalTypeAheadManager
 import org.jetbrains.skia.FontMgr
 import ai.rever.bossterm.terminal.TextStyle as BossTextStyle
@@ -158,6 +159,11 @@ fun ProperTerminal(
   val scope = rememberCoroutineScope()
   var hasPerformedInitialResize by remember { mutableStateOf(false) }  // Track initial resize
   var isModifierPressed by remember { mutableStateOf(false) }  // Track Ctrl/Cmd for hyperlink clicks
+  // Remember whether the last press was forwarded to the TUI so Release can
+  // mirror that exact decision (instead of re-reading the modifier on release,
+  // which would mishandle the case where the user toggles Cmd/Ctrl between
+  // press and release and leave the TUI with an unpaired button-down/up).
+  var lastPressForwardedToTui by remember { mutableStateOf(false) }
   val focusRequester = remember { FocusRequester() }
   val textMeasurer = rememberTextMeasurer()
   val clipboardManager = LocalClipboardManager.current
@@ -822,15 +828,22 @@ fun ProperTerminal(
             // hyperlink (open via line ~1042) or otherwise driving the BossTerm UI, not
             // the TUI. Symmetric with the Move-handler bypass and how shift bypasses
             // for text selection. Without this, Cmd+click on a URL in mouse-reporting
-            // TUIs (claude, vim with mouse=a, ...) gets eaten by the TUI.
+            // TUIs (claude, vim with mouse=a, ...) gets eaten by the TUI. Modifier is
+            // read straight off the AWT event (focus-independent) rather than the
+            // canvas-focus-gated isModifierPressed flag.
             val shiftPressed = event.isShiftPressed()
-            if (settings.enableMouseReporting && isRemoteMouseAction(shiftPressed) && event.button != PointerButton.Secondary && !isModifierPressed) {
+            val cmdOrCtrlHeld = event.isCtrlOrMetaPressed()
+            // Reset eagerly; flip true below only if we actually forward this press.
+            // Ensures Release pairs with the correct Press decision.
+            lastPressForwardedToTui = false
+            if (settings.enableMouseReporting && isRemoteMouseAction(shiftPressed) && event.button != PointerButton.Secondary && !cmdOrCtrlHeld) {
               // If button is null, skip remote forwarding and fall through to local handling
               // Button can be null for touch events, stylus input, or exotic input devices
               event.button?.let { button ->
                 val (col, row) = pixelToCharCoords(change.position)
                 val mouseEvent = createComposeMouseEvent(event, button)
                 terminal.mousePressed(col, row, mouseEvent)
+                lastPressForwardedToTui = true
                 change.consume()
                 return@onPointerEvent
               } ?: run {
@@ -1142,15 +1155,25 @@ fun ProperTerminal(
           val pos = change.position
           val startPos = dragStartPos
 
-          // Check if mouse event should be forwarded to terminal application
-          val shiftPressed = event.isShiftPressed()
+          // Check if mouse event should be forwarded to terminal application.
           // When the user is holding Cmd/Ctrl for hyperlink interaction, bypass
           // the mouse-reporting forward (same as shift bypasses for selection)
           // so the hover-detection block below can set hoveredHyperlink and the
           // renderer can draw the link underline. Press/Release apply the same
           // bypass — see those handlers. Scroll keeps current forwarding so
           // Ctrl+wheel (TUI font zoom / pager input) still reaches the TUI.
-          if (settings.enableMouseReporting && isRemoteMouseAction(shiftPressed) && !isModifierPressed) {
+          //
+          // Drag (button held): mirror the Press decision via lastPressForwardedToTui
+          // so toggling Cmd mid-drag does not strand half a sequence at the TUI.
+          // Pure motion (no button): each event is independent — read the modifier
+          // straight off the AWT event (focus-independent).
+          val shiftPressed = event.isShiftPressed()
+          val forwardThisMove = if (change.pressed) {
+            lastPressForwardedToTui
+          } else {
+            !event.isCtrlOrMetaPressed()
+          }
+          if (settings.enableMouseReporting && isRemoteMouseAction(shiftPressed) && forwardThisMove) {
             val (col, row) = pixelToCharCoords(pos)
             if (change.pressed) {
               // Button is held - this is a drag event (BUTTON_MOTION or ALL_MOTION modes)
@@ -1292,18 +1315,19 @@ fun ProperTerminal(
           // Skip if event was already consumed by an overlay
           if (change.isConsumed) return@onPointerEvent
 
-          // Check if mouse event should be forwarded to terminal application
-          // NOTE: Mirror the Press handler — bypass when Cmd/Ctrl is held so the
-          // TUI never sees an unpaired button-up after a Cmd+click that we handled
-          // locally (e.g. a hyperlink open).
+          // Check if mouse event should be forwarded to terminal application.
+          // Mirror the exact Press decision via lastPressForwardedToTui rather
+          // than re-reading the modifier here — toggling Cmd/Ctrl between press
+          // and release would otherwise leave the TUI with an unpaired event.
           val shiftPressed = event.isShiftPressed()
-          if (settings.enableMouseReporting && isRemoteMouseAction(shiftPressed) && !isModifierPressed) {
+          if (settings.enableMouseReporting && isRemoteMouseAction(shiftPressed) && lastPressForwardedToTui) {
             // If button is null, skip remote forwarding and fall through to local handling
             // Button can be null for touch events, stylus input, or exotic input devices
             event.button?.let { button ->
               val (col, row) = pixelToCharCoords(change.position)
               val mouseEvent = createComposeMouseEvent(event, button)
               terminal.mouseReleased(col, row, mouseEvent)
+              lastPressForwardedToTui = false
               change.consume()
               return@onPointerEvent
             } ?: run {

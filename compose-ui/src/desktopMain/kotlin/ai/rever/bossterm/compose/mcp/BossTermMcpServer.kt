@@ -908,11 +908,33 @@ class BossTermMcpServer(
                     // path auto-appends '\n', matching the new_tab branch. An empty script
                     // means "just split, don't run anything".
                     val normalizedScript = script.removeSuffix("\n").ifEmpty { null }
-                    val paneId = if (panel == "horizontal_split") {
-                        state.splitHorizontal(targetTabId, ratio = effectiveRatio, initialCommand = normalizedScript)
-                    } else {
-                        state.splitVertical(targetTabId, ratio = effectiveRatio, initialCommand = normalizedScript)
+                    // Anchor stacking: if there's already an MCP scratch pane for
+                    // this tab and the caller asked for horizontal_split, stack
+                    // the new pane to the RIGHT of that existing pane instead of
+                    // splitting whatever's focused — keeps consecutive MCP panes
+                    // in a horizontal strip along the bottom rather than fighting
+                    // for the focused pane's real estate.
+                    val anchor = if (panel == "horizontal_split") {
+                        registry.getScratchPane(targetTabId)
+                            ?.takeIf { state.findSession(targetTabId, it) != null }
+                    } else null
+                    val paneId = when {
+                        anchor != null -> state.splitVerticalFromPane(
+                            tabId = targetTabId,
+                            anchorPaneId = anchor,
+                            ratio = effectiveRatio,
+                            initialCommand = normalizedScript
+                        )
+                        panel == "horizontal_split" -> state.splitHorizontal(
+                            targetTabId, ratio = effectiveRatio, initialCommand = normalizedScript
+                        )
+                        else -> state.splitVertical(
+                            targetTabId, ratio = effectiveRatio, initialCommand = normalizedScript
+                        )
                     } ?: return@addTool errorResult("Split failed (terminal too small?)")
+                    // Record the new pane as the latest scratch pane so the
+                    // next call has it as its anchor (chains horizontally).
+                    registry.setScratchPane(targetTabId, paneId)
                     val payload = RunInPanelResult(ok = true, tabId = targetTabId, paneId = paneId)
                     successJson(json.encodeToString(RunInPanelResult.serializer(), payload))
                 }

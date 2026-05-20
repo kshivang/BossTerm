@@ -339,6 +339,15 @@ with shell startup.
   `paneId` is `null` for `new_tab`; for splits it's the new pane's session
   id, which you can pass back as `pane_id` to other tools.
 
+**Stacking behavior with `horizontal_split`:** when the tab already has an
+MCP-created scratch pane (from a prior `run_in_panel` or `run_command`),
+the next `horizontal_split` call splits the existing scratch pane *to the
+right*, not the focused pane downward. Consecutive fire-and-forget
+launches therefore line up as a horizontal strip along the bottom of the
+tab rather than fighting each other for whatever pane the user happens to
+have clicked on. `vertical_split` and `new_tab` keep their straightforward
+semantics (target the focused pane or open a fresh tab).
+
 ### `run_command` (write tool)
 
 Blocking variant of `run_in_panel`: runs a shell command in a visible BossTerm

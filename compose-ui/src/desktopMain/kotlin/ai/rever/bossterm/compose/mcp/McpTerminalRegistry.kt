@@ -6,7 +6,10 @@ import ai.rever.bossterm.compose.tabs.TerminalTab
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Process-wide registry of live [TabbedTerminalState] instances exposed to the
@@ -145,6 +148,140 @@ object McpTerminalRegistry {
             _attachedTargets.value = next
             persist(next)
         }
+    }
+
+    // -----------------------------------------------------------------
+    // run_command pane reuse — cache the "MCP scratch pane" per tab so
+    // consecutive run_command calls stack into one visible split instead
+    // of spawning a new one each time. Eviction is lazy: the cache holds
+    // a hint, and run_command verifies the paneId still resolves via
+    // state.findSession before reusing. No listener wiring needed.
+    //
+    // Per-pane Mutex serializes concurrent run_command calls hitting the
+    // same pane — without it, two pipelined calls would interleave their
+    // scripts in the shell's stdin buffer. Stale entries accumulate when
+    // panes close (unbounded by paneId UUIDs) but the leak is bounded by
+    // pane-creation rate, which is human-scale.
+    // -----------------------------------------------------------------
+
+    private val mcpScratchPanes = ConcurrentHashMap<String /*tabId*/, String /*paneId*/>()
+    private val paneMutexes = ConcurrentHashMap<String /*paneId*/, Mutex>()
+    private val tabCacheLocks = ConcurrentHashMap<String /*tabId*/, Mutex>()
+
+    /** Most recent MCP scratch pane recorded for [tabId], or null if none. */
+    internal fun getScratchPane(tabId: String): String? = mcpScratchPanes[tabId]
+
+    /** Record [paneId] as the active MCP scratch pane for [tabId]. */
+    internal fun setScratchPane(tabId: String, paneId: String) {
+        mcpScratchPanes[tabId] = paneId
+        // Opportunistic GC: shed paneMutex entries for panes / sessions that
+        // no longer exist anywhere in the registry. Without this the mutex
+        // map grows unbounded — clearScratchPane only sheds entries on the
+        // cache-miss-with-stale-pane path, so a user who closes the cached
+        // pane and never re-runs against that tab leaks a Mutex forever.
+        // Triggered from setScratchPane because it runs on every successful
+        // new-pane creation, naturally batching the sweep behind real work.
+        if (paneMutexes.size > MCP_MUTEX_GC_THRESHOLD) {
+            gcStalePaneMutexes()
+        }
+    }
+
+    /**
+     * Walk every registered state's tabs + split-tree pane snapshots,
+     * collect all live ids (tab id, pane id, session id), and evict any
+     * [paneMutexes] entries that aren't in that set. Also sweeps stale
+     * [mcpScratchPanes] entries pointing at dead panes — they'd be
+     * lazy-cleared on next read anyway, but better to drop them now while
+     * the sweep is hot.
+     */
+    private fun gcStalePaneMutexes() {
+        val live = HashSet<String>()
+        for (state in states) {
+            for (tab in state.tabs) {
+                live.add(tab.id)
+                for (snapshot in state.getPaneSnapshots(tab.id)) {
+                    live.add(snapshot.id)
+                    live.add(snapshot.sessionId)
+                }
+            }
+        }
+        paneMutexes.keys.removeIf { it !in live }
+        mcpScratchPanes.entries.removeIf { (k, v) -> k !in live || v !in live }
+    }
+
+    /**
+     * Sweep threshold for the opportunistic [gcStalePaneMutexes]. Picked to
+     * comfortably exceed the realistic pane-creation count in a single
+     * session while still bounding map growth for very long-lived ones.
+     */
+    private const val MCP_MUTEX_GC_THRESHOLD = 32
+
+    /**
+     * Drop the recorded scratch pane for [tabId] (called when the pane is gone).
+     * Pass [paneId] to also evict the stale per-pane mutex, preventing the
+     * mutex map from accumulating entries over long-lived sessions.
+     */
+    internal fun clearScratchPane(tabId: String, paneId: String? = null) {
+        mcpScratchPanes.remove(tabId)
+        if (paneId != null) paneMutexes.remove(paneId)
+    }
+
+    /** Per-pane mutex; created on first use. */
+    internal fun paneMutex(paneId: String): Mutex =
+        paneMutexes.computeIfAbsent(paneId) { Mutex() }
+
+    /**
+     * Per-tab lock that guards the scratch-pane read-or-create-and-cache
+     * critical section. Without this, two concurrent run_command calls with
+     * the same tabId can each miss the cache, each create a fresh pane, and
+     * orphan one of them. Created on first use; held briefly so contention
+     * is low.
+     */
+    internal fun tabCacheLock(tabId: String): Mutex =
+        tabCacheLocks.computeIfAbsent(tabId) { Mutex() }
+
+    // -----------------------------------------------------------------
+    // Caller-window resolution — pick the window an MCP client is
+    // running INSIDE (via process-tree walk in ProcessAncestry) so tools
+    // that default to "the primary window" target the window the calling
+    // client lives in, not whichever window happened to register first.
+    //
+    // Updated by the Ktor interceptor in BossTermMcpManager on each
+    // incoming request; read by tool handlers in BossTermMcpServer that
+    // previously called primaryState() directly.
+    //
+    // Race: in a multi-client multi-window setup, concurrent requests
+    // from different clients write here last-writer-wins. Acceptable —
+    // the single-client case (the common one) is consistent; the rare
+    // multi-client race may target one client's window for another's
+    // call for a single request, never permanently.
+    // -----------------------------------------------------------------
+
+    private val lastResolvedClient = AtomicReference<TabbedTerminalState?>(null)
+
+    /**
+     * Most recently resolved "calling-client window", or null if no
+     * request has been resolved yet OR the resolved state has been
+     * unregistered (window closed). Lazy invalidation: stale entries
+     * are detected on read and cleared.
+     */
+    internal fun lastResolvedClientWindow(): TabbedTerminalState? {
+        val cached = lastResolvedClient.get() ?: return null
+        if (cached !in states) {
+            lastResolvedClient.compareAndSet(cached, null)
+            return null
+        }
+        return cached
+    }
+
+    /**
+     * Manager-only. Pass a resolved state to record it as the most-recent
+     * caller window. Null is a no-op — a non-resolving request (client
+     * running outside any BossTerm pane) shouldn't blow away the prior
+     * resolution from a request that DID resolve.
+     */
+    internal fun setLastResolvedClientWindow(state: TabbedTerminalState?) {
+        if (state != null) lastResolvedClient.set(state)
     }
 
     private fun persist(targets: Set<McpAttachTarget>) {

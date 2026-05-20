@@ -602,23 +602,56 @@ class TabbedTerminalState {
     }
 
     /**
+     * Split a specific pane (by id) vertically — the new pane appears to the
+     * right of [anchorPaneId]. Equivalent to focusing [anchorPaneId] then
+     * calling [splitVertical], but as one atomic operation. If the anchor
+     * pane doesn't exist, falls back to splitting the currently focused pane.
+     *
+     * Designed for the MCP tools (run_command / run_in_panel) so they can
+     * stack scratch panes horizontally in the bottom row instead of
+     * blindly splitting whatever pane happens to be focused.
+     *
+     * @return The session id of the new pane, or null if the split failed.
+     */
+    fun splitVerticalFromPane(
+        tabId: String,
+        anchorPaneId: String,
+        ratio: Float? = null,
+        initialCommand: String? = null
+    ): String? = performSplit(
+        SplitOrientation.VERTICAL, tabId, ratio, initialCommand, anchorPaneId
+    )
+
+    /**
      * Internal helper to perform a split in the given orientation.
      *
      * @param initialCommand Optional command to run in the new pane once its shell is ready
      *   (OSC 133;A or fallback delay). Held by the session bootstrap so the bytes are not
      *   eaten by shell startup output (banner, rc-file sourcing, prompt draw).
+     * @param anchorPaneId Optional pane to split. When provided, that pane is
+     *   focused before the split so [SplitViewState.splitFocusedPane] targets
+     *   it. Ignored if the pane doesn't exist (falls back to current focus).
      */
     private fun performSplit(
         orientation: SplitOrientation,
         tabId: String?,
         ratio: Float? = null,
-        initialCommand: String? = null
+        initialCommand: String? = null,
+        anchorPaneId: String? = null
     ): String? {
         val resolvedTabId = resolveTabId(tabId) ?: return null
         val controller = tabController ?: return null
         val tab = controller.getTabById(resolvedTabId) as? TerminalTab ?: return null
         val splitState = getOrCreateSplitState(resolvedTabId) ?: return null
         val settings = SettingsManager.instance.settings.value
+
+        // Anchor focus before split, when an explicit pane was requested.
+        // SplitViewState.setFocusedPane silently no-ops on unknown ids, so
+        // we read back focusedPaneId to confirm whether the redirect took
+        // effect — debug only; behavior degrades gracefully either way.
+        if (anchorPaneId != null) {
+            splitState.setFocusedPane(anchorPaneId)
+        }
 
         val workingDir = if (settings.splitInheritWorkingDirectory) {
             splitState.getFocusedSession()?.workingDirectory?.value

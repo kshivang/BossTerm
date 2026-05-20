@@ -1064,6 +1064,15 @@ fun ProperTerminal(
               if (!handled) {
                 HyperlinkDetector.openUrl(link.url)
               }
+              // Opening the URL hands focus to the browser, so the canvas never
+              // sees the Cmd/Ctrl KeyUp — isModifierPressed would stay true and
+              // the renderer would keep the link underlined indefinitely. Clear
+              // both flags and force a redraw so the underline drops now; the
+              // next Move event after the user re-engages will reset them
+              // naturally based on the actual cursor + modifier state.
+              isModifierPressed = false
+              hoveredHyperlink = null
+              display.requestImmediateRedraw()
               change.consume()
               return@onPointerEvent
             }

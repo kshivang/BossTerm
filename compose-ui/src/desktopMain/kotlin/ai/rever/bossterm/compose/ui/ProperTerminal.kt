@@ -818,8 +818,13 @@ fun ProperTerminal(
 
             // Check if mouse event should be forwarded to terminal application
             // NOTE: Exclude right-click (Secondary) from forwarding so context menu always works
+            // NOTE: Also bypass when Cmd/Ctrl is held — the user is interacting with a
+            // hyperlink (open via line ~1042) or otherwise driving the BossTerm UI, not
+            // the TUI. Symmetric with the Move-handler bypass and how shift bypasses
+            // for text selection. Without this, Cmd+click on a URL in mouse-reporting
+            // TUIs (claude, vim with mouse=a, ...) gets eaten by the TUI.
             val shiftPressed = event.isShiftPressed()
-            if (settings.enableMouseReporting && isRemoteMouseAction(shiftPressed) && event.button != PointerButton.Secondary) {
+            if (settings.enableMouseReporting && isRemoteMouseAction(shiftPressed) && event.button != PointerButton.Secondary && !isModifierPressed) {
               // If button is null, skip remote forwarding and fall through to local handling
               // Button can be null for touch events, stylus input, or exotic input devices
               event.button?.let { button ->
@@ -1139,7 +1144,13 @@ fun ProperTerminal(
 
           // Check if mouse event should be forwarded to terminal application
           val shiftPressed = event.isShiftPressed()
-          if (settings.enableMouseReporting && isRemoteMouseAction(shiftPressed)) {
+          // When the user is holding Cmd/Ctrl for hyperlink interaction, bypass
+          // the mouse-reporting forward (same as shift bypasses for selection)
+          // so the hover-detection block below can set hoveredHyperlink and the
+          // renderer can draw the link underline. Press/Release apply the same
+          // bypass — see those handlers. Scroll keeps current forwarding so
+          // Ctrl+wheel (TUI font zoom / pager input) still reaches the TUI.
+          if (settings.enableMouseReporting && isRemoteMouseAction(shiftPressed) && !isModifierPressed) {
             val (col, row) = pixelToCharCoords(pos)
             if (change.pressed) {
               // Button is held - this is a drag event (BUTTON_MOTION or ALL_MOTION modes)
@@ -1282,8 +1293,11 @@ fun ProperTerminal(
           if (change.isConsumed) return@onPointerEvent
 
           // Check if mouse event should be forwarded to terminal application
+          // NOTE: Mirror the Press handler — bypass when Cmd/Ctrl is held so the
+          // TUI never sees an unpaired button-up after a Cmd+click that we handled
+          // locally (e.g. a hyperlink open).
           val shiftPressed = event.isShiftPressed()
-          if (settings.enableMouseReporting && isRemoteMouseAction(shiftPressed)) {
+          if (settings.enableMouseReporting && isRemoteMouseAction(shiftPressed) && !isModifierPressed) {
             // If button is null, skip remote forwarding and fall through to local handling
             // Button can be null for touch events, stylus input, or exotic input devices
             event.button?.let { button ->

@@ -146,6 +146,24 @@ fun McpSettingsSection(
                         "100..600000. Per-call values from the agent still override this.",
                 enabled = settings.mcpEnabled
             )
+
+            SettingsToggle(
+                label = "Use `run_command` as AI clients' default shell",
+                checked = settings.mcpRunCommandPreferredShell,
+                onCheckedChange = {
+                    onSettingsChange(settings.copy(mcpRunCommandPreferredShell = it))
+                },
+                description = "Off by default: `run_command` is available, but the agent uses " +
+                        "it only when you explicitly ask (e.g. \"split and run X\"). Turn on to " +
+                        "prefer `run_command` over the client's own built-in shell for " +
+                        "everything, so commands run in a visible BossTerm pane. The MCP " +
+                        "initialize instructions carry this as a soft nudge (applies on the " +
+                        "next client connect). If you've installed the Claude Code PreToolUse " +
+                        "hook (docs/mcp-server.md), this also writes the ~/.bossterm/mcp.port " +
+                        "marker live, so the hook enforces it instantly — toggling flips Bash " +
+                        "routing on/off per command with no Claude restart.",
+                enabled = settings.mcpEnabled
+            )
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -212,10 +230,9 @@ private fun ExposedToolsSection(
         Text(
             text = "Pick which built-in BossTerm MCP tools clients can call. Toggling here " +
                     "is equivalent to calling the `manage_tools` MCP tool — both update the " +
-                    "same setting and apply live without restarting the server. Two tools " +
-                    "are always exposed and cannot be disabled: `manage_tools` (so there's " +
-                    "always a way to re-enable the others from MCP), and `run_command` (the " +
-                    "Claude Code PreToolUse hook depends on routing Bash to it).",
+                    "same setting and apply live without restarting the server. The " +
+                    "`manage_tools` tool itself is always exposed so disabling everything " +
+                    "leaves a way back.",
             color = TextMuted,
             fontSize = 12.sp,
             modifier = Modifier.padding(bottom = 8.dp)
@@ -236,10 +253,8 @@ private fun ExposedToolsSection(
             Spacer(modifier = Modifier.height(8.dp))
             ToolGroupLabel("Write tools")
             BossTermMcpServer.BUILT_IN_WRITE_TOOLS.forEach { name ->
-                // Reserved tools (run_command) cannot be disabled — the Claude
-                // Code PreToolUse hook routes Bash to it, so taking it off the
-                // wire would brick that integration. Show the row so users
-                // know it exists, but gate the toggle.
+                // Reserved tools (only manage_tools today) can never be disabled;
+                // it isn't in this list, so every write tool is togglable.
                 val reserved = name in BossTermMcpServer.UNDISABLABLE_TOOLS
                 SettingsToggle(
                     label = name,
@@ -296,7 +311,8 @@ private fun toolDescription(name: String): String = when (name) {
     "run_in_panel" -> "Open a new tab or split pane and run a script in it (fire-and-forget)."
     "run_command" ->
         "Run a shell command in a visible pane and return its output + exit code. " +
-            "Reserved — cannot be disabled (the Claude Code PreToolUse hook depends on it)."
+            "Available for explicit use by default; see 'Use run_command as default " +
+            "shell' above to make AI clients prefer it over their built-in shell."
     else -> name
 }
 

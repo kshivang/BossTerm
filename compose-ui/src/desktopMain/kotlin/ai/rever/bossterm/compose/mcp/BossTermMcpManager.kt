@@ -89,6 +89,7 @@ class BossTermMcpManager(
 
     private var watcherJob: Job? = null
     private var disabledToolsWatcherJob: Job? = null
+    private var preferredShellWatcherJob: Job? = null
 
     /** Begin observing settings. Idempotent. Safe to call multiple times. */
     fun start() {
@@ -153,6 +154,25 @@ class BossTermMcpManager(
                     }
                 }
         }
+
+        // Marker reflects the "use run_command as default shell" setting so the
+        // user-global PreToolUse hook (which keys off ~/.bossterm/mcp.port)
+        // turns on/off the instant, per-Bash-call enforcement the moment the
+        // setting changes — no client restart. Write when opted in AND an
+        // engine is bound; delete otherwise. Also clears any stale marker left
+        // by a prior kill -9 when the setting is (or has become) off.
+        preferredShellWatcherJob = parentScope.launch {
+            settingsManager.settings
+                .map { it.mcpRunCommandPreferredShell }
+                .distinctUntilChanged()
+                .collect { preferred ->
+                    mutex.withLock {
+                        val port = runningPort
+                        if (preferred && port != null) writePortMarker(port)
+                        else deletePortMarker()
+                    }
+                }
+        }
     }
 
     /**
@@ -164,6 +184,8 @@ class BossTermMcpManager(
         watcherJob = null
         disabledToolsWatcherJob?.cancel()
         disabledToolsWatcherJob = null
+        preferredShellWatcherJob?.cancel()
+        preferredShellWatcherJob = null
         // Async shutdown so callers (including Compose onDispose on the UI
         // thread) don't block waiting for Ktor's grace period.
         parentScope.launch(Dispatchers.IO) {
@@ -380,7 +402,13 @@ class BossTermMcpManager(
             runningPort = port
             runningServer = mcpServerWrapper
             registry.setRunning(port)
-            writePortMarker(port)
+            // The marker is gated on the "use run_command as default shell"
+            // setting: it exists ONLY while the user has opted in, so the
+            // PreToolUse hook (which keys off it) enforces run_command exactly
+            // when desired. Live toggles are handled by preferredShellWatcherJob.
+            if (settingsManager.settings.value.mcpRunCommandPreferredShell) {
+                writePortMarker(port)
+            }
             log.info(
                 "BossTerm MCP server ready: http://{}:{}{} (SSE transport, {} state(s) registered)",
                 HOST, port, PATH, registry.stateCount()
@@ -491,6 +519,13 @@ class BossTermMcpManager(
      * Claude Code `PreToolUse` hook can decide whether to route `Bash` through
      * `mcp__bossterm__run_command` with a single stat + `nc -z` instead of an
      * HTTP probe (~5ms vs ~300ms worst case per Bash call).
+     *
+     * The marker is GATED on [TerminalSettings.mcpRunCommandPreferredShell]: it
+     * is present only while the user has opted into run_command as the default
+     * shell, so the hook enforces exactly when desired and toggling the setting
+     * flips enforcement instantly (the marker is written/deleted live by
+     * `preferredShellWatcherJob`). Callers must check the setting before calling
+     * this; the bind path and the watcher both do.
      *
      * Reflects the *actual* bound port, including the 7676→7685 fallback range,
      * so the hook doesn't need to know about fallback. Best-effort: any I/O

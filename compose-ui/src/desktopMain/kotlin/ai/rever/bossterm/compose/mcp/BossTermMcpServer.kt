@@ -162,7 +162,19 @@ class BossTermMcpServer(
                     tools = ServerCapabilities.Tools(listChanged = true)
                 )
             ),
-            instructions = BOSSTERM_MCP_INSTRUCTIONS
+            // Provider, not a baked string: the SDK invokes it per client
+            // session, so toggling `mcpRunCommandPreferredShell` takes effect
+            // for the next client to connect without an engine rebuild. When
+            // the user hasn't opted in, we advertise NO preference (empty
+            // string) — run_command stays available for explicit use, the
+            // agent just isn't told to use it instead of its own shell.
+            instructionsProvider = {
+                if (settingsManager.settings.value.mcpRunCommandPreferredShell) {
+                    BOSSTERM_MCP_INSTRUCTIONS
+                } else {
+                    ""
+                }
+            }
         )
         serverRef = server
 
@@ -215,10 +227,11 @@ class BossTermMcpServer(
             // null it between the check and the mutations.
             val server = serverRef ?: return
             // Defense in depth: even if settings.json is hand-edited to put
-            // `manage_tools` or `run_command` in `disabledMcpTools`, never
-            // actually take them off the wire. `manage_tools` handler already
-            // refuses these names, but applyDisabledSet trusts the persisted
-            // set blindly — the filter here covers the hand-edit path.
+            // `manage_tools` in `disabledMcpTools`, never actually take it off
+            // the wire — that's the one escape hatch back to the other tools.
+            // The manage_tools handler already refuses the name, but
+            // applyDisabledSet trusts the persisted set blindly, so the filter
+            // here covers the hand-edit path.
             val effectiveDisabled = disabled - undisablableTools
             for (name in availableToolNames()) {
                 val prefixed = toolName(name)
@@ -959,8 +972,7 @@ class BossTermMcpServer(
                 "Run a shell command in a visible BossTerm pane and return its stdout/stderr, " +
                         "exit code, and duration. Reuses the same pane across calls within a tab — " +
                         "pass back the `pane_id` from a prior call to keep using the same pane. " +
-                        "Requires OSC 133 shell integration on the user's shell. Use this instead " +
-                        "of your built-in shell tool when the BossTerm MCP is attached. For TUIs " +
+                        "Requires OSC 133 shell integration on the user's shell. For TUIs " +
                         "(vim, less, htop, git commit without -m), returns `error: \"TUI detected\"`; " +
                         "switch to send_input / read_scrollback to drive those."
             ),
@@ -1999,32 +2011,30 @@ class BossTermMcpServer(
         /**
          * Tools that may never be disabled. `manage_tools` is the only escape hatch
          * once everything else has been turned off, so disabling it would brick the
-         * MCP surface. `run_command` is the tool the user-global PreToolUse hook
-         * (~/.claude/hooks/prefer-bossterm.sh) routes Bash calls to, so disabling
-         * it would leave Claude staring at a "deny: use run_command" message with
-         * no run_command on the wire.
+         * MCP surface — it's the one tool that must always stay on the wire.
          */
-        val UNDISABLABLE_TOOLS: Set<String> = setOf("manage_tools", "run_command")
+        val UNDISABLABLE_TOOLS: Set<String> = setOf("manage_tools")
 
         /**
-         * Surfaced to clients in the MCP `initialize` response so they see this
-         * preference in their system prompt without any user-side config.
+         * Advertised to clients in the MCP `initialize` response **only when**
+         * the user opts in via `mcpRunCommandPreferredShell` (see the provider
+         * in [createServer]). When off, no instructions are sent and the agent
+         * uses `run_command` only when explicitly asked.
          *
-         * The Kotlin MCP SDK 0.8.3 puts the string here into [io.modelcontextprotocol
+         * The Kotlin MCP SDK 0.8.3 surfaces this in [io.modelcontextprotocol
          * .kotlin.sdk.server.ServerSession.instructions], which the spec says
-         * clients SHOULD surface to the LLM as system-prompt guidance. Both
-         * Claude Code and Codex do.
+         * clients SHOULD put in the model's system prompt. Both Claude Code and
+         * Codex do.
          */
         @Suppress("ConstPropertyName")
         const val BOSSTERM_MCP_INSTRUCTIONS: String =
-            "The `run_command` tool runs a shell command in a visible BossTerm pane and " +
-                "returns its stdout/stderr, exit code, and duration. Prefer it over your " +
-                "built-in shell tool when this server is attached — the user sees commands " +
-                "run in their actual terminal, output is still returned to you, and " +
-                "consecutive calls reuse the same pane so the UI stays clean. Pass back " +
-                "the `pane_id` from a prior call to keep using the same pane. Use " +
-                "`run_in_panel` only when you explicitly want a fire-and-forget visible " +
-                "action (long-running dev servers, REPLs). If `run_command` returns " +
+            "Prefer the `run_command` tool over your built-in shell tool: it runs the " +
+                "command in a visible BossTerm pane and still returns stdout/stderr, exit " +
+                "code, and duration, so the user sees commands run in their actual terminal " +
+                "and consecutive calls reuse the same pane (pass back the `pane_id` from a " +
+                "prior call). If `run_command` isn't in your tool list, just use your " +
+                "built-in shell. Use `run_in_panel` only for fire-and-forget visible actions " +
+                "(long-running dev servers, REPLs). If `run_command` returns " +
                 "`error: \"TUI detected\"`, switch to `send_input` + `read_scrollback` to " +
                 "drive the program — do not retry the same command."
     }

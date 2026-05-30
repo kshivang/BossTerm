@@ -848,6 +848,25 @@ data class TerminalSettings(
     val mcpRunCommandDefaultPanel: String = "horizontal_split",
 
     /**
+     * Whether to advertise `run_command` as the AI client's **default shell**.
+     *
+     * The `run_command` tool is always available (when not individually
+     * disabled) for explicit use — e.g. when you ask the agent to "split and
+     * run X". This flag controls something narrower: whether the MCP server's
+     * initialize-time `instructions` actively tell the client to *prefer*
+     * `run_command` over its own built-in shell tool for everything.
+     *
+     * Default `false` — the agent uses its normal shell unless you ask it to
+     * use `run_command`. Flip to `true` to make a visible BossTerm pane the
+     * default way the agent runs commands (pairs with the optional Claude Code
+     * `PreToolUse` hook described in `docs/mcp-server.md`).
+     *
+     * Read per client connection (via the server's instructions provider), so
+     * toggling it takes effect for the next client that connects — no restart.
+     */
+    val mcpRunCommandPreferredShell: Boolean = false,
+
+    /**
      * Names (enum `.name`) of [ai.rever.bossterm.compose.mcp.McpAttachTarget]s
      * that this BossTerm endpoint is registered with via the user's
      * AI CLIs. Persisted across runs so the manager can silently

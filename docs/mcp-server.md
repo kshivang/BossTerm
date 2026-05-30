@@ -64,12 +64,19 @@ INFO  BossTermMcpManager - BossTerm MCP server ready: http://127.0.0.1:7676/ (SS
 
 ### `~/.bossterm/mcp.port` marker file
 
-Every successful bind atomically writes the **bound** port (after fallback,
-not the configured one) to `~/.bossterm/mcp.port`. It's deleted on a clean
-stop. The marker exists so external tooling — primarily the user-global
-Claude Code PreToolUse hook described below — can decide whether BossTerm
-MCP is reachable with a stat + cheap TCP probe (`nc -z 127.0.0.1 <port>`),
-instead of an HTTP request with a timeout.
+`~/.bossterm/mcp.port` holds the **bound** port (after fallback, not the
+configured one) and exists so external tooling — primarily the user-global
+Claude Code PreToolUse hook described below — can decide whether to route
+`Bash` through `run_command` with a stat + cheap TCP probe
+(`nc -z 127.0.0.1 <port>`) instead of an HTTP request with a timeout.
+
+The marker is **gated on the `mcpRunCommandPreferredShell` setting**: it's
+written only while that setting is on *and* an engine is bound, and deleted as
+soon as the setting is turned off, the server stops, or BossTerm exits. So its
+presence means "BossTerm is reachable **and** the user wants it as the default
+shell." Toggling the setting writes/deletes the marker live (atomic
+`ATOMIC_MOVE` write), which is what makes the hook's enforcement turn on/off
+**instantly, per `Bash` call, with no Claude restart**.
 
 The marker is an optimization, not a security boundary. Any local user
 process can already reach the loopback endpoint while it's running.
@@ -355,6 +362,13 @@ pane and waits for OSC 133;D before returning the **exit code, captured
 stdout/stderr, and duration**. Consecutive calls in the same tab reuse one
 "MCP scratch pane" so the UI doesn't accumulate splits.
 
+Exposed by default (disable it like any other tool in Settings → BossTerm MCP →
+Exposed Tools). It's available for explicit use out of the box — e.g. when the
+user asks the agent to "split and run X". Whether the agent is *told to prefer*
+it over its own built-in shell for everything is a separate opt-in: the
+`mcpRunCommandPreferredShell` setting (default off), see
+[Using as Claude Code's default shell](#using-as-claude-codes-default-shell).
+
 This is the tool to prefer over your client's built-in shell tool when the
 BossTerm MCP is attached — the user sees commands run in their actual
 terminal *and* the output still comes back to the agent. The server
@@ -455,16 +469,10 @@ Response:
 { "ok": true }
 ```
 
-Unknown names error out before any change is written. Two tools are reserved
-and cannot be disabled:
-
-- `manage_tools` — disabling it would brick the surface (no way to re-enable
-  anything from MCP).
-- `run_command` — the user-global Claude Code PreToolUse hook
-  (`~/.claude/hooks/prefer-bossterm.sh`, see
-  [Using as Claude Code's default shell](#using-as-claude-codes-default-shell))
-  routes `Bash` calls to it. Disabling it would leave Claude facing a
-  "use run_command instead" message with no `run_command` on the wire.
+Unknown names error out before any change is written. `manage_tools` itself is
+reserved and cannot be disabled — that would brick the surface (no way to
+re-enable anything from MCP). Every other tool, including `run_command`, is
+freely disablable and exposed by default.
 
 ## Attaching to AI CLIs
 
@@ -498,13 +506,31 @@ will fail against the SSE endpoint until BossTerm's MCP SDK is upgraded.
 
 ## Using as Claude Code's default shell
 
-`run_command` plus the initialize-time `instructions` field steer Claude Code
-toward the MCP tool whenever the BossTerm MCP is attached. For a stronger
-guarantee — Claude *can't* fall back to its built-in `Bash` when BossTerm
-is running — wire up a user-global `PreToolUse` hook. The hook reads the
-[`~/.bossterm/mcp.port` marker](#bosstermmcpport-marker-file) to decide
-whether to enforce; if the file is missing or the port isn't listening, it
-exits silently so non-BossTerm sessions are unaffected.
+> **Opt-in.** `run_command` is exposed by default, but the agent only uses it
+> when explicitly asked unless you turn on **Settings → BossTerm MCP → "Use
+> `run_command` as AI clients' default shell"** (`mcpRunCommandPreferredShell`,
+> default off). With it on, the server's initialize-time `instructions` tell
+> clients to prefer `run_command` over their built-in shell. (If you've also
+> disabled `run_command` in Exposed Tools, re-enable it first — a disabled tool
+> isn't on the wire.)
+
+There are two layers, with different timing:
+
+- **Soft (built in).** With the setting on, the initialize-time `instructions`
+  field steers Claude Code toward `run_command`. Because MCP `instructions` are
+  read once at connect, this layer applies to the **next** client that connects
+  (restart Claude Code or reconnect the server), and it's a nudge — the model
+  usually follows it but can still pick `Bash`.
+- **Hard + instant (the hook below).** For a guarantee — and for the toggle to
+  take effect *immediately* in a running session — wire up a user-global
+  `PreToolUse` hook. It reads the
+  [`~/.bossterm/mcp.port` marker](#bosstermmcpport-marker-file), which BossTerm
+  writes/deletes the moment you flip `mcpRunCommandPreferredShell`. So turning
+  the setting on makes the hook deny `Bash` (routing to `run_command`) on the
+  very next call; turning it off makes the marker disappear and `Bash` flow
+  normally — no Claude restart either way. If the file is missing or the port
+  isn't listening, the hook exits silently so non-BossTerm sessions and the
+  opted-out state are unaffected.
 
 **1. Hook script** at `~/.claude/hooks/prefer-bossterm.sh` (chmod +x):
 
@@ -594,8 +620,9 @@ and are persisted to `~/.bossterm/settings.json`.
 | `mcpRunCommandMaxOutputChars`   | `Int`         | `120_000`   | Cap on the captured `output` field returned by `run_command`, in UTF-16 chars. Beyond it, output is truncated and `truncated: true` is set. Sized to fit under `mcpMaxAnswerChars` (150_000, also chars) with JSON-wrapper headroom; raise both together for tooling that emits very large dumps. Minimum enforced: 1024. Advanced; no UI control. |
 | `mcpRunCommandShellReadyTimeoutMs` | `Int`      | `1_500`     | Fallback delay `run_command` waits for OSC 133;A on a freshly-created pane before sending anyway. Set `0` to skip the wait entirely. Advanced; no UI control. |
 | `mcpRunCommandDefaultPanel`     | `String`      | `"horizontal_split"` | Panel mode `run_command` uses when it has to create a new MCP scratch pane and the caller passed `panel: "reuse"` (or omitted it). One of `horizontal_split`, `vertical_split`, `new_tab`. |
+| `mcpRunCommandPreferredShell`   | `Boolean`     | `false`     | Make `run_command` the AI client's default shell. Off = the tool is available but used only when explicitly asked. On = (a) the initialize-time `instructions` tell clients to prefer it (soft, applies next connect) and (b) the `~/.bossterm/mcp.port` marker is written so the PreToolUse hook enforces it (hard, instant per-call). Toggling writes/deletes the marker live. UI toggle in Settings → BossTerm MCP. |
 | `mcpAttachedTo`           | `Set<String>`       | `{}`        | Stable `persistenceKey`s (e.g. `"CLAUDE_CODE"`) of attached AI CLIs. Used for silent re-attach.        |
-| `disabledMcpTools`        | `Set<String>`       | `{}`        | Unprefixed built-in tool names hidden from clients. Edited via the UI or `manage_tools`. `manage_tools` and `run_command` are reserved and ignored if added by hand. |
+| `disabledMcpTools`        | `Set<String>`       | `{}`        | Unprefixed built-in tool names hidden from clients. Edited via the UI or `manage_tools`. `manage_tools` is reserved and ignored if added by hand; every other tool (including `run_command`) is freely disablable and exposed by default. |
 | `mcpMaxAnswerChars`       | `Int`               | `150_000`   | Soft ceiling on tool response size. When exceeded, the tool returns a progressively smaller summary instead of the full payload — see [Response shortening](#response-shortening). Advanced; no UI control. |
 | `mcpConfigured`           | `Boolean`           | `false`     | Internal first-launch marker. Once `true`, embedder defaults no longer override the user's choice.     |
 

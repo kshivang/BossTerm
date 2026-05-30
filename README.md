@@ -484,15 +484,20 @@ code (`run_command` — recommended default shell for AI clients).
 
 ### Using as Claude Code's default shell
 
-Out of the box, the server's initialize-time `instructions` already tell
-Claude Code to prefer `run_command` over its built-in `Bash` whenever the
-MCP is attached — commands run in a visible BossTerm pane and the output
-still comes back to the agent. For a hard guarantee, add the user-global
+`run_command` is exposed by default and ready for explicit use (e.g. "split and
+run X"). To make it Claude Code's *default* shell — preferred over its built-in
+`Bash` for everything — turn on **Settings → BossTerm MCP → "Use `run_command`
+as AI clients' default shell"** (off by default). With it on, the server's
+initialize-time `instructions` tell Claude Code to prefer `run_command` (a soft
+nudge that applies to the next client connection).
+
+For a hard guarantee that also takes effect **instantly**, add the user-global
 `PreToolUse` hook described in
-[docs/mcp-server.md](docs/mcp-server.md#using-as-claude-codes-default-shell):
-the hook checks the `~/.bossterm/mcp.port` marker BossTerm writes on every
-successful bind and routes `Bash` calls to `mcp__bossterm__run_command` when
-BossTerm is running, falling through silently when it isn't.
+[docs/mcp-server.md](docs/mcp-server.md#using-as-claude-codes-default-shell).
+BossTerm writes/deletes the `~/.bossterm/mcp.port` marker the moment you flip
+the setting, and the hook routes `Bash` calls to `mcp__bossterm__run_command`
+whenever the marker is present — so toggling the setting turns enforcement on or
+off per command, with no Claude restart.
 
 ### Embedding it (as a developer)
 

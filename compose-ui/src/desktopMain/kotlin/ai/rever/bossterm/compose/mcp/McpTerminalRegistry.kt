@@ -179,8 +179,9 @@ object McpTerminalRegistry {
         // map grows unbounded — clearScratchPane only sheds entries on the
         // cache-miss-with-stale-pane path, so a user who closes the cached
         // pane and never re-runs against that tab leaks a Mutex forever.
-        // Triggered from setScratchPane because it runs on every successful
-        // new-pane creation, naturally batching the sweep behind real work.
+        // Triggered here (and from paneMutex, which covers the explicit
+        // pane_id path that skips this method) so a sweep is batched behind
+        // real pane activity on every code path.
         if (paneMutexes.size > MCP_MUTEX_GC_THRESHOLD) {
             gcStalePaneMutexes()
         }
@@ -232,8 +233,18 @@ object McpTerminalRegistry {
     }
 
     /** Per-pane mutex; created on first use. */
-    internal fun paneMutex(paneId: String): Mutex =
-        paneMutexes.computeIfAbsent(paneId) { Mutex() }
+    internal fun paneMutex(paneId: String): Mutex {
+        // GC here too, not only in setScratchPane: run_command's explicit
+        // pane_id path acquires a pane mutex but deliberately skips
+        // setScratchPane (to avoid hijacking the scratch cache), so an
+        // explicit-only workload would otherwise never trigger a sweep and
+        // would leak one Mutex per distinct closed pane. Checked before
+        // computeIfAbsent so this call's own (live) entry is never swept.
+        if (paneMutexes.size > MCP_MUTEX_GC_THRESHOLD) {
+            gcStalePaneMutexes()
+        }
+        return paneMutexes.computeIfAbsent(paneId) { Mutex() }
+    }
 
     /**
      * Per-tab lock that guards the scratch-pane read-or-create-and-cache

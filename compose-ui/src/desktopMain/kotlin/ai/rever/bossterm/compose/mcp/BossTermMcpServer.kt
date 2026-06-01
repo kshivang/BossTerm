@@ -1323,10 +1323,15 @@ class BossTermMcpServer(
 
             val toWrite = if (script.endsWith("\n")) script else script + "\n"
             // Flip the gate BEFORE the write so the listener counts the next
-            // B as ours. Tiny race window: a stdin byte the user types in the
-            // microsecond between this write and the shell consuming it could
-            // be misattributed. Acceptable — the alternative (post-write flip)
-            // would lose B events for very-fast shells.
+            // B as ours. This races ONLY with the user concurrently running
+            // their own command in this same pane: if they hit Enter (firing a
+            // B) in the microsecond between this flip and the shell consuming
+            // our bytes, their command's B would be attributed to us and anchor
+            // historyAtB to the wrong row. The per-pane mutex does NOT guard
+            // this — it serializes MCP callers, not the human at the keyboard.
+            // Accepted: a user typing into the MCP scratch pane mid-call is
+            // rare, and the alternative (flipping after the write) would lose B
+            // events for very-fast shells, which is the common case.
             weHaveWritten.set(true)
             session.writeUserInput(toWrite)
 
@@ -1335,6 +1340,14 @@ class BossTermMcpServer(
                     // Alternate-screen poll runs alongside the OSC 133;D wait.
                     // Whichever fires first completes finishedSignal. TUI detection
                     // doesn't kill the process — the user can still send_input.
+                    //
+                    // Corner case: a command that briefly enters the alternate
+                    // screen and then exits cleanly (emitting D) can be reported
+                    // as "TUI detected" if a poll tick lands during that window,
+                    // since the poller wins the race. Persistent TUIs (vim, a
+                    // pager you must quit) — the case this is for — are detected
+                    // correctly; only self-exiting alt-screen excursions can
+                    // false-positive, which is rare enough to accept.
                     val tuiPoller = launch {
                         while (isActive) {
                             if (textBuffer.isUsingAlternateBuffer) {
@@ -1416,8 +1429,14 @@ class BossTermMcpServer(
      * (notably zsh, which fires OSC 133;B inside `preexec`) emit the start
      * mark before the prompt line's trailing newline, so the slice can begin
      * on the `<prompt> <command>` line. If the first line ends with the script
-     * we sent, it's that echo — strip it. Conservative: only the exact
-     * trailing-command match triggers removal, so genuine output is preserved.
+     * we sent, it's treated as that echo and removed.
+     *
+     * Best-effort, NOT airtight: the match is a plain `endsWith` on the first
+     * physical line, so a genuine first output line that happens to end with
+     * the command text would be stripped too (e.g. command `echo foo`, output
+     * `bar echo foo`). A prompt-sigil-anchored match would be tighter but the
+     * sigil varies per shell/theme (`$ % # ❯`, custom), so we accept the rare
+     * false strip over a brittle prompt parser.
      */
     private fun stripEchoedCommandLine(output: String, script: String): String {
         if (output.isEmpty()) return output

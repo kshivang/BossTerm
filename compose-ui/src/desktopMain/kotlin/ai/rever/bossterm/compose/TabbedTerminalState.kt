@@ -647,11 +647,15 @@ class TabbedTerminalState {
 
         // Anchor focus before split, when an explicit pane was requested.
         // SplitViewState.setFocusedPane silently no-ops on unknown ids, so
-        // we read back focusedPaneId to confirm whether the redirect took
-        // effect — debug only; behavior degrades gracefully either way.
-        if (anchorPaneId != null) {
+        // behavior degrades gracefully either way. Remember the user's prior
+        // focus so we can restore it afterward — an MCP-driven split (e.g.
+        // run_command's scratch strip) shouldn't yank focus away from the pane
+        // the user is actively typing in.
+        val focusToRestore = if (anchorPaneId != null) {
+            val prior = splitState.focusedPaneId
             splitState.setFocusedPane(anchorPaneId)
-        }
+            prior
+        } else null
 
         val workingDir = if (settings.splitInheritWorkingDirectory) {
             splitState.getFocusedSession()?.workingDirectory?.value
@@ -684,7 +688,14 @@ class TabbedTerminalState {
         // either way, so the UI's keyboard-shortcut splits keep their
         // existing behavior.
         val newPaneRatio = (ratio ?: settings.splitDefaultRatio).coerceIn(0.05f, 0.95f)
-        return splitState.splitFocusedPane(orientation, newSession, 1f - newPaneRatio)
+        val newPaneId = splitState.splitFocusedPane(orientation, newSession, 1f - newPaneRatio)
+        // Restore the user's pre-split focus (anchor-split path only). The new
+        // pane is still returned for the caller to drive; it just isn't stolen
+        // into the foreground while the user works elsewhere in the tab.
+        if (focusToRestore != null) {
+            splitState.setFocusedPane(focusToRestore)
+        }
+        return newPaneId
     }
 
     /**

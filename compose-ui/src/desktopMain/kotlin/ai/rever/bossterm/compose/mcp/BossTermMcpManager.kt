@@ -1,6 +1,8 @@
 package ai.rever.bossterm.compose.mcp
 
+import ai.rever.bossterm.compose.TabbedTerminalState
 import ai.rever.bossterm.compose.settings.SettingsManager
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
@@ -33,8 +35,11 @@ import java.io.IOException
 import java.net.BindException
 import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.Optional
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Lifecycle wrapper that brings up the BossTerm in-process MCP server on a
@@ -90,6 +95,17 @@ class BossTermMcpManager(
     private var watcherJob: Job? = null
     private var disabledToolsWatcherJob: Job? = null
     private var preferredShellWatcherJob: Job? = null
+
+    // Caches caller-window resolution by the client's ephemeral TCP port. That
+    // port is stable for a connection's lifetime and its owning PID can't
+    // change without reconnecting, so one (possibly expensive) ProcessAncestry
+    // resolution per socket suffices instead of one per request. Optional wraps
+    // the nullable result (a client outside any pane resolves to "no window")
+    // since ConcurrentHashMap forbids null values. Cleared wholesale past
+    // CLIENT_WINDOW_CACHE_MAX so recycled ephemeral ports can't accrete entries
+    // — a recycled port could briefly return a stale window, an acceptable
+    // last-writer-wins miss already inherent to the multi-client design.
+    private val clientWindowByPort = ConcurrentHashMap<Int, Optional<TabbedTerminalState>>()
 
     /** Begin observing settings. Idempotent. Safe to call multiple times. */
     fun start() {
@@ -375,16 +391,30 @@ class BossTermMcpManager(
                     // caller's window rather than first-registered. Failure
                     // here is silent — the resolver returns null and the
                     // server keeps using the prior resolution (or
-                    // primaryState() if there is none). This runs only
-                    // AFTER the rebinding check passes, so we never spawn
-                    // lsof for a hostile request.
-                    val remotePort = call.request.local.remotePort
-                    val resolved = try {
-                        ProcessAncestry.resolveClientWindow(remotePort, registry)
-                    } catch (_: Throwable) {
-                        null
+                    // primaryState() if there is none). This runs only AFTER
+                    // the rebinding check passes, so we never spawn lsof for a
+                    // hostile request.
+                    //
+                    // Gated to POST (the JSON-RPC path) so the long-lived SSE
+                    // GET and Ktor housekeeping never trigger an lsof/ps walk,
+                    // and cached per client port so repeated POSTs on one
+                    // connection resolve once. Together these cut the shell-out
+                    // cost (~50-150ms on macOS) from per-request to roughly
+                    // once per client connection.
+                    if (call.request.httpMethod == HttpMethod.Post) {
+                        val remotePort = call.request.local.remotePort
+                        if (clientWindowByPort.size > CLIENT_WINDOW_CACHE_MAX) {
+                            clientWindowByPort.clear()
+                        }
+                        val resolved = clientWindowByPort.computeIfAbsent(remotePort) {
+                            Optional.ofNullable(
+                                runCatching {
+                                    ProcessAncestry.resolveClientWindow(remotePort, registry)
+                                }.getOrNull()
+                            )
+                        }.orElse(null)
+                        registry.setLastResolvedClientWindow(resolved)
                     }
-                    registry.setLastResolvedClientWindow(resolved)
                 }
                 // SDK 0.8.3 quirk: both `Route.mcp { ... }` and
                 // `Routing.mcp(path, ...) { ... }` end up mounting SSE +
@@ -539,10 +569,22 @@ class BossTermMcpManager(
             val tmp = File(target.parentFile, ".mcp.port.tmp")
             tmp.writeText(port.toString())
             // ATOMIC_MOVE so concurrent hook reads never see a partial file.
-            Files.move(
-                tmp.toPath(), target.toPath(),
-                StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING
-            )
+            try {
+                Files.move(
+                    tmp.toPath(), target.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                // Layered filesystems (NFS $HOME with a tmpfs override, some
+                // container mounts) can't do atomic rename. Fall back to a
+                // plain replace — a hook reading mid-write is theoretically
+                // possible but the window is sub-millisecond on a short numeric
+                // string, far better than never writing the marker at all.
+                Files.move(
+                    tmp.toPath(), target.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING
+                )
+            }
         } catch (e: Throwable) {
             log.warn("Failed to write MCP port marker: {}", e.message)
         }
@@ -583,5 +625,13 @@ class BossTermMcpManager(
 
         /** Upper bound on TCP port numbers; we never wrap past this. */
         private const val MAX_TCP_PORT = 65535
+
+        /**
+         * Size at which [clientWindowByPort] is cleared wholesale. Caller-window
+         * resolutions are keyed by ephemeral client port; this bounds the map so
+         * recycled ports over a long-lived server can't accrete entries. Well
+         * above the realistic concurrent-client count.
+         */
+        private const val CLIENT_WINDOW_CACHE_MAX = 256
     }
 }

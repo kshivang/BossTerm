@@ -189,9 +189,9 @@ object McpTerminalRegistry {
     /**
      * Walk every registered state's tabs + split-tree pane snapshots,
      * collect all live ids (tab id, pane id, session id), and evict any
-     * [paneMutexes] entries that aren't in that set. Also sweeps stale
-     * [mcpScratchPanes] entries pointing at dead panes — they'd be
-     * lazy-cleared on next read anyway, but better to drop them now while
+     * [paneMutexes] / [tabCacheLocks] entries that aren't in that set. Also
+     * sweeps stale [mcpScratchPanes] entries pointing at dead panes — they'd
+     * be lazy-cleared on next read anyway, but better to drop them now while
      * the sweep is hot.
      */
     private fun gcStalePaneMutexes() {
@@ -206,6 +206,9 @@ object McpTerminalRegistry {
             }
         }
         paneMutexes.keys.removeIf { it !in live }
+        // tabCacheLocks is keyed by tabId; closed tabs would otherwise leak one
+        // Mutex each, forever. Swept here with the related pane state.
+        tabCacheLocks.keys.removeIf { it !in live }
         mcpScratchPanes.entries.removeIf { (k, v) -> k !in live || v !in live }
     }
 

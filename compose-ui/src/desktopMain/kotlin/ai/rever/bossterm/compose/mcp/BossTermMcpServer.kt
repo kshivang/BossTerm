@@ -1017,8 +1017,8 @@ class BossTermMcpServer(
             val args = request.arguments
             val script = args.requireString("script")
                 ?: return@addTool errorResult("Missing required argument: script")
-            if (script.isEmpty()) {
-                return@addTool errorResult("'script' must not be empty")
+            if (script.isBlank()) {
+                return@addTool errorResult("'script' must not be empty or blank")
             }
             val explicitPaneId = args.requireString("pane_id")
             val requestedTabId = args.requireString("tab_id")
@@ -1031,7 +1031,7 @@ class BossTermMcpServer(
                 .coerceIn(MIN_RUN_COMMAND_TIMEOUT_MS, MAX_RUN_COMMAND_TIMEOUT_MS)
             val maxOutputChars = userSettings.mcpRunCommandMaxOutputChars.coerceAtLeast(1024)
             val shellReadyTimeoutMs = userSettings.mcpRunCommandShellReadyTimeoutMs
-                .coerceAtLeast(0).toLong()
+                .coerceIn(0, MAX_SHELL_READY_TIMEOUT_MS).toLong()
 
             val state = if (requestedTabId != null) {
                 registry.findState(requestedTabId)
@@ -1071,10 +1071,13 @@ class BossTermMcpServer(
                         "Unknown pane_id '$explicitPaneId' in tab '$tabId'"
                     )
                 paneId = explicitPaneId
-                // Keep the cache in sync with explicit use so later `panel:
-                // "reuse"` calls return the same pane the user is already
-                // driving. Idempotent under concurrent explicit calls.
-                registry.setScratchPane(tabId, explicitPaneId)
+                // Deliberately do NOT promote an explicit pane_id to the tab's
+                // cached scratch pane. The caller already knows the id and
+                // passes it per call; an agent that learned a pane id from
+                // get_tabs could otherwise point at the user's regular shell
+                // pane and silently capture every subsequent reuse-mode call
+                // (hijacking the main shell). The scratch cache is reserved for
+                // panes this tool created.
             } else {
                 val resolveResult = registry.tabCacheLock(tabId).withLock {
                     val cached = registry.getScratchPane(tabId)
@@ -1186,8 +1189,12 @@ class BossTermMcpServer(
             // overlapping JSON-RPC requests on one session, so without this two
             // pipelined calls would interleave their scripts in the shell's stdin.
             val mutex = registry.paneMutex(resolvedPaneId)
-            val startTimeMs = System.currentTimeMillis()
+            // Measure runtime INSIDE the lock so durationMs reflects how long
+            // the command actually ran, not how long this call waited behind a
+            // pipelined call on the same pane.
+            var durationMs = 0L
             val outcome = mutex.withLock {
+                val startTimeMs = System.currentTimeMillis()
                 executeInPane(
                     session = resolvedSession,
                     script = script,
@@ -1195,9 +1202,8 @@ class BossTermMcpServer(
                     freshlyCreated = freshlyCreated,
                     shellReadyTimeoutMs = shellReadyTimeoutMs,
                     maxOutputChars = maxOutputChars
-                )
+                ).also { durationMs = System.currentTimeMillis() - startTimeMs }
             }
-            val durationMs = System.currentTimeMillis() - startTimeMs
 
             val result = RunCommandResult(
                 ok = outcome.error == null,
@@ -1349,7 +1355,7 @@ class BossTermMcpServer(
                     )
                     RunOutcome(
                         exitCode = null,
-                        output = sliced.text,
+                        output = stripEchoedCommandLine(sliced.text, script),
                         truncated = true,
                         error = "Timed out after ${timeoutMs}ms waiting for command to finish. " +
                                 "Partial output captured."
@@ -1374,7 +1380,7 @@ class BossTermMcpServer(
                     )
                     RunOutcome(
                         exitCode = finish.exitCode,
-                        output = sliced.text,
+                        output = stripEchoedCommandLine(sliced.text, script),
                         truncated = sliced.truncated,
                         error = null
                     )
@@ -1383,6 +1389,24 @@ class BossTermMcpServer(
         } finally {
             terminal.removeCommandStateListener(listener)
         }
+    }
+
+    /**
+     * Drop a leading echoed-command line from captured output. Some shells
+     * (notably zsh, which fires OSC 133;B inside `preexec`) emit the start
+     * mark before the prompt line's trailing newline, so the slice can begin
+     * on the `<prompt> <command>` line. If the first line ends with the script
+     * we sent, it's that echo — strip it. Conservative: only the exact
+     * trailing-command match triggers removal, so genuine output is preserved.
+     */
+    private fun stripEchoedCommandLine(output: String, script: String): String {
+        if (output.isEmpty()) return output
+        val cmd = script.trim()
+        if (cmd.isEmpty() || '\n' in cmd) return output
+        val nl = output.indexOf('\n')
+        val firstLine = if (nl >= 0) output.substring(0, nl) else output
+        if (!firstLine.trimEnd().endsWith(cmd)) return output
+        return if (nl >= 0) output.substring(nl + 1) else ""
     }
 
     /**
@@ -1395,8 +1419,9 @@ class BossTermMcpServer(
      * history during the command.
      *
      * Falls back to "last visible screen" if the start mark scrolled past the
-     * history cap (very long outputs). Caps total bytes at [MAX_OUTPUT_BYTES]
-     * and reports `truncated=true` in that case.
+     * history cap (very long outputs). Caps total length at [maxOutputChars]
+     * (the clamped `mcpRunCommandMaxOutputChars` setting) and reports
+     * `truncated=true` in that case.
      */
     private fun sliceCommandOutput(
         textBuffer: TerminalTextBuffer,
@@ -1425,7 +1450,16 @@ class BossTermMcpServer(
         while (row <= endRowInclusive) {
             val line = snapshot.getLine(row).text.trimEnd()
             // +1 for the newline that joins lines.
-            if (sb.length + line.length + 1 > maxOutputChars) {
+            val sep = if (sb.isEmpty()) 0 else 1
+            if (sb.length + sep + line.length > maxOutputChars) {
+                // Append as much of this line as still fits rather than dropping
+                // it whole — otherwise a single oversize line (e.g. a one-line
+                // JSON dump bigger than the cap) would yield empty output.
+                val remaining = maxOutputChars - sb.length - sep
+                if (remaining > 0) {
+                    if (sep == 1) sb.append('\n')
+                    sb.append(line, 0, remaining)
+                }
                 truncated = true
                 break
             }
@@ -1918,7 +1952,7 @@ class BossTermMcpServer(
         val durationMs: Long,
         /** Captured stdout/stderr, ANSI-stripped per the emulator's per-line `.text`. */
         val output: String,
-        /** True when output was capped at MAX_OUTPUT_BYTES or the command timed out. */
+        /** True when output was capped at `mcpRunCommandMaxOutputChars` or the command timed out. */
         val truncated: Boolean,
         /** Non-null on timeout, TUI detection, or other recoverable failures. */
         val error: String?
@@ -1967,6 +2001,13 @@ class BossTermMcpServer(
         private const val MIN_RUN_COMMAND_TIMEOUT_MS = 100
         /** Upper bound — a single MCP request that hogs the pane for >10 min is suspect. */
         private const val MAX_RUN_COMMAND_TIMEOUT_MS = 600_000
+
+        /**
+         * Ceiling for `mcpRunCommandShellReadyTimeoutMs`. Without a cap, a typo'd
+         * setting (e.g. `2147483647`) would make every freshly-created pane wait
+         * ~25 days for OSC 133;A. 30s is well beyond any real shell rc load time.
+         */
+        private const val MAX_SHELL_READY_TIMEOUT_MS = 30_000
 
         /**
          * How often `run_command` checks `isUsingAlternateBuffer` while waiting

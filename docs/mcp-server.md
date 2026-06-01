@@ -411,8 +411,9 @@ Requires OSC 133 shell integration on the user's shell. See
   ```
   - `exitCode` is `null` on timeout, TUI detection, or shell-integration
     missing (no OSC 133;D ever arrived).
-  - `output` is capped at 200 KB; `truncated` becomes `true` when the cap is
-    hit *or* the command timed out.
+  - `output` is capped at `mcpRunCommandMaxOutputChars` (default 120,000 UTF-16
+    chars, ~117 KB for ASCII); `truncated` becomes `true` when the cap is hit
+    *or* the command timed out.
   - `error` is set when `ok` is `false`. Notable values:
     - `"TUI detected (alternate screen entered). Use send_input + read_scrollback ..."`
       — the command entered an alternate-screen program (`vim`, `less`,

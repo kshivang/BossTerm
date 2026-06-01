@@ -25,8 +25,9 @@ import java.util.concurrent.TimeUnit
  *     Claude Desktop, an external Inspector, a CI script…), return null
  *     and the caller falls back to first-registered.
  *
- * Platform support: macOS via `lsof` + `ps`, Linux via `/proc/net/tcp` +
- * `/proc/<pid>/status`. Windows and unknown platforms return null silently.
+ * Platform support: macOS via `lsof` + `ps`, Linux via `/proc/net/tcp{,6}` +
+ * `/proc/<pid>/status` (both IPv4 and IPv6 loopback). Windows and unknown
+ * platforms return null silently.
  *
  * Cost: a fresh resolution shells out twice per parent hop on macOS (lsof
  * once, then `ps -o ppid=` per ancestor). Real pane→Claude depth is 2-4
@@ -106,18 +107,21 @@ internal object ProcessAncestry {
     }
 
     /**
-     * `lsof -nP -iTCP@127.0.0.1:<port> -sTCP:ESTABLISHED -F p` lists every
-     * process touching the loopback TCP endpoint on that port — both ends
-     * of the connection match the filter when both are local. Each end is
-     * one line `p<PID>`. Our own PID is the server side; the *other* PID
-     * is the client we're looking for.
+     * `lsof -nP -iTCP:<port> -sTCP:ESTABLISHED -F p` lists every process with
+     * an established TCP endpoint on that port number — both ends of the
+     * connection match (the client's local port and our server's remote port).
+     * Filtering by port alone rather than `-iTCP@127.0.0.1:<port>` means an
+     * IPv6 loopback client (`::1`, e.g. when the OS resolves `localhost` to
+     * IPv6) is matched too. The ephemeral client port is unique to this
+     * connection, so port-only matching stays precise. Each end is one line
+     * `p<PID>`; our own PID is the server side, the *other* is the client.
      */
     private fun findClientPidMacOS(remotePort: Int): Long? {
         val ourPid = ProcessHandle.current().pid()
         return try {
             val process = ProcessBuilder(
                 "lsof", "-nP",
-                "-iTCP@127.0.0.1:$remotePort",
+                "-iTCP:$remotePort",
                 "-sTCP:ESTABLISHED",
                 "-F", "p"
             ).redirectErrorStream(true).start()
@@ -134,19 +138,25 @@ internal object ProcessAncestry {
     }
 
     /**
-     * Linux: scan `/proc/net/tcp` for ESTABLISHED rows whose local or
-     * remote address ends with `:<portHex>`. Each row carries the socket
-     * inode. Then scan `/proc/<pid>/fd/N` symlinks (over every PID's fd
-     * directory) for `socket:[<inode>]` targets to find the owning PID.
+     * Linux: scan `/proc/net/tcp` AND `/proc/net/tcp6` for ESTABLISHED rows
+     * whose local or remote address ends with `:<portHex>`. Reading tcp6 too
+     * covers an IPv6 loopback client (`::1`, e.g. when `localhost` resolves to
+     * IPv6) — both files share the same column layout, only the address width
+     * differs, and the `:<portHex>` suffix match is layout-agnostic. Each row
+     * carries the socket inode; then scan `/proc/<pid>/fd/N` symlinks for
+     * `socket:[<inode>]` targets to find the owning PID.
      *
      * Pure file reads — no shell-out, so this is fast (~5-10ms).
      */
     private fun findClientPidLinux(remotePort: Int): Long? {
         val portHex = remotePort.toString(16).uppercase().padStart(4, '0')
         return try {
-            val inodes = File("/proc/net/tcp").readText()
-                .lineSequence()
-                .drop(1) // header
+            val inodes = sequenceOf("/proc/net/tcp", "/proc/net/tcp6")
+                .flatMap { path ->
+                    runCatching { File(path).readText().lineSequence().drop(1).toList() }
+                        .getOrDefault(emptyList())
+                        .asSequence()
+                }
                 .mapNotNull { line ->
                     val fields = line.trim().split(Regex("\\s+"))
                     if (fields.size < 10) return@mapNotNull null

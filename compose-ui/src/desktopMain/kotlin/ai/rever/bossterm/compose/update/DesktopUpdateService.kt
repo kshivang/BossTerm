@@ -16,7 +16,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.File
-import java.io.FileOutputStream
 
 /**
  * Desktop implementation of update service using GitHub Releases API.
@@ -105,12 +104,6 @@ class DesktopUpdateService {
             ?: return Result.failure(Exception("No download URL for asset"))
 
         return try {
-            val response = downloadClient.get(downloadUrl)
-            if (response.status.value !in 200..299) {
-                return Result.failure(Exception("Download failed (HTTP ${response.status.value})"))
-            }
-
-            val totalSize = response.headers["Content-Length"]?.toLongOrNull() ?: asset.size
             val tempDir = File(System.getProperty("java.io.tmpdir"), "bossterm-updates")
             tempDir.mkdirs()
 
@@ -119,49 +112,7 @@ class DesktopUpdateService {
                 downloadFile.delete()
             }
 
-            withContext(Dispatchers.IO) {
-                val channel = response.bodyAsChannel()
-                val outputStream = FileOutputStream(downloadFile)
-
-                var downloadedBytes = 0L
-                val buffer = ByteArray(8192)
-                var lastProgressUpdate = 0L
-
-                while (!channel.isClosedForRead) {
-                    val bytesRead = channel.readAvailable(buffer)
-                    if (bytesRead > 0) {
-                        outputStream.write(buffer, 0, bytesRead)
-                        downloadedBytes += bytesRead
-
-                        val shouldUpdateProgress = if (totalSize > 0) {
-                            downloadedBytes - lastProgressUpdate >= 262144 ||
-                                (downloadedBytes.toFloat() / totalSize - lastProgressUpdate.toFloat() / totalSize) >= 0.05f
-                        } else {
-                            downloadedBytes - lastProgressUpdate >= 131072
-                        }
-
-                        if (shouldUpdateProgress) {
-                            val progress = if (totalSize > 0) {
-                                (downloadedBytes.toFloat() / totalSize.toFloat()).coerceIn(0f, 1f)
-                            } else {
-                                0.1f + (downloadedBytes / 1048576f % 0.8f)
-                            }
-
-                            withContext(Dispatchers.Main) {
-                                onProgress(progress)
-                            }
-                            lastProgressUpdate = downloadedBytes
-                        }
-                    }
-                }
-
-                outputStream.close()
-                channel.cancel()
-
-                withContext(Dispatchers.Main) {
-                    onProgress(1f)
-                }
-            }
+            streamToFile(downloadUrl, asset.size, downloadFile, onProgress)
 
             if (downloadFile.exists() && downloadFile.length() > 0) {
                 Result.success(downloadFile.absolutePath)
@@ -283,13 +234,6 @@ class DesktopUpdateService {
 
             println("Starting download from: $downloadUrl")
 
-            val response = downloadClient.get(downloadUrl)
-            if (response.status.value !in 200..299) {
-                println("Download failed with HTTP status: ${response.status.value}")
-                return null
-            }
-
-            val totalSize = response.headers["Content-Length"]?.toLongOrNull() ?: updateInfo.assetSize
             val tempDir = File(System.getProperty("java.io.tmpdir"), "bossterm-updates")
             tempDir.mkdirs()
 
@@ -298,10 +242,43 @@ class DesktopUpdateService {
                 downloadFile.delete()
             }
 
-            withContext(Dispatchers.IO) {
-                val channel = response.bodyAsChannel()
-                val outputStream = FileOutputStream(downloadFile)
+            streamToFile(downloadUrl, updateInfo.assetSize, downloadFile, onProgress)
 
+            if (downloadFile.exists() && downloadFile.length() > 0) {
+                println("Update downloaded successfully: ${downloadFile.absolutePath}")
+                downloadFile.absolutePath
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            println("Error downloading update: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Stream a download to [destFile], reporting throttled progress.
+     *
+     * Uses Ktor's [prepareGet]/[execute] streaming API and reads the body channel
+     * INSIDE the execute lambda, so progress reflects bytes arriving off the socket.
+     * (The non-streaming `get()` would buffer the whole body into memory before
+     * returning, making the bar jump straight to 100% at the end — see issue #265.)
+     */
+    private suspend fun streamToFile(
+        url: String,
+        expectedSize: Long,
+        destFile: File,
+        onProgress: (progress: Float) -> Unit
+    ) = withContext(Dispatchers.IO) {
+        downloadClient.prepareGet(url).execute { response ->
+            check(response.status.value in 200..299) {
+                "Download failed (HTTP ${response.status.value})"
+            }
+
+            val totalSize = response.headers["Content-Length"]?.toLongOrNull() ?: expectedSize
+            val channel = response.bodyAsChannel()
+
+            destFile.outputStream().use { output ->
                 var downloadedBytes = 0L
                 val buffer = ByteArray(8192)
                 var lastProgressUpdate = 0L
@@ -309,7 +286,7 @@ class DesktopUpdateService {
                 while (!channel.isClosedForRead) {
                     val bytesRead = channel.readAvailable(buffer)
                     if (bytesRead > 0) {
-                        outputStream.write(buffer, 0, bytesRead)
+                        output.write(buffer, 0, bytesRead)
                         downloadedBytes += bytesRead
 
                         val shouldUpdateProgress = if (totalSize > 0) {
@@ -323,7 +300,10 @@ class DesktopUpdateService {
                             val progress = if (totalSize > 0) {
                                 (downloadedBytes.toFloat() / totalSize.toFloat()).coerceIn(0f, 1f)
                             } else {
-                                0.1f + (downloadedBytes / 1048576f % 0.8f)
+                                // Unknown total size: monotonic, asymptotic toward <1
+                                // (never decreases; the explicit onProgress(1f) below finishes it).
+                                val mb = downloadedBytes / 1_048_576f
+                                (1f - 1f / (1f + mb / 8f)).coerceIn(0f, 0.95f)
                             }
 
                             withContext(Dispatchers.Main) {
@@ -333,24 +313,11 @@ class DesktopUpdateService {
                         }
                     }
                 }
-
-                outputStream.close()
-                channel.cancel()
-
-                withContext(Dispatchers.Main) {
-                    onProgress(1f)
-                }
             }
 
-            if (downloadFile.exists() && downloadFile.length() > 0) {
-                println("Update downloaded successfully: ${downloadFile.absolutePath}")
-                downloadFile.absolutePath
-            } else {
-                null
+            withContext(Dispatchers.Main) {
+                onProgress(1f)
             }
-        } catch (e: Exception) {
-            println("Error downloading update: ${e.message}")
-            null
         }
     }
 

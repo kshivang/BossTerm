@@ -571,14 +571,20 @@ class TabbedTerminalState {
      * @param ratio Optional size of the new pane as a fraction of the
      *   parent's width. When null, falls back to
      *   `settings.splitDefaultRatio`. Clamped to 0.05..0.95.
+     * @param preserveFocus When true, the user's currently focused pane keeps
+     *   focus instead of the new pane taking it. Used by MCP `run_command` so
+     *   an agent-driven split doesn't yank focus from the pane the user is in.
      * @return The session ID of the new pane, or null if the split failed
      */
     fun splitVertical(
         tabId: String? = null,
         ratio: Float? = null,
-        initialCommand: String? = null
+        initialCommand: String? = null,
+        preserveFocus: Boolean = false
     ): String? {
-        return performSplit(SplitOrientation.VERTICAL, tabId, ratio, initialCommand)
+        return performSplit(
+            SplitOrientation.VERTICAL, tabId, ratio, initialCommand, preserveFocus = preserveFocus
+        )
     }
 
     /**
@@ -591,15 +597,45 @@ class TabbedTerminalState {
      * @param ratio Optional size of the new pane as a fraction of the
      *   parent's height. When null, falls back to
      *   `settings.splitDefaultRatio`. Clamped to 0.05..0.95.
+     * @param preserveFocus When true, the user's currently focused pane keeps
+     *   focus instead of the new pane taking it. Used by MCP `run_command` so
+     *   an agent-driven split doesn't yank focus from the pane the user is in.
      * @return The session ID of the new pane, or null if the split failed
      */
     fun splitHorizontal(
         tabId: String? = null,
         ratio: Float? = null,
-        initialCommand: String? = null
+        initialCommand: String? = null,
+        preserveFocus: Boolean = false
     ): String? {
-        return performSplit(SplitOrientation.HORIZONTAL, tabId, ratio, initialCommand)
+        return performSplit(
+            SplitOrientation.HORIZONTAL, tabId, ratio, initialCommand, preserveFocus = preserveFocus
+        )
     }
+
+    /**
+     * Split a specific pane (by id) vertically — the new pane appears to the
+     * right of [anchorPaneId]. Focuses [anchorPaneId], splits it, then restores
+     * the caller's prior focus. Not atomic: these are three sequential Compose
+     * state mutations, so a recomposition landing between them could briefly
+     * show focus on the anchor/new pane before it's restored (imperceptible in
+     * practice). If the anchor pane doesn't exist, falls back to splitting the
+     * currently focused pane.
+     *
+     * Designed for the MCP tools (run_command / run_in_panel) so they can
+     * stack scratch panes horizontally in the bottom row instead of
+     * blindly splitting whatever pane happens to be focused.
+     *
+     * @return The session id of the new pane, or null if the split failed.
+     */
+    fun splitVerticalFromPane(
+        tabId: String,
+        anchorPaneId: String,
+        ratio: Float? = null,
+        initialCommand: String? = null
+    ): String? = performSplit(
+        SplitOrientation.VERTICAL, tabId, ratio, initialCommand, anchorPaneId
+    )
 
     /**
      * Internal helper to perform a split in the given orientation.
@@ -607,18 +643,38 @@ class TabbedTerminalState {
      * @param initialCommand Optional command to run in the new pane once its shell is ready
      *   (OSC 133;A or fallback delay). Held by the session bootstrap so the bytes are not
      *   eaten by shell startup output (banner, rc-file sourcing, prompt draw).
+     * @param anchorPaneId Optional pane to split. When provided, that pane is
+     *   focused before the split so [SplitViewState.splitFocusedPane] targets
+     *   it. Ignored if the pane doesn't exist (falls back to current focus).
+     * @param preserveFocus When true, the user's pre-split focus is restored
+     *   after the split instead of letting the new pane take it. Always implied
+     *   when [anchorPaneId] is set (the anchor path already restores).
      */
     private fun performSplit(
         orientation: SplitOrientation,
         tabId: String?,
         ratio: Float? = null,
-        initialCommand: String? = null
+        initialCommand: String? = null,
+        anchorPaneId: String? = null,
+        preserveFocus: Boolean = false
     ): String? {
         val resolvedTabId = resolveTabId(tabId) ?: return null
         val controller = tabController ?: return null
         val tab = controller.getTabById(resolvedTabId) as? TerminalTab ?: return null
         val splitState = getOrCreateSplitState(resolvedTabId) ?: return null
         val settings = SettingsManager.instance.settings.value
+
+        // Remember the user's prior focus so we can restore it after the split
+        // (when anchoring on an explicit pane, or when the caller asked to
+        // preserve focus) — an MCP-driven split (run_command's scratch pane,
+        // run_in_panel's stacking) shouldn't yank focus away from the pane the
+        // user is actively typing in. SplitViewState.setFocusedPane silently
+        // no-ops on unknown ids, so the anchor step degrades gracefully.
+        val focusToRestore = if (anchorPaneId != null || preserveFocus) {
+            val prior = splitState.focusedPaneId
+            if (anchorPaneId != null) splitState.setFocusedPane(anchorPaneId)
+            prior
+        } else null
 
         val workingDir = if (settings.splitInheritWorkingDirectory) {
             splitState.getFocusedSession()?.workingDirectory?.value
@@ -651,7 +707,14 @@ class TabbedTerminalState {
         // either way, so the UI's keyboard-shortcut splits keep their
         // existing behavior.
         val newPaneRatio = (ratio ?: settings.splitDefaultRatio).coerceIn(0.05f, 0.95f)
-        return splitState.splitFocusedPane(orientation, newSession, 1f - newPaneRatio)
+        val newPaneId = splitState.splitFocusedPane(orientation, newSession, 1f - newPaneRatio)
+        // Restore the user's pre-split focus (anchor-split path only). The new
+        // pane is still returned for the caller to drive; it just isn't stolen
+        // into the foreground while the user works elsewhere in the tab.
+        if (focusToRestore != null) {
+            splitState.setFocusedPane(focusToRestore)
+        }
+        return newPaneId
     }
 
     /**

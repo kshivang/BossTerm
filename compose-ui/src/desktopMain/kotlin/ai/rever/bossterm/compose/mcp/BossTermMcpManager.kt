@@ -1,6 +1,8 @@
 package ai.rever.bossterm.compose.mcp
 
+import ai.rever.bossterm.compose.TabbedTerminalState
 import ai.rever.bossterm.compose.settings.SettingsManager
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
@@ -28,10 +30,16 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
+import java.io.File
 import java.io.IOException
 import java.net.BindException
 import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.Optional
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Lifecycle wrapper that brings up the BossTerm in-process MCP server on a
@@ -86,6 +94,18 @@ class BossTermMcpManager(
 
     private var watcherJob: Job? = null
     private var disabledToolsWatcherJob: Job? = null
+    private var preferredShellWatcherJob: Job? = null
+
+    // Caches caller-window resolution by the client's ephemeral TCP port. That
+    // port is stable for a connection's lifetime and its owning PID can't
+    // change without reconnecting, so one (possibly expensive) ProcessAncestry
+    // resolution per socket suffices instead of one per request. Optional wraps
+    // the nullable result (a client outside any pane resolves to "no window")
+    // since ConcurrentHashMap forbids null values. Cleared wholesale past
+    // CLIENT_WINDOW_CACHE_MAX so recycled ephemeral ports can't accrete entries
+    // — a recycled port could briefly return a stale window, an acceptable
+    // last-writer-wins miss already inherent to the multi-client design.
+    private val clientWindowByPort = ConcurrentHashMap<Int, Optional<TabbedTerminalState>>()
 
     /** Begin observing settings. Idempotent. Safe to call multiple times. */
     fun start() {
@@ -150,6 +170,25 @@ class BossTermMcpManager(
                     }
                 }
         }
+
+        // Marker reflects the "use run_command as default shell" setting so the
+        // user-global PreToolUse hook (which keys off ~/.bossterm/mcp.port)
+        // turns on/off the instant, per-Bash-call enforcement the moment the
+        // setting changes — no client restart. Write when opted in AND an
+        // engine is bound; delete otherwise. Also clears any stale marker left
+        // by a prior kill -9 when the setting is (or has become) off.
+        preferredShellWatcherJob = parentScope.launch {
+            settingsManager.settings
+                .map { it.mcpRunCommandPreferredShell }
+                .distinctUntilChanged()
+                .collect { preferred ->
+                    mutex.withLock {
+                        val port = runningPort
+                        if (preferred && port != null) writePortMarker(port)
+                        else deletePortMarker()
+                    }
+                }
+        }
     }
 
     /**
@@ -161,6 +200,8 @@ class BossTermMcpManager(
         watcherJob = null
         disabledToolsWatcherJob?.cancel()
         disabledToolsWatcherJob = null
+        preferredShellWatcherJob?.cancel()
+        preferredShellWatcherJob = null
         // Async shutdown so callers (including Compose onDispose on the UI
         // thread) don't block waiting for Ktor's grace period.
         parentScope.launch(Dispatchers.IO) {
@@ -301,7 +342,10 @@ class BossTermMcpManager(
     private fun looksLikePermissionDenied(msg: String): Boolean =
         msg.contains("permission", ignoreCase = true) ||
             msg.contains("denied", ignoreCase = true) ||
-            msg.contains("not permitted", ignoreCase = true)
+            msg.contains("not permitted", ignoreCase = true) ||
+            // The JDK sometimes includes the raw errno code in the message,
+            // which is locale-independent — match it as a backstop.
+            msg.contains("EACCES", ignoreCase = true)
 
     /**
      * One bind attempt. See [StartOutcome] for the return semantics.
@@ -343,6 +387,47 @@ class BossTermMcpManager(
                         finish()
                         return@intercept
                     }
+
+                    // Resolve which BossTerm window the calling client lives in
+                    // (process-tree walk from the client's PID) and record it
+                    // so tools that default to "primary window" target the
+                    // caller's window rather than first-registered. Failure
+                    // here is silent — the resolver returns null and the
+                    // server keeps using the prior resolution (or
+                    // primaryState() if there is none). This runs only AFTER
+                    // the rebinding check passes, so we never spawn lsof for a
+                    // hostile request.
+                    //
+                    // Gated to POST (the JSON-RPC path) so the long-lived SSE
+                    // GET and Ktor housekeeping never trigger an lsof/ps walk,
+                    // and cached per client port so repeated POSTs on one
+                    // connection resolve once. Together these cut the shell-out
+                    // cost (~50-150ms on macOS) from per-request to roughly
+                    // once per client connection.
+                    if (call.request.httpMethod == HttpMethod.Post) {
+                        val remotePort = call.request.local.remotePort
+                        val cached = clientWindowByPort[remotePort]
+                        val resolved = if (cached != null) {
+                            cached.orElse(null)
+                        } else {
+                            // Cache miss: the resolver shells out to lsof/ps
+                            // (~50-150ms on macOS). Run it on Dispatchers.IO so
+                            // it never stalls a CIO selector thread. The small
+                            // race where two first-POSTs on one port both
+                            // resolve is harmless (same result, idempotent).
+                            if (clientWindowByPort.size > CLIENT_WINDOW_CACHE_MAX) {
+                                clientWindowByPort.clear()
+                            }
+                            val r = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    ProcessAncestry.resolveClientWindow(remotePort, registry)
+                                }.getOrNull()
+                            }
+                            clientWindowByPort[remotePort] = Optional.ofNullable(r)
+                            r
+                        }
+                        registry.setLastResolvedClientWindow(resolved)
+                    }
                 }
                 // SDK 0.8.3 quirk: both `Route.mcp { ... }` and
                 // `Routing.mcp(path, ...) { ... }` end up mounting SSE +
@@ -360,6 +445,13 @@ class BossTermMcpManager(
             runningPort = port
             runningServer = mcpServerWrapper
             registry.setRunning(port)
+            // The marker is gated on the "use run_command as default shell"
+            // setting: it exists ONLY while the user has opted in, so the
+            // PreToolUse hook (which keys off it) enforces run_command exactly
+            // when desired. Live toggles are handled by preferredShellWatcherJob.
+            if (settingsManager.settings.value.mcpRunCommandPreferredShell) {
+                writePortMarker(port)
+            }
             log.info(
                 "BossTerm MCP server ready: http://{}:{}{} (SSE transport, {} state(s) registered)",
                 HOST, port, PATH, registry.stateCount()
@@ -461,8 +553,71 @@ class BossTermMcpManager(
             runningPort = null
             runningServer = null
             registry.setStopped()
+            deletePortMarker()
         }
     }
+
+    /**
+     * Atomic write of the bound port to `~/.bossterm/mcp.port` so the user-global
+     * Claude Code `PreToolUse` hook can decide whether to route `Bash` through
+     * `mcp__bossterm__run_command` with a single stat + `nc -z` instead of an
+     * HTTP probe (~5ms vs ~300ms worst case per Bash call).
+     *
+     * The marker is GATED on [TerminalSettings.mcpRunCommandPreferredShell]: it
+     * is present only while the user has opted into run_command as the default
+     * shell, so the hook enforces exactly when desired and toggling the setting
+     * flips enforcement instantly (the marker is written/deleted live by
+     * `preferredShellWatcherJob`). Callers must check the setting before calling
+     * this; the bind path and the watcher both do.
+     *
+     * Reflects the *actual* bound port, including the 7676→7685 fallback range,
+     * so the hook doesn't need to know about fallback. Best-effort: any I/O
+     * failure is logged at WARN and ignored — the marker is an optimization,
+     * not a correctness lever.
+     */
+    private fun writePortMarker(port: Int) {
+        try {
+            val target = mcpPortMarkerFile()
+            target.parentFile?.mkdirs()
+            val tmp = File(target.parentFile, ".mcp.port.tmp")
+            tmp.writeText(port.toString())
+            // ATOMIC_MOVE so concurrent hook reads never see a partial file.
+            try {
+                Files.move(
+                    tmp.toPath(), target.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                // Layered filesystems (NFS $HOME with a tmpfs override, some
+                // container mounts) can't do atomic rename. Fall back to a
+                // plain replace. The only race is a hook reading the marker
+                // mid-write on this fallback path — and its `case "$port" in '')`
+                // guard degrades that to "no routing this call" (a missed hook
+                // fire on the transition), never a stale/wrong port number.
+                // Far better than never writing the marker at all.
+                Files.move(
+                    tmp.toPath(), target.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING
+                )
+            }
+        } catch (e: Throwable) {
+            log.warn("Failed to write MCP port marker: {}", e.message)
+        }
+    }
+
+    private fun deletePortMarker() {
+        try {
+            val target = mcpPortMarkerFile()
+            if (target.exists() && !target.delete()) {
+                log.warn("Failed to delete MCP port marker at {}", target)
+            }
+        } catch (e: Throwable) {
+            log.warn("Error while deleting MCP port marker: {}", e.message)
+        }
+    }
+
+    private fun mcpPortMarkerFile(): File =
+        File(System.getProperty("user.home"), ".bossterm/mcp.port")
 
     private data class McpRuntimeConfig(val enabled: Boolean, val port: Int)
 
@@ -485,5 +640,13 @@ class BossTermMcpManager(
 
         /** Upper bound on TCP port numbers; we never wrap past this. */
         private const val MAX_TCP_PORT = 65535
+
+        /**
+         * Size at which [clientWindowByPort] is cleared wholesale. Caller-window
+         * resolutions are keyed by ephemeral client port; this bounds the map so
+         * recycled ports over a long-lived server can't accrete entries. Well
+         * above the realistic concurrent-client count.
+         */
+        private const val CLIENT_WINDOW_CACHE_MAX = 256
     }
 }

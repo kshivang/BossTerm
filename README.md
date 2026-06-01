@@ -461,7 +461,9 @@ BossTerm ships an in-process [Model Context Protocol](https://modelcontextprotoc
 server that exposes the running terminal to MCP-aware clients (Claude Code,
 Codex, Gemini CLI, OpenCode). Clients can enumerate tabs, read scrollback,
 search output, capture the last completed command, and — when write tools
-are enabled — drive shells, send signals, and open new splits.
+are enabled — drive shells, send signals, open new splits, and **run
+commands in a visible pane** while still capturing stdout/stderr and exit
+code (`run_command` — recommended default shell for AI clients).
 
 - **Endpoint**: `http://127.0.0.1:7676/` over Server-Sent Events, configurable
   via Settings → BossTerm MCP → Port.
@@ -479,6 +481,23 @@ are enabled — drive shells, send signals, and open new splits.
 3. Under **Attach to AI CLI**, click the button for each AI CLI you want to
    register the endpoint with. Re-attachment is idempotent and happens
    silently on subsequent launches.
+
+### Using as Claude Code's default shell
+
+`run_command` is exposed by default and ready for explicit use (e.g. "split and
+run X"). To make it Claude Code's *default* shell — preferred over its built-in
+`Bash` for everything — turn on **Settings → BossTerm MCP → "Use `run_command`
+as AI clients' default shell"** (off by default). With it on, the server's
+initialize-time `instructions` tell Claude Code to prefer `run_command` (a soft
+nudge that applies to the next client connection).
+
+For a hard guarantee that also takes effect **instantly**, add the user-global
+`PreToolUse` hook described in
+[docs/mcp-server.md](docs/mcp-server.md#using-as-claude-codes-default-shell).
+BossTerm writes/deletes the `~/.bossterm/mcp.port` marker the moment you flip
+the setting, and the hook routes `Bash` calls to `mcp__bossterm__run_command`
+whenever the marker is present — so toggling the setting turns enforcement on or
+off per command, with no Claude restart.
 
 ### Embedding it (as a developer)
 

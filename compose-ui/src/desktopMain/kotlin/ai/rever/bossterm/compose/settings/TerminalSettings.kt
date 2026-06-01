@@ -780,6 +780,93 @@ data class TerminalSettings(
     val mcpDefaultSplitRatio: Float = 0.3f,
 
     /**
+     * Default hard timeout (in milliseconds) for `run_command`, applied when
+     * the caller doesn't pass `timeout_ms`. Default and per-call overrides
+     * are both clamped to `100..600_000` server-side. Lower this if you'd
+     * rather see "timed out" results sooner; raise it for long builds.
+     *
+     * Default `120_000` (2 minutes) covers the majority of dev workflows
+     * (tests, builds, package installs) while keeping a 10-minute ceiling
+     * before a runaway script can hog the pane. Long builds (e.g. cold
+     * gradle builds) may need a higher value — pass `timeout_ms` per call,
+     * or raise the default.
+     */
+    val mcpRunCommandDefaultTimeoutMs: Int = 120_000,
+
+    /**
+     * Cap on the captured `output` field returned by `run_command`, in
+     * UTF-16 chars (Kotlin String length). Beyond this, output is truncated
+     * and the response carries `truncated: true`.
+     *
+     * Default `120_000` is sized to fit under `mcpMaxAnswerChars`
+     * (`150_000` soft response cap, also UTF-16 chars) with headroom for
+     * the JSON wrapper, so a maxed-out `run_command` reply never trips the
+     * response-shortening ladder. Raise it (and `mcpMaxAnswerChars`)
+     * together for tooling that emits very large dumps; lower it for
+     * tight-context clients.
+     *
+     * Unit choice: UTF-16 chars (not UTF-8 bytes) so the comparison against
+     * `mcpMaxAnswerChars` is apples-to-apples. For ASCII-heavy output 1
+     * char ≈ 1 byte; for emoji/CJK the byte count can be up to ~4x the
+     * char count, so the real network payload for an emoji-heavy command
+     * could exceed the value here. Tighten further if your transport
+     * cares about bytes.
+     *
+     * Minimum enforced: `1024` chars — smaller values are silently raised
+     * so a single typical output line still fits.
+     *
+     * Advanced setting — no UI control, edit settings.json directly.
+     */
+    val mcpRunCommandMaxOutputChars: Int = 120_000,
+
+    /**
+     * Fallback delay `run_command` waits for OSC 133;A on a freshly-created
+     * pane before sending the script anyway. Only kicks in when the user's
+     * shell hasn't been configured for OSC 133 prompt-ready notifications,
+     * so most users never see this matter.
+     *
+     * Default `1_500` ms. Raise it if your shell rc files are very slow to
+     * load; lower it if you want faster "shell integration missing" feedback.
+     * Set `0` to skip the wait entirely — the script is sent immediately on
+     * a freshly-created pane (cached panes never wait regardless).
+     *
+     * Advanced setting — no UI control, edit settings.json directly.
+     */
+    val mcpRunCommandShellReadyTimeoutMs: Int = 1_500,
+
+    /**
+     * Panel mode `run_command` uses when it has to create a new MCP scratch
+     * pane (no cached pane for the tab, no explicit `pane_id`, and the
+     * caller passed `panel: "reuse"` or omitted `panel`). One of:
+     * `horizontal_split` (default — splits below the focused pane),
+     * `vertical_split` (splits beside), or `new_tab` (opens a fresh tab).
+     *
+     * Subsequent `run_command` calls reuse the pane created here, so this
+     * is "what does the first call's UI look like" — it doesn't kick in
+     * every call.
+     */
+    val mcpRunCommandDefaultPanel: String = "horizontal_split",
+
+    /**
+     * Whether to advertise `run_command` as the AI client's **default shell**.
+     *
+     * The `run_command` tool is always available (when not individually
+     * disabled) for explicit use — e.g. when you ask the agent to "split and
+     * run X". This flag controls something narrower: whether the MCP server's
+     * initialize-time `instructions` actively tell the client to *prefer*
+     * `run_command` over its own built-in shell tool for everything.
+     *
+     * Default `false` — the agent uses its normal shell unless you ask it to
+     * use `run_command`. Flip to `true` to make a visible BossTerm pane the
+     * default way the agent runs commands (pairs with the optional Claude Code
+     * `PreToolUse` hook described in `docs/mcp-server.md`).
+     *
+     * Read per client connection (via the server's instructions provider), so
+     * toggling it takes effect for the next client that connects — no restart.
+     */
+    val mcpRunCommandPreferredShell: Boolean = false,
+
+    /**
      * Names (enum `.name`) of [ai.rever.bossterm.compose.mcp.McpAttachTarget]s
      * that this BossTerm endpoint is registered with via the user's
      * AI CLIs. Persisted across runs so the manager can silently

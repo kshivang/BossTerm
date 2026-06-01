@@ -342,7 +342,10 @@ class BossTermMcpManager(
     private fun looksLikePermissionDenied(msg: String): Boolean =
         msg.contains("permission", ignoreCase = true) ||
             msg.contains("denied", ignoreCase = true) ||
-            msg.contains("not permitted", ignoreCase = true)
+            msg.contains("not permitted", ignoreCase = true) ||
+            // The JDK sometimes includes the raw errno code in the message,
+            // which is locale-independent — match it as a backstop.
+            msg.contains("EACCES", ignoreCase = true)
 
     /**
      * One bind attempt. See [StartOutcome] for the return semantics.
@@ -403,16 +406,26 @@ class BossTermMcpManager(
                     // once per client connection.
                     if (call.request.httpMethod == HttpMethod.Post) {
                         val remotePort = call.request.local.remotePort
-                        if (clientWindowByPort.size > CLIENT_WINDOW_CACHE_MAX) {
-                            clientWindowByPort.clear()
-                        }
-                        val resolved = clientWindowByPort.computeIfAbsent(remotePort) {
-                            Optional.ofNullable(
+                        val cached = clientWindowByPort[remotePort]
+                        val resolved = if (cached != null) {
+                            cached.orElse(null)
+                        } else {
+                            // Cache miss: the resolver shells out to lsof/ps
+                            // (~50-150ms on macOS). Run it on Dispatchers.IO so
+                            // it never stalls a CIO selector thread. The small
+                            // race where two first-POSTs on one port both
+                            // resolve is harmless (same result, idempotent).
+                            if (clientWindowByPort.size > CLIENT_WINDOW_CACHE_MAX) {
+                                clientWindowByPort.clear()
+                            }
+                            val r = withContext(Dispatchers.IO) {
                                 runCatching {
                                     ProcessAncestry.resolveClientWindow(remotePort, registry)
                                 }.getOrNull()
-                            )
-                        }.orElse(null)
+                            }
+                            clientWindowByPort[remotePort] = Optional.ofNullable(r)
+                            r
+                        }
                         registry.setLastResolvedClientWindow(resolved)
                     }
                 }
@@ -577,9 +590,11 @@ class BossTermMcpManager(
             } catch (_: AtomicMoveNotSupportedException) {
                 // Layered filesystems (NFS $HOME with a tmpfs override, some
                 // container mounts) can't do atomic rename. Fall back to a
-                // plain replace — a hook reading mid-write is theoretically
-                // possible but the window is sub-millisecond on a short numeric
-                // string, far better than never writing the marker at all.
+                // plain replace. The only race is a hook reading the marker
+                // mid-write on this fallback path — and its `case "$port" in '')`
+                // guard degrades that to "no routing this call" (a missed hook
+                // fire on the transition), never a stale/wrong port number.
+                // Far better than never writing the marker at all.
                 Files.move(
                     tmp.toPath(), target.toPath(),
                     StandardCopyOption.REPLACE_EXISTING

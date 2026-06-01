@@ -603,9 +603,12 @@ class TabbedTerminalState {
 
     /**
      * Split a specific pane (by id) vertically — the new pane appears to the
-     * right of [anchorPaneId]. Equivalent to focusing [anchorPaneId] then
-     * calling [splitVertical], but as one atomic operation. If the anchor
-     * pane doesn't exist, falls back to splitting the currently focused pane.
+     * right of [anchorPaneId]. Focuses [anchorPaneId], splits it, then restores
+     * the caller's prior focus. Not atomic: these are three sequential Compose
+     * state mutations, so a recomposition landing between them could briefly
+     * show focus on the anchor/new pane before it's restored (imperceptible in
+     * practice). If the anchor pane doesn't exist, falls back to splitting the
+     * currently focused pane.
      *
      * Designed for the MCP tools (run_command / run_in_panel) so they can
      * stack scratch panes horizontally in the bottom row instead of

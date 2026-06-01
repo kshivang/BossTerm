@@ -213,11 +213,13 @@ object McpTerminalRegistry {
     }
 
     /**
-     * Sweep threshold for the opportunistic [gcStalePaneMutexes]. Picked to
-     * comfortably exceed the realistic pane-creation count in a single
-     * session while still bounding map growth for very long-lived ones.
+     * Sweep threshold for the opportunistic [gcStalePaneMutexes]. Set well
+     * above the realistic concurrent-pane count (matching the
+     * `clientWindowByPort` cap heuristic) so a heavy multi-window session
+     * doesn't trigger a full-state sweep on every pane creation, while still
+     * bounding map growth for very long-lived processes.
      */
-    private const val MCP_MUTEX_GC_THRESHOLD = 32
+    private const val MCP_MUTEX_GC_THRESHOLD = 256
 
     /**
      * Drop the recorded scratch pane for [tabId] (called when the pane is gone).

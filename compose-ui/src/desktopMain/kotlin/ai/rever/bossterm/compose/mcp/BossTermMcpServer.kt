@@ -1259,6 +1259,13 @@ class BossTermMcpServer(
         // field isn't volatile, no JMM ordering guarantees.
         val historyAtB = AtomicInteger(-1)
         val cursorYAtB = AtomicInteger(-1)
+        // End-of-command marks captured at D-time, inside the listener — NOT
+        // after the coroutine resumes, by which point the shell may have drawn
+        // the next prompt or scrolled. -1 sentinel = "D hasn't fired for our
+        // command" (timeout / TUI path), in which case we fall back to a live
+        // sample.
+        val historyAtD = AtomicInteger(-1)
+        val cursorYAtD = AtomicInteger(-1)
         val weHaveWritten = AtomicBoolean(false)
         val ourCommandStarted = AtomicBoolean(false)
 
@@ -1277,6 +1284,10 @@ class BossTermMcpServer(
             override fun onCommandFinished(exitCode: Int) {
                 if (!ourCommandStarted.get()) return // D from a prior writer's command
                 if (!finishedSignal.isCompleted) {
+                    // Snapshot end position at D-time, before completing the
+                    // signal wakes the coroutine and the emulator races ahead.
+                    historyAtD.set(textBuffer.historyLinesCount)
+                    cursorYAtD.set(terminal.cursorY - 1)
                     finishedSignal.complete(CommandFinish.Done(exitCode))
                 }
             }
@@ -1336,8 +1347,12 @@ class BossTermMcpServer(
                 }
             }
 
-            val historyAtEnd = textBuffer.historyLinesCount
-            val cursorYAtEnd = terminal.cursorY - 1
+            // Prefer the D-time snapshot (captured inside the listener); fall
+            // back to a live sample only when D never fired (timeout / TUI).
+            val dSnapHistory = historyAtD.get()
+            val dSnapCursorY = cursorYAtD.get()
+            val historyAtEnd = if (dSnapHistory >= 0) dSnapHistory else textBuffer.historyLinesCount
+            val cursorYAtEnd = if (dSnapCursorY >= 0) dSnapCursorY else terminal.cursorY - 1
             val bSnapHistory = historyAtB.get()
             val bSnapCursorY = cursorYAtB.get()
             val startHistory = if (bSnapHistory >= 0) bSnapHistory else historyAtSend
@@ -1401,11 +1416,14 @@ class BossTermMcpServer(
      */
     private fun stripEchoedCommandLine(output: String, script: String): String {
         if (output.isEmpty()) return output
-        val cmd = script.trim()
-        if (cmd.isEmpty() || '\n' in cmd) return output
+        // Compare against the FIRST physical line of the script: that's what the
+        // shell echoes on the prompt line (for compound `cd foo && ls` it's the
+        // whole command; for a multi-line script it's the first line).
+        val firstCmdLine = script.trim().substringBefore('\n').trimEnd()
+        if (firstCmdLine.isEmpty()) return output
         val nl = output.indexOf('\n')
         val firstLine = if (nl >= 0) output.substring(0, nl) else output
-        if (!firstLine.trimEnd().endsWith(cmd)) return output
+        if (!firstLine.trimEnd().endsWith(firstCmdLine)) return output
         return if (nl >= 0) output.substring(nl + 1) else ""
     }
 

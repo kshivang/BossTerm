@@ -125,9 +125,14 @@ internal object ProcessAncestry {
                 "-sTCP:ESTABLISHED",
                 "-F", "p"
             ).redirectErrorStream(true).start()
-            val out = process.inputStream.bufferedReader().readLines()
-            process.waitFor(SUBPROCESS_TIMEOUT_S, TimeUnit.SECONDS)
-            out.asSequence()
+            // waitFor BEFORE reading: on timeout the child is killed instead of
+            // leaked, and we never parse a half-written line. Safe to read after
+            // exit because lsof's per-port output is far below the pipe buffer.
+            if (!process.waitFor(SUBPROCESS_TIMEOUT_S, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                return null
+            }
+            process.inputStream.bufferedReader().readLines().asSequence()
                 .filter { it.startsWith("p") }
                 .mapNotNull { it.drop(1).toLongOrNull() }
                 .firstOrNull { it != ourPid }
@@ -215,9 +220,12 @@ internal object ProcessAncestry {
     private fun parentPidMacOS(pid: Long): Long? = try {
         val process = ProcessBuilder("ps", "-o", "ppid=", "-p", pid.toString())
             .redirectErrorStream(true).start()
-        val out = process.inputStream.bufferedReader().readText().trim()
-        process.waitFor(SUBPROCESS_TIMEOUT_S, TimeUnit.SECONDS)
-        out.toLongOrNull()
+        if (!process.waitFor(SUBPROCESS_TIMEOUT_S, TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            null
+        } else {
+            process.inputStream.bufferedReader().readText().trim().toLongOrNull()
+        }
     } catch (e: Throwable) {
         log.debug("macOS ps ppid lookup failed for pid {}: {}", pid, e.message)
         null

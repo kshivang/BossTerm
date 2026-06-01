@@ -66,6 +66,7 @@ import ai.rever.bossterm.compose.splits.SplitOrientation
 import ai.rever.bossterm.compose.splits.SplitViewState
 import ai.rever.bossterm.compose.window.WindowManager
 import ai.rever.bossterm.compose.tabs.TabBar
+import ai.rever.bossterm.compose.tabs.TabBarHeight
 import ai.rever.bossterm.compose.tabs.TabController
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import ai.rever.bossterm.compose.ui.ProperTerminal
@@ -753,11 +754,14 @@ fun TabbedTerminal(
         }
     }
 
-    // Tab UI layout with focus overlay support
+    // Tab UI layout with focus overlay support.
+    // Computed once so the MCP overlay below can offset itself clear of the
+    // tab bar (which occupies the same top-right corner as the "+" button).
+    val tabBarVisible = tabController.tabs.size > 1 || settings.alwaysShowTabBar
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Tab bar at top (show when multiple tabs or alwaysShowTabBar is set).
-            if (tabController.tabs.size > 1 || settings.alwaysShowTabBar) {
+            if (tabBarVisible) {
             TabBar(
                 tabs = tabController.tabs,
                 activeTabIndex = tabController.activeTabIndex,
@@ -1111,7 +1115,12 @@ fun TabbedTerminal(
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(top = 4.dp, end = 8.dp),
+                    // Drop below the tab bar when it's showing so the pill /
+                    // attach toast don't overlap the tab "+" button.
+                    .padding(
+                        top = if (tabBarVisible) TabBarHeight + 4.dp else 4.dp,
+                        end = 8.dp
+                    ),
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {

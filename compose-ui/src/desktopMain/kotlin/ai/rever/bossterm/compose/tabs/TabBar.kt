@@ -18,8 +18,12 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+/** Fixed height of the [TabBar] surface; referenced by overlays that must clear it. */
+val TabBarHeight: Dp = 48.dp
 
 /**
  * Tab bar component for multiple terminal sessions.
@@ -49,7 +53,7 @@ fun TabBar(
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .height(48.dp),
+            .height(TabBarHeight),
         color = Color(0xFF1E1E1E),
         shadowElevation = 2.dp
     ) {

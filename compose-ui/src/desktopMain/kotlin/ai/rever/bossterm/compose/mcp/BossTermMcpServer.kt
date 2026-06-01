@@ -1111,16 +1111,21 @@ class BossTermMcpServer(
                         "horizontal_split"
                     }
                     val effectivePanel = if (panel == "reuse") defaultPanel else panel
+                    // preserveFocus: run_command's scratch pane is agent-driven,
+                    // so creating it must not steal focus from the pane the user
+                    // is typing in. (new_tab is an explicit tab switch — left as-is.)
                     val newId = when (effectivePanel) {
                         "horizontal_split" -> state.splitHorizontal(
                             tabId = tabId,
                             ratio = effectiveRatio,
-                            initialCommand = null
+                            initialCommand = null,
+                            preserveFocus = true
                         )
                         "vertical_split" -> state.splitVertical(
                             tabId = tabId,
                             ratio = effectiveRatio,
-                            initialCommand = null
+                            initialCommand = null,
+                            preserveFocus = true
                         )
                         "new_tab" -> state.createTab(
                             workingDir = workingDir,

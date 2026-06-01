@@ -1754,7 +1754,7 @@ fun ProperTerminal(
 
         // Restore focus to terminal when debug window closes
         LaunchedEffect(debugPanelVisible) {
-          if (!debugPanelVisible) {
+          if (!debugPanelVisible && isActiveTab) {
             // Delay for Compose window to fully close before focus restoration
             kotlinx.coroutines.delay(50)
             focusRequester.requestFocus()
@@ -1766,7 +1766,7 @@ fun ProperTerminal(
         // instead of terminal after AWT JPopupMenu dismissal. Fixes #126.
         val contextMenuState by contextMenuController.menuState
         LaunchedEffect(contextMenuState.isVisible) {
-          if (!contextMenuState.isVisible) {
+          if (!contextMenuState.isVisible && isActiveTab) {
             // Delay for AWT JPopupMenu to fully close before focus restoration
             kotlinx.coroutines.delay(50)
             focusRequester.requestFocus()

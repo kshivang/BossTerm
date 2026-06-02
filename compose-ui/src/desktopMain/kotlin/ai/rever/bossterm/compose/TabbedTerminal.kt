@@ -1144,7 +1144,8 @@ fun TabbedTerminal(
                                 copy(mcpEnabled = true)
                             }
                         },
-                        isUserEnabled = settings.mcpEnabled
+                        isUserEnabled = settings.mcpEnabled,
+                        serverLabel = LocalBossTermMcpConfig.current?.displayName ?: "BossTerm"
                     )
                 }
                 attachStatus?.let { status ->

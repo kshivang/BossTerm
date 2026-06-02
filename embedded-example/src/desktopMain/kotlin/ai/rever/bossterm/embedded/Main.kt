@@ -80,6 +80,9 @@ fun main() {
     val mcpScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val mcpConfig = BossTermMcpConfig(
         serverName = "bossterm-embedded-example",
+        // Friendly brand for the in-app MCP status pill / menus. With this set the
+        // pill reads "Embedded Example MCP on" instead of the default "BossTerm MCP on".
+        displayName = "Embedded Example",
         // `defaultEnabled` is honored only on the very first BossTerm launch on this
         // machine (gated by the global `mcpConfigured` flag in ~/.bossterm/settings.json).
         // If you've already run another BossTerm-based app on this machine, the setting

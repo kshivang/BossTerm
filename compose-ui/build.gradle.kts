@@ -50,6 +50,14 @@ kotlin {
             compileTaskProvider.configure {
                 compilerOptions {
                     jvmTarget.set(JvmTarget.JVM_17)
+                    // Compile Kotlin interface default methods as real JVM default
+                    // methods instead of generating a $DefaultImpls bridge class. The
+                    // bridge is resolved lazily on first call; for a listener like
+                    // TerminalSessionListener that fires during teardown, that lazy load
+                    // can happen after a consuming plugin's classloader is closed,
+                    // throwing NoClassDefFoundError. JVM default methods resolve with the
+                    // interface at link time. See risa-labs-inc/BossConsole#764.
+                    freeCompilerArgs.add("-Xjvm-default=all")
                 }
             }
         }

@@ -79,6 +79,8 @@ fun McpStatusIndicator(
     onTurnOnRequest: () -> Unit = {},
     /** User's `settings.mcpEnabled` (intent) — drives the toggle menu label. */
     isUserEnabled: Boolean = true,
+    /** Brand shown in the pill / menus / tooltip (e.g. "Boss"). Defaults to "BossTerm". */
+    serverLabel: String = "BossTerm",
     modifier: Modifier = Modifier
 ) {
     if (!enabled) return
@@ -101,6 +103,7 @@ fun McpStatusIndicator(
             attached = attached,
             isRunning = isRunning,
             isUserEnabled = isUserEnabled,
+            serverLabel = serverLabel,
             onAttachRequest = onAttachRequest,
             onShowSettings = onShowSettings,
             onTurnOffRequest = onTurnOffRequest,
@@ -110,7 +113,7 @@ fun McpStatusIndicator(
     }
 
     TooltipArea(
-        tooltip = { McpStatusTooltip(runningPort = runningPort, attached = attached) },
+        tooltip = { McpStatusTooltip(runningPort = runningPort, attached = attached, serverLabel = serverLabel) },
         delayMillis = 350,
         tooltipPlacement = TooltipPlacement.CursorPoint(
             offset = DpOffset(0.dp, 16.dp)
@@ -149,7 +152,7 @@ fun McpStatusIndicator(
                 )
             }
             Text(
-                text = if (isRunning) "BossTerm MCP on" else "BossTerm MCP off",
+                text = if (isRunning) "$serverLabel MCP on" else "$serverLabel MCP off",
                 color = labelColor,
                 fontSize = 11.sp
             )
@@ -180,6 +183,7 @@ private fun buildIndicatorMenuItems(
     attached: Set<McpAttachTarget>,
     isRunning: Boolean,
     isUserEnabled: Boolean,
+    serverLabel: String,
     onAttachRequest: (McpAttachTarget) -> Unit,
     onShowSettings: () -> Unit,
     onTurnOffRequest: () -> Unit,
@@ -202,7 +206,7 @@ private fun buildIndicatorMenuItems(
     )
     val settings = ContextMenuController.MenuItem(
         id = "mcp_settings",
-        label = "BossTerm MCP Settings…",
+        label = "$serverLabel MCP Settings…",
         enabled = true,
         action = onShowSettings
     )
@@ -210,14 +214,14 @@ private fun buildIndicatorMenuItems(
     val toggle = if (isUserEnabled) {
         ContextMenuController.MenuItem(
             id = "mcp_turn_off",
-            label = "Turn BossTerm MCP off",
+            label = "Turn $serverLabel MCP off",
             enabled = true,
             action = onTurnOffRequest
         )
     } else {
         ContextMenuController.MenuItem(
             id = "mcp_turn_on",
-            label = "Turn BossTerm MCP on",
+            label = "Turn $serverLabel MCP on",
             enabled = true,
             action = onTurnOnRequest
         )
@@ -233,7 +237,8 @@ private fun buildIndicatorMenuItems(
 @Composable
 private fun McpStatusTooltip(
     runningPort: Int?,
-    attached: Set<McpAttachTarget>
+    attached: Set<McpAttachTarget>,
+    serverLabel: String = "BossTerm"
 ) {
     Column(
         modifier = Modifier
@@ -245,20 +250,20 @@ private fun McpStatusTooltip(
     ) {
         if (runningPort == null) {
             Text(
-                text = "BossTerm MCP server is off",
+                text = "$serverLabel MCP server is off",
                 color = McpOffLabelColor,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold
             )
             Text(
-                text = "Click the pill to turn it on, or open BossTerm MCP Settings…",
+                text = "Click the pill to turn it on, or open $serverLabel MCP Settings…",
                 color = McpToastTextColor,
                 fontSize = 11.sp
             )
             return@Column
         }
         Text(
-            text = "BossTerm MCP server running",
+            text = "$serverLabel MCP server running",
             color = McpToastSuccessColor,
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold

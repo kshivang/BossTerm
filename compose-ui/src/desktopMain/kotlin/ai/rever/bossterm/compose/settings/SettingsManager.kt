@@ -48,14 +48,25 @@ class SettingsManager(private val customSettingsPath: String? = null) {
         if (customSettingsPath != null) {
             File(customSettingsPath).parentFile?.apply {
                 if (!exists()) mkdirs()
-            } ?: File(System.getProperty("user.home"), ".bossterm").apply {
-                if (!exists()) mkdirs()
-            }
+            } ?: defaultSettingsDir()
         } else {
-            File(System.getProperty("user.home"), ".bossterm").apply {
-                if (!exists()) mkdirs()
-            }
+            defaultSettingsDir()
         }
+    }
+
+    /**
+     * Default directory for the settings file when no [customSettingsPath] is
+     * given. Honors the `bossterm.settings.dir` system property so an embedder
+     * (e.g. BossConsole's terminal plugin) can relocate the entire settings
+     * store off the shared `~/.bossterm` — letting multiple BossTerm-based apps
+     * on one machine keep independent settings, including independent MCP
+     * `mcpEnabled`/`mcpPort` state. When the property is unset or blank, falls
+     * back to the historical `~/.bossterm` so standalone BossTerm is unchanged.
+     */
+    private fun defaultSettingsDir(): File {
+        val override = System.getProperty("bossterm.settings.dir")?.takeIf { it.isNotBlank() }
+        val dir = if (override != null) File(override) else File(System.getProperty("user.home"), ".bossterm")
+        return dir.apply { if (!exists()) mkdirs() }
     }
 
     private val settingsFile: File by lazy {

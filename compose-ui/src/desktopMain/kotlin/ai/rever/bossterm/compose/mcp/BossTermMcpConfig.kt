@@ -56,6 +56,12 @@ typealias ServerToolRegistrar = (Server) -> Unit
 data class BossTermMcpConfig(
     /** Reported as `Implementation.name`. MCP clients see this string. */
     val serverName: String = "bossterm",
+    /**
+     * Friendly label for the in-app MCP status pill / menus (e.g. "Boss",
+     * "BossConsole"). When null, the UI falls back to "BossTerm". This is purely
+     * cosmetic and independent of [serverName] (which clients/auto-attach use).
+     */
+    val displayName: String? = null,
     /** Reported as `Implementation.version`. */
     val serverVersion: String = "1.0",
     /**

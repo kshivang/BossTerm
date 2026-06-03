@@ -367,6 +367,40 @@ data class TerminalSettings(
      */
     val currentSearchMarkerColor: String = "0xFFFF6600",
 
+    // ===== Command Blocks =====
+
+    /**
+     * Master toggle for per-command blocks (left-edge gutter bar, scrollbar
+     * markers, jump/copy/re-run actions). Defaults to false: when off, no block
+     * is rendered and the block actions are disabled, so behavior is unchanged.
+     */
+    val commandBlocksEnabled: Boolean = false,
+
+    /**
+     * Width, in pixels, of the colored command-block gutter bar at the left edge.
+     */
+    val commandBlockGutterWidth: Float = 3f,
+
+    /**
+     * Gutter color for a successful command (exit code 0), serialized as ARGB hex.
+     */
+    val commandBlockSuccessColor: String = "0xFF4CAF50",
+
+    /**
+     * Gutter color for a failed command (non-zero exit), serialized as ARGB hex.
+     */
+    val commandBlockErrorColor: String = "0xFFF44336",
+
+    /**
+     * Gutter color for a still-running command, serialized as ARGB hex.
+     */
+    val commandBlockRunningColor: String = "0xFF9E9E9E",
+
+    /**
+     * Mirror each command-block start position into the scrollbar track.
+     */
+    val commandBlockShowScrollbarMarkers: Boolean = true,
+
     // ===== GPU Rendering Settings =====
 
     /**
@@ -978,6 +1012,15 @@ data class TerminalSettings(
 
     @Transient
     val splitFocusBorderColorValue: Color = Color(splitFocusBorderColor.removePrefix("0x").toULong(16).toLong())
+
+    @Transient
+    val commandBlockSuccessColorValue: Color = Color(commandBlockSuccessColor.removePrefix("0x").toULong(16).toLong())
+
+    @Transient
+    val commandBlockErrorColorValue: Color = Color(commandBlockErrorColor.removePrefix("0x").toULong(16).toLong())
+
+    @Transient
+    val commandBlockRunningColorValue: Color = Color(commandBlockRunningColor.removePrefix("0x").toULong(16).toLong())
 
     companion object {
         /**

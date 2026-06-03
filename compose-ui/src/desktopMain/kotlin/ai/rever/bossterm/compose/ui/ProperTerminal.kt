@@ -81,7 +81,9 @@ import ai.rever.bossterm.compose.scrollbar.computeMatchPositions
 import ai.rever.bossterm.compose.scrollbar.rememberTerminalScrollbarAdapter
 import ai.rever.bossterm.compose.search.SearchBar
 import ai.rever.bossterm.compose.rendering.RenderingContext
+import ai.rever.bossterm.compose.rendering.RenderableBlock
 import ai.rever.bossterm.compose.rendering.TerminalCanvasRenderer
+import ai.rever.bossterm.compose.blocks.BlockState
 import ai.rever.bossterm.compose.selection.SelectionEngine
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
@@ -177,6 +179,15 @@ fun ProperTerminal(
   val terminal = tab.terminal
   val textBuffer = tab.textBuffer
   val display = tab.display
+
+  // Command blocks captured for this session (OSC 133). Collected so the gutter
+  // and scrollbar markers repaint as commands start and finish. Falls back to a
+  // stable empty flow when this session does not track blocks.
+  val commandBlockFlow = remember(tab) {
+    tab.commandBlockTracker?.blocks
+      ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList<ai.rever.bossterm.compose.blocks.CommandBlock>())
+  }
+  val commandBlocks by commandBlockFlow.collectAsState()
 
   // Search state from tab
   var searchVisible by tab.searchVisible
@@ -493,6 +504,16 @@ fun ProperTerminal(
       isMacOS = isMacOS
     )
 
+    // Command-block actions (Phase 1). Enabled-gated by `commandBlocksEnabled`,
+    // so they no-op and pass keys through when the feature is off.
+    registry.registerAll(
+      *ai.rever.bossterm.compose.blocks.CommandBlockActions.create(
+        session = tab,
+        clipboardManager = clipboardManager,
+        isMacOS = isMacOS
+      ).toTypedArray()
+    )
+
     registry
   }
 
@@ -510,6 +531,10 @@ fun ProperTerminal(
       }
       onFind = { actionRegistry.getAction("search")?.executeFromMenu() }
       onToggleDebug = { actionRegistry.getAction("debug_panel")?.executeFromMenu() }
+      onBlockJumpPrev = { actionRegistry.getAction("block_jump_prev")?.executeFromMenu() }
+      onBlockJumpNext = { actionRegistry.getAction("block_jump_next")?.executeFromMenu() }
+      onBlockCopyOutput = { actionRegistry.getAction("block_copy_last_output")?.executeFromMenu() }
+      onBlockRerun = { actionRegistry.getAction("block_rerun_last")?.executeFromMenu() }
     }
   }
 
@@ -894,7 +919,27 @@ fun ProperTerminal(
               fun doShowContextMenu() {
                 // Get fresh items from provider if available, otherwise use static list
                 // This is called AFTER onContextMenuOpenAsync completes, so provider can return fresh data
-                val effectiveCustomItems = customContextMenuItemsProvider?.invoke() ?: customContextMenuItems
+                val baseCustomItems = customContextMenuItemsProvider?.invoke() ?: customContextMenuItems
+                // Append command-block actions (only when enabled and blocks exist).
+                val blockMenuItems: List<ai.rever.bossterm.compose.ContextMenuElement> =
+                  if (settings.commandBlocksEnabled &&
+                      tab.commandBlockTracker?.blocks?.value?.isNotEmpty() == true) {
+                    listOf(
+                      ai.rever.bossterm.compose.ContextMenuSection("cmd_blocks_section", "Command Block"),
+                      ai.rever.bossterm.compose.ContextMenuItem("block_copy_output", "Copy Last Command Output") {
+                        actionRegistry.getAction("block_copy_last_output")?.executeFromMenu()
+                      },
+                      ai.rever.bossterm.compose.ContextMenuItem("block_copy_command", "Copy Last Command") {
+                        actionRegistry.getAction("block_copy_last_command")?.executeFromMenu()
+                      },
+                      ai.rever.bossterm.compose.ContextMenuItem("block_rerun", "Re-run Last Command") {
+                        actionRegistry.getAction("block_rerun_last")?.executeFromMenu()
+                      },
+                    )
+                  } else {
+                    emptyList()
+                  }
+                val effectiveCustomItems = baseCustomItems + blockMenuItems
 
                 // Check if we're hovering over a hyperlink
                 if (currentHoveredHyperlink != null) {
@@ -1637,6 +1682,32 @@ fun ProperTerminal(
           val effectiveSelectionEnd = resolvedSelection?.toEndPair()
           val effectiveSelectionMode = resolvedSelection?.mode ?: selectionMode
 
+          // Resolve command blocks to on-screen rows (empty unless the feature is
+          // enabled). Reading the collected `commandBlocks` state here subscribes
+          // the draw to block changes so the gutter repaints as commands run.
+          val resolvedCommandBlocks: List<RenderableBlock> = if (settings.commandBlocksEnabled) {
+            commandBlocks.mapNotNull { block ->
+              val startBuf = selectionTracker.resolveAnchorRow(block.startAnchor, bufferSnapshot)
+                ?: return@mapNotNull null
+              val endBuf = block.endAnchor?.let { selectionTracker.resolveAnchorRow(it, bufferSnapshot) }
+              val startScreen = startBuf + scrollOffset
+              val endScreen = endBuf?.let { it + scrollOffset } ?: visibleRows
+              if (endScreen < 0 || startScreen > visibleRows) return@mapNotNull null
+              val color = when (block.state) {
+                BlockState.SUCCESS -> settings.commandBlockSuccessColorValue
+                BlockState.ERROR -> settings.commandBlockErrorColorValue
+                BlockState.RUNNING -> settings.commandBlockRunningColorValue
+              }
+              RenderableBlock(
+                startRow = startScreen.coerceAtLeast(0),
+                endRow = endScreen.coerceIn(0, visibleRows),
+                color = color
+              )
+            }
+          } else {
+            emptyList()
+          }
+
           // Build rendering context with all state
           val renderingContext = RenderingContext(
             bufferSnapshot = bufferSnapshot,
@@ -1676,7 +1747,8 @@ fun ProperTerminal(
             precomputedHyperlinks = precomputedHyperlinks,
             workingDirectory = tab.workingDirectory.value,
             detectFilePaths = settings.detectFilePaths,
-            hyperlinkRegistry = hyperlinkRegistry
+            hyperlinkRegistry = hyperlinkRegistry,
+            commandBlocks = resolvedCommandBlocks
           )
 
           // Render terminal using extracted renderer - returns detected hyperlinks
@@ -1789,6 +1861,39 @@ fun ProperTerminal(
           }
         }
 
+        // Compute command-block markers for the scrollbar track. Resolved against
+        // a fresh snapshot so positions reflect current history depth.
+        val (blockMarkerPositions, blockMarkerColors) = remember(
+          commandBlocks,
+          textBuffer.historyLinesCount,
+          textBuffer.height,
+          settings.commandBlocksEnabled,
+          settings.commandBlockShowScrollbarMarkers
+        ) {
+          if (!settings.commandBlocksEnabled ||
+              !settings.commandBlockShowScrollbarMarkers ||
+              commandBlocks.isEmpty()) {
+            emptyList<Float>() to emptyList<Color>()
+          } else {
+            val snap = textBuffer.createIncrementalSnapshot()
+            val total = (snap.historyLinesCount + textBuffer.height).coerceAtLeast(1)
+            val positions = ArrayList<Float>(commandBlocks.size)
+            val colors = ArrayList<Color>(commandBlocks.size)
+            for (block in commandBlocks) {
+              val row = selectionTracker.resolveAnchorRow(block.startAnchor, snap) ?: continue
+              positions.add(((row + snap.historyLinesCount).toFloat() / total).coerceIn(0f, 1f))
+              colors.add(
+                when (block.state) {
+                  BlockState.SUCCESS -> settings.commandBlockSuccessColorValue
+                  BlockState.ERROR -> settings.commandBlockErrorColorValue
+                  BlockState.RUNNING -> settings.commandBlockRunningColorValue
+                }
+              )
+            }
+            positions.toList() to colors.toList()
+          }
+        }
+
         AlwaysVisibleScrollbar(
           adapter = scrollbarAdapter,
           redrawTrigger = display.redrawTrigger,
@@ -1811,7 +1916,9 @@ fun ProperTerminal(
               highlightMatch(col, row, searchQuery.length)
             }
           },
-          userScrollTrigger = rememberUpdatedState(userScrollTrigger)
+          userScrollTrigger = rememberUpdatedState(userScrollTrigger),
+          blockMarkerPositions = blockMarkerPositions,
+          blockMarkerColors = blockMarkerColors
         )
 
         // Visual bell overlay - flashes when BEL character received and visualBell enabled

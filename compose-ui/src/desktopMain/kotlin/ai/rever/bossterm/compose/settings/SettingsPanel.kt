@@ -315,6 +315,11 @@ private fun SettingsContent(
                 onSettingsChange = onSettingsChange,
                 onSettingsSave = onSettingsSave
             )
+            SettingsCategory.COMMAND_BLOCKS -> CommandBlocksSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave
+            )
             SettingsCategory.PERFORMANCE -> PerformanceSettingsSection(
                 settings = settings,
                 onSettingsChange = onSettingsChange,

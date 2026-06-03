@@ -34,6 +34,10 @@ _bossterm_precmd() {
 
 # Called just before a command is executed
 _bossterm_preexec() {
+    # Command line capture (OSC 1341;BossTermCmd). Emitted before 133;B so the
+    # command-block tracker has the text when onCommandStarted fires. $1 is the
+    # command line as typed (zsh passes it to preexec hooks).
+    printf '\e]1341;BossTermCmd;%s\a' "$1"
     # B - Command starting
     printf '\e]133;B\a'
 }

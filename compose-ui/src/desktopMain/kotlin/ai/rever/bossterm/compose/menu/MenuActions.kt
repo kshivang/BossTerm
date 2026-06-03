@@ -25,6 +25,12 @@ class MenuActions {
     // View menu actions
     var onToggleDebug: (() -> Unit)? = null
 
+    // Command block actions (no-ops unless commandBlocksEnabled)
+    var onBlockJumpPrev: (() -> Unit)? = null
+    var onBlockJumpNext: (() -> Unit)? = null
+    var onBlockCopyOutput: (() -> Unit)? = null
+    var onBlockRerun: (() -> Unit)? = null
+
     // Window menu actions
     var onNextTab: (() -> Unit)? = null
     var onPreviousTab: (() -> Unit)? = null

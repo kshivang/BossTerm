@@ -100,7 +100,24 @@ data class RenderingContext(
     val detectFilePaths: Boolean = true,
 
     // Custom hyperlink registry for per-instance pattern customization
-    val hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry
+    val hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
+
+    // Command blocks resolved to on-screen rows for this frame (empty when the
+    // feature is disabled, so the gutter pass is a no-op).
+    val commandBlocks: List<RenderableBlock> = emptyList()
+)
+
+/**
+ * A command block resolved to on-screen rows for the current frame.
+ *
+ * @property startRow first on-screen row of the block (inclusive, 0-based)
+ * @property endRow row just past the block's last line (exclusive)
+ * @property color gutter color derived from the block's exit state
+ */
+data class RenderableBlock(
+    val startRow: Int,
+    val endRow: Int,
+    val color: Color
 )
 
 /**
@@ -358,6 +375,10 @@ object TerminalCanvasRenderer {
         // Pass 1: Draw backgrounds and populate analysis cache
         renderBackgrounds(ctx, analysisCache)
 
+        // Pass 1.25: Command-block gutter bars. Drawn before text so glyphs paint
+        // over the thin left-edge bar (it shows through the column's left bearing).
+        renderCommandBlockGutter(ctx)
+
         // Pass 1.5: Draw selection highlight BEFORE text (so text renders on top)
         if (ctx.selectionStart != null && ctx.selectionEnd != null &&
             !(ctx.searchVisible && ctx.searchMatches.isNotEmpty())) {
@@ -372,6 +393,28 @@ object TerminalCanvasRenderer {
         renderOverlays(ctx)
 
         return hyperlinksCache
+    }
+
+    /**
+     * Pass 1.25: draw the command-block gutter — a thin colored bar at the left
+     * edge spanning each visible block's rows. Pure overlay at x=0: the text
+     * origin is unchanged, so column math and mouse hit-testing are untouched.
+     * No-op when [RenderingContext.commandBlocks] is empty (feature disabled).
+     */
+    private fun DrawScope.renderCommandBlockGutter(ctx: RenderingContext) {
+        if (ctx.commandBlocks.isEmpty()) return
+        val width = ctx.settings.commandBlockGutterWidth
+        for (block in ctx.commandBlocks) {
+            val top = kotlin.math.floor(block.startRow * ctx.cellHeight)
+            val bottom = kotlin.math.floor(block.endRow * ctx.cellHeight)
+            val height = (bottom - top).coerceAtLeast(ctx.cellHeight)
+            if (top > size.height || top + height < 0f) continue
+            drawRect(
+                color = block.color,
+                topLeft = Offset(0f, top),
+                size = Size(width, height)
+            )
+        }
     }
 
     /**

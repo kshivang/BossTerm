@@ -36,6 +36,10 @@ end
 
 # Called just before a command is executed
 function __bossterm_fish_preexec --on-event fish_preexec
+    # Command line capture (OSC 1341;BossTermCmd). Emitted before 133;B so the
+    # command-block tracker has the text when onCommandStarted fires. fish passes
+    # the command line as the first event argument.
+    printf '\e]1341;BossTermCmd;%s\a' "$argv[1]"
     # B - Command starting
     printf '\e]133;B\a'
 end

@@ -274,6 +274,14 @@ data class TerminalTab(
     val lastCommand: kotlinx.coroutines.flow.MutableStateFlow<ai.rever.bossterm.compose.mcp.LastCommand?> =
         kotlinx.coroutines.flow.MutableStateFlow(null)
 
+    /**
+     * Per-tab command-block tracker (OSC 133), populated by [TabController] when
+     * the tab/session is created. Captures one [ai.rever.bossterm.compose.blocks.CommandBlock]
+     * per command; the renderer and block actions consume it only when
+     * `commandBlocksEnabled` is on. `null` only before construction completes.
+     */
+    override var commandBlockTracker: ai.rever.bossterm.compose.blocks.CommandBlockTracker? = null
+
     // === Content-Anchored Selection ===
 
     /**

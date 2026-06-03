@@ -44,6 +44,9 @@ __bossterm_preexec() {
     [[ $__bossterm_in_command -eq 1 ]] && return
 
     __bossterm_in_command=1
+    # Command line capture (OSC 1341;BossTermCmd). Emitted before 133;B so the
+    # command-block tracker has the text when onCommandStarted fires.
+    printf '\e]1341;BossTermCmd;%s\a' "$BASH_COMMAND"
     # B - Command starting
     printf '\e]133;B\a'
 }

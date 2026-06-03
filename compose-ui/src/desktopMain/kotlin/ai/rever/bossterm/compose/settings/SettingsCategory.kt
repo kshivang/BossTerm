@@ -33,6 +33,11 @@ enum class SettingsCategory(
         icon = Icons.Default.Menu,
         description = "Scrollbar appearance and markers"
     ),
+    COMMAND_BLOCKS(
+        displayName = "Command Blocks",
+        icon = Icons.Default.List,
+        description = "Per-command output blocks, gutter bars, and markers"
+    ),
     PERFORMANCE(
         displayName = "Performance",
         icon = Icons.Default.Refresh,

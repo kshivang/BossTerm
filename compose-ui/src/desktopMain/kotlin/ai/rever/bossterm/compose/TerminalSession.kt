@@ -217,6 +217,17 @@ interface TerminalSession {
     val aiCommandInterceptor: AICommandInterceptor?
         get() = null  // Default implementation returns null
 
+    // === Command Blocks ===
+
+    /**
+     * Per-session command-block tracker (OSC 133). Captures one
+     * [ai.rever.bossterm.compose.blocks.CommandBlock] per command for the gutter,
+     * scrollbar markers, and jump/copy/re-run actions. Null when the implementation
+     * does not track command blocks.
+     */
+    val commandBlockTracker: ai.rever.bossterm.compose.blocks.CommandBlockTracker?
+        get() = null  // Default implementation returns null
+
     // === Lifecycle Methods ===
 
     /**

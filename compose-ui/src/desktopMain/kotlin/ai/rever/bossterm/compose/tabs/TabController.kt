@@ -417,6 +417,19 @@ class TabController(
         tab.commandStateListeners.add(notificationHandler)
         tab.commandStateListeners.add(lastCommandTracker)
 
+        // Register command-block tracker (OSC 133) + command-line capture
+        // (OSC 1341;BossTermCmd). Additive and capture-only; nothing renders
+        // unless `commandBlocksEnabled` is on.
+        val commandBlockTracker = ai.rever.bossterm.compose.blocks.CommandBlockTracker(tab)
+        terminal.addCommandStateListener(commandBlockTracker)
+        tab.commandStateListeners.add(commandBlockTracker)
+        tab.commandBlockTracker = commandBlockTracker
+        terminal.addCustomCommandListener(
+            ai.rever.bossterm.compose.osc.CommandLineOSCListener { cmd ->
+                commandBlockTracker.pendingCommandText = cmd
+            }
+        )
+
         // Complete debug collector initialization
         debugCollector?.let { collector ->
             // Set the tab reference now that tab is created
@@ -662,6 +675,19 @@ class TabController(
         session.commandStateListeners.add(notificationHandler)
         session.commandStateListeners.add(lastCommandTracker)
 
+        // Register command-block tracker (OSC 133) + command-line capture
+        // (OSC 1341;BossTermCmd). Additive and capture-only; nothing renders
+        // unless `commandBlocksEnabled` is on.
+        val commandBlockTracker = ai.rever.bossterm.compose.blocks.CommandBlockTracker(session)
+        terminal.addCommandStateListener(commandBlockTracker)
+        session.commandStateListeners.add(commandBlockTracker)
+        session.commandBlockTracker = commandBlockTracker
+        terminal.addCustomCommandListener(
+            ai.rever.bossterm.compose.osc.CommandLineOSCListener { cmd ->
+                commandBlockTracker.pendingCommandText = cmd
+            }
+        )
+
         // Complete debug collector initialization
         debugCollector?.let { collector ->
             collector.setTab(session)
@@ -852,6 +878,19 @@ class TabController(
         terminal.addCommandStateListener(lastCommandTracker)
         tab.commandStateListeners.add(notificationHandler)
         tab.commandStateListeners.add(lastCommandTracker)
+
+        // Register command-block tracker (OSC 133) + command-line capture
+        // (OSC 1341;BossTermCmd). Additive and capture-only; nothing renders
+        // unless `commandBlocksEnabled` is on.
+        val commandBlockTracker = ai.rever.bossterm.compose.blocks.CommandBlockTracker(tab)
+        terminal.addCommandStateListener(commandBlockTracker)
+        tab.commandStateListeners.add(commandBlockTracker)
+        tab.commandBlockTracker = commandBlockTracker
+        terminal.addCustomCommandListener(
+            ai.rever.bossterm.compose.osc.CommandLineOSCListener { cmd ->
+                commandBlockTracker.pendingCommandText = cmd
+            }
+        )
 
         debugCollector?.let { collector ->
             collector.setTab(tab)

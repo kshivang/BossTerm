@@ -86,15 +86,44 @@ object WorkflowYaml {
     private fun unquote(s: String): String {
         if (s.length >= 2) {
             if (s.first() == '"' && s.last() == '"') {
-                return s.substring(1, s.length - 1)
-                    .replace("\\n", "\n").replace("\\t", "\t")
-                    .replace("\\\"", "\"").replace("\\\\", "\\")
+                return unescapeDoubleQuoted(s.substring(1, s.length - 1))
             }
             if (s.first() == '\'' && s.last() == '\'') {
                 return s.substring(1, s.length - 1).replace("''", "'")
             }
         }
         return s
+    }
+
+    /**
+     * Decode backslash escapes in a double-quoted scalar's body in a single
+     * left-to-right pass. A chained `.replace()` is wrong here: it would re-scan
+     * its own output, so a literal `\\n` (escaped backslash + 'n') would first
+     * collapse to a backslash + newline. Scanning once consumes each `\` together
+     * with the char after it, so `\\` + `n` stays a backslash followed by 'n'.
+     * Unknown escapes are kept verbatim (both characters).
+     */
+    private fun unescapeDoubleQuoted(body: String): String {
+        val sb = StringBuilder(body.length)
+        var i = 0
+        while (i < body.length) {
+            val c = body[i]
+            if (c == '\\' && i + 1 < body.length) {
+                when (val next = body[i + 1]) {
+                    'n' -> sb.append('\n')
+                    't' -> sb.append('\t')
+                    'r' -> sb.append('\r')
+                    '"' -> sb.append('"')
+                    '\\' -> sb.append('\\')
+                    else -> { sb.append('\\'); sb.append(next) }  // keep unknown escapes literal
+                }
+                i += 2
+            } else {
+                sb.append(c)
+                i++
+            }
+        }
+        return sb.toString()
     }
 
     /** Read an indented block scalar; `fold` joins lines with spaces (`>`) vs newlines (`|`). */

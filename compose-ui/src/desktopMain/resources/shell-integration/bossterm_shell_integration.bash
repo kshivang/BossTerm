@@ -16,6 +16,9 @@ fi
 
 BOSSTERM_SHELL_INTEGRATION_LOADED=1
 
+# Optional customizations requested by BossTerm settings (Phase 7).
+[[ -n "$BOSSTERM_VI_MODE" ]] && set -o vi
+
 # Track if we're in a command (to avoid duplicate B markers)
 __bossterm_in_command=0
 
@@ -32,6 +35,8 @@ __bossterm_prompt_command() {
 
     # A - Prompt starting
     printf '\e]133;A\a'
+    # Report cwd so the tab title tracks the directory (routed via OSC 1341 -> OSC 7).
+    printf '\e]1341;7;file://%s\a' "$PWD"
 }
 
 # Called via DEBUG trap before each command
@@ -44,6 +49,9 @@ __bossterm_preexec() {
     [[ $__bossterm_in_command -eq 1 ]] && return
 
     __bossterm_in_command=1
+    # Command line capture (OSC 1341;BossTermCmd). Emitted before 133;B so the
+    # command-block tracker has the text when onCommandStarted fires.
+    printf '\e]1341;BossTermCmd;%s\a' "$BASH_COMMAND"
     # B - Command starting
     printf '\e]133;B\a'
 }

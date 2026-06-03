@@ -33,6 +33,31 @@ enum class SettingsCategory(
         icon = Icons.Default.Menu,
         description = "Scrollbar appearance and markers"
     ),
+    COMMAND_BLOCKS(
+        displayName = "Command Blocks",
+        icon = Icons.Default.List,
+        description = "Per-command output blocks, gutter bars, and markers"
+    ),
+    WORKFLOWS(
+        displayName = "Workflows",
+        icon = Icons.Default.Bookmark,
+        description = "Saved parameterized commands"
+    ),
+    HISTORY_AI(
+        displayName = "History & AI",
+        icon = Icons.Default.Search,
+        description = "Ctrl+R history search and the AI command bar"
+    ),
+    SESSION(
+        displayName = "Session",
+        icon = Icons.Default.Refresh,
+        description = "Restore tabs and layout on launch"
+    ),
+    EXTRAS(
+        displayName = "Extras",
+        icon = Icons.Default.Star,
+        description = "Git branch indicator, shell vi-mode, autosuggestions, prevent-sleep"
+    ),
     PERFORMANCE(
         displayName = "Performance",
         icon = Icons.Default.Refresh,

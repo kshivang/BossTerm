@@ -274,6 +274,30 @@ data class TerminalTab(
     val lastCommand: kotlinx.coroutines.flow.MutableStateFlow<ai.rever.bossterm.compose.mcp.LastCommand?> =
         kotlinx.coroutines.flow.MutableStateFlow(null)
 
+    /**
+     * Per-tab command-block tracker (OSC 133), populated by [TabController] when
+     * the tab/session is created. Captures one [ai.rever.bossterm.compose.blocks.CommandBlock]
+     * per command; the renderer and block actions consume it only when
+     * `commandBlocksEnabled` is on. `null` only before construction completes.
+     */
+    override var commandBlockTracker: ai.rever.bossterm.compose.blocks.CommandBlockTracker? = null
+
+    // === Warp-style tab customization (left tab bar) ===
+
+    /**
+     * User-assigned tab title (via Rename…). When non-null it overrides the
+     * auto cwd-derived title and survives `cd`; clearing it (null) reverts the
+     * tab to tracking the working directory. See [TabController.wireCwdTitle].
+     */
+    override val customTitle: MutableState<String?> = mutableStateOf(null)
+
+    /**
+     * User-assigned tab accent color as an ARGB hex string ("0xAARRGGBB"), or
+     * null for no manual color. Rendered as a leading stripe by the tab bar.
+     * Manual color always wins over auto-color-by-directory.
+     */
+    override val tabColor: MutableState<String?> = mutableStateOf(null)
+
     // === Content-Anchored Selection ===
 
     /**
@@ -400,6 +424,10 @@ data class TerminalTab(
         // remain attached to `terminal` and keep this tab's state reachable until
         // the terminal itself is collected.
         for (listener in commandStateListeners) {
+            // Release any OS wake-lock held by the prevent-sleep listener before detaching.
+            (listener as? ai.rever.bossterm.compose.power.PreventSleepListener)?.let {
+                runCatching { it.dispose() }
+            }
             try {
                 terminal.removeCommandStateListener(listener)
             } catch (e: Exception) {

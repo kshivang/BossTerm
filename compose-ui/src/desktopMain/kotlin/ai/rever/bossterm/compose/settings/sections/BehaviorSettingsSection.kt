@@ -84,6 +84,36 @@ fun BehaviorSettingsSection(
                 onCheckedChange = { onSettingsChange(settings.copy(alwaysShowTabBar = it)) },
                 description = "Show tab bar even with a single tab (provides access to + button)"
             )
+            SettingsDropdown(
+                label = "Position",
+                options = listOf("top", "left"),
+                selectedOption = settings.tabBarPosition,
+                onOptionSelected = { onSettingsChange(settings.copy(tabBarPosition = it)) },
+                description = "Place the tab bar across the top or down the left side"
+            )
+            SettingsSlider(
+                label = "Vertical Bar Width",
+                value = settings.tabBarVerticalWidth,
+                onValueChange = { onSettingsChange(settings.copy(tabBarVerticalWidth = it)) },
+                onValueChangeFinished = onSettingsSave,
+                valueRange = 120f..320f,
+                steps = 19,
+                valueDisplay = { "${it.toInt()} dp" },
+                description = "Width of the left tab bar (only applies when position is 'left')",
+                enabled = settings.tabBarPosition == "left"
+            )
+            SettingsToggle(
+                label = "Summary Mode",
+                checked = settings.tabBarSummaryMode,
+                onCheckedChange = { onSettingsChange(settings.copy(tabBarSummaryMode = it)) },
+                description = "Show one chip per tab instead of one per split pane"
+            )
+            SettingsToggle(
+                label = "Color Tabs by Directory",
+                checked = settings.tabColorByDirectory,
+                onCheckedChange = { onSettingsChange(settings.copy(tabColorByDirectory = it)) },
+                description = "Auto-assign a stable accent color per working directory (a manual color always wins)"
+            )
         }
 
         Spacer(modifier = Modifier.height(24.dp))

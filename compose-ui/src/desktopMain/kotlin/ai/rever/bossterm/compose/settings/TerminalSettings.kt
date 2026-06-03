@@ -367,6 +367,134 @@ data class TerminalSettings(
      */
     val currentSearchMarkerColor: String = "0xFFFF6600",
 
+    // ===== Command Blocks =====
+
+    /**
+     * Master toggle for per-command blocks (left-edge gutter bar, scrollbar
+     * markers, jump/copy/re-run actions). Defaults to false: when off, no block
+     * is rendered and the block actions are disabled, so behavior is unchanged.
+     */
+    val commandBlocksEnabled: Boolean = false,
+
+    /**
+     * Width, in dp, of the command-block gutter bar (drawn on the right edge).
+     */
+    val commandBlockGutterWidth: Float = 4f,
+
+    /**
+     * Gutter color for a successful command (exit code 0), serialized as ARGB hex.
+     * Defaults to transparent so only failed/running commands draw a bar.
+     */
+    val commandBlockSuccessColor: String = "0x00000000",
+
+    /**
+     * Gutter color for a failed command (non-zero exit), serialized as ARGB hex.
+     */
+    val commandBlockErrorColor: String = "0xFFF44336",
+
+    /**
+     * Gutter color for a still-running command, serialized as ARGB hex.
+     */
+    val commandBlockRunningColor: String = "0xFF9E9E9E",
+
+    /**
+     * Mirror each command-block start position into the scrollbar track.
+     */
+    val commandBlockShowScrollbarMarkers: Boolean = true,
+
+    /**
+     * Tint the whole command block with a faint version of its gutter color
+     * (e.g. light red for a failed command). Transparent-gutter states (success)
+     * get no tint.
+     */
+    val commandBlockHighlightBackground: Boolean = true,
+
+    // ===== Command Palette =====
+
+    /**
+     * Enable the fuzzy command palette (Cmd/Ctrl+Shift+P). When false the hotkey
+     * is not intercepted and the palette never opens.
+     */
+    val commandPaletteEnabled: Boolean = true,
+
+    // ===== Workflows =====
+
+    /**
+     * Enable saved parameterized commands (workflows). When false no workflows
+     * are loaded or surfaced in the palette.
+     */
+    val workflowsEnabled: Boolean = true,
+
+    /**
+     * Run a workflow's command immediately on submit (append newline) instead of
+     * just inserting it at the prompt for review.
+     */
+    val workflowsAutoRun: Boolean = false,
+
+    /**
+     * Additional directories to scan for workflow `*.yaml` files, beyond
+     * `~/.bossterm/workflows` and the project's `.warp/workflows`.
+     */
+    val workflowExtraDirs: List<String> = emptyList(),
+
+    // ===== History search + AI command bar (Phase 4) =====
+
+    /** Enable Ctrl+R fuzzy history search overlay. */
+    val historySearchEnabled: Boolean = false,
+
+    /** Enable the natural-language → command AI bar inside history search. */
+    val aiCommandBarEnabled: Boolean = false,
+
+    /** Agent command used for NL→command (e.g. "claude"). */
+    val aiCommandBarAgentCommand: String = "claude",
+
+    /** One-shot print flag for the agent (e.g. "-p"); empty disables the AI bar. */
+    val aiCommandBarPrintFlag: String = "-p",
+
+    // ===== Tabs & layout (Phase 5) =====
+
+    /** Tab bar position: "left" (vertical, default) or "top". */
+    val tabBarPosition: String = "left",
+
+    /** Width (dp) of the vertical (left) tab bar. Ignored when position is "top". */
+    val tabBarVerticalWidth: Float = 180f,
+
+    /**
+     * Summary mode (Warp's VerticalTabsSummaryMode): show one chip per tab
+     * (the active pane, labeled with the tab's title) instead of one chip per
+     * split pane. Off = per-pane chips (default).
+     */
+    val tabBarSummaryMode: Boolean = false,
+
+    /**
+     * Auto-color tabs by working directory (Warp's DirectoryTabColors): when on
+     * and a tab has no manual color, derive a stable accent from its cwd. A
+     * manual color (Color ▸ menu) always wins. Off = no color (default).
+     */
+    val tabColorByDirectory: Boolean = false,
+
+    // ===== Session restore (Phase 6) =====
+
+    /** Reopen tabs / split layout / cwds on launch. */
+    val restoreSessionOnLaunch: Boolean = false,
+
+    // ===== Polish (Phase 7) =====
+
+    /** Show the current git branch near the tab bar. */
+    val showGitBranchIndicator: Boolean = false,
+
+    /** Inject shell vi-mode (set -o vi / bindkey -v / fish vi) via shell integration. */
+    val shellViMode: Boolean = false,
+
+    /** Enable shell autosuggestions hint via shell integration. */
+    val shellAutosuggestions: Boolean = false,
+
+    /** Hold an OS wake-lock while a foreground command runs past the threshold. */
+    val preventSleepDuringCommands: Boolean = false,
+
+    /** Seconds a command must run before the wake-lock is acquired. */
+    val preventSleepThresholdSeconds: Int = 30,
+
     // ===== GPU Rendering Settings =====
 
     /**
@@ -730,10 +858,10 @@ data class TerminalSettings(
 
     /**
      * Always show tab bar even with single tab.
-     * When false (default), tab bar auto-hides when only one tab is open.
-     * When true, tab bar is always visible for consistency and quick access to "+" button.
+     * When true (default), tab bar is always visible for consistency and quick access to "+" button.
+     * When false, tab bar auto-hides when only one tab is open.
      */
-    val alwaysShowTabBar: Boolean = false,
+    val alwaysShowTabBar: Boolean = true,
 
     /**
      * Show the small dim "Cmd+1"/"Ctrl+1" hotkey hint label in the top-right
@@ -978,6 +1106,15 @@ data class TerminalSettings(
 
     @Transient
     val splitFocusBorderColorValue: Color = Color(splitFocusBorderColor.removePrefix("0x").toULong(16).toLong())
+
+    @Transient
+    val commandBlockSuccessColorValue: Color = Color(commandBlockSuccessColor.removePrefix("0x").toULong(16).toLong())
+
+    @Transient
+    val commandBlockErrorColorValue: Color = Color(commandBlockErrorColor.removePrefix("0x").toULong(16).toLong())
+
+    @Transient
+    val commandBlockRunningColorValue: Color = Color(commandBlockRunningColor.removePrefix("0x").toULong(16).toLong())
 
     companion object {
         /**

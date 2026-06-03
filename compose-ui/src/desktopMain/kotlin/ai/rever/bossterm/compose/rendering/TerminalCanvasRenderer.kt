@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.rendering
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.scale
@@ -100,7 +101,24 @@ data class RenderingContext(
     val detectFilePaths: Boolean = true,
 
     // Custom hyperlink registry for per-instance pattern customization
-    val hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry
+    val hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
+
+    // Command blocks resolved to on-screen rows for this frame (empty when the
+    // feature is disabled, so the gutter pass is a no-op).
+    val commandBlocks: List<RenderableBlock> = emptyList()
+)
+
+/**
+ * A command block resolved to on-screen rows for the current frame.
+ *
+ * @property startRow first on-screen row of the block (inclusive, 0-based)
+ * @property endRow row just past the block's last line (exclusive)
+ * @property color gutter color derived from the block's exit state
+ */
+data class RenderableBlock(
+    val startRow: Int,
+    val endRow: Int,
+    val color: Color
 )
 
 /**
@@ -358,6 +376,10 @@ object TerminalCanvasRenderer {
         // Pass 1: Draw backgrounds and populate analysis cache
         renderBackgrounds(ctx, analysisCache)
 
+        // Pass 1.25: Command-block gutter bars. Drawn before text so glyphs paint
+        // over the thin left-edge bar (it shows through the column's left bearing).
+        renderCommandBlockGutter(ctx)
+
         // Pass 1.5: Draw selection highlight BEFORE text (so text renders on top)
         if (ctx.selectionStart != null && ctx.selectionEnd != null &&
             !(ctx.searchVisible && ctx.searchMatches.isNotEmpty())) {
@@ -372,6 +394,65 @@ object TerminalCanvasRenderer {
         renderOverlays(ctx)
 
         return hyperlinksCache
+    }
+
+    /**
+     * Pass 1.25: draw the command-block gutter — a thin colored bar at the left
+     * edge spanning each visible block's rows. Pure overlay at x=0: the text
+     * origin is unchanged, so column math and mouse hit-testing are untouched.
+     * No-op when [RenderingContext.commandBlocks] is empty (feature disabled).
+     */
+    private fun DrawScope.renderCommandBlockGutter(ctx: RenderingContext) {
+        if (ctx.commandBlocks.isEmpty()) return
+        // Gutter width is in dp (DPI-correct). Place it on the RIGHT edge, just
+        // inside the scrollbar so it doesn't sit under it.
+        val width = ctx.settings.commandBlockGutterWidth.dp.toPx()
+        val rightInset = if (ctx.settings.showScrollbar) ctx.settings.scrollbarWidth.dp.toPx() else 0f
+        val x = (size.width - width - rightInset).coerceAtLeast(0f)
+        val tintBackground = ctx.settings.commandBlockHighlightBackground
+        val snapshot = ctx.bufferSnapshot
+        val cols = ctx.visibleCols
+
+        // A visible row is blank if every cell is empty/space. Used to trim the
+        // prompt-spacing and trailing blank lines that OSC-133 marks land on, so
+        // the highlight hugs the actual prompt+command+output (and adjacent blocks
+        // don't visually merge across the gap between them).
+        fun rowBlank(screenRow: Int): Boolean {
+            val line = snapshot.getLine(screenRow - ctx.scrollOffset)
+            for (c in 0 until cols) {
+                val ch = line.charAt(c)
+                if (ch != ' ' && ch != CharUtils.EMPTY_CHAR) return false
+            }
+            return true
+        }
+
+        for (block in ctx.commandBlocks) {
+            if (block.color.alpha == 0f) continue // transparent (e.g. success) = no bar/tint
+            var startScreen = block.startRow.coerceIn(0, ctx.visibleRows)
+            var endScreen = block.endRow.coerceIn(0, ctx.visibleRows) // exclusive
+            while (endScreen > startScreen && rowBlank(endScreen - 1)) endScreen--
+            while (startScreen < endScreen && rowBlank(startScreen)) startScreen++
+            if (endScreen <= startScreen) continue
+
+            val top = kotlin.math.floor(startScreen * ctx.cellHeight)
+            val bottom = kotlin.math.floor(endScreen * ctx.cellHeight)
+            val height = (bottom - top).coerceAtLeast(ctx.cellHeight)
+            if (top > size.height || top + height < 0f) continue
+            // Faint full-row tint behind the block (drawn before text so it stays subtle).
+            if (tintBackground) {
+                drawRect(
+                    color = block.color.copy(alpha = 0.12f),
+                    topLeft = Offset(0f, top),
+                    size = Size(size.width - rightInset, height)
+                )
+            }
+            // Solid gutter bar on the right edge.
+            drawRect(
+                color = block.color,
+                topLeft = Offset(x, top),
+                size = Size(width, height)
+            )
+        }
     }
 
     /**

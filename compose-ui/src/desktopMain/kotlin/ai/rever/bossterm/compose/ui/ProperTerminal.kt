@@ -81,7 +81,9 @@ import ai.rever.bossterm.compose.scrollbar.computeMatchPositions
 import ai.rever.bossterm.compose.scrollbar.rememberTerminalScrollbarAdapter
 import ai.rever.bossterm.compose.search.SearchBar
 import ai.rever.bossterm.compose.rendering.RenderingContext
+import ai.rever.bossterm.compose.rendering.RenderableBlock
 import ai.rever.bossterm.compose.rendering.TerminalCanvasRenderer
+import ai.rever.bossterm.compose.blocks.BlockState
 import ai.rever.bossterm.compose.selection.SelectionEngine
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
@@ -177,6 +179,34 @@ fun ProperTerminal(
   val terminal = tab.terminal
   val textBuffer = tab.textBuffer
   val display = tab.display
+
+  // Command blocks captured for this session (OSC 133). Collected so the gutter
+  // and scrollbar markers repaint as commands start and finish. Falls back to a
+  // stable empty flow when this session does not track blocks.
+  val commandBlockFlow = remember(tab) {
+    tab.commandBlockTracker?.blocks
+      ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList<ai.rever.bossterm.compose.blocks.CommandBlock>())
+  }
+  val commandBlocks by commandBlockFlow.collectAsState()
+
+  // Command palette overlay visibility (toggled by the command_palette action).
+  var commandPaletteVisible by remember { mutableStateOf(false) }
+
+  // Workflows for this session (Phase 3); reloaded when cwd / settings change.
+  val workflows = remember(tab.workingDirectory.value, settings.workflowsEnabled, settings.workflowExtraDirs) {
+    if (settings.workflowsEnabled) {
+      ai.rever.bossterm.compose.workflows.WorkflowStore(
+        extraDirs = settings.workflowExtraDirs.map { java.io.File(it) }
+      ).load(tab.workingDirectory.value)
+    } else {
+      emptyList()
+    }
+  }
+  // When non-null, the workflow parameter dialog is shown for this workflow.
+  var pendingWorkflow by remember { mutableStateOf<ai.rever.bossterm.compose.workflows.Workflow?>(null) }
+
+  // History search overlay visibility (Ctrl+R when enabled and not in an alt-screen app).
+  var historySearchVisible by remember { mutableStateOf(false) }
 
   // Search state from tab
   var searchVisible by tab.searchVisible
@@ -493,6 +523,54 @@ fun ProperTerminal(
       isMacOS = isMacOS
     )
 
+    // Command-block actions (Phase 1). Enabled-gated by `commandBlocksEnabled`,
+    // so they no-op and pass keys through when the feature is off.
+    registry.registerAll(
+      *ai.rever.bossterm.compose.blocks.CommandBlockActions.create(
+        session = tab,
+        clipboardManager = clipboardManager,
+        isMacOS = isMacOS
+      ).toTypedArray()
+    )
+
+    // Command palette (Phase 2). Cmd/Ctrl+Shift+P. Enabled-gated by
+    // `commandPaletteEnabled`, so the hotkey passes through when disabled.
+    registry.register(
+      ai.rever.bossterm.compose.actions.TerminalAction(
+        id = "command_palette",
+        name = "Command Palette",
+        keyStrokes = if (isMacOS) {
+          listOf(ai.rever.bossterm.compose.actions.KeyStroke(key = Key.P, meta = true, shift = true))
+        } else {
+          listOf(ai.rever.bossterm.compose.actions.KeyStroke(key = Key.P, ctrl = true, shift = true))
+        },
+        enabled = { SettingsManager.instance.settings.value.commandPaletteEnabled },
+        handler = {
+          commandPaletteVisible = true
+          true
+        }
+      )
+    )
+
+    // History search (Phase 4). Ctrl+R. Enabled-gated by `historySearchEnabled`
+    // and ignored while a full-screen app owns the alternate screen, so vim/less
+    // keep their own Ctrl+R.
+    registry.register(
+      ai.rever.bossterm.compose.actions.TerminalAction(
+        id = "history_search",
+        name = "Search History",
+        keyStrokes = listOf(ai.rever.bossterm.compose.actions.KeyStroke(key = Key.R, ctrl = true)),
+        enabled = {
+          SettingsManager.instance.settings.value.historySearchEnabled &&
+            !textBuffer.isUsingAlternateBuffer
+        },
+        handler = {
+          historySearchVisible = true
+          true
+        }
+      )
+    )
+
     registry
   }
 
@@ -510,6 +588,10 @@ fun ProperTerminal(
       }
       onFind = { actionRegistry.getAction("search")?.executeFromMenu() }
       onToggleDebug = { actionRegistry.getAction("debug_panel")?.executeFromMenu() }
+      onBlockJumpPrev = { actionRegistry.getAction("block_jump_prev")?.executeFromMenu() }
+      onBlockJumpNext = { actionRegistry.getAction("block_jump_next")?.executeFromMenu() }
+      onBlockCopyOutput = { actionRegistry.getAction("block_copy_last_output")?.executeFromMenu() }
+      onBlockRerun = { actionRegistry.getAction("block_rerun_last")?.executeFromMenu() }
     }
   }
 
@@ -894,7 +976,27 @@ fun ProperTerminal(
               fun doShowContextMenu() {
                 // Get fresh items from provider if available, otherwise use static list
                 // This is called AFTER onContextMenuOpenAsync completes, so provider can return fresh data
-                val effectiveCustomItems = customContextMenuItemsProvider?.invoke() ?: customContextMenuItems
+                val baseCustomItems = customContextMenuItemsProvider?.invoke() ?: customContextMenuItems
+                // Append command-block actions (only when enabled and blocks exist).
+                val blockMenuItems: List<ai.rever.bossterm.compose.ContextMenuElement> =
+                  if (settings.commandBlocksEnabled &&
+                      tab.commandBlockTracker?.blocks?.value?.isNotEmpty() == true) {
+                    listOf(
+                      ai.rever.bossterm.compose.ContextMenuSection("cmd_blocks_section", "Command Block"),
+                      ai.rever.bossterm.compose.ContextMenuItem("block_copy_output", "Copy Last Command Output") {
+                        actionRegistry.getAction("block_copy_last_output")?.executeFromMenu()
+                      },
+                      ai.rever.bossterm.compose.ContextMenuItem("block_copy_command", "Copy Last Command") {
+                        actionRegistry.getAction("block_copy_last_command")?.executeFromMenu()
+                      },
+                      ai.rever.bossterm.compose.ContextMenuItem("block_rerun", "Re-run Last Command") {
+                        actionRegistry.getAction("block_rerun_last")?.executeFromMenu()
+                      },
+                    )
+                  } else {
+                    emptyList()
+                  }
+                val effectiveCustomItems = baseCustomItems + blockMenuItems
 
                 // Check if we're hovering over a hyperlink
                 if (currentHoveredHyperlink != null) {
@@ -1637,6 +1739,32 @@ fun ProperTerminal(
           val effectiveSelectionEnd = resolvedSelection?.toEndPair()
           val effectiveSelectionMode = resolvedSelection?.mode ?: selectionMode
 
+          // Resolve command blocks to on-screen rows (empty unless the feature is
+          // enabled). Reading the collected `commandBlocks` state here subscribes
+          // the draw to block changes so the gutter repaints as commands run.
+          val resolvedCommandBlocks: List<RenderableBlock> = if (settings.commandBlocksEnabled) {
+            commandBlocks.mapNotNull { block ->
+              val startBuf = selectionTracker.resolveAnchorRow(block.startAnchor, bufferSnapshot)
+                ?: return@mapNotNull null
+              val endBuf = block.endAnchor?.let { selectionTracker.resolveAnchorRow(it, bufferSnapshot) }
+              val startScreen = startBuf + scrollOffset
+              val endScreen = endBuf?.let { it + scrollOffset } ?: visibleRows
+              if (endScreen < 0 || startScreen > visibleRows) return@mapNotNull null
+              val color = when (block.state) {
+                BlockState.SUCCESS -> settings.commandBlockSuccessColorValue
+                BlockState.ERROR -> settings.commandBlockErrorColorValue
+                BlockState.RUNNING -> settings.commandBlockRunningColorValue
+              }
+              RenderableBlock(
+                startRow = startScreen.coerceAtLeast(0),
+                endRow = endScreen.coerceIn(0, visibleRows),
+                color = color
+              )
+            }
+          } else {
+            emptyList()
+          }
+
           // Build rendering context with all state
           val renderingContext = RenderingContext(
             bufferSnapshot = bufferSnapshot,
@@ -1676,7 +1804,8 @@ fun ProperTerminal(
             precomputedHyperlinks = precomputedHyperlinks,
             workingDirectory = tab.workingDirectory.value,
             detectFilePaths = settings.detectFilePaths,
-            hyperlinkRegistry = hyperlinkRegistry
+            hyperlinkRegistry = hyperlinkRegistry,
+            commandBlocks = resolvedCommandBlocks
           )
 
           // Render terminal using extracted renderer - returns detected hyperlinks
@@ -1752,6 +1881,87 @@ fun ProperTerminal(
           modifier = Modifier.align(Alignment.TopEnd)
         )
 
+        // Command palette overlay (Phase 2)
+        if (commandPaletteVisible) {
+          val paletteCommands = remember(commandBlocks, actionRegistry, workflows) {
+            ai.rever.bossterm.compose.palette.PaletteSources.collect(
+              actions = actionRegistry,
+              recentCommands = commandBlocks.mapNotNull { it.commandText },
+              insertCommand = { cmd -> tab.writeUserInput(cmd) },
+              workflows = workflows,
+              onRunWorkflow = { wf -> pendingWorkflow = wf }
+            )
+          }
+          ai.rever.bossterm.compose.palette.CommandPalette(
+            visible = true,
+            commands = paletteCommands,
+            onDismiss = {
+              commandPaletteVisible = false
+              scope.launch {
+                kotlinx.coroutines.delay(50)
+                focusRequester.requestFocus()
+              }
+            }
+          )
+        }
+
+        // Workflow parameter dialog (Phase 3)
+        pendingWorkflow?.let { wf ->
+          ai.rever.bossterm.compose.workflows.WorkflowRunDialog(
+            workflow = wf,
+            autoRun = settings.workflowsAutoRun,
+            onDismiss = {
+              pendingWorkflow = null
+              scope.launch {
+                kotlinx.coroutines.delay(50)
+                focusRequester.requestFocus()
+              }
+            },
+            onSubmit = { rendered ->
+              tab.writeUserInput(rendered + if (settings.workflowsAutoRun) "\n" else "")
+            }
+          )
+        }
+
+        // History search overlay (Phase 4)
+        if (historySearchVisible) {
+          // Load shell-history files off the UI thread; show empty until ready.
+          val historyEntries by androidx.compose.runtime.produceState(
+            initialValue = emptyList<String>(), commandBlocks
+          ) {
+            val recent = commandBlocks.mapNotNull { it.commandText }
+            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+              ai.rever.bossterm.compose.history.HistoryStore.load(recent)
+            }
+          }
+          val restoreFocus = {
+            historySearchVisible = false
+            scope.launch {
+              kotlinx.coroutines.delay(50)
+              focusRequester.requestFocus()
+            }
+            Unit
+          }
+          ai.rever.bossterm.compose.history.HistorySearchOverlay(
+            visible = true,
+            history = historyEntries,
+            onSelect = { cmd -> tab.writeUserInput(cmd); restoreFocus() },
+            onDismiss = { restoreFocus() },
+            aiEnabled = settings.aiCommandBarEnabled && settings.aiCommandBarPrintFlag.isNotBlank(),
+            onAskAi = { query ->
+              restoreFocus()
+              scope.launch {
+                val suggestion = ai.rever.bossterm.compose.ai.AiCommandSuggester.suggest(
+                  agentCommand = settings.aiCommandBarAgentCommand,
+                  printFlag = settings.aiCommandBarPrintFlag,
+                  naturalLanguage = query
+                )
+                if (!suggestion.isNullOrBlank()) tab.writeUserInput(suggestion)
+              }
+            }
+          )
+        }
+
         // Restore focus to terminal when debug window closes
         LaunchedEffect(debugPanelVisible) {
           if (!debugPanelVisible && isActiveTab) {
@@ -1789,6 +1999,39 @@ fun ProperTerminal(
           }
         }
 
+        // Compute command-block markers for the scrollbar track. Resolved against
+        // a fresh snapshot so positions reflect current history depth.
+        val (blockMarkerPositions, blockMarkerColors) = remember(
+          commandBlocks,
+          textBuffer.historyLinesCount,
+          textBuffer.height,
+          settings.commandBlocksEnabled,
+          settings.commandBlockShowScrollbarMarkers
+        ) {
+          if (!settings.commandBlocksEnabled ||
+              !settings.commandBlockShowScrollbarMarkers ||
+              commandBlocks.isEmpty()) {
+            emptyList<Float>() to emptyList<Color>()
+          } else {
+            val snap = textBuffer.createIncrementalSnapshot()
+            val total = (snap.historyLinesCount + textBuffer.height).coerceAtLeast(1)
+            val positions = ArrayList<Float>(commandBlocks.size)
+            val colors = ArrayList<Color>(commandBlocks.size)
+            for (block in commandBlocks) {
+              val row = selectionTracker.resolveAnchorRow(block.startAnchor, snap) ?: continue
+              positions.add(((row + snap.historyLinesCount).toFloat() / total).coerceIn(0f, 1f))
+              colors.add(
+                when (block.state) {
+                  BlockState.SUCCESS -> settings.commandBlockSuccessColorValue
+                  BlockState.ERROR -> settings.commandBlockErrorColorValue
+                  BlockState.RUNNING -> settings.commandBlockRunningColorValue
+                }
+              )
+            }
+            positions.toList() to colors.toList()
+          }
+        }
+
         AlwaysVisibleScrollbar(
           adapter = scrollbarAdapter,
           redrawTrigger = display.redrawTrigger,
@@ -1811,7 +2054,9 @@ fun ProperTerminal(
               highlightMatch(col, row, searchQuery.length)
             }
           },
-          userScrollTrigger = rememberUpdatedState(userScrollTrigger)
+          userScrollTrigger = rememberUpdatedState(userScrollTrigger),
+          blockMarkerPositions = blockMarkerPositions,
+          blockMarkerColors = blockMarkerColors
         )
 
         // Visual bell overlay - flashes when BEL character received and visualBell enabled

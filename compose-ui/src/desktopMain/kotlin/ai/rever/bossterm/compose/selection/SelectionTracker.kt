@@ -147,6 +147,20 @@ class SelectionTracker(private val textBuffer: TerminalTextBuffer) {
     }
 
     /**
+     * Resolve a single content anchor to its current buffer row, reusing the same
+     * identity cache as [resolveToCoordinates] (screen rows >= 0, history rows < 0).
+     *
+     * Independent of the active selection — used by command-block rendering to map
+     * a block's anchor to a row each frame. Returns null if the anchored line was
+     * evicted from history or garbage-collected.
+     */
+    fun resolveAnchorRow(anchor: SelectionAnchor, snapshot: VersionedBufferSnapshot): Int? {
+        buildLineIndexCache(snapshot)
+        val line = anchor.line ?: return null
+        return lineIndexCache[line]
+    }
+
+    /**
      * Resolve to legacy Pair format for compatibility with existing rendering code.
      */
     fun resolveToLegacyPairs(snapshot: VersionedBufferSnapshot): Pair<Pair<Int, Int>?, Pair<Int, Int>?> {

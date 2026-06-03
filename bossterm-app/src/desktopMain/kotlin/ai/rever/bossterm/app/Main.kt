@@ -390,6 +390,27 @@ fun main() {
                                 onClick = { window.menuActions.onToggleDebug?.invoke() },
                                 shortcut = KeyShortcut(Key.D, meta = isMacOS, ctrl = !isMacOS, shift = true)
                             )
+                            Separator()
+                            Item(
+                                "Jump to Previous Command",
+                                onClick = { window.menuActions.onBlockJumpPrev?.invoke() },
+                                shortcut = KeyShortcut(Key.DirectionUp, meta = isMacOS, ctrl = !isMacOS, shift = true)
+                            )
+                            Item(
+                                "Jump to Next Command",
+                                onClick = { window.menuActions.onBlockJumpNext?.invoke() },
+                                shortcut = KeyShortcut(Key.DirectionDown, meta = isMacOS, ctrl = !isMacOS, shift = true)
+                            )
+                            Item(
+                                "Copy Last Command Output",
+                                onClick = { window.menuActions.onBlockCopyOutput?.invoke() },
+                                shortcut = KeyShortcut(Key.C, meta = isMacOS, ctrl = !isMacOS, shift = true)
+                            )
+                            Item(
+                                "Re-run Last Command",
+                                onClick = { window.menuActions.onBlockRerun?.invoke() },
+                                shortcut = KeyShortcut(Key.R, meta = isMacOS, ctrl = !isMacOS, shift = true)
+                            )
                         }
 
                         Menu("Shell", mnemonic = 'S') {

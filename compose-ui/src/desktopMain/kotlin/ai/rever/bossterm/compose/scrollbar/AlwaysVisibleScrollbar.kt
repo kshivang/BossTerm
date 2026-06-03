@@ -71,7 +71,9 @@ fun AlwaysVisibleScrollbar(
     matchMarkerColor: Color = Color(0xFFFFFF00),
     currentMatchMarkerColor: Color = Color(0xFFFF6600),
     onMatchClicked: ((Int) -> Unit)? = null,
-    userScrollTrigger: State<Int> = mutableStateOf(0)
+    userScrollTrigger: State<Int> = mutableStateOf(0),
+    blockMarkerPositions: List<Float> = emptyList(),
+    blockMarkerColors: List<Color> = emptyList()
 ) {
     var containerHeight by remember { mutableStateOf(0f) }
     val interactionSource = remember { MutableInteractionSource() }
@@ -239,6 +241,23 @@ fun AlwaysVisibleScrollbar(
                             }
                             drawRect(
                                 color = color,
+                                topLeft = Offset(0f, y - markerHeightPx / 2),
+                                size = Size(size.width, markerHeightPx)
+                            )
+                        }
+                    }
+                }
+
+                // Draw command-block markers on the track (independent channel from
+                // search markers; colored per block exit state).
+                if (blockMarkerPositions.isNotEmpty()) {
+                    val density = LocalDensity.current
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val markerHeightPx = with(density) { 2.dp.toPx() }
+                        blockMarkerPositions.forEachIndexed { index, position ->
+                            val y = position * size.height
+                            drawRect(
+                                color = blockMarkerColors.getOrElse(index) { Color(0xFF9E9E9E) },
                                 topLeft = Offset(0f, y - markerHeightPx / 2),
                                 size = Size(size.width, markerHeightPx)
                             )

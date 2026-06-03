@@ -315,6 +315,28 @@ private fun SettingsContent(
                 onSettingsChange = onSettingsChange,
                 onSettingsSave = onSettingsSave
             )
+            SettingsCategory.COMMAND_BLOCKS -> CommandBlocksSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave
+            )
+            SettingsCategory.WORKFLOWS -> WorkflowsSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange
+            )
+            SettingsCategory.HISTORY_AI -> HistoryAiSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange
+            )
+            SettingsCategory.SESSION -> SessionSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange
+            )
+            SettingsCategory.EXTRAS -> ExtrasSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave
+            )
             SettingsCategory.PERFORMANCE -> PerformanceSettingsSection(
                 settings = settings,
                 onSettingsChange = onSettingsChange,

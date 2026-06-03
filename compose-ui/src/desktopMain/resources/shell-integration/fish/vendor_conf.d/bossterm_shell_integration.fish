@@ -3,25 +3,30 @@
 
 # Avoid loading twice
 if set -q BOSSTERM_SHELL_INTEGRATION_LOADED
-    exit 0
+    return
 end
 
 # Skip inside tmux/screen unless explicitly enabled
 if not set -q BOSSTERM_ENABLE_INTEGRATION_WITH_TMUX
     if string match -q "tmux-256color" "$TERM"
-        exit 0
+        return
     end
     if string match -q "screen*" "$TERM"
-        exit 0
+        return
     end
 end
 
 # Skip in dumb terminals
 if test "$TERM" = "dumb"
-    exit 0
+    return
 end
 
 set -g BOSSTERM_SHELL_INTEGRATION_LOADED 1
+
+# Optional customizations requested by BossTerm settings (Phase 7).
+if set -q BOSSTERM_VI_MODE
+    fish_vi_key_bindings
+end
 
 # Track exit code from last command
 set -g __bossterm_last_status 0
@@ -32,10 +37,16 @@ function __bossterm_fish_prompt --on-event fish_prompt
     printf '\e]133;D;%s\a' $__bossterm_last_status
     # A - Prompt starting
     printf '\e]133;A\a'
+    # Report cwd so the tab title tracks the directory (routed via OSC 1341 -> OSC 7).
+    printf '\e]1341;7;file://%s\a' "$PWD"
 end
 
 # Called just before a command is executed
 function __bossterm_fish_preexec --on-event fish_preexec
+    # Command line capture (OSC 1341;BossTermCmd). Emitted before 133;B so the
+    # command-block tracker has the text when onCommandStarted fires. fish passes
+    # the command line as the first event argument.
+    printf '\e]1341;BossTermCmd;%s\a' "$argv[1]"
     # B - Command starting
     printf '\e]133;B\a'
 end

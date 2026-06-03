@@ -30,24 +30,34 @@ object AiCommandSuggester {
         printFlag: String,
         naturalLanguage: String,
     ): String? = withContext(Dispatchers.IO) {
+        var process: Process? = null
         runCatching {
             val prompt = "Output ONLY a single shell command, no explanation, for: $naturalLanguage"
 
             val args = agentCommand.split(" ").filter { it.isNotBlank() } + printFlag + prompt
-            val process = ProcessBuilder(args)
-                .redirectErrorStream(false)
-                .start()
+            val proc = ProcessBuilder(args).redirectErrorStream(false).start()
+            process = proc
 
-            val output = process.inputStream.bufferedReader().use { it.readText() }
+            // Drain stdout on a daemon thread so the timeout governs the wait even
+            // if the agent never closes its stdout (readText would otherwise block
+            // forever). destroyForcibly() on timeout unblocks the reader.
+            val output = StringBuilder()
+            val reader = Thread {
+                runCatching { proc.inputStream.bufferedReader().forEachLine { output.appendLine(it) } }
+            }.apply { isDaemon = true; start() }
 
-            if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                process.destroyForcibly()
+            if (!proc.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                proc.destroyForcibly()
                 return@runCatching null
             }
+            reader.join(1000)
 
             output.lineSequence()
                 .map { it.trim() }
                 .firstOrNull { it.isNotBlank() }
-        }.getOrNull()
+        }.getOrElse {
+            process?.destroyForcibly()
+            null
+        }
     }
 }

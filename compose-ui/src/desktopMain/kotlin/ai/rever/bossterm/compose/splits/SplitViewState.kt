@@ -20,7 +20,7 @@ import java.util.UUID
  */
 class SplitViewState(
     initialSession: TerminalSession,
-    private val sessionFactory: (() -> TerminalSession)? = null
+    private val sessionFactory: ((onProcessExit: () -> Unit) -> TerminalSession)? = null
 ) {
     /**
      * The root of the split tree. Initially a single pane.
@@ -69,17 +69,33 @@ class SplitViewState(
         paneActiveIndex[paneId] = list.size // primary is 0; the new extra becomes active
     }
 
-    /** Create a session via [sessionFactory] and add it to the pane (no-op if no factory). */
+    /** Create a session via [sessionFactory] (wired to auto-prune on shell exit) and add it. */
     fun addNewSessionToPane(paneId: String) {
-        val session = sessionFactory?.invoke() ?: return
+        val factory = sessionFactory ?: return
+        var ref: TerminalSession? = null
+        val session = factory {
+            // When the extra session's shell exits, prune it from the pane.
+            ref?.let { removeExtraSession(paneId, it) }
+        }
+        ref = session
         addSessionToPane(paneId, session)
+    }
+
+    /** Remove a specific extra session from a pane by identity and dispose it. */
+    private fun removeExtraSession(paneId: String, session: TerminalSession) {
+        val list = paneExtraSessions[paneId] ?: return
+        val idx = list.indexOfFirst { it === session }
+        if (idx < 0) return
+        list.removeAt(idx)
+        runCatching { session.dispose() }
+        paneActiveIndex[paneId] = (paneActiveIndex[paneId] ?: 0).coerceIn(0, list.size)
     }
 
     fun activatePaneSession(paneId: String, index: Int) {
         paneActiveIndex[paneId] = index
     }
 
-    /** Close an extra session (index > 0; the primary is closed via [closePane]). */
+    /** Close an extra session (index > 0 in the combined list; the primary is closed via [closePane]). */
     fun closePaneSession(pane: SplitNode.Pane, index: Int) {
         if (index <= 0) return
         val list = paneExtraSessions[pane.id] ?: return
@@ -87,7 +103,13 @@ class SplitViewState(
         if (extraIdx !in list.indices) return
         val removed = list.removeAt(extraIdx)
         runCatching { removed.dispose() }
-        paneActiveIndex[pane.id] = activeIndexForPane(pane.id).coerceIn(0, list.size)
+        val current = activeIndexForPane(pane.id)
+        val combinedSize = 1 + list.size
+        paneActiveIndex[pane.id] = when {
+            current > index -> current - 1
+            current == index -> (index - 1).coerceAtLeast(0)
+            else -> current
+        }.coerceIn(0, combinedSize - 1)
     }
 
     /**
@@ -107,14 +129,18 @@ class SplitViewState(
      * Get the focused session.
      */
     fun getFocusedSession(): TerminalSession? {
-        return getFocusedPane()?.session
+        val pane = getFocusedPane() ?: return null
+        // Route through the pane's active sub-session so focused-session actions
+        // (cwd inheritance, paste, AI launch, git) hit the session the user sees.
+        return activeSessionForPane(pane)
     }
 
     /**
-     * Get all sessions in the split tree.
+     * Get all sessions in the split tree, including per-pane extra sub-sessions
+     * (so lifecycle/kill-on-close covers them too).
      */
     fun getAllSessions(): List<TerminalSession> {
-        return rootNode.getAllSessions()
+        return rootNode.getAllSessions() + paneExtraSessions.values.flatten()
     }
 
     /**
@@ -193,6 +219,9 @@ class SplitViewState(
 
         // Dispose the session
         paneToClose.session.dispose()
+        // Also dispose any extra sub-sessions belonging to this pane.
+        paneExtraSessions.remove(paneId)?.forEach { runCatching { it.dispose() } }
+        paneActiveIndex.remove(paneId)
 
         // Remove from bounds tracking
         paneBounds.remove(paneId)
@@ -364,5 +393,7 @@ class SplitViewState(
             }
         }
         paneBounds.clear()
+        paneExtraSessions.clear()
+        paneActiveIndex.clear()
     }
 }

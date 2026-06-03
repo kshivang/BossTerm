@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -320,20 +321,15 @@ private fun RenderPane(
             }
     ) {
         val perSplitSettings = ai.rever.bossterm.compose.settings.SettingsManager.instance.settings.collectAsState().value
-        Column(modifier = Modifier.fillMaxSize()) {
-            if (perSplitSettings.enablePerSplitTabs) {
-                PaneTabBar(
-                    sessions = splitState.sessionsForPane(pane),
-                    activeIndex = splitState.activeIndexForPane(pane.id),
-                    heightDp = perSplitSettings.perSplitTabBarHeight.dp,
-                    onSelect = { splitState.activatePaneSession(pane.id, it) },
-                    onClose = { splitState.closePaneSession(pane, it) },
-                    onAdd = { splitState.addNewSessionToPane(pane.id) }
-                )
-            }
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        val perSplitEnabled = perSplitSettings.enablePerSplitTabs
+        // Off: render the pane's primary session directly (byte-for-byte the prior
+        // layout). On: show the active sub-session above a PaneTabBar; key() on the
+        // session id so each session keeps its own ProperTerminal state.
+        val activeSession = if (perSplitEnabled) splitState.activeSessionForPane(pane) else pane.session
+        val terminalContent: @Composable () -> Unit = {
+          key(activeSession.id) {
         ProperTerminal(
-            tab = splitState.activeSessionForPane(pane),
+            tab = activeSession,
             isActiveTab = isActiveTab && isFocusedPane,
             sharedFont = sharedFont,
             onTabTitleChange = { title ->
@@ -375,7 +371,23 @@ private fun RenderPane(
             hyperlinkRegistry = hyperlinkRegistry,
             modifier = Modifier.fillMaxSize()
         )
+          }
+        }
+
+        if (perSplitEnabled) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                PaneTabBar(
+                    sessions = splitState.sessionsForPane(pane),
+                    activeIndex = splitState.activeIndexForPane(pane.id),
+                    heightDp = perSplitSettings.perSplitTabBarHeight.dp,
+                    onSelect = { splitState.activatePaneSession(pane.id, it) },
+                    onClose = { splitState.closePaneSession(pane, it) },
+                    onAdd = { splitState.addNewSessionToPane(pane.id) }
+                )
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) { terminalContent() }
             }
+        } else {
+            terminalContent()
         }
     }
 }

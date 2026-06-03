@@ -408,6 +408,10 @@ data class TerminalTab(
         // remain attached to `terminal` and keep this tab's state reachable until
         // the terminal itself is collected.
         for (listener in commandStateListeners) {
+            // Release any OS wake-lock held by the prevent-sleep listener before detaching.
+            (listener as? ai.rever.bossterm.compose.power.PreventSleepListener)?.let {
+                runCatching { it.dispose() }
+            }
             try {
                 terminal.removeCommandStateListener(listener)
             } catch (e: Exception) {

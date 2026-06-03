@@ -1925,8 +1925,14 @@ fun ProperTerminal(
 
         // History search overlay (Phase 4)
         if (historySearchVisible) {
-          val historyEntries = remember(commandBlocks, historySearchVisible) {
-            ai.rever.bossterm.compose.history.HistoryStore.load(commandBlocks.mapNotNull { it.commandText })
+          // Load shell-history files off the UI thread; show empty until ready.
+          val historyEntries by androidx.compose.runtime.produceState(
+            initialValue = emptyList<String>(), commandBlocks
+          ) {
+            val recent = commandBlocks.mapNotNull { it.commandText }
+            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+              ai.rever.bossterm.compose.history.HistoryStore.load(recent)
+            }
           }
           val restoreFocus = {
             historySearchVisible = false

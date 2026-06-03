@@ -261,7 +261,10 @@ fun TabbedTerminal(
             val state = SplitViewState(
                 initialSession = tab,
                 // Phase 5b: lets a pane spawn extra sessions for its sub-tab strip.
-                sessionFactory = { tabController.createSessionForSplit(workingDir = null) }
+                // onExit prunes the dead sub-session from the pane.
+                sessionFactory = { onExit ->
+                    tabController.createSessionForSplit(workingDir = null, onProcessExit = onExit)
+                }
             )
 
             // Set up split-aware process exit for the original tab
@@ -618,10 +621,26 @@ fun TabbedTerminal(
                                 state = splitState,
                                 paneId = splitState.focusedPaneId,
                                 makeSession = { cwd ->
-                                    tabController.createSessionForSplit(
+                                    var sessionRef: TerminalSession? = null
+                                    val s = tabController.createSessionForSplit(
                                         workingDir = cwd,
-                                        onProcessExit = { splitState.closeFocusedPane() }
+                                        onProcessExit = {
+                                            // Close the pane whose shell exited (by identity), not
+                                            // whichever pane currently has focus.
+                                            if (splitState.isSinglePane) {
+                                                val idx = tabController.tabs.indexOfFirst { it.id == tab.id }
+                                                if (idx != -1) tabController.closeTab(idx)
+                                            } else {
+                                                sessionRef?.let { sess ->
+                                                    splitState.getAllPanes()
+                                                        .find { it.session === sess }
+                                                        ?.let { p -> splitState.closePane(p.id) }
+                                                }
+                                            }
+                                        }
                                     )
+                                    sessionRef = s
+                                    s
                                 }
                             )
                         }
@@ -643,8 +662,14 @@ fun TabbedTerminal(
         }
     }
 
-    // Phase 6: persist session structure on structural change (tab add/close/switch).
-    LaunchedEffect(tabController.tabs.size, tabController.activeTabIndex, settings.restoreSessionOnLaunch) {
+    // Phase 6: persist session structure on structural change (tab add/close/switch,
+    // and split/ratio changes in the active tab via its rootNode identity).
+    LaunchedEffect(
+        tabController.tabs.size,
+        tabController.activeTabIndex,
+        settings.restoreSessionOnLaunch,
+        tabController.activeTab?.let { splitStates[it.id]?.rootNode }
+    ) {
         if (settings.restoreSessionOnLaunch && tabController.tabs.isNotEmpty()) {
             ai.rever.bossterm.compose.session.SessionStore.save(
                 ai.rever.bossterm.compose.session.SessionStore.capture(

@@ -3,22 +3,22 @@
 
 # Avoid loading twice
 if set -q BOSSTERM_SHELL_INTEGRATION_LOADED
-    exit 0
+    return
 end
 
 # Skip inside tmux/screen unless explicitly enabled
 if not set -q BOSSTERM_ENABLE_INTEGRATION_WITH_TMUX
     if string match -q "tmux-256color" "$TERM"
-        exit 0
+        return
     end
     if string match -q "screen*" "$TERM"
-        exit 0
+        return
     end
 end
 
 # Skip in dumb terminals
 if test "$TERM" = "dumb"
-    exit 0
+    return
 end
 
 set -g BOSSTERM_SHELL_INTEGRATION_LOADED 1

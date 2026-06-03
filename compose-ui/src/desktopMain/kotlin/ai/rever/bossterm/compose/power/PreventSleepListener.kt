@@ -43,4 +43,16 @@ class PreventSleepListener(
         job = null
         preventSleep.release()
     }
+
+    /**
+     * Release any held wake-lock and cancel pending acquisition. Must be called
+     * when the session is disposed — otherwise a tab closed mid-command (after the
+     * lock was acquired, before OSC 133;D) would orphan the caffeinate/systemd
+     * process and keep the machine awake.
+     */
+    fun dispose() {
+        job?.cancel()
+        job = null
+        preventSleep.release()
+    }
 }

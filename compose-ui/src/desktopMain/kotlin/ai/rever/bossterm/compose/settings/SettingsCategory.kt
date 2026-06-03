@@ -38,11 +38,6 @@ enum class SettingsCategory(
         icon = Icons.Default.List,
         description = "Per-command output blocks, gutter bars, and markers"
     ),
-    COMMAND_PALETTE(
-        displayName = "Command Palette",
-        icon = Icons.Default.PlayArrow,
-        description = "Fuzzy command palette (Cmd/Ctrl+Shift+P)"
-    ),
     WORKFLOWS(
         displayName = "Workflows",
         icon = Icons.Default.Bookmark,
@@ -52,11 +47,6 @@ enum class SettingsCategory(
         displayName = "History & AI",
         icon = Icons.Default.Search,
         description = "Ctrl+R history search and the AI command bar"
-    ),
-    TABS_LAYOUT(
-        displayName = "Tabs & Layout",
-        icon = Icons.Default.Splitscreen,
-        description = "Tab bar position and per-split sub-tabs"
     ),
     SESSION(
         displayName = "Session",

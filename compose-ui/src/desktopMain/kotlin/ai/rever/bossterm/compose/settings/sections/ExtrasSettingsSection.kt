@@ -1,8 +1,11 @@
 package ai.rever.bossterm.compose.settings.sections
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.*
 
@@ -27,6 +30,8 @@ fun ExtrasSettingsSection(
             )
         }
 
+        Spacer(modifier = Modifier.height(24.dp))
+
         SettingsSection(title = "Shell") {
             SettingsToggle(
                 label = "Vi Mode",
@@ -41,6 +46,8 @@ fun ExtrasSettingsSection(
                 description = "Enable fish-style autosuggestions where the shell supports them (new shells)"
             )
         }
+
+        Spacer(modifier = Modifier.height(24.dp))
 
         SettingsSection(title = "Power") {
             SettingsToggle(

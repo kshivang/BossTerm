@@ -37,6 +37,8 @@ function __bossterm_fish_prompt --on-event fish_prompt
     printf '\e]133;D;%s\a' $__bossterm_last_status
     # A - Prompt starting
     printf '\e]133;A\a'
+    # Report cwd so the tab title tracks the directory (routed via OSC 1341 -> OSC 7).
+    printf '\e]1341;7;file://%s\a' "$PWD"
 end
 
 # Called just before a command is executed

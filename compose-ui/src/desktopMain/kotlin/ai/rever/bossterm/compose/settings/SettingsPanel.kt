@@ -320,10 +320,6 @@ private fun SettingsContent(
                 onSettingsChange = onSettingsChange,
                 onSettingsSave = onSettingsSave
             )
-            SettingsCategory.COMMAND_PALETTE -> CommandPaletteSettingsSection(
-                settings = settings,
-                onSettingsChange = onSettingsChange
-            )
             SettingsCategory.WORKFLOWS -> WorkflowsSettingsSection(
                 settings = settings,
                 onSettingsChange = onSettingsChange
@@ -331,11 +327,6 @@ private fun SettingsContent(
             SettingsCategory.HISTORY_AI -> HistoryAiSettingsSection(
                 settings = settings,
                 onSettingsChange = onSettingsChange
-            )
-            SettingsCategory.TABS_LAYOUT -> TabsLayoutSettingsSection(
-                settings = settings,
-                onSettingsChange = onSettingsChange,
-                onSettingsSave = onSettingsSave
             )
             SettingsCategory.SESSION -> SessionSettingsSection(
                 settings = settings,

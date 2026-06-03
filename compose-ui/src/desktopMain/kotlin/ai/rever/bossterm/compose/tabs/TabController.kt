@@ -67,9 +67,42 @@ class TabController(
         private set
 
     /**
-     * Counter for generating unique tab titles (Shell 1, Shell 2, etc.).
+     * Derive a tab title from a working directory (Warp-style): home → "~",
+     * otherwise the directory's base name. Null/blank → "~".
      */
-    private var tabCounter = 0
+    private fun cwdLabel(path: String?): String {
+        if (path.isNullOrBlank()) return "~"
+        val clean = path.trimEnd('/')
+        if (clean.isEmpty()) return "/"
+        val home = System.getProperty("user.home")?.trimEnd('/')
+        if (clean == home) return "~"
+        return clean.substringAfterLast('/').ifEmpty { "/" }
+    }
+
+    /**
+     * Keep a session's title in sync with its working directory, which updates
+     * live via OSC 7 from the shell integration. Mirrors Warp, where the tab
+     * title is the current directory rather than a static "Shell N".
+     */
+    private fun wireCwdTitle(session: TerminalTab) {
+        // Live updates when the directory changes (cd) or the user clears a rename.
+        // A non-null customTitle (set via Rename…) always wins; clearing it (null)
+        // reverts the tab to tracking the directory immediately.
+        session.coroutineScope.launch {
+            snapshotFlow { session.customTitle.value to session.workingDirectory.value }
+                .collect { (custom, cwd) -> session.title.value = custom ?: cwdLabel(cwd) }
+        }
+        // On each fresh prompt (OSC 133;A) re-assert the title, so a full-screen
+        // app's OSC title (e.g. "claude") reverts to the directory (or the custom
+        // title) on exit even when the working directory itself didn't change.
+        val titleResetListener = object : ai.rever.bossterm.terminal.model.CommandStateListener {
+            override fun onPromptStarted() {
+                session.title.value = session.customTitle.value ?: cwdLabel(session.workingDirectory.value)
+            }
+        }
+        session.terminal.addCommandStateListener(titleResetListener)
+        session.commandStateListeners.add(titleResetListener)
+    }
 
     /**
      * Registered session lifecycle listeners.
@@ -208,6 +241,34 @@ class TabController(
     }
 
     /**
+     * Close every tab except the one at [keepIndex] (Warp's "Close Other Tabs").
+     * Captures the kept tab's stable ID first, then closes the rest one at a time
+     * via [closeTab] so all the usual cleanup (process kill, listener removal,
+     * active-index adjustment) runs for each.
+     *
+     * @param keepIndex Index of the tab to keep open
+     */
+    fun closeOtherTabs(keepIndex: Int) {
+        val keepId = tabs.getOrNull(keepIndex)?.id ?: return
+        // Snapshot the ids to close so index shifts during closeTab don't matter.
+        val idsToClose = tabs.filter { it.id != keepId }.map { it.id }
+        idsToClose.forEach { id -> closeTabById(id) }
+    }
+
+    /**
+     * Close every tab positioned after [index] (Warp's "Close Tabs Below" on the
+     * vertical bar). Closes high→low so each [closeTab] call's index stays valid.
+     *
+     * @param index Tabs with a higher index than this are closed
+     */
+    fun closeTabsBelow(index: Int) {
+        if (index < 0) return
+        for (i in tabs.size - 1 downTo index + 1) {
+            closeTab(i)
+        }
+    }
+
+    /**
      * Switch to a tab by its stable ID.
      *
      * @param tabId The unique tab ID (UUID) to switch to
@@ -248,8 +309,6 @@ class TabController(
                 "Tab ID '$tabId' already exists. Each tab must have a unique ID."
             )
         }
-
-        tabCounter++
 
         // On macOS, optionally use 'login -fp $USER' to properly register the session
         // This shows "Last login" message and registers in utmp/wtmp like iTerm2
@@ -379,7 +438,7 @@ class TabController(
         // Create tab with all state
         val tab = TerminalTab(
             id = tabId ?: java.util.UUID.randomUUID().toString(),
-            title = mutableStateOf("Shell $tabCounter"),
+            title = mutableStateOf(cwdLabel(workingDir)),
             terminal = terminal,
             textBuffer = textBuffer,
             display = display,
@@ -434,6 +493,9 @@ class TabController(
         val preventSleepListener = ai.rever.bossterm.compose.power.PreventSleepListener(tab.coroutineScope)
         terminal.addCommandStateListener(preventSleepListener)
         tab.commandStateListeners.add(preventSleepListener)
+
+        // Keep the tab title in sync with the working directory (Warp-style).
+        wireCwdTitle(tab)
 
         // Complete debug collector initialization
         debugCollector?.let { collector ->
@@ -642,7 +704,7 @@ class TabController(
         // Create session (TerminalTab) with all state
         val session = TerminalTab(
             id = tabId ?: java.util.UUID.randomUUID().toString(),
-            title = mutableStateOf(sessionTitle),
+            title = mutableStateOf(cwdLabel(workingDir)),
             terminal = terminal,
             textBuffer = textBuffer,
             display = display,
@@ -697,6 +759,9 @@ class TabController(
         val preventSleepListener = ai.rever.bossterm.compose.power.PreventSleepListener(session.coroutineScope)
         terminal.addCommandStateListener(preventSleepListener)
         session.commandStateListeners.add(preventSleepListener)
+
+        // Keep the tab title in sync with the working directory (Warp-style).
+        wireCwdTitle(session)
 
         // Complete debug collector initialization
         debugCollector?.let { collector ->
@@ -788,8 +853,6 @@ class TabController(
         onProcessExit: (() -> Unit)? = null,
         preConnectHandler: suspend (ComposeQuestioner) -> PreConnectConfig?
     ): TerminalTab {
-        tabCounter++
-
         // Initialize terminal components (same as createTab)
         val styleState = StyleState()
         val textBuffer = TerminalTextBuffer(80, 24, styleState, settings.bufferMaxLines)
@@ -852,7 +915,7 @@ class TabController(
         // Create tab with Initializing state
         val tab = TerminalTab(
             id = java.util.UUID.randomUUID().toString(),
-            title = mutableStateOf("Shell $tabCounter"),
+            title = mutableStateOf(cwdLabel(null)),
             terminal = terminal,
             textBuffer = textBuffer,
             display = display,
@@ -906,6 +969,9 @@ class TabController(
         val preventSleepListener = ai.rever.bossterm.compose.power.PreventSleepListener(tab.coroutineScope)
         terminal.addCommandStateListener(preventSleepListener)
         tab.commandStateListeners.add(preventSleepListener)
+
+        // Keep the tab title in sync with the working directory (Warp-style).
+        wireCwdTitle(tab)
 
         debugCollector?.let { collector ->
             collector.setTab(tab)
@@ -1632,12 +1698,10 @@ class TabController(
      * @return The tab index where the session was added
      */
     fun createTabFromExistingSession(session: TerminalSession): Int {
-        tabCounter++
-
-        // Update the session title to reflect it's now a standalone tab
+        // Title tracks the working directory (the session's cwd observer keeps it updated).
         val existingTitle = session.title.value
         if (existingTitle == "Split" || existingTitle.isEmpty()) {
-            session.title.value = "Shell $tabCounter"
+            session.title.value = cwdLabel(session.workingDirectory.value)
         }
 
         // Cast to TerminalTab (our TerminalSession implementation)
@@ -1679,8 +1743,7 @@ class TabController(
         // Update the session title if needed
         val existingTitle = newTab.title.value
         if (existingTitle == "Split" || existingTitle.isEmpty()) {
-            tabCounter++
-            newTab.title.value = "Shell $tabCounter"
+            newTab.title.value = cwdLabel(newTab.workingDirectory.value)
         }
 
         // Replace in the list

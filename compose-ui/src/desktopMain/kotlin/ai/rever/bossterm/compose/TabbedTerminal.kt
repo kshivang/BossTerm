@@ -258,14 +258,7 @@ fun TabbedTerminal(
     // Helper function to get or create SplitViewState for a tab
     fun getOrCreateSplitState(tab: TerminalTab): SplitViewState {
         return splitStates.getOrPut(tab.id) {
-            val state = SplitViewState(
-                initialSession = tab,
-                // Phase 5b: lets a pane spawn extra sessions for its sub-tab strip.
-                // onExit prunes the dead sub-session from the pane.
-                sessionFactory = { onExit ->
-                    tabController.createSessionForSplit(workingDir = null, onProcessExit = onExit)
-                }
-            )
+            val state = SplitViewState(initialSession = tab)
 
             // Set up split-aware process exit for the original tab
             // This ensures exiting the original pane closes just that pane,
@@ -834,28 +827,101 @@ fun TabbedTerminal(
         val tabBarComposable: @Composable () -> Unit = {
             // Tab bar (show when multiple tabs or alwaysShowTabBar is set).
             if (tabBarVisible) {
+            val summaryMode = settings.tabBarSummaryMode
+
+            // Resolve the per-tab accent color: a manual color (Color ▸ menu) always
+            // wins; otherwise, when color-by-directory is on, derive a stable accent
+            // from the session's cwd. Reads MutableState so the bar recomposes live.
+            fun colorHexFor(session: TerminalSession): String? {
+                session.tabColor.value?.let { return it }
+                if (settings.tabColorByDirectory) {
+                    val cwd = session.workingDirectory.value
+                    if (!cwd.isNullOrBlank()) {
+                        val idx = Math.floorMod(cwd.hashCode(), ai.rever.bossterm.compose.tabs.TAB_COLOR_PRESETS.size)
+                        return ai.rever.bossterm.compose.tabs.TAB_COLOR_PRESETS[idx].second
+                    }
+                }
+                return null
+            }
+
+            // Resolve the session a chip refers to: a split pane by id, or the tab
+            // itself for the synthetic tab-level chip (summary mode / not-yet-split).
+            fun sessionFor(tabIndex: Int, paneId: String): TerminalSession? {
+                val tab = tabController.tabs.getOrNull(tabIndex) ?: return null
+                return splitStates[tab.id]?.getAllPanes()?.firstOrNull { it.id == paneId }?.session ?: tab
+            }
+
+            // Each tab contributes a group of pane-chips (one chip per split pane).
+            // In summary mode (or before a tab is split) a single chip represents the
+            // whole tab, labeled with the tab's title.
+            val tabGroups = tabController.tabs.mapIndexed { index, tab ->
+                val st = splitStates[tab.id]
+                val panes = if (st != null && !summaryMode) {
+                    st.getAllPanes().map { p ->
+                        ai.rever.bossterm.compose.tabs.TabBarPane(p.id, p.session.title.value, colorHexFor(p.session))
+                    }
+                } else {
+                    listOf(ai.rever.bossterm.compose.tabs.TabBarPane(tab.id, tab.title.value, colorHexFor(tab)))
+                }
+                ai.rever.bossterm.compose.tabs.TabBarGroup(index, panes)
+            }
+            // In summary mode the active tab's single chip carries the tab id; match it
+            // so it highlights. Otherwise highlight the focused split pane.
+            val focusedPaneId = if (summaryMode) tabController.activeTabId
+                                else tabController.activeTab?.let { splitStates[it.id]?.focusedPaneId }
             TabBar(
-                tabs = tabController.tabs,
+                groups = tabGroups,
                 activeTabIndex = tabController.activeTabIndex,
-                onTabSelected = { index -> tabController.switchToTab(index) },
-                onTabClosed = { index -> tabController.closeTab(index) },
+                focusedPaneId = focusedPaneId,
+                onPaneSelected = { tabIndex, paneId ->
+                    tabController.switchToTab(tabIndex)
+                    tabController.tabs.getOrNull(tabIndex)?.let { t -> splitStates[t.id]?.setFocusedPane(paneId) }
+                },
+                onPaneClosed = { tabIndex, paneId ->
+                    val t = tabController.tabs.getOrNull(tabIndex)
+                    if (t != null) {
+                        val st = splitStates[t.id]
+                        // paneId == t.id is a synthetic tab-level chip (summary / single
+                        // pane) — close the whole tab. Real split panes close just the pane.
+                        if (st == null || st.isSinglePane || paneId == t.id) tabController.closeTab(tabIndex)
+                        else st.closePane(paneId)
+                    }
+                },
                 onNewTab = {
                     // New tabs always start in home directory (no working dir inheritance)
                     // Use initial command from settings if configured
                     tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
                 },
                 onTabMoveToNewWindow = { index ->
-                    // Get tab first to access its ID for split state lookup
                     val tab = tabController.tabs.getOrNull(index) ?: return@TabBar
-                    // Extract split state before extracting tab (preserves entire split layout)
                     val splitState = splitStates.remove(tab.id)
-                    // Extract tab without disposing (preserves PTY session)
                     val extractedTab = tabController.extractTab(index) ?: return@TabBar
-                    // Create new window and transfer both tab and split state
                     WindowManager.createWindowWithTab(extractedTab, splitState)
                 },
+                onRename = { tabIndex, paneId, newTitle ->
+                    sessionFor(tabIndex, paneId)?.let { session ->
+                        val trimmed = newTitle.trim()
+                        if (trimmed.isBlank()) {
+                            // Clear the custom title; wireCwdTitle reverts it to the cwd.
+                            session.customTitle.value = null
+                        } else {
+                            session.customTitle.value = trimmed
+                            session.title.value = trimmed
+                        }
+                    }
+                },
+                onSetColor = { tabIndex, paneId, hex ->
+                    sessionFor(tabIndex, paneId)?.let { it.tabColor.value = hex }
+                },
+                onCloseOthers = { tabController.closeOtherTabs(it) },
+                onCloseBelow = { tabController.closeTabsBelow(it) },
+                onDuplicate = { index ->
+                    val wd = tabController.tabs.getOrNull(index)?.workingDirectory?.value
+                    tabController.createTab(workingDir = wd)
+                },
                 orientation = if (tabBarOnLeft) ai.rever.bossterm.compose.tabs.TabBarOrientation.LEFT
-                              else ai.rever.bossterm.compose.tabs.TabBarOrientation.TOP
+                              else ai.rever.bossterm.compose.tabs.TabBarOrientation.TOP,
+                verticalWidth = settings.tabBarVerticalWidth.dp
             )
             }
         }
@@ -1183,15 +1249,15 @@ fun TabbedTerminal(
             }
         }
 
-        // Git branch indicator (Phase 7) — active pane's branch near the tab bar.
+        // Git branch indicator (Phase 7) — active tab's branch, bottom-right
+        // (clearing the scrollbar on the right edge).
         if (settings.showGitBranchIndicator) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.TopStart)
+                    .align(Alignment.BottomEnd)
                     .padding(
-                        top = if (tabBarVisible && !tabBarOnLeft) TabBarHeight + 6.dp else 6.dp,
-                        start = if (tabBarVisible && tabBarOnLeft)
-                            ai.rever.bossterm.compose.tabs.TabBarVerticalWidth + 8.dp else 8.dp
+                        bottom = 6.dp,
+                        end = (if (settings.showScrollbar) settings.scrollbarWidth.dp else 0.dp) + 10.dp
                     )
             ) {
                 ai.rever.bossterm.compose.vcs.GitBranchIndicator(
@@ -1221,10 +1287,11 @@ fun TabbedTerminal(
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    // Drop below the tab bar when it's showing so the pill /
-                    // attach toast don't overlap the tab "+" button.
+                    // Drop below the tab bar only when it's at the top (so the pill /
+                    // attach toast don't overlap the tab "+" button). A left/vertical
+                    // tab bar doesn't occupy the top, so stay near the top edge.
                     .padding(
-                        top = if (tabBarVisible) TabBarHeight + 4.dp else 4.dp,
+                        top = if (tabBarVisible && !tabBarOnLeft) TabBarHeight + 4.dp else 4.dp,
                         end = 8.dp
                     ),
                 horizontalAlignment = Alignment.End,

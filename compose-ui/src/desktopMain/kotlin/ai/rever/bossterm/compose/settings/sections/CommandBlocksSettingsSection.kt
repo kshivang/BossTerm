@@ -39,7 +39,7 @@ fun CommandBlocksSettingsSection(
                 onValueChangeFinished = onSettingsSave,
                 valueRange = 1f..8f,
                 steps = 7,
-                valueDisplay = { "${it.toInt()} px" },
+                valueDisplay = { "${it.toInt()} dp" },
                 enabled = settings.commandBlocksEnabled
             )
 
@@ -48,6 +48,14 @@ fun CommandBlocksSettingsSection(
                 checked = settings.commandBlockShowScrollbarMarkers,
                 onCheckedChange = { onSettingsChange(settings.copy(commandBlockShowScrollbarMarkers = it)) },
                 description = "Mark each command's start position in the scrollbar",
+                enabled = settings.commandBlocksEnabled
+            )
+
+            SettingsToggle(
+                label = "Highlight Block Background",
+                checked = settings.commandBlockHighlightBackground,
+                onCheckedChange = { onSettingsChange(settings.copy(commandBlockHighlightBackground = it)) },
+                description = "Tint the whole block with a faint version of its color (e.g. light red for failed commands)",
                 enabled = settings.commandBlocksEnabled
             )
         }
@@ -77,6 +85,17 @@ fun CommandBlocksSettingsSection(
                 onColorChange = { onSettingsChange(settings.copy(commandBlockRunningColor = it.toSettingsHex())) },
                 description = "Command still in progress",
                 enabled = settings.commandBlocksEnabled
+            )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        SettingsSection(title = "Command Palette") {
+            SettingsToggle(
+                label = "Enable Command Palette",
+                checked = settings.commandPaletteEnabled,
+                onCheckedChange = { onSettingsChange(settings.copy(commandPaletteEnabled = it)) },
+                description = "Fuzzy-search and run any action or recent command (Cmd/Ctrl+Shift+P)"
             )
         }
     }

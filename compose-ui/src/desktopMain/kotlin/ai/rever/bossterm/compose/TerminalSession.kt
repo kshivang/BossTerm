@@ -228,6 +228,24 @@ interface TerminalSession {
     val commandBlockTracker: ai.rever.bossterm.compose.blocks.CommandBlockTracker?
         get() = null  // Default implementation returns null
 
+    // === Warp-style tab customization ===
+
+    /**
+     * User-assigned tab title (via Rename…), overriding the auto cwd-derived
+     * title. Null = track the working directory. Null when the implementation
+     * does not support renaming.
+     */
+    val customTitle: MutableState<String?>
+        get() = androidx.compose.runtime.mutableStateOf(null)  // Default: no custom title
+
+    /**
+     * User-assigned tab accent color as an ARGB hex string ("0xAARRGGBB"), or
+     * null for no manual color. Null when the implementation does not support
+     * tab colors.
+     */
+    val tabColor: MutableState<String?>
+        get() = androidx.compose.runtime.mutableStateOf(null)  // Default: no color
+
     // === Lifecycle Methods ===
 
     /**

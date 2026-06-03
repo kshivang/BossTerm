@@ -35,6 +35,8 @@ __bossterm_prompt_command() {
 
     # A - Prompt starting
     printf '\e]133;A\a'
+    # Report cwd so the tab title tracks the directory (routed via OSC 1341 -> OSC 7).
+    printf '\e]1341;7;file://%s\a' "$PWD"
 }
 
 # Called via DEBUG trap before each command

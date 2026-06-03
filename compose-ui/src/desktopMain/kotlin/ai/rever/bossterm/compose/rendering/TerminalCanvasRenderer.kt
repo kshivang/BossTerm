@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.rendering
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.scale
@@ -403,15 +404,52 @@ object TerminalCanvasRenderer {
      */
     private fun DrawScope.renderCommandBlockGutter(ctx: RenderingContext) {
         if (ctx.commandBlocks.isEmpty()) return
-        val width = ctx.settings.commandBlockGutterWidth
+        // Gutter width is in dp (DPI-correct). Place it on the RIGHT edge, just
+        // inside the scrollbar so it doesn't sit under it.
+        val width = ctx.settings.commandBlockGutterWidth.dp.toPx()
+        val rightInset = if (ctx.settings.showScrollbar) ctx.settings.scrollbarWidth.dp.toPx() else 0f
+        val x = (size.width - width - rightInset).coerceAtLeast(0f)
+        val tintBackground = ctx.settings.commandBlockHighlightBackground
+        val snapshot = ctx.bufferSnapshot
+        val cols = ctx.visibleCols
+
+        // A visible row is blank if every cell is empty/space. Used to trim the
+        // prompt-spacing and trailing blank lines that OSC-133 marks land on, so
+        // the highlight hugs the actual prompt+command+output (and adjacent blocks
+        // don't visually merge across the gap between them).
+        fun rowBlank(screenRow: Int): Boolean {
+            val line = snapshot.getLine(screenRow - ctx.scrollOffset)
+            for (c in 0 until cols) {
+                val ch = line.charAt(c)
+                if (ch != ' ' && ch != CharUtils.EMPTY_CHAR) return false
+            }
+            return true
+        }
+
         for (block in ctx.commandBlocks) {
-            val top = kotlin.math.floor(block.startRow * ctx.cellHeight)
-            val bottom = kotlin.math.floor(block.endRow * ctx.cellHeight)
+            if (block.color.alpha == 0f) continue // transparent (e.g. success) = no bar/tint
+            var startScreen = block.startRow.coerceIn(0, ctx.visibleRows)
+            var endScreen = block.endRow.coerceIn(0, ctx.visibleRows) // exclusive
+            while (endScreen > startScreen && rowBlank(endScreen - 1)) endScreen--
+            while (startScreen < endScreen && rowBlank(startScreen)) startScreen++
+            if (endScreen <= startScreen) continue
+
+            val top = kotlin.math.floor(startScreen * ctx.cellHeight)
+            val bottom = kotlin.math.floor(endScreen * ctx.cellHeight)
             val height = (bottom - top).coerceAtLeast(ctx.cellHeight)
             if (top > size.height || top + height < 0f) continue
+            // Faint full-row tint behind the block (drawn before text so it stays subtle).
+            if (tintBackground) {
+                drawRect(
+                    color = block.color.copy(alpha = 0.12f),
+                    topLeft = Offset(0f, top),
+                    size = Size(size.width - rightInset, height)
+                )
+            }
+            // Solid gutter bar on the right edge.
             drawRect(
                 color = block.color,
-                topLeft = Offset(0f, top),
+                topLeft = Offset(x, top),
                 size = Size(width, height)
             )
         }

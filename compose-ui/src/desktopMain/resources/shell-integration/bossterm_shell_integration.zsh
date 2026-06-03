@@ -17,17 +17,10 @@ fi
 
 BOSSTERM_SHELL_INTEGRATION_LOADED=1
 
-# Optional customizations requested by BossTerm settings (Phase 7).
-[[ -n "$BOSSTERM_VI_MODE" ]] && bindkey -v
-if [[ -n "$BOSSTERM_AUTOSUGGEST" ]]; then
-    for __bossterm_zas in \
-        /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
-        /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
-        /usr/local/share/zsh-autosuggestions/zsh-autosuggestions.zsh; do
-        [[ -r "$__bossterm_zas" ]] && source "$__bossterm_zas" && break
-    done
-    unset __bossterm_zas
-fi
+# NOTE: optional customizations (vi-mode / autosuggestions) are applied in the
+# first precmd, NOT here. This file is sourced from .zshenv (before the user's
+# .zshrc), so doing `bindkey -v` here would be overridden when .zshrc sets emacs
+# bindings. The precmd hook runs after .zshrc, so it sticks.
 
 # OSC 133 sequences:
 # A - Prompt started (shell ready for input)
@@ -42,6 +35,23 @@ _bossterm_precmd() {
     printf '\e]133;D;%s\a' "$exit_code"
     # A - Prompt starting
     printf '\e]133;A\a'
+    # Report cwd so the tab title tracks the directory (routed via OSC 1341 -> OSC 7).
+    printf '\e]1341;7;file://%s\a' "$PWD"
+    # Apply optional customizations once. This runs after the user's .zshrc, so
+    # vi-mode / autosuggestions are not overridden by bindings set there.
+    if [[ -z "$__bossterm_custom_applied" ]]; then
+        __bossterm_custom_applied=1
+        [[ -n "$BOSSTERM_VI_MODE" ]] && bindkey -v
+        if [[ -n "$BOSSTERM_AUTOSUGGEST" ]]; then
+            for __bossterm_zas in \
+                /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
+                /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
+                /usr/local/share/zsh-autosuggestions/zsh-autosuggestions.zsh; do
+                [[ -r "$__bossterm_zas" ]] && source "$__bossterm_zas" && break
+            done
+            unset __bossterm_zas
+        fi
+    fi
 }
 
 # Called just before a command is executed

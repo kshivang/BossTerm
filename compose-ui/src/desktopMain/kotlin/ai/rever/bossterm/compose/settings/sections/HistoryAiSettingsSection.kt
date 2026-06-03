@@ -1,8 +1,11 @@
 package ai.rever.bossterm.compose.settings.sections
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.*
 
@@ -25,6 +28,8 @@ fun HistoryAiSettingsSection(
                 description = "Ctrl+R opens a fuzzy search over shell history and recent commands (ignored while a full-screen app is active)"
             )
         }
+
+        Spacer(modifier = Modifier.height(24.dp))
 
         SettingsSection(title = "AI Command Bar") {
             SettingsToggle(

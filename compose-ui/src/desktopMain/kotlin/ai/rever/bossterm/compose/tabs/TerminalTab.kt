@@ -282,6 +282,22 @@ data class TerminalTab(
      */
     override var commandBlockTracker: ai.rever.bossterm.compose.blocks.CommandBlockTracker? = null
 
+    // === Warp-style tab customization (left tab bar) ===
+
+    /**
+     * User-assigned tab title (via Rename…). When non-null it overrides the
+     * auto cwd-derived title and survives `cd`; clearing it (null) reverts the
+     * tab to tracking the working directory. See [TabController.wireCwdTitle].
+     */
+    override val customTitle: MutableState<String?> = mutableStateOf(null)
+
+    /**
+     * User-assigned tab accent color as an ARGB hex string ("0xAARRGGBB"), or
+     * null for no manual color. Rendered as a leading stripe by the tab bar.
+     * Manual color always wins over auto-color-by-directory.
+     */
+    override val tabColor: MutableState<String?> = mutableStateOf(null)
+
     // === Content-Anchored Selection ===
 
     /**

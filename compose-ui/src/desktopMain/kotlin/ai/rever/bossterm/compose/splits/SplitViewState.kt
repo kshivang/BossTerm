@@ -2,7 +2,6 @@ package ai.rever.bossterm.compose.splits
 
 import ai.rever.bossterm.compose.TerminalSession
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -20,7 +19,7 @@ import java.util.UUID
  */
 class SplitViewState(
     initialSession: TerminalSession,
-    private val sessionFactory: ((onProcessExit: () -> Unit) -> TerminalSession)? = null
+    private val sessionFactory: (() -> TerminalSession)? = null
 ) {
     /**
      * The root of the split tree. Initially a single pane.
@@ -44,74 +43,6 @@ class SplitViewState(
      */
     val paneBounds = mutableStateMapOf<String, Rect>()
 
-    // ===== Phase 5b: per-split sub-tabs =====
-    // Extra sessions beyond a pane's primary node session, keyed by pane id, plus
-    // the active session index per pane (0 = primary). Empty unless the user adds
-    // sessions to a pane, so behavior is unchanged when the feature is off.
-    private val paneExtraSessions = mutableStateMapOf<String, MutableList<TerminalSession>>()
-    private val paneActiveIndex = mutableStateMapOf<String, Int>()
-
-    /** All sessions for a pane: its primary node session first, then any extras. */
-    fun sessionsForPane(pane: SplitNode.Pane): List<TerminalSession> =
-        listOf(pane.session) + (paneExtraSessions[pane.id] ?: emptyList())
-
-    fun activeIndexForPane(paneId: String): Int = paneActiveIndex[paneId] ?: 0
-
-    /** The currently-active session for a pane (falls back to the primary). */
-    fun activeSessionForPane(pane: SplitNode.Pane): TerminalSession {
-        val all = sessionsForPane(pane)
-        return all.getOrElse(activeIndexForPane(pane.id)) { pane.session }
-    }
-
-    fun addSessionToPane(paneId: String, session: TerminalSession) {
-        val list = paneExtraSessions.getOrPut(paneId) { mutableStateListOf() }
-        list.add(session)
-        paneActiveIndex[paneId] = list.size // primary is 0; the new extra becomes active
-    }
-
-    /** Create a session via [sessionFactory] (wired to auto-prune on shell exit) and add it. */
-    fun addNewSessionToPane(paneId: String) {
-        val factory = sessionFactory ?: return
-        var ref: TerminalSession? = null
-        val session = factory {
-            // When the extra session's shell exits, prune it from the pane.
-            ref?.let { removeExtraSession(paneId, it) }
-        }
-        ref = session
-        addSessionToPane(paneId, session)
-    }
-
-    /** Remove a specific extra session from a pane by identity and dispose it. */
-    private fun removeExtraSession(paneId: String, session: TerminalSession) {
-        val list = paneExtraSessions[paneId] ?: return
-        val idx = list.indexOfFirst { it === session }
-        if (idx < 0) return
-        list.removeAt(idx)
-        runCatching { session.dispose() }
-        paneActiveIndex[paneId] = (paneActiveIndex[paneId] ?: 0).coerceIn(0, list.size)
-    }
-
-    fun activatePaneSession(paneId: String, index: Int) {
-        paneActiveIndex[paneId] = index
-    }
-
-    /** Close an extra session (index > 0 in the combined list; the primary is closed via [closePane]). */
-    fun closePaneSession(pane: SplitNode.Pane, index: Int) {
-        if (index <= 0) return
-        val list = paneExtraSessions[pane.id] ?: return
-        val extraIdx = index - 1
-        if (extraIdx !in list.indices) return
-        val removed = list.removeAt(extraIdx)
-        runCatching { removed.dispose() }
-        val current = activeIndexForPane(pane.id)
-        val combinedSize = 1 + list.size
-        paneActiveIndex[pane.id] = when {
-            current > index -> current - 1
-            current == index -> (index - 1).coerceAtLeast(0)
-            else -> current
-        }.coerceIn(0, combinedSize - 1)
-    }
-
     /**
      * Check if there's only one pane (no splits).
      */
@@ -129,18 +60,14 @@ class SplitViewState(
      * Get the focused session.
      */
     fun getFocusedSession(): TerminalSession? {
-        val pane = getFocusedPane() ?: return null
-        // Route through the pane's active sub-session so focused-session actions
-        // (cwd inheritance, paste, AI launch, git) hit the session the user sees.
-        return activeSessionForPane(pane)
+        return getFocusedPane()?.session
     }
 
     /**
-     * Get all sessions in the split tree, including per-pane extra sub-sessions
-     * (so lifecycle/kill-on-close covers them too).
+     * Get all sessions in the split tree.
      */
     fun getAllSessions(): List<TerminalSession> {
-        return rootNode.getAllSessions() + paneExtraSessions.values.flatten()
+        return rootNode.getAllSessions()
     }
 
     /**
@@ -219,9 +146,6 @@ class SplitViewState(
 
         // Dispose the session
         paneToClose.session.dispose()
-        // Also dispose any extra sub-sessions belonging to this pane.
-        paneExtraSessions.remove(paneId)?.forEach { runCatching { it.dispose() } }
-        paneActiveIndex.remove(paneId)
 
         // Remove from bounds tracking
         paneBounds.remove(paneId)
@@ -393,7 +317,5 @@ class SplitViewState(
             }
         }
         paneBounds.clear()
-        paneExtraSessions.clear()
-        paneActiveIndex.clear()
     }
 }

@@ -377,14 +377,15 @@ data class TerminalSettings(
     val commandBlocksEnabled: Boolean = false,
 
     /**
-     * Width, in pixels, of the colored command-block gutter bar at the left edge.
+     * Width, in dp, of the command-block gutter bar (drawn on the right edge).
      */
-    val commandBlockGutterWidth: Float = 3f,
+    val commandBlockGutterWidth: Float = 4f,
 
     /**
      * Gutter color for a successful command (exit code 0), serialized as ARGB hex.
+     * Defaults to transparent so only failed/running commands draw a bar.
      */
-    val commandBlockSuccessColor: String = "0xFF4CAF50",
+    val commandBlockSuccessColor: String = "0x00000000",
 
     /**
      * Gutter color for a failed command (non-zero exit), serialized as ARGB hex.
@@ -400,6 +401,13 @@ data class TerminalSettings(
      * Mirror each command-block start position into the scrollbar track.
      */
     val commandBlockShowScrollbarMarkers: Boolean = true,
+
+    /**
+     * Tint the whole command block with a faint version of its gutter color
+     * (e.g. light red for a failed command). Transparent-gutter states (success)
+     * get no tint.
+     */
+    val commandBlockHighlightBackground: Boolean = true,
 
     // ===== Command Palette =====
 
@@ -445,14 +453,25 @@ data class TerminalSettings(
 
     // ===== Tabs & layout (Phase 5) =====
 
-    /** Tab bar position: "top" (default) or "left" (vertical). */
-    val tabBarPosition: String = "top",
+    /** Tab bar position: "left" (vertical, default) or "top". */
+    val tabBarPosition: String = "left",
 
-    /** Allow multiple sessions per split pane with a per-pane tab strip. */
-    val enablePerSplitTabs: Boolean = false,
+    /** Width (dp) of the vertical (left) tab bar. Ignored when position is "top". */
+    val tabBarVerticalWidth: Float = 180f,
 
-    /** Height (px) of the per-split tab strip when [enablePerSplitTabs]. */
-    val perSplitTabBarHeight: Float = 28f,
+    /**
+     * Summary mode (Warp's VerticalTabsSummaryMode): show one chip per tab
+     * (the active pane, labeled with the tab's title) instead of one chip per
+     * split pane. Off = per-pane chips (default).
+     */
+    val tabBarSummaryMode: Boolean = false,
+
+    /**
+     * Auto-color tabs by working directory (Warp's DirectoryTabColors): when on
+     * and a tab has no manual color, derive a stable accent from its cwd. A
+     * manual color (Color ▸ menu) always wins. Off = no color (default).
+     */
+    val tabColorByDirectory: Boolean = false,
 
     // ===== Session restore (Phase 6) =====
 
@@ -839,10 +858,10 @@ data class TerminalSettings(
 
     /**
      * Always show tab bar even with single tab.
-     * When false (default), tab bar auto-hides when only one tab is open.
-     * When true, tab bar is always visible for consistency and quick access to "+" button.
+     * When true (default), tab bar is always visible for consistency and quick access to "+" button.
+     * When false, tab bar auto-hides when only one tab is open.
      */
-    val alwaysShowTabBar: Boolean = false,
+    val alwaysShowTabBar: Boolean = true,
 
     /**
      * Show the small dim "Cmd+1"/"Ctrl+1" hotkey hint label in the top-right

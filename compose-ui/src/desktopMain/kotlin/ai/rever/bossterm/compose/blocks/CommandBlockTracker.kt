@@ -36,6 +36,11 @@ class CommandBlockTracker(
     private var nextId = 0L
     private var openId = -1L
 
+    /** Anchor at the prompt line (OSC 133;A), used as the block's start so the
+     *  gutter spans the prompt + command + output (not just the output). */
+    @Volatile
+    private var pendingPromptAnchor: SelectionAnchor? = null
+
     /** Anchor at the current cursor row (screen-relative; history is negative). */
     private fun anchorAtCursor(): SelectionAnchor =
         SelectionAnchor.fromBufferCoordinates(
@@ -44,11 +49,18 @@ class CommandBlockTracker(
             textBuffer = tab.textBuffer,
         )
 
+    override fun onPromptStarted() {
+        // OSC 133;A — remember where the prompt begins; the next command's block
+        // starts here so the gutter aligns with the prompt line, not the output.
+        pendingPromptAnchor = anchorAtCursor()
+    }
+
     override fun onCommandStarted() {
-        // OSC 133;B — anchor the block at the prompt/command line.
+        // OSC 133;B — start the block at the prompt line captured at 133;A.
         val cmd = pendingCommandText
         pendingCommandText = null
-        val anchor = anchorAtCursor()
+        val anchor = pendingPromptAnchor ?: anchorAtCursor()
+        pendingPromptAnchor = null
         val now = System.currentTimeMillis()
         synchronized(lock) {
             val id = nextId++

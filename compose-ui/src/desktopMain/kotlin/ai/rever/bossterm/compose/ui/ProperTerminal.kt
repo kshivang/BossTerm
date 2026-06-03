@@ -189,6 +189,9 @@ fun ProperTerminal(
   }
   val commandBlocks by commandBlockFlow.collectAsState()
 
+  // Command palette overlay visibility (toggled by the command_palette action).
+  var commandPaletteVisible by remember { mutableStateOf(false) }
+
   // Search state from tab
   var searchVisible by tab.searchVisible
   var searchQuery by tab.searchQuery
@@ -512,6 +515,25 @@ fun ProperTerminal(
         clipboardManager = clipboardManager,
         isMacOS = isMacOS
       ).toTypedArray()
+    )
+
+    // Command palette (Phase 2). Cmd/Ctrl+Shift+P. Enabled-gated by
+    // `commandPaletteEnabled`, so the hotkey passes through when disabled.
+    registry.register(
+      ai.rever.bossterm.compose.actions.TerminalAction(
+        id = "command_palette",
+        name = "Command Palette",
+        keyStrokes = if (isMacOS) {
+          listOf(ai.rever.bossterm.compose.actions.KeyStroke(key = Key.P, meta = true, shift = true))
+        } else {
+          listOf(ai.rever.bossterm.compose.actions.KeyStroke(key = Key.P, ctrl = true, shift = true))
+        },
+        enabled = { SettingsManager.instance.settings.value.commandPaletteEnabled },
+        handler = {
+          commandPaletteVisible = true
+          true
+        }
+      )
     )
 
     registry
@@ -1823,6 +1845,28 @@ fun ProperTerminal(
           },
           modifier = Modifier.align(Alignment.TopEnd)
         )
+
+        // Command palette overlay (Phase 2)
+        if (commandPaletteVisible) {
+          val paletteCommands = remember(commandBlocks, actionRegistry) {
+            ai.rever.bossterm.compose.palette.PaletteSources.collect(
+              actions = actionRegistry,
+              recentCommands = commandBlocks.mapNotNull { it.commandText },
+              insertCommand = { cmd -> tab.writeUserInput(cmd) }
+            )
+          }
+          ai.rever.bossterm.compose.palette.CommandPalette(
+            visible = true,
+            commands = paletteCommands,
+            onDismiss = {
+              commandPaletteVisible = false
+              scope.launch {
+                kotlinx.coroutines.delay(50)
+                focusRequester.requestFocus()
+              }
+            }
+          )
+        }
 
         // Restore focus to terminal when debug window closes
         LaunchedEffect(debugPanelVisible) {

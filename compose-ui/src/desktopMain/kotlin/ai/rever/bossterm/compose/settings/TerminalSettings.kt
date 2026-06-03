@@ -401,6 +401,14 @@ data class TerminalSettings(
      */
     val commandBlockShowScrollbarMarkers: Boolean = true,
 
+    // ===== Command Palette =====
+
+    /**
+     * Enable the fuzzy command palette (Cmd/Ctrl+Shift+P). When false the hotkey
+     * is not intercepted and the palette never opens.
+     */
+    val commandPaletteEnabled: Boolean = true,
+
     // ===== GPU Rendering Settings =====
 
     /**

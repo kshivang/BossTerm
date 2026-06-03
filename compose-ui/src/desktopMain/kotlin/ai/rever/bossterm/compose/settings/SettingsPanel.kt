@@ -320,6 +320,10 @@ private fun SettingsContent(
                 onSettingsChange = onSettingsChange,
                 onSettingsSave = onSettingsSave
             )
+            SettingsCategory.COMMAND_PALETTE -> CommandPaletteSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange
+            )
             SettingsCategory.PERFORMANCE -> PerformanceSettingsSection(
                 settings = settings,
                 onSettingsChange = onSettingsChange,

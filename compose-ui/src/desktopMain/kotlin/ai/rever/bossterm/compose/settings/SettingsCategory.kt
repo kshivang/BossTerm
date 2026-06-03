@@ -38,6 +38,11 @@ enum class SettingsCategory(
         icon = Icons.Default.List,
         description = "Per-command output blocks, gutter bars, and markers"
     ),
+    COMMAND_PALETTE(
+        displayName = "Command Palette",
+        icon = Icons.Default.PlayArrow,
+        description = "Fuzzy command palette (Cmd/Ctrl+Shift+P)"
+    ),
     PERFORMANCE(
         displayName = "Performance",
         icon = Icons.Default.Refresh,

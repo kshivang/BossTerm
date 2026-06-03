@@ -1,14 +1,15 @@
 package ai.rever.bossterm.compose.palette
 
 import ai.rever.bossterm.compose.actions.ActionRegistry
+import ai.rever.bossterm.compose.workflows.Workflow
 
 /**
  * Builds the list of [PaletteCommand]s shown in the command palette.
  *
- * Phase 2 covers two sources: every registered [ai.rever.bossterm.compose.actions.TerminalAction]
- * (run immediately via `executeFromMenu`) and recent commands captured by the
- * command-block tracker (inserted at the prompt, not auto-run, so the user can
- * review before pressing Enter). Git / AI / workflow sources are planned follow-ups.
+ * Sources: every registered [ai.rever.bossterm.compose.actions.TerminalAction]
+ * (run immediately via `executeFromMenu`), workflows (open the parameter dialog),
+ * and recent commands captured by the command-block tracker (inserted at the
+ * prompt, not auto-run). Git / AI sources are planned follow-ups.
  */
 object PaletteSources {
 
@@ -16,6 +17,8 @@ object PaletteSources {
         actions: ActionRegistry,
         recentCommands: List<String>,
         insertCommand: (String) -> Unit,
+        workflows: List<Workflow> = emptyList(),
+        onRunWorkflow: (Workflow) -> Unit = {},
     ): List<PaletteCommand> = buildList {
         actions.getAllActions()
             .filter { it.name.isNotBlank() }
@@ -30,6 +33,19 @@ object PaletteSources {
                     )
                 )
             }
+
+        workflows.sortedBy { it.name.lowercase() }.forEach { wf ->
+            add(
+                PaletteCommand(
+                    id = "workflow:${wf.sourcePath ?: wf.name}",
+                    title = wf.name,
+                    subtitle = wf.description?.takeIf { it.isNotBlank() }
+                        ?: "Workflow — ${wf.arguments.size} parameter(s)",
+                    group = "Workflow",
+                    run = { onRunWorkflow(wf) },
+                )
+            )
+        }
 
         // recentCommands arrive oldest-first; show newest first, de-duplicated.
         recentCommands.asReversed().distinct().take(50).forEach { cmd ->

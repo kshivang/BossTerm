@@ -192,6 +192,19 @@ fun ProperTerminal(
   // Command palette overlay visibility (toggled by the command_palette action).
   var commandPaletteVisible by remember { mutableStateOf(false) }
 
+  // Workflows for this session (Phase 3); reloaded when cwd / settings change.
+  val workflows = remember(tab.workingDirectory.value, settings.workflowsEnabled, settings.workflowExtraDirs) {
+    if (settings.workflowsEnabled) {
+      ai.rever.bossterm.compose.workflows.WorkflowStore(
+        extraDirs = settings.workflowExtraDirs.map { java.io.File(it) }
+      ).load(tab.workingDirectory.value)
+    } else {
+      emptyList()
+    }
+  }
+  // When non-null, the workflow parameter dialog is shown for this workflow.
+  var pendingWorkflow by remember { mutableStateOf<ai.rever.bossterm.compose.workflows.Workflow?>(null) }
+
   // Search state from tab
   var searchVisible by tab.searchVisible
   var searchQuery by tab.searchQuery
@@ -1848,11 +1861,13 @@ fun ProperTerminal(
 
         // Command palette overlay (Phase 2)
         if (commandPaletteVisible) {
-          val paletteCommands = remember(commandBlocks, actionRegistry) {
+          val paletteCommands = remember(commandBlocks, actionRegistry, workflows) {
             ai.rever.bossterm.compose.palette.PaletteSources.collect(
               actions = actionRegistry,
               recentCommands = commandBlocks.mapNotNull { it.commandText },
-              insertCommand = { cmd -> tab.writeUserInput(cmd) }
+              insertCommand = { cmd -> tab.writeUserInput(cmd) },
+              workflows = workflows,
+              onRunWorkflow = { wf -> pendingWorkflow = wf }
             )
           }
           ai.rever.bossterm.compose.palette.CommandPalette(
@@ -1864,6 +1879,24 @@ fun ProperTerminal(
                 kotlinx.coroutines.delay(50)
                 focusRequester.requestFocus()
               }
+            }
+          )
+        }
+
+        // Workflow parameter dialog (Phase 3)
+        pendingWorkflow?.let { wf ->
+          ai.rever.bossterm.compose.workflows.WorkflowRunDialog(
+            workflow = wf,
+            autoRun = settings.workflowsAutoRun,
+            onDismiss = {
+              pendingWorkflow = null
+              scope.launch {
+                kotlinx.coroutines.delay(50)
+                focusRequester.requestFocus()
+              }
+            },
+            onSubmit = { rendered ->
+              tab.writeUserInput(rendered + if (settings.workflowsAutoRun) "\n" else "")
             }
           )
         }

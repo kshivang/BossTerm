@@ -43,6 +43,11 @@ enum class SettingsCategory(
         icon = Icons.Default.PlayArrow,
         description = "Fuzzy command palette (Cmd/Ctrl+Shift+P)"
     ),
+    WORKFLOWS(
+        displayName = "Workflows",
+        icon = Icons.Default.Bookmark,
+        description = "Saved parameterized commands"
+    ),
     PERFORMANCE(
         displayName = "Performance",
         icon = Icons.Default.Refresh,

@@ -324,6 +324,10 @@ private fun SettingsContent(
                 settings = settings,
                 onSettingsChange = onSettingsChange
             )
+            SettingsCategory.WORKFLOWS -> WorkflowsSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange
+            )
             SettingsCategory.PERFORMANCE -> PerformanceSettingsSection(
                 settings = settings,
                 onSettingsChange = onSettingsChange,

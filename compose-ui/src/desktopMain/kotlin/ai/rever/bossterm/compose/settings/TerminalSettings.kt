@@ -409,6 +409,26 @@ data class TerminalSettings(
      */
     val commandPaletteEnabled: Boolean = true,
 
+    // ===== Workflows =====
+
+    /**
+     * Enable saved parameterized commands (workflows). When false no workflows
+     * are loaded or surfaced in the palette.
+     */
+    val workflowsEnabled: Boolean = true,
+
+    /**
+     * Run a workflow's command immediately on submit (append newline) instead of
+     * just inserting it at the prompt for review.
+     */
+    val workflowsAutoRun: Boolean = false,
+
+    /**
+     * Additional directories to scan for workflow `*.yaml` files, beyond
+     * `~/.bossterm/workflows` and the project's `.warp/workflows`.
+     */
+    val workflowExtraDirs: List<String> = emptyList(),
+
     // ===== GPU Rendering Settings =====
 
     /**

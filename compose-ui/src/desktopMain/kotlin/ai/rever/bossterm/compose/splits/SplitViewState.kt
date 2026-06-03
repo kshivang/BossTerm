@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.splits
 
 import ai.rever.bossterm.compose.TerminalSession
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -42,6 +43,52 @@ class SplitViewState(
      * Used for spatial navigation between panes.
      */
     val paneBounds = mutableStateMapOf<String, Rect>()
+
+    // ===== Phase 5b: per-split sub-tabs =====
+    // Extra sessions beyond a pane's primary node session, keyed by pane id, plus
+    // the active session index per pane (0 = primary). Empty unless the user adds
+    // sessions to a pane, so behavior is unchanged when the feature is off.
+    private val paneExtraSessions = mutableStateMapOf<String, MutableList<TerminalSession>>()
+    private val paneActiveIndex = mutableStateMapOf<String, Int>()
+
+    /** All sessions for a pane: its primary node session first, then any extras. */
+    fun sessionsForPane(pane: SplitNode.Pane): List<TerminalSession> =
+        listOf(pane.session) + (paneExtraSessions[pane.id] ?: emptyList())
+
+    fun activeIndexForPane(paneId: String): Int = paneActiveIndex[paneId] ?: 0
+
+    /** The currently-active session for a pane (falls back to the primary). */
+    fun activeSessionForPane(pane: SplitNode.Pane): TerminalSession {
+        val all = sessionsForPane(pane)
+        return all.getOrElse(activeIndexForPane(pane.id)) { pane.session }
+    }
+
+    fun addSessionToPane(paneId: String, session: TerminalSession) {
+        val list = paneExtraSessions.getOrPut(paneId) { mutableStateListOf() }
+        list.add(session)
+        paneActiveIndex[paneId] = list.size // primary is 0; the new extra becomes active
+    }
+
+    /** Create a session via [sessionFactory] and add it to the pane (no-op if no factory). */
+    fun addNewSessionToPane(paneId: String) {
+        val session = sessionFactory?.invoke() ?: return
+        addSessionToPane(paneId, session)
+    }
+
+    fun activatePaneSession(paneId: String, index: Int) {
+        paneActiveIndex[paneId] = index
+    }
+
+    /** Close an extra session (index > 0; the primary is closed via [closePane]). */
+    fun closePaneSession(pane: SplitNode.Pane, index: Int) {
+        if (index <= 0) return
+        val list = paneExtraSessions[pane.id] ?: return
+        val extraIdx = index - 1
+        if (extraIdx !in list.indices) return
+        val removed = list.removeAt(extraIdx)
+        runCatching { removed.dispose() }
+        paneActiveIndex[pane.id] = activeIndexForPane(pane.id).coerceIn(0, list.size)
+    }
 
     /**
      * Check if there's only one pane (no splits).

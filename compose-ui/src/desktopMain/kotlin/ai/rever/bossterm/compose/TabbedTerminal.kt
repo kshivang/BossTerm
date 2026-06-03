@@ -258,7 +258,11 @@ fun TabbedTerminal(
     // Helper function to get or create SplitViewState for a tab
     fun getOrCreateSplitState(tab: TerminalTab): SplitViewState {
         return splitStates.getOrPut(tab.id) {
-            val state = SplitViewState(initialSession = tab)
+            val state = SplitViewState(
+                initialSession = tab,
+                // Phase 5b: lets a pane spawn extra sessions for its sub-tab strip.
+                sessionFactory = { tabController.createSessionForSplit(workingDir = null) }
+            )
 
             // Set up split-aware process exit for the original tab
             // This ensures exiting the original pane closes just that pane,

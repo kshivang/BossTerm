@@ -14,8 +14,10 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -317,8 +319,21 @@ private fun RenderPane(
                 splitState.updatePaneBounds(pane.id, coordinates.boundsInWindow())
             }
     ) {
+        val perSplitSettings = ai.rever.bossterm.compose.settings.SettingsManager.instance.settings.collectAsState().value
+        Column(modifier = Modifier.fillMaxSize()) {
+            if (perSplitSettings.enablePerSplitTabs) {
+                PaneTabBar(
+                    sessions = splitState.sessionsForPane(pane),
+                    activeIndex = splitState.activeIndexForPane(pane.id),
+                    heightDp = perSplitSettings.perSplitTabBarHeight.dp,
+                    onSelect = { splitState.activatePaneSession(pane.id, it) },
+                    onClose = { splitState.closePaneSession(pane, it) },
+                    onAdd = { splitState.addNewSessionToPane(pane.id) }
+                )
+            }
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
         ProperTerminal(
-            tab = pane.session,
+            tab = splitState.activeSessionForPane(pane),
             isActiveTab = isActiveTab && isFocusedPane,
             sharedFont = sharedFont,
             onTabTitleChange = { title ->
@@ -360,6 +375,8 @@ private fun RenderPane(
             hyperlinkRegistry = hyperlinkRegistry,
             modifier = Modifier.fillMaxSize()
         )
+            }
+        }
     }
 }
 

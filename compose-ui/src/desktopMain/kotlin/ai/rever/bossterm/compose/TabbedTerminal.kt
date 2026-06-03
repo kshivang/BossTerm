@@ -599,15 +599,56 @@ fun TabbedTerminal(
                     splitStates[pendingTab.id] = pendingSplitState
                 }
             } else {
-                // No pending tab, create fresh terminal with optional initial command
-                // Priority: parameter > settings > none
-                val effectiveInitialCommand = initialCommand ?: settings.initialCommand.ifEmpty { null }
-                tabController.createTab(
-                    workingDir = workingDirectory,
-                    initialCommand = effectiveInitialCommand,
-                    onInitialCommandComplete = onInitialCommandComplete
-                )
+                // Phase 6: restore the saved session (tabs + split layout + cwds) if enabled.
+                val restored = if (settings.restoreSessionOnLaunch) {
+                    ai.rever.bossterm.compose.session.SessionStore.load()
+                } else null
+                if (restored != null && restored.tabs.isNotEmpty()) {
+                    restored.tabs.forEach { tabSnap ->
+                        val firstCwd = ai.rever.bossterm.compose.session.SessionStore.firstLeafCwd(tabSnap.tree)
+                        val tab = tabController.createTab(workingDir = firstCwd)
+                        val splitState = getOrCreateSplitState(tab)
+                        runCatching {
+                            ai.rever.bossterm.compose.session.SessionStore.rebuildTree(
+                                node = tabSnap.tree,
+                                state = splitState,
+                                paneId = splitState.focusedPaneId,
+                                makeSession = { cwd ->
+                                    tabController.createSessionForSplit(
+                                        workingDir = cwd,
+                                        onProcessExit = { splitState.closeFocusedPane() }
+                                    )
+                                }
+                            )
+                        }
+                    }
+                    tabController.switchToTab(
+                        restored.activeTab.coerceIn(0, (tabController.tabs.size - 1).coerceAtLeast(0))
+                    )
+                } else {
+                    // No saved session: create fresh terminal with optional initial command.
+                    // Priority: parameter > settings > none
+                    val effectiveInitialCommand = initialCommand ?: settings.initialCommand.ifEmpty { null }
+                    tabController.createTab(
+                        workingDir = workingDirectory,
+                        initialCommand = effectiveInitialCommand,
+                        onInitialCommandComplete = onInitialCommandComplete
+                    )
+                }
             }
+        }
+    }
+
+    // Phase 6: persist session structure on structural change (tab add/close/switch).
+    LaunchedEffect(tabController.tabs.size, tabController.activeTabIndex, settings.restoreSessionOnLaunch) {
+        if (settings.restoreSessionOnLaunch && tabController.tabs.isNotEmpty()) {
+            ai.rever.bossterm.compose.session.SessionStore.save(
+                ai.rever.bossterm.compose.session.SessionStore.capture(
+                    tabs = tabController.tabs,
+                    splitStateFor = { splitStates[it.id] },
+                    activeTab = tabController.activeTabIndex
+                )
+            )
         }
     }
 

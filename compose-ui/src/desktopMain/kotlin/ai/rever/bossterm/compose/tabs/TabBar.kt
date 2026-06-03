@@ -25,6 +25,12 @@ import androidx.compose.ui.unit.sp
 /** Fixed height of the [TabBar] surface; referenced by overlays that must clear it. */
 val TabBarHeight: Dp = 48.dp
 
+/** Width of the [TabBar] surface when rendered vertically (left position). */
+val TabBarVerticalWidth: Dp = 180.dp
+
+/** Orientation of the tab bar: across the top (default) or down the left side. */
+enum class TabBarOrientation { TOP, LEFT }
+
 /**
  * Tab bar component for multiple terminal sessions.
  *
@@ -46,28 +52,41 @@ fun TabBar(
     onTabClosed: (Int) -> Unit,
     onNewTab: () -> Unit,
     onTabMoveToNewWindow: (Int) -> Unit = {},
+    orientation: TabBarOrientation = TabBarOrientation.TOP,
     modifier: Modifier = Modifier
 ) {
     // Context menu controller for tab right-click menu
     val contextMenuController = remember { ContextMenuController() }
+    val vertical = orientation == TabBarOrientation.LEFT
+
+    val showTabMenu: (Int) -> Unit = { index ->
+        val items = listOf(
+            ContextMenuController.MenuItem(id = "new_tab", label = "New Tab", enabled = true, action = { onNewTab() }),
+            ContextMenuController.MenuItem(id = "separator_tab", label = "", enabled = false, action = {}),
+            ContextMenuController.MenuItem(id = "close_tab", label = "Close Tab", enabled = true, action = { onTabClosed(index) }),
+            ContextMenuController.MenuItem(id = "move_to_new_window", label = "Move to New Window", enabled = true, action = { onTabMoveToNewWindow(index) })
+        )
+        contextMenuController.showMenu(0f, 0f, items)
+    }
+
+    val newTabButton: @Composable () -> Unit = {
+        IconButton(onClick = onNewTab, modifier = Modifier.size(36.dp)) {
+            Icon(imageVector = Icons.Default.Add, contentDescription = "New Tab", tint = Color.White)
+        }
+    }
+
     Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(TabBarHeight),
+        modifier = modifier.then(
+            if (vertical) Modifier.fillMaxHeight().width(TabBarVerticalWidth)
+            else Modifier.fillMaxWidth().height(TabBarHeight)
+        ),
         color = Color(0xFF1E1E1E),
         shadowElevation = 2.dp
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            // Tab strip (scrollable if many tabs)
-            Row(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+        if (vertical) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 tabs.forEachIndexed { index, tab ->
                     TabItem(
@@ -75,50 +94,34 @@ fun TabBar(
                         isActive = index == activeTabIndex,
                         onSelected = { onTabSelected(index) },
                         onClose = { onTabClosed(index) },
-                        onContextMenu = {
-                            val items = listOf(
-                                ContextMenuController.MenuItem(
-                                    id = "new_tab",
-                                    label = "New Tab",
-                                    enabled = true,
-                                    action = { onNewTab() }
-                                ),
-                                ContextMenuController.MenuItem(
-                                    id = "separator_tab",
-                                    label = "",
-                                    enabled = false,
-                                    action = {}
-                                ),
-                                ContextMenuController.MenuItem(
-                                    id = "close_tab",
-                                    label = "Close Tab",
-                                    enabled = true,
-                                    action = { onTabClosed(index) }
-                                ),
-                                ContextMenuController.MenuItem(
-                                    id = "move_to_new_window",
-                                    label = "Move to New Window",
-                                    enabled = true,
-                                    action = { onTabMoveToNewWindow(index) }
-                                )
-                            )
-                            contextMenuController.showMenu(0f, 0f, items)
-                        },
-                        modifier = Modifier.weight(1f, fill = false)
+                        onContextMenu = { showTabMenu(index) },
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
+                newTabButton()
             }
-
-            // New tab button
-            IconButton(
-                onClick = onNewTab,
-                modifier = Modifier.size(36.dp)
+        } else {
+            Row(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = "New Tab",
-                    tint = Color.White
-                )
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    tabs.forEachIndexed { index, tab ->
+                        TabItem(
+                            title = tab.title.value,
+                            isActive = index == activeTabIndex,
+                            onSelected = { onTabSelected(index) },
+                            onClose = { onTabClosed(index) },
+                            onContextMenu = { showTabMenu(index) },
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                    }
+                }
+                newTabButton()
             }
         }
     }

@@ -429,6 +429,53 @@ data class TerminalSettings(
      */
     val workflowExtraDirs: List<String> = emptyList(),
 
+    // ===== History search + AI command bar (Phase 4) =====
+
+    /** Enable Ctrl+R fuzzy history search overlay. */
+    val historySearchEnabled: Boolean = false,
+
+    /** Enable the natural-language → command AI bar inside history search. */
+    val aiCommandBarEnabled: Boolean = false,
+
+    /** Agent command used for NL→command (e.g. "claude"). */
+    val aiCommandBarAgentCommand: String = "claude",
+
+    /** One-shot print flag for the agent (e.g. "-p"); empty disables the AI bar. */
+    val aiCommandBarPrintFlag: String = "-p",
+
+    // ===== Tabs & layout (Phase 5) =====
+
+    /** Tab bar position: "top" (default) or "left" (vertical). */
+    val tabBarPosition: String = "top",
+
+    /** Allow multiple sessions per split pane with a per-pane tab strip. */
+    val enablePerSplitTabs: Boolean = false,
+
+    /** Height (px) of the per-split tab strip when [enablePerSplitTabs]. */
+    val perSplitTabBarHeight: Float = 28f,
+
+    // ===== Session restore (Phase 6) =====
+
+    /** Reopen tabs / split layout / cwds on launch. */
+    val restoreSessionOnLaunch: Boolean = false,
+
+    // ===== Polish (Phase 7) =====
+
+    /** Show the current git branch near the tab bar. */
+    val showGitBranchIndicator: Boolean = false,
+
+    /** Inject shell vi-mode (set -o vi / bindkey -v / fish vi) via shell integration. */
+    val shellViMode: Boolean = false,
+
+    /** Enable shell autosuggestions hint via shell integration. */
+    val shellAutosuggestions: Boolean = false,
+
+    /** Hold an OS wake-lock while a foreground command runs past the threshold. */
+    val preventSleepDuringCommands: Boolean = false,
+
+    /** Seconds a command must run before the wake-lock is acquired. */
+    val preventSleepThresholdSeconds: Int = 30,
+
     // ===== GPU Rendering Settings =====
 
     /**

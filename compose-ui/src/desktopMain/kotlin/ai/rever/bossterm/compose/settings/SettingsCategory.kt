@@ -48,6 +48,26 @@ enum class SettingsCategory(
         icon = Icons.Default.Bookmark,
         description = "Saved parameterized commands"
     ),
+    HISTORY_AI(
+        displayName = "History & AI",
+        icon = Icons.Default.Search,
+        description = "Ctrl+R history search and the AI command bar"
+    ),
+    TABS_LAYOUT(
+        displayName = "Tabs & Layout",
+        icon = Icons.Default.Splitscreen,
+        description = "Tab bar position and per-split sub-tabs"
+    ),
+    SESSION(
+        displayName = "Session",
+        icon = Icons.Default.Refresh,
+        description = "Restore tabs and layout on launch"
+    ),
+    EXTRAS(
+        displayName = "Extras",
+        icon = Icons.Default.Star,
+        description = "Git branch indicator, shell vi-mode, autosuggestions, prevent-sleep"
+    ),
     PERFORMANCE(
         displayName = "Performance",
         icon = Icons.Default.Refresh,

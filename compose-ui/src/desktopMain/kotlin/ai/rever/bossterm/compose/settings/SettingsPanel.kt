@@ -328,6 +328,24 @@ private fun SettingsContent(
                 settings = settings,
                 onSettingsChange = onSettingsChange
             )
+            SettingsCategory.HISTORY_AI -> HistoryAiSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange
+            )
+            SettingsCategory.TABS_LAYOUT -> TabsLayoutSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave
+            )
+            SettingsCategory.SESSION -> SessionSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange
+            )
+            SettingsCategory.EXTRAS -> ExtrasSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave
+            )
             SettingsCategory.PERFORMANCE -> PerformanceSettingsSection(
                 settings = settings,
                 onSettingsChange = onSettingsChange,

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -759,8 +760,9 @@ fun TabbedTerminal(
     // tab bar (which occupies the same top-right corner as the "+" button).
     val tabBarVisible = tabController.tabs.size > 1 || settings.alwaysShowTabBar
     Box(modifier = modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Tab bar at top (show when multiple tabs or alwaysShowTabBar is set).
+        val tabBarOnLeft = settings.tabBarPosition == "left"
+        val tabBarComposable: @Composable () -> Unit = {
+            // Tab bar (show when multiple tabs or alwaysShowTabBar is set).
             if (tabBarVisible) {
             TabBar(
                 tabs = tabController.tabs,
@@ -781,10 +783,14 @@ fun TabbedTerminal(
                     val extractedTab = tabController.extractTab(index) ?: return@TabBar
                     // Create new window and transfer both tab and split state
                     WindowManager.createWindowWithTab(extractedTab, splitState)
-                }
+                },
+                orientation = if (tabBarOnLeft) ai.rever.bossterm.compose.tabs.TabBarOrientation.LEFT
+                              else ai.rever.bossterm.compose.tabs.TabBarOrientation.TOP
             )
+            }
         }
 
+        val mainContent: @Composable () -> Unit = {
         // Render active terminal tab with split support
         if (tabController.tabs.isNotEmpty()) {
             val activeTab = tabController.tabs[tabController.activeTabIndex]
@@ -1093,6 +1099,18 @@ fun TabbedTerminal(
                 modifier = Modifier.fillMaxSize()
             )
         }
+        }
+
+        if (tabBarOnLeft) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                tabBarComposable()
+                Box(modifier = Modifier.weight(1f).fillMaxHeight()) { mainContent() }
+            }
+        } else {
+            Column(modifier = Modifier.fillMaxSize()) {
+                tabBarComposable()
+                mainContent()
+            }
         }
 
         // Semi-transparent overlay when window loses focus

@@ -1113,6 +1113,24 @@ fun TabbedTerminal(
             }
         }
 
+        // Git branch indicator (Phase 7) — active pane's branch near the tab bar.
+        if (settings.showGitBranchIndicator) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(
+                        top = if (tabBarVisible && !tabBarOnLeft) TabBarHeight + 6.dp else 6.dp,
+                        start = if (tabBarVisible && tabBarOnLeft)
+                            ai.rever.bossterm.compose.tabs.TabBarVerticalWidth + 8.dp else 8.dp
+                    )
+            ) {
+                ai.rever.bossterm.compose.vcs.GitBranchIndicator(
+                    cwd = tabController.activeTab?.workingDirectory?.value,
+                    enabled = true
+                )
+            }
+        }
+
         // Semi-transparent overlay when window loses focus
         if (!isWindowFocusedState && settings.showUnfocusedOverlay) {
             Box(

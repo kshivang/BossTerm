@@ -52,6 +52,8 @@ fun HistorySearchOverlay(
     history: List<String>,
     onSelect: (String) -> Unit,
     onDismiss: () -> Unit,
+    aiEnabled: Boolean = false,
+    onAskAi: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     if (!visible) return
@@ -75,7 +77,15 @@ fun HistorySearchOverlay(
     }
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
 
+    val aiRowVisible = aiEnabled && query.isNotBlank() &&
+        ai.rever.bossterm.compose.ai.InputClassifier.isNaturalLanguage(query)
+
     fun choose() {
+        if (filtered.isEmpty() && aiRowVisible) {
+            onDismiss()
+            onAskAi(query)
+            return
+        }
         val cmd = filtered.getOrNull(selected) ?: return
         onDismiss()
         onSelect(cmd)
@@ -140,6 +150,19 @@ fun HistorySearchOverlay(
                 )
 
                 Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF3A3A3A)))
+
+                if (aiRowVisible) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onDismiss(); onAskAi(query) }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("✨ Ask AI:  $query", color = Color(0xFF66D9EF), fontSize = 13.sp, maxLines = 1)
+                    }
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF3A3A3A)))
+                }
 
                 LazyColumn(Modifier.heightIn(max = 360.dp)) {
                     itemsIndexed(filtered) { i, cmd ->

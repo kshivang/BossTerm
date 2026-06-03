@@ -23,6 +23,11 @@ end
 
 set -g BOSSTERM_SHELL_INTEGRATION_LOADED 1
 
+# Optional customizations requested by BossTerm settings (Phase 7).
+if set -q BOSSTERM_VI_MODE
+    fish_vi_key_bindings
+end
+
 # Track exit code from last command
 set -g __bossterm_last_status 0
 

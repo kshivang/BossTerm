@@ -17,6 +17,18 @@ fi
 
 BOSSTERM_SHELL_INTEGRATION_LOADED=1
 
+# Optional customizations requested by BossTerm settings (Phase 7).
+[[ -n "$BOSSTERM_VI_MODE" ]] && bindkey -v
+if [[ -n "$BOSSTERM_AUTOSUGGEST" ]]; then
+    for __bossterm_zas in \
+        /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
+        /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
+        /usr/local/share/zsh-autosuggestions/zsh-autosuggestions.zsh; do
+        [[ -r "$__bossterm_zas" ]] && source "$__bossterm_zas" && break
+    done
+    unset __bossterm_zas
+fi
+
 # OSC 133 sequences:
 # A - Prompt started (shell ready for input)
 # B - Command started (user entered command)

@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.tabs
 
+import ai.rever.bossterm.compose.settings.SettingsManager
 import org.slf4j.LoggerFactory
 import java.io.File
 
@@ -59,6 +60,13 @@ object ShellIntegrationInjector {
         }
 
         LOG.debug("Injecting shell integration for: $effectiveShellName")
+
+        // Optional shell customizations (Phase 7), honored by the integration
+        // scripts. Reading settings here avoids threading flags through every
+        // PTY-spawn call site.
+        val customization = SettingsManager.instance.settings.value
+        if (customization.shellViMode) env["BOSSTERM_VI_MODE"] = "1"
+        if (customization.shellAutosuggestions) env["BOSSTERM_AUTOSUGGEST"] = "1"
 
         when {
             effectiveShellName == "zsh" || effectiveShellName.endsWith("zsh") -> injectZsh(env)

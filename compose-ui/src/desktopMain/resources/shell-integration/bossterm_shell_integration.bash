@@ -16,6 +16,9 @@ fi
 
 BOSSTERM_SHELL_INTEGRATION_LOADED=1
 
+# Optional customizations requested by BossTerm settings (Phase 7).
+[[ -n "$BOSSTERM_VI_MODE" ]] && set -o vi
+
 # Track if we're in a command (to avoid duplicate B markers)
 __bossterm_in_command=0
 

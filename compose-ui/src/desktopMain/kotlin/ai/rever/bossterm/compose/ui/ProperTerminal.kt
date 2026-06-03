@@ -205,6 +205,9 @@ fun ProperTerminal(
   // When non-null, the workflow parameter dialog is shown for this workflow.
   var pendingWorkflow by remember { mutableStateOf<ai.rever.bossterm.compose.workflows.Workflow?>(null) }
 
+  // History search overlay visibility (Ctrl+R when enabled and not in an alt-screen app).
+  var historySearchVisible by remember { mutableStateOf(false) }
+
   // Search state from tab
   var searchVisible by tab.searchVisible
   var searchQuery by tab.searchQuery
@@ -544,6 +547,25 @@ fun ProperTerminal(
         enabled = { SettingsManager.instance.settings.value.commandPaletteEnabled },
         handler = {
           commandPaletteVisible = true
+          true
+        }
+      )
+    )
+
+    // History search (Phase 4). Ctrl+R. Enabled-gated by `historySearchEnabled`
+    // and ignored while a full-screen app owns the alternate screen, so vim/less
+    // keep their own Ctrl+R.
+    registry.register(
+      ai.rever.bossterm.compose.actions.TerminalAction(
+        id = "history_search",
+        name = "Search History",
+        keyStrokes = listOf(ai.rever.bossterm.compose.actions.KeyStroke(key = Key.R, ctrl = true)),
+        enabled = {
+          SettingsManager.instance.settings.value.historySearchEnabled &&
+            !textBuffer.isUsingAlternateBuffer
+        },
+        handler = {
+          historySearchVisible = true
           true
         }
       )
@@ -1897,6 +1919,39 @@ fun ProperTerminal(
             },
             onSubmit = { rendered ->
               tab.writeUserInput(rendered + if (settings.workflowsAutoRun) "\n" else "")
+            }
+          )
+        }
+
+        // History search overlay (Phase 4)
+        if (historySearchVisible) {
+          val historyEntries = remember(commandBlocks, historySearchVisible) {
+            ai.rever.bossterm.compose.history.HistoryStore.load(commandBlocks.mapNotNull { it.commandText })
+          }
+          val restoreFocus = {
+            historySearchVisible = false
+            scope.launch {
+              kotlinx.coroutines.delay(50)
+              focusRequester.requestFocus()
+            }
+            Unit
+          }
+          ai.rever.bossterm.compose.history.HistorySearchOverlay(
+            visible = true,
+            history = historyEntries,
+            onSelect = { cmd -> tab.writeUserInput(cmd); restoreFocus() },
+            onDismiss = { restoreFocus() },
+            aiEnabled = settings.aiCommandBarEnabled && settings.aiCommandBarPrintFlag.isNotBlank(),
+            onAskAi = { query ->
+              restoreFocus()
+              scope.launch {
+                val suggestion = ai.rever.bossterm.compose.ai.AiCommandSuggester.suggest(
+                  agentCommand = settings.aiCommandBarAgentCommand,
+                  printFlag = settings.aiCommandBarPrintFlag,
+                  naturalLanguage = query
+                )
+                if (!suggestion.isNullOrBlank()) tab.writeUserInput(suggestion)
+              }
             }
           )
         }

@@ -430,6 +430,11 @@ class TabController(
             }
         )
 
+        // Prevent-sleep during long commands (Phase 7). Inert unless enabled.
+        val preventSleepListener = ai.rever.bossterm.compose.power.PreventSleepListener(tab.coroutineScope)
+        terminal.addCommandStateListener(preventSleepListener)
+        tab.commandStateListeners.add(preventSleepListener)
+
         // Complete debug collector initialization
         debugCollector?.let { collector ->
             // Set the tab reference now that tab is created
@@ -688,6 +693,11 @@ class TabController(
             }
         )
 
+        // Prevent-sleep during long commands (Phase 7). Inert unless enabled.
+        val preventSleepListener = ai.rever.bossterm.compose.power.PreventSleepListener(session.coroutineScope)
+        terminal.addCommandStateListener(preventSleepListener)
+        session.commandStateListeners.add(preventSleepListener)
+
         // Complete debug collector initialization
         debugCollector?.let { collector ->
             collector.setTab(session)
@@ -891,6 +901,11 @@ class TabController(
                 commandBlockTracker.pendingCommandText = cmd
             }
         )
+
+        // Prevent-sleep during long commands (Phase 7). Inert unless enabled.
+        val preventSleepListener = ai.rever.bossterm.compose.power.PreventSleepListener(tab.coroutineScope)
+        terminal.addCommandStateListener(preventSleepListener)
+        tab.commandStateListeners.add(preventSleepListener)
 
         debugCollector?.let { collector ->
             collector.setTab(tab)

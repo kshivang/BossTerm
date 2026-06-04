@@ -392,6 +392,10 @@ private fun SettingsContent(
                 onSettingsChange = onSettingsChange,
                 onSettingsSave = onSettingsSave
             )
+            SettingsCategory.SESSION_SHARING -> SessionSharingSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange
+            )
             SettingsCategory.ABOUT -> AboutSection()
         }
     }

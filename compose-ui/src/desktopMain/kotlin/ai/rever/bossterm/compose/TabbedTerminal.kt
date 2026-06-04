@@ -777,8 +777,57 @@ fun TabbedTerminal(
     // a single source of truth across both entry points.
     val mcpRunningPort by McpTerminalRegistry.runningPort.collectAsState()
     val mcpScope = rememberCoroutineScope()
+    // Popup menu for picking Tab vs Window when starting a share from the status pill.
+    val shareScopeMenu = remember { ai.rever.bossterm.compose.features.ContextMenuController() }
+    // Popup menu for the MCP status segment (same menu the old MCP pill showed).
+    val mcpMenu = remember { ai.rever.bossterm.compose.features.ContextMenuController() }
+    val mcpServerLabel = LocalBossTermMcpConfig.current?.displayName ?: "BossTerm"
     var attachStatus by remember { mutableStateOf<AttachStatus?>(null) }
     var mcpAttaching by remember { mutableStateOf(false) }
+    // Session sharing (issue #276): dialog state + live set of shared tab ids.
+    var shareDialog by remember { mutableStateOf<ai.rever.bossterm.compose.share.SessionShareManager.ShareInfo?>(null) }
+    val sharedTabIds by ai.rever.bossterm.compose.share.SessionShareManager.sharedTabIds.collectAsState()
+    // Start (or reopen) a share for a tab. TAB = this tab + its splits; WINDOW = all tabs.
+    // First use auto-enables the feature; the server binds on demand.
+    fun startShare(tabId: String, scope: ai.rever.bossterm.compose.share.ShareScope) {
+        if (sharedTabIds.contains(tabId)) {
+            shareDialog = ai.rever.bossterm.compose.share.SessionShareManager.infoFor(tabId)
+            return
+        }
+        if (!settings.sessionSharingEnabled) {
+            SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
+        }
+        mcpScope.launch {
+            val info = ai.rever.bossterm.compose.share.SessionShareManager.share(tabId, scope)
+            if (info != null) shareDialog = info
+        }
+    }
+    // Split the active tab's focused pane (used by the left bar's split buttons). Mirrors
+    // the per-tab onSplit handlers so panes auto-close on shell exit.
+    fun splitActiveTab(orientation: SplitOrientation) {
+        val activeTab = tabController.activeTab ?: return
+        val splitState = getOrCreateSplitState(activeTab)
+        val workingDir = if (settings.splitInheritWorkingDirectory) {
+            val s = splitState.getFocusedSession()
+            s?.workingDirectory?.value ?: s?.processHandle?.value?.getWorkingDirectory()
+        } else null
+        var newSessionRef: TerminalSession? = null
+        val newSession = tabController.createSessionForSplit(
+            workingDir = workingDir,
+            onProcessExit = {
+                if (splitState.isSinglePane) {
+                    val idx = tabController.tabs.indexOfFirst { it.id == activeTab.id }
+                    if (idx != -1) tabController.closeTab(idx)
+                } else {
+                    newSessionRef?.let { session ->
+                        splitState.getAllPanes().find { it.session === session }?.let { p -> splitState.closePane(p.id) }
+                    }
+                }
+            }
+        )
+        newSessionRef = newSession
+        splitState.splitFocusedPane(orientation, newSession, settings.splitDefaultRatio)
+    }
     // Auto-dismiss the Done toast a few seconds after it appears, AND clear
     // any stale state if the MCP server unbinds — so the toast doesn't pop
     // back unexpectedly after a brief MCP off-then-on cycle.
@@ -844,6 +893,23 @@ fun TabbedTerminal(
                 return null
             }
 
+            // Abbreviate a working directory for the chip's second line (Warp-style):
+            // home → "~", otherwise collapse long paths to "~/…/parent/dir".
+            fun abbreviateCwd(path: String?): String? {
+                if (path.isNullOrBlank()) return null
+                val home = System.getProperty("user.home")?.trimEnd('/')
+                val clean = path.trimEnd('/').ifEmpty { "/" }
+                val withTilde = if (!home.isNullOrEmpty() && (clean == home || clean.startsWith("$home/")))
+                    "~" + clean.removePrefix(home) else clean
+                val parts = withTilde.split('/').filter { it.isNotEmpty() }
+                return when {
+                    withTilde == "~" || withTilde == "/" -> withTilde
+                    parts.size <= 2 -> withTilde
+                    withTilde.startsWith("~") -> "~/…/" + parts.takeLast(2).joinToString("/")
+                    else -> "/…/" + parts.takeLast(2).joinToString("/")
+                }
+            }
+
             // Resolve the session a chip refers to: a split pane by id, or the tab
             // itself for the synthetic tab-level chip (summary mode / not-yet-split).
             fun sessionFor(tabIndex: Int, paneId: String): TerminalSession? {
@@ -858,10 +924,18 @@ fun TabbedTerminal(
                 val st = splitStates[tab.id]
                 val panes = if (st != null && !summaryMode) {
                     st.getAllPanes().map { p ->
-                        ai.rever.bossterm.compose.tabs.TabBarPane(p.id, p.session.title.value, colorHexFor(p.session))
+                        ai.rever.bossterm.compose.tabs.TabBarPane(
+                            p.id, p.session.title.value, colorHexFor(p.session),
+                            subtitle = abbreviateCwd(p.session.workingDirectory.value),
+                            branch = (p.session as? ai.rever.bossterm.compose.tabs.TerminalTab)?.gitBranch?.value
+                        )
                     }
                 } else {
-                    listOf(ai.rever.bossterm.compose.tabs.TabBarPane(tab.id, tab.title.value, colorHexFor(tab)))
+                    listOf(ai.rever.bossterm.compose.tabs.TabBarPane(
+                        tab.id, tab.title.value, colorHexFor(tab),
+                        subtitle = abbreviateCwd(tab.workingDirectory.value),
+                        branch = tab.gitBranch.value
+                    ))
                 }
                 ai.rever.bossterm.compose.tabs.TabBarGroup(index, panes)
             }
@@ -919,6 +993,21 @@ fun TabbedTerminal(
                     val wd = tabController.tabs.getOrNull(index)?.workingDirectory?.value
                     tabController.createTab(workingDir = wd)
                 },
+                onShareTab = { index ->
+                    tabController.tabs.getOrNull(index)?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
+                },
+                onShareWindow = { index ->
+                    tabController.tabs.getOrNull(index)?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.WINDOW) }
+                },
+                onStopShare = { index ->
+                    tabController.tabs.getOrNull(index)?.let {
+                        ai.rever.bossterm.compose.share.SessionShareManager.unshare(it.id)
+                    }
+                },
+                isSharing = { index -> tabController.tabs.getOrNull(index)?.id in sharedTabIds },
+                onSplitVertical = { splitActiveTab(SplitOrientation.VERTICAL) },
+                onSplitHorizontal = { splitActiveTab(SplitOrientation.HORIZONTAL) },
+                onSettings = onShowSettings,
                 orientation = if (tabBarOnLeft) ai.rever.bossterm.compose.tabs.TabBarOrientation.LEFT
                               else ai.rever.bossterm.compose.tabs.TabBarOrientation.TOP,
                 verticalWidth = settings.tabBarVerticalWidth.dp
@@ -1162,6 +1251,29 @@ fun TabbedTerminal(
                         items = items + mcpAttachItems
                     }
 
+                    // Session sharing (issue #276): start/stop sharing from the terminal
+                    // right-click menu — this tab (incl. splits) or the whole window.
+                    tabController.activeTab?.let { activeTab ->
+                        val sharing = ai.rever.bossterm.compose.share.SessionShareManager.isSharing(activeTab.id)
+                        items = if (sharing) {
+                            items + ContextMenuItem(
+                                id = "stop_share",
+                                label = "Stop Sharing",
+                                action = { ai.rever.bossterm.compose.share.SessionShareManager.unshare(activeTab.id) }
+                            )
+                        } else {
+                            items + ContextMenuItem(
+                                id = "share_tab",
+                                label = "Share Tab…",
+                                action = { startShare(activeTab.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
+                            ) + ContextMenuItem(
+                                id = "share_window",
+                                label = "Share Window…",
+                                action = { startShare(activeTab.id, ai.rever.bossterm.compose.share.ShareScope.WINDOW) }
+                            )
+                        }
+                    }
+
                     // Add Version Control menu items
                     val terminalWriter: (String) -> Unit = { text ->
                         splitState.getFocusedSession()?.writeUserInput(text)
@@ -1283,11 +1395,17 @@ fun TabbedTerminal(
         //   - Toast renders whenever attachStatus is non-null. Attaches
         //     can't happen when MCP is off, so toast naturally stays
         //     dormant in that state.
-        if (settings.mcpShowStatusIndicator || attachStatus != null) {
+        // Combined inline status strip: "● MCP | ● Sharing" (issue #276). Each segment
+        // is color-coded (green = on/active, gray = off/idle) and clickable: MCP →
+        // BossTerm MCP settings; Sharing → start sharing the active tab (or reopen its
+        // QR/links dialog if already shared). Shown per its own toggle.
+        val showMcpStatus = settings.mcpShowStatusIndicator
+        val showSharingStatus = settings.sessionSharingShowIndicator
+        if (showMcpStatus || showSharingStatus || attachStatus != null) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    // Drop below the tab bar only when it's at the top (so the pill /
+                    // Drop below the tab bar only when it's at the top (so the strip /
                     // attach toast don't overlap the tab "+" button). A left/vertical
                     // tab bar doesn't occupy the top, so stay near the top edge.
                     .padding(
@@ -1297,35 +1415,69 @@ fun TabbedTerminal(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                if (settings.mcpShowStatusIndicator) {
-                    McpStatusIndicator(
-                        enabled = true,
-                        onClick = onShowMcpSettings,
-                        onHideRequest = {
-                            SettingsManager.instance.updateSetting {
-                                copy(mcpShowStatusIndicator = false)
+                ai.rever.bossterm.compose.share.StatusStrip(
+                    showMcp = showMcpStatus,
+                    mcpOn = mcpRunningPort != null,
+                    onMcpClick = {
+                        // Same context menu the standalone MCP pill showed: Attach ▸,
+                        // <server> MCP Settings…, Turn on/off.
+                        mcpMenu.showMenu(0f, 0f, ai.rever.bossterm.compose.mcp.buildIndicatorMenuItems(
+                            attached = McpTerminalRegistry.attachedTargets.value,
+                            isRunning = mcpRunningPort != null,
+                            isUserEnabled = settings.mcpEnabled,
+                            serverLabel = mcpServerLabel,
+                            onAttachRequest = fireMcpAttach,
+                            onShowSettings = onShowMcpSettings,
+                            onTurnOffRequest = { SettingsManager.instance.updateSetting { copy(mcpEnabled = false) } },
+                            onTurnOnRequest = { SettingsManager.instance.updateSetting { copy(mcpEnabled = true) } },
+                        ))
+                    },
+                    showSharing = showSharingStatus,
+                    sharingCount = sharedTabIds.size,
+                    onSharingClick = {
+                        // Reopen the dialog if something is shared; else offer Tab vs Window.
+                        val sharedId = sharedTabIds.firstOrNull { tabController.tabs.any { t -> t.id == it } }
+                            ?: sharedTabIds.firstOrNull()
+                        if (sharedId != null) {
+                            shareDialog = ai.rever.bossterm.compose.share.SessionShareManager.infoFor(sharedId)
+                        } else {
+                            tabController.activeTab?.let { active ->
+                                shareScopeMenu.showMenu(0f, 0f, listOf(
+                                    ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
+                                        id = "share_this_tab", label = "Share This Tab", enabled = true,
+                                        action = { startShare(active.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
+                                    ),
+                                    ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
+                                        id = "share_window", label = "Share Whole Window", enabled = true,
+                                        action = { startShare(active.id, ai.rever.bossterm.compose.share.ShareScope.WINDOW) }
+                                    ),
+                                ))
                             }
-                        },
-                        onAttachRequest = fireMcpAttach,
-                        onTurnOffRequest = {
-                            SettingsManager.instance.updateSetting {
-                                copy(mcpEnabled = false)
-                            }
-                        },
-                        onTurnOnRequest = {
-                            SettingsManager.instance.updateSetting {
-                                copy(mcpEnabled = true)
-                            }
-                        },
-                        isUserEnabled = settings.mcpEnabled,
-                        serverLabel = LocalBossTermMcpConfig.current?.displayName ?: "BossTerm"
-                    )
-                }
+                        }
+                    },
+                )
                 attachStatus?.let { status ->
                     AttachToast(status = status)
                 }
             }
         }
+    }
+
+    // Session sharing window (issue #276): a real top-level OS window (like Settings)
+    // with the QR + links + Stop, rather than an in-canvas Compose dialog.
+    shareDialog?.let { info ->
+        ai.rever.bossterm.compose.share.ShareWindow(
+            info = info,
+            onDismiss = { shareDialog = null },
+            onStop = {
+                ai.rever.bossterm.compose.share.SessionShareManager.unshare(info.tabId)
+                shareDialog = null
+            },
+            onScopeChange = { scope ->
+                // Re-scope in place (same tokens/links/viewers) and refresh the dialog.
+                ai.rever.bossterm.compose.share.SessionShareManager.reshare(info.tabId, scope)?.let { shareDialog = it }
+            }
+        )
     }
 
     // AI Assistant Installation Wizard (command interception, context menu, and programmatic API)

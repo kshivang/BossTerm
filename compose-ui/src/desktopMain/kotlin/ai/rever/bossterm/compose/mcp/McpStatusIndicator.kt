@@ -179,7 +179,7 @@ fun McpStatusIndicator(
  * so a bind-failure state ("intent on, but port busy") still offers a
  * meaningful action — toggle off to reset.
  */
-private fun buildIndicatorMenuItems(
+internal fun buildIndicatorMenuItems(
     attached: Set<McpAttachTarget>,
     isRunning: Boolean,
     isUserEnabled: Boolean,

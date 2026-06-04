@@ -89,8 +89,17 @@ fun main() {
         config = mcpConfig
     )
     mcpManager.start()
+
+    // Session sharing (issue #276): app-singleton lifecycle for the self-hosted
+    // web-viewer server. Inert until the user enables it in settings AND shares a
+    // tab — the server only binds while ≥1 share is active.
+    ai.rever.bossterm.compose.share.SessionShareManager.start()
+
     Runtime.getRuntime().addShutdownHook(Thread {
         mcpManager.stop()
+        // Tear down session sharing synchronously so a Tailscale serve/funnel mapping
+        // isn't left published after the app exits (issue #276).
+        ai.rever.bossterm.compose.share.SessionShareManager.shutdown()
         mcpScope.cancel()
     })
 
@@ -755,6 +764,12 @@ fun main() {
                                 // Terminal content
                                 TabbedTerminal(
                                     state = tabbedState,
+                                    // Stop sharing a tab when it closes (issue #276) — otherwise
+                                    // the share server stays bound and viewers freeze. Covers all
+                                    // windows (this content is built per-window); no-op for unshared tabs.
+                                    onTabClose = { tabId ->
+                                        ai.rever.bossterm.compose.share.SessionShareManager.onTabClosed(tabId)
+                                    },
                                     onExit = {
                                         WindowManager.closeWindow(window.id)
                                         if (!WindowManager.hasWindows()) {

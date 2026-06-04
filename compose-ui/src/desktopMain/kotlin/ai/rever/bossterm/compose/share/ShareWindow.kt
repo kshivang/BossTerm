@@ -101,6 +101,33 @@ fun ShareWindow(
                 )
                 Spacer(Modifier.height(20.dp))
 
+                SettingsSection("QR code") {
+                    // QR first, then the View/Control toggle below it, then the caption —
+                    // all centered so their left/right margins match.
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        if (qr != null) {
+                            Image(
+                                bitmap = qr,
+                                contentDescription = if (controlQr) "Control link QR" else "View link QR",
+                                modifier = Modifier.size(210.dp).background(Color.White).padding(10.dp)
+                            )
+                        }
+                        SegToggle("View", "Control", rightSelected = controlQr) { controlQr = it }
+                        Text(
+                            if (controlQr) "QR encodes the Control link — scanning grants typing access."
+                            else "QR encodes the View link (read-only).",
+                            color = if (controlQr) Danger else TextMuted, fontSize = 11.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+                Spacer(Modifier.height(20.dp))
+
                 SettingsSection("Scope") {
                     Column(
                         modifier = Modifier.fillMaxWidth(),
@@ -114,33 +141,6 @@ fun ShareWindow(
                             if (isWindow) "Sharing all tabs in this window — switchable in the viewer, with splits."
                             else "Sharing this tab and its splits.",
                             color = TextMuted, fontSize = 11.sp,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                }
-                Spacer(Modifier.height(20.dp))
-
-                SettingsSection("QR code") {
-                    // Center the toggle and the QR together so their left/right margins
-                    // match (otherwise the toggle hugs the left edge while the QR is centered).
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        SegToggle("View", "Control", rightSelected = controlQr) { controlQr = it }
-                        if (qr != null) {
-                            Image(
-                                bitmap = qr,
-                                contentDescription = if (controlQr) "Control link QR" else "View link QR",
-                                modifier = Modifier.size(210.dp).background(Color.White).padding(10.dp)
-                            )
-                        }
-                        Text(
-                            if (controlQr) "QR encodes the Control link — scanning grants typing access."
-                            else "QR encodes the View link (read-only).",
-                            color = if (controlQr) Danger else TextMuted, fontSize = 11.sp,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
                         )

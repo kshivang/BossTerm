@@ -128,6 +128,9 @@ fun main() {
                 val windowState = rememberWindowState()
                 // Settings dialog state (declared before Window for onPreviewKeyEvent access)
                 var showSettingsDialog by remember { mutableStateOf(false) }
+                // Bumped on every settings-open request so an already-open settings window
+                // is raised to the front instead of staying behind. See SettingsWindow.focusTick.
+                var settingsFocusTick by remember { mutableStateOf(0) }
                 // Optional initial category — set by deep links (e.g. MCP status indicator).
                 // Cleared on dismiss so the next open falls back to the default category.
                 var initialSettingsCategory by remember {
@@ -202,7 +205,7 @@ fun main() {
                             keyEvent.key == Key.Comma &&
                             ((isMacOS && keyEvent.isMetaPressed) || (!isMacOS && keyEvent.isCtrlPressed))
                         ) {
-                            showSettingsDialog = true
+                            showSettingsDialog = true; settingsFocusTick++
                             true // Consume event
                         } else {
                             false
@@ -353,7 +356,7 @@ fun main() {
                             Separator()
                             Item(
                                 "Settings...",
-                                onClick = { showSettingsDialog = true },
+                                onClick = { showSettingsDialog = true; settingsFocusTick++ },
                                 shortcut = KeyShortcut(Key.Comma, meta = isMacOS, ctrl = !isMacOS)
                             )
                             Separator()
@@ -498,7 +501,7 @@ fun main() {
                                         onClick = {
                                             initialSettingsCategory =
                                                 ai.rever.bossterm.compose.settings.SettingsCategory.MCP
-                                            showSettingsDialog = true
+                                            showSettingsDialog = true; settingsFocusTick++
                                         }
                                     )
                                 }
@@ -782,11 +785,11 @@ fun main() {
                                     onNewWindow = {
                                         WindowManager.createWindow()
                                     },
-                                    onShowSettings = { showSettingsDialog = true },
+                                    onShowSettings = { showSettingsDialog = true; settingsFocusTick++ },
                                     onShowMcpSettings = {
                                         initialSettingsCategory =
                                             ai.rever.bossterm.compose.settings.SettingsCategory.MCP
-                                        showSettingsDialog = true
+                                        showSettingsDialog = true; settingsFocusTick++
                                     },
                                     onShowWelcomeWizard = { showOnboardingWizard = true },
                                     menuActions = window.menuActions,
@@ -828,7 +831,8 @@ fun main() {
                             WindowManager.closeWindow(window.id)
                             WindowManager.createWindow()
                         },
-                        initialCategory = initialSettingsCategory
+                        initialCategory = initialSettingsCategory,
+                        focusTick = settingsFocusTick
                     )
 
                     // CLI install dialog

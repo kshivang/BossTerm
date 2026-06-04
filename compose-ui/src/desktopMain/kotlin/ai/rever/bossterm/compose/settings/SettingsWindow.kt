@@ -28,7 +28,9 @@ fun SettingsWindow(
     onDismiss: () -> Unit,
     onRestartApp: (() -> Unit)? = null,
     /** Optional category to open the panel at. Null falls back to [SettingsCategory.default]. */
-    initialCategory: SettingsCategory? = null
+    initialCategory: SettingsCategory? = null,
+    /** Bumped each time settings is requested; raises the window to the front when it changes. */
+    focusTick: Int = 0
 ) {
     if (!visible) return
 
@@ -66,6 +68,11 @@ fun SettingsWindow(
             size = DpSize(750.dp, 580.dp)
         )
     ) {
+        // Raise an already-open settings window to the front when settings is requested again.
+        LaunchedEffect(focusTick) {
+            window.toFront()
+            window.requestFocus()
+        }
         SettingsPanel(
             settings = pendingSettings,
             onSettingsChange = { newSettings ->

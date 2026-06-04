@@ -33,6 +33,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,6 +48,7 @@ import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -72,6 +74,7 @@ fun ShareWindow(
     onDismiss: () -> Unit,
     onStop: () -> Unit,
     onScopeChange: (ShareScope) -> Unit,
+    focusTick: Int = 0,
 ) {
     val clipboard = LocalClipboardManager.current
     val isWindow = info.scope == ShareScope.WINDOW
@@ -86,6 +89,12 @@ fun ShareWindow(
         resizable = false,
         state = rememberWindowState(size = DpSize(600.dp, 680.dp))
     ) {
+        // Bring this window to the front whenever the share button is clicked again
+        // (focusTick changes) so an already-open share window is raised, not left behind.
+        LaunchedEffect(focusTick) {
+            window.toFront()
+            window.requestFocus()
+        }
         Surface(color = BackgroundColor, modifier = Modifier.fillMaxSize()) {
           Column(modifier = Modifier.fillMaxSize()) {
             // Scrollable content fills the space above the pinned footer.
@@ -100,33 +109,50 @@ fun ShareWindow(
                 )
                 Spacer(Modifier.height(20.dp))
 
-                SettingsSection("Scope") {
-                    SegToggle("Tab", "Window", rightSelected = isWindow) { win ->
-                        onScopeChange(if (win) ShareScope.WINDOW else ShareScope.TAB)
+                SettingsSection("QR code") {
+                    // QR first, then the View/Control toggle below it, then the caption —
+                    // all centered so their left/right margins match.
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        if (qr != null) {
+                            Image(
+                                bitmap = qr,
+                                contentDescription = if (controlQr) "Control link QR" else "View link QR",
+                                modifier = Modifier.size(210.dp).background(Color.White).padding(10.dp)
+                            )
+                        }
+                        SegToggle("View", "Control", rightSelected = controlQr) { controlQr = it }
+                        Text(
+                            if (controlQr) "QR encodes the Control link — scanning grants typing access."
+                            else "QR encodes the View link (read-only).",
+                            color = if (controlQr) Danger else TextMuted, fontSize = 11.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
-                    Text(
-                        if (isWindow) "Sharing all tabs in this window — switchable in the viewer, with splits."
-                        else "Sharing this tab and its splits.",
-                        color = TextMuted, fontSize = 11.sp
-                    )
                 }
                 Spacer(Modifier.height(20.dp))
 
-                SettingsSection("QR code") {
-                    SegToggle("View", "Control", rightSelected = controlQr) { controlQr = it }
-                    if (qr != null) {
-                        Image(
-                            bitmap = qr,
-                            contentDescription = if (controlQr) "Control link QR" else "View link QR",
-                            modifier = Modifier.size(210.dp).align(Alignment.CenterHorizontally)
-                                .background(Color.White).padding(10.dp)
+                SettingsSection("Scope") {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SegToggle("Tab", "Window", rightSelected = isWindow) { win ->
+                            onScopeChange(if (win) ShareScope.WINDOW else ShareScope.TAB)
+                        }
+                        Text(
+                            if (isWindow) "Sharing all tabs in this window — switchable in the viewer, with splits."
+                            else "Sharing this tab and its splits.",
+                            color = TextMuted, fontSize = 11.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
-                    Text(
-                        if (controlQr) "QR encodes the Control link — scanning grants typing access."
-                        else "QR encodes the View link (read-only).",
-                        color = if (controlQr) Danger else TextMuted, fontSize = 11.sp
-                    )
                 }
                 Spacer(Modifier.height(20.dp))
 

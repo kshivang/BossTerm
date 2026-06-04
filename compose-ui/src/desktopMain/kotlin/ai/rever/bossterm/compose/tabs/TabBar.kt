@@ -168,8 +168,14 @@ fun TabBar(
             listOf(ContextMenuController.MenuItem(id = "stop_share", label = "Stop Sharing", enabled = true, action = { onStopShare(tabIndex) }))
         } else {
             listOf(
-                ContextMenuController.MenuItem(id = "share_tab", label = "Share Tab…", enabled = true, action = { onShareTab(tabIndex) }),
-                ContextMenuController.MenuItem(id = "share_window", label = "Share Window…", enabled = true, action = { onShareWindow(tabIndex) })
+                ContextMenuController.MenuSubmenu(
+                    id = "share_submenu",
+                    label = "Share",
+                    items = listOf(
+                        ContextMenuController.MenuItem(id = "share_tab", label = "Tab…", enabled = true, action = { onShareTab(tabIndex) }),
+                        ContextMenuController.MenuItem(id = "share_window", label = "Window…", enabled = true, action = { onShareWindow(tabIndex) })
+                    )
+                )
             )
         }
         contextMenuController.showMenu(0f, 0f, items)

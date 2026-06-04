@@ -240,6 +240,21 @@ object SessionShareManager {
         else -> "127.0.0.1"
     }
 
+    /**
+     * True if [port] on [host] can currently be bound. Probes with a plain
+     * [java.net.ServerSocket] (SO_REUSEADDR set to mirror CIO) and releases it
+     * immediately. Used to pick a free port before starting Ktor, since CIO's
+     * own bind failure is asynchronous and would otherwise leak an uncaught
+     * BindException. A tiny TOCTOU window remains but is harmless for a local tool.
+     */
+    private fun portBindable(host: String, port: Int): Boolean = runCatching {
+        java.net.ServerSocket().use { ss ->
+            ss.reuseAddress = true
+            ss.bind(java.net.InetSocketAddress(host, port))
+        }
+        true
+    }.getOrDefault(false)
+
     /** Start the engine if not already running. Returns true if running afterwards. */
     private fun ensureEngineLocked(settings: TerminalSettings): Boolean {
         if (engine != null) return true
@@ -248,6 +263,14 @@ object SessionShareManager {
         for (offset in 0 until MAX_PORT_FALLBACK) {
             val port = desiredPort + offset
             if (port > 65535) break
+            // CIO binds its listening socket asynchronously (in the acceptJob coroutine),
+            // so a port-already-in-use surfaces as an UNCAUGHT BindException instead of
+            // throwing from start(). Probe the port synchronously first and skip it if
+            // taken — e.g. a previous instance still shutting down on relaunch.
+            if (!portBindable(host, port)) {
+                log.warn("Session-sharing port {}:{} in use, trying next", host, port)
+                continue
+            }
             try {
                 val started = embeddedServer(CIO, host = host, port = port) {
                     install(WebSockets)

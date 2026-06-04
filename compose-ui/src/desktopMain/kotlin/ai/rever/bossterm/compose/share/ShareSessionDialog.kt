@@ -9,8 +9,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -47,6 +49,10 @@ fun ShareSessionDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(10.dp),
+        containerColor = BossDialogBg,
+        titleContentColor = Color.White,
+        textContentColor = BossDialogText,
         title = { Text("Sharing this tab") },
         text = {
             Column {
@@ -86,24 +92,37 @@ fun ShareSessionDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Done") }
+            TextButton(
+                onClick = onDismiss,
+                colors = ButtonDefaults.textButtonColors(contentColor = BossAccent)
+            ) { Text("Done") }
         },
         dismissButton = {
-            TextButton(onClick = onStop) { Text("Stop sharing") }
+            TextButton(
+                onClick = onStop,
+                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFE57373))
+            ) { Text("Stop sharing") }
         }
     )
 }
 
+private val BossDialogBg = Color(0xFF2B2B2B)
+private val BossDialogText = Color(0xFFCCCCCC)
+private val BossAccent = Color(0xFF4A90E2)
+
 @Composable
 private fun LinkRow(label: String, url: String, clipboard: androidx.compose.ui.platform.ClipboardManager) {
     Column {
-        Text(label, fontSize = 11.sp, color = Color(0xFF888888))
+        Text(label, fontSize = 11.sp, color = Color(0xFF8A8A8A))
         Row(verticalAlignment = Alignment.CenterVertically) {
             SelectionContainer(modifier = Modifier.weight(1f)) {
-                Text(url, fontSize = 12.sp, maxLines = 1)
+                Text(url, fontSize = 12.sp, maxLines = 1, color = Color(0xFFDDDDDD))
             }
             Spacer(Modifier.width(8.dp))
-            TextButton(onClick = { clipboard.setText(AnnotatedString(url)) }) { Text("Copy") }
+            TextButton(
+                onClick = { clipboard.setText(AnnotatedString(url)) },
+                colors = ButtonDefaults.textButtonColors(contentColor = BossAccent)
+            ) { Text("Copy") }
         }
     }
 }

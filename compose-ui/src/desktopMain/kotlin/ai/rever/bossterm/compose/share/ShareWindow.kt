@@ -1,5 +1,13 @@
 package ai.rever.bossterm.compose.share
 
+import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
+import ai.rever.bossterm.compose.settings.components.SettingsSection
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -49,191 +57,155 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import java.awt.image.BufferedImage
 
-private val BgColor = Color(0xFF1E1E1E)
-private val PanelColor = Color(0xFF2B2B2B)
-private val TextColor = Color(0xFFCCCCCC)
-private val DimColor = Color(0xFF8A8A8A)
-private val Accent = Color(0xFF4A90E2)
+private val Track = Color(0xFF252526)
 private val Danger = Color(0xFFE57373)
 
 /**
- * Session-sharing window (issue #276) — a real top-level OS window, like
- * [ai.rever.bossterm.compose.settings.SettingsWindow], rather than an in-canvas
- * Compose dialog. Shows the QR code + view/control links + reach hint, themed to
- * match BossTerm. Render it conditionally: `info?.let { ShareWindow(it, …) }`.
+ * Session-sharing window (issue #276) — a top-level OS window styled like
+ * [ai.rever.bossterm.compose.settings.SettingsWindow] (SettingsTheme colors +
+ * SettingsSection headers). Sections: Scope (Tab/Window toggle), QR (View/Control
+ * toggle + code), Links (view/control), and Stop/Close actions.
  */
 @Composable
 fun ShareWindow(
     info: SessionShareManager.ShareInfo,
     onDismiss: () -> Unit,
     onStop: () -> Unit,
+    onScopeChange: (ShareScope) -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
+    val isWindow = info.scope == ShareScope.WINDOW
     val loopbackOnly = info.url.contains("://127.0.0.1") || info.url.contains("://localhost")
-    // Which link the QR encodes — toggled by the View/Control switch below it.
     var controlQr by remember { mutableStateOf(false) }
     val qrUrl = if (controlQr) info.controlUrl else info.url
     val qr = remember(qrUrl) { qrImageBitmap(qrUrl) }
 
-    val isWindow = info.scope == ShareScope.WINDOW
     Window(
         onCloseRequest = onDismiss,
         title = if (isWindow) "BossTerm — Share Window" else "BossTerm — Share Tab",
         resizable = false,
-        state = rememberWindowState(size = DpSize(440.dp, 660.dp))
+        state = rememberWindowState(size = DpSize(460.dp, 720.dp))
     ) {
-        Surface(color = BgColor, modifier = Modifier.fillMaxSize()) {
+        Surface(color = BackgroundColor, modifier = Modifier.fillMaxSize()) {
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(20.dp)
+                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)
             ) {
+                Text("Share session", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
                 Text(
-                    if (isWindow) "Sharing this window" else "Sharing this tab",
-                    color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold
+                    "Open a link on another device to watch live; the control link also lets it type.",
+                    color = TextSecondary, fontSize = 12.sp
                 )
-                Spacer(Modifier.height(3.dp))
-                // Scope chip + what's included, so it's clear what the viewer will see.
-                Surface(color = if (isWindow) Color(0xFF1E3A1E) else Color(0xFF233047),
-                        shape = RoundedCornerShape(10.dp)) {
-                    Text(
-                        if (isWindow) "● Window — all tabs (switchable) + splits"
-                        else "● Tab — this tab and its splits",
-                        color = if (isWindow) Color(0xFFB9F6CA) else Color(0xFFAFCBFF),
-                        fontSize = 11.sp,
-                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Scan from another device. Toggle which link the QR encodes:",
-                    color = TextColor, fontSize = 12.sp
-                )
-                Spacer(Modifier.height(12.dp))
-
-                // View / Control segmented toggle for the QR.
-                QrModeToggle(
-                    controlSelected = controlQr,
-                    onSelect = { controlQr = it },
-                    modifier = Modifier.align(Alignment.CenterHorizontally)
-                )
-                Spacer(Modifier.height(12.dp))
-
-                if (qr != null) {
-                    Image(
-                        bitmap = qr,
-                        contentDescription = if (controlQr) "Control link QR code" else "View link QR code",
-                        modifier = Modifier
-                            .size(220.dp)
-                            .align(Alignment.CenterHorizontally)
-                            .background(Color.White)
-                            .padding(10.dp)
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = if (controlQr) "QR: Control link — scanning grants typing access"
-                               else "QR: View link — read-only",
-                        color = if (controlQr) Danger else DimColor,
-                        fontSize = 11.sp,
-                        modifier = Modifier.align(Alignment.CenterHorizontally)
-                    )
-                    Spacer(Modifier.height(16.dp))
-                }
-
-                LinkRow("View (read-only)", info.url, clipboard)
-                Spacer(Modifier.height(10.dp))
-                LinkRow("Control (can type)", info.controlUrl, clipboard)
-                Spacer(Modifier.height(14.dp))
-
-                Text(
-                    if (loopbackOnly)
-                        "Reachable only on this machine. To open it from your phone, set the bind scope to LAN in Settings → Session Sharing, or turn on Tailscale."
-                    else
-                        "Reachable from devices that can route to this host. For the public internet, use Tailscale Funnel or a TLS tunnel.",
-                    color = DimColor, fontSize = 11.sp
-                )
-                if (!info.secure) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "⚠ Not encrypted — this link is plaintext over the network. Use https " +
-                            "(Tailscale Funnel or a TLS tunnel) for anything beyond your trusted LAN.",
-                        color = Danger, fontSize = 11.sp
-                    )
-                }
-
                 Spacer(Modifier.height(20.dp))
+
+                SettingsSection("Scope") {
+                    SegToggle("Tab", "Window", rightSelected = isWindow) { win ->
+                        onScopeChange(if (win) ShareScope.WINDOW else ShareScope.TAB)
+                    }
+                    Text(
+                        if (isWindow) "Sharing all tabs in this window — switchable in the viewer, with splits."
+                        else "Sharing this tab and its splits.",
+                        color = TextMuted, fontSize = 11.sp
+                    )
+                }
+                Spacer(Modifier.height(20.dp))
+
+                SettingsSection("QR code") {
+                    SegToggle("View", "Control", rightSelected = controlQr) { controlQr = it }
+                    if (qr != null) {
+                        Image(
+                            bitmap = qr,
+                            contentDescription = if (controlQr) "Control link QR" else "View link QR",
+                            modifier = Modifier.size(210.dp).align(Alignment.CenterHorizontally)
+                                .background(Color.White).padding(10.dp)
+                        )
+                    }
+                    Text(
+                        if (controlQr) "QR encodes the Control link — scanning grants typing access."
+                        else "QR encodes the View link (read-only).",
+                        color = if (controlQr) Danger else TextMuted, fontSize = 11.sp
+                    )
+                }
+                Spacer(Modifier.height(20.dp))
+
+                SettingsSection("Links") {
+                    LinkRow("View (read-only)", info.url, clipboard)
+                    LinkRow("Control (can type)", info.controlUrl, clipboard)
+                    Text(
+                        if (loopbackOnly)
+                            "Reachable only on this machine. Set the bind scope to LAN in Settings → Session Sharing, or enable Tailscale, to reach other devices."
+                        else
+                            "Reachable from devices that can route to this host. For the public internet, use Tailscale Funnel or a TLS tunnel.",
+                        color = TextMuted, fontSize = 11.sp
+                    )
+                    if (!info.secure) {
+                        Text(
+                            "⚠ Not encrypted — this link is plaintext. Use https (Tailscale Funnel / a TLS tunnel) beyond your trusted LAN.",
+                            color = Danger, fontSize = 11.sp
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(24.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TextButton(
-                        onClick = onStop,
-                        colors = ButtonDefaults.textButtonColors(contentColor = Danger)
-                    ) { Text("Stop sharing") }
-                    Button(
-                        onClick = onDismiss,
-                        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.White)
-                    ) { Text("Close") }
+                    TextButton(onClick = onStop, colors = ButtonDefaults.textButtonColors(contentColor = Danger)) {
+                        Text("Stop sharing")
+                    }
+                    Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)) {
+                        Text("Close")
+                    }
                 }
             }
         }
     }
 }
 
+/** Two-option segmented toggle in BossTerm's compact style (no Material min-size). */
 @Composable
-private fun LinkRow(label: String, url: String, clipboard: ClipboardManager) {
-    Surface(color = PanelColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-            Text(label, fontSize = 11.sp, color = DimColor)
-            Spacer(Modifier.height(2.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                SelectionContainer(modifier = Modifier.weight(1f)) {
-                    Text(url, fontSize = 12.sp, maxLines = 1, color = Color(0xFFDDDDDD))
-                }
-                Spacer(Modifier.width(8.dp))
-                TextButton(
-                    onClick = { clipboard.setText(AnnotatedString(url)) },
-                    colors = ButtonDefaults.textButtonColors(contentColor = Accent)
-                ) { Text("Copy") }
-            }
-        }
-    }
-}
-
-/**
- * Segmented View/Control toggle controlling which link the QR encodes. Built with
- * [clickable] rather than a clickable [Surface] so it isn't forced to Material3's
- * 48dp minimum touch size — keeping the compact padding BossTerm uses elsewhere
- * (e.g. the search bar's toggles).
- */
-@Composable
-private fun QrModeToggle(controlSelected: Boolean, onSelect: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+private fun SegToggle(left: String, right: String, rightSelected: Boolean, onSelect: (Boolean) -> Unit) {
     Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xFF252526))
-            .border(1.dp, Color(0xFF3C3C3C), RoundedCornerShape(6.dp))
-            .padding(2.dp),
+        modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(Track)
+            .border(1.dp, BorderColor, RoundedCornerShape(6.dp)).padding(2.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        Seg("View", selected = !controlSelected) { onSelect(false) }
-        Seg("Control", selected = controlSelected) { onSelect(true) }
+        Seg(left, !rightSelected) { onSelect(false) }
+        Seg(right, rightSelected) { onSelect(true) }
     }
 }
 
 @Composable
 private fun Seg(label: String, selected: Boolean, onClick: () -> Unit) {
     Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(4.dp))
-            .background(if (selected) Accent else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 5.dp),
+        modifier = Modifier.clip(RoundedCornerShape(4.dp))
+            .background(if (selected) AccentColor else Color.Transparent)
+            .clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 5.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(label, color = if (selected) Color.White else Color(0xFF808080), fontSize = 12.sp)
+        Text(label, color = if (selected) Color.White else TextMuted, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun LinkRow(label: String, url: String, clipboard: ClipboardManager) {
+    Surface(color = SurfaceColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+            Text(label, fontSize = 11.sp, color = TextMuted)
+            Spacer(Modifier.height(2.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SelectionContainer(modifier = Modifier.weight(1f)) {
+                    Text(url, fontSize = 12.sp, maxLines = 1, color = TextSecondary)
+                }
+                Spacer(Modifier.width(8.dp))
+                TextButton(
+                    onClick = { clipboard.setText(AnnotatedString(url)) },
+                    colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                ) { Text("Copy") }
+            }
+        }
     }
 }
 
@@ -244,10 +216,6 @@ private fun qrImageBitmap(text: String, size: Int = 256): ImageBitmap? = runCatc
     val image = BufferedImage(size, size, BufferedImage.TYPE_INT_RGB)
     val black = 0xFF000000.toInt()
     val white = 0xFFFFFFFF.toInt()
-    for (y in 0 until size) {
-        for (x in 0 until size) {
-            image.setRGB(x, y, if (matrix[x, y]) black else white)
-        }
-    }
+    for (y in 0 until size) for (x in 0 until size) image.setRGB(x, y, if (matrix[x, y]) black else white)
     image.toComposeImageBitmap()
 }.getOrNull()

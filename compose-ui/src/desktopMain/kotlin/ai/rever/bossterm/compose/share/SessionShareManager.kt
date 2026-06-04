@@ -150,6 +150,17 @@ object SessionShareManager {
     }
 
     /**
+     * Change an active share's scope (Tab ↔ Window) in place — same tokens/viewers,
+     * just a different set of mirrored tabs. Returns the refreshed [ShareInfo], or null
+     * if the tab isn't currently shared (caller should [share] instead).
+     */
+    fun reshare(tabId: String, scope: ShareScope): ShareInfo? {
+        val share = sharesByTab[tabId] ?: return null
+        share.setScope(scope)
+        return infoFor(tabId)
+    }
+
+    /**
      * Window's onTabClose hook: stop only a TAB-scope share keyed by the closed tab.
      * WINDOW shares clean up via [MirrorShare]'s own observer when their window empties.
      */

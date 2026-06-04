@@ -8,6 +8,9 @@ import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,12 +43,18 @@ enum class ShareScope { TAB, WINDOW }
 class MirrorShare(
     /** The tab the share was initiated from; also resolves the owning window. */
     val tabId: String,
-    val scope: ShareScope,
+    initialScope: ShareScope,
     /** Invoked when the share has no panes left (its tab/window closed) so the manager can drop it. */
     private val onEnded: () -> Unit,
 ) {
     val viewToken: String = secureToken()
     val controlToken: String = secureToken()
+
+    // Observable so the layout observer re-emits when the scope is toggled live
+    // (Tab ↔ Window) — same tokens/viewers, just a different set of mirrored tabs.
+    private var scopeVar by mutableStateOf(initialScope)
+    val scope: ShareScope get() = scopeVar
+    fun setScope(s: ShareScope) { scopeVar = s }
 
     private val viewers = CopyOnWriteArrayList<ViewerConnection>()
     private val viewerSeq = AtomicInteger(0)

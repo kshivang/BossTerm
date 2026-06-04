@@ -777,6 +777,8 @@ fun TabbedTerminal(
     // a single source of truth across both entry points.
     val mcpRunningPort by McpTerminalRegistry.runningPort.collectAsState()
     val mcpScope = rememberCoroutineScope()
+    // Popup menu for picking Tab vs Window when starting a share from the status pill.
+    val shareScopeMenu = remember { ai.rever.bossterm.compose.features.ContextMenuController() }
     var attachStatus by remember { mutableStateOf<AttachStatus?>(null) }
     var mcpAttaching by remember { mutableStateOf(false) }
     // Session sharing (issue #276): dialog state + live set of shared tab ids.
@@ -1391,13 +1393,24 @@ fun TabbedTerminal(
                     showSharing = showSharingStatus,
                     sharingCount = sharedTabIds.size,
                     onSharingClick = {
-                        // Reopen the dialog if something is shared, else share the active tab.
+                        // Reopen the dialog if something is shared; else offer Tab vs Window.
                         val sharedId = sharedTabIds.firstOrNull { tabController.tabs.any { t -> t.id == it } }
                             ?: sharedTabIds.firstOrNull()
                         if (sharedId != null) {
                             shareDialog = ai.rever.bossterm.compose.share.SessionShareManager.infoFor(sharedId)
                         } else {
-                            tabController.activeTab?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
+                            tabController.activeTab?.let { active ->
+                                shareScopeMenu.showMenu(0f, 0f, listOf(
+                                    ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
+                                        id = "share_this_tab", label = "Share This Tab", enabled = true,
+                                        action = { startShare(active.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
+                                    ),
+                                    ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
+                                        id = "share_window", label = "Share Whole Window", enabled = true,
+                                        action = { startShare(active.id, ai.rever.bossterm.compose.share.ShareScope.WINDOW) }
+                                    ),
+                                ))
+                            }
                         }
                     },
                 )
@@ -1417,6 +1430,10 @@ fun TabbedTerminal(
             onStop = {
                 ai.rever.bossterm.compose.share.SessionShareManager.unshare(info.tabId)
                 shareDialog = null
+            },
+            onScopeChange = { scope ->
+                // Re-scope in place (same tokens/links/viewers) and refresh the dialog.
+                ai.rever.bossterm.compose.share.SessionShareManager.reshare(info.tabId, scope)?.let { shareDialog = it }
             }
         )
     }

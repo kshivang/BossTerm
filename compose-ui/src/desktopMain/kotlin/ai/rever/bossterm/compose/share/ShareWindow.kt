@@ -33,6 +33,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -73,6 +74,7 @@ fun ShareWindow(
     onDismiss: () -> Unit,
     onStop: () -> Unit,
     onScopeChange: (ShareScope) -> Unit,
+    focusTick: Int = 0,
 ) {
     val clipboard = LocalClipboardManager.current
     val isWindow = info.scope == ShareScope.WINDOW
@@ -87,6 +89,12 @@ fun ShareWindow(
         resizable = false,
         state = rememberWindowState(size = DpSize(600.dp, 680.dp))
     ) {
+        // Bring this window to the front whenever the share button is clicked again
+        // (focusTick changes) so an already-open share window is raised, not left behind.
+        LaunchedEffect(focusTick) {
+            window.toFront()
+            window.requestFocus()
+        }
         Surface(color = BackgroundColor, modifier = Modifier.fillMaxSize()) {
           Column(modifier = Modifier.fillMaxSize()) {
             // Scrollable content fills the space above the pinned footer.

@@ -9,6 +9,9 @@ import ai.rever.bossterm.terminal.model.StyleState
 import ai.rever.bossterm.terminal.model.TerminalApplicationTitleListener
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import ai.rever.bossterm.compose.vcs.GitUtils
 import ai.rever.bossterm.compose.ComposeQuestioner
 import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.compose.ConnectionState
@@ -102,6 +105,18 @@ class TabController(
         }
         session.terminal.addCommandStateListener(titleResetListener)
         session.commandStateListeners.add(titleResetListener)
+
+        // Track the git branch of the working directory for the left tab-bar's
+        // third chip line (Warp-style title / cwd / branch). Debounced + collectLatest
+        // so a rapid `cd` cancels the stale lookup; null outside a repository.
+        session.coroutineScope.launch {
+            snapshotFlow { session.workingDirectory.value }
+                .distinctUntilChanged()
+                .collectLatest { cwd ->
+                    delay(350)
+                    session.gitBranch.value = withContext(Dispatchers.IO) { GitUtils.getCurrentBranch(cwd) }
+                }
+        }
     }
 
     /**

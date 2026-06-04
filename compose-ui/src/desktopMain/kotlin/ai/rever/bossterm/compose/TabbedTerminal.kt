@@ -893,6 +893,23 @@ fun TabbedTerminal(
                 return null
             }
 
+            // Abbreviate a working directory for the chip's second line (Warp-style):
+            // home → "~", otherwise collapse long paths to "~/…/parent/dir".
+            fun abbreviateCwd(path: String?): String? {
+                if (path.isNullOrBlank()) return null
+                val home = System.getProperty("user.home")?.trimEnd('/')
+                val clean = path.trimEnd('/').ifEmpty { "/" }
+                val withTilde = if (!home.isNullOrEmpty() && (clean == home || clean.startsWith("$home/")))
+                    "~" + clean.removePrefix(home) else clean
+                val parts = withTilde.split('/').filter { it.isNotEmpty() }
+                return when {
+                    withTilde == "~" || withTilde == "/" -> withTilde
+                    parts.size <= 2 -> withTilde
+                    withTilde.startsWith("~") -> "~/…/" + parts.takeLast(2).joinToString("/")
+                    else -> "/…/" + parts.takeLast(2).joinToString("/")
+                }
+            }
+
             // Resolve the session a chip refers to: a split pane by id, or the tab
             // itself for the synthetic tab-level chip (summary mode / not-yet-split).
             fun sessionFor(tabIndex: Int, paneId: String): TerminalSession? {
@@ -907,10 +924,18 @@ fun TabbedTerminal(
                 val st = splitStates[tab.id]
                 val panes = if (st != null && !summaryMode) {
                     st.getAllPanes().map { p ->
-                        ai.rever.bossterm.compose.tabs.TabBarPane(p.id, p.session.title.value, colorHexFor(p.session))
+                        ai.rever.bossterm.compose.tabs.TabBarPane(
+                            p.id, p.session.title.value, colorHexFor(p.session),
+                            subtitle = abbreviateCwd(p.session.workingDirectory.value),
+                            branch = (p.session as? ai.rever.bossterm.compose.tabs.TerminalTab)?.gitBranch?.value
+                        )
                     }
                 } else {
-                    listOf(ai.rever.bossterm.compose.tabs.TabBarPane(tab.id, tab.title.value, colorHexFor(tab)))
+                    listOf(ai.rever.bossterm.compose.tabs.TabBarPane(
+                        tab.id, tab.title.value, colorHexFor(tab),
+                        subtitle = abbreviateCwd(tab.workingDirectory.value),
+                        branch = tab.gitBranch.value
+                    ))
                 }
                 ai.rever.bossterm.compose.tabs.TabBarGroup(index, panes)
             }

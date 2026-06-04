@@ -298,6 +298,14 @@ data class TerminalTab(
      */
     override val tabColor: MutableState<String?> = mutableStateOf(null)
 
+    /**
+     * Current git branch of [workingDirectory], or null when the directory is
+     * not inside a repository. Tracked by [TabController.wireCwdTitle] (debounced
+     * lookup on each `cd`) and rendered as the third line of the left tab-bar
+     * chips (Warp-style title / cwd / branch).
+     */
+    val gitBranch: MutableState<String?> = mutableStateOf(null)
+
     // === Content-Anchored Selection ===
 
     /**

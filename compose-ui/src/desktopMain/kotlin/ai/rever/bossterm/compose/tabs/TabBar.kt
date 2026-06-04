@@ -78,8 +78,19 @@ internal fun parseTabColor(hex: String?): Color? {
     return runCatching { Color(hex.removePrefix("0x").toULong(16).toLong()) }.getOrNull()
 }
 
-/** One pane shown as a chip in the tab bar. [colorHex] is the resolved accent (manual or auto). */
-data class TabBarPane(val paneId: String, val title: String, val colorHex: String? = null)
+/**
+ * One pane shown as a chip in the tab bar. [colorHex] is the resolved accent
+ * (manual or auto). [subtitle] (abbreviated cwd) and [branch] (git branch) are
+ * the second and third lines shown on the vertical (left) bar's Warp-style chips;
+ * both are ignored by the single-line top bar.
+ */
+data class TabBarPane(
+    val paneId: String,
+    val title: String,
+    val colorHex: String? = null,
+    val subtitle: String? = null,
+    val branch: String? = null
+)
 
 /** A tab and its panes, rendered as a visually-grouped cluster of chips. */
 data class TabBarGroup(val tabIndex: Int, val panes: List<TabBarPane>)
@@ -198,6 +209,9 @@ fun TabBar(
     val chip: @Composable (TabBarGroup, TabBarPane, Modifier) -> Unit = { group, pane, chipModifier ->
         TabItem(
             title = pane.title,
+            subtitle = pane.subtitle,
+            branch = pane.branch,
+            multiLine = vertical,
             isActive = group.tabIndex == activeTabIndex && pane.paneId == focusedPaneId,
             colorHex = pane.colorHex,
             isEditing = pane.paneId == editingPaneId,
@@ -283,12 +297,15 @@ private fun TabItem(
     onCancelRename: () -> Unit,
     onClose: () -> Unit,
     onContextMenu: () -> Unit,
+    subtitle: String? = null,
+    branch: String? = null,
+    multiLine: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val accent = parseTabColor(colorHex)
     Surface(
         modifier = modifier
-            .height(36.dp)
+            .then(if (multiLine) Modifier.heightIn(min = 36.dp) else Modifier.height(36.dp))
             .widthIn(min = 80.dp, max = 200.dp)
             .then(
                 if (isEditing) Modifier
@@ -312,53 +329,98 @@ private fun TabItem(
             }
         )
     ) {
+        // The title row + close button, shared by both layouts (it's line 1 of the
+        // multi-line chip and the whole content of the single-line chip). Declared as a
+        // RowScope receiver so the title's Modifier.weight(1f) resolves.
+        val titleRow: @Composable RowScope.() -> Unit = {
+            if (isEditing) {
+                TabRenameField(
+                    initial = title,
+                    onCommit = onCommitRename,
+                    onCancel = onCancelRename,
+                    modifier = Modifier.weight(1f)
+                )
+            } else {
+                // Tab title - use Monospace font (Menlo on macOS) for monochrome symbols
+                Text(
+                    text = title,
+                    color = if (isActive) Color.White else Color(0xFFB0B0B0),
+                    fontSize = 13.sp,
+                    fontFamily = FontFamily.Monospace,  // Menlo has monochrome Dingbats (✳, ❯, etc.)
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+
+                // Close button
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.size(20.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Close Tab",
+                        tint = if (isActive) Color(0xFFB0B0B0) else Color(0xFF707070),
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+        }
+
         Row(
             modifier = Modifier.fillMaxSize(),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = if (multiLine) Alignment.Top else Alignment.CenterVertically
         ) {
             // Leading accent stripe (manual color or auto-by-directory)
             if (accent != null) {
                 Box(Modifier.width(3.dp).fillMaxHeight().background(accent))
             }
-            Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = if (accent != null) 8.dp else 12.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                if (isEditing) {
-                    TabRenameField(
-                        initial = title,
-                        onCommit = onCommitRename,
-                        onCancel = onCancelRename,
-                        modifier = Modifier.weight(1f)
-                    )
-                } else {
-                    // Tab title - use Monospace font (Menlo on macOS) for monochrome symbols
-                    Text(
-                        text = title,
-                        color = if (isActive) Color.White else Color(0xFFB0B0B0),
-                        fontSize = 13.sp,
-                        fontFamily = FontFamily.Monospace,  // Menlo has monochrome Dingbats (✳, ❯, etc.)
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
+            if (multiLine) {
+                // Warp-style three lines: title · working directory · git branch.
+                // Lines 2/3 are hidden when absent, so the chip shrinks to 2 (or 1) lines.
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = if (accent != null) 8.dp else 12.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) { titleRow() }
 
-                    // Close button
-                    IconButton(
-                        onClick = onClose,
-                        modifier = Modifier.size(20.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close Tab",
-                            tint = if (isActive) Color(0xFFB0B0B0) else Color(0xFF707070),
-                            modifier = Modifier.size(14.dp)
+                    if (!subtitle.isNullOrBlank() && subtitle != title) {
+                        Text(
+                            text = subtitle,
+                            color = Color(0xFF808080),
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    if (!branch.isNullOrBlank()) {
+                        Text(
+                            text = "⎇ $branch",
+                            color = Color(0xFF6A9955),
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
                 }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = if (accent != null) 8.dp else 12.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) { titleRow() }
             }
         }
     }

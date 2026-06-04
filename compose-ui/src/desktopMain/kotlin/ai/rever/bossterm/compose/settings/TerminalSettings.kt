@@ -890,6 +890,56 @@ data class TerminalSettings(
      */
     val mcpPort: Int = 7676,
 
+    // ===== Session sharing / remote control (issue #276) =====
+
+    /**
+     * Master switch for session sharing — a self-hosted web viewer that mirrors
+     * a terminal tab to another device's browser (and, with control granted,
+     * accepts input). Defaults to false for opt-in safety: the share server only
+     * starts when this is explicitly enabled, and even then nothing is exposed
+     * until the user shares a specific tab.
+     */
+    val sessionSharingEnabled: Boolean = false,
+
+    /** Localhost/LAN TCP port for the session-sharing web server. Default 7677. */
+    val sessionSharingPort: Int = 7677,
+
+    /**
+     * Bind scope for the share server (OpenClaw-style):
+     *  - "loopback" (default, safest): 127.0.0.1 — reachable only on this machine
+     *    (use a tunnel/VPN for other devices).
+     *  - "lan": 0.0.0.0 — reachable by devices on the local network (e.g. your phone).
+     *  - "custom": bind [sessionSharingBindHost] verbatim.
+     * Anything beyond loopback is an explicit, security-sensitive opt-in.
+     */
+    val sessionSharingBind: String = "loopback",
+
+    /** Host to bind when [sessionSharingBind] == "custom". Ignored otherwise. */
+    val sessionSharingBindHost: String = "",
+
+    /**
+     * Remote-reach via Tailscale (OpenClaw-style; requires the `tailscale` CLI):
+     *  - "off" (default): no tunnel — reach is loopback/LAN only.
+     *  - "serve": expose to your tailnet only (private, TLS via Tailscale).
+     *  - "funnel": expose to the public internet via Tailscale's edge (TLS).
+     * When active, the share URL becomes the published https://<host>.ts.net link.
+     */
+    val shareTailscaleMode: String = "off",
+
+    /**
+     * Explicit public base URL to advertise instead of the bound host — for when the
+     * user fronts the share server with their own reverse proxy / cloudflared / SSH
+     * reverse tunnel (e.g. "https://term.example.com"). Blank = derive from the bind.
+     * Takes precedence only when Tailscale is off.
+     */
+    val sessionSharingPublicUrl: String = "",
+
+    /**
+     * Show the small status indicator while a tab is being shared. Mirrors
+     * [mcpShowStatusIndicator] for the share server.
+     */
+    val sessionSharingShowIndicator: Boolean = true,
+
     /**
      * Show the small green status indicator in the tab bar while the MCP
      * server is running. Has no effect when mcpEnabled is false. Turning

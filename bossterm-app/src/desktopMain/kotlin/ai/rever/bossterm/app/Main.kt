@@ -89,6 +89,12 @@ fun main() {
         config = mcpConfig
     )
     mcpManager.start()
+
+    // Session sharing (issue #276): app-singleton lifecycle for the self-hosted
+    // web-viewer server. Inert until the user enables it in settings AND shares a
+    // tab — the server only binds while ≥1 share is active.
+    ai.rever.bossterm.compose.share.SessionShareManager.start()
+
     Runtime.getRuntime().addShutdownHook(Thread {
         mcpManager.stop()
         mcpScope.cancel()

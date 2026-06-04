@@ -122,6 +122,10 @@ kotlin {
                 // otherwise be inaccessible from a downstream module.
                 api("io.modelcontextprotocol:kotlin-sdk-server:0.8.3")
                 implementation("io.ktor:ktor-server-cio:3.2.3")
+                // Session sharing (issue #276): WebSocket endpoint for the web viewer.
+                implementation("io.ktor:ktor-server-websockets:3.2.3")
+                // QR code for the share dialog (pure-Java, no Android deps).
+                implementation("com.google.zxing:core:3.5.3")
             }
         }
 

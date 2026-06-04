@@ -109,6 +109,9 @@ fun TabBar(
     onCloseOthers: (Int) -> Unit = {},
     onCloseBelow: (Int) -> Unit = {},
     onDuplicate: (Int) -> Unit = {},
+    onShareTab: (Int) -> Unit = {},
+    onStopShare: (Int) -> Unit = {},
+    isSharing: (Int) -> Boolean = { false },
     orientation: TabBarOrientation = TabBarOrientation.TOP,
     verticalWidth: Dp = TabBarVerticalWidth,
     modifier: Modifier = Modifier
@@ -139,7 +142,12 @@ fun TabBar(
             ContextMenuController.MenuItem(id = "close_pane", label = "Close", enabled = true, action = { onPaneClosed(tabIndex, paneId) }),
             ContextMenuController.MenuItem(id = "close_others", label = "Close Other Tabs", enabled = true, action = { onCloseOthers(tabIndex) }),
             ContextMenuController.MenuItem(id = "close_below", label = "Close Tabs Below", enabled = true, action = { onCloseBelow(tabIndex) }),
-            ContextMenuController.MenuItem(id = "move_to_new_window", label = "Move Tab to New Window", enabled = true, action = { onTabMoveToNewWindow(tabIndex) })
+            ContextMenuController.MenuItem(id = "move_to_new_window", label = "Move Tab to New Window", enabled = true, action = { onTabMoveToNewWindow(tabIndex) }),
+            ContextMenuController.MenuSeparator(id = "separator_share"),
+            if (isSharing(tabIndex))
+                ContextMenuController.MenuItem(id = "stop_share", label = "Stop Sharing", enabled = true, action = { onStopShare(tabIndex) })
+            else
+                ContextMenuController.MenuItem(id = "share_tab", label = "Share Tab…", enabled = true, action = { onShareTab(tabIndex) })
         )
         contextMenuController.showMenu(0f, 0f, items)
     }

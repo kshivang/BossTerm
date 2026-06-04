@@ -779,6 +779,9 @@ fun TabbedTerminal(
     val mcpScope = rememberCoroutineScope()
     var attachStatus by remember { mutableStateOf<AttachStatus?>(null) }
     var mcpAttaching by remember { mutableStateOf(false) }
+    // Session sharing (issue #276): dialog state + live set of shared tab ids.
+    var shareDialog by remember { mutableStateOf<ai.rever.bossterm.compose.share.SessionShareManager.ShareInfo?>(null) }
+    val sharedTabIds by ai.rever.bossterm.compose.share.SessionShareManager.sharedTabIds.collectAsState()
     // Auto-dismiss the Done toast a few seconds after it appears, AND clear
     // any stale state if the MCP server unbinds — so the toast doesn't pop
     // back unexpectedly after a brief MCP off-then-on cycle.
@@ -919,6 +922,25 @@ fun TabbedTerminal(
                     val wd = tabController.tabs.getOrNull(index)?.workingDirectory?.value
                     tabController.createTab(workingDir = wd)
                 },
+                onShareTab = { index ->
+                    val tab = tabController.tabs.getOrNull(index)
+                    if (tab != null) {
+                        // First share auto-enables the feature; the server binds on demand.
+                        if (!settings.sessionSharingEnabled) {
+                            SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
+                        }
+                        mcpScope.launch {
+                            val info = ai.rever.bossterm.compose.share.SessionShareManager.share(tab.id, tab.title.value)
+                            if (info != null) shareDialog = info
+                        }
+                    }
+                },
+                onStopShare = { index ->
+                    tabController.tabs.getOrNull(index)?.let {
+                        ai.rever.bossterm.compose.share.SessionShareManager.unshare(it.id)
+                    }
+                },
+                isSharing = { index -> tabController.tabs.getOrNull(index)?.id in sharedTabIds },
                 orientation = if (tabBarOnLeft) ai.rever.bossterm.compose.tabs.TabBarOrientation.LEFT
                               else ai.rever.bossterm.compose.tabs.TabBarOrientation.TOP,
                 verticalWidth = settings.tabBarVerticalWidth.dp
@@ -1326,6 +1348,18 @@ fun TabbedTerminal(
                 }
             }
         }
+    }
+
+    // Session sharing dialog (issue #276): URL to open on another device + Stop.
+    shareDialog?.let { info ->
+        ai.rever.bossterm.compose.share.ShareSessionDialog(
+            info = info,
+            onDismiss = { shareDialog = null },
+            onStop = {
+                ai.rever.bossterm.compose.share.SessionShareManager.unshare(info.tabId)
+                shareDialog = null
+            }
+        )
     }
 
     // AI Assistant Installation Wizard (command interception, context menu, and programmatic API)

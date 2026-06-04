@@ -103,6 +103,15 @@ class BlockingTerminalDataStream(
     var debugCallback: ((String) -> Unit)? = null
 
     /**
+     * Optional callback invoked with each complete chunk of raw PTY output as it
+     * is appended (before emulator processing), independent of debug mode. Used by
+     * session sharing to relay the raw byte/escape stream to remote viewers, which
+     * re-emulate it with xterm.js. Same data the emulator consumes, so fidelity is
+     * exact. Null when nothing is observing. Set/cleared by [ai.rever.bossterm.compose.share.SharedSession].
+     */
+    var onRawOutput: ((String) -> Unit)? = null
+
+    /**
      * Optional callback invoked when terminal state changes (data arrives from PTY).
      * Used by type-ahead system to validate/clear predictions.
      */
@@ -154,11 +163,13 @@ class BlockingTerminalDataStream(
                 dataQueue.offer(completeData)
                 // Invoke debug callback only for complete data
                 debugCallback?.invoke(completeData)
+                onRawOutput?.invoke(completeData)
             }
         } else {
             // All graphemes are complete
             dataQueue.offer(fullData)
             debugCallback?.invoke(fullData)
+            onRawOutput?.invoke(fullData)
         }
     }
 

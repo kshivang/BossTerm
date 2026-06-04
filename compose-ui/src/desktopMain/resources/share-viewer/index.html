@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>BossTerm — shared session</title>
+  <!--
+    xterm.js is loaded from a CDN for v1 (viewer device needs internet).
+    Vendoring the bundle into this folder for fully-offline LAN viewing is a
+    tracked follow-up (issue #276, Phase 3). The terminal itself never leaves
+    your machine — only this static page pulls xterm from the CDN.
+  -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; background: #1e1e1e; color: #ddd;
+                 font-family: -apple-system, Menlo, monospace; }
+    #bar { display: flex; align-items: center; gap: 10px; padding: 6px 10px;
+           background: #2b2b2b; border-bottom: 1px solid #404040; font-size: 13px; }
+    #status { width: 8px; height: 8px; border-radius: 50%; background: #888; }
+    #status.live { background: #4caf50; }
+    #status.down { background: #f44336; }
+    .badge { padding: 1px 7px; border-radius: 10px; background: #3a3a3a; font-size: 11px; color: #bbb; }
+    #wrap { position: absolute; top: 33px; left: 0; right: 0; bottom: 0; padding: 6px; }
+    #terminal { width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <span id="status"></span>
+    <span id="title">BossTerm shared session</span>
+    <span class="badge" id="viewonly">view only</span>
+    <span class="badge" id="presence" style="margin-left:auto"></span>
+  </div>
+  <div id="wrap"><div id="terminal"></div></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+  <script src="viewer.js"></script>
+</body>
+</html>

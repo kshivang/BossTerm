@@ -53,6 +53,11 @@ enum class SettingsCategory(
         icon = Icons.Default.Refresh,
         description = "Restore tabs and layout on launch"
     ),
+    SESSION_SHARING(
+        displayName = "Session Sharing",
+        icon = Icons.Default.Share,
+        description = "Watch & steer a tab from another device's browser"
+    ),
     EXTRAS(
         displayName = "Extras",
         icon = Icons.Default.Star,

@@ -42,9 +42,9 @@ fun SessionSharingSettingsSection(
                 options = listOf("loopback", "lan", "custom"),
                 selectedOption = settings.sessionSharingBind,
                 onOptionSelected = { onSettingsChange(settings.copy(sessionSharingBind = it)) },
-                description = "loopback = this machine only (safest); lan = reachable by devices on " +
-                        "your network (e.g. your phone); custom = bind a specific host. Anything beyond " +
-                        "loopback exposes a terminal on the network — share links are token-gated."
+                description = "lan (default) = reachable by devices on your network (e.g. your phone), " +
+                        "URL is this machine's LAN IP; loopback = lock to this machine only; " +
+                        "custom = bind a specific host. Share links are token-gated."
             )
             SettingsTextField(
                 label = "Custom bind host",

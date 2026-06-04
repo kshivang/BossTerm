@@ -906,13 +906,14 @@ data class TerminalSettings(
 
     /**
      * Bind scope for the share server (OpenClaw-style):
-     *  - "loopback" (default, safest): 127.0.0.1 — reachable only on this machine
-     *    (use a tunnel/VPN for other devices).
-     *  - "lan": 0.0.0.0 — reachable by devices on the local network (e.g. your phone).
+     *  - "lan" (default): 0.0.0.0 — reachable by devices on the local network (e.g.
+     *    your phone); the share URL is this machine's LAN IP. Sharing's whole point is
+     *    another device, so this is the default. Access is gated by an unguessable token.
+     *  - "loopback": 127.0.0.1 — locks the share to this machine only (use a tunnel/VPN
+     *    for other devices).
      *  - "custom": bind [sessionSharingBindHost] verbatim.
-     * Anything beyond loopback is an explicit, security-sensitive opt-in.
      */
-    val sessionSharingBind: String = "loopback",
+    val sessionSharingBind: String = "lan",
 
     /** Host to bind when [sessionSharingBind] == "custom". Ignored otherwise. */
     val sessionSharingBindHost: String = "",

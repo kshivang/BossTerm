@@ -319,7 +319,9 @@ object SessionShareManager {
             return
         }
         val session = ref.session
-        // Snapshot first (current state), THEN register so the outbox only carries
+        // Theme first so the viewer renders identically to BossTerm before any paint.
+        ws.send(Frame.Text(ShareProtocol.encodeServer(session.themeMessage())))
+        // Snapshot next (current state), THEN register so the outbox only carries
         // output produced after the snapshot — avoids double-rendering a chunk.
         ws.send(Frame.Text(ShareProtocol.encodeServer(session.snapshotMessage())))
         session.currentSize()?.let { (c, r) ->

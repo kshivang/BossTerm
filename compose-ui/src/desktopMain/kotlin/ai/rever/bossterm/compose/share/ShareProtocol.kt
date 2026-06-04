@@ -62,6 +62,25 @@ sealed class ServerMessage {
     @Serializable
     @SerialName("control")
     data class Control(val granted: Boolean) : ServerMessage()
+
+    /**
+     * The host's terminal theme so the browser viewer renders identically to BossTerm:
+     * core colors + the 16 ANSI colors (all "#RRGGBB") + font. Sent once before the
+     * first [Snapshot].
+     */
+    @Serializable
+    @SerialName("theme")
+    data class Theme(
+        val background: String,
+        val foreground: String,
+        val cursor: String,
+        val cursorAccent: String,
+        val selectionBackground: String,
+        /** 16 ANSI colors (indices 0–15) as "#RRGGBB". */
+        val ansi: List<String>,
+        val fontFamily: String,
+        val fontSize: Int,
+    ) : ServerMessage()
 }
 
 /** Viewer → host messages. */

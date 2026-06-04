@@ -1330,12 +1330,17 @@ fun TabbedTerminal(
         //   - Toast renders whenever attachStatus is non-null. Attaches
         //     can't happen when MCP is off, so toast naturally stays
         //     dormant in that state.
-        val showSharingIndicator = settings.sessionSharingShowIndicator && sharedTabIds.isNotEmpty()
-        if (settings.mcpShowStatusIndicator || attachStatus != null || showSharingIndicator) {
+        // Combined inline status strip: "● MCP | ● Sharing" (issue #276). Each segment
+        // is color-coded (green = on/active, gray = off/idle) and clickable: MCP →
+        // BossTerm MCP settings; Sharing → start sharing the active tab (or reopen its
+        // QR/links dialog if already shared). Shown per its own toggle.
+        val showMcpStatus = settings.mcpShowStatusIndicator
+        val showSharingStatus = settings.sessionSharingShowIndicator
+        if (showMcpStatus || showSharingStatus || attachStatus != null) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    // Drop below the tab bar only when it's at the top (so the pill /
+                    // Drop below the tab bar only when it's at the top (so the strip /
                     // attach toast don't overlap the tab "+" button). A left/vertical
                     // tab bar doesn't occupy the top, so stay near the top edge.
                     .padding(
@@ -1345,45 +1350,31 @@ fun TabbedTerminal(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // Visible "sharing active" cue (issue #276). Persistent security affordance;
-                // click to reopen the QR/links dialog for the active (or first) shared tab.
-                if (showSharingIndicator) {
-                    ai.rever.bossterm.compose.share.SharingIndicator(
-                        count = sharedTabIds.size,
-                        onClick = {
-                            val active = tabController.activeTab?.id
-                            val target = if (active != null && active in sharedTabIds) active
-                                         else sharedTabIds.firstOrNull()
-                            if (target != null) {
-                                shareDialog = ai.rever.bossterm.compose.share.SessionShareManager.infoFor(target)
+                ai.rever.bossterm.compose.share.StatusStrip(
+                    showMcp = showMcpStatus,
+                    mcpOn = mcpRunningPort != null,
+                    onMcpClick = onShowMcpSettings,
+                    showSharing = showSharingStatus,
+                    sharingCount = sharedTabIds.size,
+                    onSharingClick = {
+                        val active = tabController.activeTab
+                        if (active != null) {
+                            if (active.id in sharedTabIds) {
+                                shareDialog = ai.rever.bossterm.compose.share.SessionShareManager.infoFor(active.id)
+                            } else {
+                                if (!settings.sessionSharingEnabled) {
+                                    SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
+                                }
+                                mcpScope.launch {
+                                    val info = ai.rever.bossterm.compose.share.SessionShareManager.share(
+                                        active.id, active.title.value
+                                    )
+                                    if (info != null) shareDialog = info
+                                }
                             }
                         }
-                    )
-                }
-                if (settings.mcpShowStatusIndicator) {
-                    McpStatusIndicator(
-                        enabled = true,
-                        onClick = onShowMcpSettings,
-                        onHideRequest = {
-                            SettingsManager.instance.updateSetting {
-                                copy(mcpShowStatusIndicator = false)
-                            }
-                        },
-                        onAttachRequest = fireMcpAttach,
-                        onTurnOffRequest = {
-                            SettingsManager.instance.updateSetting {
-                                copy(mcpEnabled = false)
-                            }
-                        },
-                        onTurnOnRequest = {
-                            SettingsManager.instance.updateSetting {
-                                copy(mcpEnabled = true)
-                            }
-                        },
-                        isUserEnabled = settings.mcpEnabled,
-                        serverLabel = LocalBossTermMcpConfig.current?.displayName ?: "BossTerm"
-                    )
-                }
+                    },
+                )
                 attachStatus?.let { status ->
                     AttachToast(status = status)
                 }

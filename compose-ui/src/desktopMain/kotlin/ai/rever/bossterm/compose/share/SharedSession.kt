@@ -1,6 +1,10 @@
 package ai.rever.bossterm.compose.share
 
 import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
+import ai.rever.bossterm.compose.settings.SettingsManager
+import ai.rever.bossterm.compose.settings.theme.ColorPalette
+import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
+import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -90,6 +94,41 @@ class SharedSession(val tabId: String, val title: String) {
         val cols = if (size.columns > 0) size.columns else snap.width
         val rows = if (size.rows > 0) size.rows else snap.height
         return ServerMessage.Snapshot(sb.toString(), cols, rows)
+    }
+
+    /**
+     * The host's terminal theme (active Theme + ANSI palette + font) so the browser
+     * viewer renders identically to BossTerm. Sent once before the first snapshot.
+     */
+    fun themeMessage(): ServerMessage.Theme {
+        val theme = ThemeManager.instance.currentTheme.value
+        val palette = ColorPaletteManager.instance.currentPalette.value ?: ColorPalette.fromTheme(theme)
+        val settings = SettingsManager.instance.settings.value
+        val font = settings.fontName
+            ?.takeIf { it.isNotBlank() }
+            ?.let { "\"$it\", Menlo, Monaco, monospace" }
+            ?: "Menlo, Monaco, \"Courier New\", monospace"
+        return ServerMessage.Theme(
+            background = hexToCss(theme.background),
+            foreground = hexToCss(theme.foreground),
+            cursor = hexToCss(theme.cursor),
+            cursorAccent = hexToCss(theme.cursorText),
+            selectionBackground = hexToCss(theme.selection),
+            ansi = (0..15).map { hexToCss(palette.getAnsiColorHex(it)) },
+            fontFamily = font,
+            fontSize = settings.fontSize.toInt(),
+        )
+    }
+
+    /** "0xAARRGGBB" / "0xRRGGBB" / "#RRGGBB" → CSS "#RRGGBB" (alpha dropped). */
+    private fun hexToCss(argb: String): String {
+        val h = argb.removePrefix("0x").removePrefix("0X").removePrefix("#")
+        val rrggbb = when {
+            h.length >= 8 -> h.substring(h.length - 6)
+            h.length == 6 -> h
+            else -> "FFFFFF"
+        }
+        return "#$rrggbb"
     }
 
     /** Current terminal dimensions, for the resize observer in the manager. */

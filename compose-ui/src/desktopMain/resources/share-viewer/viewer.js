@@ -38,6 +38,29 @@
 
   function setStatus(cls) { statusEl.className = cls; }
 
+  // Apply BossTerm's theme so the shared view looks identical to the host terminal.
+  function applyTheme(m) {
+    var a = m.ansi || [];
+    term.options.theme = {
+      background: m.background,
+      foreground: m.foreground,
+      cursor: m.cursor,
+      cursorAccent: m.cursorAccent,
+      selectionBackground: m.selectionBackground,
+      black: a[0], red: a[1], green: a[2], yellow: a[3],
+      blue: a[4], magenta: a[5], cyan: a[6], white: a[7],
+      brightBlack: a[8], brightRed: a[9], brightGreen: a[10], brightYellow: a[11],
+      brightBlue: a[12], brightMagenta: a[13], brightCyan: a[14], brightWhite: a[15],
+    };
+    if (m.fontFamily) term.options.fontFamily = m.fontFamily;
+    if (m.fontSize) term.options.fontSize = m.fontSize;
+    // Match the page chrome to the terminal background.
+    if (m.background) {
+      document.documentElement.style.background = m.background;
+      document.body.style.background = m.background;
+    }
+  }
+
   var wsProto = location.protocol === "https:" ? "wss" : "ws";
   var ws = new WebSocket(wsProto + "://" + location.host + "/ws/" + encodeURIComponent(token));
 
@@ -50,6 +73,9 @@
     var m;
     try { m = JSON.parse(ev.data); } catch (e) { return; }
     switch (m.t) {
+      case "theme":
+        applyTheme(m);
+        break;
       case "snapshot":
         if (m.cols && m.rows) term.resize(m.cols, m.rows);
         term.reset();

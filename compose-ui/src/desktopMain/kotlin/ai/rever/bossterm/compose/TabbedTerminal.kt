@@ -779,6 +779,9 @@ fun TabbedTerminal(
     val mcpScope = rememberCoroutineScope()
     // Popup menu for picking Tab vs Window when starting a share from the status pill.
     val shareScopeMenu = remember { ai.rever.bossterm.compose.features.ContextMenuController() }
+    // Popup menu for the MCP status segment (same menu the old MCP pill showed).
+    val mcpMenu = remember { ai.rever.bossterm.compose.features.ContextMenuController() }
+    val mcpServerLabel = LocalBossTermMcpConfig.current?.displayName ?: "BossTerm"
     var attachStatus by remember { mutableStateOf<AttachStatus?>(null) }
     var mcpAttaching by remember { mutableStateOf(false) }
     // Session sharing (issue #276): dialog state + live set of shared tab ids.
@@ -1389,7 +1392,20 @@ fun TabbedTerminal(
                 ai.rever.bossterm.compose.share.StatusStrip(
                     showMcp = showMcpStatus,
                     mcpOn = mcpRunningPort != null,
-                    onMcpClick = onShowMcpSettings,
+                    onMcpClick = {
+                        // Same context menu the standalone MCP pill showed: Attach ▸,
+                        // <server> MCP Settings…, Turn on/off.
+                        mcpMenu.showMenu(0f, 0f, ai.rever.bossterm.compose.mcp.buildIndicatorMenuItems(
+                            attached = McpTerminalRegistry.attachedTargets.value,
+                            isRunning = mcpRunningPort != null,
+                            isUserEnabled = settings.mcpEnabled,
+                            serverLabel = mcpServerLabel,
+                            onAttachRequest = fireMcpAttach,
+                            onShowSettings = onShowMcpSettings,
+                            onTurnOffRequest = { SettingsManager.instance.updateSetting { copy(mcpEnabled = false) } },
+                            onTurnOnRequest = { SettingsManager.instance.updateSetting { copy(mcpEnabled = true) } },
+                        ))
+                    },
                     showSharing = showSharingStatus,
                     sharingCount = sharedTabIds.size,
                     onSharingClick = {

@@ -47,6 +47,7 @@ import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -101,14 +102,22 @@ fun ShareWindow(
                 Spacer(Modifier.height(20.dp))
 
                 SettingsSection("Scope") {
-                    SegToggle("Tab", "Window", rightSelected = isWindow) { win ->
-                        onScopeChange(if (win) ShareScope.WINDOW else ShareScope.TAB)
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SegToggle("Tab", "Window", rightSelected = isWindow) { win ->
+                            onScopeChange(if (win) ShareScope.WINDOW else ShareScope.TAB)
+                        }
+                        Text(
+                            if (isWindow) "Sharing all tabs in this window — switchable in the viewer, with splits."
+                            else "Sharing this tab and its splits.",
+                            color = TextMuted, fontSize = 11.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
-                    Text(
-                        if (isWindow) "Sharing all tabs in this window — switchable in the viewer, with splits."
-                        else "Sharing this tab and its splits.",
-                        color = TextMuted, fontSize = 11.sp
-                    )
                 }
                 Spacer(Modifier.height(20.dp))
 
@@ -128,12 +137,14 @@ fun ShareWindow(
                                 modifier = Modifier.size(210.dp).background(Color.White).padding(10.dp)
                             )
                         }
+                        Text(
+                            if (controlQr) "QR encodes the Control link — scanning grants typing access."
+                            else "QR encodes the View link (read-only).",
+                            color = if (controlQr) Danger else TextMuted, fontSize = 11.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
-                    Text(
-                        if (controlQr) "QR encodes the Control link — scanning grants typing access."
-                        else "QR encodes the View link (read-only).",
-                        color = if (controlQr) Danger else TextMuted, fontSize = 11.sp
-                    )
                 }
                 Spacer(Modifier.height(20.dp))
 

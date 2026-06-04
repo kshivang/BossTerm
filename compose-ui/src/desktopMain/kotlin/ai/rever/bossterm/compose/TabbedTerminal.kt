@@ -1382,9 +1382,10 @@ fun TabbedTerminal(
         }
     }
 
-    // Session sharing dialog (issue #276): URL to open on another device + Stop.
+    // Session sharing window (issue #276): a real top-level OS window (like Settings)
+    // with the QR + links + Stop, rather than an in-canvas Compose dialog.
     shareDialog?.let { info ->
-        ai.rever.bossterm.compose.share.ShareSessionDialog(
+        ai.rever.bossterm.compose.share.ShareWindow(
             info = info,
             onDismiss = { shareDialog = null },
             onStop = {

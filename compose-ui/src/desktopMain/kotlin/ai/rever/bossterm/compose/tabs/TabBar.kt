@@ -13,8 +13,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.HorizontalSplit
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Splitscreen
+import androidx.compose.material.icons.filled.VerticalSplit
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -116,7 +117,8 @@ fun TabBar(
     onShareWindow: (Int) -> Unit = {},
     onStopShare: (Int) -> Unit = {},
     isSharing: (Int) -> Boolean = { false },
-    onNewSplit: () -> Unit = {},
+    onSplitVertical: () -> Unit = {},
+    onSplitHorizontal: () -> Unit = {},
     orientation: TabBarOrientation = TabBarOrientation.TOP,
     verticalWidth: Dp = TabBarVerticalWidth,
     modifier: Modifier = Modifier
@@ -173,15 +175,16 @@ fun TabBar(
         }
     }
 
-    // Bottom action bar for the vertical tab bar: New Tab, Split, Share Window.
+    // Action toolbar for the vertical tab bar: New Tab, Split L/R, Split T/B, Share Window.
     val actionBar: @Composable () -> Unit = {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterHorizontally),
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(1.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.CenterVertically
         ) {
             barButton(Icons.Default.Add, "New Tab", onNewTab)
-            barButton(Icons.Default.Splitscreen, "Split Pane", onNewSplit)
+            barButton(Icons.Default.VerticalSplit, "Split Left/Right", onSplitVertical)
+            barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom", onSplitHorizontal)
             barButton(Icons.Default.Share, "Share Window", { onShareWindow(activeTabIndex) })
         }
     }
@@ -218,7 +221,12 @@ fun TabBar(
     ) {
         if (vertical) {
             Column(modifier = Modifier.fillMaxSize().padding(6.dp)) {
-                // Scrollable tab/pane chips fill the available height…
+                // Action toolbar pinned at the top, then a divider…
+                actionBar()
+                Spacer(Modifier.height(6.dp))
+                Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF333333)))
+                Spacer(Modifier.height(8.dp))
+                // …with scrollable tab/pane chips filling the rest.
                 Column(
                     modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(TabGroupGap)
@@ -229,9 +237,6 @@ fun TabBar(
                         }
                     }
                 }
-                // …with a fixed action toolbar pinned at the bottom.
-                Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF333333)))
-                actionBar()
             }
         } else {
             Row(

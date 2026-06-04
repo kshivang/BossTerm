@@ -797,9 +797,9 @@ fun TabbedTerminal(
             if (info != null) shareDialog = info
         }
     }
-    // Split the active tab's focused pane (used by the left bar's Split button). Mirrors
-    // the per-tab onSplitVertical handler so panes auto-close on shell exit.
-    fun splitActiveTabVertical() {
+    // Split the active tab's focused pane (used by the left bar's split buttons). Mirrors
+    // the per-tab onSplit handlers so panes auto-close on shell exit.
+    fun splitActiveTab(orientation: SplitOrientation) {
         val activeTab = tabController.activeTab ?: return
         val splitState = getOrCreateSplitState(activeTab)
         val workingDir = if (settings.splitInheritWorkingDirectory) {
@@ -821,7 +821,7 @@ fun TabbedTerminal(
             }
         )
         newSessionRef = newSession
-        splitState.splitFocusedPane(SplitOrientation.VERTICAL, newSession, settings.splitDefaultRatio)
+        splitState.splitFocusedPane(orientation, newSession, settings.splitDefaultRatio)
     }
     // Auto-dismiss the Done toast a few seconds after it appears, AND clear
     // any stale state if the MCP server unbinds — so the toast doesn't pop
@@ -975,7 +975,8 @@ fun TabbedTerminal(
                     }
                 },
                 isSharing = { index -> tabController.tabs.getOrNull(index)?.id in sharedTabIds },
-                onNewSplit = { splitActiveTabVertical() },
+                onSplitVertical = { splitActiveTab(SplitOrientation.VERTICAL) },
+                onSplitHorizontal = { splitActiveTab(SplitOrientation.HORIZONTAL) },
                 orientation = if (tabBarOnLeft) ai.rever.bossterm.compose.tabs.TabBarOrientation.LEFT
                               else ai.rever.bossterm.compose.tabs.TabBarOrientation.TOP,
                 verticalWidth = settings.tabBarVerticalWidth.dp

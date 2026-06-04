@@ -1184,6 +1184,31 @@ fun TabbedTerminal(
                         items = items + mcpAttachItems
                     }
 
+                    // Session sharing (issue #276): start/stop sharing the active tab
+                    // straight from the terminal right-click menu (not just the tab bar).
+                    tabController.activeTab?.let { activeTab ->
+                        val sharing = ai.rever.bossterm.compose.share.SessionShareManager.isSharing(activeTab.id)
+                        items = items + ContextMenuItem(
+                            id = "share_tab",
+                            label = if (sharing) "Stop Sharing Tab" else "Share Tab…",
+                            action = {
+                                if (sharing) {
+                                    ai.rever.bossterm.compose.share.SessionShareManager.unshare(activeTab.id)
+                                } else {
+                                    if (!settings.sessionSharingEnabled) {
+                                        SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
+                                    }
+                                    mcpScope.launch {
+                                        val info = ai.rever.bossterm.compose.share.SessionShareManager.share(
+                                            activeTab.id, activeTab.title.value
+                                        )
+                                        if (info != null) shareDialog = info
+                                    }
+                                }
+                            }
+                        )
+                    }
+
                     // Add Version Control menu items
                     val terminalWriter: (String) -> Unit = { text ->
                         splitState.getFocusedSession()?.writeUserInput(text)
@@ -1320,9 +1345,20 @@ fun TabbedTerminal(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // Visible "sharing active" cue (issue #276). Persistent security affordance.
+                // Visible "sharing active" cue (issue #276). Persistent security affordance;
+                // click to reopen the QR/links dialog for the active (or first) shared tab.
                 if (showSharingIndicator) {
-                    ai.rever.bossterm.compose.share.SharingIndicator(count = sharedTabIds.size)
+                    ai.rever.bossterm.compose.share.SharingIndicator(
+                        count = sharedTabIds.size,
+                        onClick = {
+                            val active = tabController.activeTab?.id
+                            val target = if (active != null && active in sharedTabIds) active
+                                         else sharedTabIds.firstOrNull()
+                            if (target != null) {
+                                shareDialog = ai.rever.bossterm.compose.share.SessionShareManager.infoFor(target)
+                            }
+                        }
+                    )
                 }
                 if (settings.mcpShowStatusIndicator) {
                     McpStatusIndicator(

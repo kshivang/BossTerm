@@ -111,6 +111,14 @@ object SessionShareManager {
         return buildUrl(token)
     }
 
+    /** Rebuild the [ShareInfo] for an already-shared tab (e.g. to reopen the QR dialog). */
+    fun infoFor(tabId: String): ShareInfo? {
+        val session = sharesByTab[tabId] ?: return null
+        val url = buildUrl(session.viewToken) ?: return null
+        val controlUrl = buildUrl(session.controlToken) ?: url
+        return ShareInfo(tabId, url, session.viewToken, controlUrl, isSecureUrl(url))
+    }
+
     /**
      * Start sharing [tabId] (read-only). Boots the share server if needed.
      * Returns null when sharing is disabled in settings or the server can't bind.

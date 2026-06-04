@@ -24,8 +24,10 @@ import androidx.compose.ui.unit.sp
  * user can always see. Gated by [TerminalSettings.sessionSharingShowIndicator].
  */
 @Composable
-fun SharingIndicator(count: Int, modifier: Modifier = Modifier) {
+fun SharingIndicator(count: Int, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
     Surface(
+        onClick = onClick ?: {},
+        enabled = onClick != null,
         modifier = modifier,
         color = Color(0xFF13361B),
         shape = RoundedCornerShape(12.dp),

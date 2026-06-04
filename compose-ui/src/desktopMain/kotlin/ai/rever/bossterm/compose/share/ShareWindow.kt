@@ -75,11 +75,12 @@ fun ShareWindow(
     val qrUrl = if (controlQr) info.controlUrl else info.url
     val qr = remember(qrUrl) { qrImageBitmap(qrUrl) }
 
+    val isWindow = info.scope == ShareScope.WINDOW
     Window(
         onCloseRequest = onDismiss,
-        title = "BossTerm — Share Session",
+        title = if (isWindow) "BossTerm — Share Window" else "BossTerm — Share Tab",
         resizable = false,
-        state = rememberWindowState(size = DpSize(440.dp, 640.dp))
+        state = rememberWindowState(size = DpSize(440.dp, 660.dp))
     ) {
         Surface(color = BgColor, modifier = Modifier.fillMaxSize()) {
             Column(
@@ -88,8 +89,23 @@ fun ShareWindow(
                     .verticalScroll(rememberScrollState())
                     .padding(20.dp)
             ) {
-                Text("Sharing this tab", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (isWindow) "Sharing this window" else "Sharing this tab",
+                    color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(3.dp))
+                // Scope chip + what's included, so it's clear what the viewer will see.
+                Surface(color = if (isWindow) Color(0xFF1E3A1E) else Color(0xFF233047),
+                        shape = RoundedCornerShape(10.dp)) {
+                    Text(
+                        if (isWindow) "● Window — all tabs (switchable) + splits"
+                        else "● Tab — this tab and its splits",
+                        color = if (isWindow) Color(0xFFB9F6CA) else Color(0xFFAFCBFF),
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
                 Text(
                     "Scan from another device. Toggle which link the QR encodes:",
                     color = TextColor, fontSize = 12.sp

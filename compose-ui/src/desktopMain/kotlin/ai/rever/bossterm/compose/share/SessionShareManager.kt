@@ -86,6 +86,8 @@ object SessionShareManager {
         val controlUrl: String,
         /** False when the link is plaintext over a non-private host (no TLS). */
         val secure: Boolean = true,
+        /** Whether this share covers one tab or the whole window. */
+        val scope: ShareScope = ShareScope.TAB,
     )
 
     /** Begin observing settings. Idempotent. Call once from main(). */
@@ -113,7 +115,7 @@ object SessionShareManager {
         val share = sharesByTab[tabId] ?: return null
         val url = buildUrl(share.viewToken) ?: return null
         val controlUrl = buildUrl(share.controlToken) ?: url
-        return ShareInfo(tabId, url, share.viewToken, controlUrl, isSecureUrl(url))
+        return ShareInfo(tabId, url, share.viewToken, controlUrl, isSecureUrl(url), share.scope)
     }
 
     /**
@@ -143,7 +145,7 @@ object SessionShareManager {
                     url
                 )
             }
-            ShareInfo(tabId, url, share.viewToken, controlUrl, secure)
+            ShareInfo(tabId, url, share.viewToken, controlUrl, secure, share.scope)
         }
     }
 

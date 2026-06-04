@@ -13,6 +13,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Splitscreen
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,6 +25,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -113,6 +116,7 @@ fun TabBar(
     onShareWindow: (Int) -> Unit = {},
     onStopShare: (Int) -> Unit = {},
     isSharing: (Int) -> Boolean = { false },
+    onNewSplit: () -> Unit = {},
     orientation: TabBarOrientation = TabBarOrientation.TOP,
     verticalWidth: Dp = TabBarVerticalWidth,
     modifier: Modifier = Modifier
@@ -162,6 +166,26 @@ fun TabBar(
         }
     }
 
+    // A single compact action button for the left bar's bottom toolbar.
+    val barButton: @Composable (ImageVector, String, () -> Unit) -> Unit = { icon, desc, onClick ->
+        IconButton(onClick = onClick, modifier = Modifier.size(34.dp)) {
+            Icon(imageVector = icon, contentDescription = desc, tint = Color(0xFFB0B0B0), modifier = Modifier.size(18.dp))
+        }
+    }
+
+    // Bottom action bar for the vertical tab bar: New Tab, Split, Share Window.
+    val actionBar: @Composable () -> Unit = {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            barButton(Icons.Default.Add, "New Tab", onNewTab)
+            barButton(Icons.Default.Splitscreen, "Split Pane", onNewSplit)
+            barButton(Icons.Default.Share, "Share Window", { onShareWindow(activeTabIndex) })
+        }
+    }
+
     // One chip per pane. Panes of the same tab are clustered together (TabChipGap);
     // separate tabs are spaced further apart (TabGroupGap). The focused pane of the
     // active tab is highlighted.
@@ -193,16 +217,21 @@ fun TabBar(
         shadowElevation = 2.dp
     ) {
         if (vertical) {
-            Column(
-                modifier = Modifier.fillMaxSize().padding(6.dp).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(TabGroupGap)
-            ) {
-                groups.forEach { group ->
-                    Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
-                        group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+            Column(modifier = Modifier.fillMaxSize().padding(6.dp)) {
+                // Scrollable tab/pane chips fill the available height…
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(TabGroupGap)
+                ) {
+                    groups.forEach { group ->
+                        Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                            group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                        }
                     }
                 }
-                newTabButton()
+                // …with a fixed action toolbar pinned at the bottom.
+                Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF333333)))
+                actionBar()
             }
         } else {
             Row(

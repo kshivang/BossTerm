@@ -797,6 +797,32 @@ fun TabbedTerminal(
             if (info != null) shareDialog = info
         }
     }
+    // Split the active tab's focused pane (used by the left bar's Split button). Mirrors
+    // the per-tab onSplitVertical handler so panes auto-close on shell exit.
+    fun splitActiveTabVertical() {
+        val activeTab = tabController.activeTab ?: return
+        val splitState = getOrCreateSplitState(activeTab)
+        val workingDir = if (settings.splitInheritWorkingDirectory) {
+            val s = splitState.getFocusedSession()
+            s?.workingDirectory?.value ?: s?.processHandle?.value?.getWorkingDirectory()
+        } else null
+        var newSessionRef: TerminalSession? = null
+        val newSession = tabController.createSessionForSplit(
+            workingDir = workingDir,
+            onProcessExit = {
+                if (splitState.isSinglePane) {
+                    val idx = tabController.tabs.indexOfFirst { it.id == activeTab.id }
+                    if (idx != -1) tabController.closeTab(idx)
+                } else {
+                    newSessionRef?.let { session ->
+                        splitState.getAllPanes().find { it.session === session }?.let { p -> splitState.closePane(p.id) }
+                    }
+                }
+            }
+        )
+        newSessionRef = newSession
+        splitState.splitFocusedPane(SplitOrientation.VERTICAL, newSession, settings.splitDefaultRatio)
+    }
     // Auto-dismiss the Done toast a few seconds after it appears, AND clear
     // any stale state if the MCP server unbinds — so the toast doesn't pop
     // back unexpectedly after a brief MCP off-then-on cycle.
@@ -949,6 +975,7 @@ fun TabbedTerminal(
                     }
                 },
                 isSharing = { index -> tabController.tabs.getOrNull(index)?.id in sharedTabIds },
+                onNewSplit = { splitActiveTabVertical() },
                 orientation = if (tabBarOnLeft) ai.rever.bossterm.compose.tabs.TabBarOrientation.LEFT
                               else ai.rever.bossterm.compose.tabs.TabBarOrientation.TOP,
                 verticalWidth = settings.tabBarVerticalWidth.dp

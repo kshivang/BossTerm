@@ -982,6 +982,7 @@ fun TabbedTerminal(
                 isSharing = { index -> tabController.tabs.getOrNull(index)?.id in sharedTabIds },
                 onSplitVertical = { splitActiveTab(SplitOrientation.VERTICAL) },
                 onSplitHorizontal = { splitActiveTab(SplitOrientation.HORIZONTAL) },
+                onSettings = onShowSettings,
                 orientation = if (tabBarOnLeft) ai.rever.bossterm.compose.tabs.TabBarOrientation.LEFT
                               else ai.rever.bossterm.compose.tabs.TabBarOrientation.TOP,
                 verticalWidth = settings.tabBarVerticalWidth.dp

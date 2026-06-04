@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.HorizontalSplit
 import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VerticalSplit
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -119,6 +120,7 @@ fun TabBar(
     isSharing: (Int) -> Boolean = { false },
     onSplitVertical: () -> Unit = {},
     onSplitHorizontal: () -> Unit = {},
+    onSettings: () -> Unit = {},
     orientation: TabBarOrientation = TabBarOrientation.TOP,
     verticalWidth: Dp = TabBarVerticalWidth,
     modifier: Modifier = Modifier
@@ -168,24 +170,25 @@ fun TabBar(
         }
     }
 
-    // A single compact action button for the left bar's bottom toolbar.
+    // A single compact action button for the left bar's top toolbar.
     val barButton: @Composable (ImageVector, String, () -> Unit) -> Unit = { icon, desc, onClick ->
-        IconButton(onClick = onClick, modifier = Modifier.size(34.dp)) {
-            Icon(imageVector = icon, contentDescription = desc, tint = Color(0xFFB0B0B0), modifier = Modifier.size(18.dp))
+        IconButton(onClick = onClick, modifier = Modifier.size(30.dp)) {
+            Icon(imageVector = icon, contentDescription = desc, tint = Color(0xFFB0B0B0), modifier = Modifier.size(16.dp))
         }
     }
 
-    // Action toolbar for the vertical tab bar: New Tab, Split L/R, Split T/B, Share Window.
+    // Action toolbar for the vertical tab bar: Settings, Split L/R, Split T/B, Share, New Tab.
     val actionBar: @Composable () -> Unit = {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(1.dp, Alignment.CenterHorizontally),
+            horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            barButton(Icons.Default.Add, "New Tab", onNewTab)
+            barButton(Icons.Default.Settings, "Settings", onSettings)
             barButton(Icons.Default.VerticalSplit, "Split Left/Right", onSplitVertical)
             barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom", onSplitHorizontal)
             barButton(Icons.Default.QrCode2, "Share Window (QR)", { onShareWindow(activeTabIndex) })
+            barButton(Icons.Default.Add, "New Tab", onNewTab)
         }
     }
 

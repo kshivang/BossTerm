@@ -5,12 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>BossTerm — shared session</title>
   <!--
-    xterm.js is loaded from a CDN for v1 (viewer device needs internet).
-    Vendoring the bundle into this folder for fully-offline LAN viewing is a
-    tracked follow-up (issue #276, Phase 3). The terminal itself never leaves
-    your machine — only this static page pulls xterm from the CDN.
+    xterm.js is vendored locally (vendor/) and served by the share server, so the
+    viewer works fully offline on a LAN with no external dependency. Nothing leaves
+    your machine. xterm.js is MIT-licensed (@xterm/xterm@5.5.0).
   -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css" />
+  <link rel="stylesheet" href="vendor/xterm.css" />
   <style>
     :root { color-scheme: dark; }
     html, body { margin: 0; height: 100%; background: #1e1e1e; color: #ddd;
@@ -34,7 +33,7 @@
   </div>
   <div id="wrap"><div id="terminal"></div></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+  <script src="vendor/xterm.js"></script>
   <script src="viewer.js"></script>
 </body>
 </html>

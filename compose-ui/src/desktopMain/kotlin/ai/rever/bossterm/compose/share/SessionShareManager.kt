@@ -87,6 +87,8 @@ object SessionShareManager {
         val token: String,
         /** Control URL (grants write access) — share deliberately. */
         val controlUrl: String,
+        /** False when the link is plaintext over a non-private host (no TLS). */
+        val secure: Boolean = true,
     )
 
     /** Begin observing settings. Idempotent. Call once from main(). */
@@ -132,8 +134,31 @@ object SessionShareManager {
             }
             val url = buildUrl(session.viewToken) ?: return@withLock null
             val controlUrl = buildUrl(session.controlToken) ?: url
-            ShareInfo(tabId, url, session.viewToken, controlUrl)
+            val secure = isSecureUrl(url)
+            if (!secure) {
+                log.warn(
+                    "Session-sharing link is plaintext over a non-private host ({}). " +
+                        "Use https (Tailscale Funnel or a TLS tunnel) — input/output is not encrypted.",
+                    url
+                )
+            }
+            ShareInfo(tabId, url, session.viewToken, controlUrl, secure)
         }
+    }
+
+    /** A URL is "secure" if it's https or points at a loopback/private/`.local`/`.ts.net` host. */
+    private fun isSecureUrl(url: String): Boolean =
+        url.startsWith("https://", ignoreCase = true) || hostIsPrivate(hostOf(url))
+
+    private fun hostOf(url: String): String =
+        url.substringAfter("://", "").substringBefore('/').substringBefore(':')
+
+    private fun hostIsPrivate(host: String): Boolean {
+        val h = host.lowercase()
+        return h == "localhost" || h == "::1" || h.endsWith(".local") || h.endsWith(".ts.net") ||
+            h.startsWith("127.") || h.startsWith("10.") || h.startsWith("192.168.") ||
+            h.startsWith("169.254.") ||
+            Regex("^172\\.(1[6-9]|2\\d|3[01])\\.").containsMatchIn(h)
     }
 
     /** Stop sharing [tabId]; stops the server if it was the last share. */
@@ -163,6 +188,31 @@ object SessionShareManager {
                 stopEngineLocked()
             }
         }
+    }
+
+    /**
+     * Synchronous teardown for the JVM shutdown hook: stops all shares, the engine,
+     * and any Tailscale serve/funnel mapping without the coroutine scope (which would
+     * not drain at process exit). Crucially this tears down the Tailscale tunnel so it
+     * isn't left published after the app quits. Best-effort; every step is guarded.
+     */
+    fun shutdown() {
+        runCatching { watcherJob?.cancel() }
+        resizeJobs.values.forEach { runCatching { it.cancel() } }
+        resizeJobs.clear()
+        sharesByTab.values.forEach { runCatching { it.stop() } }
+        sharesByTab.clear()
+        sharesByToken.clear()
+        _sharedTabIds.value = emptySet()
+        val e = engine ?: return
+        val port = boundPort
+        if (tailscaleMode != "off" && port != null) runCatching { TailscaleExposer.disable(tailscaleMode, port) }
+        runCatching { e.stop(200, 800) }
+        engine = null
+        boundPort = null
+        boundHost = null
+        tailscaleUrl = null
+        tailscaleMode = "off"
     }
 
     /** Mirror terminal-size changes to all viewers of [session]. */
@@ -206,7 +256,11 @@ object SessionShareManager {
                 boundHost = host
                 log.info("Session-sharing server bound on {}:{} (bind={})", host, port, settings.sessionSharingBind)
                 // Phase 3: expose remotely via Tailscale if configured. Best-effort —
-                // failure just leaves us on the LAN/loopback URL.
+                // failure just leaves us on the LAN/loopback URL. Kept inline (under the
+                // mutex) because the share dialog needs the published https URL the moment
+                // share() returns; this only blocks once — on the FIRST share of a server
+                // lifecycle when Tailscale is enabled (the engine is reused thereafter, so
+                // ensureEngineLocked returns early and never re-runs this).
                 if (settings.shareTailscaleMode != "off") {
                     tailscaleMode = settings.shareTailscaleMode
                     tailscaleUrl = TailscaleExposer.enable(tailscaleMode, port)

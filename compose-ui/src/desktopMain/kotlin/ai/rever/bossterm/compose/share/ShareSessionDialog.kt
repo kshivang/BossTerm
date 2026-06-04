@@ -74,6 +74,15 @@ fun ShareSessionDialog(
                         "Reachable from devices that can route to this host. For the public internet, use Tailscale Funnel or a TLS tunnel.",
                     fontSize = 11.sp
                 )
+                if (!info.secure) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "⚠ Not encrypted — this link is plaintext over the network. Use https " +
+                            "(Tailscale Funnel or a TLS tunnel) for anything beyond your trusted LAN.",
+                        fontSize = 11.sp,
+                        color = Color(0xFFFF8A80)
+                    )
+                }
             }
         },
         confirmButton = {

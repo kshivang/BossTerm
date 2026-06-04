@@ -97,6 +97,9 @@ fun main() {
 
     Runtime.getRuntime().addShutdownHook(Thread {
         mcpManager.stop()
+        // Tear down session sharing synchronously so a Tailscale serve/funnel mapping
+        // isn't left published after the app exits (issue #276).
+        ai.rever.bossterm.compose.share.SessionShareManager.shutdown()
         mcpScope.cancel()
     })
 
@@ -761,6 +764,12 @@ fun main() {
                                 // Terminal content
                                 TabbedTerminal(
                                     state = tabbedState,
+                                    // Stop sharing a tab when it closes (issue #276) — otherwise
+                                    // the share server stays bound and viewers freeze. Covers all
+                                    // windows (this content is built per-window); no-op for unshared tabs.
+                                    onTabClose = { tabId ->
+                                        ai.rever.bossterm.compose.share.SessionShareManager.unshare(tabId)
+                                    },
                                     onExit = {
                                         WindowManager.closeWindow(window.id)
                                         if (!WindowManager.hasWindows()) {

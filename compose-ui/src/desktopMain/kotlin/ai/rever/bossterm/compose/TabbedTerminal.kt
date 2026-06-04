@@ -1305,7 +1305,8 @@ fun TabbedTerminal(
         //   - Toast renders whenever attachStatus is non-null. Attaches
         //     can't happen when MCP is off, so toast naturally stays
         //     dormant in that state.
-        if (settings.mcpShowStatusIndicator || attachStatus != null) {
+        val showSharingIndicator = settings.sessionSharingShowIndicator && sharedTabIds.isNotEmpty()
+        if (settings.mcpShowStatusIndicator || attachStatus != null || showSharingIndicator) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -1319,6 +1320,10 @@ fun TabbedTerminal(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                // Visible "sharing active" cue (issue #276). Persistent security affordance.
+                if (showSharingIndicator) {
+                    ai.rever.bossterm.compose.share.SharingIndicator(count = sharedTabIds.size)
+                }
                 if (settings.mcpShowStatusIndicator) {
                     McpStatusIndicator(
                         enabled = true,

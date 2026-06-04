@@ -84,11 +84,13 @@ fun ShareWindow(
         onCloseRequest = onDismiss,
         title = if (isWindow) "BossTerm — Share Window" else "BossTerm — Share Tab",
         resizable = false,
-        state = rememberWindowState(size = DpSize(460.dp, 720.dp))
+        state = rememberWindowState(size = DpSize(600.dp, 680.dp))
     ) {
         Surface(color = BackgroundColor, modifier = Modifier.fillMaxSize()) {
+          Column(modifier = Modifier.fillMaxSize()) {
+            // Scrollable content fills the space above the pinned footer.
             Column(
-                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)
+                modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp)
             ) {
                 Text("Share session", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
@@ -146,20 +148,23 @@ fun ShareWindow(
                     }
                 }
 
-                Spacer(Modifier.height(24.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextButton(onClick = onStop, colors = ButtonDefaults.textButtonColors(contentColor = Danger)) {
-                        Text("Stop sharing")
-                    }
-                    Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)) {
-                        Text("Close")
-                    }
+                Spacer(Modifier.height(8.dp))
+            }
+            // Pinned footer — always visible without scrolling.
+            Box(Modifier.fillMaxWidth().height(1.dp).background(BorderColor))
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onStop, colors = ButtonDefaults.textButtonColors(contentColor = Danger)) {
+                    Text("Stop sharing")
+                }
+                Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)) {
+                    Text("Close")
                 }
             }
+          }
         }
     }
 }

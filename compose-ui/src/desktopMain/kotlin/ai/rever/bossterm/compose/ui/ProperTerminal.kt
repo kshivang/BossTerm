@@ -711,7 +711,13 @@ fun ProperTerminal(
   // Icon title (OSC 1) is used for tab labels in modern terminals
   // Window title (OSC 2) is used for the main window title bar
   // Using reactive Flow instead of polling for immediate updates and better resource efficiency
-  LaunchedEffect(Unit) {
+  //
+  // Keyed by tab.id (NOT Unit): TabbedTerminal renders only the active tab and
+  // reuses this ProperTerminal composition across tab switches. With a Unit key
+  // the collector never relaunched, so after switching tabs it kept the FIRST
+  // tab's onTabTitleChange closure — routing OSC-1 titles (e.g. "claude") onto
+  // the wrong tab. Re-keying rebinds the flow and the callback together.
+  LaunchedEffect(tab.id) {
     display.iconTitleFlow.collect { newTitle ->
       if (newTitle.isNotEmpty()) {
         onTabTitleChange(newTitle)

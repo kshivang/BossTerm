@@ -22,9 +22,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
@@ -63,7 +67,10 @@ fun ShareWindow(
 ) {
     val clipboard = LocalClipboardManager.current
     val loopbackOnly = info.url.contains("://127.0.0.1") || info.url.contains("://localhost")
-    val qr = remember(info.url) { qrImageBitmap(info.url) }
+    // Which link the QR encodes — toggled by the View/Control switch below it.
+    var controlQr by remember { mutableStateOf(false) }
+    val qrUrl = if (controlQr) info.controlUrl else info.url
+    val qr = remember(qrUrl) { qrImageBitmap(qrUrl) }
 
     Window(
         onCloseRequest = onDismiss,
@@ -81,20 +88,36 @@ fun ShareWindow(
                 Text("Sharing this tab", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Scan or open this on another device to watch the session live.",
+                    "Scan from another device. Toggle which link the QR encodes:",
                     color = TextColor, fontSize = 12.sp
                 )
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(12.dp))
+
+                // View / Control segmented toggle for the QR.
+                QrModeToggle(
+                    controlSelected = controlQr,
+                    onSelect = { controlQr = it },
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                )
+                Spacer(Modifier.height(12.dp))
 
                 if (qr != null) {
                     Image(
                         bitmap = qr,
-                        contentDescription = "Share link QR code",
+                        contentDescription = if (controlQr) "Control link QR code" else "View link QR code",
                         modifier = Modifier
                             .size(220.dp)
                             .align(Alignment.CenterHorizontally)
                             .background(Color.White)
                             .padding(10.dp)
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = if (controlQr) "QR: Control link — scanning grants typing access"
+                               else "QR: View link — read-only",
+                        color = if (controlQr) Danger else DimColor,
+                        fontSize = 11.sp,
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
                     )
                     Spacer(Modifier.height(16.dp))
                 }
@@ -157,6 +180,33 @@ private fun LinkRow(label: String, url: String, clipboard: ClipboardManager) {
                 ) { Text("Copy") }
             }
         }
+    }
+}
+
+/** Segmented View/Control toggle controlling which link the QR encodes. */
+@Composable
+private fun QrModeToggle(controlSelected: Boolean, onSelect: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(PanelColor)
+            .padding(2.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Seg("View", selected = !controlSelected) { onSelect(false) }
+        Seg("Control", selected = controlSelected) { onSelect(true) }
+    }
+}
+
+@Composable
+private fun Seg(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        color = if (selected) Accent else Color.Transparent,
+        contentColor = if (selected) Color.White else DimColor,
+        shape = RoundedCornerShape(6.dp)
+    ) {
+        Text(label, modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp), fontSize = 12.sp)
     }
 }
 

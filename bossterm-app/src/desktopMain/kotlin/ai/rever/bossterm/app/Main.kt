@@ -768,7 +768,7 @@ fun main() {
                                     // the share server stays bound and viewers freeze. Covers all
                                     // windows (this content is built per-window); no-op for unshared tabs.
                                     onTabClose = { tabId ->
-                                        ai.rever.bossterm.compose.share.SessionShareManager.unshare(tabId)
+                                        ai.rever.bossterm.compose.share.SessionShareManager.onTabClosed(tabId)
                                     },
                                     onExit = {
                                         WindowManager.closeWindow(window.id)

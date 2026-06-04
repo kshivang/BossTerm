@@ -4,34 +4,40 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>BossTerm — shared session</title>
-  <!--
-    xterm.js is vendored locally (vendor/) and served by the share server, so the
-    viewer works fully offline on a LAN with no external dependency. Nothing leaves
-    your machine. xterm.js is MIT-licensed (@xterm/xterm@5.5.0).
-  -->
+  <!-- xterm.js vendored locally (works fully offline on a LAN). MIT licensed. -->
   <link rel="stylesheet" href="vendor/xterm.css" />
   <style>
     :root { color-scheme: dark; }
     html, body { margin: 0; height: 100%; background: #1e1e1e; color: #ddd;
-                 font-family: -apple-system, Menlo, monospace; }
-    #bar { display: flex; align-items: center; gap: 10px; padding: 6px 10px;
-           background: #2b2b2b; border-bottom: 1px solid #404040; font-size: 13px; }
-    #status { width: 8px; height: 8px; border-radius: 50%; background: #888; }
-    #status.live { background: #4caf50; }
-    #status.down { background: #f44336; }
-    .badge { padding: 1px 7px; border-radius: 10px; background: #3a3a3a; font-size: 11px; color: #bbb; }
-    #wrap { position: absolute; top: 33px; left: 0; right: 0; bottom: 0; padding: 6px; }
-    #terminal { width: 100%; height: 100%; }
+                 font-family: -apple-system, Menlo, monospace; overflow: hidden; }
+    #bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; height: 30px;
+           box-sizing: border-box; background: #2b2b2b; border-bottom: 1px solid #404040; font-size: 12px; }
+    #status { width: 8px; height: 8px; border-radius: 50%; background: #888; flex: 0 0 auto; }
+    #status.live { background: #4caf50; } #status.down { background: #f44336; }
+    #tabbar { display: flex; gap: 4px; overflow-x: auto; flex: 1 1 auto; }
+    .tab { padding: 2px 10px; border-radius: 5px; background: #1e1e1e; border: 1px solid #404040;
+           color: #b0b0b0; white-space: nowrap; cursor: pointer; font-size: 12px; }
+    .tab.active { background: #2b2b2b; border-color: #4a90e2; color: #fff; }
+    .badge { padding: 1px 7px; border-radius: 10px; background: #3a3a3a; font-size: 11px; color: #bbb; flex: 0 0 auto; }
+    #stage { position: absolute; top: 30px; left: 0; right: 0; bottom: 0; display: flex; }
+    .split { display: flex; flex: 1 1 0; min-width: 0; min-height: 0; }
+    .split.v { flex-direction: row; }
+    .split.h { flex-direction: column; }
+    .divider { background: #000; flex: 0 0 1px; }
+    .pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; box-sizing: border-box;
+            border: 1px solid transparent; }
+    .pane.focused { border-color: #4a90e2; }
+    .termhost { width: 100%; height: 100%; overflow: hidden; }
   </style>
 </head>
 <body>
   <div id="bar">
     <span id="status"></span>
-    <span id="title">BossTerm shared session</span>
+    <div id="tabbar"></div>
     <span class="badge" id="viewonly">view only</span>
-    <span class="badge" id="presence" style="margin-left:auto"></span>
+    <span class="badge" id="presence"></span>
   </div>
-  <div id="wrap"><div id="terminal"></div></div>
+  <div id="stage"></div>
 
   <script src="vendor/xterm.js"></script>
   <script src="viewer.js"></script>

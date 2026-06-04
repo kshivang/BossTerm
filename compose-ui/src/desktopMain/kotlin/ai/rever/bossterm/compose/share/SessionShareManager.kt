@@ -1,9 +1,7 @@
 package ai.rever.bossterm.compose.share
 
-import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
-import androidx.compose.runtime.snapshotFlow
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
@@ -66,12 +64,11 @@ object SessionShareManager {
     private var tailscaleUrl: String? = null
     private var tailscaleMode: String = "off"
 
-    /** A token resolves to a session and whether that token grants control (Phase 2). */
-    private data class TokenRef(val session: SharedSession, val canControl: Boolean)
+    /** A token resolves to a share and whether that token grants control. */
+    private data class TokenRef(val share: MirrorShare, val canControl: Boolean)
 
     private val sharesByToken = ConcurrentHashMap<String, TokenRef>()
-    private val sharesByTab = ConcurrentHashMap<String, SharedSession>()
-    private val resizeJobs = ConcurrentHashMap<String, Job>()
+    private val sharesByTab = ConcurrentHashMap<String, MirrorShare>()
 
     private val _sharedTabIds = MutableStateFlow<Set<String>>(emptySet())
     /** Tab ids currently being shared — drives the UI indicator + Share/Stop menu state. */
@@ -113,35 +110,31 @@ object SessionShareManager {
 
     /** Rebuild the [ShareInfo] for an already-shared tab (e.g. to reopen the QR dialog). */
     fun infoFor(tabId: String): ShareInfo? {
-        val session = sharesByTab[tabId] ?: return null
-        val url = buildUrl(session.viewToken) ?: return null
-        val controlUrl = buildUrl(session.controlToken) ?: url
-        return ShareInfo(tabId, url, session.viewToken, controlUrl, isSecureUrl(url))
+        val share = sharesByTab[tabId] ?: return null
+        val url = buildUrl(share.viewToken) ?: return null
+        val controlUrl = buildUrl(share.controlToken) ?: url
+        return ShareInfo(tabId, url, share.viewToken, controlUrl, isSecureUrl(url))
     }
 
     /**
-     * Start sharing [tabId] (read-only). Boots the share server if needed.
-     * Returns null when sharing is disabled in settings or the server can't bind.
-     * Safe to call repeatedly — returns the existing share if already sharing.
+     * Start sharing — [ShareScope.TAB] (this tab + its splits) or [ShareScope.WINDOW]
+     * (all tabs of the owning window). Boots the share server if needed. Returns null
+     * when sharing is disabled or the server can't bind. Idempotent per [tabId].
      */
-    suspend fun share(tabId: String, title: String): ShareInfo? {
+    suspend fun share(tabId: String, scope: ShareScope = ShareScope.TAB): ShareInfo? {
         val settings = SettingsManager.instance.settings.value
         if (!settings.sessionSharingEnabled) return null
         return mutex.withLock {
             if (!ensureEngineLocked(settings)) return@withLock null
-            val existing = sharesByTab[tabId]
-            val session = if (existing != null) existing else {
-                SharedSession(tabId, title).also {
-                    it.start()
-                    sharesByToken[it.viewToken] = TokenRef(it, canControl = false)
-                    sharesByToken[it.controlToken] = TokenRef(it, canControl = true)
-                    sharesByTab[tabId] = it
-                    _sharedTabIds.value = sharesByTab.keys.toSet()
-                    launchResizeObserver(it)
-                }
+            val share = sharesByTab[tabId] ?: MirrorShare(tabId, scope, onEnded = { unshare(tabId) }).also {
+                it.start()
+                sharesByToken[it.viewToken] = TokenRef(it, canControl = false)
+                sharesByToken[it.controlToken] = TokenRef(it, canControl = true)
+                sharesByTab[tabId] = it
+                _sharedTabIds.value = sharesByTab.keys.toSet()
             }
-            val url = buildUrl(session.viewToken) ?: return@withLock null
-            val controlUrl = buildUrl(session.controlToken) ?: url
+            val url = buildUrl(share.viewToken) ?: return@withLock null
+            val controlUrl = buildUrl(share.controlToken) ?: url
             val secure = isSecureUrl(url)
             if (!secure) {
                 log.warn(
@@ -150,8 +143,16 @@ object SessionShareManager {
                     url
                 )
             }
-            ShareInfo(tabId, url, session.viewToken, controlUrl, secure)
+            ShareInfo(tabId, url, share.viewToken, controlUrl, secure)
         }
+    }
+
+    /**
+     * Window's onTabClose hook: stop only a TAB-scope share keyed by the closed tab.
+     * WINDOW shares clean up via [MirrorShare]'s own observer when their window empties.
+     */
+    fun onTabClosed(tabId: String) {
+        if (sharesByTab[tabId]?.scope == ShareScope.TAB) unshare(tabId)
     }
 
     /** A URL is "secure" if it's https or points at a loopback/private/`.local`/`.ts.net` host. */
@@ -173,11 +174,10 @@ object SessionShareManager {
     fun unshare(tabId: String) {
         scope.launch {
             mutex.withLock {
-                val session = sharesByTab.remove(tabId) ?: return@withLock
-                sharesByToken.remove(session.viewToken)
-                sharesByToken.remove(session.controlToken)
-                resizeJobs.remove(tabId)?.cancel()
-                session.stop()
+                val share = sharesByTab.remove(tabId) ?: return@withLock
+                sharesByToken.remove(share.viewToken)
+                sharesByToken.remove(share.controlToken)
+                share.stop()
                 _sharedTabIds.value = sharesByTab.keys.toSet()
                 if (sharesByTab.isEmpty()) stopEngineLocked()
             }
@@ -190,8 +190,6 @@ object SessionShareManager {
                 sharesByTab.values.forEach { it.stop() }
                 sharesByTab.clear()
                 sharesByToken.clear()
-                resizeJobs.values.forEach { it.cancel() }
-                resizeJobs.clear()
                 _sharedTabIds.value = emptySet()
                 stopEngineLocked()
             }
@@ -206,8 +204,6 @@ object SessionShareManager {
      */
     fun shutdown() {
         runCatching { watcherJob?.cancel() }
-        resizeJobs.values.forEach { runCatching { it.cancel() } }
-        resizeJobs.clear()
         sharesByTab.values.forEach { runCatching { it.stop() } }
         sharesByTab.clear()
         sharesByToken.clear()
@@ -221,15 +217,6 @@ object SessionShareManager {
         boundHost = null
         tailscaleUrl = null
         tailscaleMode = "off"
-    }
-
-    /** Mirror terminal-size changes to all viewers of [session]. */
-    private fun launchResizeObserver(session: SharedSession) {
-        val tab = McpTerminalRegistry.findTab(session.tabId) ?: return
-        resizeJobs[session.tabId] = scope.launch {
-            snapshotFlow { tab.display.termSize.value }
-                .collect { size -> session.broadcast(ServerMessage.Resize(size.columns, size.rows)) }
-        }
     }
 
     // ---- engine lifecycle (mutex-guarded) ----
@@ -318,18 +305,13 @@ object SessionShareManager {
             ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Unknown or expired share token"))
             return
         }
-        val session = ref.session
-        // Theme first so the viewer renders identically to BossTerm before any paint.
-        ws.send(Frame.Text(ShareProtocol.encodeServer(session.themeMessage())))
-        // Snapshot next (current state), THEN register so the outbox only carries
-        // output produced after the snapshot — avoids double-rendering a chunk.
-        ws.send(Frame.Text(ShareProtocol.encodeServer(session.snapshotMessage())))
-        session.currentSize()?.let { (c, r) ->
-            ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Resize(c, r))))
-        }
-        // Control granted iff this connection used the control token (Phase 2).
+        val share = ref.share
+        // Theme + Layout + a PaneSnapshot per pane, THEN register so the outbox only
+        // carries output produced after the snapshot — avoids double-rendering a chunk.
+        share.initialMessages().forEach { ws.send(Frame.Text(ShareProtocol.encodeServer(it))) }
+        // Control granted iff this connection used the control token.
         ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Control(granted = ref.canControl))))
-        val vc = session.addViewer(ref.canControl)
+        val vc = share.addViewer(ref.canControl)
         val writer = ws.launch {
             for (text in vc.outbox) ws.send(Frame.Text(text))
         }
@@ -337,16 +319,14 @@ object SessionShareManager {
             for (frame in ws.incoming) {
                 if (frame is Frame.Text) {
                     val msg = runCatching { ShareProtocol.decodeClient(frame.readText()) }.getOrNull()
-                    // Only control-token viewers can write; handleInput re-checks the role.
-                    if (msg is ClientMessage.Input) session.handleInput(vc, msg.data)
-                    // RequestControl from a view-only viewer is a no-op — they need the control link.
+                    if (msg != null) share.handleClient(vc, msg)  // input gated by role inside
                 }
             }
         } catch (_: Throwable) {
             // client gone
         } finally {
             writer.cancel()
-            session.removeViewer(vc)
+            share.removeViewer(vc)
         }
     }
 

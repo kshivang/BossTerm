@@ -782,6 +782,21 @@ fun TabbedTerminal(
     // Session sharing (issue #276): dialog state + live set of shared tab ids.
     var shareDialog by remember { mutableStateOf<ai.rever.bossterm.compose.share.SessionShareManager.ShareInfo?>(null) }
     val sharedTabIds by ai.rever.bossterm.compose.share.SessionShareManager.sharedTabIds.collectAsState()
+    // Start (or reopen) a share for a tab. TAB = this tab + its splits; WINDOW = all tabs.
+    // First use auto-enables the feature; the server binds on demand.
+    fun startShare(tabId: String, scope: ai.rever.bossterm.compose.share.ShareScope) {
+        if (sharedTabIds.contains(tabId)) {
+            shareDialog = ai.rever.bossterm.compose.share.SessionShareManager.infoFor(tabId)
+            return
+        }
+        if (!settings.sessionSharingEnabled) {
+            SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
+        }
+        mcpScope.launch {
+            val info = ai.rever.bossterm.compose.share.SessionShareManager.share(tabId, scope)
+            if (info != null) shareDialog = info
+        }
+    }
     // Auto-dismiss the Done toast a few seconds after it appears, AND clear
     // any stale state if the MCP server unbinds — so the toast doesn't pop
     // back unexpectedly after a brief MCP off-then-on cycle.
@@ -923,17 +938,10 @@ fun TabbedTerminal(
                     tabController.createTab(workingDir = wd)
                 },
                 onShareTab = { index ->
-                    val tab = tabController.tabs.getOrNull(index)
-                    if (tab != null) {
-                        // First share auto-enables the feature; the server binds on demand.
-                        if (!settings.sessionSharingEnabled) {
-                            SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
-                        }
-                        mcpScope.launch {
-                            val info = ai.rever.bossterm.compose.share.SessionShareManager.share(tab.id, tab.title.value)
-                            if (info != null) shareDialog = info
-                        }
-                    }
+                    tabController.tabs.getOrNull(index)?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
+                },
+                onShareWindow = { index ->
+                    tabController.tabs.getOrNull(index)?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.WINDOW) }
                 },
                 onStopShare = { index ->
                     tabController.tabs.getOrNull(index)?.let {
@@ -1184,29 +1192,27 @@ fun TabbedTerminal(
                         items = items + mcpAttachItems
                     }
 
-                    // Session sharing (issue #276): start/stop sharing the active tab
-                    // straight from the terminal right-click menu (not just the tab bar).
+                    // Session sharing (issue #276): start/stop sharing from the terminal
+                    // right-click menu — this tab (incl. splits) or the whole window.
                     tabController.activeTab?.let { activeTab ->
                         val sharing = ai.rever.bossterm.compose.share.SessionShareManager.isSharing(activeTab.id)
-                        items = items + ContextMenuItem(
-                            id = "share_tab",
-                            label = if (sharing) "Stop Sharing Tab" else "Share Tab…",
-                            action = {
-                                if (sharing) {
-                                    ai.rever.bossterm.compose.share.SessionShareManager.unshare(activeTab.id)
-                                } else {
-                                    if (!settings.sessionSharingEnabled) {
-                                        SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
-                                    }
-                                    mcpScope.launch {
-                                        val info = ai.rever.bossterm.compose.share.SessionShareManager.share(
-                                            activeTab.id, activeTab.title.value
-                                        )
-                                        if (info != null) shareDialog = info
-                                    }
-                                }
-                            }
-                        )
+                        items = if (sharing) {
+                            items + ContextMenuItem(
+                                id = "stop_share",
+                                label = "Stop Sharing",
+                                action = { ai.rever.bossterm.compose.share.SessionShareManager.unshare(activeTab.id) }
+                            )
+                        } else {
+                            items + ContextMenuItem(
+                                id = "share_tab",
+                                label = "Share Tab…",
+                                action = { startShare(activeTab.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
+                            ) + ContextMenuItem(
+                                id = "share_window",
+                                label = "Share Window…",
+                                action = { startShare(activeTab.id, ai.rever.bossterm.compose.share.ShareScope.WINDOW) }
+                            )
+                        }
                     }
 
                     // Add Version Control menu items
@@ -1357,21 +1363,13 @@ fun TabbedTerminal(
                     showSharing = showSharingStatus,
                     sharingCount = sharedTabIds.size,
                     onSharingClick = {
-                        val active = tabController.activeTab
-                        if (active != null) {
-                            if (active.id in sharedTabIds) {
-                                shareDialog = ai.rever.bossterm.compose.share.SessionShareManager.infoFor(active.id)
-                            } else {
-                                if (!settings.sessionSharingEnabled) {
-                                    SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
-                                }
-                                mcpScope.launch {
-                                    val info = ai.rever.bossterm.compose.share.SessionShareManager.share(
-                                        active.id, active.title.value
-                                    )
-                                    if (info != null) shareDialog = info
-                                }
-                            }
+                        // Reopen the dialog if something is shared, else share the active tab.
+                        val sharedId = sharedTabIds.firstOrNull { tabController.tabs.any { t -> t.id == it } }
+                            ?: sharedTabIds.firstOrNull()
+                        if (sharedId != null) {
+                            shareDialog = ai.rever.bossterm.compose.share.SessionShareManager.infoFor(sharedId)
+                        } else {
+                            tabController.activeTab?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
                         }
                     },
                 )

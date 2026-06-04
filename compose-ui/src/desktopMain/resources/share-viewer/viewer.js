@@ -32,6 +32,45 @@
     return;
   }
 
+  // ---- approval handshake (issue #276) ----
+  // Stable per-browser id so the host recognizes this device across reconnects.
+  var clientId = localStorage.getItem("bossterm.clientId");
+  if (!clientId) {
+    clientId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+             : String(Date.now()) + "-" + Math.random().toString(16).slice(2);
+    localStorage.setItem("bossterm.clientId", clientId);
+  }
+  // A previously granted access key (per share token), replayed to skip re-approval.
+  var keyStore = "bossterm.key." + token;
+  function loadKey() {
+    try {
+      var o = JSON.parse(localStorage.getItem(keyStore) || "null");
+      if (o && o.key && o.expiresAt > Date.now()) return o.key;
+      localStorage.removeItem(keyStore);
+    } catch (e) {}
+    return null;
+  }
+  function saveKey(key, expiresAt) {
+    try { localStorage.setItem(keyStore, JSON.stringify({ key: key, expiresAt: expiresAt })); } catch (e) {}
+  }
+  function clearKey() { try { localStorage.removeItem(keyStore); } catch (e) {} }
+
+  var overlayEl = document.getElementById("overlay");
+  var overlayTitleEl = document.getElementById("overlay-title");
+  var overlayMsgEl = document.getElementById("overlay-msg");
+  var overlaySpinnerEl = document.getElementById("overlay-spinner");
+  function showOverlay(title, msg, spinning) {
+    overlayTitleEl.textContent = title;
+    overlayMsgEl.textContent = msg || "";
+    overlaySpinnerEl.style.display = spinning ? "" : "none";
+    overlayEl.style.display = "";
+  }
+  function hideOverlay() { overlayEl.style.display = "none"; }
+
+  function deviceName() {
+    return localStorage.getItem("bossterm.name") || navigator.platform || "browser";
+  }
+
   // ---- xterm pool ----
   function getPane(paneId) {
     var p = panes[paneId];
@@ -152,14 +191,28 @@
 
   ws.onopen = function () {
     setStatus("live");
-    ws.send(JSON.stringify({ t: "hello", name: navigator.platform || "browser" }));
+    ws.send(JSON.stringify({ t: "hello", name: deviceName(), clientId: clientId, key: loadKey() }));
   };
 
   ws.onmessage = function (ev) {
     var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
     switch (m.t) {
+      case "pending":
+        showOverlay("Waiting for host approval…",
+          "Ask the person sharing in BossTerm to approve this device. This window will connect automatically once they do.",
+          true);
+        break;
+      case "grant":
+        // Approved (or refreshed): persist the rolling key and dismiss the overlay.
+        if (m.key) saveKey(m.key, m.expiresAt);
+        hideOverlay();
+        break;
+      case "denied":
+        clearKey();
+        showOverlay("Request denied", m.reason || "The host declined this device.", false);
+        break;
       case "theme": applyTheme(m); break;
-      case "layout": onLayout(m); break;
+      case "layout": hideOverlay(); onLayout(m); break;
       case "paneSnapshot": {
         var p = getPane(m.paneId);
         if (m.cols && m.rows) p.term.resize(m.cols, m.rows);

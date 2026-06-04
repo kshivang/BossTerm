@@ -15,6 +15,7 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -30,10 +31,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
 import java.net.BindException
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -75,6 +78,79 @@ object SessionShareManager {
     val sharedTabIds: StateFlow<Set<String>> = _sharedTabIds.asStateFlow()
 
     private var watcherJob: Job? = null
+
+    // ---- Approval handshake + 24h rolling access keys (issue #276) ----
+
+    private const val GRANT_TTL_MS = 24L * 60 * 60 * 1000
+
+    /** A granted device key: which share it's for, its role, and when it lapses. */
+    private data class Grant(
+        val key: String,
+        val shareId: String,
+        val clientId: String,
+        val canControl: Boolean,
+        @Volatile var expiresAtMs: Long,
+    )
+
+    /** Access key → grant. Lazily expired on use; cleared when the share ends. */
+    private val grants = ConcurrentHashMap<String, Grant>()
+
+    /** A viewer connection awaiting the host's approve/deny decision. */
+    data class PendingShareRequest(
+        val id: String,
+        val tabId: String,
+        val deviceName: String,
+        /** True when the device used the control link (one approve grants control). */
+        val wantsControl: Boolean,
+    ) {
+        internal val decision = CompletableDeferred<Boolean>()
+    }
+
+    private val _pendingRequests = MutableStateFlow<List<PendingShareRequest>>(emptyList())
+    /** Connections waiting for host approval — drives the approval toast + dialog list. */
+    val pendingRequests: StateFlow<List<PendingShareRequest>> = _pendingRequests.asStateFlow()
+
+    /** Host approved a pending request (admits the viewer + mints a 24h key). */
+    fun approveRequest(id: String) = decideRequest(id, true)
+    /** Host denied a pending request (closes the viewer socket). */
+    fun denyRequest(id: String) = decideRequest(id, false)
+    private fun decideRequest(id: String, approve: Boolean) {
+        val req = _pendingRequests.value.firstOrNull { it.id == id } ?: return
+        _pendingRequests.value = _pendingRequests.value.filterNot { it.id == id }
+        req.decision.complete(approve)
+    }
+
+    /** Deny + drop any pending requests for [tabId] (its share is ending). */
+    private fun failPendingFor(tabId: String) {
+        val (drop, keep) = _pendingRequests.value.partition { it.tabId == tabId }
+        if (drop.isEmpty()) return
+        _pendingRequests.value = keep
+        drop.forEach { it.decision.complete(false) }
+    }
+
+    /** Deny + drop all pending requests (sharing is shutting down). */
+    private fun failAllPending() {
+        val all = _pendingRequests.value
+        if (all.isNotEmpty()) _pendingRequests.value = emptyList()
+        all.forEach { it.decision.complete(false) }
+    }
+
+    /**
+     * Whether a newly connecting device must be approved before it can view/control,
+     * per [TerminalSettings.sessionSharingApprovalScope]: "all" = always; "off" = never;
+     * "funnel" (default) = only when the share is publicly reachable (Tailscale Funnel
+     * or a custom public URL), since LAN/Serve reach is already trusted.
+     */
+    private fun requiresApproval(): Boolean {
+        val s = SettingsManager.instance.settings.value
+        return when (s.sessionSharingApprovalScope) {
+            "all" -> true
+            "off" -> false
+            else -> tailscaleMode == "funnel" || s.sessionSharingPublicUrl.isNotBlank()
+        }
+    }
+
+    private fun newKey(): String = UUID.randomUUID().toString().replace("-", "")
 
     /** Public info handed back to the UI when a share starts. */
     data class ShareInfo(
@@ -190,6 +266,8 @@ object SessionShareManager {
                 val share = sharesByTab.remove(tabId) ?: return@withLock
                 sharesByToken.remove(share.viewToken)
                 sharesByToken.remove(share.controlToken)
+                grants.values.removeIf { it.shareId == share.viewToken }
+                failPendingFor(tabId)
                 share.stop()
                 _sharedTabIds.value = sharesByTab.keys.toSet()
                 if (sharesByTab.isEmpty()) stopEngineLocked()
@@ -203,6 +281,8 @@ object SessionShareManager {
                 sharesByTab.values.forEach { it.stop() }
                 sharesByTab.clear()
                 sharesByToken.clear()
+                grants.clear()
+                failAllPending()
                 _sharedTabIds.value = emptySet()
                 stopEngineLocked()
             }
@@ -220,6 +300,8 @@ object SessionShareManager {
         sharesByTab.values.forEach { runCatching { it.stop() } }
         sharesByTab.clear()
         sharesByToken.clear()
+        grants.clear()
+        failAllPending()
         _sharedTabIds.value = emptySet()
         val e = engine ?: return
         val port = boundPort
@@ -346,7 +428,7 @@ object SessionShareManager {
         }
     }
 
-    /** Handle one viewer WebSocket: snapshot, then drain its outbox to the socket. */
+    /** Handle one viewer WebSocket: handshake/approval, snapshot, then drain its outbox. */
     private suspend fun serveViewer(ws: io.ktor.server.websocket.DefaultWebSocketServerSession) {
         val token = ws.call.parameters["token"]
         val ref = token?.let { sharesByToken[it] }
@@ -355,12 +437,52 @@ object SessionShareManager {
             return
         }
         val share = ref.share
-        // Theme + Layout + a PaneSnapshot per pane, THEN register so the outbox only
-        // carries output produced after the snapshot — avoids double-rendering a chunk.
+        val shareId = share.viewToken
+
+        // Handshake: the viewer's first frame carries its clientId + any prior access key.
+        val hello = readHello(ws)
+        val clientId = hello?.clientId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
+        var canControl = ref.canControl
+
+        if (requiresApproval()) {
+            val now = System.currentTimeMillis()
+            val existing = hello?.key?.let { grants[it] }
+            if (existing != null && existing.shareId == shareId && existing.expiresAtMs > now) {
+                // Known device with a live key → slide the 24h window, skip re-approval.
+                existing.expiresAtMs = now + GRANT_TTL_MS
+                canControl = existing.canControl
+                ws.send(Frame.Text(ShareProtocol.encodeServer(
+                    ServerMessage.Grant(existing.key, existing.expiresAtMs, canControl))))
+            } else {
+                hello?.key?.let { grants.remove(it) } // drop a stale/expired key
+                val req = PendingShareRequest(
+                    id = UUID.randomUUID().toString(),
+                    tabId = share.tabId,
+                    deviceName = hello?.name?.takeIf { it.isNotBlank() } ?: "Browser (${clientId.take(6)})",
+                    wantsControl = ref.canControl,
+                )
+                _pendingRequests.value = _pendingRequests.value + req
+                runCatching { ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Pending))) }
+                val approved = withTimeoutOrNull(2 * 60_000L) { req.decision.await() } ?: false
+                _pendingRequests.value = _pendingRequests.value.filterNot { it.id == req.id }
+                if (!approved) {
+                    runCatching { ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Denied("Not approved")))) }
+                    ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Not approved"))
+                    return
+                }
+                val key = newKey()
+                val exp = System.currentTimeMillis() + GRANT_TTL_MS
+                grants[key] = Grant(key, shareId, clientId, ref.canControl, exp)
+                canControl = ref.canControl
+                ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Grant(key, exp, canControl))))
+            }
+        }
+
+        // Admit: Theme + Layout + a PaneSnapshot per pane, THEN register so the outbox
+        // only carries output produced after the snapshot (avoids double-rendering).
         share.initialMessages().forEach { ws.send(Frame.Text(ShareProtocol.encodeServer(it))) }
-        // Control granted iff this connection used the control token.
-        ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Control(granted = ref.canControl))))
-        val vc = share.addViewer(ref.canControl)
+        ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Control(granted = canControl))))
+        val vc = share.addViewer(canControl)
         val writer = ws.launch {
             for (text in vc.outbox) ws.send(Frame.Text(text))
         }
@@ -377,6 +499,15 @@ object SessionShareManager {
             writer.cancel()
             share.removeViewer(vc)
         }
+    }
+
+    /** Read the first frame as a [ClientMessage.Hello] (best-effort, short timeout). */
+    private suspend fun readHello(
+        ws: io.ktor.server.websocket.DefaultWebSocketServerSession
+    ): ClientMessage.Hello? {
+        val frame = withTimeoutOrNull(10_000L) { runCatching { ws.incoming.receive() }.getOrNull() } ?: return null
+        if (frame !is Frame.Text) return null
+        return runCatching { ShareProtocol.decodeClient(frame.readText()) }.getOrNull() as? ClientMessage.Hello
     }
 
     /**

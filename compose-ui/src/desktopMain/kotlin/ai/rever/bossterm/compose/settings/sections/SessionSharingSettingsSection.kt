@@ -74,6 +74,15 @@ fun SessionSharingSettingsSection(
                 description = "If you front the server with your own reverse proxy / cloudflared / SSH " +
                         "reverse tunnel, set the public base URL here (use https for internet access)."
             )
+            SettingsDropdown(
+                label = "Require device approval",
+                options = listOf("off", "funnel", "all"),
+                selectedOption = settings.sessionSharingApprovalScope,
+                onOptionSelected = { onSettingsChange(settings.copy(sessionSharingApprovalScope = it)) },
+                description = "Ask before a new device may view/control. funnel (default) = only for " +
+                        "public reach (Funnel or a custom URL); all = every device incl. LAN; off = the " +
+                        "link alone grants access. Approved devices get a 24h key so they aren't re-prompted."
+            )
         }
     }
 }

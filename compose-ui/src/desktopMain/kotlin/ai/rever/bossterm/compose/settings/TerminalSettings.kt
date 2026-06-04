@@ -936,6 +936,17 @@ data class TerminalSettings(
     val sessionSharingPublicUrl: String = "",
 
     /**
+     * When a new device connects to a share, whether the host must approve it before
+     * it can view/control. On approval the device gets a 24h rolling access key so it
+     * isn't re-prompted on every reconnect. Values:
+     *  - "off":    no approval — the share link alone grants access (original behavior).
+     *  - "funnel": require approval only for public reach (Tailscale Funnel or a custom
+     *              public URL); LAN and Tailscale Serve stay link-only. (default)
+     *  - "all":    require approval for every connection, including LAN.
+     */
+    val sessionSharingApprovalScope: String = "funnel",
+
+    /**
      * Show the small status indicator while a tab is being shared. Mirrors
      * [mcpShowStatusIndicator] for the share server.
      */

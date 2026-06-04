@@ -75,6 +75,9 @@ fun ShareWindow(
     onStop: () -> Unit,
     onScopeChange: (ShareScope) -> Unit,
     focusTick: Int = 0,
+    pendingRequests: List<SessionShareManager.PendingShareRequest> = emptyList(),
+    onApproveRequest: (String) -> Unit = {},
+    onDenyRequest: (String) -> Unit = {},
 ) {
     val clipboard = LocalClipboardManager.current
     val isWindow = info.scope == ShareScope.WINDOW
@@ -108,6 +111,14 @@ fun ShareWindow(
                     color = TextSecondary, fontSize = 12.sp
                 )
                 Spacer(Modifier.height(20.dp))
+
+                // Devices waiting for approval surface first so the host acts on them.
+                if (pendingRequests.isNotEmpty()) {
+                    SettingsSection("Pending requests") {
+                        PendingRequestsList(pendingRequests, onApproveRequest, onDenyRequest)
+                    }
+                    Spacer(Modifier.height(20.dp))
+                }
 
                 SettingsSection("QR code") {
                     // QR first, then the View/Control toggle below it, then the caption —

@@ -791,6 +791,9 @@ fun TabbedTerminal(
     // window is already open raises that window instead of leaving it behind.
     var shareFocusTick by remember { mutableStateOf(0) }
     val sharedTabIds by ai.rever.bossterm.compose.share.SessionShareManager.sharedTabIds.collectAsState()
+    // Devices awaiting host approval to connect (issue #276) — drives the approval toast
+    // and the share dialog's pending list.
+    val pendingShareRequests by ai.rever.bossterm.compose.share.SessionShareManager.pendingRequests.collectAsState()
     // Show (and focus) the share window for [info]. No-op when info is null.
     fun openShareWindow(info: ai.rever.bossterm.compose.share.SessionShareManager.ShareInfo?) {
         if (info == null) return
@@ -1418,7 +1421,7 @@ fun TabbedTerminal(
         // QR/links dialog if already shared). Shown per its own toggle.
         val showMcpStatus = settings.mcpShowStatusIndicator
         val showSharingStatus = settings.sessionSharingShowIndicator
-        if (showMcpStatus || showSharingStatus || attachStatus != null) {
+        if (showMcpStatus || showSharingStatus || attachStatus != null || pendingShareRequests.isNotEmpty()) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -1476,6 +1479,14 @@ fun TabbedTerminal(
                 attachStatus?.let { status ->
                     AttachToast(status = status)
                 }
+                // Approval prompts (issue #276): one banner per waiting device.
+                pendingShareRequests.forEach { req ->
+                    ai.rever.bossterm.compose.share.ShareRequestToast(
+                        request = req,
+                        onApprove = { ai.rever.bossterm.compose.share.SessionShareManager.approveRequest(req.id) },
+                        onDeny = { ai.rever.bossterm.compose.share.SessionShareManager.denyRequest(req.id) },
+                    )
+                }
             }
         }
     }
@@ -1494,7 +1505,10 @@ fun TabbedTerminal(
                 // Re-scope in place (same tokens/links/viewers) and refresh the dialog.
                 ai.rever.bossterm.compose.share.SessionShareManager.reshare(info.tabId, scope)?.let { shareDialog = it }
             },
-            focusTick = shareFocusTick
+            focusTick = shareFocusTick,
+            pendingRequests = pendingShareRequests,
+            onApproveRequest = { ai.rever.bossterm.compose.share.SessionShareManager.approveRequest(it) },
+            onDenyRequest = { ai.rever.bossterm.compose.share.SessionShareManager.denyRequest(it) },
         )
     }
 

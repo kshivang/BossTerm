@@ -28,6 +28,15 @@
             border: 1px solid transparent; }
     .pane.focused { border-color: #4a90e2; }
     .termhost { width: 100%; height: 100%; overflow: hidden; }
+    #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+               background: rgba(20,20,20,0.92); z-index: 10; padding: 24px; }
+    #overlay-card { max-width: 360px; text-align: center; background: #2b2b2b; border: 1px solid #404040;
+                    border-radius: 10px; padding: 24px 28px; }
+    #overlay-spinner { width: 26px; height: 26px; margin: 0 auto 14px; border: 3px solid #444;
+                       border-top-color: #4a90e2; border-radius: 50%; animation: spin 0.9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #overlay-title { font-size: 15px; color: #fff; margin-bottom: 6px; }
+    #overlay-msg { font-size: 12px; color: #b0b0b0; line-height: 1.5; }
   </style>
 </head>
 <body>
@@ -38,6 +47,14 @@
     <span class="badge" id="presence"></span>
   </div>
   <div id="stage"></div>
+
+  <div id="overlay" style="display:none">
+    <div id="overlay-card">
+      <div id="overlay-spinner"></div>
+      <div id="overlay-title">Waiting for host approval…</div>
+      <div id="overlay-msg"></div>
+    </div>
+  </div>
 
   <script src="vendor/xterm.js"></script>
   <script src="viewer.js"></script>

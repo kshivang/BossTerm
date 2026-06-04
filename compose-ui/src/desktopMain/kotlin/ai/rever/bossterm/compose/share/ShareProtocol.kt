@@ -63,6 +63,25 @@ sealed class ServerMessage {
     @SerialName("control")
     data class Control(val granted: Boolean) : ServerMessage()
 
+    /** Host requires approval and this viewer's request is awaiting the host's decision. */
+    @Serializable
+    @SerialName("pending")
+    data object Pending : ServerMessage()
+
+    /**
+     * The host approved this device: a per-device access [key] valid until [expiresAt]
+     * (epoch ms). The viewer persists it and replays it on reconnect to skip re-approval;
+     * the host slides [expiresAt] forward on each accepted use (24h rolling window).
+     */
+    @Serializable
+    @SerialName("grant")
+    data class Grant(val key: String, val expiresAt: Long, val control: Boolean) : ServerMessage()
+
+    /** The host denied the request (or it timed out / the key expired). */
+    @Serializable
+    @SerialName("denied")
+    data class Denied(val reason: String? = null) : ServerMessage()
+
     /** Host terminal theme (core colors + 16 ANSI + font) so the viewer matches BossTerm. */
     @Serializable
     @SerialName("theme")
@@ -99,10 +118,18 @@ sealed class PaneTreeNode {
 /** Viewer → host messages. */
 @Serializable
 sealed class ClientMessage {
-    /** Handshake with an optional display name. */
+    /**
+     * Handshake. [name] is a display label for the host's approval prompt; [clientId]
+     * is a stable per-browser id (localStorage) so a device is recognized across
+     * reconnects; [key] is a previously granted access key replayed to skip re-approval.
+     */
     @Serializable
     @SerialName("hello")
-    data class Hello(val name: String? = null) : ClientMessage()
+    data class Hello(
+        val name: String? = null,
+        val clientId: String? = null,
+        val key: String? = null,
+    ) : ClientMessage()
 
     /** Keystrokes for a specific pane. Honored only with controller role. */
     @Serializable

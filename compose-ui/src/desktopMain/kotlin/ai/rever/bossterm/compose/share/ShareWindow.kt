@@ -2,7 +2,10 @@ package ai.rever.bossterm.compose.share
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -183,13 +186,19 @@ private fun LinkRow(label: String, url: String, clipboard: ClipboardManager) {
     }
 }
 
-/** Segmented View/Control toggle controlling which link the QR encodes. */
+/**
+ * Segmented View/Control toggle controlling which link the QR encodes. Built with
+ * [clickable] rather than a clickable [Surface] so it isn't forced to Material3's
+ * 48dp minimum touch size — keeping the compact padding BossTerm uses elsewhere
+ * (e.g. the search bar's toggles).
+ */
 @Composable
 private fun QrModeToggle(controlSelected: Boolean, onSelect: (Boolean) -> Unit, modifier: Modifier = Modifier) {
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(PanelColor)
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color(0xFF252526))
+            .border(1.dp, Color(0xFF3C3C3C), RoundedCornerShape(6.dp))
             .padding(2.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp)
     ) {
@@ -200,13 +209,15 @@ private fun QrModeToggle(controlSelected: Boolean, onSelect: (Boolean) -> Unit, 
 
 @Composable
 private fun Seg(label: String, selected: Boolean, onClick: () -> Unit) {
-    Surface(
-        onClick = onClick,
-        color = if (selected) Accent else Color.Transparent,
-        contentColor = if (selected) Color.White else DimColor,
-        shape = RoundedCornerShape(6.dp)
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(if (selected) Accent else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 5.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Text(label, modifier = Modifier.padding(horizontal = 16.dp, vertical = 5.dp), fontSize = 12.sp)
+        Text(label, color = if (selected) Color.White else Color(0xFF808080), fontSize = 12.sp)
     }
 }
 

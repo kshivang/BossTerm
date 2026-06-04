@@ -14,7 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.HorizontalSplit
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.VerticalSplit
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -185,7 +185,7 @@ fun TabBar(
             barButton(Icons.Default.Add, "New Tab", onNewTab)
             barButton(Icons.Default.VerticalSplit, "Split Left/Right", onSplitVertical)
             barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom", onSplitHorizontal)
-            barButton(Icons.Default.Share, "Share Window", { onShareWindow(activeTabIndex) })
+            barButton(Icons.Default.QrCode2, "Share Window (QR)", { onShareWindow(activeTabIndex) })
         }
     }
 

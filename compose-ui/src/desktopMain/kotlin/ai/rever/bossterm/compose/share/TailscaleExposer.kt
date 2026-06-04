@@ -65,14 +65,29 @@ object TailscaleExposer {
         }.getOrNull()?.takeIf { it.isNotBlank() }
     }
 
-    private fun runCmd(cmd: List<String>, timeoutSec: Long): String? = try {
-        val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
-        val out = p.inputStream.bufferedReader().readText()
-        if (!p.waitFor(timeoutSec, TimeUnit.SECONDS)) {
-            p.destroyForcibly()
+    private fun runCmd(cmd: List<String>, timeoutSec: Long): String? {
+        return try {
+            val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
+            // Close the child's stdin so a CLI that prompts for input (e.g. `tailscale
+            // serve` asking to enable a feature) gets EOF instead of waiting forever.
+            runCatching { p.outputStream.close() }
+            // Drain stdout on a daemon thread. The previous code read to EOF *before*
+            // waitFor(), so a process that never closes its output (a hung `tailscale
+            // serve`) blocked the read indefinitely and the timeout never fired — that
+            // is what froze the UI thread for minutes. Reading off-thread lets waitFor()
+            // own the deadline and destroy the process if it overruns.
+            val sb = StringBuilder()
+            val reader = Thread {
+                runCatching { p.inputStream.bufferedReader().forEachLine { sb.append(it).append('\n') } }
+            }.apply { isDaemon = true; start() }
+            if (!p.waitFor(timeoutSec, TimeUnit.SECONDS)) {
+                p.destroyForcibly()
+                return null
+            }
+            reader.join(500)
+            if (p.exitValue() == 0) sb.toString() else null
+        } catch (e: Exception) {
             null
-        } else if (p.exitValue() == 0) out else null
-    } catch (e: Exception) {
-        null
+        }
     }
 }

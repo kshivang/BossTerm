@@ -287,14 +287,27 @@ object SessionShareManager {
                 boundHost = host
                 log.info("Session-sharing server bound on {}:{} (bind={})", host, port, settings.sessionSharingBind)
                 // Phase 3: expose remotely via Tailscale if configured. Best-effort —
-                // failure just leaves us on the LAN/loopback URL. Kept inline (under the
-                // mutex) because the share dialog needs the published https URL the moment
-                // share() returns; this only blocks once — on the FIRST share of a server
-                // lifecycle when Tailscale is enabled (the engine is reused thereafter, so
-                // ensureEngineLocked returns early and never re-runs this).
-                if (settings.shareTailscaleMode != "off") {
-                    tailscaleMode = settings.shareTailscaleMode
-                    tailscaleUrl = TailscaleExposer.enable(tailscaleMode, port)
+                // failure just leaves us on the LAN/loopback URL. Run it OFF the share
+                // path (manager scope, Dispatchers.IO): shelling out to the `tailscale`
+                // CLI can be slow or hang, and ensureEngineLocked runs synchronously on
+                // the caller's (UI) thread — doing it inline froze the whole app while a
+                // stuck `tailscale serve` was draining. The dialog opens immediately with
+                // the LAN URL; the Tailscale URL is picked up when the dialog is next
+                // (re)opened. Guarded so it only fires once per server lifecycle.
+                if (settings.shareTailscaleMode != "off" && tailscaleMode == "off") {
+                    val tsMode = settings.shareTailscaleMode
+                    val tsPort = port
+                    tailscaleMode = tsMode
+                    scope.launch {
+                        val url = TailscaleExposer.enable(tsMode, tsPort)
+                        if (url != null) {
+                            tailscaleUrl = url
+                            log.info("Session-sharing reachable via Tailscale: {}", url)
+                        } else {
+                            log.warn("Tailscale {} did not yield a URL; using the LAN link. " +
+                                "Check `tailscale status` and that {} is enabled for your tailnet.", tsMode, tsMode)
+                        }
+                    }
                 }
                 return true
             } catch (e: Throwable) {

@@ -1262,14 +1262,21 @@ fun TabbedTerminal(
                                 action = { ai.rever.bossterm.compose.share.SessionShareManager.unshare(activeTab.id) }
                             )
                         } else {
-                            items + ContextMenuItem(
-                                id = "share_tab",
-                                label = "Share Tab…",
-                                action = { startShare(activeTab.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
-                            ) + ContextMenuItem(
-                                id = "share_window",
-                                label = "Share Window…",
-                                action = { startShare(activeTab.id, ai.rever.bossterm.compose.share.ShareScope.WINDOW) }
+                            items + ContextMenuSubmenu(
+                                id = "share_submenu",
+                                label = "Share",
+                                items = listOf(
+                                    ContextMenuItem(
+                                        id = "share_tab",
+                                        label = "Tab…",
+                                        action = { startShare(activeTab.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
+                                    ),
+                                    ContextMenuItem(
+                                        id = "share_window",
+                                        label = "Window…",
+                                        action = { startShare(activeTab.id, ai.rever.bossterm.compose.share.ShareScope.WINDOW) }
+                                    )
+                                )
                             )
                         }
                     }

@@ -88,6 +88,28 @@
   var activeTabId = null;         // client-side selected tab
   var panes = {};                 // paneId -> { term, host(el) }
   var ws = null;
+  var baseFontSize = 13;          // host's intended font size; fit never exceeds it
+
+  // Auto-fit a pane's font so the host's full column width is visible (zoom-out to fit),
+  // never larger than the host's size. Linear in fontSize since the grid is monospace;
+  // pinch-zoom still works on top for reading detail. Vertical overflow scrolls.
+  function fitPane(p) {
+    if (!p) return;
+    var pane = p.host.parentElement; if (!pane) return;
+    var screen = p.host.querySelector(".xterm-screen"); if (!screen) return;
+    var avail = pane.clientWidth - 2;
+    var w = screen.getBoundingClientRect().width;
+    if (avail <= 0 || w <= 0) return;
+    var cur = (p.term.options && p.term.options.fontSize) || baseFontSize;
+    var target = Math.max(6, Math.min(baseFontSize, Math.floor(cur * (avail / w))));
+    if (target !== cur) { try { p.term.options.fontSize = target; } catch (e) {} }
+  }
+  function fitAll() {
+    requestAnimationFrame(function () { Object.keys(panes).forEach(function (id) { fitPane(panes[id]); }); });
+  }
+  window.addEventListener("resize", fitAll);
+  window.addEventListener("orientationchange", fitAll);
+  if (window.visualViewport) window.visualViewport.addEventListener("resize", fitAll);
 
   function setStatus(cls) { statusEl.className = cls; }
 
@@ -181,6 +203,7 @@
 
   function applyTheme(m) {
     theme = m;
+    if (m.fontSize) baseFontSize = m.fontSize;
     Object.keys(panes).forEach(function (id) {
       var o = {}; applyThemeToOpts(o);
       var t = panes[id].term;
@@ -193,6 +216,7 @@
       document.body.style.background = m.background;
       stageEl.style.background = m.background;
     }
+    fitAll();
   }
 
   // ---- layout rendering ----
@@ -302,6 +326,7 @@
     var root = buildNode(tab.tree);
     root.style.flex = "1 1 0";
     stageEl.appendChild(root);
+    fitAll(); // re-fit fonts to the (re)rendered panes' widths
   }
 
   function onLayout(m) {
@@ -359,10 +384,13 @@
         if (m.cols && m.rows) p.term.resize(m.cols, m.rows);
         p.term.reset();
         if (m.data) p.term.write(m.data);
+        fitPane(p);
         break;
       }
       case "paneOutput": if (m.data) getPane(m.paneId).term.write(m.data); break;
-      case "paneResize": if (m.cols && m.rows) getPane(m.paneId).term.resize(m.cols, m.rows); break;
+      case "paneResize":
+        if (m.cols && m.rows) { var rp = getPane(m.paneId); rp.term.resize(m.cols, m.rows); fitPane(rp); }
+        break;
       case "presence":
         presenceEl.textContent = m.viewers === 1 ? "1 viewer" : m.viewers + " viewers"; break;
       case "control":

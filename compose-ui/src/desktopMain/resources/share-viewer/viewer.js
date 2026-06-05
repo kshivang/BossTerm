@@ -88,28 +88,25 @@
   var activeTabId = null;         // client-side selected tab
   var panes = {};                 // paneId -> { term, host(el) }
   var ws = null;
-  var baseFontSize = 13;          // host's intended font size; fit never exceeds it
-
-  // Auto-fit a pane's font so the host's full column width is visible (zoom-out to fit),
-  // never larger than the host's size. Linear in fontSize since the grid is monospace;
-  // pinch-zoom still works on top for reading detail. Vertical overflow scrolls.
-  function fitPane(p) {
-    if (!p) return;
-    var pane = p.host.parentElement; if (!pane) return;
-    var screen = p.host.querySelector(".xterm-screen"); if (!screen) return;
-    var avail = pane.clientWidth - 2;
-    var w = screen.getBoundingClientRect().width;
-    if (avail <= 0 || w <= 0) return;
-    var cur = (p.term.options && p.term.options.fontSize) || baseFontSize;
-    var target = Math.max(6, Math.min(baseFontSize, Math.floor(cur * (avail / w))));
-    if (target !== cur) { try { p.term.options.fontSize = target; } catch (e) {} }
+  // Give the active single pane its NATURAL width so a wide host terminal scrolls
+  // horizontally inside #stage. (xterm's own viewport is a y-scroll container that clips
+  // x, so we can't get native horizontal scroll from it — instead we expose the full
+  // width by sizing the pane to content and letting #stage scroll both axes. Vertical
+  // scrollback stays inside xterm; pinch-zoom works on top. Splits keep the fill layout.)
+  function relayoutSinglePane() {
+    if (!layout) return;
+    var tab = null, i;
+    for (i = 0; i < layout.tabs.length; i++) if (layout.tabs[i].id === activeTabId) tab = layout.tabs[i];
+    if (!tab) tab = layout.tabs[0];
+    if (!tab || !tab.tree || tab.tree.t !== "pane") return;
+    var p = panes[tab.tree.paneId]; if (!p) return;
+    requestAnimationFrame(function () {
+      var sc = p.host.querySelector(".xterm-screen");
+      if (sc) { var w = Math.ceil(sc.getBoundingClientRect().width); if (w > 0) p.host.style.width = w + "px"; }
+    });
   }
-  function fitAll() {
-    requestAnimationFrame(function () { Object.keys(panes).forEach(function (id) { fitPane(panes[id]); }); });
-  }
-  window.addEventListener("resize", fitAll);
-  window.addEventListener("orientationchange", fitAll);
-  if (window.visualViewport) window.visualViewport.addEventListener("resize", fitAll);
+  window.addEventListener("resize", relayoutSinglePane);
+  window.addEventListener("orientationchange", relayoutSinglePane);
 
   function setStatus(cls) { statusEl.className = cls; }
 
@@ -203,7 +200,6 @@
 
   function applyTheme(m) {
     theme = m;
-    if (m.fontSize) baseFontSize = m.fontSize;
     Object.keys(panes).forEach(function (id) {
       var o = {}; applyThemeToOpts(o);
       var t = panes[id].term;
@@ -216,7 +212,7 @@
       document.body.style.background = m.background;
       stageEl.style.background = m.background;
     }
-    fitAll();
+    relayoutSinglePane();
   }
 
   // ---- layout rendering ----
@@ -324,9 +320,18 @@
     var ids = {}; collectPaneIds(tab.tree, ids);
     if (!currentPaneId || !ids[currentPaneId]) currentPaneId = firstFocusedPane(tab.tree);
     var root = buildNode(tab.tree);
-    root.style.flex = "1 1 0";
+    if (tab.tree.t === "pane") {
+      // single pane → natural width, scrollable in #stage (don't stretch/clip)
+      root.style.flex = "0 0 auto";
+      root.style.height = "100%";
+      root.style.overflow = "visible";
+      var sp = panes[tab.tree.paneId];
+      if (sp) { sp.host.style.overflow = "visible"; sp.host.style.height = "100%"; }
+    } else {
+      root.style.flex = "1 1 0"; // splits fill the stage
+    }
     stageEl.appendChild(root);
-    fitAll(); // re-fit fonts to the (re)rendered panes' widths
+    relayoutSinglePane(); // size a single pane to its natural width for horizontal scroll
   }
 
   function onLayout(m) {
@@ -384,12 +389,12 @@
         if (m.cols && m.rows) p.term.resize(m.cols, m.rows);
         p.term.reset();
         if (m.data) p.term.write(m.data);
-        fitPane(p);
+        relayoutSinglePane();
         break;
       }
       case "paneOutput": if (m.data) getPane(m.paneId).term.write(m.data); break;
       case "paneResize":
-        if (m.cols && m.rows) { var rp = getPane(m.paneId); rp.term.resize(m.cols, m.rows); fitPane(rp); }
+        if (m.cols && m.rows) { getPane(m.paneId).term.resize(m.cols, m.rows); relayoutSinglePane(); }
         break;
       case "presence":
         presenceEl.textContent = m.viewers === 1 ? "1 viewer" : m.viewers + " viewers"; break;

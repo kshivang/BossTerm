@@ -2,6 +2,11 @@ package ai.rever.bossterm.compose.share
 
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO as ClientCIO
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsText
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
@@ -21,6 +26,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -78,6 +84,45 @@ object SessionShareManager {
      * the UI observes this to refresh the dialog to the public link when it's ready.
      */
     val remoteUrlFlow: StateFlow<String?> = _remoteUrlFlow.asStateFlow()
+
+    /** Lifecycle of the remote-access link, surfaced in the share dialog. */
+    enum class RemoteStatus { Off, Starting, Verifying, Active, Retrying, FellBack }
+
+    /** Remote-access status snapshot: phase + provider [mode] + retry progress. */
+    data class RemoteState(
+        val status: RemoteStatus,
+        val mode: String,
+        val attempt: Int = 0,
+        val maxAttempts: Int = 0,
+    )
+
+    private val _remoteStateFlow = MutableStateFlow(RemoteState(RemoteStatus.Off, "off"))
+    /** Observed by the share dialog to show "starting / verifying / retrying / active / fell back". */
+    val remoteStateFlow: StateFlow<RemoteState> = _remoteStateFlow.asStateFlow()
+
+    // Cloudflare quick tunnels often 5xx for a few seconds after the URL prints (edge warming
+    // up), so we poll the link before publishing it; if it never comes good we spin a fresh
+    // tunnel a couple of times, else fall back to the LAN link.
+    private const val VERIFY_POLLS = 6
+    private const val VERIFY_INTERVAL_MS = 2_000L
+    private const val MAX_REFRESHES = 2
+
+    // Short-lived HTTP client for the link health-check (Ktor client; already a dependency).
+    private val httpClientLazy = lazy {
+        HttpClient(ClientCIO) {
+            install(HttpTimeout) { requestTimeoutMillis = 5_000; connectTimeoutMillis = 4_000 }
+        }
+    }
+    private val httpClient by httpClientLazy
+
+    /**
+     * True if [url] actually serves our viewer end-to-end (GET `<url>/` → 200 + the viewer's
+     * "BossTerm" title), i.e. the tunnel routes to us rather than a Cloudflare error page.
+     */
+    private suspend fun linkHealthy(url: String): Boolean = runCatching {
+        val resp = httpClient.get("${url.trimEnd('/')}/")
+        resp.status.value in 200..299 && resp.bodyAsText().contains("BossTerm")
+    }.getOrDefault(false)
 
     /** A token resolves to a share and whether that token grants control. */
     private data class TokenRef(val share: MirrorShare, val canControl: Boolean)
@@ -249,47 +294,103 @@ object SessionShareManager {
     }
 
     /**
-     * Regenerate the remote-access link in place — get a fresh tunnel and publish it.
-     * Cloudflare quick-tunnel URLs are ephemeral (new one per process, and a tunnel can
-     * drop), so this is the "give me a new link" action in the share dialog. The share
-     * server + viewers keep running; the open dialog updates via [remoteUrlFlow].
-     *
-     * For Cloudflare the new tunnel is brought up and its URL captured *before* the old
-     * process is killed, so the dialog jumps straight from the old link to the new one
-     * (no momentary fallback to the LAN URL). Tailscale serve/funnel URLs are stable, so
-     * this just re-affirms the mapping. No-op when remote access is off (the LAN link
-     * never changes). Runs off the UI thread.
+     * Regenerate the remote-access link in place — the "give me a new link" action in the
+     * share dialog (Cloudflare quick-tunnel URLs are ephemeral and can drop). Re-runs the
+     * configured provider through the verified establish path (so the new Cloudflare link
+     * is health-checked before it's published) and drives [remoteStateFlow]. No-op when
+     * remote access is off. Runs off the UI thread.
      */
     fun refreshRemoteLink() {
         scope.launch {
             val port = boundPort ?: return@launch
             val mode = SettingsManager.instance.settings.value.shareTailscaleMode
             if (mode == "off") return@launch
+            withContext(Dispatchers.IO) { establishRemote(mode, port) }
+        }
+    }
+
+    /**
+     * Switch the **live** remote-access provider (the share dialog's Off/Serve/Funnel/
+     * Cloudflare picker, after the user confirms). Tears down the current exposure and
+     * establishes the new one in place — same server + viewers, a new link. When sharing
+     * isn't active (no bound port) this is a no-op; the persisted setting applies next share.
+     */
+    fun applyRemoteMode(mode: String) {
+        scope.launch {
+            val port = boundPort ?: return@launch
             withContext(Dispatchers.IO) {
-                val newUrl = when (mode) {
-                    "cloudflare" -> {
-                        val newProc = CloudflaredExposer.start(port)
-                        val u = newProc?.let { CloudflaredExposer.awaitUrl(it) }
-                        if (u != null) {
-                            val old = remoteProcess
-                            remoteProcess = newProc
-                            runCatching { old?.destroyForcibly() } // swap, then kill the old tunnel
-                        } else {
-                            runCatching { newProc?.destroyForcibly() } // failed — don't leak it
-                        }
-                        u
-                    }
-                    else -> TailscaleExposer.enable(mode, port) // serve/funnel: URL is stable
-                }
-                activeRemoteMode = mode
-                if (newUrl != null) {
-                    remoteUrl = newUrl
-                    _remoteUrlFlow.value = newUrl
-                    log.info("Session-sharing remote link refreshed via {}: {}", mode, newUrl)
-                } else {
-                    log.warn("Remote link refresh ({}) did not yield a URL; keeping the current link.", mode)
+                teardownRemoteAccess(port)
+                if (mode != "off") establishRemote(mode, port)
+                else _remoteStateFlow.value = RemoteState(RemoteStatus.Off, "off")
+            }
+        }
+    }
+
+    /**
+     * Bring up remote access for [mode] on [port], publishing the URL only once it's
+     * confirmed working, and driving [remoteStateFlow] through Starting → Verifying/
+     * Retrying → Active, or → FellBack (URL stays unpublished, so [buildUrl] uses the LAN
+     * link). Shared by the initial share, manual refresh, and live mode switch.
+     */
+    private suspend fun establishRemote(mode: String, port: Int) {
+        activeRemoteMode = mode
+        // Drop any stale link while we (re)establish, so the dialog shows the LAN link +
+        // progress rather than a soon-to-be-dead URL.
+        remoteUrl = null
+        _remoteUrlFlow.value = null
+        _remoteStateFlow.value = RemoteState(RemoteStatus.Starting, mode)
+        val url: String? = when (mode) {
+            "cloudflare" -> establishCloudflareVerified(port)
+            "serve", "funnel" -> TailscaleExposer.enable(mode, port) // stable URL; published as-is
+            else -> null
+        }
+        if (url != null) {
+            remoteUrl = url
+            _remoteUrlFlow.value = url
+            _remoteStateFlow.value = RemoteState(RemoteStatus.Active, mode)
+            log.info("Session-sharing reachable via {}: {}", mode, url)
+        } else {
+            _remoteStateFlow.value = RemoteState(RemoteStatus.FellBack, mode)
+            log.warn(
+                "Remote access ({}) did not yield a working link; using the LAN link. " +
+                    "For tailscale check `tailscale status`; for cloudflare ensure `cloudflared` is installed.",
+                mode
+            )
+        }
+    }
+
+    /**
+     * Start a Cloudflare quick tunnel and return its URL only once it actually serves us.
+     * Polls the freshly-printed URL ([VERIFY_POLLS] × [VERIFY_INTERVAL_MS], to ride out the
+     * edge warm-up), and if it never comes good spins a brand-new tunnel up to
+     * [MAX_REFRESHES] times. Returns null (→ caller falls back to LAN) if all attempts fail.
+     */
+    private suspend fun establishCloudflareVerified(port: Int): String? {
+        runCatching { remoteProcess?.destroyForcibly() } // kill a prior tunnel (refresh/switch)
+        var proc = CloudflaredExposer.start(port) ?: return null
+        remoteProcess = proc
+        var url = CloudflaredExposer.awaitUrl(proc)
+        var refreshes = 0
+        while (true) {
+            val u = url
+            if (u != null) {
+                _remoteStateFlow.value = RemoteState(RemoteStatus.Verifying, "cloudflare")
+                repeat(VERIFY_POLLS) { i ->
+                    if (linkHealthy(u)) return u
+                    if (i < VERIFY_POLLS - 1) delay(VERIFY_INTERVAL_MS)
                 }
             }
+            if (refreshes >= MAX_REFRESHES) {
+                runCatching { proc.destroyForcibly() }
+                remoteProcess = null
+                return null
+            }
+            refreshes++
+            _remoteStateFlow.value = RemoteState(RemoteStatus.Retrying, "cloudflare", refreshes, MAX_REFRESHES)
+            runCatching { proc.destroyForcibly() }
+            proc = CloudflaredExposer.start(port) ?: run { remoteProcess = null; return null }
+            remoteProcess = proc
+            url = CloudflaredExposer.awaitUrl(proc)
         }
     }
 
@@ -361,6 +462,7 @@ object SessionShareManager {
         failAllPending()
         _sharedTabIds.value = emptySet()
         teardownRemoteAccess(boundPort)
+        if (httpClientLazy.isInitialized()) runCatching { httpClient.close() }
         val e = engine ?: return
         runCatching { e.stop(200, 800) }
         engine = null
@@ -444,27 +546,8 @@ object SessionShareManager {
                 if (settings.shareTailscaleMode != "off" && activeRemoteMode == "off") {
                     val mode = settings.shareTailscaleMode
                     val rPort = port
-                    activeRemoteMode = mode
-                    scope.launch {
-                        val url = when (mode) {
-                            "cloudflare" -> CloudflaredExposer.start(rPort)?.let { proc ->
-                                remoteProcess = proc
-                                CloudflaredExposer.awaitUrl(proc)
-                            }
-                            else -> TailscaleExposer.enable(mode, rPort) // "serve" / "funnel"
-                        }
-                        if (url != null) {
-                            remoteUrl = url
-                            _remoteUrlFlow.value = url  // refresh any open share dialog to the public URL
-                            log.info("Session-sharing reachable via {}: {}", mode, url)
-                        } else {
-                            log.warn(
-                                "Remote access ({}) did not yield a URL; using the LAN link. " +
-                                    "For tailscale check `tailscale status`; for cloudflare ensure `cloudflared` is installed.",
-                                mode
-                            )
-                        }
-                    }
+                    activeRemoteMode = mode // claim it now so this fires once per lifecycle
+                    scope.launch { establishRemote(mode, rPort) }
                 }
                 return true
             } catch (e: Throwable) {
@@ -510,6 +593,7 @@ object SessionShareManager {
         remoteProcess = null
         remoteUrl = null
         _remoteUrlFlow.value = null
+        _remoteStateFlow.value = RemoteState(RemoteStatus.Off, "off")
         activeRemoteMode = "off"
     }
 

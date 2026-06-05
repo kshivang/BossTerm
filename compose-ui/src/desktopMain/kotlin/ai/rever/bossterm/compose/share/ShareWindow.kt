@@ -27,8 +27,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.ArrowRight
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -310,7 +314,13 @@ private fun RemoteAccessSetupSection(
                 .clickable { expanded = !expanded }.padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(if (expanded) "▾" else "▸", color = TextSecondary, fontSize = 18.sp, modifier = Modifier.width(22.dp))
+            Icon(
+                imageVector = if (expanded) Icons.Default.ArrowDropDown else Icons.Default.ArrowRight,
+                contentDescription = if (expanded) "Collapse" else "Expand",
+                tint = TextSecondary,
+                modifier = Modifier.size(28.dp)
+            )
+            Spacer(Modifier.width(2.dp))
             Text("Remote access", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
             Text(

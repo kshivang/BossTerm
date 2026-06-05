@@ -22,6 +22,7 @@
   var keybarEl = document.getElementById("keybar");
   var menubtnEl = document.getElementById("menubtn");
   var bodyEl = document.getElementById("body");
+  var ctxEl = document.getElementById("ctxmenu");
   var tabBarOnLeft = false;       // mirror the host's tab-bar orientation
   var currentPaneId = null;       // pane the on-screen key bar targets
   function sendMsg(o) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); }
@@ -132,6 +133,67 @@
   document.getElementById("zoomin").onclick = function () { applyFont(curFont() + 1); };
   document.getElementById("zoomout").onclick = function () { applyFont(curFont() - 1); };
   document.getElementById("zoomfit").onclick = fitWidth;
+
+  // ---- right-click / long-press context menu ----
+  // Copy via the async Clipboard API where available (needs a secure context: https /
+  // localhost), else fall back to a hidden-textarea execCommand("copy") so plain-LAN
+  // http viewers can still copy.
+  function copyText(t) {
+    if (!t) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).catch(function () { copyFallback(t); });
+    } else { copyFallback(t); }
+  }
+  function copyFallback(t) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      document.execCommand("copy"); document.body.removeChild(ta);
+    } catch (e) {}
+  }
+  function hideContextMenu() { ctxEl.style.display = "none"; ctxEl.innerHTML = ""; }
+  function ctxItem(label, enabled, onClick) {
+    var it = document.createElement("div");
+    it.className = "ctxitem" + (enabled ? "" : " disabled");
+    it.textContent = label;
+    if (enabled) it.addEventListener("mousedown", function (e) {
+      e.preventDefault(); e.stopPropagation(); hideContextMenu(); onClick();
+    });
+    return it;
+  }
+  function showContextMenu(x, y, paneId) {
+    var p = panes[paneId]; if (!p) return;
+    var term = p.term;
+    var hasSel = false; try { hasSel = term.hasSelection(); } catch (e) {}
+    ctxEl.innerHTML = "";
+    ctxEl.appendChild(ctxItem("Copy", hasSel, function () {
+      var s = ""; try { s = term.getSelection(); } catch (e) {}
+      copyText(s); try { term.clearSelection(); } catch (e) {}
+    }));
+    // Paste needs control (we send the text as input) + clipboard read (secure context).
+    var canRead = controlGranted && navigator.clipboard && navigator.clipboard.readText;
+    ctxEl.appendChild(ctxItem("Paste", canRead, function () {
+      navigator.clipboard.readText().then(function (txt) {
+        if (txt) sendMsg({ t: "input", paneId: paneId, data: txt });
+      }).catch(function () {});
+    }));
+    ctxEl.appendChild(ctxItem("Select all", true, function () { try { term.selectAll(); } catch (e) {} }));
+    ctxEl.appendChild(ctxItem("Clear scrollback", controlGranted, function () { try { term.clear(); } catch (e) {} }));
+    ctxEl.appendChild(ctxItem("Scroll to bottom", true, function () { try { term.scrollToBottom(); } catch (e) {} }));
+    // Show off-screen first to measure, then clamp inside the viewport.
+    ctxEl.style.left = "0px"; ctxEl.style.top = "0px"; ctxEl.style.display = "block";
+    var w = ctxEl.offsetWidth, h = ctxEl.offsetHeight;
+    ctxEl.style.left = Math.max(0, Math.min(x, window.innerWidth - w - 4)) + "px";
+    ctxEl.style.top = Math.max(0, Math.min(y, window.innerHeight - h - 4)) + "px";
+  }
+  document.addEventListener("mousedown", function (e) {
+    if (ctxEl.style.display === "block" && !ctxEl.contains(e.target)) hideContextMenu();
+  });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") hideContextMenu(); });
+  window.addEventListener("blur", hideContextMenu);
+  window.addEventListener("resize", hideContextMenu);
+  stageEl.addEventListener("scroll", hideContextMenu, true);
 
   function setStatus(cls) { statusEl.className = cls; }
 
@@ -323,8 +385,30 @@
       var wrap = document.createElement("div");
       wrap.className = "pane" + (node.focused ? " focused" : "");
       wrap.appendChild(getPane(node.paneId).host);
+      var pid = node.paneId;
       // Tapping a pane makes it the key-bar / typing target.
-      wrap.addEventListener("pointerdown", function () { currentPaneId = node.paneId; });
+      wrap.addEventListener("pointerdown", function () { currentPaneId = pid; });
+      // Desktop right-click → context menu.
+      wrap.addEventListener("contextmenu", function (e) {
+        e.preventDefault(); currentPaneId = pid; showContextMenu(e.clientX, e.clientY, pid);
+      });
+      // Mobile long-press (~500ms) → same menu, anchored at the touch point.
+      var lpTimer = null, lpX = 0, lpY = 0;
+      wrap.addEventListener("touchstart", function (e) {
+        if (!e.touches || e.touches.length !== 1) return;
+        lpX = e.touches[0].clientX; lpY = e.touches[0].clientY; currentPaneId = pid;
+        lpTimer = setTimeout(function () { lpTimer = null; showContextMenu(lpX, lpY, pid); }, 500);
+      }, { passive: true });
+      function cancelLongPress(e) {
+        if (lpTimer && e && e.touches && e.touches[0]) {
+          var dx = Math.abs(e.touches[0].clientX - lpX), dy = Math.abs(e.touches[0].clientY - lpY);
+          if (dx < 10 && dy < 10) return; // small jitter — keep the timer
+        }
+        if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+      }
+      wrap.addEventListener("touchmove", cancelLongPress, { passive: true });
+      wrap.addEventListener("touchend", cancelLongPress);
+      wrap.addEventListener("touchcancel", cancelLongPress);
       return wrap;
     }
     // split

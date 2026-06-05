@@ -219,6 +219,11 @@ class MirrorShare(
             row++
         }
         sb.append("[0m") // reset trailing style
+        // Park the cursor at its real screen position (1-based row;col) — otherwise xterm.js
+        // leaves it on the bottom row after we write the full-height blob (scrollback + screen).
+        val cy = tab.terminal.cursorY.coerceIn(1, snap.height)
+        val cx = tab.terminal.cursorX.coerceAtLeast(1)
+        sb.append("[$cy;${cx}H")
         return sb.toString()
     }
 

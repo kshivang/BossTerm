@@ -101,17 +101,30 @@ fun ShareWindow(
     var refreshing by remember { mutableStateOf(false) }
     LaunchedEffect(info.url) { refreshing = false }
     LaunchedEffect(refreshing) { if (refreshing) { kotlinx.coroutines.delay(35_000); refreshing = false } }
-    // Inline "↻ Refresh link" action for the QR + Links headers — shown only when a remote
-    // provider is selected (the LAN link never changes). Mints a fresh tunnel link.
-    val refreshAction: (@Composable () -> Unit)? = if (tailscaleMode != "off") {
+    // Inline actions for the QR + Links headers: "↻ Refresh link" (only when a remote
+    // provider is selected — the LAN link never changes) and "⤴ Share" (macOS native
+    // share sheet → AirDrop/Messages/Mail; falls back to copying if the helper can't run).
+    val hasRefresh = tailscaleMode != "off"
+    val canShare = ShareSheet.isSupported()
+    val headerActions: (@Composable () -> Unit)? = if (!hasRefresh && !canShare) null else {
         {
-            TextButton(
-                onClick = { refreshing = true; onRefreshLink() },
-                enabled = !refreshing,
-                colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
-            ) { Text(if (refreshing) "Refreshing…" else "↻ Refresh link", fontSize = 12.sp) }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (hasRefresh) {
+                    TextButton(
+                        onClick = { refreshing = true; onRefreshLink() },
+                        enabled = !refreshing,
+                        colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                    ) { Text(if (refreshing) "Refreshing…" else "↻ Refresh link", fontSize = 12.sp) }
+                }
+                if (canShare) {
+                    TextButton(
+                        onClick = { if (!ShareSheet.share(info.url)) clipboard.setText(AnnotatedString(info.url)) },
+                        colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                    ) { Text("⤴ Share", fontSize = 12.sp) }
+                }
+            }
         }
-    } else null
+    }
     val qrUrl = if (controlQr) info.controlUrl else info.url
     val qr = remember(qrUrl) { qrImageBitmap(qrUrl) }
 
@@ -149,7 +162,7 @@ fun ShareWindow(
                     Spacer(Modifier.height(20.dp))
                 }
 
-                ShareSection("QR code", headerAction = refreshAction) {
+                ShareSection("QR code", headerAction = headerActions) {
                     // QR first, then the View/Control toggle below it, then the caption —
                     // all centered so their left/right margins match.
                     Column(
@@ -196,7 +209,7 @@ fun ShareWindow(
                 }
                 Spacer(Modifier.height(20.dp))
 
-                ShareSection("Links", headerAction = refreshAction) {
+                ShareSection("Links", headerAction = headerActions) {
                     LinkRow("View (read-only)", info.url, clipboard)
                     LinkRow("Control (can type)", info.controlUrl, clipboard)
                     Text(

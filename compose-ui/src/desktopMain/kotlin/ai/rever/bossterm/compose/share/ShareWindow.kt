@@ -15,6 +15,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -100,6 +101,17 @@ fun ShareWindow(
     var refreshing by remember { mutableStateOf(false) }
     LaunchedEffect(info.url) { refreshing = false }
     LaunchedEffect(refreshing) { if (refreshing) { kotlinx.coroutines.delay(35_000); refreshing = false } }
+    // Inline "↻ Refresh link" action for the QR + Links headers — shown only when a remote
+    // provider is selected (the LAN link never changes). Mints a fresh tunnel link.
+    val refreshAction: (@Composable () -> Unit)? = if (tailscaleMode != "off") {
+        {
+            TextButton(
+                onClick = { refreshing = true; onRefreshLink() },
+                enabled = !refreshing,
+                colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+            ) { Text(if (refreshing) "Refreshing…" else "↻ Refresh link", fontSize = 12.sp) }
+        }
+    } else null
     val qrUrl = if (controlQr) info.controlUrl else info.url
     val qr = remember(qrUrl) { qrImageBitmap(qrUrl) }
 
@@ -137,7 +149,7 @@ fun ShareWindow(
                     Spacer(Modifier.height(20.dp))
                 }
 
-                SettingsSection("QR code") {
+                ShareSection("QR code", headerAction = refreshAction) {
                     // QR first, then the View/Control toggle below it, then the caption —
                     // all centered so their left/right margins match.
                     Column(
@@ -184,7 +196,7 @@ fun ShareWindow(
                 }
                 Spacer(Modifier.height(20.dp))
 
-                SettingsSection("Links") {
+                ShareSection("Links", headerAction = refreshAction) {
                     LinkRow("View (read-only)", info.url, clipboard)
                     LinkRow("Control (can type)", info.controlUrl, clipboard)
                     Text(
@@ -200,23 +212,11 @@ fun ShareWindow(
                             color = Danger, fontSize = 11.sp
                         )
                     }
-                    // Remote (tunnel) links are ephemeral — let the host mint a fresh one.
-                    if (tailscaleMode != "off") {
-                        Spacer(Modifier.height(2.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(
-                                onClick = { refreshing = true; onRefreshLink() },
-                                enabled = !refreshing,
-                                colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
-                            ) { Text(if (refreshing) "Refreshing…" else "↻ Refresh link") }
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                if (tailscaleMode == "cloudflare")
-                                    "Generates a new public link; the current one stops working."
-                                else "Re-establishes the tunnel if the link stopped working.",
-                                color = TextMuted, fontSize = 11.sp, modifier = Modifier.weight(1f)
-                            )
-                        }
+                    if (tailscaleMode == "cloudflare") {
+                        Text(
+                            "The public link is ephemeral — use ↻ Refresh link (above) to mint a new one.",
+                            color = TextMuted, fontSize = 11.sp
+                        )
                     }
                 }
                 Spacer(Modifier.height(20.dp))
@@ -246,6 +246,32 @@ fun ShareWindow(
             }
           }
         }
+    }
+}
+
+/**
+ * Like [SettingsSection] but with an optional [headerAction] rendered inline at the end
+ * of the title row (used for the QR + Links sections' "↻ Refresh link" button).
+ */
+@Composable
+private fun ShareSection(
+    title: String,
+    modifier: Modifier = Modifier,
+    headerAction: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(title, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            if (headerAction != null) {
+                Spacer(Modifier.weight(1f))
+                headerAction()
+            }
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
     }
 }
 

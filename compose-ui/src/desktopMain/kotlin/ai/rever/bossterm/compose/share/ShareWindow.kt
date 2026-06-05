@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.DpSize
@@ -78,6 +79,8 @@ fun ShareWindow(
     pendingRequests: List<SessionShareManager.PendingShareRequest> = emptyList(),
     onApproveRequest: (String) -> Unit = {},
     onDenyRequest: (String) -> Unit = {},
+    tailscaleMode: String = "off",
+    onTailscaleModeChange: (String) -> Unit = {},
 ) {
     val clipboard = LocalClipboardManager.current
     val isWindow = info.scope == ShareScope.WINDOW
@@ -184,6 +187,14 @@ fun ShareWindow(
                         )
                     }
                 }
+                Spacer(Modifier.height(20.dp))
+
+                TailscaleSetupSection(
+                    mode = tailscaleMode,
+                    onModeChange = onTailscaleModeChange,
+                    currentUrl = info.url,
+                    clipboard = clipboard,
+                )
 
                 Spacer(Modifier.height(8.dp))
             }
@@ -249,6 +260,114 @@ private fun LinkRow(label: String, url: String, clipboard: ClipboardManager) {
             }
         }
     }
+}
+
+private const val FUNNEL_ACL_SNIPPET =
+    "\"nodeAttrs\": [\n  { \"target\": [\"autogroup:member\"], \"attr\": [\"funnel\"] },\n],"
+
+/**
+ * Collapsible "Remote access (Tailscale)" subsection: pick the mode (Off/Serve/Funnel),
+ * see live status, and the full one-time setup with clickable admin-console links and a
+ * copyable ACL snippet. Surfaces the same steps as Settings → Session Sharing here, where
+ * you actually share. Collapsed by default so it doesn't clutter the common LAN case.
+ */
+@Composable
+private fun TailscaleSetupSection(
+    mode: String,
+    onModeChange: (String) -> Unit,
+    currentUrl: String,
+    clipboard: ClipboardManager,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val active = currentUrl.contains(".ts.net")
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+                .clickable { expanded = !expanded }.padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(if (expanded) "▾" else "▸", color = TextSecondary, fontSize = 13.sp, modifier = Modifier.width(16.dp))
+            Text("Remote access (Tailscale)", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Text(
+                when {
+                    mode == "off" -> "LAN only"
+                    active -> "$mode · active"
+                    else -> "$mode · not active"
+                },
+                color = if (active) Color(0xFF4CAF50) else TextMuted, fontSize = 11.sp
+            )
+        }
+        if (expanded) {
+            Spacer(Modifier.height(10.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(Track)
+                        .border(1.dp, BorderColor, RoundedCornerShape(6.dp)).padding(2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Seg("Off", mode == "off") { onModeChange("off") }
+                    Seg("Serve", mode == "serve") { onModeChange("serve") }
+                    Seg("Funnel", mode == "funnel") { onModeChange("funnel") }
+                }
+                Text(
+                    when (mode) {
+                        "serve" -> "Serve = your tailnet only (the viewing device must be signed into your Tailscale)."
+                        "funnel" -> "Funnel = public internet (anyone with the link; no Tailscale needed on their end)."
+                        else -> "Off = LAN/loopback only. Pick Serve (your devices) or Funnel (public) to reach other networks."
+                    },
+                    color = TextMuted, fontSize = 11.sp
+                )
+                if (mode != "off") {
+                    SetupStep(1, "Install Tailscale on this Mac and sign in (menu-bar app, or `tailscale up`).")
+                    SetupStep(2, "Enable HTTPS certificates (required) — admin console → DNS → “Enable HTTPS”. Sign in with the SAME account as this machine, or the page 404s.")
+                    LinkText("Open DNS settings →", "https://login.tailscale.com/admin/dns")
+                    if (mode == "funnel") {
+                        SetupStep(3, "Funnel also needs the Funnel node-attribute in your ACL policy. Add this block and Save:")
+                        LinkText("Open Access controls →", "https://login.tailscale.com/admin/acls/file")
+                        Surface(color = SurfaceColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                                SelectionContainer {
+                                    Text(FUNNEL_ACL_SNIPPET, fontSize = 11.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
+                                }
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                    TextButton(
+                                        onClick = { clipboard.setText(AnnotatedString(FUNNEL_ACL_SNIPPET)) },
+                                        colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                                    ) { Text("Copy") }
+                                }
+                            }
+                        }
+                    }
+                    SetupStep(if (mode == "funnel") 4 else 3, "After enabling, wait ~1 min (DNS / policy propagation), then Stop + Share again — the links above upgrade to https://<host>.ts.net.")
+                    if (!active) {
+                        Text(
+                            "Not active yet — the links above still use the LAN address. Finish the steps, then re-share.",
+                            color = TextMuted, fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SetupStep(n: Int, text: String) {
+    Row(verticalAlignment = Alignment.Top) {
+        Text("$n.", color = TextSecondary, fontSize = 11.sp, modifier = Modifier.width(18.dp))
+        Text(text, color = TextSecondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun LinkText(text: String, url: String) {
+    Text(
+        text, color = AccentColor, fontSize = 11.sp,
+        modifier = Modifier.padding(start = 18.dp).clickable {
+            runCatching { java.awt.Desktop.getDesktop().browse(java.net.URI(url)) }
+        }
+    )
 }
 
 /** Render [text] as a QR code into a Compose [ImageBitmap], or null on failure. */

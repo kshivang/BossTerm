@@ -115,7 +115,7 @@ class MirrorShare(
         val sig = computeSignature()
         val out = ArrayList<ServerMessage>()
         out.add(themeMessage())
-        out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft))
+        out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode))
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
             out.add(ServerMessage.PaneSnapshot(id, snapshotText(tab), sz[0], sz[1]))
@@ -176,7 +176,7 @@ class MirrorShare(
                 }
             }
         }
-        broadcast(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft))
+        broadcast(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode))
         sig.sizes.forEach { (id, sz) -> broadcast(ServerMessage.PaneResize(id, sz[0], sz[1])) }
     }
 
@@ -186,6 +186,7 @@ class MirrorShare(
         val activeTabId: String?,
         val sizes: Map<String, List<Int>>,
         val tabBarOnLeft: Boolean,
+        val summaryMode: Boolean,
     )
 
     private fun inScopeTabs(state: TabbedTerminalState): List<TerminalTab> = when (scope) {
@@ -194,11 +195,13 @@ class MirrorShare(
     }
 
     private fun computeSignature(): WindowSig {
-        val state = McpTerminalRegistry.findState(tabId) ?: return WindowSig(emptyList(), null, emptyMap(), false)
+        val state = McpTerminalRegistry.findState(tabId) ?: return WindowSig(emptyList(), null, emptyMap(), false, false)
         val tabNodes = ArrayList<TabNode>()
         val sizes = HashMap<String, List<Int>>()
         val activeId = if (scope == ShareScope.TAB) tabId else state.activeTabId
-        val onLeft = SettingsManager.instance.settings.value.tabBarPosition == "left"
+        val settings = SettingsManager.instance.settings.value
+        val onLeft = settings.tabBarPosition == "left"
+        val summary = settings.tabBarSummaryMode
         for (tab in inScopeTabs(state)) {
             val ss = state.splitStates[tab.id]
             val tree: PaneTreeNode = if (ss != null) {
@@ -206,7 +209,10 @@ class MirrorShare(
             } else {
                 val s = tab.display.termSize.value
                 sizes[tab.id] = listOf(s.columns, s.rows)
-                PaneTreeNode.Pane(tab.id, tab.title.value, tab.workingDirectory.value, true)
+                PaneTreeNode.Pane(
+                    tab.id, tab.title.value, tab.workingDirectory.value, true,
+                    color = tabColorCss(tab), branch = tab.gitBranch.value
+                )
             }
             tabNodes.add(
                 TabNode(
@@ -215,7 +221,7 @@ class MirrorShare(
                 )
             )
         }
-        return WindowSig(tabNodes, activeId, sizes, onLeft)
+        return WindowSig(tabNodes, activeId, sizes, onLeft, summary)
     }
 
     /** Resolve a tab's accent as CSS (#RRGGBB), mirroring the host's chip color (manual or auto). */
@@ -237,7 +243,10 @@ class MirrorShare(
             val tab = node.session as TerminalTab
             val s = tab.display.termSize.value
             sizes[node.id] = listOf(s.columns, s.rows)
-            PaneTreeNode.Pane(node.id, tab.title.value, tab.workingDirectory.value, node.id == focusedId)
+            PaneTreeNode.Pane(
+                node.id, tab.title.value, tab.workingDirectory.value, node.id == focusedId,
+                color = tabColorCss(tab), branch = tab.gitBranch.value
+            )
         }
         is SplitNode.VerticalSplit ->
             PaneTreeNode.Split("v", node.ratio, sigNode(node.left, focusedId, sizes), sigNode(node.right, focusedId, sizes))

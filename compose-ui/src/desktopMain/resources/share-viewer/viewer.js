@@ -24,10 +24,11 @@
   var bodyEl = document.getElementById("body");
   var ctxEl = document.getElementById("ctxmenu");
   var tabBarOnLeft = false;       // mirror the host's tab-bar orientation
+  var summaryMode = false;        // host's tabBarSummaryMode: 1 chip/tab vs 1 chip/pane
   var currentPaneId = null;       // pane the on-screen key bar targets
   function sendMsg(o) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); }
 
-  // ☰ toggles the left tab drawer (phone); tapping a tab closes it (see switchTab).
+  // ☰ toggles the left tab drawer (phone); tapping a tab closes it (see selectPane).
   menubtnEl.onclick = function () { sidebarEl.classList.toggle("open"); };
 
   // Keep the fixed key bar just above the soft keyboard (and reserve space for it).
@@ -366,7 +367,18 @@
       menubtnEl.classList.add("show");
       sidebarEl.classList.add("show"); // .open (drawer) toggled by ☰ on phones
       sidebarEl.innerHTML = "";
-      if (layout) layout.tabs.forEach(function (tab) { sidebarEl.appendChild(leftChip(tab)); });
+      // One cluster per tab: per-pane sub-tab chips when the tab is split (and the host
+      // isn't in summary mode), otherwise a single tab-level chip — like the host.
+      if (layout) layout.tabs.forEach(function (tab) {
+        var group = document.createElement("div"); group.className = "ltab-group";
+        var ps = []; panesInOrder(tab.tree, ps);
+        if (!summaryMode && tab.tree && tab.tree.t === "split") {
+          ps.forEach(function (pane) { group.appendChild(leftChip(tab, pane)); });
+        } else {
+          group.appendChild(leftChip(tab, null));
+        }
+        sidebarEl.appendChild(group);
+      });
       // Action row mirroring the host's left bar: Split L/R, Split T/B, then New tab.
       if (controlGranted) {
         var actions = document.createElement("div");
@@ -381,7 +393,16 @@
       menubtnEl.classList.remove("show");
       sidebarEl.classList.remove("show", "open");
       tabbarEl.innerHTML = "";
-      if (layout) layout.tabs.forEach(function (tab) { tabbarEl.appendChild(topChip(tab)); });
+      if (layout) layout.tabs.forEach(function (tab) {
+        var grp = document.createElement("div"); grp.className = "tab-group";
+        var ps = []; panesInOrder(tab.tree, ps);
+        if (!summaryMode && tab.tree && tab.tree.t === "split") {
+          ps.forEach(function (pane) { grp.appendChild(topChip(tab, pane)); });
+        } else {
+          grp.appendChild(topChip(tab, null));
+        }
+        tabbarEl.appendChild(grp);
+      });
       // Split buttons sit just left of the new-tab (+), like the host's tab-bar actions.
       if (controlGranted) {
         tabbarEl.appendChild(splitButton("v"));
@@ -389,6 +410,21 @@
         tabbarEl.appendChild(newTabButton("+"));
       }
     }
+  }
+
+  // Panes of a tab in split-tree order (left/top before right/bottom).
+  function panesInOrder(node, out) {
+    if (!node) return;
+    if (node.t === "pane") out.push(node);
+    else { panesInOrder(node.a, out); panesInOrder(node.b, out); }
+  }
+  // Select a tab (and, for a sub-tab chip, the specific pane) as the viewer's target.
+  function selectPane(tabId, paneId) {
+    activeTabId = tabId;
+    if (paneId) currentPaneId = paneId;
+    sidebarEl.classList.remove("open"); // close the phone drawer after picking
+    renderTabBar();
+    renderStage();
   }
 
   // Inline SVGs matching the host's Material split icons: a pane outline divided by a
@@ -418,17 +454,15 @@
     return b;
   }
 
-  function switchTab(id) {
-    activeTabId = id;
-    sidebarEl.classList.remove("open"); // close the phone drawer after picking a tab
-    renderTabBar();
-    renderStage();
-  }
-
-  function closeBtn(tabId) {
+  // Close affordance: closes a single pane (sub-tab chip) or the whole tab (tab chip).
+  function closeBtn(tabId, paneId) {
     var x = document.createElement("span");
-    x.className = "tabclose"; x.textContent = "×"; x.title = "Close tab";
-    x.onclick = function (ev) { ev.stopPropagation(); sendMsg({ t: "closeTab", tabId: tabId }); };
+    x.className = "tabclose"; x.textContent = "×"; x.title = paneId ? "Close pane" : "Close tab";
+    x.onclick = function (ev) {
+      ev.stopPropagation();
+      if (paneId) sendMsg({ t: "closePane", tabId: tabId, paneId: paneId });
+      else sendMsg({ t: "closeTab", tabId: tabId });
+    };
     return x;
   }
 
@@ -439,30 +473,44 @@
     return el;
   }
 
-  function topChip(tab) {
+  // A top-bar chip. [pane] null = whole-tab chip; otherwise a per-split sub-tab chip.
+  function topChip(tab, pane) {
+    var isPane = !!pane;
+    var color = isPane ? pane.color : tab.color;
+    var active = isPane ? (tab.id === activeTabId && pane.paneId === currentPaneId)
+                        : (tab.id === activeTabId);
     var el = document.createElement("div");
-    el.className = "tab" + (tab.id === activeTabId ? " active" : "");
-    if (tab.color) el.style.borderLeft = "3px solid " + tab.color;
+    el.className = "tab" + (active ? " active" : "");
+    if (color) el.style.borderLeft = "3px solid " + color;
     var label = document.createElement("span");
-    label.className = "tablabel"; label.textContent = tab.title || "shell";
+    label.className = "tablabel"; label.textContent = (isPane ? pane.title : tab.title) || "shell";
     el.appendChild(label);
-    if (controlGranted) el.appendChild(closeBtn(tab.id));
-    el.onclick = function () { switchTab(tab.id); };
+    if (controlGranted) el.appendChild(closeBtn(tab.id, isPane ? pane.paneId : null));
+    el.onclick = function () { selectPane(tab.id, isPane ? pane.paneId : null); };
     return el;
   }
 
-  function leftChip(tab) {
+  // A left-bar (Warp-style) chip. [pane] null = whole-tab chip; otherwise a per-split
+  // sub-tab chip (title / cwd / branch / accent come from that pane).
+  function leftChip(tab, pane) {
+    var isPane = !!pane;
+    var color = isPane ? pane.color : tab.color;
+    var cwd = isPane ? pane.cwd : tab.cwd;
+    var branch = isPane ? pane.branch : tab.branch;
+    var active = isPane ? (tab.id === activeTabId && pane.paneId === currentPaneId)
+                        : (tab.id === activeTabId);
     var el = document.createElement("div");
-    el.className = "ltab" + (tab.id === activeTabId ? " active" : "");
-    if (tab.color) el.style.borderLeft = "3px solid " + tab.color;
+    el.className = "ltab" + (active ? " active" : "") + (isPane ? " ltab-pane" : "");
+    if (color) el.style.borderLeft = "3px solid " + color;
     var row = document.createElement("div"); row.className = "ltab-row";
-    var title = document.createElement("span"); title.className = "ltab-title"; title.textContent = tab.title || "shell";
+    var title = document.createElement("span"); title.className = "ltab-title";
+    title.textContent = (isPane ? pane.title : tab.title) || "shell";
     row.appendChild(title);
-    if (controlGranted) row.appendChild(closeBtn(tab.id));
+    if (controlGranted) row.appendChild(closeBtn(tab.id, isPane ? pane.paneId : null));
     el.appendChild(row);
-    if (tab.cwd) { var s = document.createElement("div"); s.className = "ltab-sub"; s.textContent = abbreviateCwd(tab.cwd); el.appendChild(s); }
-    if (tab.branch) { var b = document.createElement("div"); b.className = "ltab-branch"; b.textContent = "⎇ " + tab.branch; el.appendChild(b); }
-    el.onclick = function () { switchTab(tab.id); };
+    if (cwd) { var s = document.createElement("div"); s.className = "ltab-sub"; s.textContent = abbreviateCwd(cwd); el.appendChild(s); }
+    if (branch) { var b = document.createElement("div"); b.className = "ltab-branch"; b.textContent = "⎇ " + branch; el.appendChild(b); }
+    el.onclick = function () { selectPane(tab.id, isPane ? pane.paneId : null); };
     return el;
   }
 
@@ -541,6 +589,7 @@
   function onLayout(m) {
     layout = m;
     tabBarOnLeft = !!m.tabBarOnLeft;
+    summaryMode = !!m.summaryMode;
     var ids = m.tabs.map(function (t) { return t.id; });
     if (activeTabId === null || ids.indexOf(activeTabId) === -1) {
       activeTabId = m.activeTabId && ids.indexOf(m.activeTabId) !== -1 ? m.activeTabId : (ids[0] || null);

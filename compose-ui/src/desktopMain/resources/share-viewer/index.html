@@ -16,8 +16,10 @@
            box-sizing: border-box; background: #2b2b2b; border-bottom: 1px solid #404040; font-size: 12px; }
     #status { width: 8px; height: 8px; border-radius: 50%; background: #888; flex: 0 0 auto; }
     #status.live { background: #4caf50; } #status.down { background: #f44336; }
-    #tabbar { display: flex; gap: 4px; overflow-x: auto; flex: 1 1 auto; align-items: center; }
+    #tabbar { display: flex; gap: 12px; overflow-x: auto; flex: 1 1 auto; align-items: center; }
     #tabbar.hidden { display: none; }
+    /* one cluster per tab; panes of a tab sit tight together, tabs spaced apart */
+    .tab-group { display: inline-flex; gap: 3px; align-items: center; flex: 0 0 auto; }
     .badge { padding: 1px 7px; border-radius: 10px; background: #3a3a3a; font-size: 11px; color: #bbb; flex: 0 0 auto; }
 
     #menubtn { display: none; flex: 0 0 auto; padding: 2px 8px; border-radius: 5px; border: 1px solid #404040;
@@ -25,9 +27,11 @@
     #menubtn.show { display: inline-flex; align-items: center; }
 
     #body { flex: 1 1 auto; display: flex; flex-direction: row; min-height: 0; min-width: 0; position: relative; }
-    #sidebar { display: none; flex-direction: column; gap: 4px; width: 200px; flex: 0 0 auto; box-sizing: border-box;
+    #sidebar { display: none; flex-direction: column; gap: 10px; width: 200px; flex: 0 0 auto; box-sizing: border-box;
                padding: 6px; background: #1e1e1e; border-right: 1px solid #333; overflow: auto; -webkit-overflow-scrolling: touch; }
     #sidebar.show { display: flex; }
+    /* one cluster per tab; its per-split sub-tab chips sit tight together */
+    .ltab-group { display: flex; flex-direction: column; gap: 3px; }
     /* On phones the left tab panel becomes a hideable drawer over the terminal (toggled by ☰). */
     @media (max-width: 700px) {
       #sidebar.show { position: absolute; top: 0; bottom: 0; left: 0; z-index: 20; width: 220px;
@@ -66,6 +70,8 @@
     .ltab.active .ltab-title { color: #fff; }
     .ltab-sub { color: #808080; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ltab-branch { color: #6a9955; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* per-split sub-tab chips: indented under their tab to read as nested */
+    .ltab-pane { margin-left: 12px; }
 
     /* close + new-tab affordances (shown only with control) */
     .tabclose { flex: 0 0 auto; color: #707070; font-size: 14px; line-height: 1; padding: 0 3px; border-radius: 3px; }

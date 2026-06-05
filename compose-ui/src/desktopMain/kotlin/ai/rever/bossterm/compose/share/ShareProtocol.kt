@@ -41,6 +41,11 @@ sealed class ServerMessage {
         val activeTabId: String?,
         /** Host's tab-bar orientation, so the viewer mirrors it: true = left (vertical), false = top. */
         val tabBarOnLeft: Boolean = false,
+        /**
+         * Host's `tabBarSummaryMode`: true = one chip per tab (active pane, tab title);
+         * false (default) = one chip per split pane (the viewer shows per-pane sub-tabs).
+         */
+        val summaryMode: Boolean = false,
     ) : ServerMessage()
 
     /** One-time initial paint for a pane: scrollback+screen as a raw escape/text blob. */
@@ -126,10 +131,20 @@ sealed class PaneTreeNode {
     @SerialName("split")
     data class Split(val dir: String, val ratio: Float, val a: PaneTreeNode, val b: PaneTreeNode) : PaneTreeNode()
 
-    /** A leaf terminal pane. */
+    /**
+     * A leaf terminal pane. [color] (CSS accent) and [branch] (git branch) mirror the
+     * host's per-pane chip styling in the left bar's per-split sub-tabs; both optional.
+     */
     @Serializable
     @SerialName("pane")
-    data class Pane(val paneId: String, val title: String, val cwd: String?, val focused: Boolean) : PaneTreeNode()
+    data class Pane(
+        val paneId: String,
+        val title: String,
+        val cwd: String?,
+        val focused: Boolean,
+        val color: String? = null,
+        val branch: String? = null,
+    ) : PaneTreeNode()
 }
 
 /** Viewer → host messages. */

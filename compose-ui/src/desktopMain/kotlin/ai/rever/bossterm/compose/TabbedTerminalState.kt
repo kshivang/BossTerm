@@ -264,6 +264,47 @@ class TabbedTerminalState {
         return tabController?.closeTabById(tabId) ?: false
     }
 
+    /** Close every tab except [tabId] (mirrors the chip menu's "Close Other Tabs"). */
+    fun closeOtherTabs(tabId: String) {
+        val i = tabs.indexOfFirst { it.id == tabId }
+        if (i >= 0) tabController?.closeOtherTabs(i)
+    }
+
+    /** Close all tabs ordered after [tabId] (mirrors "Close Tabs Below"). */
+    fun closeTabsBelow(tabId: String) {
+        val i = tabs.indexOfFirst { it.id == tabId }
+        if (i >= 0) tabController?.closeTabsBelow(i)
+    }
+
+    /** Duplicate [tabId] into a new tab starting in the same cwd (mirrors "Duplicate Tab"). */
+    fun duplicateTab(tabId: String) {
+        val wd = tabs.firstOrNull { it.id == tabId }?.workingDirectory?.value
+        createTab(workingDir = wd)
+    }
+
+    /** The session a chip refers to: a split pane by id, else the tab itself (summary/unsplit). */
+    private fun chipSession(tabId: String, paneId: String): TerminalSession? =
+        splitStates[tabId]?.getAllPanes()?.firstOrNull { it.id == paneId }?.session
+            ?: tabs.firstOrNull { it.id == tabId }
+
+    /** Rename a tab/pane chip; a blank [title] clears the custom title (reverts to cwd). */
+    fun renameChip(tabId: String, paneId: String, title: String) {
+        val s = chipSession(tabId, paneId) ?: return
+        val t = title.trim()
+        if (t.isBlank()) {
+            s.customTitle.value = null
+        } else {
+            s.customTitle.value = t
+            s.title.value = t
+        }
+    }
+
+    /** Set ("#RRGGBB") or clear (null) a tab/pane chip's accent color. */
+    fun setChipColor(tabId: String, paneId: String, cssHex: String?) {
+        val s = chipSession(tabId, paneId) ?: return
+        s.tabColor.value = cssHex?.removePrefix("#")?.uppercase()?.let { "0xFF$it" }
+    }
+
     /**
      * Close the currently active tab.
      */
@@ -635,6 +676,24 @@ class TabbedTerminalState {
         initialCommand: String? = null
     ): String? = performSplit(
         SplitOrientation.VERTICAL, tabId, ratio, initialCommand, anchorPaneId
+    )
+
+    /**
+     * Split a specific pane (by id) horizontally — the new pane appears below
+     * [anchorPaneId]. Horizontal twin of [splitVerticalFromPane]: focuses the
+     * anchor, splits it, then restores the caller's prior focus (so it doesn't
+     * yank focus from the pane a local user is typing in). Falls back to the
+     * focused pane if the anchor doesn't exist.
+     *
+     * @return The session id of the new pane, or null if the split failed.
+     */
+    fun splitHorizontalFromPane(
+        tabId: String,
+        anchorPaneId: String,
+        ratio: Float? = null,
+        initialCommand: String? = null
+    ): String? = performSplit(
+        SplitOrientation.HORIZONTAL, tabId, ratio, initialCommand, anchorPaneId
     )
 
     /**

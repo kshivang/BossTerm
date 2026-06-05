@@ -33,6 +33,28 @@ object TailscaleExposer {
     /** Resolve a working `tailscale` binary path, or null if none responds. */
     private fun bin(): String? = candidates.firstOrNull { runCmd(listOf(it, "version"), 3) != null }
 
+    /** True if a working `tailscale` CLI/app is present. Blocking — call off the UI thread. */
+    fun isInstalled(): Boolean = bin() != null
+
+    // Common Homebrew locations (Apple-silicon, Intel, then PATH).
+    private val brewCandidates = listOf("/opt/homebrew/bin/brew", "/usr/local/bin/brew", "brew")
+    private fun brewBin(): String? = brewCandidates.firstOrNull { runCmd(listOf(it, "--version"), 5) != null }
+
+    /** True if Homebrew is available to auto-install Tailscale. Blocking. */
+    fun brewAvailable(): Boolean = brewBin() != null
+
+    /**
+     * Install Tailscale via `brew install tailscale`. Blocking and slow (downloads) —
+     * call off the UI thread. Returns true on success (or if it's already installed).
+     */
+    fun brewInstall(): Boolean {
+        val brew = brewBin() ?: run { log.warn("Homebrew not found; cannot install Tailscale"); return false }
+        log.info("Installing Tailscale: {} install tailscale …", brew)
+        val ok = runCmd(listOf(brew, "install", "tailscale"), 600) != null
+        log.info("`brew install tailscale` {}", if (ok) "succeeded" else "failed")
+        return ok || isInstalled()
+    }
+
     /**
      * Expose [port] via `tailscale serve|funnel --bg`. Returns the published base URL
      * (`https://<magic-dns-name>`) on success, or null if the CLI is missing/fails.
@@ -65,14 +87,29 @@ object TailscaleExposer {
         }.getOrNull()?.takeIf { it.isNotBlank() }
     }
 
-    private fun runCmd(cmd: List<String>, timeoutSec: Long): String? = try {
-        val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
-        val out = p.inputStream.bufferedReader().readText()
-        if (!p.waitFor(timeoutSec, TimeUnit.SECONDS)) {
-            p.destroyForcibly()
+    private fun runCmd(cmd: List<String>, timeoutSec: Long): String? {
+        return try {
+            val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
+            // Close the child's stdin so a CLI that prompts for input (e.g. `tailscale
+            // serve` asking to enable a feature) gets EOF instead of waiting forever.
+            runCatching { p.outputStream.close() }
+            // Drain stdout on a daemon thread. The previous code read to EOF *before*
+            // waitFor(), so a process that never closes its output (a hung `tailscale
+            // serve`) blocked the read indefinitely and the timeout never fired — that
+            // is what froze the UI thread for minutes. Reading off-thread lets waitFor()
+            // own the deadline and destroy the process if it overruns.
+            val sb = StringBuilder()
+            val reader = Thread {
+                runCatching { p.inputStream.bufferedReader().forEachLine { sb.append(it).append('\n') } }
+            }.apply { isDaemon = true; start() }
+            if (!p.waitFor(timeoutSec, TimeUnit.SECONDS)) {
+                p.destroyForcibly()
+                return null
+            }
+            reader.join(500)
+            if (p.exitValue() == 0) sb.toString() else null
+        } catch (e: Exception) {
             null
-        } else if (p.exitValue() == 0) out else null
-    } catch (e: Exception) {
-        null
+        }
     }
 }

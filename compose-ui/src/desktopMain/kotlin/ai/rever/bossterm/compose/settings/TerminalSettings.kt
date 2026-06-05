@@ -919,13 +919,20 @@ data class TerminalSettings(
     val sessionSharingBindHost: String = "",
 
     /**
-     * Remote-reach via Tailscale (OpenClaw-style; requires the `tailscale` CLI):
-     *  - "off" (default): no tunnel — reach is loopback/LAN only.
-     *  - "serve": expose to your tailnet only (private, TLS via Tailscale).
-     *  - "funnel": expose to the public internet via Tailscale's edge (TLS).
-     * When active, the share URL becomes the published https://<host>.ts.net link.
+     * Remote-access mode for sharing (which tunnel provider exposes the share server):
+     *  - "off": no tunnel — reach is loopback/LAN only.
+     *  - "serve": Tailscale Serve — your tailnet only (private, TLS). Requires `tailscale`.
+     *  - "funnel": Tailscale Funnel — public internet via Tailscale's edge (TLS).
+     *  - "cloudflare" (default): Cloudflare Quick Tunnel — instant public https link via
+     *    `cloudflared`, no account/config (ephemeral URL); auto-installable via Homebrew.
+     *    The zero-config option, so it's the default. Falls back to the LAN URL if
+     *    `cloudflared` isn't present. See [ai.rever.bossterm.compose.share.CloudflaredExposer].
+     * When active, the share URL becomes the published https link (…ts.net or …trycloudflare.com).
+     * Note: sharing is still gated by [sessionSharingEnabled] (off by default) and, for public
+     * modes, [sessionSharingApprovalScope] — so a public tunnel only opens once the user shares.
+     * (Field name is historical — it's the general remote-access mode, not Tailscale-only.)
      */
-    val shareTailscaleMode: String = "off",
+    val shareTailscaleMode: String = "cloudflare",
 
     /**
      * Explicit public base URL to advertise instead of the bound host — for when the
@@ -934,6 +941,17 @@ data class TerminalSettings(
      * Takes precedence only when Tailscale is off.
      */
     val sessionSharingPublicUrl: String = "",
+
+    /**
+     * When a new device connects to a share, whether the host must approve it before
+     * it can view/control. On approval the device gets a 24h rolling access key so it
+     * isn't re-prompted on every reconnect. Values:
+     *  - "off":    no approval — the share link alone grants access (original behavior).
+     *  - "funnel": require approval only for public reach (Tailscale Funnel or a custom
+     *              public URL); LAN and Tailscale Serve stay link-only. (default)
+     *  - "all":    require approval for every connection, including LAN.
+     */
+    val sessionSharingApprovalScope: String = "funnel",
 
     /**
      * Show the small status indicator while a tab is being shared. Mirrors

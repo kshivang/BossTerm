@@ -15,6 +15,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -27,16 +28,25 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.ArrowRight
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,7 +56,9 @@ import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -72,11 +84,47 @@ fun ShareWindow(
     onDismiss: () -> Unit,
     onStop: () -> Unit,
     onScopeChange: (ShareScope) -> Unit,
+    focusTick: Int = 0,
+    pendingRequests: List<SessionShareManager.PendingShareRequest> = emptyList(),
+    onApproveRequest: (String) -> Unit = {},
+    onDenyRequest: (String) -> Unit = {},
+    tailscaleMode: String = "off",
+    onTailscaleModeChange: (String) -> Unit = {},
+    onRefreshLink: () -> Unit = {},
 ) {
     val clipboard = LocalClipboardManager.current
     val isWindow = info.scope == ShareScope.WINDOW
     val loopbackOnly = info.url.contains("://127.0.0.1") || info.url.contains("://localhost")
     var controlQr by remember { mutableStateOf(false) }
+    // "Refresh link" regenerates the remote tunnel (ephemeral for Cloudflare). Clears when
+    // the URL updates (the dialog refreshes via remoteUrlFlow) or after a timeout fallback.
+    var refreshing by remember { mutableStateOf(false) }
+    LaunchedEffect(info.url) { refreshing = false }
+    LaunchedEffect(refreshing) { if (refreshing) { kotlinx.coroutines.delay(35_000); refreshing = false } }
+    // Inline actions for the QR + Links headers: "↻ Refresh link" (only when a remote
+    // provider is selected — the LAN link never changes) and "⤴ Share" (macOS native
+    // share sheet → AirDrop/Messages/Mail; falls back to copying if the helper can't run).
+    val hasRefresh = tailscaleMode != "off"
+    val canShare = ShareSheet.isSupported()
+    val headerActions: (@Composable () -> Unit)? = if (!hasRefresh && !canShare) null else {
+        {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (hasRefresh) {
+                    TextButton(
+                        onClick = { refreshing = true; onRefreshLink() },
+                        enabled = !refreshing,
+                        colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                    ) { Text(if (refreshing) "Refreshing…" else "↻ Refresh link", fontSize = 12.sp) }
+                }
+                if (canShare) {
+                    TextButton(
+                        onClick = { if (!ShareSheet.share(info.url)) clipboard.setText(AnnotatedString(info.url)) },
+                        colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                    ) { Text("⤴ Share", fontSize = 12.sp) }
+                }
+            }
+        }
+    }
     val qrUrl = if (controlQr) info.controlUrl else info.url
     val qr = remember(qrUrl) { qrImageBitmap(qrUrl) }
 
@@ -86,6 +134,12 @@ fun ShareWindow(
         resizable = false,
         state = rememberWindowState(size = DpSize(600.dp, 680.dp))
     ) {
+        // Bring this window to the front whenever the share button is clicked again
+        // (focusTick changes) so an already-open share window is raised, not left behind.
+        LaunchedEffect(focusTick) {
+            window.toFront()
+            window.requestFocus()
+        }
         Surface(color = BackgroundColor, modifier = Modifier.fillMaxSize()) {
           Column(modifier = Modifier.fillMaxSize()) {
             // Scrollable content fills the space above the pinned footer.
@@ -100,37 +154,62 @@ fun ShareWindow(
                 )
                 Spacer(Modifier.height(20.dp))
 
-                SettingsSection("Scope") {
-                    SegToggle("Tab", "Window", rightSelected = isWindow) { win ->
-                        onScopeChange(if (win) ShareScope.WINDOW else ShareScope.TAB)
+                // Devices waiting for approval surface first so the host acts on them.
+                if (pendingRequests.isNotEmpty()) {
+                    SettingsSection("Pending requests") {
+                        PendingRequestsList(pendingRequests, onApproveRequest, onDenyRequest)
                     }
-                    Text(
-                        if (isWindow) "Sharing all tabs in this window — switchable in the viewer, with splits."
-                        else "Sharing this tab and its splits.",
-                        color = TextMuted, fontSize = 11.sp
-                    )
+                    Spacer(Modifier.height(20.dp))
                 }
-                Spacer(Modifier.height(20.dp))
 
-                SettingsSection("QR code") {
-                    SegToggle("View", "Control", rightSelected = controlQr) { controlQr = it }
-                    if (qr != null) {
-                        Image(
-                            bitmap = qr,
-                            contentDescription = if (controlQr) "Control link QR" else "View link QR",
-                            modifier = Modifier.size(210.dp).align(Alignment.CenterHorizontally)
-                                .background(Color.White).padding(10.dp)
+                ShareSection("QR code", headerAction = headerActions) {
+                    // QR first, then the View/Control toggle below it, then the caption —
+                    // all centered so their left/right margins match.
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        if (qr != null) {
+                            Image(
+                                bitmap = qr,
+                                contentDescription = if (controlQr) "Control link QR" else "View link QR",
+                                modifier = Modifier.size(210.dp).background(Color.White).padding(10.dp)
+                            )
+                        }
+                        SegToggle("View", "Control", rightSelected = controlQr) { controlQr = it }
+                        Text(
+                            if (controlQr) "QR encodes the Control link — scanning grants typing access."
+                            else "QR encodes the View link (read-only).",
+                            color = if (controlQr) Danger else TextMuted, fontSize = 11.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
-                    Text(
-                        if (controlQr) "QR encodes the Control link — scanning grants typing access."
-                        else "QR encodes the View link (read-only).",
-                        color = if (controlQr) Danger else TextMuted, fontSize = 11.sp
-                    )
                 }
                 Spacer(Modifier.height(20.dp))
 
-                SettingsSection("Links") {
+                SettingsSection("Scope") {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SegToggle("Tab", "Window", rightSelected = isWindow) { win ->
+                            onScopeChange(if (win) ShareScope.WINDOW else ShareScope.TAB)
+                        }
+                        Text(
+                            if (isWindow) "Sharing all tabs in this window — switchable in the viewer, with splits."
+                            else "Sharing this tab and its splits.",
+                            color = TextMuted, fontSize = 11.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+                Spacer(Modifier.height(20.dp))
+
+                ShareSection("Links", headerAction = headerActions) {
                     LinkRow("View (read-only)", info.url, clipboard)
                     LinkRow("Control (can type)", info.controlUrl, clipboard)
                     Text(
@@ -146,7 +225,21 @@ fun ShareWindow(
                             color = Danger, fontSize = 11.sp
                         )
                     }
+                    if (tailscaleMode == "cloudflare") {
+                        Text(
+                            "The public link is ephemeral — use ↻ Refresh link (above) to mint a new one.",
+                            color = TextMuted, fontSize = 11.sp
+                        )
+                    }
                 }
+                Spacer(Modifier.height(20.dp))
+
+                RemoteAccessSetupSection(
+                    mode = tailscaleMode,
+                    onModeChange = onTailscaleModeChange,
+                    currentUrl = info.url,
+                    clipboard = clipboard,
+                )
 
                 Spacer(Modifier.height(8.dp))
             }
@@ -166,6 +259,32 @@ fun ShareWindow(
             }
           }
         }
+    }
+}
+
+/**
+ * Like [SettingsSection] but with an optional [headerAction] rendered inline at the end
+ * of the title row (used for the QR + Links sections' "↻ Refresh link" button).
+ */
+@Composable
+private fun ShareSection(
+    title: String,
+    modifier: Modifier = Modifier,
+    headerAction: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(title, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            if (headerAction != null) {
+                Spacer(Modifier.weight(1f))
+                headerAction()
+            }
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
     }
 }
 
@@ -212,6 +331,208 @@ private fun LinkRow(label: String, url: String, clipboard: ClipboardManager) {
             }
         }
     }
+}
+
+private const val FUNNEL_ACL_SNIPPET =
+    "\"nodeAttrs\": [\n  { \"target\": [\"autogroup:member\"], \"attr\": [\"funnel\"] },\n],"
+
+/**
+ * Collapsible "Remote access (Tailscale)" subsection: pick the mode (Off/Serve/Funnel),
+ * see live status, and the full one-time setup with clickable admin-console links and a
+ * copyable ACL snippet. Surfaces the same steps as Settings → Session Sharing here, where
+ * you actually share. Collapsed by default so it doesn't clutter the common LAN case.
+ */
+@Composable
+private fun RemoteAccessSetupSection(
+    mode: String,
+    onModeChange: (String) -> Unit,
+    currentUrl: String,
+    clipboard: ClipboardManager,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val active = currentUrl.contains(".ts.net") || currentUrl.contains(".trycloudflare.com")
+    val isCloudflare = mode == "cloudflare"
+    val tool = if (isCloudflare) "cloudflared" else "Tailscale"
+    // Install detection + one-click Homebrew install for the selected provider's CLI.
+    // Checked off the UI thread (the probes shell out to the CLI / brew); re-checked when
+    // the mode changes (so switching Tailscale↔Cloudflare re-probes the right binary).
+    var installed by remember { mutableStateOf<Boolean?>(null) }
+    var brewOk by remember { mutableStateOf(true) }
+    var installing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    fun toolInstalled() = if (isCloudflare) CloudflaredExposer.isInstalled() else TailscaleExposer.isInstalled()
+    fun toolBrewOk() = if (isCloudflare) CloudflaredExposer.brewAvailable() else TailscaleExposer.brewAvailable()
+    fun toolBrewInstall() = if (isCloudflare) CloudflaredExposer.brewInstall() else TailscaleExposer.brewInstall()
+    LaunchedEffect(expanded, mode) {
+        if (expanded && mode != "off" && !installing) {
+            installed = null
+            val ins = withContext(Dispatchers.IO) { toolInstalled() }
+            installed = ins
+            brewOk = if (ins) true else withContext(Dispatchers.IO) { toolBrewOk() }
+        }
+    }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+                .clickable { expanded = !expanded }.padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = if (expanded) Icons.Default.ArrowDropDown else Icons.Default.ArrowRight,
+                contentDescription = if (expanded) "Collapse" else "Expand",
+                tint = TextSecondary,
+                modifier = Modifier.size(28.dp)
+            )
+            Spacer(Modifier.width(2.dp))
+            Text("Remote access", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Text(
+                when {
+                    mode == "off" -> "LAN only"
+                    active -> "$mode · active"
+                    else -> "$mode · not active"
+                },
+                color = if (active) Color(0xFF4CAF50) else TextMuted, fontSize = 11.sp
+            )
+        }
+        if (expanded) {
+            Spacer(Modifier.height(10.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(Track)
+                        .border(1.dp, BorderColor, RoundedCornerShape(6.dp)).padding(2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Seg("Off", mode == "off") { onModeChange("off") }
+                    Seg("Serve", mode == "serve") { onModeChange("serve") }
+                    Seg("Funnel", mode == "funnel") { onModeChange("funnel") }
+                    Seg("Cloudflare", isCloudflare) { onModeChange("cloudflare") }
+                }
+                Text(
+                    when (mode) {
+                        "serve" -> "Tailscale Serve = your tailnet only (the viewing device must be signed into your Tailscale)."
+                        "funnel" -> "Tailscale Funnel = public internet (anyone with the link; no Tailscale on their end)."
+                        "cloudflare" -> "Cloudflare = instant public link, no account, no config. Link changes each session (best-effort)."
+                        else -> "Off = LAN/loopback only. Pick a provider to reach other networks."
+                    },
+                    color = TextMuted, fontSize = 11.sp
+                )
+                if (mode != "off") {
+                    ProviderInstallRow(
+                        label = tool,
+                        downloadUrl = if (isCloudflare)
+                            "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+                        else "https://tailscale.com/download",
+                        installed = installed,
+                        installing = installing,
+                        brewOk = brewOk,
+                        onInstall = {
+                            installing = true
+                            scope.launch {
+                                withContext(Dispatchers.IO) { toolBrewInstall() }
+                                installed = withContext(Dispatchers.IO) { toolInstalled() }
+                                installing = false
+                            }
+                        }
+                    )
+                    if (isCloudflare) {
+                        SetupStep(2, "That's it — Share, and a public https://…trycloudflare.com link is generated automatically (no account). It appears here in a few seconds and changes each session.")
+                    } else {
+                        SetupStep(2, "Enable HTTPS certificates (required) — admin console → DNS → “Enable HTTPS”. Sign in with the SAME account as this machine, or the page 404s.")
+                        LinkText("Open DNS settings →", "https://login.tailscale.com/admin/dns")
+                        if (mode == "funnel") {
+                            SetupStep(3, "Funnel also needs the Funnel node-attribute in your ACL policy. Add this block and Save:")
+                            LinkText("Open Access controls →", "https://login.tailscale.com/admin/acls/file")
+                            Surface(color = SurfaceColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                                    SelectionContainer {
+                                        Text(FUNNEL_ACL_SNIPPET, fontSize = 11.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
+                                    }
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                        TextButton(
+                                            onClick = { clipboard.setText(AnnotatedString(FUNNEL_ACL_SNIPPET)) },
+                                            colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                                        ) { Text("Copy") }
+                                    }
+                                }
+                            }
+                        }
+                        SetupStep(if (mode == "funnel") 4 else 3, "After enabling, wait ~1 min (DNS / policy propagation), then Stop + Share again — the links above upgrade to https://<host>.ts.net.")
+                    }
+                    if (!active) {
+                        Text(
+                            "Not active yet — the links above still use the LAN address. " +
+                                if (isCloudflare) "Install cloudflared, then re-share." else "Finish the steps, then re-share.",
+                            color = TextMuted, fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Step 1 of remote-access setup: live install check + a one-click `brew install <tool>`. */
+@Composable
+private fun ProviderInstallRow(
+    label: String,
+    downloadUrl: String,
+    installed: Boolean?,
+    installing: Boolean,
+    brewOk: Boolean,
+    onInstall: () -> Unit,
+) {
+    Surface(color = SurfaceColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            val isCloudflared = label == "cloudflared"
+            Column(Modifier.weight(1f)) {
+                Text("1. $label", color = TextMuted, fontSize = 11.sp)
+                Text(
+                    when {
+                        installing -> "Installing via Homebrew… (this can take a minute)"
+                        installed == null -> "Checking…"
+                        installed == true -> if (isCloudflared) "Installed ✓ — ready (no sign-in needed)."
+                                             else "Installed ✓ — now sign in (menu-bar app, or `tailscale up`)."
+                        brewOk -> if (isCloudflared) "Not found — install it." else "Not found — install it, then sign in."
+                        else -> "Not found, and Homebrew isn't available — install manually."
+                    },
+                    color = if (installed == true) Color(0xFF4CAF50) else TextSecondary, fontSize = 11.sp
+                )
+                if (installed == false && !brewOk && !installing) {
+                    LinkText("Download $label →", downloadUrl)
+                }
+            }
+            if (installed == false && brewOk) {
+                Button(
+                    onClick = onInstall,
+                    enabled = !installing,
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                ) { Text(if (installing) "Installing…" else "Install") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SetupStep(n: Int, text: String) {
+    Row(verticalAlignment = Alignment.Top) {
+        Text("$n.", color = TextSecondary, fontSize = 11.sp, modifier = Modifier.width(18.dp))
+        Text(text, color = TextSecondary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun LinkText(text: String, url: String) {
+    Text(
+        text, color = AccentColor, fontSize = 11.sp,
+        modifier = Modifier.padding(start = 18.dp).clickable {
+            runCatching { java.awt.Desktop.getDesktop().browse(java.net.URI(url)) }
+        }
+    )
 }
 
 /** Render [text] as a QR code into a Compose [ImageBitmap], or null on failure. */

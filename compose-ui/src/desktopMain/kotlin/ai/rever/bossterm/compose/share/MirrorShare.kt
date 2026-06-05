@@ -1,6 +1,8 @@
 package ai.rever.bossterm.compose.share
 
 import ai.rever.bossterm.compose.TabbedTerminalState
+import ai.rever.bossterm.compose.ai.AIAssistants
+import ai.rever.bossterm.compose.ai.ToolCommandProvider
 import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.theme.ColorPalette
@@ -8,6 +10,9 @@ import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import ai.rever.bossterm.terminal.TerminalColor
+import ai.rever.bossterm.terminal.TextStyle
+import ai.rever.bossterm.terminal.model.TerminalLine
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -110,7 +115,7 @@ class MirrorShare(
         val sig = computeSignature()
         val out = ArrayList<ServerMessage>()
         out.add(themeMessage())
-        out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId))
+        out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode))
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
             out.add(ServerMessage.PaneSnapshot(id, snapshotText(tab), sz[0], sz[1]))
@@ -118,12 +123,50 @@ class MirrorShare(
         return out
     }
 
-    /** Route viewer input to the addressed pane (controller role only). */
+    /** Route viewer messages — input + tab close/new — to the host (controller role only). */
     fun handleClient(vc: ViewerConnection, msg: ClientMessage) {
-        if (msg is ClientMessage.Input && vc.canControl) {
-            (taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId])?.writeUserInput(msg.data)
+        if (!vc.canControl) return // all mutating actions require the control role
+        when (msg) {
+            is ClientMessage.Input ->
+                (taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId])?.writeUserInput(msg.data)
+            is ClientMessage.CloseTab ->
+                McpTerminalRegistry.findState(tabId)?.closeTab(msg.tabId)
+            is ClientMessage.NewTab ->
+                McpTerminalRegistry.findState(tabId)?.createTab()
+            is ClientMessage.SplitVertical ->
+                McpTerminalRegistry.findState(tabId)?.splitVerticalFromPane(msg.tabId, msg.paneId)
+            is ClientMessage.SplitHorizontal ->
+                McpTerminalRegistry.findState(tabId)?.splitHorizontalFromPane(msg.tabId, msg.paneId)
+            is ClientMessage.ClosePane -> {
+                // Target the clicked pane (focus it), then close; closeFocusedPane closes
+                // the whole tab when it's the only pane (matches the host's behavior).
+                val st = McpTerminalRegistry.findState(tabId)
+                st?.splitStates?.get(msg.tabId)?.setFocusedPane(msg.paneId)
+                st?.closeFocusedPane(msg.tabId)
+            }
+            is ClientMessage.LaunchAI -> {
+                // Run the same launch command the host's AI menu would (honoring the
+                // user's per-assistant YOLO/auto-mode config), in the clicked pane.
+                val target = taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId]
+                val assistant = AIAssistants.findById(msg.assistantId)
+                if (target != null && assistant != null) {
+                    val cfg = SettingsManager.instance.settings.value.aiAssistantConfigs[msg.assistantId]
+                    target.writeUserInput(ToolCommandProvider().getLaunchCommand(assistant, cfg))
+                }
+            }
+            // ---- tab-chip context menu (mirrors the host's chip menu) ----
+            is ClientMessage.RenameTab ->
+                McpTerminalRegistry.findState(tabId)?.renameChip(msg.tabId, msg.paneId, msg.title)
+            is ClientMessage.SetTabColor ->
+                McpTerminalRegistry.findState(tabId)?.setChipColor(msg.tabId, msg.paneId, msg.color)
+            is ClientMessage.DuplicateTab ->
+                McpTerminalRegistry.findState(tabId)?.duplicateTab(msg.tabId)
+            is ClientMessage.CloseOtherTabs ->
+                McpTerminalRegistry.findState(tabId)?.closeOtherTabs(msg.tabId)
+            is ClientMessage.CloseTabsBelow ->
+                McpTerminalRegistry.findState(tabId)?.closeTabsBelow(msg.tabId)
+            else -> {} // Hello / Focus / RequestControl: no-op (focus is viewer-side; control via token)
         }
-        // Hello / Focus / RequestControl: no-op in v1 (focus is viewer-side; control via token).
     }
 
     // ---- reconcile on structural change ----
@@ -144,12 +187,18 @@ class MirrorShare(
                 }
             }
         }
-        broadcast(ServerMessage.Layout(sig.tabs, sig.activeTabId))
+        broadcast(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode))
         sig.sizes.forEach { (id, sz) -> broadcast(ServerMessage.PaneResize(id, sz[0], sz[1])) }
     }
 
     // ---- window-state signature (pure-serializable; drives distinctUntilChanged) ----
-    private data class WindowSig(val tabs: List<TabNode>, val activeTabId: String?, val sizes: Map<String, List<Int>>)
+    private data class WindowSig(
+        val tabs: List<TabNode>,
+        val activeTabId: String?,
+        val sizes: Map<String, List<Int>>,
+        val tabBarOnLeft: Boolean,
+        val summaryMode: Boolean,
+    )
 
     private fun inScopeTabs(state: TabbedTerminalState): List<TerminalTab> = when (scope) {
         ShareScope.WINDOW -> state.tabs
@@ -157,10 +206,13 @@ class MirrorShare(
     }
 
     private fun computeSignature(): WindowSig {
-        val state = McpTerminalRegistry.findState(tabId) ?: return WindowSig(emptyList(), null, emptyMap())
+        val state = McpTerminalRegistry.findState(tabId) ?: return WindowSig(emptyList(), null, emptyMap(), false, false)
         val tabNodes = ArrayList<TabNode>()
         val sizes = HashMap<String, List<Int>>()
         val activeId = if (scope == ShareScope.TAB) tabId else state.activeTabId
+        val settings = SettingsManager.instance.settings.value
+        val onLeft = settings.tabBarPosition == "left"
+        val summary = settings.tabBarSummaryMode
         for (tab in inScopeTabs(state)) {
             val ss = state.splitStates[tab.id]
             val tree: PaneTreeNode = if (ss != null) {
@@ -168,11 +220,33 @@ class MirrorShare(
             } else {
                 val s = tab.display.termSize.value
                 sizes[tab.id] = listOf(s.columns, s.rows)
-                PaneTreeNode.Pane(tab.id, tab.title.value, tab.workingDirectory.value, true)
+                PaneTreeNode.Pane(
+                    tab.id, tab.title.value, tab.workingDirectory.value, true,
+                    color = tabColorCss(tab), branch = tab.gitBranch.value
+                )
             }
-            tabNodes.add(TabNode(tab.id, tab.title.value, tab.id == activeId, tree))
+            tabNodes.add(
+                TabNode(
+                    id = tab.id, title = tab.title.value, active = tab.id == activeId, tree = tree,
+                    color = tabColorCss(tab), cwd = tab.workingDirectory.value, branch = tab.gitBranch.value
+                )
+            )
         }
-        return WindowSig(tabNodes, activeId, sizes)
+        return WindowSig(tabNodes, activeId, sizes, onLeft, summary)
+    }
+
+    /** Resolve a tab's accent as CSS (#RRGGBB), mirroring the host's chip color (manual or auto). */
+    private fun tabColorCss(tab: TerminalTab): String? {
+        val argb = tab.tabColor.value ?: run {
+            val s = SettingsManager.instance.settings.value
+            if (!s.tabColorByDirectory) return null
+            val cwd = tab.workingDirectory.value
+            if (cwd.isNullOrBlank()) return null
+            val presets = ai.rever.bossterm.compose.tabs.TAB_COLOR_PRESETS
+            presets[cwd.hashCode().mod(presets.size)].second
+        }
+        val h = argb.removePrefix("0x")
+        return if (h.length >= 8) "#" + h.substring(2) else null // drop AA → #RRGGBB
     }
 
     private fun sigNode(node: SplitNode, focusedId: String, sizes: HashMap<String, List<Int>>): PaneTreeNode = when (node) {
@@ -180,7 +254,10 @@ class MirrorShare(
             val tab = node.session as TerminalTab
             val s = tab.display.termSize.value
             sizes[node.id] = listOf(s.columns, s.rows)
-            PaneTreeNode.Pane(node.id, tab.title.value, tab.workingDirectory.value, node.id == focusedId)
+            PaneTreeNode.Pane(
+                node.id, tab.title.value, tab.workingDirectory.value, node.id == focusedId,
+                color = tabColorCss(tab), branch = tab.gitBranch.value
+            )
         }
         is SplitNode.VerticalSplit ->
             PaneTreeNode.Split("v", node.ratio, sigNode(node.left, focusedId, sizes), sigNode(node.right, focusedId, sizes))
@@ -200,16 +277,68 @@ class MirrorShare(
         return m
     }
 
+    /**
+     * Build the initial-paint blob for a pane as **styled** text: each cell run is
+     * prefixed with its SGR escape so the viewer's xterm.js paints the scrollback in
+     * color, exactly like live output. (Previously this sent `line.text` — plain chars
+     * with no styling — so the very first render was monochrome until new output arrived.)
+     */
     private fun snapshotText(tab: TerminalTab): String {
         val snap = tab.textBuffer.createSnapshot()
         val sb = StringBuilder()
         var row = -snap.historyLinesCount
         while (row < snap.height) {
-            sb.append(snap.getLine(row).text.trimEnd())
+            appendStyledLine(sb, snap.getLine(row))
             if (row < snap.height - 1) sb.append("\r\n")
             row++
         }
+        sb.append("[0m") // reset trailing style
+        // Park the cursor at its real screen position (1-based row;col) — otherwise xterm.js
+        // leaves it on the bottom row after we write the full-height blob (scrollback + screen).
+        val cy = tab.terminal.cursorY.coerceIn(1, snap.height)
+        val cx = tab.terminal.cursorX.coerceAtLeast(1)
+        sb.append("[$cy;${cx}H")
         return sb.toString()
+    }
+
+    /** Append one buffer line as SGR-prefixed styled runs, trimming invisible trailing padding. */
+    private fun appendStyledLine(sb: StringBuilder, line: TerminalLine) {
+        // Collect runs, stopping at the first NUL entry (trailing unfilled cells), like TerminalLine.text.
+        val runs = ArrayList<TerminalLine.TextEntry>()
+        for (e in line.entries) {
+            if (e == null) continue
+            if (e.isNul) break
+            runs.add(e)
+        }
+        // Drop trailing runs that are blank with no background — invisible padding (old .trimEnd()).
+        var end = runs.size
+        while (end > 0 && runs[end - 1].let { it.text.toString().isBlank() && it.style.background == null }) end--
+        for (i in 0 until end) {
+            sb.append(ansiForStyle(runs[i].style)).append(runs[i].text.toString())
+        }
+    }
+
+    /** SGR escape that resets then applies [style]'s colors + attributes (256-color / truecolor). */
+    private fun ansiForStyle(style: TextStyle): String {
+        val codes = ArrayList<String>()
+        codes.add("0") // reset first so each run is self-contained
+        if (style.hasOption(TextStyle.Option.BOLD)) codes.add("1")
+        if (style.hasOption(TextStyle.Option.DIM)) codes.add("2")
+        if (style.hasOption(TextStyle.Option.ITALIC)) codes.add("3")
+        if (style.hasOption(TextStyle.Option.UNDERLINED)) codes.add("4")
+        if (style.hasOption(TextStyle.Option.SLOW_BLINK)) codes.add("5")
+        if (style.hasOption(TextStyle.Option.RAPID_BLINK)) codes.add("6")
+        if (style.hasOption(TextStyle.Option.INVERSE)) codes.add("7")
+        if (style.hasOption(TextStyle.Option.HIDDEN)) codes.add("8")
+        style.foreground?.let { codes.add(sgrColor(it, fg = true)) }
+        style.background?.let { codes.add(sgrColor(it, fg = false)) }
+        return "[" + codes.joinToString(";") + "m"
+    }
+
+    private fun sgrColor(c: TerminalColor, fg: Boolean): String {
+        val base = if (fg) "38" else "48"
+        return if (c.isIndexed) "$base;5;${c.colorIndex}"
+        else c.toColor().let { "$base;2;${it.red};${it.green};${it.blue}" }
     }
 
     // ---- theme (host palette → CSS) ----

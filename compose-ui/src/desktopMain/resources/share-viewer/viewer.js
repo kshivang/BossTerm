@@ -206,11 +206,11 @@
       var tabId = tab ? tab.id : activeTabId;
       var multiPane = !!(tab && tab.tree && tab.tree.t === "split");
       ctxEl.appendChild(ctxSep());
-      ctxEl.appendChild(ctxItem("Split right", true, function () {
-        sendMsg({ t: "splitRight", tabId: tabId, paneId: paneId });
+      ctxEl.appendChild(ctxItem("Split vertical (left / right)", true, function () {
+        sendMsg({ t: "splitVertical", tabId: tabId, paneId: paneId });
       }));
-      ctxEl.appendChild(ctxItem("Split down", true, function () {
-        sendMsg({ t: "splitDown", tabId: tabId, paneId: paneId });
+      ctxEl.appendChild(ctxItem("Split horizontal (top / bottom)", true, function () {
+        sendMsg({ t: "splitHorizontal", tabId: tabId, paneId: paneId });
       }));
       if (multiPane) ctxEl.appendChild(ctxItem("Close pane", true, function () {
         sendMsg({ t: "closePane", tabId: tabId, paneId: paneId });
@@ -367,15 +367,55 @@
       sidebarEl.classList.add("show"); // .open (drawer) toggled by ☰ on phones
       sidebarEl.innerHTML = "";
       if (layout) layout.tabs.forEach(function (tab) { sidebarEl.appendChild(leftChip(tab)); });
-      if (controlGranted) sidebarEl.appendChild(newTabButton("+ New tab"));
+      // Action row mirroring the host's left bar: Split L/R, Split T/B, then New tab.
+      if (controlGranted) {
+        var actions = document.createElement("div");
+        actions.className = "ltab-actions";
+        actions.appendChild(splitButton("v"));
+        actions.appendChild(splitButton("h"));
+        actions.appendChild(newTabButton("+ New tab"));
+        sidebarEl.appendChild(actions);
+      }
     } else {
       tabbarEl.classList.remove("hidden");
       menubtnEl.classList.remove("show");
       sidebarEl.classList.remove("show", "open");
       tabbarEl.innerHTML = "";
       if (layout) layout.tabs.forEach(function (tab) { tabbarEl.appendChild(topChip(tab)); });
-      if (controlGranted) tabbarEl.appendChild(newTabButton("+"));
+      // Split buttons sit just left of the new-tab (+), like the host's tab-bar actions.
+      if (controlGranted) {
+        tabbarEl.appendChild(splitButton("v"));
+        tabbarEl.appendChild(splitButton("h"));
+        tabbarEl.appendChild(newTabButton("+"));
+      }
     }
+  }
+
+  // Inline SVGs matching the host's Material split icons: a pane outline divided by a
+  // vertical line (left/right) or a horizontal line (top/bottom).
+  var SVG_VSPLIT = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="12" y1="4" x2="12" y2="20"/></svg>';
+  var SVG_HSPLIT = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="12" x2="21" y2="12"/></svg>';
+
+  // The pane a tab-bar split targets: the viewer's current pane if it's in the active
+  // tab, else that tab's focused pane (matches the host splitting the focused pane).
+  function activePaneId() {
+    var tab = activeTabNode(); if (!tab || !tab.tree) return null;
+    if (currentPaneId) { var ids = {}; collectPaneIds(tab.tree, ids); if (ids[currentPaneId]) return currentPaneId; }
+    return firstFocusedPane(tab.tree);
+  }
+  // kind: "v" = Split Left/Right (vertical divider), "h" = Split Top/Bottom (horizontal divider).
+  function splitButton(kind) {
+    var b = document.createElement("div");
+    b.className = "splitbtn";
+    b.title = kind === "v" ? "Split vertical (left / right)" : "Split horizontal (top / bottom)";
+    b.innerHTML = kind === "v" ? SVG_VSPLIT : SVG_HSPLIT;
+    b.onclick = function (ev) {
+      ev.stopPropagation();
+      var tab = activeTabNode(), pid = activePaneId();
+      if (!tab || !pid) return;
+      sendMsg({ t: kind === "v" ? "splitVertical" : "splitHorizontal", tabId: tab.id, paneId: pid });
+    };
+    return b;
   }
 
   function switchTab(id) {

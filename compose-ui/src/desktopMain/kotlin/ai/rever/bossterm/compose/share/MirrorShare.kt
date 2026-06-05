@@ -133,9 +133,9 @@ class MirrorShare(
                 McpTerminalRegistry.findState(tabId)?.closeTab(msg.tabId)
             is ClientMessage.NewTab ->
                 McpTerminalRegistry.findState(tabId)?.createTab()
-            is ClientMessage.SplitRight ->
+            is ClientMessage.SplitVertical ->
                 McpTerminalRegistry.findState(tabId)?.splitVerticalFromPane(msg.tabId, msg.paneId)
-            is ClientMessage.SplitDown ->
+            is ClientMessage.SplitHorizontal ->
                 McpTerminalRegistry.findState(tabId)?.splitHorizontalFromPane(msg.tabId, msg.paneId)
             is ClientMessage.ClosePane -> {
                 // Target the clicked pane (focus it), then close; closeFocusedPane closes

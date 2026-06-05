@@ -173,15 +173,21 @@ sealed class ClientMessage {
     @SerialName("newTab")
     data object NewTab : ClientMessage()
 
-    /** Split [paneId] in [tabId] left/right — new pane on the right (controller role only). */
+    /**
+     * Split [paneId] in [tabId] into left/right panes (vertical divider) — the host's
+     * "Split Left/Right". Controller role only.
+     */
     @Serializable
-    @SerialName("splitRight")
-    data class SplitRight(val tabId: String, val paneId: String) : ClientMessage()
+    @SerialName("splitVertical")
+    data class SplitVertical(val tabId: String, val paneId: String) : ClientMessage()
 
-    /** Split [paneId] in [tabId] top/bottom — new pane below (controller role only). */
+    /**
+     * Split [paneId] in [tabId] into top/bottom panes (horizontal divider) — the host's
+     * "Split Top/Bottom". Controller role only.
+     */
     @Serializable
-    @SerialName("splitDown")
-    data class SplitDown(val tabId: String, val paneId: String) : ClientMessage()
+    @SerialName("splitHorizontal")
+    data class SplitHorizontal(val tabId: String, val paneId: String) : ClientMessage()
 
     /** Close [paneId] in [tabId]; closes the tab if it's the last pane (controller role only). */
     @Serializable

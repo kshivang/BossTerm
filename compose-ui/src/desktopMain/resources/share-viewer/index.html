@@ -74,6 +74,15 @@
               color: #b0b0b0; cursor: pointer; font-size: 13px; text-align: center; }
     .newtab:hover { color: #fff; border-color: #4a90e2; }
 
+    /* tab-bar split buttons (Split L/R, Split T/B) — mirror the host's tab-bar actions */
+    .splitbtn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+                padding: 2px 6px; border-radius: 5px; border: 1px solid #404040; background: #1e1e1e;
+                color: #b0b0b0; cursor: pointer; }
+    .splitbtn:hover { color: #fff; border-color: #4a90e2; }
+    .splitbtn svg { display: block; }
+    .ltab-actions { display: flex; gap: 4px; align-items: center; margin-top: 4px; }
+    .ltab-actions .newtab { flex: 1 1 auto; }
+
     .split { display: flex; flex: 1 1 0; min-width: 0; min-height: 0; }
     .split.v { flex-direction: row; }
     .split.h { flex-direction: column; }

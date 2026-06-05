@@ -63,16 +63,21 @@ object SessionShareManager {
     private var engine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     private var boundPort: Int? = null
     private var boundHost: String? = null
-    // Tailscale (Phase 3): published https://<host>.ts.net URL while a tunnel is up.
-    private var tailscaleUrl: String? = null
-    private var tailscaleMode: String = "off"
-    private val _tailscaleUrlFlow = MutableStateFlow<String?>(null)
+    // Remote access (Phase 3): the published public/tunnel URL + which provider is live.
+    // [activeRemoteMode] mirrors a TerminalSettings.shareTailscaleMode value:
+    // "off" | "serve" | "funnel" (Tailscale) | "cloudflare" (Cloudflare Quick Tunnel).
+    private var remoteUrl: String? = null
+    private var activeRemoteMode: String = "off"
+    // For long-lived tunnels (cloudflared): the running process to kill on teardown.
+    private var remoteProcess: Process? = null
+    private val _remoteUrlFlow = MutableStateFlow<String?>(null)
     /**
-     * The published Tailscale https URL once exposure resolves, else null. Exposure runs
+     * The published remote-access URL (Tailscale `https://<host>.ts.net` or a Cloudflare
+     * `https://<rand>.trycloudflare.com`) once exposure resolves, else null. Exposure runs
      * asynchronously (off the UI thread), so the share dialog opens with the LAN URL first;
-     * the UI observes this to refresh the dialog to the https://<host>.ts.net link when ready.
+     * the UI observes this to refresh the dialog to the public link when it's ready.
      */
-    val tailscaleUrlFlow: StateFlow<String?> = _tailscaleUrlFlow.asStateFlow()
+    val remoteUrlFlow: StateFlow<String?> = _remoteUrlFlow.asStateFlow()
 
     /** A token resolves to a share and whether that token grants control. */
     private data class TokenRef(val share: MirrorShare, val canControl: Boolean)
@@ -145,15 +150,15 @@ object SessionShareManager {
     /**
      * Whether a newly connecting device must be approved before it can view/control,
      * per [TerminalSettings.sessionSharingApprovalScope]: "all" = always; "off" = never;
-     * "funnel" (default) = only when the share is publicly reachable (Tailscale Funnel
-     * or a custom public URL), since LAN/Serve reach is already trusted.
+     * "funnel" (default) = only when the share is publicly reachable (Tailscale Funnel,
+     * Cloudflare Quick Tunnel, or a custom public URL), since LAN/Serve reach is trusted.
      */
     private fun requiresApproval(): Boolean {
         val s = SettingsManager.instance.settings.value
         return when (s.sessionSharingApprovalScope) {
             "all" -> true
             "off" -> false
-            else -> tailscaleMode == "funnel" || s.sessionSharingPublicUrl.isNotBlank()
+            else -> activeRemoteMode == "funnel" || activeRemoteMode == "cloudflare" || s.sessionSharingPublicUrl.isNotBlank()
         }
     }
 
@@ -310,16 +315,12 @@ object SessionShareManager {
         grants.clear()
         failAllPending()
         _sharedTabIds.value = emptySet()
+        teardownRemoteAccess(boundPort)
         val e = engine ?: return
-        val port = boundPort
-        if (tailscaleMode != "off" && port != null) runCatching { TailscaleExposer.disable(tailscaleMode, port) }
         runCatching { e.stop(200, 800) }
         engine = null
         boundPort = null
         boundHost = null
-        tailscaleUrl = null
-        _tailscaleUrlFlow.value = null
-        tailscaleMode = "off"
     }
 
     // ---- engine lifecycle (mutex-guarded) ----
@@ -388,27 +389,35 @@ object SessionShareManager {
                 boundPort = port
                 boundHost = host
                 log.info("Session-sharing server bound on {}:{} (bind={})", host, port, settings.sessionSharingBind)
-                // Phase 3: expose remotely via Tailscale if configured. Best-effort —
-                // failure just leaves us on the LAN/loopback URL. Run it OFF the share
-                // path (manager scope, Dispatchers.IO): shelling out to the `tailscale`
-                // CLI can be slow or hang, and ensureEngineLocked runs synchronously on
-                // the caller's (UI) thread — doing it inline froze the whole app while a
-                // stuck `tailscale serve` was draining. The dialog opens immediately with
-                // the LAN URL; the Tailscale URL is picked up when the dialog is next
-                // (re)opened. Guarded so it only fires once per server lifecycle.
-                if (settings.shareTailscaleMode != "off" && tailscaleMode == "off") {
-                    val tsMode = settings.shareTailscaleMode
-                    val tsPort = port
-                    tailscaleMode = tsMode
+                // Phase 3: expose remotely via the configured provider, if any. Best-effort —
+                // failure just leaves us on the LAN/loopback URL. Run it OFF the share path
+                // (manager scope, Dispatchers.IO): shelling out to `tailscale`/`cloudflared`
+                // can be slow or hang, and ensureEngineLocked runs synchronously on the
+                // caller's (UI) thread — doing it inline would freeze the app. The dialog
+                // opens immediately with the LAN URL; the public URL is picked up via
+                // remoteUrlFlow when it resolves. Guarded so it only fires once per lifecycle.
+                if (settings.shareTailscaleMode != "off" && activeRemoteMode == "off") {
+                    val mode = settings.shareTailscaleMode
+                    val rPort = port
+                    activeRemoteMode = mode
                     scope.launch {
-                        val url = TailscaleExposer.enable(tsMode, tsPort)
+                        val url = when (mode) {
+                            "cloudflare" -> CloudflaredExposer.start(rPort)?.let { proc ->
+                                remoteProcess = proc
+                                CloudflaredExposer.awaitUrl(proc)
+                            }
+                            else -> TailscaleExposer.enable(mode, rPort) // "serve" / "funnel"
+                        }
                         if (url != null) {
-                            tailscaleUrl = url
-                            _tailscaleUrlFlow.value = url  // refresh any open share dialog to the https URL
-                            log.info("Session-sharing reachable via Tailscale: {}", url)
+                            remoteUrl = url
+                            _remoteUrlFlow.value = url  // refresh any open share dialog to the public URL
+                            log.info("Session-sharing reachable via {}: {}", mode, url)
                         } else {
-                            log.warn("Tailscale {} did not yield a URL; using the LAN link. " +
-                                "Check `tailscale status` and that {} is enabled for your tailnet.", tsMode, tsMode)
+                            log.warn(
+                                "Remote access ({}) did not yield a URL; using the LAN link. " +
+                                    "For tailscale check `tailscale status`; for cloudflare ensure `cloudflared` is installed.",
+                                mode
+                            )
                         }
                     }
                 }
@@ -429,12 +438,8 @@ object SessionShareManager {
 
     private suspend fun stopEngineLocked() {
         val e = engine ?: return
-        // Tear down any Tailscale mapping first (best-effort).
-        if (tailscaleMode != "off") {
-            val port = boundPort
-            val mode = tailscaleMode
-            if (port != null) withContext(Dispatchers.IO) { TailscaleExposer.disable(mode, port) }
-        }
+        // Tear down any active remote-access exposure first (best-effort, off the UI thread).
+        withContext(Dispatchers.IO) { teardownRemoteAccess(boundPort) }
         try {
             withContext(Dispatchers.IO) { e.stop(300, 1000) }
             log.info("Session-sharing server stopped (port {})", boundPort)
@@ -444,10 +449,23 @@ object SessionShareManager {
             engine = null
             boundPort = null
             boundHost = null
-            tailscaleUrl = null
-            _tailscaleUrlFlow.value = null
-            tailscaleMode = "off"
         }
+    }
+
+    /**
+     * Tear down whatever remote-access provider is live and reset the published URL.
+     * Tailscale serve/funnel is unmapped via the CLI; a Cloudflare quick tunnel is a
+     * long-lived process, so it's killed. Idempotent / safe when nothing is active.
+     */
+    private fun teardownRemoteAccess(port: Int?) {
+        when (activeRemoteMode) {
+            "serve", "funnel" -> if (port != null) runCatching { TailscaleExposer.disable(activeRemoteMode, port) }
+            "cloudflare" -> runCatching { remoteProcess?.destroyForcibly() }
+        }
+        remoteProcess = null
+        remoteUrl = null
+        _remoteUrlFlow.value = null
+        activeRemoteMode = "off"
     }
 
     /** Handle one viewer WebSocket: handshake/approval, snapshot, then drain its outbox. */
@@ -533,13 +551,14 @@ object SessionShareManager {
     }
 
     /**
-     * Build the user-facing share URL. Precedence: an active Tailscale tunnel
-     * (https://<host>.ts.net) → a user-set public URL (their own proxy/cloudflared/
-     * SSH tunnel) → the bound host (LAN-resolved when bound wide). https bases yield
-     * wss automatically since the viewer derives the WS scheme from the page.
+     * Build the user-facing share URL. Precedence: an active remote-access tunnel
+     * (Tailscale `https://<host>.ts.net` or Cloudflare `https://<rand>.trycloudflare.com`)
+     * → a user-set public URL (their own proxy/SSH tunnel) → the bound host (LAN-resolved
+     * when bound wide). https bases yield wss automatically since the viewer derives the
+     * WS scheme from the page.
      */
     private fun buildUrl(token: String): String? {
-        tailscaleUrl?.let { return "${it.trimEnd('/')}/?t=$token" }
+        remoteUrl?.let { return "${it.trimEnd('/')}/?t=$token" }
         val publicUrl = SettingsManager.instance.settings.value.sessionSharingPublicUrl
         if (publicUrl.isNotBlank()) return "${publicUrl.trimEnd('/')}/?t=$token"
         val port = boundPort ?: return null

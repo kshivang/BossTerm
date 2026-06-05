@@ -59,12 +59,14 @@ fun SessionSharingSettingsSection(
 
         SettingsSection(title = "Remote Access (advanced)") {
             SettingsDropdown(
-                label = "Tailscale",
-                options = listOf("off", "serve", "funnel"),
+                label = "Remote access",
+                options = listOf("off", "serve", "funnel", "cloudflare"),
                 selectedOption = settings.shareTailscaleMode,
                 onOptionSelected = { onSettingsChange(settings.copy(shareTailscaleMode = it)) },
-                description = "Reach the share from anywhere via the Tailscale CLI (no port-forwarding): " +
-                        "serve = your tailnet only; funnel = public internet (TLS). off = LAN/loopback only."
+                description = "Reach the share from other networks (no port-forwarding). " +
+                        "serve = your Tailscale tailnet only; funnel = public via Tailscale (TLS); " +
+                        "cloudflare = instant public link via cloudflared, no account (ephemeral URL); " +
+                        "off = LAN/loopback only."
             )
             SettingsTextField(
                 label = "Public URL override",

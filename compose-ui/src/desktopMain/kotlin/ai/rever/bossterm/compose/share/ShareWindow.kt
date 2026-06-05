@@ -193,7 +193,7 @@ fun ShareWindow(
                 }
                 Spacer(Modifier.height(20.dp))
 
-                TailscaleSetupSection(
+                RemoteAccessSetupSection(
                     mode = tailscaleMode,
                     onModeChange = onTailscaleModeChange,
                     currentUrl = info.url,
@@ -276,24 +276,32 @@ private const val FUNNEL_ACL_SNIPPET =
  * you actually share. Collapsed by default so it doesn't clutter the common LAN case.
  */
 @Composable
-private fun TailscaleSetupSection(
+private fun RemoteAccessSetupSection(
     mode: String,
     onModeChange: (String) -> Unit,
     currentUrl: String,
     clipboard: ClipboardManager,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val active = currentUrl.contains(".ts.net")
-    // Tailscale-install detection + one-click Homebrew install. Checked lazily on expand,
-    // off the UI thread (the probes shell out to `tailscale`/`brew`).
-    var installed by remember { mutableStateOf<Boolean?>(null) } // null = not yet checked
+    val active = currentUrl.contains(".ts.net") || currentUrl.contains(".trycloudflare.com")
+    val isCloudflare = mode == "cloudflare"
+    val tool = if (isCloudflare) "cloudflared" else "Tailscale"
+    // Install detection + one-click Homebrew install for the selected provider's CLI.
+    // Checked off the UI thread (the probes shell out to the CLI / brew); re-checked when
+    // the mode changes (so switching Tailscale↔Cloudflare re-probes the right binary).
+    var installed by remember { mutableStateOf<Boolean?>(null) }
     var brewOk by remember { mutableStateOf(true) }
     var installing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    LaunchedEffect(expanded, installing) {
-        if (expanded && installed == null && !installing) {
-            installed = withContext(Dispatchers.IO) { TailscaleExposer.isInstalled() }
-            if (installed == false) brewOk = withContext(Dispatchers.IO) { TailscaleExposer.brewAvailable() }
+    fun toolInstalled() = if (isCloudflare) CloudflaredExposer.isInstalled() else TailscaleExposer.isInstalled()
+    fun toolBrewOk() = if (isCloudflare) CloudflaredExposer.brewAvailable() else TailscaleExposer.brewAvailable()
+    fun toolBrewInstall() = if (isCloudflare) CloudflaredExposer.brewInstall() else TailscaleExposer.brewInstall()
+    LaunchedEffect(expanded, mode) {
+        if (expanded && mode != "off" && !installing) {
+            installed = null
+            val ins = withContext(Dispatchers.IO) { toolInstalled() }
+            installed = ins
+            brewOk = if (ins) true else withContext(Dispatchers.IO) { toolBrewOk() }
         }
     }
     Column(Modifier.fillMaxWidth()) {
@@ -303,7 +311,7 @@ private fun TailscaleSetupSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(if (expanded) "▾" else "▸", color = TextSecondary, fontSize = 13.sp, modifier = Modifier.width(16.dp))
-            Text("Remote access (Tailscale)", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Text("Remote access", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
             Text(
                 when {
@@ -325,52 +333,63 @@ private fun TailscaleSetupSection(
                     Seg("Off", mode == "off") { onModeChange("off") }
                     Seg("Serve", mode == "serve") { onModeChange("serve") }
                     Seg("Funnel", mode == "funnel") { onModeChange("funnel") }
+                    Seg("Cloudflare", isCloudflare) { onModeChange("cloudflare") }
                 }
                 Text(
                     when (mode) {
-                        "serve" -> "Serve = your tailnet only (the viewing device must be signed into your Tailscale)."
-                        "funnel" -> "Funnel = public internet (anyone with the link; no Tailscale needed on their end)."
-                        else -> "Off = LAN/loopback only. Pick Serve (your devices) or Funnel (public) to reach other networks."
+                        "serve" -> "Tailscale Serve = your tailnet only (the viewing device must be signed into your Tailscale)."
+                        "funnel" -> "Tailscale Funnel = public internet (anyone with the link; no Tailscale on their end)."
+                        "cloudflare" -> "Cloudflare = instant public link, no account, no config. Link changes each session (best-effort)."
+                        else -> "Off = LAN/loopback only. Pick a provider to reach other networks."
                     },
                     color = TextMuted, fontSize = 11.sp
                 )
                 if (mode != "off") {
-                    TailscaleInstallRow(
+                    ProviderInstallRow(
+                        label = tool,
+                        downloadUrl = if (isCloudflare)
+                            "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+                        else "https://tailscale.com/download",
                         installed = installed,
                         installing = installing,
                         brewOk = brewOk,
                         onInstall = {
                             installing = true
                             scope.launch {
-                                withContext(Dispatchers.IO) { TailscaleExposer.brewInstall() }
-                                installed = withContext(Dispatchers.IO) { TailscaleExposer.isInstalled() }
+                                withContext(Dispatchers.IO) { toolBrewInstall() }
+                                installed = withContext(Dispatchers.IO) { toolInstalled() }
                                 installing = false
                             }
                         }
                     )
-                    SetupStep(2, "Enable HTTPS certificates (required) — admin console → DNS → “Enable HTTPS”. Sign in with the SAME account as this machine, or the page 404s.")
-                    LinkText("Open DNS settings →", "https://login.tailscale.com/admin/dns")
-                    if (mode == "funnel") {
-                        SetupStep(3, "Funnel also needs the Funnel node-attribute in your ACL policy. Add this block and Save:")
-                        LinkText("Open Access controls →", "https://login.tailscale.com/admin/acls/file")
-                        Surface(color = SurfaceColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-                                SelectionContainer {
-                                    Text(FUNNEL_ACL_SNIPPET, fontSize = 11.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
-                                }
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                    TextButton(
-                                        onClick = { clipboard.setText(AnnotatedString(FUNNEL_ACL_SNIPPET)) },
-                                        colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
-                                    ) { Text("Copy") }
+                    if (isCloudflare) {
+                        SetupStep(2, "That's it — Share, and a public https://…trycloudflare.com link is generated automatically (no account). It appears here in a few seconds and changes each session.")
+                    } else {
+                        SetupStep(2, "Enable HTTPS certificates (required) — admin console → DNS → “Enable HTTPS”. Sign in with the SAME account as this machine, or the page 404s.")
+                        LinkText("Open DNS settings →", "https://login.tailscale.com/admin/dns")
+                        if (mode == "funnel") {
+                            SetupStep(3, "Funnel also needs the Funnel node-attribute in your ACL policy. Add this block and Save:")
+                            LinkText("Open Access controls →", "https://login.tailscale.com/admin/acls/file")
+                            Surface(color = SurfaceColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                                    SelectionContainer {
+                                        Text(FUNNEL_ACL_SNIPPET, fontSize = 11.sp, color = TextSecondary, fontFamily = FontFamily.Monospace)
+                                    }
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                        TextButton(
+                                            onClick = { clipboard.setText(AnnotatedString(FUNNEL_ACL_SNIPPET)) },
+                                            colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                                        ) { Text("Copy") }
+                                    }
                                 }
                             }
                         }
+                        SetupStep(if (mode == "funnel") 4 else 3, "After enabling, wait ~1 min (DNS / policy propagation), then Stop + Share again — the links above upgrade to https://<host>.ts.net.")
                     }
-                    SetupStep(if (mode == "funnel") 4 else 3, "After enabling, wait ~1 min (DNS / policy propagation), then Stop + Share again — the links above upgrade to https://<host>.ts.net.")
                     if (!active) {
                         Text(
-                            "Not active yet — the links above still use the LAN address. Finish the steps, then re-share.",
+                            "Not active yet — the links above still use the LAN address. " +
+                                if (isCloudflare) "Install cloudflared, then re-share." else "Finish the steps, then re-share.",
                             color = TextMuted, fontSize = 11.sp
                         )
                     }
@@ -380,9 +399,11 @@ private fun TailscaleSetupSection(
     }
 }
 
-/** Step 1 of the Tailscale setup: live install check + a one-click `brew install tailscale`. */
+/** Step 1 of remote-access setup: live install check + a one-click `brew install <tool>`. */
 @Composable
-private fun TailscaleInstallRow(
+private fun ProviderInstallRow(
+    label: String,
+    downloadUrl: String,
     installed: Boolean?,
     installing: Boolean,
     brewOk: Boolean,
@@ -394,20 +415,22 @@ private fun TailscaleInstallRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            val isCloudflared = label == "cloudflared"
             Column(Modifier.weight(1f)) {
-                Text("1. Tailscale", color = TextMuted, fontSize = 11.sp)
+                Text("1. $label", color = TextMuted, fontSize = 11.sp)
                 Text(
                     when {
                         installing -> "Installing via Homebrew… (this can take a minute)"
                         installed == null -> "Checking…"
-                        installed == true -> "Installed ✓ — now sign in (menu-bar app, or `tailscale up`)."
-                        brewOk -> "Not found — install it, then sign in."
+                        installed == true -> if (isCloudflared) "Installed ✓ — ready (no sign-in needed)."
+                                             else "Installed ✓ — now sign in (menu-bar app, or `tailscale up`)."
+                        brewOk -> if (isCloudflared) "Not found — install it." else "Not found — install it, then sign in."
                         else -> "Not found, and Homebrew isn't available — install manually."
                     },
                     color = if (installed == true) Color(0xFF4CAF50) else TextSecondary, fontSize = 11.sp
                 )
                 if (installed == false && !brewOk && !installing) {
-                    LinkText("Download Tailscale →", "https://tailscale.com/download")
+                    LinkText("Download $label →", downloadUrl)
                 }
             }
             if (installed == false && brewOk) {

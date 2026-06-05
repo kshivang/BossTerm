@@ -919,11 +919,14 @@ data class TerminalSettings(
     val sessionSharingBindHost: String = "",
 
     /**
-     * Remote-reach via Tailscale (OpenClaw-style; requires the `tailscale` CLI):
+     * Remote-access mode for sharing (which tunnel provider exposes the share server):
      *  - "off" (default): no tunnel — reach is loopback/LAN only.
-     *  - "serve": expose to your tailnet only (private, TLS via Tailscale).
-     *  - "funnel": expose to the public internet via Tailscale's edge (TLS).
-     * When active, the share URL becomes the published https://<host>.ts.net link.
+     *  - "serve": Tailscale Serve — your tailnet only (private, TLS). Requires `tailscale`.
+     *  - "funnel": Tailscale Funnel — public internet via Tailscale's edge (TLS).
+     *  - "cloudflare": Cloudflare Quick Tunnel — instant public https link via `cloudflared`,
+     *    no account/config (ephemeral URL). See [ai.rever.bossterm.compose.share.CloudflaredExposer].
+     * When active, the share URL becomes the published https link (…ts.net or …trycloudflare.com).
+     * (Field name is historical — it's the general remote-access mode, not Tailscale-only.)
      */
     val shareTailscaleMode: String = "off",
 

@@ -133,7 +133,8 @@ class MirrorShare(
             is ClientMessage.CloseTab ->
                 McpTerminalRegistry.findState(tabId)?.closeTab(msg.tabId)
             is ClientMessage.NewTab ->
-                McpTerminalRegistry.findState(tabId)?.createTab()
+                // Background: a viewer creating a tab shouldn't switch the host user's active tab.
+                McpTerminalRegistry.findState(tabId)?.createTab(activate = false)
             is ClientMessage.SplitVertical ->
                 McpTerminalRegistry.findState(tabId)?.splitVerticalFromPane(msg.tabId, msg.paneId)
             is ClientMessage.SplitHorizontal ->

@@ -92,7 +92,8 @@
     .split { display: flex; flex: 1 1 0; min-width: 0; min-height: 0; }
     .split.v { flex-direction: row; }
     .split.h { flex-direction: column; }
-    .divider { background: #000; flex: 0 0 1px; }
+    .divider { background: #000; flex: 0 0 4px; -webkit-user-select: none; user-select: none; touch-action: none; }
+    .divider.draggable:hover, .divider.draggable:active { background: #4a90e2; }
     /* a visible frame so the host terminal's bounds are clear against the stage */
     .pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; box-sizing: border-box;
             border: 1px solid #3a3a3a; }

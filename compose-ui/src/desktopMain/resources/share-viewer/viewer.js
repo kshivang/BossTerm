@@ -27,6 +27,7 @@
   var fithostEl = document.getElementById("fithost");
   var tabBarOnLeft = false;       // mirror the host's tab-bar orientation
   var summaryMode = false;        // host's tabBarSummaryMode: 1 chip/tab vs 1 chip/pane
+  var splitDragging = false;      // a divider is being dragged → suppress layout re-renders
   var currentPaneId = null;       // pane the on-screen key bar targets
   function sendMsg(o) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); }
 
@@ -684,9 +685,46 @@
     a.style.flex = (node.ratio || 0.5) + " 1 0";
     b.style.flex = (1 - (node.ratio || 0.5)) + " 1 0";
     var div = document.createElement("div");
-    div.className = "divider";
+    div.className = "divider " + (node.dir === "h" ? "h" : "v");
+    if (controlGranted && node.id) attachDividerDrag(div, split, a, b, node);
     split.appendChild(a); split.appendChild(div); split.appendChild(b);
     return split;
+  }
+
+  // Drag a split divider to re-ratio the split — mirrors dragging it on the host. Updates
+  // the local layout live for smoothness and streams the ratio to the host (throttled);
+  // re-renders are suppressed mid-drag so the divider isn't rebuilt under the pointer.
+  function attachDividerDrag(div, split, a, b, node) {
+    var horiz = node.dir === "h"; // h = stacked → drag vertically; v = side-by-side → horizontally
+    div.classList.add("draggable");
+    div.style.cursor = horiz ? "row-resize" : "col-resize";
+    var lastSent = 0;
+    function ratioAt(e) {
+      var r = split.getBoundingClientRect();
+      var v = horiz ? (e.clientY - r.top) / r.height : (e.clientX - r.left) / r.width;
+      return Math.max(0.1, Math.min(0.9, v));
+    }
+    function onMove(e) {
+      var ratio = ratioAt(e);
+      a.style.flex = ratio + " 1 0";
+      b.style.flex = (1 - ratio) + " 1 0";
+      var now = Date.now();
+      if (now - lastSent > 60) { lastSent = now; sendMsg({ t: "resizeSplit", tabId: activeTabId, splitId: node.id, ratio: ratio }); }
+      e.preventDefault();
+    }
+    function onUp(e) {
+      splitDragging = false;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      sendMsg({ t: "resizeSplit", tabId: activeTabId, splitId: node.id, ratio: ratioAt(e) }); // final
+      renderStage(); // apply whatever layout arrived while we suppressed re-renders
+    }
+    div.addEventListener("pointerdown", function (e) {
+      splitDragging = true;
+      e.preventDefault(); e.stopPropagation();
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    });
   }
 
   function renderStage() {
@@ -728,7 +766,9 @@
       if (!live[id]) { try { panes[id].term.dispose(); } catch (e) {} delete panes[id]; }
     });
     renderTabBar();
-    renderStage();
+    // Mid divider-drag, the host echoes ratio changes back as layouts — don't rebuild the
+    // stage (it would destroy the divider under the pointer); onUp re-renders to settle.
+    if (!splitDragging) renderStage();
   }
 
   function collectPaneIds(node, out) {

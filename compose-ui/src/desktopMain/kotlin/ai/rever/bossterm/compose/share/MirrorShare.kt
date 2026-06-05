@@ -167,6 +167,8 @@ class MirrorShare(
             is ClientMessage.CloseTabsBelow ->
                 McpTerminalRegistry.findState(tabId)?.closeTabsBelow(msg.tabId)
             is ClientMessage.ResizeHost -> resizeHostWindow(msg.cols, msg.rows)
+            is ClientMessage.ResizeSplit ->
+                McpTerminalRegistry.findState(tabId)?.splitStates?.get(msg.tabId)?.updateSplitRatio(msg.splitId, msg.ratio)
             else -> {} // Hello / Focus / RequestControl: no-op (focus is viewer-side; control via token)
         }
     }
@@ -296,9 +298,9 @@ class MirrorShare(
             )
         }
         is SplitNode.VerticalSplit ->
-            PaneTreeNode.Split("v", node.ratio, sigNode(node.left, focusedId, sizes), sigNode(node.right, focusedId, sizes))
+            PaneTreeNode.Split("v", node.ratio, sigNode(node.left, focusedId, sizes), sigNode(node.right, focusedId, sizes), node.id)
         is SplitNode.HorizontalSplit ->
-            PaneTreeNode.Split("h", node.ratio, sigNode(node.top, focusedId, sizes), sigNode(node.bottom, focusedId, sizes))
+            PaneTreeNode.Split("h", node.ratio, sigNode(node.top, focusedId, sizes), sigNode(node.bottom, focusedId, sizes), node.id)
     }
 
     /** Current paneId → owning session, across all in-scope tabs. */

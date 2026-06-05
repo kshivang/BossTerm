@@ -126,10 +126,20 @@ data class TabNode(
 /** Recursive split-layout node: either a binary split or a leaf pane. */
 @Serializable
 sealed class PaneTreeNode {
-    /** A split: [dir] "v" = side-by-side (left/right at [ratio]); "h" = stacked (top/bottom). */
+    /**
+     * A split: [dir] "v" = side-by-side (left/right at [ratio]); "h" = stacked (top/bottom).
+     * [id] is the host split node's stable id, so the viewer can drag the divider and ask the
+     * host to update this split's ratio.
+     */
     @Serializable
     @SerialName("split")
-    data class Split(val dir: String, val ratio: Float, val a: PaneTreeNode, val b: PaneTreeNode) : PaneTreeNode()
+    data class Split(
+        val dir: String,
+        val ratio: Float,
+        val a: PaneTreeNode,
+        val b: PaneTreeNode,
+        val id: String = "",
+    ) : PaneTreeNode()
 
     /**
      * A leaf terminal pane. [color] (CSS accent) and [branch] (git branch) mirror the
@@ -257,4 +267,12 @@ sealed class ClientMessage {
     @Serializable
     @SerialName("resizeHost")
     data class ResizeHost(val tabId: String, val cols: Int, val rows: Int) : ClientMessage()
+
+    /**
+     * Drag a split divider: set the split node [splitId] in [tabId] to [ratio] (0..1,
+     * fraction of the first child) — mirrors dragging the divider on the host. Controller only.
+     */
+    @Serializable
+    @SerialName("resizeSplit")
+    data class ResizeSplit(val tabId: String, val splitId: String, val ratio: Float) : ClientMessage()
 }

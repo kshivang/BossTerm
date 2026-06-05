@@ -357,13 +357,40 @@
   var overlayTitleEl = document.getElementById("overlay-title");
   var overlayMsgEl = document.getElementById("overlay-msg");
   var overlaySpinnerEl = document.getElementById("overlay-spinner");
-  function showOverlay(title, msg, spinning) {
+  var overlayActionsEl = document.getElementById("overlay-actions");
+  // [actions] = optional [{label, primary, onClick}] rendered as buttons under the message.
+  function showOverlay(title, msg, spinning, actions) {
     overlayTitleEl.textContent = title;
     overlayMsgEl.textContent = msg || "";
     overlaySpinnerEl.style.display = spinning ? "" : "none";
+    overlayActionsEl.innerHTML = "";
+    (actions || []).forEach(function (a) {
+      var b = document.createElement("button");
+      b.textContent = a.label;
+      if (a.primary) b.className = "primary";
+      b.onclick = a.onClick;
+      overlayActionsEl.appendChild(b);
+    });
     overlayEl.style.display = "";
   }
   function hideOverlay() { overlayEl.style.display = "none"; }
+
+  var sessionEnded = false;   // host denied/expired → don't offer a pointless reconnect
+  var disconnectShown = false; // de-dupe onerror + onclose firing together
+  // The link dropped (host stopped sharing, network blip, etc.): tell the user instead of
+  // just flipping the status dot red, and offer to reconnect (reload) or close.
+  function showDisconnected() {
+    setStatus("down");
+    if (sessionEnded || disconnectShown) return;
+    disconnectShown = true;
+    showOverlay("Disconnected", "The connection to the host was lost.", false, [
+      { label: "Reconnect", primary: true, onClick: function () { location.reload(); } },
+      { label: "Close", onClick: function () {
+          window.close(); // ignored for user-opened tabs — fall back to a hint
+          showOverlay("Disconnected", "You can close this tab.", false, []);
+        } }
+    ]);
+  }
 
   function deviceName() {
     return localStorage.getItem("bossterm.name") || navigator.platform || "browser";
@@ -710,6 +737,7 @@
         break;
       case "denied":
         clearKey();
+        sessionEnded = true; // terminal — keep this message, don't replace with "Disconnected"
         showOverlay("Request denied", m.reason || "The host declined this device.", false);
         break;
       case "theme": applyTheme(m); break;
@@ -737,6 +765,6 @@
     }
   };
 
-  ws.onclose = function () { setStatus("down"); };
-  ws.onerror = function () { setStatus("down"); };
+  ws.onclose = showDisconnected;
+  ws.onerror = showDisconnected;
 })();

@@ -116,6 +116,12 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     #overlay-title { font-size: 15px; color: #fff; margin-bottom: 6px; }
     #overlay-msg { font-size: 12px; color: #b0b0b0; line-height: 1.5; }
+    #overlay-actions { display: flex; gap: 10px; justify-content: center; margin-top: 16px; }
+    #overlay-actions:empty { display: none; }
+    #overlay-actions button { padding: 7px 16px; border-radius: 6px; border: 1px solid #505050;
+                              background: #1e1e1e; color: #ddd; font-size: 13px; cursor: pointer; }
+    #overlay-actions button:hover { border-color: #4a90e2; }
+    #overlay-actions button.primary { background: #4a90e2; border-color: #4a90e2; color: #fff; }
   </style>
 </head>
 <body>
@@ -143,6 +149,7 @@
       <div id="overlay-spinner"></div>
       <div id="overlay-title">Waiting for host approval…</div>
       <div id="overlay-msg"></div>
+      <div id="overlay-actions"></div>
     </div>
   </div>
 

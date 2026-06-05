@@ -161,6 +161,13 @@
     { id: "gemini-cli", label: "Gemini CLI" },
     { id: "opencode", label: "OpenCode" }
   ];
+  // Tab accent presets — same names/colors as the host chip menu's Color ▸ submenu.
+  var TAB_COLORS = [
+    { name: "Red", css: "#E06C75" }, { name: "Orange", css: "#D19A66" }, { name: "Yellow", css: "#E5C07B" },
+    { name: "Green", css: "#98C379" }, { name: "Blue", css: "#61AFEF" }, { name: "Purple", css: "#C678DD" },
+    { name: "Gray", css: "#888888" }
+  ];
+  var menuJustOpened = false; // suppress the synthesized mouse event right after open (mobile long-press)
   function hideContextMenu() { ctxEl.style.display = "none"; ctxEl.innerHTML = ""; }
   function ctxItem(label, enabled, onClick, opts) {
     opts = opts || {};
@@ -175,18 +182,20 @@
     return it;
   }
   function ctxSep() { var s = document.createElement("div"); s.className = "ctxsep"; return s; }
+  // Show ctxEl at (x,y), clamped inside the viewport. Re-callable when its height changes.
+  function positionMenu(x, y) {
+    ctxEl.style.left = "0px"; ctxEl.style.top = "0px"; ctxEl.style.display = "block";
+    var w = ctxEl.offsetWidth, h = ctxEl.offsetHeight;
+    ctxEl.style.left = Math.max(0, Math.min(x, window.innerWidth - w - 4)) + "px";
+    ctxEl.style.top = Math.max(0, Math.min(y, window.innerHeight - h - 4)) + "px";
+    menuJustOpened = true; setTimeout(function () { menuJustOpened = false; }, 350);
+  }
   function showContextMenu(x, y, paneId) {
     var p = panes[paneId]; if (!p) return;
     var term = p.term;
     var hasSel = false; try { hasSel = term.hasSelection(); } catch (e) {}
-    // Reposition + clamp inside the viewport (re-run when the menu's height changes,
-    // e.g. the AI submenu expands).
-    function clamp() {
-      ctxEl.style.left = "0px"; ctxEl.style.top = "0px"; ctxEl.style.display = "block";
-      var w = ctxEl.offsetWidth, h = ctxEl.offsetHeight;
-      ctxEl.style.left = Math.max(0, Math.min(x, window.innerWidth - w - 4)) + "px";
-      ctxEl.style.top = Math.max(0, Math.min(y, window.innerHeight - h - 4)) + "px";
-    }
+    // Reposition (re-run when the menu's height changes, e.g. the AI submenu expands).
+    function clamp() { positionMenu(x, y); }
     ctxEl.innerHTML = "";
     ctxEl.appendChild(ctxItem("Copy", hasSel, function () {
       var s = ""; try { s = term.getSelection(); } catch (e) {}
@@ -240,7 +249,73 @@
     ctxEl.appendChild(ctxItem("Scroll to bottom", true, function () { try { term.scrollToBottom(); } catch (e) {} }));
     clamp();
   }
+
+  // Tab-chip context menu — mirrors the host's chip menu (New Tab, Rename…, Color ▸,
+  // Duplicate, Close, Close Other Tabs, Close Tabs Below). All mutate the host, so it's
+  // only attached with control. [pane] null = a whole-tab chip; else a per-split chip.
+  function showTabMenu(x, y, tab, pane) {
+    var pid = pane ? pane.paneId : tab.id;
+    var curTitle = (pane ? pane.title : tab.title) || "";
+    ctxEl.innerHTML = "";
+    ctxEl.appendChild(ctxItem("New Tab", true, function () { sendMsg({ t: "newTab" }); }));
+    ctxEl.appendChild(ctxItem("Rename…", true, function () {
+      var nv = window.prompt("Rename", curTitle);
+      if (nv !== null) sendMsg({ t: "renameTab", tabId: tab.id, paneId: pid, title: nv.trim() });
+    }));
+    // Color ▸ — inline-expanding swatch list + Clear (tap-friendly on mobile).
+    var colorOpen = false, colorBox = document.createElement("div");
+    TAB_COLORS.forEach(function (c) {
+      var it = ctxItem(c.name, true, function () { sendMsg({ t: "setTabColor", tabId: tab.id, paneId: pid, color: c.css }); }, { sub: true });
+      var dot = document.createElement("span"); dot.className = "ctxswatch"; dot.style.background = c.css;
+      it.insertBefore(dot, it.firstChild);
+      colorBox.appendChild(it);
+    });
+    colorBox.appendChild(ctxItem("Clear", true, function () { sendMsg({ t: "setTabColor", tabId: tab.id, paneId: pid, color: null }); }, { sub: true }));
+    colorBox.style.display = "none";
+    var colorParent = ctxItem("Color ▸", true, function (el) {
+      colorOpen = !colorOpen;
+      colorBox.style.display = colorOpen ? "block" : "none";
+      el.textContent = colorOpen ? "Color ▾" : "Color ▸";
+      positionMenu(x, y);
+    }, { keepOpen: true });
+    ctxEl.appendChild(colorParent); ctxEl.appendChild(colorBox);
+    ctxEl.appendChild(ctxSep());
+    ctxEl.appendChild(ctxItem("Duplicate Tab", true, function () { sendMsg({ t: "duplicateTab", tabId: tab.id }); }));
+    ctxEl.appendChild(ctxItem("Close", true, function () {
+      if (pane) sendMsg({ t: "closePane", tabId: tab.id, paneId: pane.paneId });
+      else sendMsg({ t: "closeTab", tabId: tab.id });
+    }));
+    ctxEl.appendChild(ctxItem("Close Other Tabs", true, function () { sendMsg({ t: "closeOtherTabs", tabId: tab.id }); }));
+    ctxEl.appendChild(ctxItem("Close Tabs Below", true, function () { sendMsg({ t: "closeTabsBelow", tabId: tab.id }); }));
+    positionMenu(x, y);
+  }
+
+  // Open the tab menu on right-click (desktop) or long-press (mobile) of a chip.
+  function attachChipMenu(el, tab, pane) {
+    if (!controlGranted) return; // every item mutates the host
+    el.addEventListener("contextmenu", function (e) {
+      e.preventDefault(); e.stopPropagation(); showTabMenu(e.clientX, e.clientY, tab, pane);
+    });
+    var t = null, sx = 0, sy = 0;
+    el.addEventListener("touchstart", function (e) {
+      if (!e.touches || e.touches.length !== 1) return;
+      sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+      t = setTimeout(function () { t = null; showTabMenu(sx, sy, tab, pane); }, 500);
+    }, { passive: true });
+    function cancel(e) {
+      if (t && e && e.touches && e.touches[0]) {
+        var dx = Math.abs(e.touches[0].clientX - sx), dy = Math.abs(e.touches[0].clientY - sy);
+        if (dx < 10 && dy < 10) return;
+      }
+      if (t) { clearTimeout(t); t = null; }
+    }
+    el.addEventListener("touchmove", cancel, { passive: true });
+    el.addEventListener("touchend", cancel);
+    el.addEventListener("touchcancel", cancel);
+  }
+
   document.addEventListener("mousedown", function (e) {
+    if (menuJustOpened) return; // ignore the synthesized click that follows a long-press
     if (ctxEl.style.display === "block" && !ctxEl.contains(e.target)) hideContextMenu();
   });
   document.addEventListener("keydown", function (e) { if (e.key === "Escape") hideContextMenu(); });
@@ -487,6 +562,7 @@
     el.appendChild(label);
     if (controlGranted) el.appendChild(closeBtn(tab.id, isPane ? pane.paneId : null));
     el.onclick = function () { selectPane(tab.id, isPane ? pane.paneId : null); };
+    attachChipMenu(el, tab, isPane ? pane : null);
     return el;
   }
 
@@ -511,6 +587,7 @@
     if (cwd) { var s = document.createElement("div"); s.className = "ltab-sub"; s.textContent = abbreviateCwd(cwd); el.appendChild(s); }
     if (branch) { var b = document.createElement("div"); b.className = "ltab-branch"; b.textContent = "⎇ " + branch; el.appendChild(b); }
     el.onclick = function () { selectPane(tab.id, isPane ? pane.paneId : null); };
+    attachChipMenu(el, tab, isPane ? pane : null);
     return el;
   }
 

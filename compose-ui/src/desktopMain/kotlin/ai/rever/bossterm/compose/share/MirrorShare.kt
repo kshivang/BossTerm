@@ -154,6 +154,17 @@ class MirrorShare(
                     target.writeUserInput(ToolCommandProvider().getLaunchCommand(assistant, cfg))
                 }
             }
+            // ---- tab-chip context menu (mirrors the host's chip menu) ----
+            is ClientMessage.RenameTab ->
+                McpTerminalRegistry.findState(tabId)?.renameChip(msg.tabId, msg.paneId, msg.title)
+            is ClientMessage.SetTabColor ->
+                McpTerminalRegistry.findState(tabId)?.setChipColor(msg.tabId, msg.paneId, msg.color)
+            is ClientMessage.DuplicateTab ->
+                McpTerminalRegistry.findState(tabId)?.duplicateTab(msg.tabId)
+            is ClientMessage.CloseOtherTabs ->
+                McpTerminalRegistry.findState(tabId)?.closeOtherTabs(msg.tabId)
+            is ClientMessage.CloseTabsBelow ->
+                McpTerminalRegistry.findState(tabId)?.closeTabsBelow(msg.tabId)
             else -> {} // Hello / Focus / RequestControl: no-op (focus is viewer-side; control via token)
         }
     }

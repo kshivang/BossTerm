@@ -217,4 +217,35 @@ sealed class ClientMessage {
     @Serializable
     @SerialName("launchAI")
     data class LaunchAI(val tabId: String, val paneId: String, val assistantId: String) : ClientMessage()
+
+    /**
+     * Rename a tab/pane chip ([paneId] == [tabId] for a tab-level chip). A blank [title]
+     * clears the custom title (reverts to the cwd-derived one). Controller role only.
+     */
+    @Serializable
+    @SerialName("renameTab")
+    data class RenameTab(val tabId: String, val paneId: String, val title: String) : ClientMessage()
+
+    /**
+     * Set ([color] = CSS "#RRGGBB") or clear ([color] = null) a chip's accent, mirroring
+     * the host chip menu's Color ▸ presets / Clear. Controller role only.
+     */
+    @Serializable
+    @SerialName("setTabColor")
+    data class SetTabColor(val tabId: String, val paneId: String, val color: String? = null) : ClientMessage()
+
+    /** Duplicate [tabId] into a new tab in the same cwd ("Duplicate Tab"). Controller role only. */
+    @Serializable
+    @SerialName("duplicateTab")
+    data class DuplicateTab(val tabId: String) : ClientMessage()
+
+    /** Close every tab except [tabId] ("Close Other Tabs"). Controller role only. */
+    @Serializable
+    @SerialName("closeOtherTabs")
+    data class CloseOtherTabs(val tabId: String) : ClientMessage()
+
+    /** Close all tabs after [tabId] ("Close Tabs Below"). Controller role only. */
+    @Serializable
+    @SerialName("closeTabsBelow")
+    data class CloseTabsBelow(val tabId: String) : ClientMessage()
 }

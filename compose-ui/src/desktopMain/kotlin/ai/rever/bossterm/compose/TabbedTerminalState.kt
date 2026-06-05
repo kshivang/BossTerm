@@ -264,6 +264,47 @@ class TabbedTerminalState {
         return tabController?.closeTabById(tabId) ?: false
     }
 
+    /** Close every tab except [tabId] (mirrors the chip menu's "Close Other Tabs"). */
+    fun closeOtherTabs(tabId: String) {
+        val i = tabs.indexOfFirst { it.id == tabId }
+        if (i >= 0) tabController?.closeOtherTabs(i)
+    }
+
+    /** Close all tabs ordered after [tabId] (mirrors "Close Tabs Below"). */
+    fun closeTabsBelow(tabId: String) {
+        val i = tabs.indexOfFirst { it.id == tabId }
+        if (i >= 0) tabController?.closeTabsBelow(i)
+    }
+
+    /** Duplicate [tabId] into a new tab starting in the same cwd (mirrors "Duplicate Tab"). */
+    fun duplicateTab(tabId: String) {
+        val wd = tabs.firstOrNull { it.id == tabId }?.workingDirectory?.value
+        createTab(workingDir = wd)
+    }
+
+    /** The session a chip refers to: a split pane by id, else the tab itself (summary/unsplit). */
+    private fun chipSession(tabId: String, paneId: String): TerminalSession? =
+        splitStates[tabId]?.getAllPanes()?.firstOrNull { it.id == paneId }?.session
+            ?: tabs.firstOrNull { it.id == tabId }
+
+    /** Rename a tab/pane chip; a blank [title] clears the custom title (reverts to cwd). */
+    fun renameChip(tabId: String, paneId: String, title: String) {
+        val s = chipSession(tabId, paneId) ?: return
+        val t = title.trim()
+        if (t.isBlank()) {
+            s.customTitle.value = null
+        } else {
+            s.customTitle.value = t
+            s.title.value = t
+        }
+    }
+
+    /** Set ("#RRGGBB") or clear (null) a tab/pane chip's accent color. */
+    fun setChipColor(tabId: String, paneId: String, cssHex: String?) {
+        val s = chipSession(tabId, paneId) ?: return
+        s.tabColor.value = cssHex?.removePrefix("#")?.uppercase()?.let { "0xFF$it" }
+    }
+
     /**
      * Close the currently active tab.
      */

@@ -249,6 +249,51 @@ object SessionShareManager {
     }
 
     /**
+     * Regenerate the remote-access link in place — get a fresh tunnel and publish it.
+     * Cloudflare quick-tunnel URLs are ephemeral (new one per process, and a tunnel can
+     * drop), so this is the "give me a new link" action in the share dialog. The share
+     * server + viewers keep running; the open dialog updates via [remoteUrlFlow].
+     *
+     * For Cloudflare the new tunnel is brought up and its URL captured *before* the old
+     * process is killed, so the dialog jumps straight from the old link to the new one
+     * (no momentary fallback to the LAN URL). Tailscale serve/funnel URLs are stable, so
+     * this just re-affirms the mapping. No-op when remote access is off (the LAN link
+     * never changes). Runs off the UI thread.
+     */
+    fun refreshRemoteLink() {
+        scope.launch {
+            val port = boundPort ?: return@launch
+            val mode = SettingsManager.instance.settings.value.shareTailscaleMode
+            if (mode == "off") return@launch
+            withContext(Dispatchers.IO) {
+                val newUrl = when (mode) {
+                    "cloudflare" -> {
+                        val newProc = CloudflaredExposer.start(port)
+                        val u = newProc?.let { CloudflaredExposer.awaitUrl(it) }
+                        if (u != null) {
+                            val old = remoteProcess
+                            remoteProcess = newProc
+                            runCatching { old?.destroyForcibly() } // swap, then kill the old tunnel
+                        } else {
+                            runCatching { newProc?.destroyForcibly() } // failed — don't leak it
+                        }
+                        u
+                    }
+                    else -> TailscaleExposer.enable(mode, port) // serve/funnel: URL is stable
+                }
+                activeRemoteMode = mode
+                if (newUrl != null) {
+                    remoteUrl = newUrl
+                    _remoteUrlFlow.value = newUrl
+                    log.info("Session-sharing remote link refreshed via {}: {}", mode, newUrl)
+                } else {
+                    log.warn("Remote link refresh ({}) did not yield a URL; keeping the current link.", mode)
+                }
+            }
+        }
+    }
+
+    /**
      * Window's onTabClose hook: stop only a TAB-scope share keyed by the closed tab.
      * WINDOW shares clean up via [MirrorShare]'s own observer when their window empties.
      */

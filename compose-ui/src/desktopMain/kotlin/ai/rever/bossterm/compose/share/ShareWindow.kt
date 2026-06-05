@@ -89,11 +89,17 @@ fun ShareWindow(
     onDenyRequest: (String) -> Unit = {},
     tailscaleMode: String = "off",
     onTailscaleModeChange: (String) -> Unit = {},
+    onRefreshLink: () -> Unit = {},
 ) {
     val clipboard = LocalClipboardManager.current
     val isWindow = info.scope == ShareScope.WINDOW
     val loopbackOnly = info.url.contains("://127.0.0.1") || info.url.contains("://localhost")
     var controlQr by remember { mutableStateOf(false) }
+    // "Refresh link" regenerates the remote tunnel (ephemeral for Cloudflare). Clears when
+    // the URL updates (the dialog refreshes via remoteUrlFlow) or after a timeout fallback.
+    var refreshing by remember { mutableStateOf(false) }
+    LaunchedEffect(info.url) { refreshing = false }
+    LaunchedEffect(refreshing) { if (refreshing) { kotlinx.coroutines.delay(35_000); refreshing = false } }
     val qrUrl = if (controlQr) info.controlUrl else info.url
     val qr = remember(qrUrl) { qrImageBitmap(qrUrl) }
 
@@ -193,6 +199,24 @@ fun ShareWindow(
                             "⚠ Not encrypted — this link is plaintext. Use https (Tailscale Funnel / a TLS tunnel) beyond your trusted LAN.",
                             color = Danger, fontSize = 11.sp
                         )
+                    }
+                    // Remote (tunnel) links are ephemeral — let the host mint a fresh one.
+                    if (tailscaleMode != "off") {
+                        Spacer(Modifier.height(2.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                onClick = { refreshing = true; onRefreshLink() },
+                                enabled = !refreshing,
+                                colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                            ) { Text(if (refreshing) "Refreshing…" else "↻ Refresh link") }
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                if (tailscaleMode == "cloudflare")
+                                    "Generates a new public link; the current one stops working."
+                                else "Re-establishes the tunnel if the link stopped working.",
+                                color = TextMuted, fontSize = 11.sp, modifier = Modifier.weight(1f)
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.height(20.dp))

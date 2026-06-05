@@ -1519,6 +1519,7 @@ fun TabbedTerminal(
             onDenyRequest = { ai.rever.bossterm.compose.share.SessionShareManager.denyRequest(it) },
             tailscaleMode = settings.shareTailscaleMode,
             onTailscaleModeChange = { SettingsManager.instance.updateSetting { copy(shareTailscaleMode = it) } },
+            onRefreshLink = { ai.rever.bossterm.compose.share.SessionShareManager.refreshRemoteLink() },
         )
     }
 

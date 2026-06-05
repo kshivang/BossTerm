@@ -1,6 +1,8 @@
 package ai.rever.bossterm.compose.share
 
 import ai.rever.bossterm.compose.TabbedTerminalState
+import ai.rever.bossterm.compose.ai.AIAssistants
+import ai.rever.bossterm.compose.ai.ToolCommandProvider
 import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.theme.ColorPalette
@@ -131,6 +133,27 @@ class MirrorShare(
                 McpTerminalRegistry.findState(tabId)?.closeTab(msg.tabId)
             is ClientMessage.NewTab ->
                 McpTerminalRegistry.findState(tabId)?.createTab()
+            is ClientMessage.SplitRight ->
+                McpTerminalRegistry.findState(tabId)?.splitVerticalFromPane(msg.tabId, msg.paneId)
+            is ClientMessage.SplitDown ->
+                McpTerminalRegistry.findState(tabId)?.splitHorizontalFromPane(msg.tabId, msg.paneId)
+            is ClientMessage.ClosePane -> {
+                // Target the clicked pane (focus it), then close; closeFocusedPane closes
+                // the whole tab when it's the only pane (matches the host's behavior).
+                val st = McpTerminalRegistry.findState(tabId)
+                st?.splitStates?.get(msg.tabId)?.setFocusedPane(msg.paneId)
+                st?.closeFocusedPane(msg.tabId)
+            }
+            is ClientMessage.LaunchAI -> {
+                // Run the same launch command the host's AI menu would (honoring the
+                // user's per-assistant YOLO/auto-mode config), in the clicked pane.
+                val target = taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId]
+                val assistant = AIAssistants.findById(msg.assistantId)
+                if (target != null && assistant != null) {
+                    val cfg = SettingsManager.instance.settings.value.aiAssistantConfigs[msg.assistantId]
+                    target.writeUserInput(ToolCommandProvider().getLaunchCommand(assistant, cfg))
+                }
+            }
             else -> {} // Hello / Focus / RequestControl: no-op (focus is viewer-side; control via token)
         }
     }

@@ -638,6 +638,24 @@ class TabbedTerminalState {
     )
 
     /**
+     * Split a specific pane (by id) horizontally — the new pane appears below
+     * [anchorPaneId]. Horizontal twin of [splitVerticalFromPane]: focuses the
+     * anchor, splits it, then restores the caller's prior focus (so it doesn't
+     * yank focus from the pane a local user is typing in). Falls back to the
+     * focused pane if the anchor doesn't exist.
+     *
+     * @return The session id of the new pane, or null if the split failed.
+     */
+    fun splitHorizontalFromPane(
+        tabId: String,
+        anchorPaneId: String,
+        ratio: Float? = null,
+        initialCommand: String? = null
+    ): String? = performSplit(
+        SplitOrientation.HORIZONTAL, tabId, ratio, initialCommand, anchorPaneId
+    )
+
+    /**
      * Internal helper to perform a split in the given orientation.
      *
      * @param initialCommand Optional command to run in the new pane once its shell is ready

@@ -152,20 +152,40 @@
       document.execCommand("copy"); document.body.removeChild(ta);
     } catch (e) {}
   }
+  // AI assistants mirrored from the host menu (Tools ▸ AI). Launching one runs the
+  // host's configured command for that assistant in the clicked pane (control only).
+  var AI_ASSISTANTS = [
+    { id: "claude-code", label: "Claude Code" },
+    { id: "codex", label: "Codex" },
+    { id: "gemini-cli", label: "Gemini CLI" },
+    { id: "opencode", label: "OpenCode" }
+  ];
   function hideContextMenu() { ctxEl.style.display = "none"; ctxEl.innerHTML = ""; }
-  function ctxItem(label, enabled, onClick) {
+  function ctxItem(label, enabled, onClick, opts) {
+    opts = opts || {};
     var it = document.createElement("div");
-    it.className = "ctxitem" + (enabled ? "" : " disabled");
+    it.className = "ctxitem" + (enabled ? "" : " disabled") + (opts.sub ? " ctxsub" : "");
     it.textContent = label;
     if (enabled) it.addEventListener("mousedown", function (e) {
-      e.preventDefault(); e.stopPropagation(); hideContextMenu(); onClick();
+      e.preventDefault(); e.stopPropagation();
+      if (!opts.keepOpen) hideContextMenu();
+      onClick(it);
     });
     return it;
   }
+  function ctxSep() { var s = document.createElement("div"); s.className = "ctxsep"; return s; }
   function showContextMenu(x, y, paneId) {
     var p = panes[paneId]; if (!p) return;
     var term = p.term;
     var hasSel = false; try { hasSel = term.hasSelection(); } catch (e) {}
+    // Reposition + clamp inside the viewport (re-run when the menu's height changes,
+    // e.g. the AI submenu expands).
+    function clamp() {
+      ctxEl.style.left = "0px"; ctxEl.style.top = "0px"; ctxEl.style.display = "block";
+      var w = ctxEl.offsetWidth, h = ctxEl.offsetHeight;
+      ctxEl.style.left = Math.max(0, Math.min(x, window.innerWidth - w - 4)) + "px";
+      ctxEl.style.top = Math.max(0, Math.min(y, window.innerHeight - h - 4)) + "px";
+    }
     ctxEl.innerHTML = "";
     ctxEl.appendChild(ctxItem("Copy", hasSel, function () {
       var s = ""; try { s = term.getSelection(); } catch (e) {}
@@ -179,13 +199,45 @@
       }).catch(function () {});
     }));
     ctxEl.appendChild(ctxItem("Select all", true, function () { try { term.selectAll(); } catch (e) {} }));
-    ctxEl.appendChild(ctxItem("Clear scrollback", controlGranted, function () { try { term.clear(); } catch (e) {} }));
+
+    // Splits + AI assistant — host-mutating, so controller role only.
+    if (controlGranted) {
+      var tab = activeTabNode();
+      var tabId = tab ? tab.id : activeTabId;
+      var multiPane = !!(tab && tab.tree && tab.tree.t === "split");
+      ctxEl.appendChild(ctxSep());
+      ctxEl.appendChild(ctxItem("Split right", true, function () {
+        sendMsg({ t: "splitRight", tabId: tabId, paneId: paneId });
+      }));
+      ctxEl.appendChild(ctxItem("Split down", true, function () {
+        sendMsg({ t: "splitDown", tabId: tabId, paneId: paneId });
+      }));
+      if (multiPane) ctxEl.appendChild(ctxItem("Close pane", true, function () {
+        sendMsg({ t: "closePane", tabId: tabId, paneId: paneId });
+      }));
+      // AI assistant submenu: expand inline (click/tap-friendly on mobile too).
+      var aiOpen = false;
+      var aiBox = document.createElement("div");
+      AI_ASSISTANTS.forEach(function (a) {
+        aiBox.appendChild(ctxItem(a.label, true, function () {
+          sendMsg({ t: "launchAI", tabId: tabId, paneId: paneId, assistantId: a.id });
+        }, { sub: true }));
+      });
+      aiBox.style.display = "none";
+      var aiParent = ctxItem("AI assistant ▸", true, function (el) {
+        aiOpen = !aiOpen;
+        aiBox.style.display = aiOpen ? "block" : "none";
+        el.textContent = aiOpen ? "AI assistant ▾" : "AI assistant ▸";
+        clamp(); // height changed
+      }, { keepOpen: true });
+      ctxEl.appendChild(aiParent);
+      ctxEl.appendChild(aiBox);
+    }
+
+    ctxEl.appendChild(ctxSep());
+    if (controlGranted) ctxEl.appendChild(ctxItem("Clear scrollback", true, function () { try { term.clear(); } catch (e) {} }));
     ctxEl.appendChild(ctxItem("Scroll to bottom", true, function () { try { term.scrollToBottom(); } catch (e) {} }));
-    // Show off-screen first to measure, then clamp inside the viewport.
-    ctxEl.style.left = "0px"; ctxEl.style.top = "0px"; ctxEl.style.display = "block";
-    var w = ctxEl.offsetWidth, h = ctxEl.offsetHeight;
-    ctxEl.style.left = Math.max(0, Math.min(x, window.innerWidth - w - 4)) + "px";
-    ctxEl.style.top = Math.max(0, Math.min(y, window.innerHeight - h - 4)) + "px";
+    clamp();
   }
   document.addEventListener("mousedown", function (e) {
     if (ctxEl.style.display === "block" && !ctxEl.contains(e.target)) hideContextMenu();

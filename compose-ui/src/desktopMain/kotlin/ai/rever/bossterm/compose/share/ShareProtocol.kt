@@ -172,4 +172,28 @@ sealed class ClientMessage {
     @Serializable
     @SerialName("newTab")
     data object NewTab : ClientMessage()
+
+    /** Split [paneId] in [tabId] left/right — new pane on the right (controller role only). */
+    @Serializable
+    @SerialName("splitRight")
+    data class SplitRight(val tabId: String, val paneId: String) : ClientMessage()
+
+    /** Split [paneId] in [tabId] top/bottom — new pane below (controller role only). */
+    @Serializable
+    @SerialName("splitDown")
+    data class SplitDown(val tabId: String, val paneId: String) : ClientMessage()
+
+    /** Close [paneId] in [tabId]; closes the tab if it's the last pane (controller role only). */
+    @Serializable
+    @SerialName("closePane")
+    data class ClosePane(val tabId: String, val paneId: String) : ClientMessage()
+
+    /**
+     * Launch an AI assistant (by [assistantId], e.g. "claude-code") in [paneId] of [tabId]
+     * — mirrors the host's AI-assistant menu, running the same configured launch command
+     * (incl. the user's YOLO/auto-mode setting). Controller role only.
+     */
+    @Serializable
+    @SerialName("launchAI")
+    data class LaunchAI(val tabId: String, val paneId: String, val assistantId: String) : ClientMessage()
 }

@@ -113,7 +113,7 @@ class MirrorShare(
         val sig = computeSignature()
         val out = ArrayList<ServerMessage>()
         out.add(themeMessage())
-        out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId))
+        out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft))
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
             out.add(ServerMessage.PaneSnapshot(id, snapshotText(tab), sz[0], sz[1]))
@@ -121,12 +121,18 @@ class MirrorShare(
         return out
     }
 
-    /** Route viewer input to the addressed pane (controller role only). */
+    /** Route viewer messages — input + tab close/new — to the host (controller role only). */
     fun handleClient(vc: ViewerConnection, msg: ClientMessage) {
-        if (msg is ClientMessage.Input && vc.canControl) {
-            (taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId])?.writeUserInput(msg.data)
+        if (!vc.canControl) return // all mutating actions require the control role
+        when (msg) {
+            is ClientMessage.Input ->
+                (taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId])?.writeUserInput(msg.data)
+            is ClientMessage.CloseTab ->
+                McpTerminalRegistry.findState(tabId)?.closeTab(msg.tabId)
+            is ClientMessage.NewTab ->
+                McpTerminalRegistry.findState(tabId)?.createTab()
+            else -> {} // Hello / Focus / RequestControl: no-op (focus is viewer-side; control via token)
         }
-        // Hello / Focus / RequestControl: no-op in v1 (focus is viewer-side; control via token).
     }
 
     // ---- reconcile on structural change ----
@@ -147,12 +153,17 @@ class MirrorShare(
                 }
             }
         }
-        broadcast(ServerMessage.Layout(sig.tabs, sig.activeTabId))
+        broadcast(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft))
         sig.sizes.forEach { (id, sz) -> broadcast(ServerMessage.PaneResize(id, sz[0], sz[1])) }
     }
 
     // ---- window-state signature (pure-serializable; drives distinctUntilChanged) ----
-    private data class WindowSig(val tabs: List<TabNode>, val activeTabId: String?, val sizes: Map<String, List<Int>>)
+    private data class WindowSig(
+        val tabs: List<TabNode>,
+        val activeTabId: String?,
+        val sizes: Map<String, List<Int>>,
+        val tabBarOnLeft: Boolean,
+    )
 
     private fun inScopeTabs(state: TabbedTerminalState): List<TerminalTab> = when (scope) {
         ShareScope.WINDOW -> state.tabs
@@ -160,10 +171,11 @@ class MirrorShare(
     }
 
     private fun computeSignature(): WindowSig {
-        val state = McpTerminalRegistry.findState(tabId) ?: return WindowSig(emptyList(), null, emptyMap())
+        val state = McpTerminalRegistry.findState(tabId) ?: return WindowSig(emptyList(), null, emptyMap(), false)
         val tabNodes = ArrayList<TabNode>()
         val sizes = HashMap<String, List<Int>>()
         val activeId = if (scope == ShareScope.TAB) tabId else state.activeTabId
+        val onLeft = SettingsManager.instance.settings.value.tabBarPosition == "left"
         for (tab in inScopeTabs(state)) {
             val ss = state.splitStates[tab.id]
             val tree: PaneTreeNode = if (ss != null) {
@@ -173,9 +185,28 @@ class MirrorShare(
                 sizes[tab.id] = listOf(s.columns, s.rows)
                 PaneTreeNode.Pane(tab.id, tab.title.value, tab.workingDirectory.value, true)
             }
-            tabNodes.add(TabNode(tab.id, tab.title.value, tab.id == activeId, tree))
+            tabNodes.add(
+                TabNode(
+                    id = tab.id, title = tab.title.value, active = tab.id == activeId, tree = tree,
+                    color = tabColorCss(tab), cwd = tab.workingDirectory.value, branch = tab.gitBranch.value
+                )
+            )
         }
-        return WindowSig(tabNodes, activeId, sizes)
+        return WindowSig(tabNodes, activeId, sizes, onLeft)
+    }
+
+    /** Resolve a tab's accent as CSS (#RRGGBB), mirroring the host's chip color (manual or auto). */
+    private fun tabColorCss(tab: TerminalTab): String? {
+        val argb = tab.tabColor.value ?: run {
+            val s = SettingsManager.instance.settings.value
+            if (!s.tabColorByDirectory) return null
+            val cwd = tab.workingDirectory.value
+            if (cwd.isNullOrBlank()) return null
+            val presets = ai.rever.bossterm.compose.tabs.TAB_COLOR_PRESETS
+            presets[cwd.hashCode().mod(presets.size)].second
+        }
+        val h = argb.removePrefix("0x")
+        return if (h.length >= 8) "#" + h.substring(2) else null // drop AA → #RRGGBB
     }
 
     private fun sigNode(node: SplitNode, focusedId: String, sizes: HashMap<String, List<Int>>): PaneTreeNode = when (node) {

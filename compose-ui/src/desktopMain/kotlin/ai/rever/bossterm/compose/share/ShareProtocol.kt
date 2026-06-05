@@ -36,7 +36,12 @@ sealed class ServerMessage {
     /** The window layout: tabs + their split trees + which tab is active. Resent on change. */
     @Serializable
     @SerialName("layout")
-    data class Layout(val tabs: List<TabNode>, val activeTabId: String?) : ServerMessage()
+    data class Layout(
+        val tabs: List<TabNode>,
+        val activeTabId: String?,
+        /** Host's tab-bar orientation, so the viewer mirrors it: true = left (vertical), false = top. */
+        val tabBarOnLeft: Boolean = false,
+    ) : ServerMessage()
 
     /** One-time initial paint for a pane: scrollback+screen as a raw escape/text blob. */
     @Serializable
@@ -97,9 +102,21 @@ sealed class ServerMessage {
     ) : ServerMessage()
 }
 
-/** One tab in the [ServerMessage.Layout]: id, title, whether active, and its split tree. */
+/**
+ * One tab in the [ServerMessage.Layout]: id, title, whether active, and its split tree.
+ * [color] (CSS, e.g. "#E06C75"), [cwd], and [branch] mirror the host's tab-chip styling
+ * (accent stripe + the left bar's cwd/branch lines); all optional.
+ */
 @Serializable
-data class TabNode(val id: String, val title: String, val active: Boolean, val tree: PaneTreeNode)
+data class TabNode(
+    val id: String,
+    val title: String,
+    val active: Boolean,
+    val tree: PaneTreeNode,
+    val color: String? = null,
+    val cwd: String? = null,
+    val branch: String? = null,
+)
 
 /** Recursive split-layout node: either a binary split or a leaf pane. */
 @Serializable
@@ -145,4 +162,14 @@ sealed class ClientMessage {
     @Serializable
     @SerialName("requestControl")
     data object RequestControl : ClientMessage()
+
+    /** Close a tab on the host (controller role only). Mirrors the host tab's close button. */
+    @Serializable
+    @SerialName("closeTab")
+    data class CloseTab(val tabId: String) : ClientMessage()
+
+    /** Open a new tab on the host (controller role only). Mirrors the host's new-tab (+) button. */
+    @Serializable
+    @SerialName("newTab")
+    data object NewTab : ClientMessage()
 }

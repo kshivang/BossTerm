@@ -14,9 +14,13 @@
 
   var statusEl = document.getElementById("status");
   var tabbarEl = document.getElementById("tabbar");
+  var sidebarEl = document.getElementById("sidebar");
   var stageEl = document.getElementById("stage");
   var presenceEl = document.getElementById("presence");
   var viewOnlyEl = document.getElementById("viewonly");
+
+  var tabBarOnLeft = false;       // mirror the host's tab-bar orientation
+  function sendMsg(o) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); }
 
   var controlGranted = false;
   var theme = null;               // last Theme message
@@ -123,16 +127,71 @@
   }
 
   // ---- layout rendering ----
+  // Render the tab bar to mirror the host: a left column (Warp-style title/cwd/branch
+  // chips) or a top strip. Close + new-tab affordances appear only with control.
   function renderTabBar() {
-    tabbarEl.innerHTML = "";
-    if (!layout) return;
-    layout.tabs.forEach(function (tab) {
-      var el = document.createElement("div");
-      el.className = "tab" + (tab.id === activeTabId ? " active" : "");
-      el.textContent = tab.title || "shell";
-      el.onclick = function () { activeTabId = tab.id; renderTabBar(); renderStage(); };
-      tabbarEl.appendChild(el);
-    });
+    if (tabBarOnLeft) {
+      tabbarEl.className = "hidden";
+      sidebarEl.className = "show";
+      sidebarEl.innerHTML = "";
+      if (layout) layout.tabs.forEach(function (tab) { sidebarEl.appendChild(leftChip(tab)); });
+      if (controlGranted) sidebarEl.appendChild(newTabButton("+ New tab"));
+    } else {
+      tabbarEl.className = "";
+      sidebarEl.className = "";
+      tabbarEl.innerHTML = "";
+      if (layout) layout.tabs.forEach(function (tab) { tabbarEl.appendChild(topChip(tab)); });
+      if (controlGranted) tabbarEl.appendChild(newTabButton("+"));
+    }
+  }
+
+  function switchTab(id) { activeTabId = id; renderTabBar(); renderStage(); }
+
+  function closeBtn(tabId) {
+    var x = document.createElement("span");
+    x.className = "tabclose"; x.textContent = "×"; x.title = "Close tab";
+    x.onclick = function (ev) { ev.stopPropagation(); sendMsg({ t: "closeTab", tabId: tabId }); };
+    return x;
+  }
+
+  function newTabButton(label) {
+    var el = document.createElement("div");
+    el.className = "newtab"; el.textContent = label; el.title = "New tab";
+    el.onclick = function () { sendMsg({ t: "newTab" }); };
+    return el;
+  }
+
+  function topChip(tab) {
+    var el = document.createElement("div");
+    el.className = "tab" + (tab.id === activeTabId ? " active" : "");
+    if (tab.color) el.style.borderLeft = "3px solid " + tab.color;
+    var label = document.createElement("span");
+    label.className = "tablabel"; label.textContent = tab.title || "shell";
+    el.appendChild(label);
+    if (controlGranted) el.appendChild(closeBtn(tab.id));
+    el.onclick = function () { switchTab(tab.id); };
+    return el;
+  }
+
+  function leftChip(tab) {
+    var el = document.createElement("div");
+    el.className = "ltab" + (tab.id === activeTabId ? " active" : "");
+    if (tab.color) el.style.borderLeft = "3px solid " + tab.color;
+    var row = document.createElement("div"); row.className = "ltab-row";
+    var title = document.createElement("span"); title.className = "ltab-title"; title.textContent = tab.title || "shell";
+    row.appendChild(title);
+    if (controlGranted) row.appendChild(closeBtn(tab.id));
+    el.appendChild(row);
+    if (tab.cwd) { var s = document.createElement("div"); s.className = "ltab-sub"; s.textContent = abbreviateCwd(tab.cwd); el.appendChild(s); }
+    if (tab.branch) { var b = document.createElement("div"); b.className = "ltab-branch"; b.textContent = "⎇ " + tab.branch; el.appendChild(b); }
+    el.onclick = function () { switchTab(tab.id); };
+    return el;
+  }
+
+  function abbreviateCwd(p) {
+    var parts = p.split("/").filter(Boolean);
+    if (parts.length <= 2) return p;
+    return "…/" + parts.slice(-2).join("/");
   }
 
   function buildNode(node) {
@@ -166,6 +225,7 @@
 
   function onLayout(m) {
     layout = m;
+    tabBarOnLeft = !!m.tabBarOnLeft;
     var ids = m.tabs.map(function (t) { return t.id; });
     if (activeTabId === null || ids.indexOf(activeTabId) === -1) {
       activeTabId = m.activeTabId && ids.indexOf(m.activeTabId) !== -1 ? m.activeTabId : (ids[0] || null);
@@ -227,6 +287,7 @@
       case "control":
         controlGranted = !!m.granted;
         viewOnlyEl.style.display = controlGranted ? "none" : "";
+        renderTabBar(); // show/hide the close + new-tab affordances
         break;
     }
   };

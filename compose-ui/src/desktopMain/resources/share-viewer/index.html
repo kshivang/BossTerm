@@ -10,16 +10,44 @@
     :root { color-scheme: dark; }
     html, body { margin: 0; height: 100%; background: #1e1e1e; color: #ddd;
                  font-family: -apple-system, Menlo, monospace; overflow: hidden; }
-    #bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; height: 30px;
+    body { display: flex; flex-direction: column; }
+    #bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; height: 30px; flex: 0 0 auto;
            box-sizing: border-box; background: #2b2b2b; border-bottom: 1px solid #404040; font-size: 12px; }
     #status { width: 8px; height: 8px; border-radius: 50%; background: #888; flex: 0 0 auto; }
     #status.live { background: #4caf50; } #status.down { background: #f44336; }
-    #tabbar { display: flex; gap: 4px; overflow-x: auto; flex: 1 1 auto; }
-    .tab { padding: 2px 10px; border-radius: 5px; background: #1e1e1e; border: 1px solid #404040;
-           color: #b0b0b0; white-space: nowrap; cursor: pointer; font-size: 12px; }
-    .tab.active { background: #2b2b2b; border-color: #4a90e2; color: #fff; }
+    #tabbar { display: flex; gap: 4px; overflow-x: auto; flex: 1 1 auto; align-items: center; }
+    #tabbar.hidden { display: none; }
     .badge { padding: 1px 7px; border-radius: 10px; background: #3a3a3a; font-size: 11px; color: #bbb; flex: 0 0 auto; }
-    #stage { position: absolute; top: 30px; left: 0; right: 0; bottom: 0; display: flex; }
+
+    #body { flex: 1 1 auto; display: flex; flex-direction: row; min-height: 0; min-width: 0; }
+    #sidebar { display: none; flex-direction: column; gap: 4px; width: 200px; flex: 0 0 auto; box-sizing: border-box;
+               padding: 6px; background: #1e1e1e; border-right: 1px solid #333; overflow-y: auto; }
+    #sidebar.show { display: flex; }
+    #stage { flex: 1 1 auto; display: flex; min-width: 0; min-height: 0; }
+
+    /* top tab chips */
+    .tab { display: flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 5px; background: #1e1e1e;
+           border: 1px solid #404040; color: #b0b0b0; white-space: nowrap; cursor: pointer; font-size: 12px; }
+    .tab.active { background: #2b2b2b; border-color: #4a90e2; color: #fff; }
+    .tablabel { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+
+    /* left tab chips (Warp-style: title / cwd / branch) */
+    .ltab { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-radius: 6px; background: #1e1e1e;
+            border: 1px solid #404040; cursor: pointer; }
+    .ltab.active { background: #2b2b2b; border-color: #4a90e2; }
+    .ltab-row { display: flex; align-items: center; gap: 6px; }
+    .ltab-title { flex: 1 1 auto; color: #b0b0b0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ltab.active .ltab-title { color: #fff; }
+    .ltab-sub { color: #808080; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ltab-branch { color: #6a9955; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* close + new-tab affordances (shown only with control) */
+    .tabclose { flex: 0 0 auto; color: #707070; font-size: 14px; line-height: 1; padding: 0 3px; border-radius: 3px; }
+    .tabclose:hover { color: #fff; background: #4a4a4a; }
+    .newtab { flex: 0 0 auto; padding: 2px 9px; border-radius: 5px; border: 1px solid #404040; background: #1e1e1e;
+              color: #b0b0b0; cursor: pointer; font-size: 13px; text-align: center; }
+    .newtab:hover { color: #fff; border-color: #4a90e2; }
+
     .split { display: flex; flex: 1 1 0; min-width: 0; min-height: 0; }
     .split.v { flex-direction: row; }
     .split.h { flex-direction: column; }
@@ -46,7 +74,10 @@
     <span class="badge" id="viewonly">view only</span>
     <span class="badge" id="presence"></span>
   </div>
-  <div id="stage"></div>
+  <div id="body">
+    <div id="sidebar"></div>
+    <div id="stage"></div>
+  </div>
 
   <div id="overlay" style="display:none">
     <div id="overlay-card">

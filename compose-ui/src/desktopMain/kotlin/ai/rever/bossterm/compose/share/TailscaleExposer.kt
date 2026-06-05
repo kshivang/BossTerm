@@ -33,6 +33,28 @@ object TailscaleExposer {
     /** Resolve a working `tailscale` binary path, or null if none responds. */
     private fun bin(): String? = candidates.firstOrNull { runCmd(listOf(it, "version"), 3) != null }
 
+    /** True if a working `tailscale` CLI/app is present. Blocking — call off the UI thread. */
+    fun isInstalled(): Boolean = bin() != null
+
+    // Common Homebrew locations (Apple-silicon, Intel, then PATH).
+    private val brewCandidates = listOf("/opt/homebrew/bin/brew", "/usr/local/bin/brew", "brew")
+    private fun brewBin(): String? = brewCandidates.firstOrNull { runCmd(listOf(it, "--version"), 5) != null }
+
+    /** True if Homebrew is available to auto-install Tailscale. Blocking. */
+    fun brewAvailable(): Boolean = brewBin() != null
+
+    /**
+     * Install Tailscale via `brew install tailscale`. Blocking and slow (downloads) —
+     * call off the UI thread. Returns true on success (or if it's already installed).
+     */
+    fun brewInstall(): Boolean {
+        val brew = brewBin() ?: run { log.warn("Homebrew not found; cannot install Tailscale"); return false }
+        log.info("Installing Tailscale: {} install tailscale …", brew)
+        val ok = runCmd(listOf(brew, "install", "tailscale"), 600) != null
+        log.info("`brew install tailscale` {}", if (ok) "succeeded" else "failed")
+        return ok || isInstalled()
+    }
+
     /**
      * Expose [port] via `tailscale serve|funnel --bg`. Returns the published base URL
      * (`https://<magic-dns-name>`) on success, or null if the CLI is missing/fails.

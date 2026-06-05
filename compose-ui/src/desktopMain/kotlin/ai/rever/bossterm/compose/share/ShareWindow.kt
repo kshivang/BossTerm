@@ -37,7 +37,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -280,6 +284,18 @@ private fun TailscaleSetupSection(
 ) {
     var expanded by remember { mutableStateOf(false) }
     val active = currentUrl.contains(".ts.net")
+    // Tailscale-install detection + one-click Homebrew install. Checked lazily on expand,
+    // off the UI thread (the probes shell out to `tailscale`/`brew`).
+    var installed by remember { mutableStateOf<Boolean?>(null) } // null = not yet checked
+    var brewOk by remember { mutableStateOf(true) }
+    var installing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(expanded, installing) {
+        if (expanded && installed == null && !installing) {
+            installed = withContext(Dispatchers.IO) { TailscaleExposer.isInstalled() }
+            if (installed == false) brewOk = withContext(Dispatchers.IO) { TailscaleExposer.brewAvailable() }
+        }
+    }
     Column(Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
@@ -319,7 +335,19 @@ private fun TailscaleSetupSection(
                     color = TextMuted, fontSize = 11.sp
                 )
                 if (mode != "off") {
-                    SetupStep(1, "Install Tailscale on this Mac and sign in (menu-bar app, or `tailscale up`).")
+                    TailscaleInstallRow(
+                        installed = installed,
+                        installing = installing,
+                        brewOk = brewOk,
+                        onInstall = {
+                            installing = true
+                            scope.launch {
+                                withContext(Dispatchers.IO) { TailscaleExposer.brewInstall() }
+                                installed = withContext(Dispatchers.IO) { TailscaleExposer.isInstalled() }
+                                installing = false
+                            }
+                        }
+                    )
                     SetupStep(2, "Enable HTTPS certificates (required) — admin console → DNS → “Enable HTTPS”. Sign in with the SAME account as this machine, or the page 404s.")
                     LinkText("Open DNS settings →", "https://login.tailscale.com/admin/dns")
                     if (mode == "funnel") {
@@ -347,6 +375,47 @@ private fun TailscaleSetupSection(
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/** Step 1 of the Tailscale setup: live install check + a one-click `brew install tailscale`. */
+@Composable
+private fun TailscaleInstallRow(
+    installed: Boolean?,
+    installing: Boolean,
+    brewOk: Boolean,
+    onInstall: () -> Unit,
+) {
+    Surface(color = SurfaceColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("1. Tailscale", color = TextMuted, fontSize = 11.sp)
+                Text(
+                    when {
+                        installing -> "Installing via Homebrew… (this can take a minute)"
+                        installed == null -> "Checking…"
+                        installed == true -> "Installed ✓ — now sign in (menu-bar app, or `tailscale up`)."
+                        brewOk -> "Not found — install it, then sign in."
+                        else -> "Not found, and Homebrew isn't available — install manually."
+                    },
+                    color = if (installed == true) Color(0xFF4CAF50) else TextSecondary, fontSize = 11.sp
+                )
+                if (installed == false && !brewOk && !installing) {
+                    LinkText("Download Tailscale →", "https://tailscale.com/download")
+                }
+            }
+            if (installed == false && brewOk) {
+                Button(
+                    onClick = onInstall,
+                    enabled = !installing,
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                ) { Text(if (installing) "Installing…" else "Install") }
             }
         }
     }

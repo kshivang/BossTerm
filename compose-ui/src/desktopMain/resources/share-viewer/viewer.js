@@ -108,6 +108,31 @@
   window.addEventListener("resize", relayoutSinglePane);
   window.addEventListener("orientationchange", relayoutSinglePane);
 
+  // ---- zoom (viewer-local font size) ----
+  var viewerFont = 0; // 0 = use the host/theme size
+  function activeTabNode() {
+    if (!layout) return null;
+    for (var i = 0; i < layout.tabs.length; i++) if (layout.tabs[i].id === activeTabId) return layout.tabs[i];
+    return layout.tabs[0] || null;
+  }
+  function curFont() { return viewerFont || (theme && theme.fontSize) || 13; }
+  function applyFont(px) {
+    viewerFont = Math.max(6, Math.min(40, Math.round(px)));
+    Object.keys(panes).forEach(function (id) { try { panes[id].term.options.fontSize = viewerFont; } catch (e) {} });
+    relayoutSinglePane();
+  }
+  // Fit the active pane's font so the whole width shows (zoom-out to fit).
+  function fitWidth() {
+    var tab = activeTabNode(); if (!tab || !tab.tree || tab.tree.t !== "pane") return;
+    var p = panes[tab.tree.paneId]; if (!p) return;
+    var screen = p.host.querySelector(".xterm-screen"); if (!screen) return;
+    var avail = stageEl.clientWidth - 2, w = screen.getBoundingClientRect().width;
+    if (avail > 0 && w > 0) applyFont(curFont() * (avail / w));
+  }
+  document.getElementById("zoomin").onclick = function () { applyFont(curFont() + 1); };
+  document.getElementById("zoomout").onclick = function () { applyFont(curFont() - 1); };
+  document.getElementById("zoomfit").onclick = fitWidth;
+
   function setStatus(cls) { statusEl.className = cls; }
 
   if (!token) {
@@ -175,6 +200,7 @@
       ta.setAttribute("autocapitalize", "off");
       ta.setAttribute("spellcheck", "false");
     }
+    if (viewerFont) { try { term.options.fontSize = viewerFont; } catch (e) {} }
     term.onData(function (data) {
       if (controlGranted && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ t: "input", paneId: paneId, data: data }));
@@ -212,6 +238,8 @@
       document.body.style.background = m.background;
       stageEl.style.background = m.background;
     }
+    // The host theme may carry a fontSize; keep the viewer's chosen zoom if set.
+    if (viewerFont) Object.keys(panes).forEach(function (id) { try { panes[id].term.options.fontSize = viewerFont; } catch (e) {} });
     relayoutSinglePane();
   }
 

@@ -45,6 +45,12 @@
               background: #1e1e1e; color: #ddd; font-size: 14px; cursor: pointer; -webkit-user-select: none; user-select: none; }
     .keybtn:active { background: #4a90e2; color: #fff; border-color: #4a90e2; }
 
+    /* zoom controls in the top bar (font size +/- and fit-to-width) */
+    #zoom { display: flex; gap: 4px; flex: 0 0 auto; }
+    #zoom button { padding: 2px 8px; border-radius: 5px; border: 1px solid #404040; background: #1e1e1e;
+                   color: #ddd; font-size: 12px; cursor: pointer; -webkit-user-select: none; user-select: none; }
+    #zoom button:active { background: #4a90e2; color: #fff; border-color: #4a90e2; }
+
     /* top tab chips */
     .tab { display: flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 5px; background: #1e1e1e;
            border: 1px solid #404040; color: #b0b0b0; white-space: nowrap; cursor: pointer; font-size: 12px; }
@@ -94,6 +100,11 @@
     <div id="tabbar"></div>
     <span class="badge" id="viewonly">view only</span>
     <span class="badge" id="presence"></span>
+    <span id="zoom">
+      <button id="zoomout" title="Zoom out">A&minus;</button>
+      <button id="zoomin" title="Zoom in">A+</button>
+      <button id="zoomfit" title="Fit width">Fit</button>
+    </span>
   </div>
   <div id="body">
     <div id="sidebar"></div>

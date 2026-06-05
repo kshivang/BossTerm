@@ -20,9 +20,26 @@
   var viewOnlyEl = document.getElementById("viewonly");
 
   var keybarEl = document.getElementById("keybar");
+  var menubtnEl = document.getElementById("menubtn");
+  var bodyEl = document.getElementById("body");
   var tabBarOnLeft = false;       // mirror the host's tab-bar orientation
   var currentPaneId = null;       // pane the on-screen key bar targets
   function sendMsg(o) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); }
+
+  // ☰ toggles the left tab drawer (phone); tapping a tab closes it (see switchTab).
+  menubtnEl.onclick = function () { sidebarEl.classList.toggle("open"); };
+
+  // Keep the fixed key bar just above the soft keyboard (and reserve space for it).
+  function layoutForKeyboard() {
+    var vv = window.visualViewport;
+    if (vv) keybarEl.style.bottom = Math.max(0, window.innerHeight - vv.height - vv.offsetTop) + "px";
+    bodyEl.style.paddingBottom = (keybarEl.style.display !== "none" && keybarEl.offsetHeight)
+      ? keybarEl.offsetHeight + "px" : "0px";
+  }
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", layoutForKeyboard);
+    window.visualViewport.addEventListener("scroll", layoutForKeyboard);
+  }
 
   // ---- on-screen key bar (mobile control keys) ----
   var KEY_ROW = [
@@ -38,7 +55,7 @@
   }
   function buildKeybar() {
     keybarEl.innerHTML = "";
-    if (!controlGranted) { keybarEl.style.display = "none"; return; }
+    if (!controlGranted) { keybarEl.style.display = "none"; layoutForKeyboard(); return; }
     keybarEl.style.display = "flex";
     var kb = document.createElement("button");
     kb.className = "keybtn"; kb.textContent = "⌨"; kb.title = "Show keyboard";
@@ -52,6 +69,7 @@
       b.onclick = function () { sendKey(k[1]); };
       keybarEl.appendChild(b);
     });
+    layoutForKeyboard(); // reserve space + position above the keyboard
   }
   // The focused pane of [node]'s tree (or the first pane), for default key-bar target.
   function firstFocusedPane(node) {
@@ -173,21 +191,28 @@
   // chips) or a top strip. Close + new-tab affordances appear only with control.
   function renderTabBar() {
     if (tabBarOnLeft) {
-      tabbarEl.className = "hidden";
-      sidebarEl.className = "show";
+      tabbarEl.classList.add("hidden");
+      menubtnEl.classList.add("show");
+      sidebarEl.classList.add("show"); // .open (drawer) toggled by ☰ on phones
       sidebarEl.innerHTML = "";
       if (layout) layout.tabs.forEach(function (tab) { sidebarEl.appendChild(leftChip(tab)); });
       if (controlGranted) sidebarEl.appendChild(newTabButton("+ New tab"));
     } else {
-      tabbarEl.className = "";
-      sidebarEl.className = "";
+      tabbarEl.classList.remove("hidden");
+      menubtnEl.classList.remove("show");
+      sidebarEl.classList.remove("show", "open");
       tabbarEl.innerHTML = "";
       if (layout) layout.tabs.forEach(function (tab) { tabbarEl.appendChild(topChip(tab)); });
       if (controlGranted) tabbarEl.appendChild(newTabButton("+"));
     }
   }
 
-  function switchTab(id) { activeTabId = id; renderTabBar(); renderStage(); }
+  function switchTab(id) {
+    activeTabId = id;
+    sidebarEl.classList.remove("open"); // close the phone drawer after picking a tab
+    renderTabBar();
+    renderStage();
+  }
 
   function closeBtn(tabId) {
     var x = document.createElement("span");

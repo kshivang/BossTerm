@@ -62,7 +62,10 @@ object CloudflaredExposer {
     fun start(port: Int): Process? {
         val b = bin() ?: run { log.warn("cloudflared not found; cannot start quick tunnel"); return null }
         return try {
-            ProcessBuilder(b, "tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:$port")
+            // `--no-autoupdate` is a GLOBAL flag — it must precede the `tunnel` subcommand,
+            // or cloudflared rejects/ignores it (and an auto-update mid-session would restart
+            // the process and drop the tunnel).
+            ProcessBuilder(b, "--no-autoupdate", "tunnel", "--url", "http://127.0.0.1:$port")
                 .redirectErrorStream(true)
                 .start()
                 .also { runCatching { it.outputStream.close() } } // no stdin needed

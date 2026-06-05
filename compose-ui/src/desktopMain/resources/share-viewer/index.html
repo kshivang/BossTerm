@@ -93,8 +93,9 @@
     .split.v { flex-direction: row; }
     .split.h { flex-direction: column; }
     .divider { background: #000; flex: 0 0 1px; }
+    /* a visible frame so the host terminal's bounds are clear against the stage */
     .pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; box-sizing: border-box;
-            border: 1px solid transparent; }
+            border: 1px solid #3a3a3a; }
     .pane.focused { border-color: #4a90e2; }
     .termhost { width: 100%; height: 100%; overflow: hidden; }
     /* right-click / long-press context menu */
@@ -131,7 +132,9 @@
     <div id="tabbar"></div>
     <span class="badge" id="viewonly">view only</span>
     <span class="badge" id="presence"></span>
+    <span class="badge" id="dims" title="Host terminal size (columns × rows)"></span>
     <span id="zoom">
+      <button id="fithost" title="Resize the host to fit this screen" style="display:none">⇲ Fit host</button>
       <button id="zoomout" title="Zoom out">A&minus;</button>
       <button id="zoomin" title="Zoom in">A+</button>
       <button id="zoomfit" title="Fit width">Fit</button>

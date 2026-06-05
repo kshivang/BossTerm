@@ -248,4 +248,13 @@ sealed class ClientMessage {
     @Serializable
     @SerialName("closeTabsBelow")
     data class CloseTabsBelow(val tabId: String) : ClientMessage()
+
+    /**
+     * "Fit host to my screen": resize the host so [tabId]'s terminal grid becomes about
+     * [cols]×[rows] (what fits the viewer's viewport). The host terminal size is slaved to
+     * its window, so the host resizes its OS window to best approximate this. Controller only.
+     */
+    @Serializable
+    @SerialName("resizeHost")
+    data class ResizeHost(val tabId: String, val cols: Int, val rows: Int) : ClientMessage()
 }

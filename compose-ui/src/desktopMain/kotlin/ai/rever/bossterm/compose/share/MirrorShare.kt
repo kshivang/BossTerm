@@ -10,6 +10,7 @@ import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import ai.rever.bossterm.compose.window.WindowManager
 import ai.rever.bossterm.terminal.TerminalColor
 import ai.rever.bossterm.terminal.TextStyle
 import ai.rever.bossterm.terminal.model.TerminalLine
@@ -165,7 +166,42 @@ class MirrorShare(
                 McpTerminalRegistry.findState(tabId)?.closeOtherTabs(msg.tabId)
             is ClientMessage.CloseTabsBelow ->
                 McpTerminalRegistry.findState(tabId)?.closeTabsBelow(msg.tabId)
+            is ClientMessage.ResizeHost -> resizeHostWindow(msg.cols, msg.rows)
             else -> {} // Hello / Focus / RequestControl: no-op (focus is viewer-side; control via token)
+        }
+    }
+
+    /**
+     * "Fit host to client": resize the host's OS window so its terminal grid lands near
+     * [cols]×[rows]. The grid is slaved to the canvas, so we nudge the window by the pixel
+     * delta for the column/row change — the per-cell pixel size comes from the host's own
+     * measurement and the window chrome (left tab bar, title) cancels out of the delta.
+     * Best-effort and single-pane-oriented; multi-window picks the focused (else first) window.
+     */
+    private fun resizeHostWindow(cols: Int, rows: Int) {
+        if (cols < 2 || rows < 2) return
+        val tab = McpTerminalRegistry.findTab(tabId) ?: return
+        val cw = tab.terminal.cellWidthPx
+        val ch = tab.terminal.cellHeightPx
+        if (cw <= 0f || ch <= 0f) return
+        val cur = tab.display.termSize.value
+        val win = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }?.awtWindow
+            ?: WindowManager.windows.firstOrNull { it.awtWindow != null }?.awtWindow
+            ?: return
+        // AWT window size is in points; cell px is physical — divide by the display scale.
+        javax.swing.SwingUtilities.invokeLater {
+            runCatching {
+                val gc = win.graphicsConfiguration
+                val sx = gc?.defaultTransform?.scaleX?.takeIf { it > 0 } ?: 1.0
+                val sy = gc?.defaultTransform?.scaleY?.takeIf { it > 0 } ?: 1.0
+                var newW = (win.width + (cols - cur.columns) * cw / sx).toInt()
+                var newH = (win.height + (rows - cur.rows) * ch / sy).toInt()
+                gc?.bounds?.let { b -> newW = newW.coerceIn(480, b.width); newH = newH.coerceIn(320, b.height) }
+                if (newW != win.width || newH != win.height) {
+                    win.setSize(newW, newH)
+                    win.validate()
+                }
+            }
         }
     }
 

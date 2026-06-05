@@ -23,6 +23,8 @@
   var menubtnEl = document.getElementById("menubtn");
   var bodyEl = document.getElementById("body");
   var ctxEl = document.getElementById("ctxmenu");
+  var dimsEl = document.getElementById("dims");
+  var fithostEl = document.getElementById("fithost");
   var tabBarOnLeft = false;       // mirror the host's tab-bar orientation
   var summaryMode = false;        // host's tabBarSummaryMode: 1 chip/tab vs 1 chip/pane
   var currentPaneId = null;       // pane the on-screen key bar targets
@@ -134,6 +136,26 @@
   document.getElementById("zoomin").onclick = function () { applyFont(curFont() + 1); };
   document.getElementById("zoomout").onclick = function () { applyFont(curFont() - 1); };
   document.getElementById("zoomfit").onclick = fitWidth;
+
+  // Show the host terminal's grid size (cols × rows) so its bounds are explicit.
+  function updateDims() {
+    var id = activePaneId(), p = id && panes[id];
+    if (p && p.term && p.term.cols) { dimsEl.textContent = p.term.cols + "×" + p.term.rows; dimsEl.style.display = ""; }
+    else dimsEl.style.display = "none";
+  }
+  // "Fit host to my screen": measure the client's cell size + viewport, work out the grid
+  // that fills it, and ask the host to resize its window to match (control only).
+  fithostEl.onclick = function () {
+    var id = activePaneId(), p = id && panes[id];
+    if (!p || !p.term || !p.term.cols) return;
+    var sc = p.host.querySelector(".xterm-screen"); if (!sc) return;
+    var r = sc.getBoundingClientRect();
+    var cellW = r.width / p.term.cols, cellH = r.height / p.term.rows;
+    if (!(cellW > 0) || !(cellH > 0)) return;
+    var cols = Math.max(20, Math.floor((stageEl.clientWidth - 6) / cellW));
+    var rows = Math.max(6, Math.floor((stageEl.clientHeight - 6) / cellH));
+    sendMsg({ t: "resizeHost", tabId: activeTabId, cols: cols, rows: rows });
+  };
 
   // ---- right-click / long-press context menu ----
   // Copy via the async Clipboard API where available (needs a secure context: https /
@@ -688,6 +710,7 @@
     }
     stageEl.appendChild(root);
     relayoutSinglePane(); // size a single pane to its natural width for horizontal scroll
+    updateDims();
   }
 
   function onLayout(m) {
@@ -748,17 +771,19 @@
         p.term.reset();
         if (m.data) p.term.write(m.data);
         relayoutSinglePane();
+        updateDims();
         break;
       }
       case "paneOutput": if (m.data) getPane(m.paneId).term.write(m.data); break;
       case "paneResize":
-        if (m.cols && m.rows) { getPane(m.paneId).term.resize(m.cols, m.rows); relayoutSinglePane(); }
+        if (m.cols && m.rows) { getPane(m.paneId).term.resize(m.cols, m.rows); relayoutSinglePane(); updateDims(); }
         break;
       case "presence":
         presenceEl.textContent = m.viewers === 1 ? "1 viewer" : m.viewers + " viewers"; break;
       case "control":
         controlGranted = !!m.granted;
         viewOnlyEl.style.display = controlGranted ? "none" : "";
+        fithostEl.style.display = controlGranted ? "" : "none"; // resizing the host needs control
         renderTabBar(); // show/hide the close + new-tab affordances
         buildKeybar();  // show/hide the on-screen control-key bar
         break;

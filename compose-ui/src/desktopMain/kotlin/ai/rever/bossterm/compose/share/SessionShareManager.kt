@@ -331,19 +331,31 @@ object SessionShareManager {
     }
 
     /**
-     * True if [port] on [host] can currently be bound. Probes with a plain
-     * [java.net.ServerSocket] (SO_REUSEADDR set to mirror CIO) and releases it
-     * immediately. Used to pick a free port before starting Ktor, since CIO's
-     * own bind failure is asynchronous and would otherwise leak an uncaught
-     * BindException. A tiny TOCTOU window remains but is harmless for a local tool.
+     * True if [port] is free for the share server to take. Probes both the bind
+     * [host] (so we don't double-bind our own wildcard) AND `127.0.0.1` — the latter
+     * because Tailscale Serve proxies to `127.0.0.1:<port>`, so we must OWN the loopback
+     * address, not just the wildcard. With `reuseAddress = false` the probe reports a
+     * port as taken when ANY other process holds it, including a loopback-specific
+     * listener (e.g. BossConsole on 127.0.0.1) that a wildcard bind would otherwise
+     * silently shadow — which is exactly how `serve` ended up hitting the wrong server.
+     * Used to pick a free port before starting Ktor (CIO binds asynchronously, so a
+     * collision would otherwise surface as an uncaught BindException or a mis-proxy).
      */
-    private fun portBindable(host: String, port: Int): Boolean = runCatching {
-        java.net.ServerSocket().use { ss ->
-            ss.reuseAddress = true
-            ss.bind(java.net.InetSocketAddress(host, port))
+    private fun portBindable(host: String, port: Int): Boolean {
+        val probes = buildList {
+            add("127.0.0.1")
+            if (host != "127.0.0.1") add(host)
         }
-        true
-    }.getOrDefault(false)
+        return probes.all { addr ->
+            runCatching {
+                java.net.ServerSocket().use { ss ->
+                    ss.reuseAddress = false
+                    ss.bind(java.net.InetSocketAddress(addr, port))
+                }
+                true
+            }.getOrDefault(false)
+        }
+    }
 
     /** Start the engine if not already running. Returns true if running afterwards. */
     private fun ensureEngineLocked(settings: TerminalSettings): Boolean {

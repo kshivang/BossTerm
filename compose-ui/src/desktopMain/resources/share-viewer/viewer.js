@@ -147,6 +147,15 @@
     if (theme) applyThemeToOpts(opts);
     var term = new Terminal(opts);
     term.open(host);
+    // Terminals want raw keystrokes — disable the soft keyboard's autocorrect /
+    // predictive-text / autocapitalize / spellcheck on xterm's hidden input.
+    var ta = term.textarea || host.querySelector(".xterm-helper-textarea");
+    if (ta) {
+      ta.setAttribute("autocomplete", "off");
+      ta.setAttribute("autocorrect", "off");
+      ta.setAttribute("autocapitalize", "off");
+      ta.setAttribute("spellcheck", "false");
+    }
     term.onData(function (data) {
       if (controlGranted && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ t: "input", paneId: paneId, data: data }));

@@ -2,11 +2,6 @@ package ai.rever.bossterm.compose.share
 
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO as ClientCIO
-import io.ktor.client.plugins.HttpTimeout
-import io.ktor.client.request.get
-import io.ktor.client.statement.bodyAsText
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
@@ -26,7 +21,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -100,29 +94,12 @@ object SessionShareManager {
     /** Observed by the share dialog to show "starting / verifying / retrying / active / fell back". */
     val remoteStateFlow: StateFlow<RemoteState> = _remoteStateFlow.asStateFlow()
 
-    // Cloudflare quick tunnels often 5xx for a few seconds after the URL prints (edge warming
-    // up), so we poll the link before publishing it; if it never comes good we spin a fresh
-    // tunnel a couple of times, else fall back to the LAN link.
-    private const val VERIFY_POLLS = 6
-    private const val VERIFY_INTERVAL_MS = 2_000L
+    // A Cloudflare quick tunnel serves a "tunnel error" page until cloudflared registers an
+    // edge connection, so we wait for that readiness signal before publishing the URL; if it
+    // never comes we spin a fresh tunnel a couple of times, else fall back to the LAN link.
+    // (We can't HTTP-probe the public URL from the host: a Tailscale-MagicDNS resolver returns
+    // NXDOMAIN for *.trycloudflare.com, so a host-side check would falsely fail working links.)
     private const val MAX_REFRESHES = 2
-
-    // Short-lived HTTP client for the link health-check (Ktor client; already a dependency).
-    private val httpClientLazy = lazy {
-        HttpClient(ClientCIO) {
-            install(HttpTimeout) { requestTimeoutMillis = 5_000; connectTimeoutMillis = 4_000 }
-        }
-    }
-    private val httpClient by httpClientLazy
-
-    /**
-     * True if [url] actually serves our viewer end-to-end (GET `<url>/` → 200 + the viewer's
-     * "BossTerm" title), i.e. the tunnel routes to us rather than a Cloudflare error page.
-     */
-    private suspend fun linkHealthy(url: String): Boolean = runCatching {
-        val resp = httpClient.get("${url.trimEnd('/')}/")
-        resp.status.value in 200..299 && resp.bodyAsText().contains("BossTerm")
-    }.getOrDefault(false)
 
     /** A token resolves to a share and whether that token grants control. */
     private data class TokenRef(val share: MirrorShare, val canControl: Boolean)
@@ -360,37 +337,31 @@ object SessionShareManager {
     }
 
     /**
-     * Start a Cloudflare quick tunnel and return its URL only once it actually serves us.
-     * Polls the freshly-printed URL ([VERIFY_POLLS] × [VERIFY_INTERVAL_MS], to ride out the
-     * edge warm-up), and if it never comes good spins a brand-new tunnel up to
-     * [MAX_REFRESHES] times. Returns null (→ caller falls back to LAN) if all attempts fail.
+     * Start a Cloudflare quick tunnel and return its URL only once cloudflared reports the
+     * tunnel is routable (an edge connection registered) — so we never hand out a link that
+     * still serves the Cloudflare error page. If a tunnel prints a URL but never becomes
+     * ready, spin a brand-new one up to [MAX_REFRESHES] times. Returns null (→ caller falls
+     * back to LAN) if all attempts fail.
      */
     private suspend fun establishCloudflareVerified(port: Int): String? {
         runCatching { remoteProcess?.destroyForcibly() } // kill a prior tunnel (refresh/switch)
-        var proc = CloudflaredExposer.start(port) ?: return null
-        remoteProcess = proc
-        var url = CloudflaredExposer.awaitUrl(proc)
         var refreshes = 0
         while (true) {
-            val u = url
-            if (u != null) {
+            val tunnel = CloudflaredExposer.start(port) ?: run { remoteProcess = null; return null }
+            remoteProcess = tunnel.process
+            val url = withContext(Dispatchers.IO) { tunnel.awaitUrl() }
+            if (url != null) {
                 _remoteStateFlow.value = RemoteState(RemoteStatus.Verifying, "cloudflare")
-                repeat(VERIFY_POLLS) { i ->
-                    if (linkHealthy(u)) return u
-                    if (i < VERIFY_POLLS - 1) delay(VERIFY_INTERVAL_MS)
-                }
+                if (withContext(Dispatchers.IO) { tunnel.awaitReady() }) return url
             }
             if (refreshes >= MAX_REFRESHES) {
-                runCatching { proc.destroyForcibly() }
+                tunnel.destroy()
                 remoteProcess = null
                 return null
             }
             refreshes++
             _remoteStateFlow.value = RemoteState(RemoteStatus.Retrying, "cloudflare", refreshes, MAX_REFRESHES)
-            runCatching { proc.destroyForcibly() }
-            proc = CloudflaredExposer.start(port) ?: run { remoteProcess = null; return null }
-            remoteProcess = proc
-            url = CloudflaredExposer.awaitUrl(proc)
+            tunnel.destroy()
         }
     }
 
@@ -462,7 +433,6 @@ object SessionShareManager {
         failAllPending()
         _sharedTabIds.value = emptySet()
         teardownRemoteAccess(boundPort)
-        if (httpClientLazy.isInitialized()) runCatching { httpClient.close() }
         val e = engine ?: return
         runCatching { e.stop(200, 800) }
         engine = null

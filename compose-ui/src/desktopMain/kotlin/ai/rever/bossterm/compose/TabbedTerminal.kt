@@ -794,6 +794,14 @@ fun TabbedTerminal(
     // Devices awaiting host approval to connect (issue #276) — drives the approval toast
     // and the share dialog's pending list.
     val pendingShareRequests by ai.rever.bossterm.compose.share.SessionShareManager.pendingRequests.collectAsState()
+    // Tailscale exposure resolves asynchronously (off the UI thread), so a share dialog
+    // opens with the LAN URL first; when the https://<host>.ts.net link becomes available
+    // (or is torn down), rebuild the open dialog so it shows the current best URL.
+    val shareTailscaleUrl by ai.rever.bossterm.compose.share.SessionShareManager.tailscaleUrlFlow.collectAsState()
+    LaunchedEffect(shareTailscaleUrl) {
+        val info = shareDialog ?: return@LaunchedEffect
+        ai.rever.bossterm.compose.share.SessionShareManager.infoFor(info.tabId)?.let { shareDialog = it }
+    }
     // Show (and focus) the share window for [info]. No-op when info is null.
     fun openShareWindow(info: ai.rever.bossterm.compose.share.SessionShareManager.ShareInfo?) {
         if (info == null) return

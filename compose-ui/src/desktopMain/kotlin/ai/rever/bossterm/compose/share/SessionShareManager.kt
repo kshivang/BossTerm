@@ -66,6 +66,13 @@ object SessionShareManager {
     // Tailscale (Phase 3): published https://<host>.ts.net URL while a tunnel is up.
     private var tailscaleUrl: String? = null
     private var tailscaleMode: String = "off"
+    private val _tailscaleUrlFlow = MutableStateFlow<String?>(null)
+    /**
+     * The published Tailscale https URL once exposure resolves, else null. Exposure runs
+     * asynchronously (off the UI thread), so the share dialog opens with the LAN URL first;
+     * the UI observes this to refresh the dialog to the https://<host>.ts.net link when ready.
+     */
+    val tailscaleUrlFlow: StateFlow<String?> = _tailscaleUrlFlow.asStateFlow()
 
     /** A token resolves to a share and whether that token grants control. */
     private data class TokenRef(val share: MirrorShare, val canControl: Boolean)
@@ -311,6 +318,7 @@ object SessionShareManager {
         boundPort = null
         boundHost = null
         tailscaleUrl = null
+        _tailscaleUrlFlow.value = null
         tailscaleMode = "off"
     }
 
@@ -384,6 +392,7 @@ object SessionShareManager {
                         val url = TailscaleExposer.enable(tsMode, tsPort)
                         if (url != null) {
                             tailscaleUrl = url
+                            _tailscaleUrlFlow.value = url  // refresh any open share dialog to the https URL
                             log.info("Session-sharing reachable via Tailscale: {}", url)
                         } else {
                             log.warn("Tailscale {} did not yield a URL; using the LAN link. " +
@@ -424,6 +433,7 @@ object SessionShareManager {
             boundPort = null
             boundHost = null
             tailscaleUrl = null
+            _tailscaleUrlFlow.value = null
             tailscaleMode = "off"
         }
     }

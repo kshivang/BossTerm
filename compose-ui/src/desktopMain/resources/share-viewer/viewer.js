@@ -76,15 +76,16 @@
     });
     layoutForKeyboard(); // reserve space + position above the keyboard
   }
-  // The focused pane of [node]'s tree (or the first pane), for default key-bar target.
+  // The first pane of [node]'s tree (tree order) — the client's default focus / key-bar
+  // target. Host focus is intentionally NOT reflected on the client; the client picks its own.
   function firstFocusedPane(node) {
-    var found = null, first = null;
+    var first = null;
     (function walk(n) {
-      if (!n) return;
-      if (n.t === "pane") { if (first === null) first = n.paneId; if (n.focused) found = n.paneId; }
+      if (!n || first !== null) return;
+      if (n.t === "pane") first = n.paneId;
       else { walk(n.a); walk(n.b); }
     })(node);
-    return found || first;
+    return first;
   }
 
   var controlGranted = false;
@@ -551,6 +552,21 @@
     renderTabBar();
     renderStage();
   }
+  // Client-side pane focus: move the focus border to [paneId] and reflect it in the sub-tab
+  // chips, without rebuilding the stage (so xterms/selection survive). Independent of the host.
+  function setClientFocus(paneId) {
+    if (currentPaneId === paneId) return;
+    currentPaneId = paneId;
+    refreshPaneFocus();
+    renderTabBar(); // per-split sub-tab chip highlight follows the client's focus
+  }
+  function refreshPaneFocus() {
+    var els = stageEl.querySelectorAll(".pane");
+    for (var i = 0; i < els.length; i++) {
+      if (els[i].dataset.paneId === currentPaneId) els[i].classList.add("focused");
+      else els[i].classList.remove("focused");
+    }
+  }
 
   // Inline SVGs matching the host's Material split icons: a pane outline divided by a
   // vertical line (left/right) or a horizontal line (top/bottom).
@@ -649,21 +665,23 @@
 
   function buildNode(node) {
     if (node.t === "pane") {
-      var wrap = document.createElement("div");
-      wrap.className = "pane" + (node.focused ? " focused" : "");
-      wrap.appendChild(getPane(node.paneId).host);
       var pid = node.paneId;
-      // Tapping a pane makes it the key-bar / typing target.
-      wrap.addEventListener("pointerdown", function () { currentPaneId = pid; });
+      var wrap = document.createElement("div");
+      // Focus is the CLIENT's own (currentPaneId) — not the host's — and follows clicks.
+      wrap.className = "pane" + (pid === currentPaneId ? " focused" : "");
+      wrap.dataset.paneId = pid;
+      wrap.appendChild(getPane(pid).host);
+      // Clicking/tapping a pane focuses it on the client (border + key-bar / typing target).
+      wrap.addEventListener("pointerdown", function () { setClientFocus(pid); });
       // Desktop right-click → context menu.
       wrap.addEventListener("contextmenu", function (e) {
-        e.preventDefault(); currentPaneId = pid; showContextMenu(e.clientX, e.clientY, pid);
+        e.preventDefault(); setClientFocus(pid); showContextMenu(e.clientX, e.clientY, pid);
       });
       // Mobile long-press (~500ms) → same menu, anchored at the touch point.
       var lpTimer = null, lpX = 0, lpY = 0;
       wrap.addEventListener("touchstart", function (e) {
         if (!e.touches || e.touches.length !== 1) return;
-        lpX = e.touches[0].clientX; lpY = e.touches[0].clientY; currentPaneId = pid;
+        lpX = e.touches[0].clientX; lpY = e.touches[0].clientY; setClientFocus(pid);
         lpTimer = setTimeout(function () { lpTimer = null; showContextMenu(lpX, lpY, pid); }, 500);
       }, { passive: true });
       function cancelLongPress(e) {

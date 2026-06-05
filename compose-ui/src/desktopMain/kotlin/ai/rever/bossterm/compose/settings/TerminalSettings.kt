@@ -920,15 +920,19 @@ data class TerminalSettings(
 
     /**
      * Remote-access mode for sharing (which tunnel provider exposes the share server):
-     *  - "off" (default): no tunnel — reach is loopback/LAN only.
+     *  - "off": no tunnel — reach is loopback/LAN only.
      *  - "serve": Tailscale Serve — your tailnet only (private, TLS). Requires `tailscale`.
      *  - "funnel": Tailscale Funnel — public internet via Tailscale's edge (TLS).
-     *  - "cloudflare": Cloudflare Quick Tunnel — instant public https link via `cloudflared`,
-     *    no account/config (ephemeral URL). See [ai.rever.bossterm.compose.share.CloudflaredExposer].
+     *  - "cloudflare" (default): Cloudflare Quick Tunnel — instant public https link via
+     *    `cloudflared`, no account/config (ephemeral URL); auto-installable via Homebrew.
+     *    The zero-config option, so it's the default. Falls back to the LAN URL if
+     *    `cloudflared` isn't present. See [ai.rever.bossterm.compose.share.CloudflaredExposer].
      * When active, the share URL becomes the published https link (…ts.net or …trycloudflare.com).
+     * Note: sharing is still gated by [sessionSharingEnabled] (off by default) and, for public
+     * modes, [sessionSharingApprovalScope] — so a public tunnel only opens once the user shares.
      * (Field name is historical — it's the general remote-access mode, not Tailscale-only.)
      */
-    val shareTailscaleMode: String = "off",
+    val shareTailscaleMode: String = "cloudflare",
 
     /**
      * Explicit public base URL to advertise instead of the bound host — for when the

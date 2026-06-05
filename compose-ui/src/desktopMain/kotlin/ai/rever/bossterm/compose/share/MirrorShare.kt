@@ -8,6 +8,9 @@ import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import ai.rever.bossterm.terminal.TerminalColor
+import ai.rever.bossterm.terminal.TextStyle
+import ai.rever.bossterm.terminal.model.TerminalLine
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -200,16 +203,63 @@ class MirrorShare(
         return m
     }
 
+    /**
+     * Build the initial-paint blob for a pane as **styled** text: each cell run is
+     * prefixed with its SGR escape so the viewer's xterm.js paints the scrollback in
+     * color, exactly like live output. (Previously this sent `line.text` — plain chars
+     * with no styling — so the very first render was monochrome until new output arrived.)
+     */
     private fun snapshotText(tab: TerminalTab): String {
         val snap = tab.textBuffer.createSnapshot()
         val sb = StringBuilder()
         var row = -snap.historyLinesCount
         while (row < snap.height) {
-            sb.append(snap.getLine(row).text.trimEnd())
+            appendStyledLine(sb, snap.getLine(row))
             if (row < snap.height - 1) sb.append("\r\n")
             row++
         }
+        sb.append("[0m") // reset trailing style
         return sb.toString()
+    }
+
+    /** Append one buffer line as SGR-prefixed styled runs, trimming invisible trailing padding. */
+    private fun appendStyledLine(sb: StringBuilder, line: TerminalLine) {
+        // Collect runs, stopping at the first NUL entry (trailing unfilled cells), like TerminalLine.text.
+        val runs = ArrayList<TerminalLine.TextEntry>()
+        for (e in line.entries) {
+            if (e == null) continue
+            if (e.isNul) break
+            runs.add(e)
+        }
+        // Drop trailing runs that are blank with no background — invisible padding (old .trimEnd()).
+        var end = runs.size
+        while (end > 0 && runs[end - 1].let { it.text.toString().isBlank() && it.style.background == null }) end--
+        for (i in 0 until end) {
+            sb.append(ansiForStyle(runs[i].style)).append(runs[i].text.toString())
+        }
+    }
+
+    /** SGR escape that resets then applies [style]'s colors + attributes (256-color / truecolor). */
+    private fun ansiForStyle(style: TextStyle): String {
+        val codes = ArrayList<String>()
+        codes.add("0") // reset first so each run is self-contained
+        if (style.hasOption(TextStyle.Option.BOLD)) codes.add("1")
+        if (style.hasOption(TextStyle.Option.DIM)) codes.add("2")
+        if (style.hasOption(TextStyle.Option.ITALIC)) codes.add("3")
+        if (style.hasOption(TextStyle.Option.UNDERLINED)) codes.add("4")
+        if (style.hasOption(TextStyle.Option.SLOW_BLINK)) codes.add("5")
+        if (style.hasOption(TextStyle.Option.RAPID_BLINK)) codes.add("6")
+        if (style.hasOption(TextStyle.Option.INVERSE)) codes.add("7")
+        if (style.hasOption(TextStyle.Option.HIDDEN)) codes.add("8")
+        style.foreground?.let { codes.add(sgrColor(it, fg = true)) }
+        style.background?.let { codes.add(sgrColor(it, fg = false)) }
+        return "[" + codes.joinToString(";") + "m"
+    }
+
+    private fun sgrColor(c: TerminalColor, fg: Boolean): String {
+        val base = if (fg) "38" else "48"
+        return if (c.isIndexed) "$base;5;${c.colorIndex}"
+        else c.toColor().let { "$base;2;${it.red};${it.green};${it.blue}" }
     }
 
     // ---- theme (host palette → CSS) ----

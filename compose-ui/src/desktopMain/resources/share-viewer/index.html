@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <!-- Allow pinch-zoom + pan so wide/tall terminals are navigable on phones. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>BossTerm — shared session</title>
   <!-- xterm.js vendored locally (works fully offline on a LAN). MIT licensed. -->
   <link rel="stylesheet" href="vendor/xterm.css" />
@@ -23,7 +24,15 @@
     #sidebar { display: none; flex-direction: column; gap: 4px; width: 200px; flex: 0 0 auto; box-sizing: border-box;
                padding: 6px; background: #1e1e1e; border-right: 1px solid #333; overflow-y: auto; }
     #sidebar.show { display: flex; }
-    #stage { flex: 1 1 auto; display: flex; min-width: 0; min-height: 0; }
+    #stage { flex: 1 1 auto; display: flex; min-width: 0; min-height: 0;
+             overflow: auto; -webkit-overflow-scrolling: touch; }
+
+    /* on-screen key bar (mobile): Esc / Tab / Ctrl-combos / arrows, shown with control */
+    #keybar { display: none; flex: 0 0 auto; gap: 6px; padding: 6px 8px; background: #2b2b2b;
+              border-top: 1px solid #404040; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .keybtn { flex: 0 0 auto; min-width: 42px; padding: 9px 12px; border-radius: 6px; border: 1px solid #505050;
+              background: #1e1e1e; color: #ddd; font-size: 14px; cursor: pointer; -webkit-user-select: none; user-select: none; }
+    .keybtn:active { background: #4a90e2; color: #fff; border-color: #4a90e2; }
 
     /* top tab chips */
     .tab { display: flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 5px; background: #1e1e1e;
@@ -78,6 +87,7 @@
     <div id="sidebar"></div>
     <div id="stage"></div>
   </div>
+  <div id="keybar"></div>
 
   <div id="overlay" style="display:none">
     <div id="overlay-card">

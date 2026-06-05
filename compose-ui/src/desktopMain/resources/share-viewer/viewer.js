@@ -19,8 +19,50 @@
   var presenceEl = document.getElementById("presence");
   var viewOnlyEl = document.getElementById("viewonly");
 
+  var keybarEl = document.getElementById("keybar");
   var tabBarOnLeft = false;       // mirror the host's tab-bar orientation
+  var currentPaneId = null;       // pane the on-screen key bar targets
   function sendMsg(o) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); }
+
+  // ---- on-screen key bar (mobile control keys) ----
+  var KEY_ROW = [
+    ["Esc", "\x1b"], ["Tab", "\t"], ["^C", "\x03"], ["^D", "\x04"], ["^Z", "\x1a"], ["^L", "\x0c"],
+    ["←", "\x1b[D"], ["↑", "\x1b[A"], ["↓", "\x1b[B"], ["→", "\x1b[C"]
+  ];
+  function focusCurrent() {
+    if (currentPaneId && panes[currentPaneId]) { try { panes[currentPaneId].term.focus(); } catch (e) {} }
+  }
+  function sendKey(seq) {
+    if (!controlGranted || !currentPaneId) return;
+    sendMsg({ t: "input", paneId: currentPaneId, data: seq });
+  }
+  function buildKeybar() {
+    keybarEl.innerHTML = "";
+    if (!controlGranted) { keybarEl.style.display = "none"; return; }
+    keybarEl.style.display = "flex";
+    var kb = document.createElement("button");
+    kb.className = "keybtn"; kb.textContent = "⌨"; kb.title = "Show keyboard";
+    kb.onclick = focusCurrent;
+    keybarEl.appendChild(kb);
+    KEY_ROW.forEach(function (k) {
+      var b = document.createElement("button");
+      b.className = "keybtn"; b.textContent = k[0];
+      // Don't steal focus from the terminal's input, so the soft keyboard stays up.
+      b.addEventListener("mousedown", function (e) { e.preventDefault(); });
+      b.onclick = function () { sendKey(k[1]); };
+      keybarEl.appendChild(b);
+    });
+  }
+  // The focused pane of [node]'s tree (or the first pane), for default key-bar target.
+  function firstFocusedPane(node) {
+    var found = null, first = null;
+    (function walk(n) {
+      if (!n) return;
+      if (n.t === "pane") { if (first === null) first = n.paneId; if (n.focused) found = n.paneId; }
+      else { walk(n.a); walk(n.b); }
+    })(node);
+    return found || first;
+  }
 
   var controlGranted = false;
   var theme = null;               // last Theme message
@@ -199,6 +241,8 @@
       var wrap = document.createElement("div");
       wrap.className = "pane" + (node.focused ? " focused" : "");
       wrap.appendChild(getPane(node.paneId).host);
+      // Tapping a pane makes it the key-bar / typing target.
+      wrap.addEventListener("pointerdown", function () { currentPaneId = node.paneId; });
       return wrap;
     }
     // split
@@ -218,6 +262,9 @@
     if (!layout) return;
     var tab = layout.tabs.filter(function (t) { return t.id === activeTabId; })[0] || layout.tabs[0];
     if (!tab) return;
+    // Keep the key-bar target on a pane that's actually visible in this tab.
+    var ids = {}; collectPaneIds(tab.tree, ids);
+    if (!currentPaneId || !ids[currentPaneId]) currentPaneId = firstFocusedPane(tab.tree);
     var root = buildNode(tab.tree);
     root.style.flex = "1 1 0";
     stageEl.appendChild(root);
@@ -288,6 +335,7 @@
         controlGranted = !!m.granted;
         viewOnlyEl.style.display = controlGranted ? "none" : "";
         renderTabBar(); // show/hide the close + new-tab affordances
+        buildKeybar();  // show/hide the on-screen control-key bar
         break;
     }
   };

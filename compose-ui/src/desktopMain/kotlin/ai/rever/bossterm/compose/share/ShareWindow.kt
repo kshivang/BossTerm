@@ -310,7 +310,7 @@ private fun RemoteAccessSetupSection(
                 .clickable { expanded = !expanded }.padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(if (expanded) "▾" else "▸", color = TextSecondary, fontSize = 13.sp, modifier = Modifier.width(16.dp))
+            Text(if (expanded) "▾" else "▸", color = TextSecondary, fontSize = 18.sp, modifier = Modifier.width(22.dp))
             Text("Remote access", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
             Text(

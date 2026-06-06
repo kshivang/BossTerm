@@ -31,6 +31,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowRight
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -39,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -96,11 +98,13 @@ fun ShareWindow(
     val isWindow = info.scope == ShareScope.WINDOW
     val loopbackOnly = info.url.contains("://127.0.0.1") || info.url.contains("://localhost")
     var controlQr by remember { mutableStateOf(false) }
-    // "Refresh link" regenerates the remote tunnel (ephemeral for Cloudflare). Clears when
-    // the URL updates (the dialog refreshes via remoteUrlFlow) or after a timeout fallback.
-    var refreshing by remember { mutableStateOf(false) }
-    LaunchedEffect(info.url) { refreshing = false }
-    LaunchedEffect(refreshing) { if (refreshing) { kotlinx.coroutines.delay(35_000); refreshing = false } }
+    // Remote-access lifecycle (starting/verifying/retrying/active/fell-back) drives the
+    // Refresh button's disabled state, so "↻ Refresh link" reads "Refreshing…" for exactly
+    // as long as a new link is actually being established + verified.
+    val remoteState by SessionShareManager.remoteStateFlow.collectAsState()
+    val remoteBusy = remoteState.status == SessionShareManager.RemoteStatus.Starting ||
+        remoteState.status == SessionShareManager.RemoteStatus.Verifying ||
+        remoteState.status == SessionShareManager.RemoteStatus.Retrying
     // Inline actions for the QR + Links headers: "↻ Refresh link" (only when a remote
     // provider is selected — the LAN link never changes) and "⤴ Share" (macOS native
     // share sheet → AirDrop/Messages/Mail; falls back to copying if the helper can't run).
@@ -111,10 +115,10 @@ fun ShareWindow(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 if (hasRefresh) {
                     TextButton(
-                        onClick = { refreshing = true; onRefreshLink() },
-                        enabled = !refreshing,
+                        onClick = onRefreshLink,
+                        enabled = !remoteBusy,
                         colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
-                    ) { Text(if (refreshing) "Refreshing…" else "↻ Refresh link", fontSize = 12.sp) }
+                    ) { Text(if (remoteBusy) "Refreshing…" else "↻ Refresh link", fontSize = 12.sp) }
                 }
                 if (canShare) {
                     TextButton(
@@ -237,7 +241,6 @@ fun ShareWindow(
                 RemoteAccessSetupSection(
                     mode = tailscaleMode,
                     onModeChange = onTailscaleModeChange,
-                    currentUrl = info.url,
                     clipboard = clipboard,
                 )
 
@@ -346,11 +349,16 @@ private const val FUNNEL_ACL_SNIPPET =
 private fun RemoteAccessSetupSection(
     mode: String,
     onModeChange: (String) -> Unit,
-    currentUrl: String,
     clipboard: ClipboardManager,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val active = currentUrl.contains(".ts.net") || currentUrl.contains(".trycloudflare.com")
+    var pendingMode by remember { mutableStateOf<String?>(null) } // a mode awaiting the user's confirm
+    val remote by SessionShareManager.remoteStateFlow.collectAsState()
+    val active = remote.status == SessionShareManager.RemoteStatus.Active
+    // A switch/establish is in progress — don't let the picker queue a second one mid-flight.
+    val busy = remote.status == SessionShareManager.RemoteStatus.Starting ||
+        remote.status == SessionShareManager.RemoteStatus.Verifying ||
+        remote.status == SessionShareManager.RemoteStatus.Retrying
     val isCloudflare = mode == "cloudflare"
     val tool = if (isCloudflare) "cloudflared" else "Tailscale"
     // Install detection + one-click Homebrew install for the selected provider's CLI.
@@ -371,6 +379,32 @@ private fun RemoteAccessSetupSection(
             brewOk = if (ins) true else withContext(Dispatchers.IO) { toolBrewOk() }
         }
     }
+    // Confirm before switching provider — it tears down the current tunnel and brings up a
+    // new link. On confirm we persist the choice (onModeChange) AND switch the live tunnel.
+    pendingMode?.let { target ->
+        val msg = when (target) {
+            "off" -> "Turn off remote access? The public link stops working — sharing stays on your LAN only."
+            "cloudflare" -> "Switch to Cloudflare? A new public https://…trycloudflare.com link is generated; the current link stops working."
+            "serve" -> "Switch to Tailscale Serve? A new tailnet-only link replaces the current one."
+            "funnel" -> "Switch to Tailscale Funnel? A new public link replaces the current one."
+            else -> "Switch remote access to $target?"
+        }
+        AlertDialog(
+            onDismissRequest = { pendingMode = null },
+            title = { Text("Switch remote access?", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
+            text = { Text(msg, color = TextSecondary, fontSize = 13.sp) },
+            confirmButton = {
+                Button(
+                    onClick = { onModeChange(target); SessionShareManager.applyRemoteMode(target); pendingMode = null },
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                ) { Text(if (target == "off") "Turn off" else "Switch") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingMode = null }) { Text("Cancel", color = TextSecondary) }
+            },
+            containerColor = SurfaceColor,
+        )
+    }
     Column(Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
@@ -387,12 +421,21 @@ private fun RemoteAccessSetupSection(
             Text("Remote access", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
             Text(
-                when {
-                    mode == "off" -> "LAN only"
-                    active -> "$mode · active"
-                    else -> "$mode · not active"
+                when (remote.status) {
+                    SessionShareManager.RemoteStatus.Off -> "LAN only"
+                    SessionShareManager.RemoteStatus.Starting -> "${remote.mode} · starting…"
+                    SessionShareManager.RemoteStatus.Verifying -> "${remote.mode} · verifying link…"
+                    SessionShareManager.RemoteStatus.Retrying ->
+                        "${remote.mode} · retrying (${remote.attempt}/${remote.maxAttempts})…"
+                    SessionShareManager.RemoteStatus.Active -> "${remote.mode} · active"
+                    SessionShareManager.RemoteStatus.FellBack -> "${remote.mode} · unreachable — using LAN link"
                 },
-                color = if (active) Color(0xFF4CAF50) else TextMuted, fontSize = 11.sp
+                color = when (remote.status) {
+                    SessionShareManager.RemoteStatus.Active -> Color(0xFF4CAF50)
+                    SessionShareManager.RemoteStatus.FellBack -> Danger
+                    else -> TextMuted
+                },
+                fontSize = 11.sp
             )
         }
         if (expanded) {
@@ -403,10 +446,13 @@ private fun RemoteAccessSetupSection(
                         .border(1.dp, BorderColor, RoundedCornerShape(6.dp)).padding(2.dp),
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    Seg("Off", mode == "off") { onModeChange("off") }
-                    Seg("Serve", mode == "serve") { onModeChange("serve") }
-                    Seg("Funnel", mode == "funnel") { onModeChange("funnel") }
-                    Seg("Cloudflare", isCloudflare) { onModeChange("cloudflare") }
+                    // Clicking a different mode asks for confirmation (pendingMode) — the
+                    // actual switch happens on confirm in the AlertDialog above. Ignored while
+                    // an establish is already in progress (busy) so switches can't pile up.
+                    Seg("Off", mode == "off") { if (!busy && mode != "off") pendingMode = "off" }
+                    Seg("Serve", mode == "serve") { if (!busy && mode != "serve") pendingMode = "serve" }
+                    Seg("Funnel", mode == "funnel") { if (!busy && mode != "funnel") pendingMode = "funnel" }
+                    Seg("Cloudflare", isCloudflare) { if (!busy && mode != "cloudflare") pendingMode = "cloudflare" }
                 }
                 Text(
                     when (mode) {

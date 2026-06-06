@@ -316,7 +316,8 @@ class TabController(
         onProcessExit: (() -> Unit)? = null,
         initialCommand: String? = null,
         onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)? = null,
-        tabId: String? = null
+        tabId: String? = null,
+        activate: Boolean = true
     ): TerminalTab {
         // Validate tab ID uniqueness if custom ID provided
         if (tabId != null && tabs.any { it.id == tabId }) {
@@ -554,8 +555,9 @@ class TabController(
         // Notify listeners about new session
         notifySessionCreated(tab)
 
-        // Switch to newly created tab
-        switchToTab(tabs.size - 1)
+        // Switch to newly created tab (unless the caller wants it created in the background —
+        // e.g. a remote viewer creating a tab shouldn't yank the host user's active tab).
+        if (activate) switchToTab(tabs.size - 1)
 
         return tab
     }

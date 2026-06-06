@@ -226,12 +226,14 @@ class TabbedTerminalState {
     fun createTab(
         workingDir: String? = null,
         initialCommand: String? = null,
-        tabId: String? = null
+        tabId: String? = null,
+        activate: Boolean = true
     ): String? {
         return tabController?.createTab(
             workingDir = workingDir,
             initialCommand = initialCommand,
-            tabId = tabId
+            tabId = tabId,
+            activate = activate
         )?.id
     }
 
@@ -276,10 +278,14 @@ class TabbedTerminalState {
         if (i >= 0) tabController?.closeTabsBelow(i)
     }
 
-    /** Duplicate [tabId] into a new tab starting in the same cwd (mirrors "Duplicate Tab"). */
+    /**
+     * Duplicate [tabId] into a new tab starting in the same cwd (mirrors "Duplicate Tab").
+     * Created in the background ([activate] = false) so a viewer duplicating doesn't switch
+     * the host user's active tab.
+     */
     fun duplicateTab(tabId: String) {
         val wd = tabs.firstOrNull { it.id == tabId }?.workingDirectory?.value
-        createTab(workingDir = wd)
+        createTab(workingDir = wd, activate = false)
     }
 
     /** The session a chip refers to: a split pane by id, else the tab itself (summary/unsplit). */

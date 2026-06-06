@@ -642,6 +642,10 @@ class BossTerminal(
         }
     }
 
+    /** Last cell pixel size the UI measured (physical px) — used for remote "fit-to-client" resizing. */
+    val cellWidthPx: Float get() = myCellWidthPx
+    val cellHeightPx: Float get() = myCellHeightPx
+
     /**
      * Notify image storage when buffer scrolls.
      * Call this when lines are added to history.

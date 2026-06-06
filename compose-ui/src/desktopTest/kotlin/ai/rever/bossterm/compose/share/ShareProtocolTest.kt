@@ -70,4 +70,39 @@ class ShareProtocolTest {
         val msg = ShareProtocol.decodeClient("""{"t":"hello","name":"x","futureField":42}""")
         assertIs<ClientMessage.Hello>(msg)
     }
+
+    @Test
+    fun `viewer resize messages decode by discriminator`() {
+        val rh = ShareProtocol.decodeClient("""{"t":"resizeHost","tabId":"t1","cols":120,"rows":40}""")
+        assertIs<ClientMessage.ResizeHost>(rh)
+        assertEquals("t1", rh.tabId)
+        assertEquals(120, rh.cols)
+        assertEquals(40, rh.rows)
+
+        val rs = ShareProtocol.decodeClient("""{"t":"resizeSplit","tabId":"t1","splitId":"s1","ratio":0.3}""")
+        assertIs<ClientMessage.ResizeSplit>(rs)
+        assertEquals("s1", rs.splitId)
+        assertEquals(0.3f, rs.ratio)
+    }
+
+    @Test
+    fun `split id serializes and is optional for forward-compat`() {
+        val tree = PaneTreeNode.Split(
+            "v", 0.5f,
+            PaneTreeNode.Pane("p1", "zsh", "/home", focused = true),
+            PaneTreeNode.Pane("p2", "vim", "/x", focused = false),
+            id = "split-1",
+        )
+        val json = ShareProtocol.encodeServer(ServerMessage.Layout(listOf(TabNode("t1", "~", true, tree)), "t1"))
+        assertTrue(json.contains("\"id\":\"split-1\""), "split id should serialize: $json")
+
+        // An older host→viewer payload without `id` still decodes (default ""), so a viewer
+        // built against the new protocol tolerates an older peer.
+        val old = """{"t":"layout","tabs":[{"id":"t1","title":"~","active":true,"tree":{"t":"split","dir":"v","ratio":0.5,"a":{"t":"pane","paneId":"p1","title":"z","cwd":null,"focused":true},"b":{"t":"pane","paneId":"p2","title":"v","cwd":null,"focused":false}}}],"activeTabId":"t1"}"""
+        val decoded = ShareProtocol.json.decodeFromString(ServerMessage.serializer(), old)
+        assertIs<ServerMessage.Layout>(decoded)
+        val split = decoded.tabs[0].tree
+        assertIs<PaneTreeNode.Split>(split)
+        assertEquals("", split.id)
+    }
 }

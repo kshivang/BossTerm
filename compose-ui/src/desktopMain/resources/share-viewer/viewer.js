@@ -23,8 +23,11 @@
   var menubtnEl = document.getElementById("menubtn");
   var bodyEl = document.getElementById("body");
   var ctxEl = document.getElementById("ctxmenu");
+  var dimsEl = document.getElementById("dims");
+  var fithostEl = document.getElementById("fithost");
   var tabBarOnLeft = false;       // mirror the host's tab-bar orientation
   var summaryMode = false;        // host's tabBarSummaryMode: 1 chip/tab vs 1 chip/pane
+  var splitDragging = false;      // a divider is being dragged → suppress layout re-renders
   var currentPaneId = null;       // pane the on-screen key bar targets
   function sendMsg(o) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); }
 
@@ -73,15 +76,16 @@
     });
     layoutForKeyboard(); // reserve space + position above the keyboard
   }
-  // The focused pane of [node]'s tree (or the first pane), for default key-bar target.
-  function firstFocusedPane(node) {
-    var found = null, first = null;
+  // The first pane of [node]'s tree (tree order) — the client's default focus / key-bar
+  // target. Host focus is intentionally NOT reflected on the client; the client picks its own.
+  function defaultPaneId(node) {
+    var first = null;
     (function walk(n) {
-      if (!n) return;
-      if (n.t === "pane") { if (first === null) first = n.paneId; if (n.focused) found = n.paneId; }
+      if (!n || first !== null) return;
+      if (n.t === "pane") first = n.paneId;
       else { walk(n.a); walk(n.b); }
     })(node);
-    return found || first;
+    return first;
   }
 
   var controlGranted = false;
@@ -134,6 +138,27 @@
   document.getElementById("zoomin").onclick = function () { applyFont(curFont() + 1); };
   document.getElementById("zoomout").onclick = function () { applyFont(curFont() - 1); };
   document.getElementById("zoomfit").onclick = fitWidth;
+
+  // Show the host terminal's grid size (cols × rows) so its bounds are explicit.
+  function updateDims() {
+    var id = activePaneId(), p = id && panes[id];
+    if (p && p.term && p.term.cols) { dimsEl.textContent = p.term.cols + "×" + p.term.rows; dimsEl.style.display = ""; }
+    else dimsEl.style.display = "none";
+  }
+  // "Fit host to my screen": measure the client's cell size + viewport, work out the grid
+  // that fills it, and ask the host to resize its window to match (control only).
+  fithostEl.onclick = function () {
+    var id = activePaneId(), p = id && panes[id];
+    if (!p || !p.term || !p.term.cols) return;
+    var sc = p.host.querySelector(".xterm-screen"); if (!sc) return;
+    var r = sc.getBoundingClientRect();
+    var cellW = r.width / p.term.cols, cellH = r.height / p.term.rows;
+    if (!(cellW > 0) || !(cellH > 0)) return;
+    var CHROME = 8; // leave room for the pane border (1px/side) + a little slack so it fits
+    var cols = Math.max(20, Math.floor((stageEl.clientWidth - CHROME) / cellW));
+    var rows = Math.max(6, Math.floor((stageEl.clientHeight - CHROME) / cellH));
+    sendMsg({ t: "resizeHost", tabId: activeTabId, cols: cols, rows: rows });
+  };
 
   // ---- right-click / long-press context menu ----
   // Copy via the async Clipboard API where available (needs a secure context: https /
@@ -357,13 +382,40 @@
   var overlayTitleEl = document.getElementById("overlay-title");
   var overlayMsgEl = document.getElementById("overlay-msg");
   var overlaySpinnerEl = document.getElementById("overlay-spinner");
-  function showOverlay(title, msg, spinning) {
+  var overlayActionsEl = document.getElementById("overlay-actions");
+  // [actions] = optional [{label, primary, onClick}] rendered as buttons under the message.
+  function showOverlay(title, msg, spinning, actions) {
     overlayTitleEl.textContent = title;
     overlayMsgEl.textContent = msg || "";
     overlaySpinnerEl.style.display = spinning ? "" : "none";
+    overlayActionsEl.innerHTML = "";
+    (actions || []).forEach(function (a) {
+      var b = document.createElement("button");
+      b.textContent = a.label;
+      if (a.primary) b.className = "primary";
+      b.onclick = a.onClick;
+      overlayActionsEl.appendChild(b);
+    });
     overlayEl.style.display = "";
   }
   function hideOverlay() { overlayEl.style.display = "none"; }
+
+  var sessionEnded = false;   // host denied/expired → don't offer a pointless reconnect
+  var disconnectShown = false; // de-dupe onerror + onclose firing together
+  // The link dropped (host stopped sharing, network blip, etc.): tell the user instead of
+  // just flipping the status dot red, and offer to reconnect (reload) or close.
+  function showDisconnected() {
+    setStatus("down");
+    if (sessionEnded || disconnectShown) return;
+    disconnectShown = true;
+    showOverlay("Disconnected", "The connection to the host was lost.", false, [
+      { label: "Reconnect", primary: true, onClick: function () { location.reload(); } },
+      { label: "Close", onClick: function () {
+          window.close(); // ignored for user-opened tabs — fall back to a hint
+          showOverlay("Disconnected", "You can close this tab.", false, []);
+        } }
+    ]);
+  }
 
   function deviceName() {
     return localStorage.getItem("bossterm.name") || navigator.platform || "browser";
@@ -501,6 +553,21 @@
     renderTabBar();
     renderStage();
   }
+  // Client-side pane focus: move the focus border to [paneId] and reflect it in the sub-tab
+  // chips, without rebuilding the stage (so xterms/selection survive). Independent of the host.
+  function setClientFocus(paneId) {
+    if (currentPaneId === paneId) return;
+    currentPaneId = paneId;
+    refreshPaneFocus();
+    renderTabBar(); // per-split sub-tab chip highlight follows the client's focus
+  }
+  function refreshPaneFocus() {
+    var els = stageEl.querySelectorAll(".pane");
+    for (var i = 0; i < els.length; i++) {
+      if (els[i].dataset.paneId === currentPaneId) els[i].classList.add("focused");
+      else els[i].classList.remove("focused");
+    }
+  }
 
   // Inline SVGs matching the host's Material split icons: a pane outline divided by a
   // vertical line (left/right) or a horizontal line (top/bottom).
@@ -512,7 +579,7 @@
   function activePaneId() {
     var tab = activeTabNode(); if (!tab || !tab.tree) return null;
     if (currentPaneId) { var ids = {}; collectPaneIds(tab.tree, ids); if (ids[currentPaneId]) return currentPaneId; }
-    return firstFocusedPane(tab.tree);
+    return defaultPaneId(tab.tree);
   }
   // kind: "v" = Split Left/Right (vertical divider), "h" = Split Top/Bottom (horizontal divider).
   function splitButton(kind) {
@@ -599,21 +666,23 @@
 
   function buildNode(node) {
     if (node.t === "pane") {
-      var wrap = document.createElement("div");
-      wrap.className = "pane" + (node.focused ? " focused" : "");
-      wrap.appendChild(getPane(node.paneId).host);
       var pid = node.paneId;
-      // Tapping a pane makes it the key-bar / typing target.
-      wrap.addEventListener("pointerdown", function () { currentPaneId = pid; });
+      var wrap = document.createElement("div");
+      // Focus is the CLIENT's own (currentPaneId) — not the host's — and follows clicks.
+      wrap.className = "pane" + (pid === currentPaneId ? " focused" : "");
+      wrap.dataset.paneId = pid;
+      wrap.appendChild(getPane(pid).host);
+      // Clicking/tapping a pane focuses it on the client (border + key-bar / typing target).
+      wrap.addEventListener("pointerdown", function () { setClientFocus(pid); });
       // Desktop right-click → context menu.
       wrap.addEventListener("contextmenu", function (e) {
-        e.preventDefault(); currentPaneId = pid; showContextMenu(e.clientX, e.clientY, pid);
+        e.preventDefault(); setClientFocus(pid); showContextMenu(e.clientX, e.clientY, pid);
       });
       // Mobile long-press (~500ms) → same menu, anchored at the touch point.
       var lpTimer = null, lpX = 0, lpY = 0;
       wrap.addEventListener("touchstart", function (e) {
         if (!e.touches || e.touches.length !== 1) return;
-        lpX = e.touches[0].clientX; lpY = e.touches[0].clientY; currentPaneId = pid;
+        lpX = e.touches[0].clientX; lpY = e.touches[0].clientY; setClientFocus(pid);
         lpTimer = setTimeout(function () { lpTimer = null; showContextMenu(lpX, lpY, pid); }, 500);
       }, { passive: true });
       function cancelLongPress(e) {
@@ -635,9 +704,54 @@
     a.style.flex = (node.ratio || 0.5) + " 1 0";
     b.style.flex = (1 - (node.ratio || 0.5)) + " 1 0";
     var div = document.createElement("div");
-    div.className = "divider";
+    div.className = "divider " + (node.dir === "h" ? "h" : "v");
+    if (controlGranted && node.id) attachDividerDrag(div, split, a, b, node);
     split.appendChild(a); split.appendChild(div); split.appendChild(b);
     return split;
+  }
+
+  // Drag a split divider to re-ratio the split — mirrors dragging it on the host. Updates
+  // the local layout live for smoothness and streams the ratio to the host (throttled);
+  // re-renders are suppressed mid-drag so the divider isn't rebuilt under the pointer.
+  function attachDividerDrag(div, split, a, b, node) {
+    var horiz = node.dir === "h"; // h = stacked → drag vertically; v = side-by-side → horizontally
+    div.classList.add("draggable");
+    div.style.cursor = horiz ? "row-resize" : "col-resize";
+    var lastSent = 0;
+    function ratioAt(e) {
+      var r = split.getBoundingClientRect();
+      var v = horiz ? (e.clientY - r.top) / r.height : (e.clientX - r.left) / r.width;
+      return Math.max(0.1, Math.min(0.9, v));
+    }
+    function onMove(e) {
+      var ratio = ratioAt(e);
+      a.style.flex = ratio + " 1 0";
+      b.style.flex = (1 - ratio) + " 1 0";
+      var now = Date.now();
+      if (now - lastSent > 60) { lastSent = now; sendMsg({ t: "resizeSplit", tabId: activeTabId, splitId: node.id, ratio: ratio }); }
+      e.preventDefault();
+    }
+    // End the drag for any reason. pointercancel (gesture interrupted / scroll takeover on
+    // touch) MUST be handled too, or splitDragging would stick true and onLayout would stop
+    // re-rendering for the rest of the session (frozen viewer) and the window listeners leak.
+    function endDrag(commit, e) {
+      if (!splitDragging) return;
+      splitDragging = false;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      if (commit) sendMsg({ t: "resizeSplit", tabId: activeTabId, splitId: node.id, ratio: ratioAt(e) }); // final
+      renderStage(); // settle to the host layout + resume normal re-renders
+    }
+    function onUp(e) { endDrag(true, e); }
+    function onCancel() { endDrag(false, null); } // interrupted — keep the last-sent ratio
+    div.addEventListener("pointerdown", function (e) {
+      splitDragging = true;
+      e.preventDefault(); e.stopPropagation();
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onCancel);
+    });
   }
 
   function renderStage() {
@@ -647,7 +761,7 @@
     if (!tab) return;
     // Keep the key-bar target on a pane that's actually visible in this tab.
     var ids = {}; collectPaneIds(tab.tree, ids);
-    if (!currentPaneId || !ids[currentPaneId]) currentPaneId = firstFocusedPane(tab.tree);
+    if (!currentPaneId || !ids[currentPaneId]) currentPaneId = defaultPaneId(tab.tree);
     var root = buildNode(tab.tree);
     if (tab.tree.t === "pane") {
       // single pane → natural width, scrollable in #stage (don't stretch/clip)
@@ -661,6 +775,7 @@
     }
     stageEl.appendChild(root);
     relayoutSinglePane(); // size a single pane to its natural width for horizontal scroll
+    updateDims();
   }
 
   function onLayout(m) {
@@ -678,7 +793,9 @@
       if (!live[id]) { try { panes[id].term.dispose(); } catch (e) {} delete panes[id]; }
     });
     renderTabBar();
-    renderStage();
+    // Mid divider-drag, the host echoes ratio changes back as layouts — don't rebuild the
+    // stage (it would destroy the divider under the pointer); onUp re-renders to settle.
+    if (!splitDragging) renderStage();
   }
 
   function collectPaneIds(node, out) {
@@ -710,6 +827,7 @@
         break;
       case "denied":
         clearKey();
+        sessionEnded = true; // terminal — keep this message, don't replace with "Disconnected"
         showOverlay("Request denied", m.reason || "The host declined this device.", false);
         break;
       case "theme": applyTheme(m); break;
@@ -720,23 +838,25 @@
         p.term.reset();
         if (m.data) p.term.write(m.data);
         relayoutSinglePane();
+        updateDims();
         break;
       }
       case "paneOutput": if (m.data) getPane(m.paneId).term.write(m.data); break;
       case "paneResize":
-        if (m.cols && m.rows) { getPane(m.paneId).term.resize(m.cols, m.rows); relayoutSinglePane(); }
+        if (m.cols && m.rows) { getPane(m.paneId).term.resize(m.cols, m.rows); relayoutSinglePane(); updateDims(); }
         break;
       case "presence":
         presenceEl.textContent = m.viewers === 1 ? "1 viewer" : m.viewers + " viewers"; break;
       case "control":
         controlGranted = !!m.granted;
         viewOnlyEl.style.display = controlGranted ? "none" : "";
+        fithostEl.style.display = controlGranted ? "" : "none"; // resizing the host needs control
         renderTabBar(); // show/hide the close + new-tab affordances
         buildKeybar();  // show/hide the on-screen control-key bar
         break;
     }
   };
 
-  ws.onclose = function () { setStatus("down"); };
-  ws.onerror = function () { setStatus("down"); };
+  ws.onclose = showDisconnected;
+  ws.onerror = showDisconnected;
 })();

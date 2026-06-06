@@ -10,6 +10,7 @@ import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import ai.rever.bossterm.compose.window.WindowManager
 import ai.rever.bossterm.terminal.TerminalColor
 import ai.rever.bossterm.terminal.TextStyle
 import ai.rever.bossterm.terminal.model.TerminalLine
@@ -132,7 +133,8 @@ class MirrorShare(
             is ClientMessage.CloseTab ->
                 McpTerminalRegistry.findState(tabId)?.closeTab(msg.tabId)
             is ClientMessage.NewTab ->
-                McpTerminalRegistry.findState(tabId)?.createTab()
+                // Background: a viewer creating a tab shouldn't switch the host user's active tab.
+                McpTerminalRegistry.findState(tabId)?.createTab(activate = false)
             is ClientMessage.SplitVertical ->
                 McpTerminalRegistry.findState(tabId)?.splitVerticalFromPane(msg.tabId, msg.paneId)
             is ClientMessage.SplitHorizontal ->
@@ -165,7 +167,51 @@ class MirrorShare(
                 McpTerminalRegistry.findState(tabId)?.closeOtherTabs(msg.tabId)
             is ClientMessage.CloseTabsBelow ->
                 McpTerminalRegistry.findState(tabId)?.closeTabsBelow(msg.tabId)
+            is ClientMessage.ResizeHost -> resizeHostWindow(msg.cols, msg.rows)
+            is ClientMessage.ResizeSplit ->
+                McpTerminalRegistry.findState(tabId)?.splitStates?.get(msg.tabId)?.updateSplitRatio(msg.splitId, msg.ratio)
             else -> {} // Hello / Focus / RequestControl: no-op (focus is viewer-side; control via token)
+        }
+    }
+
+    /**
+     * "Fit host to client": resize the host's OS window so its terminal grid lands near
+     * [cols]×[rows]. The grid is slaved to the canvas, so we nudge the window by the pixel
+     * delta for the column/row change — the per-cell pixel size comes from the host's own
+     * measurement and the window chrome (left tab bar, title) cancels out of the delta.
+     * Best-effort and single-pane-oriented; multi-window picks the focused (else first) window.
+     */
+    private fun resizeHostWindow(cols: Int, rows: Int) {
+        if (cols < 2 || rows < 2) return
+        val tab = McpTerminalRegistry.findTab(tabId) ?: return
+        val cw = tab.terminal.cellWidthPx
+        val ch = tab.terminal.cellHeightPx
+        if (cw <= 0f || ch <= 0f) return
+        val cur = tab.display.termSize.value
+        val win = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }?.awtWindow
+            ?: WindowManager.windows.firstOrNull { it.awtWindow != null }?.awtWindow
+            ?: return
+        // AWT window size is in points; cell px is physical — divide by the display scale.
+        javax.swing.SwingUtilities.invokeLater {
+            runCatching {
+                val gc = win.graphicsConfiguration
+                val sx = gc?.defaultTransform?.scaleX?.takeIf { it > 0 } ?: 1.0
+                val sy = gc?.defaultTransform?.scaleY?.takeIf { it > 0 } ?: 1.0
+                var newW = (win.width + (cols - cur.columns) * cw / sx).toInt()
+                var newH = (win.height + (rows - cur.rows) * ch / sy).toInt()
+                // Clamp to the screen, accounting for the window's position (setSize keeps the
+                // top-left), so growing a window that isn't at the origin can't run off-screen.
+                gc?.bounds?.let { b ->
+                    val maxW = (b.x + b.width - win.x).coerceAtLeast(480)
+                    val maxH = (b.y + b.height - win.y).coerceAtLeast(320)
+                    newW = newW.coerceIn(480, maxW)
+                    newH = newH.coerceIn(320, maxH)
+                }
+                if (newW != win.width || newH != win.height) {
+                    win.setSize(newW, newH)
+                    win.validate()
+                }
+            }
         }
     }
 
@@ -260,9 +306,9 @@ class MirrorShare(
             )
         }
         is SplitNode.VerticalSplit ->
-            PaneTreeNode.Split("v", node.ratio, sigNode(node.left, focusedId, sizes), sigNode(node.right, focusedId, sizes))
+            PaneTreeNode.Split("v", node.ratio, sigNode(node.left, focusedId, sizes), sigNode(node.right, focusedId, sizes), node.id)
         is SplitNode.HorizontalSplit ->
-            PaneTreeNode.Split("h", node.ratio, sigNode(node.top, focusedId, sizes), sigNode(node.bottom, focusedId, sizes))
+            PaneTreeNode.Split("h", node.ratio, sigNode(node.top, focusedId, sizes), sigNode(node.bottom, focusedId, sizes), node.id)
     }
 
     /** Current paneId → owning session, across all in-scope tabs. */

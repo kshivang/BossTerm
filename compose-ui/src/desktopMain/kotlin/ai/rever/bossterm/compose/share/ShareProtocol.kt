@@ -213,20 +213,37 @@ sealed class ClientMessage {
     @SerialName("focus")
     data class Focus(val tabId: String, val paneId: String) : ClientMessage()
 
-    /** Request write/control access from the host. */
+    /**
+     * Request write/control access from the host. With a [tabId] naming a tab the host itself
+     * mirrors from ANOTHER session, the host relays the request to that upstream instead
+     * (A→B→C: C asks B, B asks A). Null/absent = plain upgrade of this connection (and what
+     * older peers send/understand).
+     */
     @Serializable
     @SerialName("requestControl")
-    data object RequestControl : ClientMessage()
+    data class RequestControl(val tabId: String? = null) : ClientMessage()
 
     /** Close a tab on the host (controller role only). Mirrors the host tab's close button. */
     @Serializable
     @SerialName("closeTab")
     data class CloseTab(val tabId: String) : ClientMessage()
 
-    /** Open a new tab on the host (controller role only). Mirrors the host's new-tab (+) button. */
+    /**
+     * Open a new tab on the host (controller role only). With a [tabId] naming a tab the host
+     * mirrors from another session, the host relays — the new tab opens in that upstream
+     * session instead. Null/absent = a local tab on the host (what older peers send).
+     */
     @Serializable
     @SerialName("newTab")
-    data object NewTab : ClientMessage()
+    data class NewTab(val tabId: String? = null) : ClientMessage()
+
+    /**
+     * Ask the host to disconnect from the upstream session that [tabId] mirrors (the ✕ on a
+     * "via host" group in a nested viewer). Controller role only; old hosts ignore it.
+     */
+    @Serializable
+    @SerialName("disconnectUpstream")
+    data class DisconnectUpstream(val tabId: String) : ClientMessage()
 
     /**
      * Split [paneId] in [tabId] into left/right panes (vertical divider) — the host's

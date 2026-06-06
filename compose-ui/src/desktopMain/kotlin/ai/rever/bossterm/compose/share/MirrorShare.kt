@@ -125,8 +125,27 @@ class MirrorShare(
     }
 
     /** Route viewer messages — input + tab close/new — to the host (controller role only). */
+    /**
+     * The remote session a host tab itself mirrors (so a viewer's action on it can be relayed
+     * to the origin instead of mutating the local mirror — which the next upstream Layout
+     * would wipe). Null for the host's own tabs.
+     */
+    private fun upstreamSession(targetTabId: String?): ai.rever.bossterm.compose.remote.RemoteSession? {
+        if (targetTabId == null) return null
+        val st = McpTerminalRegistry.findState(tabId) ?: return null
+        val tab = st.tabs.firstOrNull { it.id == targetTabId } ?: return null
+        return st.remoteSessions.sessionForTab(tab)
+    }
+
     fun handleClient(vc: ViewerConnection, msg: ClientMessage) {
         if (msg is ClientMessage.RequestControl) {
+            val upstream = upstreamSession(msg.tabId)
+            if (upstream != null) {
+                // Relay an upstream control request (A→B→C: C asked us, we ask A — A's user
+                // sees its approval toast with OUR device name). Needs control of this share.
+                if (vc.canControl) upstream.requestControl()
+                return
+            }
             // A view-only viewer asking for an upgrade — must run BEFORE the control gate.
             // Surfaces the same approval toast as a join request; on approve, flip this live
             // connection's role and tell the viewer. (The viewer's saved key keeps its original
@@ -145,26 +164,46 @@ class MirrorShare(
             return
         }
         if (!vc.canControl) return // all mutating actions require the control role
+        // Structural actions on a tab WE mirror from another session relay to that origin
+        // (our RemoteSession methods no-op silently if we're view-only on it).
         when (msg) {
             is ClientMessage.Input ->
                 (taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId])?.writeUserInput(msg.data)
             is ClientMessage.CloseTab ->
-                McpTerminalRegistry.findState(tabId)?.closeTab(msg.tabId)
+                upstreamSession(msg.tabId)?.closeFromChip(msg.tabId, msg.tabId)
+                    ?: McpTerminalRegistry.findState(tabId)?.closeTab(msg.tabId)
             is ClientMessage.NewTab ->
                 // Background: a viewer creating a tab shouldn't switch the host user's active tab.
-                McpTerminalRegistry.findState(tabId)?.createTab(activate = false)
+                upstreamSession(msg.tabId)?.newRemoteTab()
+                    ?: McpTerminalRegistry.findState(tabId)?.createTab(activate = false)
             is ClientMessage.SplitVertical ->
-                McpTerminalRegistry.findState(tabId)?.splitVerticalFromPane(msg.tabId, msg.paneId)
+                upstreamSession(msg.tabId)?.splitPane(msg.tabId, msg.paneId, horizontal = false)
+                    ?: McpTerminalRegistry.findState(tabId)?.splitVerticalFromPane(msg.tabId, msg.paneId)
             is ClientMessage.SplitHorizontal ->
-                McpTerminalRegistry.findState(tabId)?.splitHorizontalFromPane(msg.tabId, msg.paneId)
+                upstreamSession(msg.tabId)?.splitPane(msg.tabId, msg.paneId, horizontal = true)
+                    ?: McpTerminalRegistry.findState(tabId)?.splitHorizontalFromPane(msg.tabId, msg.paneId)
             is ClientMessage.ClosePane -> {
-                // Target the clicked pane (focus it), then close; closeFocusedPane closes
-                // the whole tab when it's the only pane (matches the host's behavior).
-                val st = McpTerminalRegistry.findState(tabId)
-                st?.splitStates?.get(msg.tabId)?.setFocusedPane(msg.paneId)
-                st?.closeFocusedPane(msg.tabId)
+                val upstream = upstreamSession(msg.tabId)
+                if (upstream != null) {
+                    upstream.closeFromChip(msg.tabId, msg.paneId)
+                } else {
+                    // Target the clicked pane (focus it), then close; closeFocusedPane closes
+                    // the whole tab when it's the only pane (matches the host's behavior).
+                    val st = McpTerminalRegistry.findState(tabId)
+                    st?.splitStates?.get(msg.tabId)?.setFocusedPane(msg.paneId)
+                    st?.closeFocusedPane(msg.tabId)
+                }
             }
+            is ClientMessage.DisconnectUpstream ->
+                upstreamSession(msg.tabId)?.let { up ->
+                    McpTerminalRegistry.findState(tabId)?.remoteSessions?.disconnect(up)
+                }
             is ClientMessage.LaunchAI -> {
+                val upstream = upstreamSession(msg.tabId)
+                if (upstream != null) {
+                    upstream.launchAI(msg.tabId, msg.paneId, msg.assistantId)
+                    return
+                }
                 // Run the same launch command the host's AI menu would (honoring the
                 // user's per-assistant YOLO/auto-mode config), in the clicked pane.
                 val target = taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId]
@@ -187,7 +226,8 @@ class MirrorShare(
                 McpTerminalRegistry.findState(tabId)?.closeTabsBelow(msg.tabId)
             is ClientMessage.ResizeHost -> resizeHostWindow(msg.cols, msg.rows)
             is ClientMessage.ResizeSplit ->
-                McpTerminalRegistry.findState(tabId)?.splitStates?.get(msg.tabId)?.updateSplitRatio(msg.splitId, msg.ratio)
+                upstreamSession(msg.tabId)?.resizeSplit(msg.tabId, msg.splitId, msg.ratio, committed = true)
+                    ?: McpTerminalRegistry.findState(tabId)?.splitStates?.get(msg.tabId)?.updateSplitRatio(msg.splitId, msg.ratio)
             is ClientMessage.OfferShare -> {
                 // Two-way sharing: mirror the offering client's session back into this window.
                 // connect() dedupes a repeated offer (same token) and refuses our own links;

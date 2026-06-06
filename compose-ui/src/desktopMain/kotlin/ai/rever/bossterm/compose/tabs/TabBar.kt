@@ -145,11 +145,23 @@ data class RemoteTabGroup(
     val nested: List<RemoteNestedGroup> = emptyList(),
 )
 
-/** One upstream session's tabs inside a remote group box (see [RemoteTabGroup.nested]). */
+/**
+ * One upstream session's tabs inside a remote group box (see [RemoteTabGroup.nested]).
+ * Actions are relayed by the host to the origin session; when [readOnly] (the host is
+ * view-only on the origin), split/new-tab instead fire [onRequestControl] so the user is
+ * routed to the upgrade path rather than a silent no-op.
+ */
 data class RemoteNestedGroup(
     val label: String,
     val readOnly: Boolean,
     val groups: List<TabBarGroup>,
+    val onSplitVertical: () -> Unit = {},
+    val onSplitHorizontal: () -> Unit = {},
+    val onNewTab: () -> Unit = {},
+    /** Ask the host to disconnect from this upstream (the box's ✕). */
+    val onClose: () -> Unit = {},
+    /** Relay a control request to the origin (host asks it on our behalf). */
+    val onRequestControl: () -> Unit = {},
 )
 
 /** AI assistants offered in the remote chip menu — same set the browser viewer mirrors. */
@@ -248,10 +260,14 @@ fun TabBar(
         contextMenuController.showMenu(0f, 0f, items)
     }
 
-    // Map each mirrored chip's tabIndex → its remote session, so a right-click on a remote chip
-    // opens the host-routed menu instead of the local one.
-    val remoteByTabIndex: Map<Int, RemoteTabGroup> =
-        remoteGroups.flatMap { rg -> rg.groups.map { it.tabIndex to rg } }.toMap()
+    // Map each mirrored chip's tabIndex → its remote session (and its upstream nest, when the
+    // chip lives in a "via host" box), so a right-click opens the right host-routed menu
+    // instead of the local one.
+    val remoteByTabIndex: Map<Int, Pair<RemoteTabGroup, RemoteNestedGroup?>> =
+        remoteGroups.flatMap { rg ->
+            rg.groups.map { it.tabIndex to (rg to (null as RemoteNestedGroup?)) } +
+                rg.nested.flatMap { nest -> nest.groups.map { it.tabIndex to (rg to nest) } }
+        }.toMap()
 
     // Remote group box currently renaming its header inline (by RemoteTabGroup.id).
     var editingRemoteId by remember { mutableStateOf<String?>(null) }
@@ -286,7 +302,7 @@ fun TabBar(
     // Right-click menu for a mirrored remote chip — mirrors the browser viewer's menu, all
     // routed to the host. Host-mutating items are gated on control; "Disconnect remote" is the
     // one native-only affordance and is always enabled.
-    val showRemoteChipMenu: (RemoteTabGroup, Int, String) -> Unit = { rg, tabIndex, paneId ->
+    val showRemoteChipMenu: (RemoteTabGroup, RemoteNestedGroup?, Int, String) -> Unit = { rg, nest, tabIndex, paneId ->
         if (!rg.canControl) {
             // View-only: every chip action mutates the host, so offer just the upgrade path
             // and the local disconnect instead of a wall of disabled items.
@@ -294,6 +310,12 @@ fun TabBar(
                 ContextMenuController.MenuItem(id = "remote_request_control", label = "Request Control", enabled = true, action = { rg.onRequestControl() }),
                 ContextMenuController.MenuSeparator(id = "remote_sep_view"),
                 ContextMenuController.MenuItem(id = "remote_disconnect", label = "Disconnect remote", enabled = true, action = { rg.onDisconnect() }),
+            ))
+        } else if (nest?.readOnly == true) {
+            // Upstream read-only (A→B→C): actions would die at the host — lean menu with the
+            // relayed control request (the host asks the origin on our behalf).
+            contextMenuController.showMenu(0f, 0f, listOf(
+                ContextMenuController.MenuItem(id = "remote_request_upstream", label = "Request Control", enabled = true, action = { nest.onRequestControl() }),
             ))
         } else {
         val ctl = rg.canControl
@@ -382,8 +404,8 @@ fun TabBar(
             onCancelRename = { editingPaneId = null },
             onClose = { onPaneClosed(group.tabIndex, pane.paneId) },
             onContextMenu = {
-                val rg = remoteByTabIndex[group.tabIndex]
-                if (rg != null) showRemoteChipMenu(rg, group.tabIndex, pane.paneId)
+                val ctx = remoteByTabIndex[group.tabIndex]
+                if (ctx != null) showRemoteChipMenu(ctx.first, ctx.second, group.tabIndex, pane.paneId)
                 else showChipMenu(group.tabIndex, pane.paneId)
             },
             modifier = chipModifier
@@ -509,6 +531,9 @@ fun TabBar(
                                             modifier = Modifier.size(12.dp)
                                         )
                                     }
+                                    Box(
+                                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = nest.onClose).padding(2.dp)
+                                    ) { Icon(Icons.Default.Close, contentDescription = "Ask host to disconnect this upstream", tint = Color(0xFF808080), modifier = Modifier.size(13.dp)) }
                                 }
                                 Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
                                     nest.groups.forEach { group ->
@@ -516,6 +541,17 @@ fun TabBar(
                                             group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
                                         }
                                     }
+                                }
+                                // Same footer as the host box; when read-only these route to
+                                // the request-control prompt instead of silently doing nothing.
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    barButton(Icons.Default.VerticalSplit, "Split Left/Right", nest.onSplitVertical)
+                                    barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom", nest.onSplitHorizontal)
+                                    barButton(Icons.Default.Add, "New tab", nest.onNewTab)
                                 }
                             }
                         }

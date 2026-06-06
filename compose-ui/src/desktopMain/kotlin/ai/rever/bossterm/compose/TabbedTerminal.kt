@@ -985,13 +985,34 @@ fun TabbedTerminal(
                 // sessions nest under a labeled subsection per upstream (read-only flagged).
                 val gs = mine.filter { session.upstreamFor(it.first.id) == null }.map { it.second }
                 val nested = mine
-                    .mapNotNull { (t, g) -> session.upstreamFor(t.id)?.let { up -> up to g } }
-                    .groupBy({ it.first.key }, { it })
+                    .mapNotNull { (t, g) -> session.upstreamFor(t.id)?.let { up -> Triple(up, t, g) } }
+                    .groupBy { it.first.key }
                     .map { (_, items) ->
+                        val up = items.first().first
+                        val nestTabs = items.map { it.second }
+                        // Footer actions target the active tab when it's in this nest, else its
+                        // first tab; the host relays them to the origin. When the host itself is
+                        // view-only on the origin, route to the relayed control request instead
+                        // of a silent no-op.
+                        fun anchor() = nestTabs.firstOrNull { it.id == tabController.activeTab?.id } ?: nestTabs.first()
+                        fun splitNest(horizontal: Boolean) {
+                            if (up.readOnly) { session.requestControlFor(anchor().id); return }
+                            val t = anchor()
+                            val paneId = splitStates[t.id]?.focusedPaneId ?: return
+                            session.splitPane(t.id, paneId, horizontal)
+                        }
                         ai.rever.bossterm.compose.tabs.RemoteNestedGroup(
-                            label = items.first().first.name ?: "remote",
-                            readOnly = items.first().first.readOnly,
-                            groups = items.map { it.second },
+                            label = up.name ?: "remote",
+                            readOnly = up.readOnly,
+                            groups = items.map { it.third },
+                            onSplitVertical = { splitNest(horizontal = false) },
+                            onSplitHorizontal = { splitNest(horizontal = true) },
+                            onNewTab = {
+                                if (up.readOnly) session.requestControlFor(anchor().id)
+                                else session.newTabIn(anchor().id)
+                            },
+                            onClose = { session.disconnectUpstream(nestTabs.first().id) },
+                            onRequestControl = { session.requestControlFor(anchor().id) },
                         )
                     }
                 if (gs.isEmpty() && nested.isEmpty()) null else ai.rever.bossterm.compose.tabs.RemoteTabGroup(
@@ -1001,9 +1022,20 @@ fun TabbedTerminal(
                     colorHex = session.accent.value,
                     groups = gs,
                     canControl = session.canControlState.value, // Compose state → menus update on grant
-                    onSplitVertical = { session.splitFocused(horizontal = false) },
-                    onSplitHorizontal = { session.splitFocused(horizontal = true) },
-                    onNewTab = { session.newRemoteTab() },
+                    // View-only: split/new-tab route to the control request (the host shows
+                    // its approval prompt) instead of silently doing nothing.
+                    onSplitVertical = {
+                        if (session.canControlState.value) session.splitFocused(horizontal = false)
+                        else session.requestControl()
+                    },
+                    onSplitHorizontal = {
+                        if (session.canControlState.value) session.splitFocused(horizontal = true)
+                        else session.requestControl()
+                    },
+                    onNewTab = {
+                        if (session.canControlState.value) session.newRemoteTab()
+                        else session.requestControl()
+                    },
                     onDisconnect = { rm?.disconnect(session) },
                     onChipSplit = { tabIndex, paneId, horizontal ->
                         tabController.tabs.getOrNull(tabIndex)?.let { session.splitPane(it.id, paneId, horizontal) }
@@ -1726,16 +1758,20 @@ fun TabbedTerminal(
                     }
                 }
                 // Upstream read-only (A→B→C): we may control the host, but the host itself is
-                // view-only on this tab's origin, so typing still can't land. Info only.
+                // view-only on this tab's origin, so typing still can't land. Clicking relays a
+                // control request through the host to the origin (its user sees the approval).
                 upstreamReadOnly?.let { up ->
                     Box(
                         modifier = Modifier
                             .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
                             .background(Color(0xE6252526))
                             .border(1.dp, Color(0xFF404040), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            .clickable {
+                                tabController.activeTab?.id?.let { id -> activeRemoteSession?.requestControlFor(id) }
+                            }
                     ) {
                         androidx.compose.material3.Text(
-                            "View only — host is view-only on ${up.name ?: "this session"}",
+                            "View only — click to request control of ${up.name ?: "the origin"}",
                             color = Color(0xFFB0B0B0),
                             fontSize = 11.sp,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)

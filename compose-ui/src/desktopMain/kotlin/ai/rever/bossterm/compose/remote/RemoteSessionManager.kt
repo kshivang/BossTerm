@@ -180,13 +180,32 @@ class RemoteSession internal constructor(
     fun start() = conn.start()
 
     /** Ask the host to grant write/control (when connected view-only). */
-    fun requestControl() = conn.send(ClientMessage.RequestControl)
+    fun requestControl() = conn.send(ClientMessage.RequestControl())
+
+    /**
+     * Control request targeted at [localTabId]'s tab: when that tab mirrors an upstream session
+     * on the host (A→B→C), the host relays the request to the origin instead.
+     */
+    fun requestControlFor(localTabId: String) =
+        conn.send(ClientMessage.RequestControl(remoteTabIdFor(localTabId)))
+
+    /** New tab in [localTabId]'s session — the host relays upstream for mirrored tabs. */
+    fun newTabIn(localTabId: String) {
+        if (!conn.canControl) return
+        conn.send(ClientMessage.NewTab(remoteTabIdFor(localTabId) ?: return))
+    }
+
+    /** Ask the host to disconnect from the upstream session that [localTabId] mirrors. */
+    fun disconnectUpstream(localTabId: String) {
+        if (!conn.canControl) return
+        conn.send(ClientMessage.DisconnectUpstream(remoteTabIdFor(localTabId) ?: return))
+    }
 
     /** True if [tab] is one of this session's mirror tabs. */
     fun containsTab(tab: TerminalTab): Boolean = localTabByRemote.values.any { it === tab }
 
     /** Open a new tab in the remote session (mirrors back as another tab). Control only. */
-    fun newRemoteTab() = conn.send(ClientMessage.NewTab)
+    fun newRemoteTab() = conn.send(ClientMessage.NewTab())
 
     /**
      * Mirror a local close of a remote chip back to the host (control only): close the whole

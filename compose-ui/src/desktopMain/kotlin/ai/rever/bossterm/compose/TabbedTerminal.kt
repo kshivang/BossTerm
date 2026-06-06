@@ -1188,6 +1188,21 @@ fun TabbedTerminal(
                 }
             }
 
+            // For a mirrored remote tab, the pane-body (shell) right-click menu's structural
+            // actions must target the HOST — the local split tree is rebuilt from the host's
+            // Layout, so a local split/close would be wiped on the next reconcile. This mirrors
+            // the browser viewer's pane menu. Normal tabs keep the local handlers.
+            val remoteForActive = state?.remoteSessions?.sessionForTab(activeTab)
+            val paneSplitVertical: () -> Unit =
+                if (remoteForActive != null) { { remoteForActive.splitPane(activeTab.id, splitState.focusedPaneId, horizontal = false) } }
+                else onSplitVertical
+            val paneSplitHorizontal: () -> Unit =
+                if (remoteForActive != null) { { remoteForActive.splitPane(activeTab.id, splitState.focusedPaneId, horizontal = true) } }
+                else onSplitHorizontal
+            val paneClose: () -> Unit =
+                if (remoteForActive != null) { { remoteForActive.closeFromChip(activeTab.id, splitState.focusedPaneId) } }
+                else onClosePane
+
             val onNavigatePane: (NavigationDirection) -> Unit = { direction ->
                 splitState.navigateFocus(direction)
             }
@@ -1227,13 +1242,14 @@ fun TabbedTerminal(
                 onNewWindow = onNewWindow,
                 onShowSettings = onShowSettings,
                 onShowWelcomeWizard = onShowWelcomeWizard,
-                onSplitHorizontal = onSplitHorizontal,
-                onSplitVertical = onSplitVertical,
-                onClosePane = onClosePane,
+                onSplitHorizontal = paneSplitHorizontal,
+                onSplitVertical = paneSplitVertical,
+                onClosePane = paneClose,
                 onNavigatePane = onNavigatePane,
                 onNavigateNextPane = { splitState.navigateToNextPane() },
                 onNavigatePreviousPane = { splitState.navigateToPreviousPane() },
-                onMoveToNewTab = if (!splitState.isSinglePane) {
+                // A remote mirror pane can't be moved into a local tab (it has no local PTY).
+                onMoveToNewTab = if (!splitState.isSinglePane && remoteForActive == null) {
                     {
                         // Extract the session from the split and move it to a new tab
                         val extractedSession = splitState.extractFocusedPaneSession()
@@ -1289,6 +1305,29 @@ fun TabbedTerminal(
                 customContextMenuItemsProvider = {
                     val userItems = contextMenuItemsProvider?.invoke() ?: contextMenuItems
                     var items = userItems
+
+                    if (remoteForActive != null) {
+                        // Remote (mirrored) pane: show the viewer's pane menu — a host-routed AI
+                        // Assistant submenu (runs the host's configured command, honoring its
+                        // YOLO/auto-mode), launched in the focused pane. Copy/Paste/Find/Split/Close
+                        // come from the base menu; local-host items (MCP attach, Share, VCS, shell
+                        // customization) don't apply to a mirror, so they're omitted.
+                        items = items + ContextMenuSubmenu(
+                            id = "remote_ai_assistants",
+                            label = "AI Assistant",
+                            items = listOf(
+                                "claude-code" to "Claude Code",
+                                "codex" to "Codex",
+                                "gemini-cli" to "Gemini CLI",
+                                "opencode" to "OpenCode",
+                            ).map { (aid, label) ->
+                                ContextMenuItem(
+                                    id = "remote_ai_$aid", label = label,
+                                    action = { remoteForActive.launchAI(activeTab.id, splitState.focusedPaneId, aid) }
+                                )
+                            }
+                        )
+                    } else {
 
                     // Add AI assistant menu items
                     if (settings.aiAssistantsEnabled) {
@@ -1399,6 +1438,7 @@ fun TabbedTerminal(
                         }
                     )
                     items = items + shellItems
+                    } // end non-remote (local host) menu items
 
                     items
                 },

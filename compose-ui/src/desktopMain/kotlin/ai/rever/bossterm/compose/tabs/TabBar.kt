@@ -470,40 +470,6 @@ fun TabBar(
                                         group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
                                     }
                                 }
-                                // Tabs the host itself mirrors from OTHER sessions: a labeled,
-                                // slightly indented subsection per upstream (eye = the host is
-                                // view-only on it, so input can't flow through).
-                                rg.nested.forEach { nest ->
-                                    Column(
-                                        modifier = Modifier.fillMaxWidth().padding(start = 6.dp),
-                                        verticalArrangement = Arrangement.spacedBy(TabChipGap)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            Icon(Icons.Default.Cloud, contentDescription = null, tint = Color(0xFF808080), modifier = Modifier.size(11.dp))
-                                            Text(
-                                                nest.label, color = Color(0xFF909090), fontSize = 10.sp,
-                                                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
-                                            )
-                                            if (nest.readOnly) {
-                                                Icon(
-                                                    Icons.Default.Visibility,
-                                                    contentDescription = "Read-only via this host",
-                                                    tint = Color(0xFF808080),
-                                                    modifier = Modifier.size(11.dp)
-                                                )
-                                            }
-                                        }
-                                        nest.groups.forEach { group ->
-                                            Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
-                                                group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
-                                            }
-                                        }
-                                    }
-                                }
                             }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -513,6 +479,44 @@ fun TabBar(
                                 barButton(Icons.Default.VerticalSplit, "Split Left/Right", rg.onSplitVertical)
                                 barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom", rg.onSplitHorizontal)
                                 barButton(Icons.Default.Add, "New tab", rg.onNewTab)
+                            }
+                        }
+                        // Tabs the host itself mirrors from OTHER sessions: flattened — each
+                        // upstream gets its own sibling box (same accent ties it to the host's
+                        // box above; the eye = the host is view-only on it, so input can't
+                        // flow through). No footer — structural actions belong to the origin.
+                        rg.nested.forEach { nest ->
+                            Column(
+                                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                                    .border(1.dp, groupAccent, RoundedCornerShape(8.dp)).padding(4.dp),
+                                verticalArrangement = Arrangement.spacedBy(TabChipGap)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(Icons.Default.Cloud, contentDescription = null, tint = groupAccent, modifier = Modifier.size(13.dp))
+                                    Text(
+                                        "${nest.label} · via ${rg.header}", color = Color(0xFFB0B0B0), fontSize = 11.sp,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                                    )
+                                    if (nest.readOnly) {
+                                        Icon(
+                                            Icons.Default.Visibility,
+                                            contentDescription = "Read-only via this host",
+                                            tint = Color(0xFF808080),
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                    }
+                                }
+                                Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
+                                    nest.groups.forEach { group ->
+                                        Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                                            group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

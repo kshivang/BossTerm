@@ -68,6 +68,18 @@
   // ☰ toggles the left tab drawer (phone); tapping a tab closes it (see selectPane).
   menubtnEl.onclick = function () { sidebarEl.classList.toggle("open"); };
 
+  // Install banner: shown until dismissed (persists across visits).
+  (function () {
+    var banner = document.getElementById("installbanner");
+    var dismissed = null;
+    try { dismissed = localStorage.getItem("bossterm-install-banner"); } catch (e) {}
+    if (dismissed !== "dismissed") banner.style.display = "flex";
+    document.getElementById("installbanner-close").onclick = function () {
+      banner.style.display = "none";
+      try { localStorage.setItem("bossterm-install-banner", "dismissed"); } catch (e) {}
+    };
+  })();
+
   // Keep the fixed key bar just above the soft keyboard (and reserve space for it).
   function layoutForKeyboard() {
     var vv = window.visualViewport;

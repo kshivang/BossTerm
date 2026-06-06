@@ -28,10 +28,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.AlertDialog
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowRight
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -402,8 +402,7 @@ private fun RemoteAccessSetupSection(
             dismissButton = {
                 TextButton(onClick = { pendingMode = null }) { Text("Cancel", color = TextSecondary) }
             },
-            backgroundColor = SurfaceColor,
-            contentColor = TextPrimary,
+            containerColor = SurfaceColor,
         )
     }
     Column(Modifier.fillMaxWidth()) {

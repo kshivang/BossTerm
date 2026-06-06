@@ -366,18 +366,26 @@ object SessionShareManager {
      */
     private suspend fun establishCloudflareVerified(port: Int, op: Int): String? {
         var refreshes = 0
+        // Already runs on Dispatchers.IO (manager scope / caller's withContext), so the
+        // blocking awaitUrl/awaitReady don't need their own withContext.
         while (isCurrentRemoteOp(op)) {
             val tunnel = CloudflaredExposer.start(port) ?: return null
-            val url = withContext(Dispatchers.IO) { tunnel.awaitUrl() }
+            val url = tunnel.awaitUrl()
             var ready = false
             if (url != null && isCurrentRemoteOp(op)) {
                 _remoteStateFlow.value = RemoteState(RemoteStatus.Verifying, "cloudflare")
-                ready = withContext(Dispatchers.IO) { tunnel.awaitReady() }
+                ready = tunnel.awaitReady()
             }
             if (ready && isCurrentRemoteOp(op)) {
                 runCatching { remoteProcess?.destroyForcibly() } // replace any prior tunnel
                 remoteProcess = tunnel.process
-                return url
+                // Re-check after adopting: a teardown/newer op could have slipped in between
+                // the guard above and this assignment (and walked past our not-yet-set tunnel).
+                // If so, reclaim our tunnel rather than leak it — the winner owns remoteProcess.
+                if (isCurrentRemoteOp(op)) return url
+                tunnel.destroy()
+                if (remoteProcess === tunnel.process) remoteProcess = null
+                return null
             }
             tunnel.destroy() // failed / superseded — never leak this tunnel
             if (!isCurrentRemoteOp(op) || refreshes >= MAX_REFRESHES) return null

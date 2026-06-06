@@ -13,7 +13,11 @@
                  font-family: -apple-system, Menlo, monospace; overflow: hidden; }
     body { display: flex; flex-direction: column; }
     #bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; height: 30px; flex: 0 0 auto;
-           box-sizing: border-box; background: #2b2b2b; border-bottom: 1px solid #404040; font-size: 12px; }
+           box-sizing: border-box; background: #2b2b2b; border-bottom: 1px solid #404040; font-size: 12px;
+           /* never clip on narrow screens — the whole bar scrolls horizontally */
+           overflow-x: auto; overflow-y: hidden; white-space: nowrap; scrollbar-width: none;
+           -webkit-overflow-scrolling: touch; }
+    #bar::-webkit-scrollbar { display: none; }
     #status { width: 8px; height: 8px; border-radius: 50%; background: #888; flex: 0 0 auto; }
     #status.live { background: #4caf50; } #status.down { background: #f44336; }
     #tabbar { display: flex; gap: 12px; overflow-x: auto; flex: 1 1 auto; align-items: center; }

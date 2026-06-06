@@ -524,7 +524,12 @@ private fun TabItem(
         }
 
         Row(
-            modifier = Modifier.fillMaxSize(),
+            // Multi-line (left bar) chips are wrap-height inside a scroll column, where the
+            // accent stripe's fillMaxHeight() would resolve against an unbounded constraint and
+            // collapse to zero (invisible on unselected tabs). Bound the row to its intrinsic
+            // height so the stripe spans the chip — like the viewer's always-on left border.
+            modifier = if (multiLine) Modifier.fillMaxWidth().heightIn(min = 36.dp).height(IntrinsicSize.Min)
+                       else Modifier.fillMaxSize(),
             verticalAlignment = if (multiLine) Alignment.Top else Alignment.CenterVertically
         ) {
             // Leading accent stripe (manual color or auto-by-directory)

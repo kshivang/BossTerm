@@ -94,6 +94,16 @@ class SplitViewState(
     }
 
     /**
+     * Replace the entire split tree. Used by the remote-session mirror to reconstruct (and
+     * re-sync) a host tab's split layout from the wire `Layout`. [focused] should be a pane id
+     * within [root]; if not present, focus falls back to the first pane.
+     */
+    fun setTree(root: SplitNode, focused: String) {
+        rootNode = root
+        focusedPaneId = if (root.findPane(focused) != null) focused else (root.getAllPanes().firstOrNull()?.id ?: focused)
+    }
+
+    /**
      * Split the focused pane in the given orientation.
      * Returns the ID of the new pane, or null if split failed.
      *

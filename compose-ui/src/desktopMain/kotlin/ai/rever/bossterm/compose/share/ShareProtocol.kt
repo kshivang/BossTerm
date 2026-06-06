@@ -28,6 +28,10 @@ object ShareProtocol {
 
     fun encodeServer(msg: ServerMessage): String = json.encodeToString(ServerMessage.serializer(), msg)
     fun decodeClient(text: String): ClientMessage = json.decodeFromString(ClientMessage.serializer(), text)
+
+    // Client (native viewer) side — symmetric to the host helpers above.
+    fun encodeClient(msg: ClientMessage): String = json.encodeToString(ClientMessage.serializer(), msg)
+    fun decodeServer(text: String): ServerMessage = json.decodeFromString(ServerMessage.serializer(), text)
 }
 
 /** Host → viewer messages. */

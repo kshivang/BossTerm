@@ -786,6 +786,8 @@ fun TabbedTerminal(
     var mcpAttaching by remember { mutableStateOf(false) }
     // Session sharing (issue #276): dialog state + live set of shared tab ids.
     var shareDialog by remember { mutableStateOf<ai.rever.bossterm.compose.share.SessionShareManager.ShareInfo?>(null) }
+    // "Add remote": connect to another BossTerm's shared session (native client).
+    var showAddRemote by remember { mutableStateOf(false) }
     // Bumped every time the share window is opened/reopened; ShareWindow brings its OS
     // window to the front when this changes, so clicking the share button while a share
     // window is already open raises that window instead of leaving it behind.
@@ -903,6 +905,7 @@ fun TabbedTerminal(
             // wins; otherwise, when color-by-directory is on, derive a stable accent
             // from the session's cwd. Reads MutableState so the bar recomposes live.
             fun colorHexFor(session: TerminalSession): String? {
+                if (session.isRemote) return "0xFF4FC3F7" // cyan accent marks mirrored remote tabs
                 session.tabColor.value?.let { return it }
                 if (settings.tabColorByDirectory) {
                     val cwd = session.workingDirectory.value
@@ -1029,6 +1032,7 @@ fun TabbedTerminal(
                 onSplitVertical = { splitActiveTab(SplitOrientation.VERTICAL) },
                 onSplitHorizontal = { splitActiveTab(SplitOrientation.HORIZONTAL) },
                 onSettings = onShowSettings,
+                onAddRemote = { showAddRemote = true },
                 orientation = if (tabBarOnLeft) ai.rever.bossterm.compose.tabs.TabBarOrientation.LEFT
                               else ai.rever.bossterm.compose.tabs.TabBarOrientation.TOP,
                 verticalWidth = settings.tabBarVerticalWidth.dp
@@ -1521,6 +1525,19 @@ fun TabbedTerminal(
             onTailscaleModeChange = { SettingsManager.instance.updateSetting { copy(shareTailscaleMode = it) } },
             onRefreshLink = { ai.rever.bossterm.compose.share.SessionShareManager.refreshRemoteLink() },
         )
+    }
+
+    // "Add remote": connect to another BossTerm's shared session and mirror its tabs here.
+    // Requires an external TabbedTerminalState (it owns the RemoteSessionManager + tab list).
+    if (showAddRemote) {
+        if (state != null) {
+            ai.rever.bossterm.compose.remote.AddRemoteDialog(
+                manager = state.remoteSessions,
+                onDismiss = { showAddRemote = false },
+            )
+        } else {
+            showAddRemote = false
+        }
     }
 
     // AI Assistant Installation Wizard (command interception, context menu, and programmatic API)

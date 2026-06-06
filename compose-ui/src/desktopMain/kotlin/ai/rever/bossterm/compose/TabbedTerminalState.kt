@@ -95,6 +95,15 @@ class TabbedTerminalState {
      */
     internal val splitStates: SnapshotStateMap<String, SplitViewState> = mutableStateMapOf()
 
+    /**
+     * Connections to remote BossTerm shared sessions whose tabs are mirrored into this
+     * window's tab list (the native client of the share protocol). Created lazily on first
+     * "Add remote"; torn down in [dispose].
+     */
+    val remoteSessions: ai.rever.bossterm.compose.remote.RemoteSessionManager by lazy {
+        ai.rever.bossterm.compose.remote.RemoteSessionManager(this)
+    }
+
     // Flow infrastructure for reactive state bridges (T7)
     private var flowScope: CoroutineScope? = null
     private val _tabsFlow = MutableStateFlow<List<TerminalTabInfo>>(emptyList())
@@ -198,6 +207,8 @@ class TabbedTerminalState {
         flowScope = null
         _tabsFlow.value = emptyList()
         _activeTabIndexFlow.value = 0
+        // Tear down any remote-session connections (closes sockets + mirror tabs).
+        runCatching { remoteSessions.disconnectAll() }
         // Dispose all split states
         splitStates.values.forEach { it.dispose() }
         splitStates.clear()

@@ -845,6 +845,9 @@ fun ProperTerminal(
       modifier = Modifier
         .fillMaxSize()
         .onGloballyPositioned { coordinates ->
+          // Remote mirror tabs are sized by the host (PaneResize); don't auto-fit them to the
+          // local canvas — that would fight the host's grid.
+          if (tab.isRemote) return@onGloballyPositioned
           // Detect window size changes and resize terminal accordingly
           // Note: This fires frequently, but we validate dimensions carefully to prevent crashes
           // Account for Canvas padding (4dp start, 4dp top) - on desktop 1dp ≈ 1px
@@ -1678,8 +1681,9 @@ fun ProperTerminal(
           isFocused = focusState.isFocused
         }
     ) {
-      // Show loading/error screen before connection is established
-      if (connectionState !is ConnectionState.Connected) {
+      // Show loading/error screen before connection is established. Remote mirror tabs have
+      // no local PTY connection — they render directly from the streamed buffer.
+      if (connectionState !is ConnectionState.Connected && !tab.isRemote) {
         PreConnectScreen(
           state = connectionState,
           onRetry = {

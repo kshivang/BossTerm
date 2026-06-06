@@ -707,8 +707,21 @@
         var wbox = document.createElement("div");
         wbox.style.cssText = "border:1px solid #555;border-radius:8px;padding:4px;display:flex;flex-direction:column;gap:4px;margin-top:6px;";
         var whd = document.createElement("div");
-        whd.style.cssText = "padding:2px;font-size:11px;color:#b0b0b0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-        whd.textContent = "🗔 " + (w.name || "Window");
+        whd.style.cssText = "display:flex;align-items:center;gap:4px;padding:2px;font-size:11px;color:#b0b0b0;";
+        var wlbl = document.createElement("span");
+        wlbl.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+        wlbl.textContent = "🗔 " + (w.name || "Window");
+        whd.appendChild(wlbl);
+        var wx = document.createElement("span");
+        wx.textContent = "×"; wx.title = "Close this window on the host";
+        wx.style.cssText = "cursor:pointer;color:#808080;padding:0 2px;";
+        wx.onclick = function (ev) {
+          ev.stopPropagation();
+          if (viewOnlyGate()) return;
+          if (window.confirm("Close " + (w.name || "this window") + " on the host? All its tabs will close."))
+            sendMsg({ t: "closeWindow", windowId: wk });
+        };
+        whd.appendChild(wx);
         wbox.appendChild(whd);
         renderTabSet(wbox, w.tabs, true);
         sidebarEl.appendChild(wbox);

@@ -986,7 +986,23 @@ fun TabbedTerminal(
                 val mine = tabGroupsWithTab.filter { rm?.sessionForTab(it.first) === session }
                 // The host's own tabs render directly; tabs the host itself mirrors from OTHER
                 // sessions nest under a labeled subsection per upstream (read-only flagged).
-                val gs = mine.filter { session.upstreamFor(it.first.id) == null }.map { it.second }
+                val gsWithTab = mine.filter { session.upstreamFor(it.first.id) == null }
+                val gs = gsWithTab.map { it.second }
+                // A host sharing ALL its windows stamps each tab with its window — section the
+                // group's own tabs per window (sub-title rows), like the web viewer's boxes.
+                // Only when EVERY own tab is stamped (mixed = an old/partial host → stay flat).
+                val windowSections = run {
+                    val byWin = gsWithTab.mapNotNull { (t, g) ->
+                        session.windowFor(t.id)?.let { w -> Triple(w, t, g) }
+                    }
+                    if (byWin.size != gsWithTab.size || byWin.isEmpty()) emptyList()
+                    else byWin.groupBy { it.first.key }.map { (_, items) ->
+                        ai.rever.bossterm.compose.tabs.RemoteWindowSection(
+                            label = items.first().first.name ?: "Window",
+                            groups = items.map { it.third },
+                        )
+                    }
+                }
                 val nested = mine
                     .mapNotNull { (t, g) -> session.upstreamFor(t.id)?.let { up -> Triple(up, t, g) } }
                     .groupBy { it.first.key }
@@ -1075,6 +1091,7 @@ fun TabbedTerminal(
                     onCopyLink = { tabBarClipboard.setText(androidx.compose.ui.text.AnnotatedString(session.link)) },
                     onRequestControl = { session.requestControl() },
                     nested = nested,
+                    windowSections = windowSections,
                 )
             }
             // In summary mode the active tab's single chip carries the tab id; match it

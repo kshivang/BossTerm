@@ -147,7 +147,16 @@ data class RemoteTabGroup(
      * means the host is view-only on that upstream — input can't flow through it.
      */
     val nested: List<RemoteNestedGroup> = emptyList(),
+    /**
+     * For a host sharing ALL its windows: the host's own tabs grouped per host window,
+     * rendered as labeled sub-sections (like the web viewer's window boxes). Empty =
+     * single-window host, [groups] renders flat. The sections' groups union == [groups].
+     */
+    val windowSections: List<RemoteWindowSection> = emptyList(),
 )
+
+/** One host-window sub-section inside a remote group box (see [RemoteTabGroup.windowSections]). */
+data class RemoteWindowSection(val label: String, val groups: List<TabBarGroup>)
 
 /**
  * One upstream session's tabs inside a remote group box (see [RemoteTabGroup.nested]).
@@ -507,10 +516,38 @@ fun TabBar(
                             }
                             // Match the local bar: split panes of one tab hug together
                             // (TabChipGap), separate tabs are spaced further apart (TabGroupGap).
+                            // A host sharing ALL its windows sections its own tabs per window
+                            // (dim sub-title + that window's clusters), like the web viewer.
                             Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
-                                rg.groups.forEach { group ->
-                                    Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
-                                        group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                if (rg.windowSections.isEmpty()) {
+                                    rg.groups.forEach { group ->
+                                        Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                                            group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                        }
+                                    }
+                                } else {
+                                    rg.windowSections.forEach { sec ->
+                                        Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth().padding(start = 2.dp, top = 2.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Text(
+                                                    sec.label, color = Color(0xFF8A8A8A), fontSize = 10.sp,
+                                                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                                                )
+                                                // Hairline ties the sub-title to its section.
+                                                Box(Modifier.weight(1f).height(1.dp).background(Color(0xFF3A3A3A)))
+                                            }
+                                            Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
+                                                sec.groups.forEach { group ->
+                                                    Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                                                        group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }

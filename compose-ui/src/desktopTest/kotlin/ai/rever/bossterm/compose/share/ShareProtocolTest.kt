@@ -63,6 +63,10 @@ class ShareProtocolTest {
         assertIs<ClientMessage.Focus>(focus)
 
         assertIs<ClientMessage.RequestControl>(ShareProtocol.decodeClient("""{"t":"requestControl"}"""))
+
+        val cw = ShareProtocol.decodeClient("""{"t":"closeWindow","windowId":"w1"}""")
+        assertIs<ClientMessage.CloseWindow>(cw)
+        assertEquals("w1", cw.windowId)
     }
 
     @Test

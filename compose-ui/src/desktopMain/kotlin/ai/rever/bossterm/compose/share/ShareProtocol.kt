@@ -265,6 +265,15 @@ sealed class ClientMessage {
     data class DisconnectUpstream(val tabId: String) : ClientMessage()
 
     /**
+     * Close a whole host window — every tab of the window keyed [windowId]
+     * ([TabNode.windowId], stamped by ALL-scope shares). The ✕ on a viewer's window
+     * box. Controller role only; old hosts ignore it.
+     */
+    @Serializable
+    @SerialName("closeWindow")
+    data class CloseWindow(val windowId: String) : ClientMessage()
+
+    /**
      * Split [paneId] in [tabId] into left/right panes (vertical divider) — the host's
      * "Split Left/Right". Controller role only.
      */

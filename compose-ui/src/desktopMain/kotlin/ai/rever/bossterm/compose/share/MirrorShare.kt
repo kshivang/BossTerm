@@ -223,6 +223,14 @@ class MirrorShare(
                 upstreamSession(msg.tabId)?.let { up ->
                     stateFor(msg.tabId)?.remoteSessions?.disconnect(up)
                 }
+            is ClientMessage.CloseWindow ->
+                // ALL scope only — windowIds are stamped by our own Layout, so the viewer can
+                // only name windows this share covers. Closing every tab closes the window
+                // (the last tab's close fires the window's onLastTabClosed).
+                if (scope == ShareScope.ALL) {
+                    McpTerminalRegistry.allStates().firstOrNull { it.windowTag == msg.windowId }
+                        ?.let { st -> st.tabs.map { it.id }.forEach { id -> st.closeTab(id) } }
+                }
             is ClientMessage.LaunchAI -> {
                 val upstream = upstreamSession(msg.tabId)
                 if (upstream != null) {

@@ -78,7 +78,7 @@
   }
   // The first pane of [node]'s tree (tree order) — the client's default focus / key-bar
   // target. Host focus is intentionally NOT reflected on the client; the client picks its own.
-  function firstFocusedPane(node) {
+  function defaultPaneId(node) {
     var first = null;
     (function walk(n) {
       if (!n || first !== null) return;
@@ -579,7 +579,7 @@
   function activePaneId() {
     var tab = activeTabNode(); if (!tab || !tab.tree) return null;
     if (currentPaneId) { var ids = {}; collectPaneIds(tab.tree, ids); if (ids[currentPaneId]) return currentPaneId; }
-    return firstFocusedPane(tab.tree);
+    return defaultPaneId(tab.tree);
   }
   // kind: "v" = Split Left/Right (vertical divider), "h" = Split Top/Bottom (horizontal divider).
   function splitButton(kind) {
@@ -731,18 +731,26 @@
       if (now - lastSent > 60) { lastSent = now; sendMsg({ t: "resizeSplit", tabId: activeTabId, splitId: node.id, ratio: ratio }); }
       e.preventDefault();
     }
-    function onUp(e) {
+    // End the drag for any reason. pointercancel (gesture interrupted / scroll takeover on
+    // touch) MUST be handled too, or splitDragging would stick true and onLayout would stop
+    // re-rendering for the rest of the session (frozen viewer) and the window listeners leak.
+    function endDrag(commit, e) {
+      if (!splitDragging) return;
       splitDragging = false;
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      sendMsg({ t: "resizeSplit", tabId: activeTabId, splitId: node.id, ratio: ratioAt(e) }); // final
-      renderStage(); // apply whatever layout arrived while we suppressed re-renders
+      window.removeEventListener("pointercancel", onCancel);
+      if (commit) sendMsg({ t: "resizeSplit", tabId: activeTabId, splitId: node.id, ratio: ratioAt(e) }); // final
+      renderStage(); // settle to the host layout + resume normal re-renders
     }
+    function onUp(e) { endDrag(true, e); }
+    function onCancel() { endDrag(false, null); } // interrupted — keep the last-sent ratio
     div.addEventListener("pointerdown", function (e) {
       splitDragging = true;
       e.preventDefault(); e.stopPropagation();
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onCancel);
     });
   }
 
@@ -753,7 +761,7 @@
     if (!tab) return;
     // Keep the key-bar target on a pane that's actually visible in this tab.
     var ids = {}; collectPaneIds(tab.tree, ids);
-    if (!currentPaneId || !ids[currentPaneId]) currentPaneId = firstFocusedPane(tab.tree);
+    if (!currentPaneId || !ids[currentPaneId]) currentPaneId = defaultPaneId(tab.tree);
     var root = buildNode(tab.tree);
     if (tab.tree.t === "pane") {
       // single pane → natural width, scrollable in #stage (don't stretch/clip)

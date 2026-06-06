@@ -199,7 +199,14 @@ class MirrorShare(
                 val sy = gc?.defaultTransform?.scaleY?.takeIf { it > 0 } ?: 1.0
                 var newW = (win.width + (cols - cur.columns) * cw / sx).toInt()
                 var newH = (win.height + (rows - cur.rows) * ch / sy).toInt()
-                gc?.bounds?.let { b -> newW = newW.coerceIn(480, b.width); newH = newH.coerceIn(320, b.height) }
+                // Clamp to the screen, accounting for the window's position (setSize keeps the
+                // top-left), so growing a window that isn't at the origin can't run off-screen.
+                gc?.bounds?.let { b ->
+                    val maxW = (b.x + b.width - win.x).coerceAtLeast(480)
+                    val maxH = (b.y + b.height - win.y).coerceAtLeast(320)
+                    newW = newW.coerceIn(480, maxW)
+                    newH = newH.coerceIn(320, maxH)
+                }
                 if (newW != win.width || newH != win.height) {
                     win.setSize(newW, newH)
                     win.validate()

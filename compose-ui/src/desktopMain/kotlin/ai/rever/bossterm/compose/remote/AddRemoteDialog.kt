@@ -56,12 +56,20 @@ private val Danger = Color(0xFFE57373)
 @Composable
 fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
     var link by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
     val deviceName = remember {
         (System.getProperty("user.name")?.takeIf { it.isNotBlank() }?.let { "$it (BossTerm)" }) ?: "BossTerm"
     }
     fun connect() {
         val l = link.trim()
-        if (l.isNotBlank()) { manager.connect(l, deviceName); link = "" }
+        if (l.isBlank()) return
+        if (manager.connect(l, deviceName) == null) {
+            // connect() refuses our own share links — mirroring a session into itself loops.
+            error = "That's this BossTerm's own share link — a session can't mirror itself."
+        } else {
+            link = ""
+            error = null
+        }
     }
     Window(
         onCloseRequest = onDismiss,
@@ -93,9 +101,10 @@ fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
                     SettingsTextField(
                         label = "Share link",
                         value = link,
-                        onValueChange = { link = it },
+                        onValueChange = { link = it; error = null },
                         placeholder = "https://….trycloudflare.com/?t=…",
                     )
+                    error?.let { Text(it, color = Danger, fontSize = 11.sp) }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End

@@ -223,6 +223,12 @@ object SessionShareManager {
     /** Is [tabId] currently shared? */
     fun isSharing(tabId: String): Boolean = sharesByTab.containsKey(tabId)
 
+    /**
+     * Is [token] one of THIS instance's active share tokens (view or control)? Used to refuse
+     * adding our own share link as a "remote" session — mirroring a session into itself loops.
+     */
+    fun ownsToken(token: String): Boolean = sharesByToken.containsKey(token)
+
     /** The read-only share URL for an active share, or null if not shared / server down. */
     fun urlFor(tabId: String): String? {
         val token = sharesByTab[tabId]?.viewToken ?: return null

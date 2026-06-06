@@ -30,12 +30,29 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
     /** Active remote sessions — observed by the UI to list them + show status. */
     val sessions = mutableStateListOf<RemoteSession>()
 
-    fun connect(link: String, deviceName: String): RemoteSession {
+    /**
+     * Dial [link] and mirror its tabs here. Returns null (refusing to connect) when [link] is one
+     * of THIS instance's own share links — mirroring a session into itself would feed the mirror
+     * tabs back into the share in a loop.
+     */
+    fun connect(link: String, deviceName: String): RemoteSession? {
+        if (isOwnShareLink(link)) return null
         val session = RemoteSession(link, deviceName, state, clientId)
         sessions.add(session)
         session.start()
         return session
     }
+
+    /** True if [link]'s token belongs to a session this instance is hosting. */
+    fun isOwnShareLink(link: String): Boolean =
+        tokenOf(link)?.let { ai.rever.bossterm.compose.share.SessionShareManager.ownsToken(it) } == true
+
+    /** The `t=` token in a share [link], or null if absent/malformed. */
+    private fun tokenOf(link: String): String? = runCatching {
+        val raw = java.net.URI(link.trim()).rawQuery ?: return@runCatching null
+        raw.split("&").firstOrNull { it.startsWith("t=") }?.substringAfter("t=")
+            ?.let { java.net.URLDecoder.decode(it, "UTF-8") }?.takeIf { it.isNotBlank() }
+    }.getOrNull()
 
     fun disconnect(session: RemoteSession) {
         session.close()

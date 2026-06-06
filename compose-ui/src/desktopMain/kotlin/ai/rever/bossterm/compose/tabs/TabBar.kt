@@ -369,9 +369,13 @@ fun TabBar(
                                     modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = rg.onDisconnect).padding(2.dp)
                                 ) { Icon(Icons.Default.Close, contentDescription = "Disconnect remote", tint = Color(0xFF808080), modifier = Modifier.size(13.dp)) }
                             }
-                            rg.groups.forEach { group ->
-                                Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
-                                    group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                            // Match the local bar: split panes of one tab hug together
+                            // (TabChipGap), separate tabs are spaced further apart (TabGroupGap).
+                            Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
+                                rg.groups.forEach { group ->
+                                    Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                                        group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                    }
                                 }
                             }
                             Row(

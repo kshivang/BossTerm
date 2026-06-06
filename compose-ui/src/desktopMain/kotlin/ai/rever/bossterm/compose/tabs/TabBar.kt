@@ -187,6 +187,11 @@ data class RemoteNestedGroup(
     val onClose: () -> Unit = {},
     /** Relay a control request to the origin (host asks it on our behalf). */
     val onRequestControl: () -> Unit = {},
+    /**
+     * The ORIGIN shared all its windows: its tabs sectioned per origin window (sub-title +
+     * per-window actions), like [RemoteTabGroup.windowSections]. Empty = flat + one footer.
+     */
+    val windowSections: List<RemoteWindowSection> = emptyList(),
 )
 
 /** AI assistants offered in the remote chip menu — same set the browser viewer mirrors. */
@@ -628,23 +633,62 @@ fun TabBar(
                                         modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = nest.onClose).padding(2.dp)
                                     ) { Icon(Icons.Default.Close, contentDescription = "Ask host to disconnect this upstream", tint = Color(0xFF808080), modifier = Modifier.size(13.dp)) }
                                 }
+                                // The origin may share ALL its windows — section its tabs per
+                                // origin window (sub-title + targeted actions), like the host box.
                                 Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
-                                    nest.groups.forEach { group ->
-                                        Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
-                                            group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                    if (nest.windowSections.isEmpty()) {
+                                        nest.groups.forEach { group ->
+                                            Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                                                group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                            }
+                                        }
+                                    } else {
+                                        nest.windowSections.forEach { sec ->
+                                            Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth().padding(start = 2.dp, top = 2.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Text(
+                                                        sec.label, color = Color(0xFF8A8A8A), fontSize = 10.sp,
+                                                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    Box(Modifier.weight(1f).height(1.dp).background(Color(0xFF3A3A3A)))
+                                                }
+                                                Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
+                                                    sec.groups.forEach { group ->
+                                                        Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                                                            group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                                        }
+                                                    }
+                                                }
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    barButton(Icons.Default.VerticalSplit, "Split Left/Right in ${sec.label}", sec.onSplitVertical)
+                                                    barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom in ${sec.label}", sec.onSplitHorizontal)
+                                                    barButton(Icons.Default.Add, "New tab in ${sec.label}", sec.onNewTab)
+                                                }
+                                            }
                                         }
                                     }
                                 }
                                 // Same footer as the host box; when read-only these route to
                                 // the request-control prompt instead of silently doing nothing.
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    barButton(Icons.Default.VerticalSplit, "Split Left/Right", nest.onSplitVertical)
-                                    barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom", nest.onSplitHorizontal)
-                                    barButton(Icons.Default.Add, "New tab", nest.onNewTab)
+                                // Hidden when sectioned — the sections carry targeted rows.
+                                if (nest.windowSections.isEmpty()) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        barButton(Icons.Default.VerticalSplit, "Split Left/Right", nest.onSplitVertical)
+                                        barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom", nest.onSplitHorizontal)
+                                        barButton(Icons.Default.Add, "New tab", nest.onNewTab)
+                                    }
                                 }
                             }
                         }

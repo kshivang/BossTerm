@@ -170,6 +170,14 @@ data class TabNode(
     val windowId: String? = null,
     /** When [windowId] != null: the display label for that window (e.g. "Window 2"). */
     val windowName: String? = null,
+    /**
+     * When [origin] != null and the UPSTREAM session shared all ITS windows: the upstream's
+     * window key for this tab — so viewers can section a "via host" group per origin window
+     * (distinct from [windowId], which is the relaying host's OWN window).
+     */
+    val originWindowId: String? = null,
+    /** When [originWindowId] != null: the upstream window's display label. */
+    val originWindowName: String? = null,
 )
 
 /** Recursive split-layout node: either a binary split or a leaf pane. */

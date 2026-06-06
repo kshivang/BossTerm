@@ -1043,6 +1043,36 @@ fun TabbedTerminal(
                             val paneId = splitStates[t.id]?.focusedPaneId ?: return
                             session.splitPane(t.id, paneId, horizontal)
                         }
+                        // The origin itself may share ALL its windows (forwarded by the host as
+                        // originWindowId) — section the nest per origin window, like the web
+                        // viewer. Only when every tab is stamped; mixed/old hosts stay flat.
+                        val nestWindowSections = run {
+                            val stamped = items.filter { it.first.window != null }
+                            if (stamped.size != items.size || stamped.isEmpty()) emptyList()
+                            else stamped.groupBy { it.first.window!!.key }.map { (_, secItems) ->
+                                val secTabs = secItems.map { it.second }
+                                fun secAnchor() = secTabs.firstOrNull { it.id == tabController.activeTab?.id } ?: secTabs.first()
+                                fun splitSec(horizontal: Boolean) {
+                                    if (up.readOnly) {
+                                        requestControlPrompt = { session.requestControlFor(secAnchor().id) }
+                                        return
+                                    }
+                                    val t = secAnchor()
+                                    val paneId = splitStates[t.id]?.focusedPaneId ?: return
+                                    session.splitPane(t.id, paneId, horizontal)
+                                }
+                                ai.rever.bossterm.compose.tabs.RemoteWindowSection(
+                                    label = secItems.first().first.window!!.name ?: "Window",
+                                    groups = secItems.map { it.third },
+                                    onSplitVertical = { splitSec(horizontal = false) },
+                                    onSplitHorizontal = { splitSec(horizontal = true) },
+                                    onNewTab = {
+                                        if (up.readOnly) requestControlPrompt = { session.requestControlFor(secAnchor().id) }
+                                        else session.newTabIn(secAnchor().id)
+                                    },
+                                )
+                            }
+                        }
                         ai.rever.bossterm.compose.tabs.RemoteNestedGroup(
                             label = up.name ?: "remote",
                             readOnly = up.readOnly,
@@ -1056,6 +1086,7 @@ fun TabbedTerminal(
                             },
                             onClose = { session.disconnectUpstream(nestTabs.first().id) },
                             onRequestControl = { session.requestControlFor(anchor().id) },
+                            windowSections = nestWindowSections,
                         )
                     }
                 if (gs.isEmpty() && nested.isEmpty()) null else ai.rever.bossterm.compose.tabs.RemoteTabGroup(

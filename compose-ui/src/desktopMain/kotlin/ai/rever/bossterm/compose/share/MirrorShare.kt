@@ -199,7 +199,9 @@ class MirrorShare(
                     ?: stateFor(msg.tabId)?.closeTab(msg.tabId)
             is ClientMessage.NewTab ->
                 // Background: a viewer creating a tab shouldn't switch the host user's active tab.
-                upstreamSession(msg.tabId)?.newRemoteTab()
+                // Relay TARGETED (newTabIn maps to the upstream tab id) so the new tab opens in
+                // the origin window the viewer pointed at, not the upstream's anchor window.
+                upstreamSession(msg.tabId)?.newTabIn(msg.tabId!!)
                     ?: stateFor(msg.tabId)?.createTab(activate = false)
             is ClientMessage.SplitVertical ->
                 upstreamSession(msg.tabId)?.splitPane(msg.tabId, msg.paneId, horizontal = false)
@@ -408,6 +410,9 @@ class MirrorShare(
                     it.customName.value ?: it.hostName.value
                         ?: runCatching { java.net.URI(it.link).host }.getOrNull() ?: it.link
                 }
+                // The upstream's own window for this tab (it shared ALL its windows) — forward
+                // it so OUR viewers can section the "via host" group per origin window.
+                val upstreamWindow = upstream?.windowFor(tab.id)
                 tabNodes.add(
                     TabNode(
                         id = tab.id, title = tab.title.value, active = tab.id == activeId, tree = tree,
@@ -424,6 +429,8 @@ class MirrorShare(
                         },
                         windowId = windowId,
                         windowName = windowName,
+                        originWindowId = upstreamWindow?.key,
+                        originWindowName = upstreamWindow?.name,
                     )
                 )
             }

@@ -673,22 +673,54 @@
           };
           hd.appendChild(x);
           box.appendChild(hd);
-          g.tabs.forEach(function (tab) { box.appendChild(tabCluster(tab)); });
-          // Always shown; view-only clicks route to the request-control dialog (viewOnlyGate).
-          var act = document.createElement("div");
-          act.className = "ltab-actions";
-          act.appendChild(groupSplitButton("v", g));
-          act.appendChild(groupSplitButton("h", g));
-          var nt = document.createElement("div");
-          nt.className = "newtab"; nt.textContent = "+ New tab";
-          nt.title = "New tab in " + (g.name || "remote");
-          nt.onclick = function () {
-            if (viewOnlyGate()) return;
-            if (g.readOnly) { requestUpstreamControl(anchorTab(g).id, g.name || "remote"); return; }
-            sendMsg({ t: "newTab", tabId: anchorTab(g).id });
-          };
-          act.appendChild(nt);
-          box.appendChild(act);
+          // Relayed action row (split/new-tab targeting [sg]'s tabs). Always shown;
+          // view-only clicks route to the request-control dialog (viewOnlyGate).
+          function upstreamActions(sg) {
+            var act = document.createElement("div");
+            act.className = "ltab-actions";
+            act.appendChild(groupSplitButton("v", sg));
+            act.appendChild(groupSplitButton("h", sg));
+            var nt = document.createElement("div");
+            nt.className = "newtab"; nt.textContent = "+ New tab";
+            nt.title = "New tab in " + (g.name || "remote");
+            nt.onclick = function () {
+              if (viewOnlyGate()) return;
+              if (g.readOnly) { requestUpstreamControl(anchorTab(sg).id, g.name || "remote"); return; }
+              sendMsg({ t: "newTab", tabId: anchorTab(sg).id });
+            };
+            act.appendChild(nt);
+            return act;
+          }
+          // The upstream itself may share ALL its windows — those tabs carry the ORIGIN's
+          // window identity; section them (dim sub-title + per-window actions), like the
+          // native client. Unstamped tabs render flat with one box-level action row.
+          var wsecs = {}, wsecOrder = [], wflat = [];
+          g.tabs.forEach(function (tab) {
+            if (tab.originWindowId) {
+              if (!wsecs[tab.originWindowId]) {
+                wsecs[tab.originWindowId] = { name: tab.originWindowName, tabs: [] };
+                wsecOrder.push(tab.originWindowId);
+              }
+              wsecs[tab.originWindowId].tabs.push(tab);
+            } else wflat.push(tab);
+          });
+          wflat.forEach(function (tab) { box.appendChild(tabCluster(tab)); });
+          if (wflat.length || !wsecOrder.length) box.appendChild(upstreamActions({ tabs: wflat.length ? wflat : g.tabs, readOnly: g.readOnly, name: g.name }));
+          wsecOrder.forEach(function (sk) {
+            var sec = wsecs[sk];
+            var sh = document.createElement("div");
+            sh.style.cssText = "display:flex;align-items:center;gap:4px;padding:2px 2px 0;font-size:10px;color:#8a8a8a;";
+            var sl = document.createElement("span");
+            sl.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+            sl.textContent = sec.name || "Window";
+            sh.appendChild(sl);
+            var hr = document.createElement("span");
+            hr.style.cssText = "flex:1;height:1px;background:#3a3a3a;";
+            sh.appendChild(hr);
+            box.appendChild(sh);
+            sec.tabs.forEach(function (tab) { box.appendChild(tabCluster(tab)); });
+            box.appendChild(upstreamActions({ tabs: sec.tabs, readOnly: g.readOnly, name: g.name }));
+          });
           container.appendChild(box);
         });
       }

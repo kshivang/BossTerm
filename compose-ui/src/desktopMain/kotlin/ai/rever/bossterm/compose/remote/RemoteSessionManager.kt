@@ -201,8 +201,16 @@ class RemoteSession internal constructor(
      * Upstream-origin info for a host tab that itself mirrors ANOTHER session (the host's
      * remote): [key] groups tabs of the same upstream, [name] labels the subsection, and
      * [readOnly] means the host can't type into it either — so neither can we through it.
+     * [window] is the ORIGIN's window for this tab when the upstream shared all its windows
+     * (forwarded by the host) — sections the nested box per origin window.
      */
-    data class UpstreamOrigin(val key: String, val name: String?, val readOnly: Boolean, val offline: Boolean = false)
+    data class UpstreamOrigin(
+        val key: String,
+        val name: String?,
+        val readOnly: Boolean,
+        val offline: Boolean = false,
+        val window: HostWindow? = null,
+    )
 
     // localTabId (container) → upstream-origin info; bumping [upstreamRev] re-renders the bar
     // when only this map changed (e.g. the host's upstream control was granted mid-session).
@@ -591,7 +599,10 @@ class RemoteSession internal constructor(
             // Track whether this host tab itself mirrors ANOTHER session (and our effective
             // writability through it) — the tab bar nests those under a labeled subsection.
             val upstream = tabNode.origin?.let {
-                UpstreamOrigin(it, tabNode.originName, tabNode.originReadOnly == true, tabNode.originOffline == true)
+                UpstreamOrigin(
+                    it, tabNode.originName, tabNode.originReadOnly == true, tabNode.originOffline == true,
+                    window = tabNode.originWindowId?.let { w -> HostWindow(w, tabNode.originWindowName) },
+                )
             }
             if (upstreamByTab[container.id] != upstream) {
                 if (upstream != null) upstreamByTab[container.id] = upstream else upstreamByTab.remove(container.id)

@@ -146,6 +146,16 @@ class ShareProtocolTest {
         assertEquals("w-abc", back.tabs[0].windowId)
         assertEquals("Window 2", back.tabs[0].windowName)
 
+        // A relaying host forwards the ORIGIN's window for tabs it mirrors (distinct fields —
+        // windowId stays the relayer's own window).
+        val mirrored = tab.copy(origin = "hash", originWindowId = "cw-1", originWindowName = "Window 1")
+        val mj = ShareProtocol.encodeServer(ServerMessage.Layout(listOf(mirrored), "t1"))
+        val mBack = ShareProtocol.decodeServer(mj)
+        assertIs<ServerMessage.Layout>(mBack)
+        assertEquals("cw-1", mBack.tabs[0].originWindowId)
+        assertEquals("Window 1", mBack.tabs[0].originWindowName)
+        assertEquals("w-abc", mBack.tabs[0].windowId)
+
         // TAB/WINDOW (and pre-ALL) payloads carry no window fields — they decode to null.
         val flat = """{"t":"layout","tabs":[{"id":"t1","title":"~","active":true,"tree":{"t":"pane","paneId":"p1","title":"z","cwd":null,"focused":true}}],"activeTabId":"t1"}"""
         val flatBack = ShareProtocol.json.decodeFromString(ServerMessage.serializer(), flat)

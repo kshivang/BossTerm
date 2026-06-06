@@ -294,4 +294,13 @@ sealed class ClientMessage {
     @Serializable
     @SerialName("resizeSplit")
     data class ResizeSplit(val tabId: String, val splitId: String, val ratio: Float) : ClientMessage()
+
+    /**
+     * Two-way sharing: the connecting client offers its OWN session's share [link] so the host
+     * mirrors the client's tabs back (the host dials [link] as a normal remote session — the
+     * client's own approval/key flow applies). Controller role only; old hosts ignore it.
+     */
+    @Serializable
+    @SerialName("offerShare")
+    data class OfferShare(val link: String) : ClientMessage()
 }

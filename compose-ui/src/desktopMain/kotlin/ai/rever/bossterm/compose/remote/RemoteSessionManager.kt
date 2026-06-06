@@ -1,17 +1,25 @@
 package ai.rever.bossterm.compose.remote
 
 import ai.rever.bossterm.compose.TabbedTerminalState
+import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.share.ClientMessage
 import ai.rever.bossterm.compose.share.PaneTreeNode
 import ai.rever.bossterm.compose.share.ServerMessage
+import ai.rever.bossterm.compose.share.SessionShareManager
 import ai.rever.bossterm.compose.share.ShareProtocol
+import ai.rever.bossterm.compose.share.ShareScope
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.splits.SplitViewState
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import ai.rever.bossterm.core.util.TermSize
 import ai.rever.bossterm.terminal.RequestOrigin
 import androidx.compose.runtime.mutableStateListOf
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.util.UUID
 
@@ -34,11 +42,17 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
     /**
      * Dial [link] and mirror its tabs here. Returns null (refusing to connect) when [link] is one
      * of THIS instance's own share links — mirroring a session into itself would feed the mirror
-     * tabs back into the share in a loop.
+     * tabs back into the share in a loop. Reconnecting to a share we're already mirroring (same
+     * token — e.g. a repeated two-way offer or a double-pasted link) returns the existing session.
+     * [shareBack] = two-way: once the host grants control, offer it this window's own share link
+     * so it mirrors our tabs too.
      */
-    fun connect(link: String, deviceName: String): RemoteSession? {
+    fun connect(link: String, deviceName: String, shareBack: Boolean = false): RemoteSession? {
         if (isOwnShareLink(link)) return null
-        val session = RemoteSession(link, deviceName, state, clientId)
+        tokenOf(link)?.let { token ->
+            sessions.firstOrNull { tokenOf(it.link) == token }?.let { return it }
+        }
+        val session = RemoteSession(link, deviceName, state, clientId, shareBack)
         sessions.add(session)
         session.start()
         return session
@@ -81,8 +95,12 @@ class RemoteSession internal constructor(
     val deviceName: String,
     private val state: TabbedTerminalState,
     clientId: String,
+    /** Two-way: once the host grants control, offer it this window's own share link. */
+    private val shareBack: Boolean = false,
 ) {
     private val log = LoggerFactory.getLogger(RemoteSession::class.java)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val offeredShareBack = java.util.concurrent.atomic.AtomicBoolean(false)
 
     // In-memory access key for this link (persistence across restarts is a follow-up).
     @Volatile private var key: String? = null
@@ -265,6 +283,7 @@ class RemoteSession internal constructor(
     }
 
     fun close() {
+        runCatching { scope.cancel() } // abandon a pending share-back offer
         conn.close()
         localTabByRemote.values.toList().forEach { removeMirrorTab(it) }
         localTabByRemote.clear()
@@ -289,8 +308,38 @@ class RemoteSession internal constructor(
                 val s = sessionByPane[msg.paneId] ?: return
                 if (msg.cols >= 2 && msg.rows >= 2) s.terminal.resize(TermSize(msg.cols, msg.rows), RequestOrigin.User)
             }
-            else -> {} // Theme/Presence/Control/Pending/Grant/Denied handled in the connection
+            is ServerMessage.Control ->
+                // Two-way sharing offers only matter once the host trusts us with control —
+                // it ignores OfferShare from view-only clients anyway.
+                if (msg.granted) maybeOfferShareBack()
+            else -> {} // Theme/Presence/Pending/Grant/Denied handled in the connection
         }
+    }
+
+    /**
+     * Two-way sharing: offer this window's own share link to the host (once per session) so it
+     * mirrors our tabs back. Reuses an active share of this window, else starts a WINDOW share
+     * (booting the share server/tunnel as needed — hence async).
+     */
+    private fun maybeOfferShareBack() {
+        if (!shareBack || !offeredShareBack.compareAndSet(false, true)) return
+        scope.launch {
+            runCatching {
+                val ownLink = ensureOwnShareLink() ?: return@launch
+                conn.send(ClientMessage.OfferShare(ownLink))
+            }.onFailure { log.warn("two-way share-back failed: {}", it.message) }
+        }
+    }
+
+    /** This window's own view link — an active share if present, else a fresh WINDOW share. */
+    private suspend fun ensureOwnShareLink(): String? {
+        state.tabs.firstOrNull { SessionShareManager.isSharing(it.id) }
+            ?.let { SessionShareManager.urlFor(it.id) }?.let { return it }
+        val tabId = state.activeTabId ?: state.tabs.firstOrNull()?.id ?: return null
+        if (!SettingsManager.instance.settings.value.sessionSharingEnabled) {
+            SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
+        }
+        return SessionShareManager.share(tabId, ShareScope.WINDOW)?.url
     }
 
     /**

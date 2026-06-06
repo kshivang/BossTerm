@@ -170,6 +170,14 @@ class MirrorShare(
             is ClientMessage.ResizeHost -> resizeHostWindow(msg.cols, msg.rows)
             is ClientMessage.ResizeSplit ->
                 McpTerminalRegistry.findState(tabId)?.splitStates?.get(msg.tabId)?.updateSplitRatio(msg.splitId, msg.ratio)
+            is ClientMessage.OfferShare -> {
+                // Two-way sharing: mirror the offering client's session back into this window.
+                // connect() dedupes a repeated offer (same token) and refuses our own links;
+                // origin tagging keeps either side's tabs from bouncing back.
+                val name = (System.getProperty("user.name")?.takeIf { it.isNotBlank() }
+                    ?.let { "$it (BossTerm)" }) ?: "BossTerm"
+                McpTerminalRegistry.findState(tabId)?.remoteSessions?.connect(msg.link, name)
+            }
             else -> {} // Hello / Focus / RequestControl: no-op (focus is viewer-side; control via token)
         }
     }

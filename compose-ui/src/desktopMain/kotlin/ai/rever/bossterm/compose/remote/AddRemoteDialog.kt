@@ -4,6 +4,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.components.SettingsSection
@@ -23,6 +24,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -57,13 +60,14 @@ private val Danger = Color(0xFFE57373)
 fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
     var link by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var shareBack by remember { mutableStateOf(false) }
     val deviceName = remember {
         (System.getProperty("user.name")?.takeIf { it.isNotBlank() }?.let { "$it (BossTerm)" }) ?: "BossTerm"
     }
     fun connect() {
         val l = link.trim()
         if (l.isBlank()) return
-        if (manager.connect(l, deviceName) == null) {
+        if (manager.connect(l, deviceName, shareBack) == null) {
             // connect() refuses our own share links — mirroring a session into itself loops.
             error = "That's this BossTerm's own share link — a session can't mirror itself."
         } else {
@@ -105,6 +109,25 @@ fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
                         placeholder = "https://….trycloudflare.com/?t=…",
                     )
                     error?.let { Text(it, color = Danger, fontSize = 11.sp) }
+                    // Two-way: once the host grants control, offer it this window's own share
+                    // link so it mirrors our tabs back (starts a window share here if needed).
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = shareBack,
+                            onCheckedChange = { shareBack = it },
+                            colors = CheckboxDefaults.colors(checkedColor = AccentColor, uncheckedColor = TextMuted)
+                        )
+                        Column {
+                            Text("Two-way: also share my tabs with the host", color = TextPrimary, fontSize = 12.sp)
+                            Text(
+                                "Shares this window and offers the host the link once it grants control.",
+                                color = TextMuted, fontSize = 11.sp
+                            )
+                        }
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End

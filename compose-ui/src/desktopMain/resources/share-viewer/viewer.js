@@ -141,8 +141,9 @@
     var tab = null, i;
     for (i = 0; i < layout.tabs.length; i++) if (layout.tabs[i].id === activeTabId) tab = layout.tabs[i];
     if (!tab) tab = layout.tabs[0];
-    if (!tab || !tab.tree || tab.tree.t !== "pane") return;
-    var p = panes[tab.tree.paneId]; if (!p) return;
+    var pid = displayedSinglePaneId(tab); // single-pane tab, or the shown pane in splits-as-tabs
+    if (!pid) return;
+    var p = panes[pid]; if (!p) return;
     requestAnimationFrame(function () {
       var sc = p.host.querySelector(".xterm-screen");
       if (sc) { var w = Math.ceil(sc.getBoundingClientRect().width); if (w > 0) p.host.style.width = w + "px"; }
@@ -166,8 +167,9 @@
   }
   // Fit the active pane's font so the whole width shows (zoom-out to fit).
   function fitWidth() {
-    var tab = activeTabNode(); if (!tab || !tab.tree || tab.tree.t !== "pane") return;
-    var p = panes[tab.tree.paneId]; if (!p) return;
+    var tab = activeTabNode(); if (!tab) return;
+    var pid = displayedSinglePaneId(tab); if (!pid) return;
+    var p = panes[pid]; if (!p) return;
     var screen = p.host.querySelector(".xterm-screen"); if (!screen) return;
     var avail = stageEl.clientWidth - 2, w = screen.getBoundingClientRect().width;
     if (avail > 0 && w > 0) applyFont(curFont() * (avail / w));
@@ -175,6 +177,44 @@
   document.getElementById("zoomin").onclick = function () { applyFont(curFont() + 1); };
   document.getElementById("zoomout").onclick = function () { applyFont(curFont() - 1); };
   document.getElementById("zoomfit").onclick = fitWidth;
+
+  // ---- "splits as tabs" (viewer-local) ----
+  // Render only the selected pane of a split tab, full-screen — switch panes via the
+  // sub-tab chips — instead of the side-by-side split. Defaults ON for phone screens;
+  // the user's explicit choice persists.
+  var splitsAsTabs = (function () {
+    var saved = null;
+    try { saved = localStorage.getItem("bossterm-splits-as-tabs"); } catch (e) {}
+    if (saved === "1") return true;
+    if (saved === "0") return false;
+    return !!(window.matchMedia && window.matchMedia("(max-width: 700px)").matches);
+  })();
+  var splitTabsBtn = document.getElementById("splittabs");
+  function refreshSplitTabsBtn() {
+    splitTabsBtn.style.background = splitsAsTabs ? "#4a90e2" : "";
+    splitTabsBtn.style.color = splitsAsTabs ? "#fff" : "";
+    splitTabsBtn.style.borderColor = splitsAsTabs ? "#4a90e2" : "";
+  }
+  splitTabsBtn.onclick = function () {
+    splitsAsTabs = !splitsAsTabs;
+    try { localStorage.setItem("bossterm-splits-as-tabs", splitsAsTabs ? "1" : "0"); } catch (e) {}
+    refreshSplitTabsBtn();
+    renderTabBar();
+    renderStage();
+  };
+  refreshSplitTabsBtn();
+  // The single pane the stage currently shows for [tab], or null when a split renders as a grid.
+  function displayedSinglePaneId(tab) {
+    if (!tab || !tab.tree) return null;
+    if (tab.tree.t === "pane") return tab.tree.paneId;
+    if (splitsAsTabs && tab.tree.t === "split") return currentPaneId || defaultPaneId(tab.tree);
+    return null;
+  }
+  function findPaneNode(node, paneId) {
+    if (!node) return null;
+    if (node.t === "pane") return node.paneId === paneId ? node : null;
+    return findPaneNode(node.a, paneId) || findPaneNode(node.b, paneId);
+  }
 
   // Show the host terminal's grid size (cols × rows) so its bounds are explicit.
   function updateDims() {
@@ -532,7 +572,7 @@
       function tabCluster(tab) {
         var group = document.createElement("div"); group.className = "ltab-group";
         var ps = []; panesInOrder(tab.tree, ps);
-        if (!summaryMode && tab.tree && tab.tree.t === "split") {
+        if ((!summaryMode || splitsAsTabs) && tab.tree && tab.tree.t === "split") {
           ps.forEach(function (pane) { group.appendChild(leftChip(tab, pane)); });
         } else {
           group.appendChild(leftChip(tab, null));
@@ -636,7 +676,7 @@
       if (layout) layout.tabs.forEach(function (tab) {
         var grp = document.createElement("div"); grp.className = "tab-group";
         var ps = []; panesInOrder(tab.tree, ps);
-        if (!summaryMode && tab.tree && tab.tree.t === "split") {
+        if ((!summaryMode || splitsAsTabs) && tab.tree && tab.tree.t === "split") {
           ps.forEach(function (pane) { grp.appendChild(topChip(tab, pane)); });
         } else {
           grp.appendChild(topChip(tab, null));
@@ -671,6 +711,7 @@
   function setClientFocus(paneId) {
     if (currentPaneId === paneId) return;
     currentPaneId = paneId;
+    if (splitsAsTabs) { renderTabBar(); renderStage(); return; } // shown pane follows focus
     refreshPaneFocus();
     renderTabBar(); // per-split sub-tab chip highlight follows the client's focus
   }
@@ -955,13 +996,19 @@
     // Keep the key-bar target on a pane that's actually visible in this tab.
     var ids = {}; collectPaneIds(tab.tree, ids);
     if (!currentPaneId || !ids[currentPaneId]) currentPaneId = defaultPaneId(tab.tree);
-    var root = buildNode(tab.tree);
-    if (tab.tree.t === "pane") {
+    // "Splits as tabs": show only the selected pane of a split, full-screen — the sub-tab
+    // chips switch between panes (each pane keeps its own xterm; nothing is lost).
+    var tree = tab.tree;
+    if (splitsAsTabs && tree && tree.t === "split") {
+      tree = findPaneNode(tree, currentPaneId) || tree;
+    }
+    var root = buildNode(tree);
+    if (tree.t === "pane") {
       // single pane → natural width, scrollable in #stage (don't stretch/clip)
       root.style.flex = "0 0 auto";
       root.style.height = "100%";
       root.style.overflow = "visible";
-      var sp = panes[tab.tree.paneId];
+      var sp = panes[tree.paneId];
       if (sp) { sp.host.style.overflow = "visible"; sp.host.style.height = "100%"; }
     } else {
       root.style.flex = "1 1 0"; // splits fill the stage

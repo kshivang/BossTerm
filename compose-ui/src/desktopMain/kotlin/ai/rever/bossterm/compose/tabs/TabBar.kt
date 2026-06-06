@@ -444,6 +444,10 @@ fun TabBar(
                         // default remote cyan. Drives the box border, the cloud icon, and (via
                         // colorHexFor upstream) the chips' accent stripes.
                         val groupAccent = parseTabColor(rg.colorHex) ?: RemoteAccent
+                        // The host box + its upstream ("via host") boxes render as ONE unit,
+                        // tethered by short accent connector lines — making the "these tabs
+                        // arrive through the box above" relationship visible.
+                        Column(modifier = Modifier.fillMaxWidth()) {
                         Column(
                             modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
                                 .border(1.dp, groupAccent, RoundedCornerShape(8.dp)).padding(4.dp),
@@ -508,6 +512,12 @@ fun TabBar(
                         // box above; the eye = the host is view-only on it, so input can't
                         // flow through). No footer — structural actions belong to the origin.
                         rg.nested.forEach { nest ->
+                            // Connector line: ties this upstream box to the box above it
+                            // (aligned under the cloud icon), in the group's accent.
+                            Box(
+                                Modifier.padding(start = 13.dp).width(2.dp).height(10.dp)
+                                    .background(groupAccent)
+                            )
                             Column(
                                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
                                     .border(1.dp, groupAccent, RoundedCornerShape(8.dp)).padding(4.dp),
@@ -555,6 +565,7 @@ fun TabBar(
                                 }
                             }
                         }
+                        } // end tether unit (host box + its upstream boxes)
                     }
                 }
                 // Bottom bar — connect to another BossTerm's shared session.

@@ -86,6 +86,27 @@ class ShareProtocolTest {
     }
 
     @Test
+    fun `native client decodes server messages (layout + paneOutput) and encodes hello`() {
+        // decodeServer is the client (native viewer) read path.
+        val layout = ShareProtocol.decodeServer(
+            """{"t":"layout","tabs":[{"id":"t1","title":"~","active":true,"tree":{"t":"pane","paneId":"p1","title":"zsh","cwd":"/home","focused":true}}],"activeTabId":"t1"}"""
+        )
+        assertIs<ServerMessage.Layout>(layout)
+        assertEquals("t1", layout.activeTabId)
+        val pane = layout.tabs[0].tree
+        assertIs<PaneTreeNode.Pane>(pane)
+        assertEquals("p1", pane.paneId)
+
+        val out = ShareProtocol.decodeServer("""{"t":"paneOutput","paneId":"p1","data":"hi"}""")
+        assertIs<ServerMessage.PaneOutput>(out)
+        assertEquals("hi", out.data)
+
+        // encodeClient is the client write path (handshake).
+        val hello = ShareProtocol.encodeClient(ClientMessage.Hello(name = "dev", clientId = "c1", key = null))
+        assertTrue(hello.contains("\"t\":\"hello\"") && hello.contains("\"clientId\":\"c1\""), hello)
+    }
+
+    @Test
     fun `split id serializes and is optional for forward-compat`() {
         val tree = PaneTreeNode.Split(
             "v", 0.5f,

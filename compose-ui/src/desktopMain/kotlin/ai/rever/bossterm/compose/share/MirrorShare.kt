@@ -65,6 +65,13 @@ class MirrorShare(
     private val viewers = CopyOnWriteArrayList<ViewerConnection>()
     private val viewerSeq = AtomicInteger(0)
     private val coro = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * The host's name for this shared session, shown to viewers as the default group label
+     * (defaults to `username_machine`; editable in the Share window). Compose state — read
+     * inside computeSignature's snapshotFlow, so renames re-broadcast the Layout.
+     */
+    val sessionName = androidx.compose.runtime.mutableStateOf(SessionShareManager.defaultSessionName())
     private var observerJob: Job? = null
 
     private class TapEntry(val tab: TerminalTab, val prev: ((String) -> Unit)?)
@@ -90,8 +97,8 @@ class MirrorShare(
     }
 
     // ---- viewers ----
-    fun addViewer(canControl: Boolean): ViewerConnection {
-        val vc = ViewerConnection(viewerSeq.incrementAndGet(), canControl)
+    fun addViewer(canControl: Boolean, name: String = "Viewer"): ViewerConnection {
+        val vc = ViewerConnection(viewerSeq.incrementAndGet(), canControl, name)
         viewers.add(vc)
         broadcast(ServerMessage.Presence(viewers.size))
         return vc
@@ -116,7 +123,7 @@ class MirrorShare(
         val sig = computeSignature()
         val out = ArrayList<ServerMessage>()
         out.add(themeMessage())
-        out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode))
+        out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
             out.add(ServerMessage.PaneSnapshot(id, snapshotText(tab), sz[0], sz[1]))
@@ -125,28 +132,88 @@ class MirrorShare(
     }
 
     /** Route viewer messages — input + tab close/new — to the host (controller role only). */
+    /**
+     * The remote session a host tab itself mirrors (so a viewer's action on it can be relayed
+     * to the origin instead of mutating the local mirror — which the next upstream Layout
+     * would wipe). Null for the host's own tabs.
+     */
+    private fun upstreamSession(targetTabId: String?): ai.rever.bossterm.compose.remote.RemoteSession? {
+        if (targetTabId == null) return null
+        val st = McpTerminalRegistry.findState(tabId) ?: return null
+        val tab = st.tabs.firstOrNull { it.id == targetTabId } ?: return null
+        return st.remoteSessions.sessionForTab(tab)
+    }
+
     fun handleClient(vc: ViewerConnection, msg: ClientMessage) {
+        if (msg is ClientMessage.RequestControl) {
+            val upstream = upstreamSession(msg.tabId)
+            if (upstream != null) {
+                // Relay an upstream control request (A→B→C: C asked us, we ask A — A's user
+                // sees its approval toast with OUR device name). Needs control of this share.
+                if (vc.canControl) upstream.requestControl()
+                return
+            }
+            // A view-only viewer asking for an upgrade — must run BEFORE the control gate.
+            // Surfaces the same approval toast as a join request; on approve, flip this live
+            // connection's role, tell the viewer, AND persist the upgrade into its grant (below)
+            // so a reconnect with the same key comes back WITH control rather than demoting.
+            if (!vc.canControl && !vc.controlRequestPending) {
+                vc.controlRequestPending = true
+                coro.launch {
+                    val approved = SessionShareManager.awaitApproval(tabId, vc.name, wantsControl = true)
+                    vc.controlRequestPending = false
+                    if (approved) {
+                        vc.canControl = true
+                        // Persist the upgrade into the grant so reconnects (same link + key)
+                        // come back WITH control instead of silently demoting to view-only.
+                        vc.grantKey?.let { SessionShareManager.upgradeGrantToControl(it) }
+                        vc.outbox.trySend(ShareProtocol.encodeServer(ServerMessage.Control(granted = true)))
+                    }
+                }
+            }
+            return
+        }
         if (!vc.canControl) return // all mutating actions require the control role
+        // Structural actions on a tab WE mirror from another session relay to that origin
+        // (our RemoteSession methods no-op silently if we're view-only on it).
         when (msg) {
             is ClientMessage.Input ->
                 (taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId])?.writeUserInput(msg.data)
             is ClientMessage.CloseTab ->
-                McpTerminalRegistry.findState(tabId)?.closeTab(msg.tabId)
+                upstreamSession(msg.tabId)?.closeFromChip(msg.tabId, msg.tabId)
+                    ?: McpTerminalRegistry.findState(tabId)?.closeTab(msg.tabId)
             is ClientMessage.NewTab ->
                 // Background: a viewer creating a tab shouldn't switch the host user's active tab.
-                McpTerminalRegistry.findState(tabId)?.createTab(activate = false)
+                upstreamSession(msg.tabId)?.newRemoteTab()
+                    ?: McpTerminalRegistry.findState(tabId)?.createTab(activate = false)
             is ClientMessage.SplitVertical ->
-                McpTerminalRegistry.findState(tabId)?.splitVerticalFromPane(msg.tabId, msg.paneId)
+                upstreamSession(msg.tabId)?.splitPane(msg.tabId, msg.paneId, horizontal = false)
+                    ?: McpTerminalRegistry.findState(tabId)?.splitVerticalFromPane(msg.tabId, msg.paneId)
             is ClientMessage.SplitHorizontal ->
-                McpTerminalRegistry.findState(tabId)?.splitHorizontalFromPane(msg.tabId, msg.paneId)
+                upstreamSession(msg.tabId)?.splitPane(msg.tabId, msg.paneId, horizontal = true)
+                    ?: McpTerminalRegistry.findState(tabId)?.splitHorizontalFromPane(msg.tabId, msg.paneId)
             is ClientMessage.ClosePane -> {
-                // Target the clicked pane (focus it), then close; closeFocusedPane closes
-                // the whole tab when it's the only pane (matches the host's behavior).
-                val st = McpTerminalRegistry.findState(tabId)
-                st?.splitStates?.get(msg.tabId)?.setFocusedPane(msg.paneId)
-                st?.closeFocusedPane(msg.tabId)
+                val upstream = upstreamSession(msg.tabId)
+                if (upstream != null) {
+                    upstream.closeFromChip(msg.tabId, msg.paneId)
+                } else {
+                    // Target the clicked pane (focus it), then close; closeFocusedPane closes
+                    // the whole tab when it's the only pane (matches the host's behavior).
+                    val st = McpTerminalRegistry.findState(tabId)
+                    st?.splitStates?.get(msg.tabId)?.setFocusedPane(msg.paneId)
+                    st?.closeFocusedPane(msg.tabId)
+                }
             }
+            is ClientMessage.DisconnectUpstream ->
+                upstreamSession(msg.tabId)?.let { up ->
+                    McpTerminalRegistry.findState(tabId)?.remoteSessions?.disconnect(up)
+                }
             is ClientMessage.LaunchAI -> {
+                val upstream = upstreamSession(msg.tabId)
+                if (upstream != null) {
+                    upstream.launchAI(msg.tabId, msg.paneId, msg.assistantId)
+                    return
+                }
                 // Run the same launch command the host's AI menu would (honoring the
                 // user's per-assistant YOLO/auto-mode config), in the clicked pane.
                 val target = taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId]
@@ -169,8 +236,21 @@ class MirrorShare(
                 McpTerminalRegistry.findState(tabId)?.closeTabsBelow(msg.tabId)
             is ClientMessage.ResizeHost -> resizeHostWindow(msg.cols, msg.rows)
             is ClientMessage.ResizeSplit ->
-                McpTerminalRegistry.findState(tabId)?.splitStates?.get(msg.tabId)?.updateSplitRatio(msg.splitId, msg.ratio)
-            else -> {} // Hello / Focus / RequestControl: no-op (focus is viewer-side; control via token)
+                upstreamSession(msg.tabId)?.resizeSplit(msg.tabId, msg.splitId, msg.ratio, committed = true)
+                    ?: McpTerminalRegistry.findState(tabId)?.splitStates?.get(msg.tabId)?.updateSplitRatio(msg.splitId, msg.ratio)
+            is ClientMessage.OfferShare -> {
+                // Two-way sharing: mirror the offering client's session back into this window.
+                // NOTE (trust boundary): this makes the host open an OUTBOUND WebSocket to a URL
+                // the peer supplies — a mild SSRF-flavored surface. It's gated on the control role
+                // (the host explicitly approved this device), so granting control also implies
+                // "this device may have my BossTerm dial a link it provides." connect() dedupes a
+                // repeated offer (same token) and refuses our own links; origin tagging keeps
+                // either side's tabs from bouncing back.
+                val name = (System.getProperty("user.name")?.takeIf { it.isNotBlank() }
+                    ?.let { "$it (BossTerm)" }) ?: "BossTerm"
+                McpTerminalRegistry.findState(tabId)?.remoteSessions?.connect(msg.link, name)
+            }
+            else -> {} // Hello / Focus: no-op (focus is viewer-side; RequestControl handled above)
         }
     }
 
@@ -233,7 +313,7 @@ class MirrorShare(
                 }
             }
         }
-        broadcast(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode))
+        broadcast(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
         sig.sizes.forEach { (id, sz) -> broadcast(ServerMessage.PaneResize(id, sz[0], sz[1])) }
     }
 
@@ -244,6 +324,7 @@ class MirrorShare(
         val sizes: Map<String, List<Int>>,
         val tabBarOnLeft: Boolean,
         val summaryMode: Boolean,
+        val sessionName: String? = null,
     )
 
     private fun inScopeTabs(state: TabbedTerminalState): List<TerminalTab> = when (scope) {
@@ -271,14 +352,40 @@ class MirrorShare(
                     color = tabColorCss(tab), branch = tab.gitBranch.value
                 )
             }
+            // Mark tabs that themselves mirror another session with that share's token hash
+            // (so a client connecting to us can skip the ones mirroring its own session), a
+            // friendly label, and whether WE are view-only on it (then input can't flow
+            // through us — nested viewers should mark those tabs read-only too).
+            //
+            // A mirrored tab may itself mirror a DEEPER session (A→B→C: our B-mirror of B's
+            // C-mirror). Forward the DEEPEST origin — its hash keeps grouping/loop-guarding
+            // correct at the true source — chain the label ("C · via B"), and degrade
+            // read-only/offline if ANY hop along the path is degraded.
+            val upstream = state.remoteSessions.sessionForTab(tab)
+            upstream?.upstreamRev?.value // subscribe: deeper-origin changes re-broadcast too
+            val deeper = upstream?.upstreamFor(tab.id)
+            val upstreamName = upstream?.let {
+                it.customName.value ?: it.hostName.value
+                    ?: runCatching { java.net.URI(it.link).host }.getOrNull() ?: it.link
+            }
             tabNodes.add(
                 TabNode(
                     id = tab.id, title = tab.title.value, active = tab.id == activeId, tree = tree,
-                    color = tabColorCss(tab), cwd = tab.workingDirectory.value, branch = tab.gitBranch.value
+                    color = tabColorCss(tab), cwd = tab.workingDirectory.value, branch = tab.gitBranch.value,
+                    origin = deeper?.key ?: upstream?.originHash,
+                    originName = when {
+                        deeper != null -> "${deeper.name ?: "remote"} · via $upstreamName"
+                        else -> upstreamName
+                    },
+                    originReadOnly = upstream?.let { (deeper?.readOnly ?: false) || !it.canControlState.value },
+                    originOffline = upstream?.let {
+                        (deeper?.offline ?: false) ||
+                            it.statusState.value !is ai.rever.bossterm.compose.remote.RemoteStatus.Connected
+                    },
                 )
             )
         }
-        return WindowSig(tabNodes, activeId, sizes, onLeft, summary)
+        return WindowSig(tabNodes, activeId, sizes, onLeft, summary, sessionName.value)
     }
 
     /** Resolve a tab's accent as CSS (#RRGGBB), mirroring the host's chip color (manual or auto). */
@@ -430,6 +537,22 @@ class MirrorShare(
  * the Ktor route drains it. Bounded + DROP_OLDEST so a slow viewer never stalls the
  * terminal — it just misses intermediate frames (the next snapshot heals it).
  */
-class ViewerConnection(val id: Int, val canControl: Boolean) {
+class ViewerConnection(
+    val id: Int,
+    /** Mutable: a view-only viewer can be upgraded mid-session via an approved RequestControl. */
+    @Volatile var canControl: Boolean,
+    /** Device name from the viewer's Hello — shown in the control-request approval prompt. */
+    val name: String = "Viewer",
+) {
     val outbox: Channel<String> = Channel(capacity = 2048, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+
+    /** A mid-session control request is awaiting the host's decision (dedupes re-requests). */
+    @Volatile var controlRequestPending = false
+
+    /**
+     * This connection's access key — an approved mid-session control upgrade is written back
+     * into its grant, so the device keeps control across silent reconnects (the client redials
+     * the same view link + key; without this each blip demoted it to view-only).
+     */
+    @Volatile var grantKey: String? = null
 }

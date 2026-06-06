@@ -131,9 +131,16 @@ object SessionShareManager {
         val key: String,
         val shareId: String,
         val clientId: String,
-        val canControl: Boolean,
+        /** Mutable: an approved mid-session control request upgrades the stored role, so the
+         *  device keeps control across silent reconnects (else each drop demoted it back). */
+        @Volatile var canControl: Boolean,
         @Volatile var expiresAtMs: Long,
     )
+
+    /** Persist an approved mid-session control upgrade into [key]'s grant (see [Grant.canControl]). */
+    internal fun upgradeGrantToControl(key: String) {
+        grants[key]?.canControl = true
+    }
 
     /** Access key → grant. Lazily expired on use; cleared when the share ends. */
     private val grants = ConcurrentHashMap<String, Grant>()
@@ -154,6 +161,39 @@ object SessionShareManager {
     val pendingRequests: StateFlow<List<PendingShareRequest>> = _pendingRequests.asStateFlow()
 
     /** Host approved a pending request (admits the viewer + mints a 24h key). */
+    /**
+     * Enqueue an approval request (e.g. a viewer's mid-session control upgrade) and await the
+     * host's decision — surfaces in the same toast/Share-window UI as join requests. Times out
+     * to denied after 2 minutes.
+     */
+    internal suspend fun awaitApproval(tabId: String, deviceName: String, wantsControl: Boolean): Boolean {
+        val req = PendingShareRequest(
+            id = UUID.randomUUID().toString(),
+            tabId = tabId,
+            deviceName = deviceName,
+            wantsControl = wantsControl,
+        )
+        _pendingRequests.value = _pendingRequests.value + req
+        notifyApprovalRequest(req)
+        val approved = withTimeoutOrNull(2 * 60_000L) { req.decision.await() } ?: false
+        _pendingRequests.value = _pendingRequests.value.filterNot { it.id == req.id }
+        return approved
+    }
+
+    /**
+     * System notification for an approval request — fires regardless of focus (an approval is
+     * urgent: someone is waiting), with sound so it's audible even while working in the app.
+     */
+    private fun notifyApprovalRequest(req: PendingShareRequest) {
+        runCatching {
+            ai.rever.bossterm.compose.notification.NotificationService.showNotification(
+                title = "BossTerm session sharing",
+                message = "${req.deviceName} wants ${if (req.wantsControl) "control of" else "to view"} your shared session",
+                withSound = true,
+            )
+        }
+    }
+
     fun approveRequest(id: String) = decideRequest(id, true)
     /** Host denied a pending request (closes the viewer socket). */
     fun denyRequest(id: String) = decideRequest(id, false)
@@ -222,6 +262,39 @@ object SessionShareManager {
 
     /** Is [tabId] currently shared? */
     fun isSharing(tabId: String): Boolean = sharesByTab.containsKey(tabId)
+
+    /**
+     * Is [token] one of THIS instance's active share tokens (view or control)? Used to refuse
+     * adding our own share link as a "remote" session — mirroring a session into itself loops.
+     */
+    fun ownsToken(token: String): Boolean = sharesByToken.containsKey(token)
+
+    /**
+     * Is [hash] the SHA-256 of one of THIS instance's active share tokens? Matches
+     * [TabNode.origin] stamped by a host on tabs that mirror a remote session, so a client
+     * connecting to that host can skip the tabs that mirror its own session.
+     */
+    fun ownsTokenHash(hash: String): Boolean =
+        sharesByToken.keys.any { ShareProtocol.sha256Hex(it) == hash }
+
+    /** The host's name for [tabId]'s share (viewers' default group label), or null if unshared. */
+    fun sessionNameFor(tabId: String): String? = sharesByTab[tabId]?.sessionName?.value
+
+    /** Rename [tabId]'s share; blank reverts to [defaultSessionName]. */
+    fun setSessionName(tabId: String, name: String) {
+        sharesByTab[tabId]?.sessionName?.value = name.trim().ifBlank { defaultSessionName() }
+    }
+
+    // Cached — InetAddress.getLocalHost() can stall on bad DNS; compute once, off the hot paths.
+    private val cachedDefaultSessionName by lazy {
+        val user = System.getProperty("user.name")?.takeIf { it.isNotBlank() } ?: "session"
+        val host = runCatching { java.net.InetAddress.getLocalHost().hostName }
+            .getOrNull()?.takeIf { it.isNotBlank() }?.removeSuffix(".local")
+        if (host != null) "${user}_$host" else user
+    }
+
+    /** Default share session name: `username_machine` (e.g. `alice_Alices-MacBook-Pro`). */
+    fun defaultSessionName(): String = cachedDefaultSessionName
 
     /** The read-only share URL for an active share, or null if not shared / server down. */
     fun urlFor(tabId: String): String? {
@@ -617,6 +690,7 @@ object SessionShareManager {
         val clientId = hello?.clientId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         var canControl = ref.canControl
 
+        var accessKey: String? = null // this connection's grant key (for mid-session role upgrades)
         if (requiresApproval()) {
             val now = System.currentTimeMillis()
             val existing = hello?.key?.let { grants[it] }
@@ -624,6 +698,7 @@ object SessionShareManager {
                 // Known device with a live key → slide the 24h window, skip re-approval.
                 existing.expiresAtMs = now + GRANT_TTL_MS
                 canControl = existing.canControl
+                accessKey = existing.key
                 ws.send(Frame.Text(ShareProtocol.encodeServer(
                     ServerMessage.Grant(existing.key, existing.expiresAtMs, canControl))))
             } else {
@@ -635,6 +710,7 @@ object SessionShareManager {
                     wantsControl = ref.canControl,
                 )
                 _pendingRequests.value = _pendingRequests.value + req
+                notifyApprovalRequest(req)
                 runCatching { ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Pending))) }
                 val approved = withTimeoutOrNull(2 * 60_000L) { req.decision.await() } ?: false
                 _pendingRequests.value = _pendingRequests.value.filterNot { it.id == req.id }
@@ -647,6 +723,7 @@ object SessionShareManager {
                 val exp = System.currentTimeMillis() + GRANT_TTL_MS
                 grants[key] = Grant(key, shareId, clientId, ref.canControl, exp)
                 canControl = ref.canControl
+                accessKey = key
                 ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Grant(key, exp, canControl))))
             }
         }
@@ -655,7 +732,8 @@ object SessionShareManager {
         // only carries output produced after the snapshot (avoids double-rendering).
         share.initialMessages().forEach { ws.send(Frame.Text(ShareProtocol.encodeServer(it))) }
         ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Control(granted = canControl))))
-        val vc = share.addViewer(canControl)
+        val vc = share.addViewer(canControl, hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})")
+        vc.grantKey = accessKey // lets an approved mid-session upgrade persist into the grant
         val writer = ws.launch {
             for (text in vc.outbox) ws.send(Frame.Text(text))
         }

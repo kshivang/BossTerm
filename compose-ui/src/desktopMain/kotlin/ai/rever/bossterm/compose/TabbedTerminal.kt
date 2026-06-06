@@ -1,6 +1,8 @@
 package ai.rever.bossterm.compose
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -786,6 +788,11 @@ fun TabbedTerminal(
     var mcpAttaching by remember { mutableStateOf(false) }
     // Session sharing (issue #276): dialog state + live set of shared tab ids.
     var shareDialog by remember { mutableStateOf<ai.rever.bossterm.compose.share.SessionShareManager.ShareInfo?>(null) }
+    // "Add remote": connect to another BossTerm's shared session (native client).
+    var showAddRemote by remember { mutableStateOf(false) }
+    // Pending "request control?" confirmation: a view-only group's split/new-tab click stores
+    // the actual request here; confirming the dialog runs it, dismissing drops it.
+    var requestControlPrompt by remember { mutableStateOf<(() -> Unit)?>(null) }
     // Bumped every time the share window is opened/reopened; ShareWindow brings its OS
     // window to the front when this changes, so clicking the share button while a share
     // window is already open raises that window instead of leaving it behind.
@@ -898,11 +905,18 @@ fun TabbedTerminal(
             // Tab bar (show when multiple tabs or alwaysShowTabBar is set).
             if (tabBarVisible) {
             val summaryMode = settings.tabBarSummaryMode
+            val rm = state?.remoteSessions
+            val tabBarClipboard = androidx.compose.ui.platform.LocalClipboardManager.current
 
             // Resolve the per-tab accent color: a manual color (Color ▸ menu) always
             // wins; otherwise, when color-by-directory is on, derive a stable accent
             // from the session's cwd. Reads MutableState so the bar recomposes live.
             fun colorHexFor(session: TerminalSession): String? {
+                if (session.isRemote) {
+                    // Group accent (set via the remote box header's right-click) wins; the
+                    // default cyan marks mirrored remote tabs.
+                    return rm?.sessionForMirror(session)?.accent?.value ?: "0xFF4FC3F7"
+                }
                 session.tabColor.value?.let { return it }
                 if (settings.tabColorByDirectory) {
                     val cwd = session.workingDirectory.value
@@ -915,7 +929,9 @@ fun TabbedTerminal(
             }
 
             // Abbreviate a working directory for the chip's second line (Warp-style):
-            // home → "~", otherwise collapse long paths to "~/…/parent/dir".
+            // collapse long paths to "~/…/parent/dir". At home the title is already "~", so the
+            // second line would collapse to "~" too and get hidden (== title) — instead show the
+            // full home path there, matching the web viewer (its second line is never blank/"~").
             fun abbreviateCwd(path: String?): String? {
                 if (path.isNullOrBlank()) return null
                 val home = System.getProperty("user.home")?.trimEnd('/')
@@ -924,7 +940,8 @@ fun TabbedTerminal(
                     "~" + clean.removePrefix(home) else clean
                 val parts = withTilde.split('/').filter { it.isNotEmpty() }
                 return when {
-                    withTilde == "~" || withTilde == "/" -> withTilde
+                    withTilde == "~" -> clean // home: show the real path (the "~" title carries the tilde)
+                    withTilde == "/" -> "/"
                     parts.size <= 2 -> withTilde
                     withTilde.startsWith("~") -> "~/…/" + parts.takeLast(2).joinToString("/")
                     else -> "/…/" + parts.takeLast(2).joinToString("/")
@@ -941,7 +958,7 @@ fun TabbedTerminal(
             // Each tab contributes a group of pane-chips (one chip per split pane).
             // In summary mode (or before a tab is split) a single chip represents the
             // whole tab, labeled with the tab's title.
-            val tabGroups = tabController.tabs.mapIndexed { index, tab ->
+            val tabGroupsWithTab = tabController.tabs.mapIndexed { index, tab ->
                 val st = splitStates[tab.id]
                 val panes = if (st != null && !summaryMode) {
                     st.getAllPanes().map { p ->
@@ -958,7 +975,107 @@ fun TabbedTerminal(
                         branch = tab.gitBranch.value
                     ))
                 }
-                ai.rever.bossterm.compose.tabs.TabBarGroup(index, panes)
+                tab to ai.rever.bossterm.compose.tabs.TabBarGroup(index, panes)
+            }
+            // Partition local tabs from mirrored remote-session tabs: local tabs render as
+            // normal chip clusters; each remote session renders as its own boxed group with
+            // a link header + footer actions (split / new tab / disconnect) targeting the host.
+            val tabGroups = tabGroupsWithTab.filter { rm?.sessionForTab(it.first) == null }.map { it.second }
+            val remoteGroups = rm?.sessions.orEmpty().mapNotNull { session ->
+                session.upstreamRev.value // subscribe: re-partition when upstream info changes
+                val mine = tabGroupsWithTab.filter { rm?.sessionForTab(it.first) === session }
+                // The host's own tabs render directly; tabs the host itself mirrors from OTHER
+                // sessions nest under a labeled subsection per upstream (read-only flagged).
+                val gs = mine.filter { session.upstreamFor(it.first.id) == null }.map { it.second }
+                val nested = mine
+                    .mapNotNull { (t, g) -> session.upstreamFor(t.id)?.let { up -> Triple(up, t, g) } }
+                    .groupBy { it.first.key }
+                    .map { (_, items) ->
+                        val up = items.first().first
+                        val nestTabs = items.map { it.second }
+                        // Footer actions target the active tab when it's in this nest, else its
+                        // first tab; the host relays them to the origin. When the host itself is
+                        // view-only on the origin, route to the relayed control request instead
+                        // of a silent no-op.
+                        fun anchor() = nestTabs.firstOrNull { it.id == tabController.activeTab?.id } ?: nestTabs.first()
+                        fun splitNest(horizontal: Boolean) {
+                            if (up.readOnly) {
+                                requestControlPrompt = { session.requestControlFor(anchor().id) }
+                                return
+                            }
+                            val t = anchor()
+                            val paneId = splitStates[t.id]?.focusedPaneId ?: return
+                            session.splitPane(t.id, paneId, horizontal)
+                        }
+                        ai.rever.bossterm.compose.tabs.RemoteNestedGroup(
+                            label = up.name ?: "remote",
+                            readOnly = up.readOnly,
+                            offline = up.offline,
+                            groups = items.map { it.third },
+                            onSplitVertical = { splitNest(horizontal = false) },
+                            onSplitHorizontal = { splitNest(horizontal = true) },
+                            onNewTab = {
+                                if (up.readOnly) requestControlPrompt = { session.requestControlFor(anchor().id) }
+                                else session.newTabIn(anchor().id)
+                            },
+                            onClose = { session.disconnectUpstream(nestTabs.first().id) },
+                            onRequestControl = { session.requestControlFor(anchor().id) },
+                        )
+                    }
+                if (gs.isEmpty() && nested.isEmpty()) null else ai.rever.bossterm.compose.tabs.RemoteTabGroup(
+                    id = session.link,
+                    // Group label precedence: local rename → the host's session name (its
+                    // username by default) → the link's host.
+                    header = session.customName.value
+                        ?: session.hostName.value
+                        ?: runCatching { java.net.URI(session.link).host ?: session.link }.getOrDefault(session.link),
+                    colorHex = session.accent.value,
+                    groups = gs,
+                    canControl = session.canControlState.value, // Compose state → menus update on grant
+                    statusLabel = when (session.statusState.value) {
+                        is ai.rever.bossterm.compose.remote.RemoteStatus.Connected -> null
+                        ai.rever.bossterm.compose.remote.RemoteStatus.Connecting -> "connecting…"
+                        ai.rever.bossterm.compose.remote.RemoteStatus.Pending -> "awaiting approval…"
+                        is ai.rever.bossterm.compose.remote.RemoteStatus.Failed -> "disconnected"
+                        is ai.rever.bossterm.compose.remote.RemoteStatus.Denied -> "denied"
+                        ai.rever.bossterm.compose.remote.RemoteStatus.Closed -> "closed"
+                    },
+                    statusError = session.statusState.value.let {
+                        it is ai.rever.bossterm.compose.remote.RemoteStatus.Failed ||
+                            it is ai.rever.bossterm.compose.remote.RemoteStatus.Denied ||
+                            it is ai.rever.bossterm.compose.remote.RemoteStatus.Closed
+                    },
+                    // View-only: split/new-tab first confirm via the request-control dialog
+                    // (confirming sends the request; the host shows its approval toast).
+                    onSplitVertical = {
+                        if (session.canControlState.value) session.splitFocused(horizontal = false)
+                        else requestControlPrompt = { session.requestControl() }
+                    },
+                    onSplitHorizontal = {
+                        if (session.canControlState.value) session.splitFocused(horizontal = true)
+                        else requestControlPrompt = { session.requestControl() }
+                    },
+                    onNewTab = {
+                        if (session.canControlState.value) session.newRemoteTab()
+                        else requestControlPrompt = { session.requestControl() }
+                    },
+                    onDisconnect = { rm?.disconnect(session) },
+                    onChipSplit = { tabIndex, paneId, horizontal ->
+                        tabController.tabs.getOrNull(tabIndex)?.let { session.splitPane(it.id, paneId, horizontal) }
+                    },
+                    onChipLaunchAI = { tabIndex, paneId, assistantId ->
+                        tabController.tabs.getOrNull(tabIndex)?.let { session.launchAI(it.id, paneId, assistantId) }
+                    },
+                    // Local group customization (box header right-click): blank name reverts
+                    // to the link's host; null color reverts to the default remote cyan.
+                    onRename = { session.customName.value = it.trim().ifBlank { null } },
+                    onSetColor = { hex -> session.accent.value = hex },
+                    // The same share link this group mirrors, in the web viewer.
+                    onOpenInBrowser = { HyperlinkDetector.openUrl(session.link) },
+                    onCopyLink = { tabBarClipboard.setText(androidx.compose.ui.text.AnnotatedString(session.link)) },
+                    onRequestControl = { session.requestControl() },
+                    nested = nested,
+                )
             }
             // In summary mode the active tab's single chip carries the tab id; match it
             // so it highlights. Otherwise highlight the focused split pane.
@@ -966,6 +1083,7 @@ fun TabbedTerminal(
                                 else tabController.activeTab?.let { splitStates[it.id]?.focusedPaneId }
             TabBar(
                 groups = tabGroups,
+                remoteGroups = remoteGroups,
                 activeTabIndex = tabController.activeTabIndex,
                 focusedPaneId = focusedPaneId,
                 onPaneSelected = { tabIndex, paneId ->
@@ -975,11 +1093,19 @@ fun TabbedTerminal(
                 onPaneClosed = { tabIndex, paneId ->
                     val t = tabController.tabs.getOrNull(tabIndex)
                     if (t != null) {
-                        val st = splitStates[t.id]
-                        // paneId == t.id is a synthetic tab-level chip (summary / single
-                        // pane) — close the whole tab. Real split panes close just the pane.
-                        if (st == null || st.isSinglePane || paneId == t.id) tabController.closeTab(tabIndex)
-                        else st.closePane(paneId)
+                        val session = rm?.sessionForTab(t)
+                        if (session != null) {
+                            // Remote: structure is host-driven. Route the close to the host
+                            // (control only) — the resulting Layout removes it locally. Never
+                            // dispose a mirror locally (the next Layout would resurrect it).
+                            session.closeFromChip(t.id, paneId)
+                        } else {
+                            val st = splitStates[t.id]
+                            // paneId == t.id is a synthetic tab-level chip (summary / single
+                            // pane) — close the whole tab. Real split panes close just the pane.
+                            if (st == null || st.isSinglePane || paneId == t.id) tabController.closeTab(tabIndex)
+                            else st.closePane(paneId)
+                        }
                     }
                 },
                 onNewTab = {
@@ -994,7 +1120,13 @@ fun TabbedTerminal(
                     WindowManager.createWindowWithTab(extractedTab, splitState)
                 },
                 onRename = { tabIndex, paneId, newTitle ->
-                    sessionFor(tabIndex, paneId)?.let { session ->
+                    val t = tabController.tabs.getOrNull(tabIndex)
+                    val remote = t?.let { rm?.sessionForTab(it) }
+                    if (remote != null && t != null) {
+                        // Remote chip: route to the host; the resulting Layout reflects the new
+                        // title locally (don't mutate the mirror's title directly).
+                        remote.renameTab(t.id, paneId, newTitle.trim())
+                    } else sessionFor(tabIndex, paneId)?.let { session ->
                         val trimmed = newTitle.trim()
                         if (trimmed.isBlank()) {
                             // Clear the custom title; wireCwdTitle reverts it to the cwd.
@@ -1006,13 +1138,31 @@ fun TabbedTerminal(
                     }
                 },
                 onSetColor = { tabIndex, paneId, hex ->
-                    sessionFor(tabIndex, paneId)?.let { it.tabColor.value = hex }
+                    val t = tabController.tabs.getOrNull(tabIndex)
+                    val remote = t?.let { rm?.sessionForTab(it) }
+                    if (remote != null && t != null) remote.setTabColor(t.id, paneId, hex)
+                    else sessionFor(tabIndex, paneId)?.let { it.tabColor.value = hex }
                 },
-                onCloseOthers = { tabController.closeOtherTabs(it) },
-                onCloseBelow = { tabController.closeTabsBelow(it) },
+                onCloseOthers = { index ->
+                    val t = tabController.tabs.getOrNull(index)
+                    val remote = t?.let { rm?.sessionForTab(it) }
+                    if (remote != null && t != null) remote.closeOtherTabs(t.id)
+                    else tabController.closeOtherTabs(index)
+                },
+                onCloseBelow = { index ->
+                    val t = tabController.tabs.getOrNull(index)
+                    val remote = t?.let { rm?.sessionForTab(it) }
+                    if (remote != null && t != null) remote.closeTabsBelow(t.id)
+                    else tabController.closeTabsBelow(index)
+                },
                 onDuplicate = { index ->
-                    val wd = tabController.tabs.getOrNull(index)?.workingDirectory?.value
-                    tabController.createTab(workingDir = wd)
+                    val t = tabController.tabs.getOrNull(index)
+                    val remote = t?.let { rm?.sessionForTab(it) }
+                    if (remote != null && t != null) remote.duplicateTab(t.id)
+                    else {
+                        val wd = t?.workingDirectory?.value
+                        tabController.createTab(workingDir = wd)
+                    }
                 },
                 onShareTab = { index ->
                     tabController.tabs.getOrNull(index)?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
@@ -1029,6 +1179,7 @@ fun TabbedTerminal(
                 onSplitVertical = { splitActiveTab(SplitOrientation.VERTICAL) },
                 onSplitHorizontal = { splitActiveTab(SplitOrientation.HORIZONTAL) },
                 onSettings = onShowSettings,
+                onAddRemote = { showAddRemote = true },
                 orientation = if (tabBarOnLeft) ai.rever.bossterm.compose.tabs.TabBarOrientation.LEFT
                               else ai.rever.bossterm.compose.tabs.TabBarOrientation.TOP,
                 verticalWidth = settings.tabBarVerticalWidth.dp
@@ -1128,6 +1279,52 @@ fun TabbedTerminal(
                 }
             }
 
+            // For a mirrored remote tab, the pane-body (shell) right-click menu's structural
+            // actions must target the HOST — the local split tree is rebuilt from the host's
+            // Layout, so a local split/close would be wiped on the next reconcile. This mirrors
+            // the browser viewer's pane menu. Normal tabs keep the local handlers.
+            val remoteForActive = state?.remoteSessions?.sessionForTab(activeTab)
+            val paneSplitVertical: () -> Unit =
+                if (remoteForActive != null) { { remoteForActive.splitPane(activeTab.id, splitState.focusedPaneId, horizontal = false) } }
+                else onSplitVertical
+            val paneSplitHorizontal: () -> Unit =
+                if (remoteForActive != null) { { remoteForActive.splitPane(activeTab.id, splitState.focusedPaneId, horizontal = true) } }
+                else onSplitHorizontal
+            val paneClose: () -> Unit =
+                if (remoteForActive != null) { { remoteForActive.closeFromChip(activeTab.id, splitState.focusedPaneId) } }
+                else onClosePane
+
+            // "Fit to client": resize THIS window so [focused]'s pane renders the remote's current
+            // grid 1:1 — the reverse of "Fit host to my screen". Mirrors the host's own
+            // resizeHostWindow nudge (per-cell px × the grid delta, window chrome cancels out);
+            // purely local, needs no control. No-op until the canvas has been measured once.
+            fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.TerminalTab) {
+                val cw = focused.terminal.cellWidthPx
+                val ch = focused.terminal.cellHeightPx
+                if (cw <= 0f || ch <= 0f) return
+                val grid = focused.display.termSize.value
+                val hostCols = grid.columns; val hostRows = grid.rows
+                val curCols = focused.remoteFitCols; val curRows = focused.remoteFitRows
+                if (hostCols < 2 || hostRows < 2 || curCols < 2 || curRows < 2) return
+                val win = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }?.awtWindow
+                    ?: WindowManager.windows.firstOrNull { it.awtWindow != null }?.awtWindow ?: return
+                javax.swing.SwingUtilities.invokeLater {
+                    runCatching {
+                        val gc = win.graphicsConfiguration
+                        val sx = gc?.defaultTransform?.scaleX?.takeIf { it > 0 } ?: 1.0
+                        val sy = gc?.defaultTransform?.scaleY?.takeIf { it > 0 } ?: 1.0
+                        var newW = (win.width + (hostCols - curCols) * cw / sx).toInt()
+                        var newH = (win.height + (hostRows - curRows) * ch / sy).toInt()
+                        gc?.bounds?.let { b ->
+                            val maxW = (b.x + b.width - win.x).coerceAtLeast(480)
+                            val maxH = (b.y + b.height - win.y).coerceAtLeast(320)
+                            newW = newW.coerceIn(480, maxW); newH = newH.coerceIn(320, maxH)
+                        }
+                        if (newW != win.width || newH != win.height) { win.setSize(newW, newH); win.validate() }
+                    }
+                }
+            }
+
             val onNavigatePane: (NavigationDirection) -> Unit = { direction ->
                 splitState.navigateFocus(direction)
             }
@@ -1167,13 +1364,14 @@ fun TabbedTerminal(
                 onNewWindow = onNewWindow,
                 onShowSettings = onShowSettings,
                 onShowWelcomeWizard = onShowWelcomeWizard,
-                onSplitHorizontal = onSplitHorizontal,
-                onSplitVertical = onSplitVertical,
-                onClosePane = onClosePane,
+                onSplitHorizontal = paneSplitHorizontal,
+                onSplitVertical = paneSplitVertical,
+                onClosePane = paneClose,
                 onNavigatePane = onNavigatePane,
                 onNavigateNextPane = { splitState.navigateToNextPane() },
                 onNavigatePreviousPane = { splitState.navigateToPreviousPane() },
-                onMoveToNewTab = if (!splitState.isSinglePane) {
+                // A remote mirror pane can't be moved into a local tab (it has no local PTY).
+                onMoveToNewTab = if (!splitState.isSinglePane && remoteForActive == null) {
                     {
                         // Extract the session from the split and move it to a new tab
                         val extractedSession = splitState.extractFocusedPaneSession()
@@ -1229,6 +1427,60 @@ fun TabbedTerminal(
                 customContextMenuItemsProvider = {
                     val userItems = contextMenuItemsProvider?.invoke() ?: contextMenuItems
                     var items = userItems
+
+                    if (remoteForActive != null) {
+                        // Remote (mirrored) pane: show the viewer's pane menu — two fit actions plus
+                        // a host-routed AI Assistant submenu (runs the host's configured command,
+                        // honoring its YOLO/auto-mode), launched in the focused pane. Copy/Paste/
+                        // Find/Split/Close come from the base menu; local-host items (MCP attach,
+                        // Share, VCS, shell customization) don't apply to a mirror, so they're omitted.
+                        val focusedRemote = splitState.getFocusedSession() as? ai.rever.bossterm.compose.tabs.TerminalTab
+                        // View-only: the host ignores mutating actions, so keep the menu lean —
+                        // the upgrade path instead of host-routed items (the base menu's Copy/
+                        // Paste/Find stay useful; its Split/Close no-op until control is granted).
+                        if (!remoteForActive.canControl) {
+                            items = items + ContextMenuItem(
+                                id = "remote_request_control", label = "Request Control",
+                                action = { remoteForActive.requestControl() }
+                            )
+                        }
+                        // Fit host to my screen: resize the REMOTE so its grid matches this pane
+                        // (like the viewer's top-bar button). Mutates the host → control only.
+                        if (focusedRemote != null && remoteForActive.canControl) {
+                            items = items + ContextMenuItem(
+                                id = "remote_fit_host", label = "Fit host to my screen",
+                                action = {
+                                    if (focusedRemote.remoteFitCols >= 2 && focusedRemote.remoteFitRows >= 2)
+                                        remoteForActive.resizeHost(activeTab.id, focusedRemote.remoteFitCols, focusedRemote.remoteFitRows)
+                                }
+                            )
+                        }
+                        // Fit my window to host: resize THIS window so the remote's grid renders
+                        // 1:1 here — the reverse direction, and purely local (no control needed).
+                        if (focusedRemote != null) {
+                            items = items + ContextMenuItem(
+                                id = "remote_fit_client", label = "Fit my window to host",
+                                action = { fitClientWindowToHost(focusedRemote) }
+                            )
+                        }
+                        if (remoteForActive.canControl) {
+                            items = items + ContextMenuSubmenu(
+                                id = "remote_ai_assistants",
+                                label = "AI Assistant",
+                                items = listOf(
+                                    "claude-code" to "Claude Code",
+                                    "codex" to "Codex",
+                                    "gemini-cli" to "Gemini CLI",
+                                    "opencode" to "OpenCode",
+                                ).map { (aid, label) ->
+                                    ContextMenuItem(
+                                        id = "remote_ai_$aid", label = label,
+                                        action = { remoteForActive.launchAI(activeTab.id, splitState.focusedPaneId, aid) }
+                                    )
+                                }
+                            )
+                        }
+                    } else {
 
                     // Add AI assistant menu items
                     if (settings.aiAssistantsEnabled) {
@@ -1339,6 +1591,7 @@ fun TabbedTerminal(
                         }
                     )
                     items = items + shellItems
+                    } // end non-remote (local host) menu items
 
                     items
                 },
@@ -1429,7 +1682,21 @@ fun TabbedTerminal(
         // QR/links dialog if already shared). Shown per its own toggle.
         val showMcpStatus = settings.mcpShowStatusIndicator
         val showSharingStatus = settings.sessionSharingShowIndicator
-        if (showMcpStatus || showSharingStatus || attachStatus != null || pendingShareRequests.isNotEmpty()) {
+        // The active tab's remote session while it's still view-only — drives the read-only
+        // pill, stacked in this same column so it sits BELOW the MCP/Sharing pills.
+        val activeRemoteSession = tabController.activeTab?.let { t -> state?.remoteSessions?.sessionForTab(t) }
+        val viewOnlyRemote = activeRemoteSession?.takeIf { !it.canControlState.value }
+        // Even with control of the host, the active tab may mirror an upstream the HOST itself
+        // can't type into (A shared view-only to B, B shared to us) — input dies at the host.
+        // Informational pill only: control must be requested by the host from the origin.
+        val upstreamReadOnly = if (viewOnlyRemote == null) {
+            activeRemoteSession?.let { s ->
+                s.upstreamRev.value // subscribe: re-evaluate when upstream info changes
+                tabController.activeTab?.id?.let { id -> s.upstreamFor(id)?.takeIf { it.readOnly } }
+            }
+        } else null
+        if (showMcpStatus || showSharingStatus || attachStatus != null || pendingShareRequests.isNotEmpty() ||
+            viewOnlyRemote != null || upstreamReadOnly != null) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -1495,6 +1762,45 @@ fun TabbedTerminal(
                         onDeny = { ai.rever.bossterm.compose.share.SessionShareManager.denyRequest(req.id) },
                     )
                 }
+                // Read-only indicator: the active tab mirrors a remote we can't type into.
+                // Clicking requests control; vanishes the moment the grant arrives.
+                viewOnlyRemote?.let { session ->
+                    Box(
+                        modifier = Modifier
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            .background(Color(0xE6252526))
+                            .border(1.dp, Color(0xFF404040), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            .clickable { session.requestControl() }
+                    ) {
+                        androidx.compose.material3.Text(
+                            "View only — click to request control",
+                            color = Color(0xFFB0B0B0),
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+                // Upstream read-only (A→B→C): we may control the host, but the host itself is
+                // view-only on this tab's origin, so typing still can't land. Clicking relays a
+                // control request through the host to the origin (its user sees the approval).
+                upstreamReadOnly?.let { up ->
+                    Box(
+                        modifier = Modifier
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            .background(Color(0xE6252526))
+                            .border(1.dp, Color(0xFF404040), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            .clickable {
+                                tabController.activeTab?.id?.let { id -> activeRemoteSession?.requestControlFor(id) }
+                            }
+                    ) {
+                        androidx.compose.material3.Text(
+                            "View only — click to request control of ${up.name ?: "the origin"}",
+                            color = Color(0xFFB0B0B0),
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
             }
         }
     }
@@ -1520,7 +1826,65 @@ fun TabbedTerminal(
             tailscaleMode = settings.shareTailscaleMode,
             onTailscaleModeChange = { SettingsManager.instance.updateSetting { copy(shareTailscaleMode = it) } },
             onRefreshLink = { ai.rever.bossterm.compose.share.SessionShareManager.refreshRemoteLink() },
+            sessionName = ai.rever.bossterm.compose.share.SessionShareManager.sessionNameFor(info.tabId) ?: "",
+            onSessionNameChange = { ai.rever.bossterm.compose.share.SessionShareManager.setSessionName(info.tabId, it) },
         )
+    }
+
+    // Confirm-before-requesting-control (a view-only group's split/new-tab click).
+    requestControlPrompt?.let { send ->
+        ai.rever.bossterm.compose.remote.RequestControlPrompt(
+            onConfirm = { send(); requestControlPrompt = null },
+            onDismiss = { requestControlPrompt = null },
+        )
+    }
+
+    // Typing into a read-only mirror (no control, or read-only via an upstream host) surfaces
+    // the same request-control prompt; dismissing snoozes it so it doesn't nag per keystroke.
+    state?.remoteSessions?.let { mgr ->
+        mgr.blockedInput.value?.let { blocked ->
+            ai.rever.bossterm.compose.remote.RequestControlPrompt(
+                onConfirm = {
+                    if (blocked.tabId != null) blocked.session.requestControlFor(blocked.tabId)
+                    else blocked.session.requestControl()
+                    mgr.blockedInput.value = null
+                },
+                onDismiss = {
+                    mgr.snoozeBlockedInputPrompt()
+                    mgr.blockedInput.value = null
+                },
+            )
+        }
+    }
+
+    // Disconnect → reconnect dialog (like the web viewer's overlay): prompt for the first
+    // remote session that lost its connection and hasn't had this failure dismissed.
+    state?.remoteSessions?.let { mgr ->
+        mgr.sessions.firstOrNull {
+            it.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Failed && !it.failureDismissed.value
+        }?.let { failed ->
+            ai.rever.bossterm.compose.remote.RemoteDisconnectedDialog(
+                name = failed.customName.value ?: failed.hostName.value
+                    ?: runCatching { java.net.URI(failed.link).host ?: failed.link }.getOrDefault(failed.link),
+                message = (failed.statusState.value as? ai.rever.bossterm.compose.remote.RemoteStatus.Failed)?.message,
+                onReconnect = { failed.reconnect() },
+                onDisconnect = { mgr.disconnect(failed) },
+                onDismiss = { failed.failureDismissed.value = true },
+            )
+        }
+    }
+
+    // "Add remote": connect to another BossTerm's shared session and mirror its tabs here.
+    // Requires an external TabbedTerminalState (it owns the RemoteSessionManager + tab list).
+    if (showAddRemote) {
+        if (state != null) {
+            ai.rever.bossterm.compose.remote.AddRemoteDialog(
+                manager = state.remoteSessions,
+                onDismiss = { showAddRemote = false },
+            )
+        } else {
+            showAddRemote = false
+        }
     }
 
     // AI Assistant Installation Wizard (command interception, context menu, and programmatic API)

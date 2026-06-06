@@ -563,6 +563,92 @@ class TabController(
     }
 
     /**
+     * Build a **remote mirror** session (no local PTY): a full terminal stack
+     * (BossTerminal/textBuffer/display/dataStream/emulator) whose bytes are fed from a remote
+     * BossTerm share via [TerminalTab.dataStream] `.append(...)` and whose size is set by the
+     * host (`PaneResize` → `terminal.resize`). Used by the native remote-session client to
+     * mirror each remote pane. Does NOT spawn a process or add itself to [tabs] — the caller
+     * places it (as a tab or a split pane) and feeds it. [onUserInput] routes local keystrokes
+     * back to the host (sent as `ClientMessage.Input`); dispose by closing [TerminalTab.dataStream]
+     * then [TerminalTab.dispose].
+     */
+    fun createRemoteSession(
+        title: String,
+        remotePaneId: String? = null,
+        onUserInput: ((String) -> Unit)? = null,
+        feedsStream: Boolean = true,
+    ): TerminalTab {
+        val styleState = StyleState()
+        val textBuffer = TerminalTextBuffer(80, 24, styleState, settings.bufferMaxLines)
+        val display = ComposeTerminalDisplay()
+        val terminal = BossTerminal(display, textBuffer, styleState)
+        terminal.setCharacterEncoding(settings.characterEncoding)
+        val modelListener = object : ai.rever.bossterm.terminal.model.TerminalModelListener {
+            override fun modelChanged() { display.requestRedraw() }
+        }
+        textBuffer.addModelListener(modelListener)
+        val dataStream = BlockingTerminalDataStream(
+            performanceMode = PerformanceMode.fromString(settings.performanceMode)
+        )
+        // Batch each appended chunk so a clear+write renders atomically (no flicker).
+        dataStream.onChunkStart = { textBuffer.beginBatch() }
+        dataStream.onChunkEnd = { textBuffer.endBatch() }
+        val emulator = BossEmulator(dataStream, terminal)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+        val tab = TerminalTab(
+            id = java.util.UUID.randomUUID().toString(),
+            title = mutableStateOf(title),
+            terminal = terminal,
+            textBuffer = textBuffer,
+            display = display,
+            dataStream = dataStream,
+            emulator = emulator,
+            processHandle = mutableStateOf(null),
+            workingDirectory = mutableStateOf(null),
+            connectionState = mutableStateOf(ConnectionState.Initializing),
+            coroutineScope = scope,
+            isFocused = mutableStateOf(false),
+            scrollOffset = mutableStateOf(0),
+            searchVisible = mutableStateOf(false),
+            searchQuery = mutableStateOf(""),
+            searchMatches = mutableStateOf(emptyList()),
+            currentSearchMatchIndex = mutableStateOf(-1),
+            selectionClipboard = mutableStateOf(null),
+            imeState = IMEState(),
+            contextMenuController = ContextMenuController(),
+            hyperlinks = mutableStateOf(emptyList()),
+            hoveredHyperlink = mutableStateOf(null),
+            modelListener = modelListener,
+        ).apply {
+            isRemote = true
+            this.remotePaneId = remotePaneId
+            this.onUserInput = onUserInput
+        }
+
+        // Emulator-processing loop: drain bytes appended from the remote stream. Exits when the
+        // stream is closed (dispose) — closing dataStream unblocks the blocking `char` read.
+        // Skipped for a container tab ([feedsStream] = false): it owns no remote pane of its own
+        // (its panes are separate mirror sessions in the split tree), so it needs no parked thread.
+        if (feedsStream) {
+            scope.launch(Dispatchers.Default) {
+                try {
+                    while (isActive) {
+                        try {
+                            tab.emulator.processChar(tab.dataStream.char, tab.terminal)
+                        } catch (_: Exception) {
+                            break // EOF on close, or stream error — stop the loop
+                        }
+                    }
+                } finally {
+                    runCatching { tab.dataStream.close() }
+                }
+            }
+        }
+        return tab
+    }
+
+    /**
      * Create a terminal session for use in split panes.
      *
      * Unlike createTab(), this method:

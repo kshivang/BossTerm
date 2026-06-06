@@ -246,6 +246,15 @@ interface TerminalSession {
     val tabColor: MutableState<String?>
         get() = androidx.compose.runtime.mutableStateOf(null)  // Default: no color
 
+    /**
+     * True for a **remote mirror** session (no local PTY): bytes are fed from a remote
+     * BossTerm share over a WebSocket and its grid size is dictated by the host. The renderer
+     * uses this to render without a local connection state and to skip local auto-fit resizing.
+     * Default false for normal local sessions.
+     */
+    val isRemote: Boolean
+        get() = false
+
     // === Lifecycle Methods ===
 
     /**

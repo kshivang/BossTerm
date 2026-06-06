@@ -13,7 +13,11 @@
                  font-family: -apple-system, Menlo, monospace; overflow: hidden; }
     body { display: flex; flex-direction: column; }
     #bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; height: 30px; flex: 0 0 auto;
-           box-sizing: border-box; background: #2b2b2b; border-bottom: 1px solid #404040; font-size: 12px; }
+           box-sizing: border-box; background: #2b2b2b; border-bottom: 1px solid #404040; font-size: 12px;
+           /* never clip on narrow screens — the whole bar scrolls horizontally */
+           overflow-x: auto; overflow-y: hidden; white-space: nowrap; scrollbar-width: none;
+           -webkit-overflow-scrolling: touch; }
+    #bar::-webkit-scrollbar { display: none; }
     #status { width: 8px; height: 8px; border-radius: 50%; background: #888; flex: 0 0 auto; }
     #status.live { background: #4caf50; } #status.down { background: #f44336; }
     #tabbar { display: flex; gap: 12px; overflow-x: auto; flex: 1 1 auto; align-items: center; }
@@ -124,9 +128,27 @@
                               background: #1e1e1e; color: #ddd; font-size: 13px; cursor: pointer; }
     #overlay-actions button:hover { border-color: #4a90e2; }
     #overlay-actions button.primary { background: #4a90e2; border-color: #4a90e2; color: #fff; }
+    /* Install banner: promote the native app at the very top; dismissible (persists). */
+    #installbanner { display: flex; align-items: center; gap: 10px; padding: 5px 10px; flex: 0 0 auto;
+      background: #1b2c3d; border-bottom: 1px solid #2c4a66; font-size: 12px; color: #cfe3f5; }
+    #installbanner a { flex: 0 0 auto; padding: 2px 10px; border-radius: 5px; background: #4a90e2;
+      color: #fff; text-decoration: none; font-size: 12px; }
+    #installbanner .txt { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #installbanner .dismiss { flex: 0 0 auto; cursor: pointer; color: #9bb8d4; padding: 0 4px; font-size: 14px; }
+    /* Floating read-only pill over the stage (native-client parity): shows for our own
+       view-only connection or an upstream-read-only active tab; click = control request. */
+    #viewpill { position: fixed; top: 44px; right: 16px; z-index: 30; padding: 4px 10px;
+      border-radius: 12px; background: rgba(37,37,38,.92); border: 1px solid #404040;
+      color: #b0b0b0; font-size: 11px; cursor: pointer; display: none; }
+    #viewpill:hover { border-color: #4a90e2; }
   </style>
 </head>
 <body>
+  <div id="installbanner" style="display:none">
+    <span class="txt">This session is shared from <b>BossTerm</b> — get the terminal to host and join sessions natively.</span>
+    <a href="https://bossterm.com" target="_blank" rel="noopener">Get BossTerm</a>
+    <span class="dismiss" id="installbanner-close" title="Dismiss">×</span>
+  </div>
   <div id="bar">
     <span id="status"></span>
     <button id="menubtn" title="Tabs">☰</button>
@@ -135,6 +157,7 @@
     <span class="badge" id="presence"></span>
     <span class="badge" id="dims" title="Host terminal size (columns × rows)"></span>
     <span id="zoom">
+      <button id="splittabs" title="Show a split tab one pane at a time — switch panes via the sub-tab chips (on by default on phones)">⊞ Panes</button>
       <button id="zoomout" title="Zoom out">A&minus;</button>
       <button id="zoomin" title="Zoom in">A+</button>
       <button id="zoomfit" title="Zoom so the terminal's full width fits your view (local only)">Fit view</button>
@@ -145,6 +168,7 @@
     <div id="sidebar"></div>
     <div id="stage"></div>
   </div>
+  <div id="viewpill"></div>
   <div id="keybar"></div>
   <div id="ctxmenu"></div>
 

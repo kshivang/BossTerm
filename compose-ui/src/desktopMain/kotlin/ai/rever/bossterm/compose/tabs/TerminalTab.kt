@@ -282,6 +282,33 @@ data class TerminalTab(
      */
     override var commandBlockTracker: ai.rever.bossterm.compose.blocks.CommandBlockTracker? = null
 
+    // === Remote mirror (native client of another BossTerm's share) ===
+
+    /**
+     * True when this tab mirrors a remote BossTerm pane (no local PTY): its bytes come from a
+     * WebSocket and its grid size is the host's. The renderer reads this (via [TerminalSession])
+     * to render without a local PTY connection and to skip local auto-fit resizing.
+     */
+    override var isRemote: Boolean = false
+
+    /** The remote pane id this mirror represents (for routing input back to the host). */
+    var remotePaneId: String? = null
+
+    /**
+     * When set (remote mirror tabs), [writeUserInput] routes here — typically to send the
+     * keystrokes back to the host as `ClientMessage.Input` over the WebSocket — instead of a
+     * local PTY. Null for normal local tabs.
+     */
+    var onUserInput: ((String) -> Unit)? = null
+
+    /**
+     * Latest grid (cols×rows) that fits this remote mirror's local canvas, recorded on layout.
+     * The "Fit to host" / "Fit to client" menu actions use it: ask the host to resize to this
+     * grid, or resize our own window so the host's current grid renders 1:1. 0 until first layout.
+     */
+    var remoteFitCols: Int = 0
+    var remoteFitRows: Int = 0
+
     // === Warp-style tab customization (left tab bar) ===
 
     /**
@@ -490,6 +517,9 @@ data class TerminalTab(
     override fun writeUserInput(text: String) {
         // Record in debug collector
         debugCollector?.recordChunk(text, ai.rever.bossterm.compose.debug.ChunkSource.USER_INPUT)
+
+        // Remote mirror: route keystrokes to the host over the WebSocket (no local PTY).
+        onUserInput?.let { it(text); return }
 
         // Queue for sequential processing by writeConsumerJob
         // Uses coroutine with send() to suspend if buffer full (never drops input)

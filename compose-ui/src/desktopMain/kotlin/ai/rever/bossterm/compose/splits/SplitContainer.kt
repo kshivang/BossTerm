@@ -499,6 +499,12 @@ private fun RenderVerticalSplit(
             minRatio = splitMinimumSize,
             onRatioChange = { newRatio ->
                 splitState.updateSplitRatio(split.id, newRatio, splitMinimumSize)
+                splitState.onRemoteDividerDrag?.invoke(split.id, newRatio, false)
+            },
+            onDragEnd = {
+                splitState.onRemoteDividerDrag?.let { route ->
+                    (splitState.rootNode.findNode(split.id) as? SplitNode.VerticalSplit)?.let { route(split.id, it.ratio, true) }
+                }
             },
             modifier = Modifier
                 .align(Alignment.CenterStart)
@@ -643,6 +649,12 @@ private fun RenderHorizontalSplit(
             minRatio = splitMinimumSize,
             onRatioChange = { newRatio ->
                 splitState.updateSplitRatio(split.id, newRatio, splitMinimumSize)
+                splitState.onRemoteDividerDrag?.invoke(split.id, newRatio, false)
+            },
+            onDragEnd = {
+                splitState.onRemoteDividerDrag?.let { route ->
+                    (splitState.rootNode.findNode(split.id) as? SplitNode.HorizontalSplit)?.let { route(split.id, it.ratio, true) }
+                }
             },
             modifier = Modifier
                 .align(Alignment.TopCenter)

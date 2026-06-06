@@ -90,7 +90,9 @@ fun SplitDragHandle(
     onRatioChange: (Float) -> Unit,
     modifier: Modifier = Modifier,
     minRatio: Float = 0.1f,
-    size: Dp = DRAG_AREA_SIZE
+    size: Dp = DRAG_AREA_SIZE,
+    /** Called when the drag ends (or is cancelled) — used to commit the final ratio to a host. */
+    onDragEnd: () -> Unit = {}
 ) {
     // Track the starting ratio when drag begins
     var startRatio by remember { mutableFloatStateOf(currentRatio) }
@@ -124,9 +126,11 @@ fun SplitDragHandle(
                     },
                     onDragEnd = {
                         cumulativeDelta = 0f
+                        onDragEnd()
                     },
                     onDragCancel = {
                         cumulativeDelta = 0f
+                        onDragEnd()
                     },
                     onDrag = { change, dragAmount ->
                         change.consume()

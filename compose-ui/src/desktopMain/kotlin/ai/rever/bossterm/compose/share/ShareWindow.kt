@@ -8,6 +8,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.components.SettingsSection
+import ai.rever.bossterm.compose.settings.components.SettingsTextField
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -93,6 +94,9 @@ fun ShareWindow(
     tailscaleMode: String = "off",
     onTailscaleModeChange: (String) -> Unit = {},
     onRefreshLink: () -> Unit = {},
+    /** The share's name as viewers see it (default: the username). */
+    sessionName: String = "",
+    onSessionNameChange: (String) -> Unit = {},
 ) {
     val clipboard = LocalClipboardManager.current
     val isWindow = info.scope == ShareScope.WINDOW
@@ -155,6 +159,16 @@ fun ShareWindow(
                 Text(
                     "Open a link on another device to watch live; the control link also lets it type.",
                     color = TextSecondary, fontSize = 12.sp
+                )
+                Spacer(Modifier.height(16.dp))
+                // What viewers see as this session's label (their remote group header).
+                // Defaults to username_machine; blank reverts to it.
+                var nameField by remember(info.tabId) { mutableStateOf(sessionName) }
+                SettingsTextField(
+                    label = "Session name",
+                    value = nameField,
+                    onValueChange = { nameField = it; onSessionNameChange(it) },
+                    placeholder = SessionShareManager.defaultSessionName(),
                 )
                 Spacer(Modifier.height(20.dp))
 

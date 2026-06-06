@@ -28,6 +28,18 @@ object ShareProtocol {
 
     fun encodeServer(msg: ServerMessage): String = json.encodeToString(ServerMessage.serializer(), msg)
     fun decodeClient(text: String): ClientMessage = json.decodeFromString(ClientMessage.serializer(), text)
+
+    // Client (native viewer) side — symmetric to the host helpers above.
+    fun encodeClient(msg: ClientMessage): String = json.encodeToString(ClientMessage.serializer(), msg)
+    fun decodeServer(text: String): ServerMessage = json.decodeFromString(ServerMessage.serializer(), text)
+
+    /**
+     * SHA-256 hex of [s]. Used as [TabNode.origin]: identifies which share a mirror tab came
+     * from without leaking the share token itself to viewers.
+     */
+    fun sha256Hex(s: String): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
 }
 
 /** Host → viewer messages. */
@@ -46,6 +58,11 @@ sealed class ServerMessage {
          * false (default) = one chip per split pane (the viewer shows per-pane sub-tabs).
          */
         val summaryMode: Boolean = false,
+        /**
+         * The host's name for this shared session (defaults to its username; editable in the
+         * Share window). Clients use it as the default group label instead of the link's host.
+         */
+        val sessionName: String? = null,
     ) : ServerMessage()
 
     /** One-time initial paint for a pane: scrollback+screen as a raw escape/text blob. */
@@ -121,6 +138,29 @@ data class TabNode(
     val color: String? = null,
     val cwd: String? = null,
     val branch: String? = null,
+    /**
+     * For a tab that itself mirrors another BossTerm session (a remote container): the SHA-256
+     * hex of the share token this host dialed ([ShareProtocol.sha256Hex]). Lets a connecting
+     * client recognize — and skip — tabs that mirror its OWN session (mirroring them back would
+     * loop), without leaking the token to viewers. Null for the host's own tabs.
+     */
+    val origin: String? = null,
+    /**
+     * When [origin] != null: a friendly label for that upstream session (the host's custom
+     * group name, else its link's host) — lets a nested viewer group these tabs under a
+     * labeled subsection instead of mixing them with the host's own tabs.
+     */
+    val originName: String? = null,
+    /**
+     * When [origin] != null: true if the HOST itself is view-only on that upstream session —
+     * input can't flow through it, so these tabs are effectively read-only for viewers too.
+     */
+    val originReadOnly: Boolean? = null,
+    /**
+     * When [origin] != null: true if the host's connection to that upstream is currently down
+     * (reconnecting or failed) — these tabs show FROZEN content until it comes back.
+     */
+    val originOffline: Boolean? = null,
 )
 
 /** Recursive split-layout node: either a binary split or a leaf pane. */
@@ -183,20 +223,37 @@ sealed class ClientMessage {
     @SerialName("focus")
     data class Focus(val tabId: String, val paneId: String) : ClientMessage()
 
-    /** Request write/control access from the host. */
+    /**
+     * Request write/control access from the host. With a [tabId] naming a tab the host itself
+     * mirrors from ANOTHER session, the host relays the request to that upstream instead
+     * (A→B→C: C asks B, B asks A). Null/absent = plain upgrade of this connection (and what
+     * older peers send/understand).
+     */
     @Serializable
     @SerialName("requestControl")
-    data object RequestControl : ClientMessage()
+    data class RequestControl(val tabId: String? = null) : ClientMessage()
 
     /** Close a tab on the host (controller role only). Mirrors the host tab's close button. */
     @Serializable
     @SerialName("closeTab")
     data class CloseTab(val tabId: String) : ClientMessage()
 
-    /** Open a new tab on the host (controller role only). Mirrors the host's new-tab (+) button. */
+    /**
+     * Open a new tab on the host (controller role only). With a [tabId] naming a tab the host
+     * mirrors from another session, the host relays — the new tab opens in that upstream
+     * session instead. Null/absent = a local tab on the host (what older peers send).
+     */
     @Serializable
     @SerialName("newTab")
-    data object NewTab : ClientMessage()
+    data class NewTab(val tabId: String? = null) : ClientMessage()
+
+    /**
+     * Ask the host to disconnect from the upstream session that [tabId] mirrors (the ✕ on a
+     * "via host" group in a nested viewer). Controller role only; old hosts ignore it.
+     */
+    @Serializable
+    @SerialName("disconnectUpstream")
+    data class DisconnectUpstream(val tabId: String) : ClientMessage()
 
     /**
      * Split [paneId] in [tabId] into left/right panes (vertical divider) — the host's
@@ -275,4 +332,13 @@ sealed class ClientMessage {
     @Serializable
     @SerialName("resizeSplit")
     data class ResizeSplit(val tabId: String, val splitId: String, val ratio: Float) : ClientMessage()
+
+    /**
+     * Two-way sharing: the connecting client offers its OWN session's share [link] so the host
+     * mirrors the client's tabs back (the host dials [link] as a normal remote session — the
+     * client's own approval/key flow applies). Controller role only; old hosts ignore it.
+     */
+    @Serializable
+    @SerialName("offerShare")
+    data class OfferShare(val link: String) : ClientMessage()
 }

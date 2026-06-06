@@ -845,6 +845,23 @@ fun ProperTerminal(
       modifier = Modifier
         .fillMaxSize()
         .onGloballyPositioned { coordinates ->
+          // Remote mirror tabs are sized by the host (PaneResize), so we don't auto-fit them to
+          // the local canvas — that would fight the host's grid. We only RECORD the grid that
+          // would fit our canvas, so the explicit "Fit to host" / "Fit to client" menu actions
+          // can use it (resize the host to us, or resize our window to the host's grid).
+          if (tab.isRemote) {
+            (tab as? ai.rever.bossterm.compose.tabs.TerminalTab)?.let { t ->
+              if (cellWidth > 0f && cellHeight > 0f) {
+                val w = coordinates.size.width - 4
+                val h = coordinates.size.height - 4
+                if (w >= 10 && h >= 10) {
+                  t.remoteFitCols = (w / cellWidth).toInt().coerceAtLeast(2)
+                  t.remoteFitRows = (h / cellHeight).toInt().coerceAtLeast(2)
+                }
+              }
+            }
+            return@onGloballyPositioned
+          }
           // Detect window size changes and resize terminal accordingly
           // Note: This fires frequently, but we validate dimensions carefully to prevent crashes
           // Account for Canvas padding (4dp start, 4dp top) - on desktop 1dp ≈ 1px
@@ -1678,8 +1695,9 @@ fun ProperTerminal(
           isFocused = focusState.isFocused
         }
     ) {
-      // Show loading/error screen before connection is established
-      if (connectionState !is ConnectionState.Connected) {
+      // Show loading/error screen before connection is established. Remote mirror tabs have
+      // no local PTY connection — they render directly from the streamed buffer.
+      if (connectionState !is ConnectionState.Connected && !tab.isRemote) {
         PreConnectScreen(
           state = connectionState,
           onRetry = {

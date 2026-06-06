@@ -18,6 +18,40 @@
   var stageEl = document.getElementById("stage");
   var presenceEl = document.getElementById("presence");
   var viewOnlyEl = document.getElementById("viewonly");
+  // The "view only" badge doubles as the request-control affordance (confirm-first, like
+  // the native client's dialog) — the host's user sees its approval toast.
+  viewOnlyEl.style.cursor = "pointer";
+  viewOnlyEl.title = "Request control";
+  viewOnlyEl.onclick = function () {
+    if (controlGranted) return;
+    if (window.confirm("You're viewing this session read-only. Ask the host for control?"))
+      sendMsg({ t: "requestControl" });
+  };
+  // Floating read-only pill over the stage (native parity): our own view-only connection, or
+  // — with control — an active tab whose upstream is read-only for the host. Click = request.
+  var viewPillEl = document.getElementById("viewpill");
+  function updateViewPill() {
+    if (!controlGranted) {
+      viewPillEl.textContent = "View only — click to request control";
+      viewPillEl.style.display = "";
+      viewPillEl.onclick = function () {
+        if (window.confirm("You're viewing this session read-only. Ask the host for control?"))
+          sendMsg({ t: "requestControl" });
+      };
+      return;
+    }
+    var t = null;
+    if (layout) for (var i = 0; i < layout.tabs.length; i++)
+      if (layout.tabs[i].id === activeTabId) { t = layout.tabs[i]; break; }
+    if (t && t.origin && t.originReadOnly) {
+      var name = t.originName || "remote";
+      viewPillEl.textContent = "View only — click to request control of " + name;
+      viewPillEl.style.display = "";
+      viewPillEl.onclick = function () { requestUpstreamControl(t.id, name); };
+      return;
+    }
+    viewPillEl.style.display = "none";
+  }
 
   var keybarEl = document.getElementById("keybar");
   var menubtnEl = document.getElementById("menubtn");
@@ -33,6 +67,18 @@
 
   // ☰ toggles the left tab drawer (phone); tapping a tab closes it (see selectPane).
   menubtnEl.onclick = function () { sidebarEl.classList.toggle("open"); };
+
+  // Install banner: shown until dismissed (persists across visits).
+  (function () {
+    var banner = document.getElementById("installbanner");
+    var dismissed = null;
+    try { dismissed = localStorage.getItem("bossterm-install-banner"); } catch (e) {}
+    if (dismissed !== "dismissed") banner.style.display = "flex";
+    document.getElementById("installbanner-close").onclick = function () {
+      banner.style.display = "none";
+      try { localStorage.setItem("bossterm-install-banner", "dismissed"); } catch (e) {}
+    };
+  })();
 
   // Keep the fixed key bar just above the soft keyboard (and reserve space for it).
   function layoutForKeyboard() {
@@ -55,8 +101,8 @@
     if (currentPaneId && panes[currentPaneId]) { try { panes[currentPaneId].term.focus(); } catch (e) {} }
   }
   function sendKey(seq) {
-    if (!controlGranted || !currentPaneId) return;
-    sendMsg({ t: "input", paneId: currentPaneId, data: seq });
+    if (!currentPaneId) return;
+    sendInput(currentPaneId, seq);
   }
   function buildKeybar() {
     keybarEl.innerHTML = "";
@@ -89,6 +135,9 @@
   }
 
   var controlGranted = false;
+  // An upstream control request queued until OUR control is granted (the host only relays
+  // upstream requests from controlling clients) — fired from the "control" handler.
+  var pendingUpstreamControlTab = null;
   var theme = null;               // last Theme message
   var layout = null;              // last Layout message
   var activeTabId = null;         // client-side selected tab
@@ -104,8 +153,9 @@
     var tab = null, i;
     for (i = 0; i < layout.tabs.length; i++) if (layout.tabs[i].id === activeTabId) tab = layout.tabs[i];
     if (!tab) tab = layout.tabs[0];
-    if (!tab || !tab.tree || tab.tree.t !== "pane") return;
-    var p = panes[tab.tree.paneId]; if (!p) return;
+    var pid = displayedSinglePaneId(tab); // single-pane tab, or the shown pane in splits-as-tabs
+    if (!pid) return;
+    var p = panes[pid]; if (!p) return;
     requestAnimationFrame(function () {
       var sc = p.host.querySelector(".xterm-screen");
       if (sc) { var w = Math.ceil(sc.getBoundingClientRect().width); if (w > 0) p.host.style.width = w + "px"; }
@@ -129,8 +179,9 @@
   }
   // Fit the active pane's font so the whole width shows (zoom-out to fit).
   function fitWidth() {
-    var tab = activeTabNode(); if (!tab || !tab.tree || tab.tree.t !== "pane") return;
-    var p = panes[tab.tree.paneId]; if (!p) return;
+    var tab = activeTabNode(); if (!tab) return;
+    var pid = displayedSinglePaneId(tab); if (!pid) return;
+    var p = panes[pid]; if (!p) return;
     var screen = p.host.querySelector(".xterm-screen"); if (!screen) return;
     var avail = stageEl.clientWidth - 2, w = screen.getBoundingClientRect().width;
     if (avail > 0 && w > 0) applyFont(curFont() * (avail / w));
@@ -138,6 +189,44 @@
   document.getElementById("zoomin").onclick = function () { applyFont(curFont() + 1); };
   document.getElementById("zoomout").onclick = function () { applyFont(curFont() - 1); };
   document.getElementById("zoomfit").onclick = fitWidth;
+
+  // ---- "splits as tabs" (viewer-local) ----
+  // Render only the selected pane of a split tab, full-screen — switch panes via the
+  // sub-tab chips — instead of the side-by-side split. Defaults ON for phone screens;
+  // the user's explicit choice persists.
+  var splitsAsTabs = (function () {
+    var saved = null;
+    try { saved = localStorage.getItem("bossterm-splits-as-tabs"); } catch (e) {}
+    if (saved === "1") return true;
+    if (saved === "0") return false;
+    return !!(window.matchMedia && window.matchMedia("(max-width: 700px)").matches);
+  })();
+  var splitTabsBtn = document.getElementById("splittabs");
+  function refreshSplitTabsBtn() {
+    splitTabsBtn.style.background = splitsAsTabs ? "#4a90e2" : "";
+    splitTabsBtn.style.color = splitsAsTabs ? "#fff" : "";
+    splitTabsBtn.style.borderColor = splitsAsTabs ? "#4a90e2" : "";
+  }
+  splitTabsBtn.onclick = function () {
+    splitsAsTabs = !splitsAsTabs;
+    try { localStorage.setItem("bossterm-splits-as-tabs", splitsAsTabs ? "1" : "0"); } catch (e) {}
+    refreshSplitTabsBtn();
+    renderTabBar();
+    renderStage();
+  };
+  refreshSplitTabsBtn();
+  // The single pane the stage currently shows for [tab], or null when a split renders as a grid.
+  function displayedSinglePaneId(tab) {
+    if (!tab || !tab.tree) return null;
+    if (tab.tree.t === "pane") return tab.tree.paneId;
+    if (splitsAsTabs && tab.tree.t === "split") return currentPaneId || defaultPaneId(tab.tree);
+    return null;
+  }
+  function findPaneNode(node, paneId) {
+    if (!node) return null;
+    if (node.t === "pane") return node.paneId === paneId ? node : null;
+    return findPaneNode(node.a, paneId) || findPaneNode(node.b, paneId);
+  }
 
   // Show the host terminal's grid size (cols × rows) so its bounds are explicit.
   function updateDims() {
@@ -230,7 +319,7 @@
     var canRead = controlGranted && navigator.clipboard && navigator.clipboard.readText;
     ctxEl.appendChild(ctxItem("Paste", canRead, function () {
       navigator.clipboard.readText().then(function (txt) {
-        if (txt) sendMsg({ t: "input", paneId: paneId, data: txt });
+        if (txt) sendInput(paneId, txt);
       }).catch(function () {});
     }));
     ctxEl.appendChild(ctxItem("Select all", true, function () { try { term.selectAll(); } catch (e) {} }));
@@ -443,11 +532,7 @@
       ta.setAttribute("spellcheck", "false");
     }
     if (viewerFont) { try { term.options.fontSize = viewerFont; } catch (e) {} }
-    term.onData(function (data) {
-      if (controlGranted && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ t: "input", paneId: paneId, data: data }));
-      }
-    });
+    term.onData(function (data) { sendInput(paneId, data); });
     p = { term: term, host: host };
     panes[paneId] = p;
     return p;
@@ -496,25 +581,105 @@
       sidebarEl.innerHTML = "";
       // One cluster per tab: per-pane sub-tab chips when the tab is split (and the host
       // isn't in summary mode), otherwise a single tab-level chip — like the host.
-      if (layout) layout.tabs.forEach(function (tab) {
+      function tabCluster(tab) {
         var group = document.createElement("div"); group.className = "ltab-group";
         var ps = []; panesInOrder(tab.tree, ps);
-        if (!summaryMode && tab.tree && tab.tree.t === "split") {
+        if ((!summaryMode || splitsAsTabs) && tab.tree && tab.tree.t === "split") {
           ps.forEach(function (pane) { group.appendChild(leftChip(tab, pane)); });
         } else {
           group.appendChild(leftChip(tab, null));
         }
-        sidebarEl.appendChild(group);
-      });
-      // Action row mirroring the host's left bar: Split L/R, Split T/B, then New tab.
-      if (controlGranted) {
-        var actions = document.createElement("div");
-        actions.className = "ltab-actions";
-        actions.appendChild(splitButton("v"));
-        actions.appendChild(splitButton("h"));
-        actions.appendChild(newTabButton("+ New tab"));
-        sidebarEl.appendChild(actions);
+        return group;
       }
+      // Partition like the native client: the host's own tabs render directly; tabs the host
+      // itself mirrors from OTHER sessions render as boxed "via host" groups below.
+      var own = [], upstreams = {}, upOrder = [];
+      if (layout) layout.tabs.forEach(function (t) {
+        if (t.origin) {
+          if (!upstreams[t.origin]) {
+            upstreams[t.origin] = { name: t.originName, readOnly: !!t.originReadOnly, offline: !!t.originOffline, tabs: [] };
+            upOrder.push(t.origin);
+          }
+          upstreams[t.origin].tabs.push(t);
+        } else own.push(t);
+      });
+      own.forEach(function (tab) { sidebarEl.appendChild(tabCluster(tab)); });
+      // Action row mirroring the host's left bar: Split L/R, Split T/B, then New tab.
+      // Always shown — when view-only, clicking offers to request control (viewOnlyGate).
+      var actions = document.createElement("div");
+      actions.className = "ltab-actions";
+      actions.appendChild(splitButton("v"));
+      actions.appendChild(splitButton("h"));
+      actions.appendChild(newTabButton("+ New tab"));
+      sidebarEl.appendChild(actions);
+      // Upstream groups: tether + bordered box with header (name · via host, offline/read-only
+      // badges, ✕ = ask host to disconnect it), chips, and a relayed action row.
+      upOrder.forEach(function (key) {
+        var g = upstreams[key];
+        var tether = document.createElement("div");
+        tether.style.cssText = "width:2px;height:10px;margin-left:13px;background:#4FC3F7;";
+        sidebarEl.appendChild(tether);
+        var box = document.createElement("div");
+        box.style.cssText = "border:1px solid #4FC3F7;border-radius:8px;padding:4px;display:flex;flex-direction:column;gap:4px;";
+        var hd = document.createElement("div");
+        hd.style.cssText = "display:flex;align-items:center;gap:4px;padding:2px;font-size:11px;color:#b0b0b0;";
+        var lbl = document.createElement("span");
+        lbl.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+        lbl.textContent = "☁ " + (g.name || "remote") + " · via " + ((layout && layout.sessionName) || "host");
+        hd.appendChild(lbl);
+        if (g.offline) {
+          var off = document.createElement("span");
+          off.textContent = "· offline"; off.title = "The host lost its connection to this session — content is frozen";
+          off.style.cssText = "color:#E57373;font-size:10px;";
+          hd.appendChild(off);
+        }
+        if (g.readOnly) {
+          var eye = document.createElement("span");
+          eye.textContent = "👁"; eye.title = "Read-only via this host — click to request control";
+          eye.style.cursor = "pointer";
+          eye.onclick = function (ev) { ev.stopPropagation(); requestUpstreamControl(anchorTab(g).id, g.name || "remote"); };
+          hd.appendChild(eye);
+        }
+        var x = document.createElement("span");
+        x.textContent = "×"; x.title = "Ask the host to disconnect this upstream";
+        x.style.cssText = "cursor:pointer;color:#808080;padding:0 2px;";
+        x.onclick = function (ev) {
+          ev.stopPropagation();
+          if (viewOnlyGate()) return;
+          if (window.confirm("Ask the host to disconnect from " + (g.name || "this upstream") + "?"))
+            sendMsg({ t: "disconnectUpstream", tabId: g.tabs[0].id });
+        };
+        hd.appendChild(x);
+        box.appendChild(hd);
+        g.tabs.forEach(function (tab) { box.appendChild(tabCluster(tab)); });
+        // Always shown; view-only clicks route to the request-control dialog (viewOnlyGate).
+        var act = document.createElement("div");
+        act.className = "ltab-actions";
+        act.appendChild(groupSplitButton("v", g));
+        act.appendChild(groupSplitButton("h", g));
+        var nt = document.createElement("div");
+        nt.className = "newtab"; nt.textContent = "+ New tab";
+        nt.title = "New tab in " + (g.name || "remote");
+        nt.onclick = function () {
+          if (viewOnlyGate()) return;
+          if (g.readOnly) { requestUpstreamControl(anchorTab(g).id, g.name || "remote"); return; }
+          sendMsg({ t: "newTab", tabId: anchorTab(g).id });
+        };
+        act.appendChild(nt);
+        box.appendChild(act);
+        sidebarEl.appendChild(box);
+      });
+      // Bottom: ask the host to mirror another BossTerm share here (native "Add remote").
+      var add = document.createElement("div");
+      add.className = "newtab";
+      add.textContent = "☁ Add remote";
+      add.title = "Ask the host to mirror another BossTerm share link";
+      add.onclick = function () {
+        if (viewOnlyGate()) return;
+        var link = window.prompt("Paste a BossTerm share link — the host will mirror its tabs:");
+        if (link && link.trim()) sendMsg({ t: "offerShare", link: link.trim() });
+      };
+      sidebarEl.appendChild(add);
     } else {
       tabbarEl.classList.remove("hidden");
       menubtnEl.classList.remove("show");
@@ -523,7 +688,7 @@
       if (layout) layout.tabs.forEach(function (tab) {
         var grp = document.createElement("div"); grp.className = "tab-group";
         var ps = []; panesInOrder(tab.tree, ps);
-        if (!summaryMode && tab.tree && tab.tree.t === "split") {
+        if ((!summaryMode || splitsAsTabs) && tab.tree && tab.tree.t === "split") {
           ps.forEach(function (pane) { grp.appendChild(topChip(tab, pane)); });
         } else {
           grp.appendChild(topChip(tab, null));
@@ -531,12 +696,12 @@
         tabbarEl.appendChild(grp);
       });
       // Split buttons sit just left of the new-tab (+), like the host's tab-bar actions.
-      if (controlGranted) {
-        tabbarEl.appendChild(splitButton("v"));
-        tabbarEl.appendChild(splitButton("h"));
-        tabbarEl.appendChild(newTabButton("+"));
-      }
+      // Always shown — when view-only, clicking offers to request control (viewOnlyGate).
+      tabbarEl.appendChild(splitButton("v"));
+      tabbarEl.appendChild(splitButton("h"));
+      tabbarEl.appendChild(newTabButton("+"));
     }
+    updateViewPill(); // runs on layout/control/selection changes — keeps the pill current
   }
 
   // Panes of a tab in split-tree order (left/top before right/bottom).
@@ -558,6 +723,7 @@
   function setClientFocus(paneId) {
     if (currentPaneId === paneId) return;
     currentPaneId = paneId;
+    if (splitsAsTabs) { renderTabBar(); renderStage(); return; } // shown pane follows focus
     refreshPaneFocus();
     renderTabBar(); // per-split sub-tab chip highlight follows the client's focus
   }
@@ -581,6 +747,43 @@
     if (currentPaneId) { var ids = {}; collectPaneIds(tab.tree, ids); if (ids[currentPaneId]) return currentPaneId; }
     return defaultPaneId(tab.tree);
   }
+  // View-only fallback for action buttons (the native client's confirm dialog): when we lack
+  // control, offer to request it instead of silently doing nothing. True = handled, caller bails.
+  function viewOnlyGate() {
+    if (controlGranted) return false;
+    if (window.confirm("You're viewing this session read-only — this action needs control. Ask the host for it?"))
+      sendMsg({ t: "requestControl" });
+    return true;
+  }
+
+  // Typing prompt throttle: buffered keystrokes must not spam confirms — one prompt, then
+  // quiet for 30s (a grant clears the read-only state and re-enables input anyway).
+  var inputPromptQuietUntil = 0;
+  function promptControlForInput(tabId, name) {
+    var now = Date.now();
+    if (now < inputPromptQuietUntil) return;
+    inputPromptQuietUntil = now + 30000;
+    if (tabId) { requestUpstreamControl(tabId, name); return; }
+    if (window.confirm("You're viewing this session read-only — typing needs control. Ask the host for it?"))
+      sendMsg({ t: "requestControl" });
+  }
+  function tabOfPane(paneId) {
+    if (!layout) return null;
+    for (var i = 0; i < layout.tabs.length; i++) {
+      var ids = {}; collectPaneIds(layout.tabs[i].tree, ids);
+      if (ids[paneId]) return layout.tabs[i];
+    }
+    return null;
+  }
+  // Central input path: typing into a read-only context (no control, or the pane's tab is
+  // read-only via an upstream host) prompts to request control instead of vanishing.
+  function sendInput(paneId, data) {
+    if (!controlGranted) { promptControlForInput(null, null); return; }
+    var t = tabOfPane(paneId);
+    if (t && t.origin && t.originReadOnly) { promptControlForInput(t.id, t.originName || "remote"); return; }
+    sendMsg({ t: "input", paneId: paneId, data: data });
+  }
+
   // kind: "v" = Split Left/Right (vertical divider), "h" = Split Top/Bottom (horizontal divider).
   function splitButton(kind) {
     var b = document.createElement("div");
@@ -589,9 +792,49 @@
     b.innerHTML = kind === "v" ? SVG_VSPLIT : SVG_HSPLIT;
     b.onclick = function (ev) {
       ev.stopPropagation();
+      if (viewOnlyGate()) return;
       var tab = activeTabNode(), pid = activePaneId();
       if (!tab || !pid) return;
       sendMsg({ t: kind === "v" ? "splitVertical" : "splitHorizontal", tabId: tab.id, paneId: pid });
+    };
+    return b;
+  }
+
+  // ---- upstream ("via host") group helpers — native-client parity ----
+
+  // Footer actions of an upstream group target the active tab when it's in the group, else
+  // the group's first tab (the host relays them to the origin session).
+  function anchorTab(g) {
+    for (var i = 0; i < g.tabs.length; i++) if (g.tabs[i].id === activeTabId) return g.tabs[i];
+    return g.tabs[0];
+  }
+
+  // Confirm-first control request for an upstream session. If we don't control the host yet,
+  // chain: request that first, then the relayed request fires when the grant arrives.
+  function requestUpstreamControl(tabId, name) {
+    if (!window.confirm("Ask for control of " + name + "? Each host along the path approves in turn.")) return;
+    if (!controlGranted) {
+      pendingUpstreamControlTab = tabId;
+      sendMsg({ t: "requestControl" });
+      return;
+    }
+    sendMsg({ t: "requestControl", tabId: tabId });
+  }
+
+  // Split button for an upstream group: relayed by the host to the origin; when the host is
+  // view-only on it, routes to the control request instead of a silent no-op.
+  function groupSplitButton(kind, g) {
+    var b = document.createElement("div");
+    b.className = "splitbtn";
+    b.title = kind === "v" ? "Split vertical (left / right)" : "Split horizontal (top / bottom)";
+    b.innerHTML = kind === "v" ? SVG_VSPLIT : SVG_HSPLIT;
+    b.onclick = function (ev) {
+      ev.stopPropagation();
+      if (viewOnlyGate()) return;
+      if (g.readOnly) { requestUpstreamControl(anchorTab(g).id, g.name || "remote"); return; }
+      var tab = anchorTab(g);
+      var pid = (tab.id === activeTabId ? activePaneId() : null) || defaultPaneId(tab.tree);
+      if (pid) sendMsg({ t: kind === "v" ? "splitVertical" : "splitHorizontal", tabId: tab.id, paneId: pid });
     };
     return b;
   }
@@ -611,7 +854,10 @@
   function newTabButton(label) {
     var el = document.createElement("div");
     el.className = "newtab"; el.textContent = label; el.title = "New tab";
-    el.onclick = function () { sendMsg({ t: "newTab" }); };
+    el.onclick = function () {
+      if (viewOnlyGate()) return;
+      sendMsg({ t: "newTab" });
+    };
     return el;
   }
 
@@ -762,13 +1008,19 @@
     // Keep the key-bar target on a pane that's actually visible in this tab.
     var ids = {}; collectPaneIds(tab.tree, ids);
     if (!currentPaneId || !ids[currentPaneId]) currentPaneId = defaultPaneId(tab.tree);
-    var root = buildNode(tab.tree);
-    if (tab.tree.t === "pane") {
+    // "Splits as tabs": show only the selected pane of a split, full-screen — the sub-tab
+    // chips switch between panes (each pane keeps its own xterm; nothing is lost).
+    var tree = tab.tree;
+    if (splitsAsTabs && tree && tree.t === "split") {
+      tree = findPaneNode(tree, currentPaneId) || tree;
+    }
+    var root = buildNode(tree);
+    if (tree.t === "pane") {
       // single pane → natural width, scrollable in #stage (don't stretch/clip)
       root.style.flex = "0 0 auto";
       root.style.height = "100%";
       root.style.overflow = "visible";
-      var sp = panes[tab.tree.paneId];
+      var sp = panes[tree.paneId];
       if (sp) { sp.host.style.overflow = "visible"; sp.host.style.height = "100%"; }
     } else {
       root.style.flex = "1 1 0"; // splits fill the stage
@@ -851,8 +1103,14 @@
         controlGranted = !!m.granted;
         viewOnlyEl.style.display = controlGranted ? "none" : "";
         fithostEl.style.display = controlGranted ? "" : "none"; // resizing the host needs control
+        // Second hop of a chained upstream request (view-only → control → relay upstream).
+        if (controlGranted && pendingUpstreamControlTab) {
+          sendMsg({ t: "requestControl", tabId: pendingUpstreamControlTab });
+          pendingUpstreamControlTab = null;
+        }
         renderTabBar(); // show/hide the close + new-tab affordances
         buildKeybar();  // show/hide the on-screen control-key bar
+        updateViewPill(); // also directly, in case layout hasn't arrived yet
         break;
     }
   };

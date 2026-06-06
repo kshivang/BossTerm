@@ -3,6 +3,8 @@ package ai.rever.bossterm.compose.tabs
 import ai.rever.bossterm.compose.features.ContextMenuController
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -13,10 +15,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.HorizontalSplit
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VerticalSplit
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -54,6 +59,9 @@ enum class TabBarOrientation { TOP, LEFT }
 
 /** Gap between tab-groups (each group = one tab's panes). Larger than within a group. */
 private val TabGroupGap: Dp = 18.dp
+
+/** Accent for remote (mirrored) sessions — the box border + tab-chip color. */
+private val RemoteAccent: Color = Color(0xFF4FC3F7)
 
 /** Gap between pane chips within the same tab-group. Tight, so they read as one cluster. */
 private val TabChipGap: Dp = 3.dp
@@ -96,6 +104,81 @@ data class TabBarPane(
 data class TabBarGroup(val tabIndex: Int, val panes: List<TabBarPane>)
 
 /**
+ * A connected remote BossTerm session, rendered (in the left bar) as a bordered box: a
+ * [header] (a custom name, else the remote link's host), the session's mirrored [groups]
+ * (its tabs), and a footer of actions that target the remote (split + new tab + disconnect).
+ *
+ * A right-click on any mirrored chip opens the same host-routed menu the browser viewer shows
+ * (new tab / split / AI assistant / rename / color / duplicate / close…). [canControl] gates the
+ * host-mutating items; [onChipSplit]/[onChipLaunchAI] act on the clicked pane (the rest reuse the
+ * shared TabBar callbacks, which route to the host for remote chips).
+ *
+ * A right-click on the box HEADER customizes the group locally: [onRename] sets the header
+ * (inline edit; blank reverts to the host name), [onSetColor] sets [colorHex], the box's
+ * border/icon/chip accent (null reverts to the default remote cyan).
+ */
+data class RemoteTabGroup(
+    val id: String,
+    val header: String,
+    val colorHex: String?,
+    val groups: List<TabBarGroup>,
+    val canControl: Boolean,
+    /** Connection state shown next to the header when not healthy (e.g. "connecting…",
+     *  "disconnected"); null = connected. [statusError] picks red over amber. */
+    val statusLabel: String? = null,
+    val statusError: Boolean = false,
+    val onSplitVertical: () -> Unit,
+    val onSplitHorizontal: () -> Unit,
+    val onNewTab: () -> Unit,
+    val onDisconnect: () -> Unit,
+    val onChipSplit: (tabIndex: Int, paneId: String, horizontal: Boolean) -> Unit,
+    val onChipLaunchAI: (tabIndex: Int, paneId: String, assistantId: String) -> Unit,
+    val onRename: (String) -> Unit,
+    val onSetColor: (String?) -> Unit,
+    /** Open this remote's share link in the default browser (the web viewer). */
+    val onOpenInBrowser: () -> Unit,
+    /** Copy this remote's share link to the clipboard. */
+    val onCopyLink: () -> Unit,
+    /** Ask the host to upgrade this view-only connection to control (host approves via toast). */
+    val onRequestControl: () -> Unit,
+    /**
+     * Tabs the host itself mirrors from OTHER sessions, nested as labeled subsections inside
+     * this box (instead of mixing with the host's own tabs). [RemoteNestedGroup.readOnly]
+     * means the host is view-only on that upstream — input can't flow through it.
+     */
+    val nested: List<RemoteNestedGroup> = emptyList(),
+)
+
+/**
+ * One upstream session's tabs inside a remote group box (see [RemoteTabGroup.nested]).
+ * Actions are relayed by the host to the origin session; when [readOnly] (the host is
+ * view-only on the origin), split/new-tab instead fire [onRequestControl] so the user is
+ * routed to the upgrade path rather than a silent no-op.
+ */
+data class RemoteNestedGroup(
+    val label: String,
+    val readOnly: Boolean,
+    /** The host's connection to this upstream is down — the tabs show frozen content. */
+    val offline: Boolean = false,
+    val groups: List<TabBarGroup>,
+    val onSplitVertical: () -> Unit = {},
+    val onSplitHorizontal: () -> Unit = {},
+    val onNewTab: () -> Unit = {},
+    /** Ask the host to disconnect from this upstream (the box's ✕). */
+    val onClose: () -> Unit = {},
+    /** Relay a control request to the origin (host asks it on our behalf). */
+    val onRequestControl: () -> Unit = {},
+)
+
+/** AI assistants offered in the remote chip menu — same set the browser viewer mirrors. */
+private val REMOTE_AI_ASSISTANTS = listOf(
+    "claude-code" to "Claude Code",
+    "codex" to "Codex",
+    "gemini-cli" to "Gemini CLI",
+    "opencode" to "OpenCode",
+)
+
+/**
  * Tab bar component for multiple terminal sessions.
  *
  * Displays a strip (top) or column (left) of pane-chips grouped by tab:
@@ -132,6 +215,8 @@ fun TabBar(
     onSplitVertical: () -> Unit = {},
     onSplitHorizontal: () -> Unit = {},
     onSettings: () -> Unit = {},
+    onAddRemote: () -> Unit = {},
+    remoteGroups: List<RemoteTabGroup> = emptyList(),
     orientation: TabBarOrientation = TabBarOrientation.TOP,
     verticalWidth: Dp = TabBarVerticalWidth,
     modifier: Modifier = Modifier
@@ -179,6 +264,101 @@ fun TabBar(
             )
         }
         contextMenuController.showMenu(0f, 0f, items)
+    }
+
+    // Map each mirrored chip's tabIndex → its remote session (and its upstream nest, when the
+    // chip lives in a "via host" box), so a right-click opens the right host-routed menu
+    // instead of the local one.
+    val remoteByTabIndex: Map<Int, Pair<RemoteTabGroup, RemoteNestedGroup?>> =
+        remoteGroups.flatMap { rg ->
+            rg.groups.map { it.tabIndex to (rg to (null as RemoteNestedGroup?)) } +
+                rg.nested.flatMap { nest -> nest.groups.map { it.tabIndex to (rg to nest) } }
+        }.toMap()
+
+    // Remote group box currently renaming its header inline (by RemoteTabGroup.id).
+    var editingRemoteId by remember { mutableStateOf<String?>(null) }
+
+    // Right-click menu on a remote group's HEADER — local customization of the box
+    // (name + accent color) plus Disconnect. Nothing here touches the host.
+    val showRemoteGroupMenu: (RemoteTabGroup) -> Unit = { rg ->
+        val colorSubmenu = ContextMenuController.MenuSubmenu(
+            id = "remote_group_color",
+            label = "Color",
+            items = TAB_COLOR_PRESETS.map { (name, hex) ->
+                ContextMenuController.MenuItem(id = "rg_color_$name", label = name, enabled = true, action = { rg.onSetColor(hex) })
+            } + ContextMenuController.MenuSeparator(id = "rg_color_sep") +
+                ContextMenuController.MenuItem(id = "rg_color_clear", label = "Clear", enabled = true, action = { rg.onSetColor(null) })
+        )
+        // View-only connections get a control-upgrade request at the top (host approves it
+        // via the same toast as join requests).
+        val requestControlItem = if (!rg.canControl) listOf(
+            ContextMenuController.MenuItem(id = "rg_request_control", label = "Request Control", enabled = true, action = { rg.onRequestControl() }),
+            ContextMenuController.MenuSeparator(id = "rg_sep_control"),
+        ) else emptyList()
+        contextMenuController.showMenu(0f, 0f, requestControlItem + listOf(
+            ContextMenuController.MenuItem(id = "rg_rename", label = "Rename…", enabled = true, action = { editingRemoteId = rg.id }),
+            colorSubmenu,
+            ContextMenuController.MenuItem(id = "rg_open_browser", label = "Open in Browser", enabled = true, action = { rg.onOpenInBrowser() }),
+            ContextMenuController.MenuItem(id = "rg_copy_link", label = "Copy Link", enabled = true, action = { rg.onCopyLink() }),
+            ContextMenuController.MenuSeparator(id = "rg_sep"),
+            ContextMenuController.MenuItem(id = "rg_disconnect", label = "Disconnect remote", enabled = true, action = { rg.onDisconnect() }),
+        ))
+    }
+
+    // Right-click menu for a mirrored remote chip — mirrors the browser viewer's menu, all
+    // routed to the host. Host-mutating items are gated on control; "Disconnect remote" is the
+    // one native-only affordance and is always enabled.
+    val showRemoteChipMenu: (RemoteTabGroup, RemoteNestedGroup?, Int, String) -> Unit = { rg, nest, tabIndex, paneId ->
+        if (!rg.canControl) {
+            // View-only: every chip action mutates the host, so offer just the upgrade path
+            // and the local disconnect instead of a wall of disabled items.
+            contextMenuController.showMenu(0f, 0f, listOf(
+                ContextMenuController.MenuItem(id = "remote_request_control", label = "Request Control", enabled = true, action = { rg.onRequestControl() }),
+                ContextMenuController.MenuSeparator(id = "remote_sep_view"),
+                ContextMenuController.MenuItem(id = "remote_disconnect", label = "Disconnect remote", enabled = true, action = { rg.onDisconnect() }),
+            ))
+        } else if (nest?.readOnly == true) {
+            // Upstream read-only (A→B→C): actions would die at the host — lean menu with the
+            // relayed control request (the host asks the origin on our behalf).
+            contextMenuController.showMenu(0f, 0f, listOf(
+                ContextMenuController.MenuItem(id = "remote_request_upstream", label = "Request Control", enabled = true, action = { nest.onRequestControl() }),
+            ))
+        } else {
+        val ctl = rg.canControl
+        val aiSubmenu = ContextMenuController.MenuSubmenu(
+            id = "remote_ai",
+            label = "AI assistant",
+            items = REMOTE_AI_ASSISTANTS.map { (id, label) ->
+                ContextMenuController.MenuItem(id = "remote_ai_$id", label = label, enabled = ctl,
+                    action = { rg.onChipLaunchAI(tabIndex, paneId, id) })
+            }
+        )
+        val colorSubmenu = ContextMenuController.MenuSubmenu(
+            id = "remote_color",
+            label = "Color",
+            items = TAB_COLOR_PRESETS.map { (name, hex) ->
+                ContextMenuController.MenuItem(id = "remote_color_$name", label = name, enabled = ctl, action = { onSetColor(tabIndex, paneId, hex) })
+            } + ContextMenuController.MenuSeparator(id = "remote_color_sep") +
+                ContextMenuController.MenuItem(id = "remote_color_clear", label = "Clear", enabled = ctl, action = { onSetColor(tabIndex, paneId, null) })
+        )
+        val items = listOf(
+            ContextMenuController.MenuItem(id = "remote_new_tab", label = "New Tab", enabled = ctl, action = { rg.onNewTab() }),
+            ContextMenuController.MenuItem(id = "remote_split_v", label = "Split Left/Right", enabled = ctl, action = { rg.onChipSplit(tabIndex, paneId, false) }),
+            ContextMenuController.MenuItem(id = "remote_split_h", label = "Split Top/Bottom", enabled = ctl, action = { rg.onChipSplit(tabIndex, paneId, true) }),
+            aiSubmenu,
+            ContextMenuController.MenuSeparator(id = "remote_sep_rename"),
+            ContextMenuController.MenuItem(id = "remote_rename", label = "Rename…", enabled = ctl, action = { editingPaneId = paneId }),
+            colorSubmenu,
+            ContextMenuController.MenuSeparator(id = "remote_sep_close"),
+            ContextMenuController.MenuItem(id = "remote_duplicate", label = "Duplicate Tab", enabled = ctl, action = { onDuplicate(tabIndex) }),
+            ContextMenuController.MenuItem(id = "remote_close", label = "Close", enabled = ctl, action = { onPaneClosed(tabIndex, paneId) }),
+            ContextMenuController.MenuItem(id = "remote_close_others", label = "Close Other Tabs", enabled = ctl, action = { onCloseOthers(tabIndex) }),
+            ContextMenuController.MenuItem(id = "remote_close_below", label = "Close Tabs Below", enabled = ctl, action = { onCloseBelow(tabIndex) }),
+            ContextMenuController.MenuSeparator(id = "remote_sep_disconnect"),
+            ContextMenuController.MenuItem(id = "remote_disconnect", label = "Disconnect remote", enabled = true, action = { rg.onDisconnect() }),
+        )
+        contextMenuController.showMenu(0f, 0f, items)
+        }
     }
 
     val newTabButton: @Composable () -> Unit = {
@@ -229,7 +409,11 @@ fun TabBar(
             },
             onCancelRename = { editingPaneId = null },
             onClose = { onPaneClosed(group.tabIndex, pane.paneId) },
-            onContextMenu = { showChipMenu(group.tabIndex, pane.paneId) },
+            onContextMenu = {
+                val ctx = remoteByTabIndex[group.tabIndex]
+                if (ctx != null) showRemoteChipMenu(ctx.first, ctx.second, group.tabIndex, pane.paneId)
+                else showChipMenu(group.tabIndex, pane.paneId)
+            },
             modifier = chipModifier
         )
     }
@@ -259,6 +443,167 @@ fun TabBar(
                             group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
                         }
                     }
+                    // Each connected remote session: a bordered box with the link header, its
+                    // mirrored tab chips, and footer actions that target the remote.
+                    remoteGroups.forEach { rg ->
+                        // Group accent: a custom color set via the header's right-click, else the
+                        // default remote cyan. Drives the box border, the cloud icon, and (via
+                        // colorHexFor upstream) the chips' accent stripes.
+                        val groupAccent = parseTabColor(rg.colorHex) ?: RemoteAccent
+                        // The host box + its upstream ("via host") boxes render as ONE unit,
+                        // tethered by short accent connector lines — making the "these tabs
+                        // arrive through the box above" relationship visible.
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                                .border(1.dp, groupAccent, RoundedCornerShape(8.dp)).padding(4.dp),
+                            verticalArrangement = Arrangement.spacedBy(TabChipGap)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 2.dp)
+                                    .onPointerEvent(PointerEventType.Press) { event ->
+                                        if (event.button == PointerButton.Secondary) showRemoteGroupMenu(rg)
+                                    },
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(Icons.Default.Cloud, contentDescription = null, tint = groupAccent, modifier = Modifier.size(13.dp))
+                                if (rg.id == editingRemoteId) {
+                                    TabRenameField(
+                                        initial = rg.header,
+                                        onCommit = { editingRemoteId = null; rg.onRename(it) },
+                                        onCancel = { editingRemoteId = null },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                } else {
+                                    Text(
+                                        rg.header, color = Color(0xFFB0B0B0), fontSize = 11.sp,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                rg.statusLabel?.let { label ->
+                                    // Connection state (connecting…/disconnected) — amber while
+                                    // it may heal, red when it gave up.
+                                    Text(
+                                        "· $label",
+                                        color = if (rg.statusError) Color(0xFFE57373) else Color(0xFFE0A030),
+                                        fontSize = 10.sp, maxLines = 1
+                                    )
+                                }
+                                if (!rg.canControl) {
+                                    // Read-only session: eye badge (right-click → Request Control).
+                                    Icon(
+                                        Icons.Default.Visibility,
+                                        contentDescription = "View only — right-click to request control",
+                                        tint = Color(0xFF808080),
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = rg.onDisconnect).padding(2.dp)
+                                ) { Icon(Icons.Default.Close, contentDescription = "Disconnect remote", tint = Color(0xFF808080), modifier = Modifier.size(13.dp)) }
+                            }
+                            // Match the local bar: split panes of one tab hug together
+                            // (TabChipGap), separate tabs are spaced further apart (TabGroupGap).
+                            Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
+                                rg.groups.forEach { group ->
+                                    Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                                        group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                    }
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                barButton(Icons.Default.VerticalSplit, "Split Left/Right", rg.onSplitVertical)
+                                barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom", rg.onSplitHorizontal)
+                                barButton(Icons.Default.Add, "New tab", rg.onNewTab)
+                            }
+                        }
+                        // Tabs the host itself mirrors from OTHER sessions: flattened — each
+                        // upstream gets its own sibling box (same accent ties it to the host's
+                        // box above; the eye = the host is view-only on it, so input can't
+                        // flow through). No footer — structural actions belong to the origin.
+                        rg.nested.forEach { nest ->
+                            // Connector line: ties this upstream box to the box above it
+                            // (aligned under the cloud icon), in the group's accent.
+                            Box(
+                                Modifier.padding(start = 13.dp).width(2.dp).height(10.dp)
+                                    .background(groupAccent)
+                            )
+                            Column(
+                                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                                    .border(1.dp, groupAccent, RoundedCornerShape(8.dp)).padding(4.dp),
+                                verticalArrangement = Arrangement.spacedBy(TabChipGap)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(Icons.Default.Cloud, contentDescription = null, tint = groupAccent, modifier = Modifier.size(13.dp))
+                                    Text(
+                                        "${nest.label} · via ${rg.header}", color = Color(0xFFB0B0B0), fontSize = 11.sp,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                                    )
+                                    if (nest.offline) {
+                                        // The host lost its upstream — these tabs are frozen.
+                                        Text("· offline", color = Color(0xFFE57373), fontSize = 10.sp, maxLines = 1)
+                                    }
+                                    if (nest.readOnly) {
+                                        Icon(
+                                            Icons.Default.Visibility,
+                                            contentDescription = "Read-only via this host",
+                                            tint = Color(0xFF808080),
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                    }
+                                    Box(
+                                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = nest.onClose).padding(2.dp)
+                                    ) { Icon(Icons.Default.Close, contentDescription = "Ask host to disconnect this upstream", tint = Color(0xFF808080), modifier = Modifier.size(13.dp)) }
+                                }
+                                Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
+                                    nest.groups.forEach { group ->
+                                        Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                                            group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                        }
+                                    }
+                                }
+                                // Same footer as the host box; when read-only these route to
+                                // the request-control prompt instead of silently doing nothing.
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    barButton(Icons.Default.VerticalSplit, "Split Left/Right", nest.onSplitVertical)
+                                    barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom", nest.onSplitHorizontal)
+                                    barButton(Icons.Default.Add, "New tab", nest.onNewTab)
+                                }
+                            }
+                        }
+                        } // end tether unit (host box + its upstream boxes)
+                    }
+                }
+                // Bottom bar — connect to another BossTerm's shared session.
+                Spacer(Modifier.height(8.dp))
+                Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF333333)))
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+                        .clickable(onClick = onAddRemote).padding(vertical = 6.dp, horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Cloud,
+                        contentDescription = "Add remote session",
+                        tint = Color(0xFFB0B0B0),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text("Add remote", color = Color(0xFFB0B0B0), fontSize = 12.sp)
                 }
             }
         } else {
@@ -272,7 +617,9 @@ fun TabBar(
                     horizontalArrangement = Arrangement.spacedBy(TabGroupGap),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    groups.forEach { group ->
+                    // Local tab clusters, then remote-session clusters (flattened in the top
+                    // bar — the boxed grouping with header/footer is a left-bar affordance).
+                    (groups + remoteGroups.flatMap { it.groups + it.nested.flatMap { n -> n.groups } }).forEach { group ->
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(TabChipGap),
                             verticalAlignment = Alignment.CenterVertically
@@ -374,7 +721,12 @@ private fun TabItem(
         }
 
         Row(
-            modifier = Modifier.fillMaxSize(),
+            // Multi-line (left bar) chips are wrap-height inside a scroll column, where the
+            // accent stripe's fillMaxHeight() would resolve against an unbounded constraint and
+            // collapse to zero (invisible on unselected tabs). Bound the row to its intrinsic
+            // height so the stripe spans the chip — like the viewer's always-on left border.
+            modifier = if (multiLine) Modifier.fillMaxWidth().heightIn(min = 36.dp).height(IntrinsicSize.Min)
+                       else Modifier.fillMaxSize(),
             verticalAlignment = if (multiLine) Alignment.Top else Alignment.CenterVertically
         ) {
             // Leading accent stripe (manual color or auto-by-directory)

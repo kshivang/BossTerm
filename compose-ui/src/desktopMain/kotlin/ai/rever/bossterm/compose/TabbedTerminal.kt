@@ -1629,10 +1629,19 @@ fun TabbedTerminal(
         val showSharingStatus = settings.sessionSharingShowIndicator
         // The active tab's remote session while it's still view-only — drives the read-only
         // pill, stacked in this same column so it sits BELOW the MCP/Sharing pills.
-        val viewOnlyRemote = tabController.activeTab
-            ?.let { t -> state?.remoteSessions?.sessionForTab(t) }
-            ?.takeIf { !it.canControlState.value }
-        if (showMcpStatus || showSharingStatus || attachStatus != null || pendingShareRequests.isNotEmpty() || viewOnlyRemote != null) {
+        val activeRemoteSession = tabController.activeTab?.let { t -> state?.remoteSessions?.sessionForTab(t) }
+        val viewOnlyRemote = activeRemoteSession?.takeIf { !it.canControlState.value }
+        // Even with control of the host, the active tab may mirror an upstream the HOST itself
+        // can't type into (A shared view-only to B, B shared to us) — input dies at the host.
+        // Informational pill only: control must be requested by the host from the origin.
+        val upstreamReadOnly = if (viewOnlyRemote == null) {
+            activeRemoteSession?.let { s ->
+                s.upstreamRev.value // subscribe: re-evaluate when upstream info changes
+                tabController.activeTab?.id?.let { id -> s.upstreamFor(id)?.takeIf { it.readOnly } }
+            }
+        } else null
+        if (showMcpStatus || showSharingStatus || attachStatus != null || pendingShareRequests.isNotEmpty() ||
+            viewOnlyRemote != null || upstreamReadOnly != null) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -1710,6 +1719,23 @@ fun TabbedTerminal(
                     ) {
                         androidx.compose.material3.Text(
                             "View only — click to request control",
+                            color = Color(0xFFB0B0B0),
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+                // Upstream read-only (A→B→C): we may control the host, but the host itself is
+                // view-only on this tab's origin, so typing still can't land. Info only.
+                upstreamReadOnly?.let { up ->
+                    Box(
+                        modifier = Modifier
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            .background(Color(0xE6252526))
+                            .border(1.dp, Color(0xFF404040), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                    ) {
+                        androidx.compose.material3.Text(
+                            "View only — host is view-only on ${up.name ?: "this session"}",
                             color = Color(0xFFB0B0B0),
                             fontSize = 11.sp,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)

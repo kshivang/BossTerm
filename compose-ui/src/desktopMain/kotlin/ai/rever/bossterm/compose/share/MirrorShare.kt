@@ -155,8 +155,8 @@ class MirrorShare(
             }
             // A view-only viewer asking for an upgrade — must run BEFORE the control gate.
             // Surfaces the same approval toast as a join request; on approve, flip this live
-            // connection's role and tell the viewer. (The viewer's saved key keeps its original
-            // role — a reconnect is view-only again until re-approved.)
+            // connection's role, tell the viewer, AND persist the upgrade into its grant (below)
+            // so a reconnect with the same key comes back WITH control rather than demoting.
             if (!vc.canControl && !vc.controlRequestPending) {
                 vc.controlRequestPending = true
                 coro.launch {
@@ -240,8 +240,12 @@ class MirrorShare(
                     ?: McpTerminalRegistry.findState(tabId)?.splitStates?.get(msg.tabId)?.updateSplitRatio(msg.splitId, msg.ratio)
             is ClientMessage.OfferShare -> {
                 // Two-way sharing: mirror the offering client's session back into this window.
-                // connect() dedupes a repeated offer (same token) and refuses our own links;
-                // origin tagging keeps either side's tabs from bouncing back.
+                // NOTE (trust boundary): this makes the host open an OUTBOUND WebSocket to a URL
+                // the peer supplies — a mild SSRF-flavored surface. It's gated on the control role
+                // (the host explicitly approved this device), so granting control also implies
+                // "this device may have my BossTerm dial a link it provides." connect() dedupes a
+                // repeated offer (same token) and refuses our own links; origin tagging keeps
+                // either side's tabs from bouncing back.
                 val name = (System.getProperty("user.name")?.takeIf { it.isNotBlank() }
                     ?.let { "$it (BossTerm)" }) ?: "BossTerm"
                 McpTerminalRegistry.findState(tabId)?.remoteSessions?.connect(msg.link, name)

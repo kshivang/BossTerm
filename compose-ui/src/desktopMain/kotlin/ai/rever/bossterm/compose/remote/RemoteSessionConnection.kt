@@ -70,8 +70,15 @@ class RemoteSessionConnection(
     @Volatile private var closedByUser = false
     @Volatile private var sawData = false // a Layout arrived this connection → it was healthy
 
+    // Outbound messages go through a per-connection channel drained by ONE writer coroutine, so
+    // frames reach the socket in submission order — independent `launch`-per-send would let two
+    // rapid keystrokes race and arrive reordered (a terminal-input correctness bug).
+    @Volatile private var outbox: kotlinx.coroutines.channels.SendChannel<ClientMessage>? = null
+
     // Best-effort: a malformed link must not crash construction — it just fails to connect.
     private val wsUrl: String = runCatching { toWsUrl(link) }.getOrDefault(link)
+    // Host portion only — safe to log (the token, a bearer credential, must never hit logs).
+    private val safeUrl: String = wsUrl.substringBefore("/ws/").substringBefore("?").ifBlank { "remote" } + "/…"
 
     private val _status = MutableStateFlow<RemoteStatus>(RemoteStatus.Connecting)
     val status: StateFlow<RemoteStatus> = _status.asStateFlow()
@@ -93,7 +100,7 @@ class RemoteSessionConnection(
             try {
                 connectOnce()
             } catch (t: Throwable) {
-                log.warn("remote session ({}) error: {}", wsUrl, t.message)
+                log.warn("remote session ({}) error: {}", safeUrl, t.message ?: t::class.simpleName)
             }
             if (closedByUser || _status.value is RemoteStatus.Denied) return
             // A connection that had actually loaded (received a Layout) gets a fresh retry
@@ -112,8 +119,17 @@ class RemoteSessionConnection(
     private suspend fun connectOnce() {
         client.webSocket(wsUrl) {
             session = this
+            // Per-connection outbox + single writer → strict send ordering. Fresh each connection
+            // so messages queued while disconnected aren't replayed stale on reconnect.
+            val box = kotlinx.coroutines.channels.Channel<ClientMessage>(kotlinx.coroutines.channels.Channel.BUFFERED)
+            outbox = box
+            // Handshake first, ahead of any queued input.
             send(Frame.Text(ShareProtocol.encodeClient(
                 ClientMessage.Hello(name = deviceName, clientId = clientId, key = keyProvider()))))
+            val writer = launch {
+                for (m in box) runCatching { send(Frame.Text(ShareProtocol.encodeClient(m))) }
+                    .onFailure { log.debug("ws send failed: {}", it.message) }
+            }
             try {
                 for (frame in incoming) {
                     if (frame is Frame.Text) {
@@ -122,6 +138,9 @@ class RemoteSessionConnection(
                     }
                 }
             } finally {
+                outbox = null
+                box.close()
+                writer.cancel()
                 session = null
             }
         }
@@ -130,7 +149,9 @@ class RemoteSessionConnection(
     private fun handle(msg: ServerMessage) {
         when (msg) {
             is ServerMessage.Pending -> _status.value = RemoteStatus.Pending
-            is ServerMessage.Grant -> onGrant(msg.key, msg.expiresAt)
+            // Defensive: mark Connected on Grant too, not just the Control that the host sends
+            // right after — so a future reorder can't leave status stuck at Pending.
+            is ServerMessage.Grant -> { onGrant(msg.key, msg.expiresAt); _status.value = RemoteStatus.Connected(msg.control) }
             is ServerMessage.Denied -> _status.value = RemoteStatus.Denied(msg.reason)
             is ServerMessage.Control -> _status.value = RemoteStatus.Connected(msg.granted)
             is ServerMessage.Layout -> sawData = true // session is up and rendering
@@ -139,10 +160,9 @@ class RemoteSessionConnection(
         onServerMessage(msg)
     }
 
-    /** Send a client message (Input / RequestControl / etc.). No-op if not connected. */
+    /** Send a client message (Input / RequestControl / etc.). Queued in submission order; dropped if not connected. */
     fun send(msg: ClientMessage) {
-        val s = session ?: return
-        scope.launch { runCatching { s.send(Frame.Text(ShareProtocol.encodeClient(msg))) } }
+        outbox?.trySend(msg)
     }
 
     /** Whether write/control was granted by the host. */
@@ -155,14 +175,16 @@ class RemoteSessionConnection(
         runCatching { client.close() } // tear down the engine + any open socket
     }
 
-    private fun toWsUrl(link: String): String {
+    // Visible for tests. https→wss, anything else→ws; token taken from ?t= (URL-decoded).
+    internal fun toWsUrl(link: String): String {
         val uri = URI(link.trim())
+        val host = uri.host ?: throw IllegalArgumentException("share link has no host: $link")
         val rawToken = (uri.rawQuery ?: "").split("&")
             .firstOrNull { it.startsWith("t=") }?.substringAfter("t=").orEmpty()
         val token = runCatching { URLDecoder.decode(rawToken, "UTF-8") }.getOrDefault(rawToken)
         val wsScheme = if (uri.scheme.equals("https", ignoreCase = true)) "wss" else "ws"
         val port = if (uri.port != -1) ":${uri.port}" else ""
-        return "$wsScheme://${uri.host}$port/ws/$token"
+        return "$wsScheme://$host$port/ws/$token"
     }
 
     private companion object {

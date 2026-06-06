@@ -10,6 +10,7 @@ import ai.rever.bossterm.compose.share.ShareProtocol
 import ai.rever.bossterm.compose.share.ShareScope
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.splits.SplitViewState
+import ai.rever.bossterm.compose.tabs.TabController
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import ai.rever.bossterm.core.util.TermSize
 import ai.rever.bossterm.terminal.RequestOrigin
@@ -33,7 +34,11 @@ import java.util.UUID
  */
 class RemoteSessionManager(private val state: TabbedTerminalState) {
 
-    /** Stable per-install client id so the host recognizes this device across reconnects. */
+    /**
+     * Client id the host uses to recognize this device across reconnects WITHIN a session. It's a
+     * fresh UUID per window/launch (not persisted), so a host re-approval is needed after restart
+     * — consistent with the in-memory access keys. Persisting it is a follow-up.
+     */
     private val clientId: String = UUID.randomUUID().toString()
 
     /** Active remote sessions — observed by the UI to list them + show status. */
@@ -47,10 +52,16 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
      * [shareBack] = two-way: once the host grants control, offer it this window's own share link
      * so it mirrors our tabs too.
      */
+    @Synchronized
     fun connect(link: String, deviceName: String, shareBack: Boolean = false): RemoteSession? {
         if (isOwnShareLink(link)) return null
+        // @Synchronized makes the lookup-then-add atomic — connect() is called from the UI thread
+        // (AddRemoteDialog) and from the host's OfferShare handler (a server coroutine).
         tokenOf(link)?.let { token ->
-            sessions.firstOrNull { tokenOf(it.link) == token }?.let { return it }
+            sessions.firstOrNull { tokenOf(it.link) == token }?.let { existing ->
+                if (shareBack) existing.enableShareBack() // honor a newly-ticked two-way box
+                return existing
+            }
         }
         val session = RemoteSession(link, deviceName, state, clientId, shareBack)
         sessions.add(session)
@@ -101,8 +112,8 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
     }
 }
 
-/** The `t=` token in a share [link], or null if absent/malformed. */
-private fun tokenOf(link: String): String? = runCatching {
+/** The `t=` token in a share [link], or null if absent/malformed. Visible for tests. */
+internal fun tokenOf(link: String): String? = runCatching {
     val raw = java.net.URI(link.trim()).rawQuery ?: return@runCatching null
     raw.split("&").firstOrNull { it.startsWith("t=") }?.substringAfter("t=")
         ?.let { java.net.URLDecoder.decode(it, "UTF-8") }?.takeIf { it.isNotBlank() }
@@ -120,11 +131,18 @@ class RemoteSession internal constructor(
     private val state: TabbedTerminalState,
     clientId: String,
     /** Two-way: once the host grants control, offer it this window's own share link. */
-    private val shareBack: Boolean = false,
+    shareBack: Boolean = false,
 ) {
     private val log = LoggerFactory.getLogger(RemoteSession::class.java)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val offeredShareBack = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var shareBackEnabled = shareBack
+
+    /** Turn on two-way share-back after construction (a re-paste with the box newly ticked). */
+    fun enableShareBack() {
+        shareBackEnabled = true
+        if (conn.canControl) maybeOfferShareBack()
+    }
 
     // In-memory access key for this link (persistence across restarts is a follow-up).
     @Volatile private var key: String? = null
@@ -188,7 +206,8 @@ class RemoteSession internal constructor(
 
     // localTabId (container) → upstream-origin info; bumping [upstreamRev] re-renders the bar
     // when only this map changed (e.g. the host's upstream control was granted mid-session).
-    private val upstreamByTab = HashMap<String, UpstreamOrigin>()
+    // Concurrent: written on Main (the inbox drain), read on host threads (MirrorShare).
+    private val upstreamByTab = java.util.concurrent.ConcurrentHashMap<String, UpstreamOrigin>()
     val upstreamRev = androidx.compose.runtime.mutableStateOf(0)
 
     /** The upstream origin of [localTabId]'s host tab, or null if it's the host's own tab. */
@@ -204,15 +223,31 @@ class RemoteSession internal constructor(
 
     // remote tabId → the local **container** tab in tabController.tabs. A container is a
     // PTY-less, stream-less shell that owns the chip + the split tree; it is never a pane itself.
-    private val localTabByRemote = LinkedHashMap<String, TerminalTab>()
+    // Concurrent maps: mutated only on Main (the inbox drain / disconnect), but read on the
+    // Compose thread (sessionForTab during composition) and host threads (MirrorShare). Insertion
+    // order isn't relied on — tab display order comes from controller.tabs.
+    private val localTabByRemote = java.util.concurrent.ConcurrentHashMap<String, TerminalTab>()
     // remote paneId → the mirror session feeding that pane's terminal. Holds ONLY pane mirrors
     // (every remote pane, even a single one), never a container — so the host closing any pane
-    // (including a tab's first) can never orphan a survivor's output.
-    private val sessionByPane = HashMap<String, TerminalTab>()
+    // (including a tab's first) can never orphan a survivor's output. Read on the WS IO thread
+    // (PaneOutput hot path) and host threads, hence concurrent.
+    private val sessionByPane = java.util.concurrent.ConcurrentHashMap<String, TerminalTab>()
+
+    // Inbound server messages are drained by ONE coroutine on Main, in wire order — so reconcile's
+    // tab-list/splitState mutation and the snapshot-after-layout ordering both run on the UI thread,
+    // matching TabController's convention and removing the cross-thread tab-mutation races.
+    private val uiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val inbox = kotlinx.coroutines.channels.Channel<ServerMessage>(kotlinx.coroutines.channels.Channel.UNLIMITED)
 
     fun start() {
-        // Mirror the connection's StateFlow status into Compose state (see [statusState]).
-        scope.launch { conn.status.collect { statusState.value = it } }
+        uiScope.launch {
+            // Mirror the connection's status into Compose state (read in composition).
+            conn.status.collect { statusState.value = it }
+        }
+        uiScope.launch {
+            for (msg in inbox) runCatching { handleMessage(msg) }
+                .onFailure { log.warn("remote message handling failed: {}", it.message) }
+        }
         conn.start()
     }
 
@@ -401,7 +436,8 @@ class RemoteSession internal constructor(
     }
 
     fun close() {
-        runCatching { scope.cancel() } // abandon a pending share-back offer
+        runCatching { scope.cancel() }   // status collector + share-back offer
+        runCatching { uiScope.cancel() } // the inbox drain
         conn.close()
         localTabByRemote.values.toList().forEach { removeMirrorTab(it) }
         localTabByRemote.clear()
@@ -410,7 +446,11 @@ class RemoteSession internal constructor(
     }
 
     // ---- message handling ----
-    private fun onMessage(msg: ServerMessage) {
+    // Called on the WS IO thread — just hand off to the ordered Main drain (see [inbox]).
+    private fun onMessage(msg: ServerMessage) { inbox.trySend(msg) }
+
+    // Runs on Main, in wire order.
+    private fun handleMessage(msg: ServerMessage) {
         when (msg) {
             is ServerMessage.Layout -> {
                 msg.sessionName?.takeIf { it.isNotBlank() }?.let { hostName.value = it }
@@ -454,7 +494,7 @@ class RemoteSession internal constructor(
      * (booting the share server/tunnel as needed — hence async).
      */
     private fun maybeOfferShareBack() {
-        if (!shareBack || !offeredShareBack.compareAndSet(false, true)) return
+        if (!shareBackEnabled || !offeredShareBack.compareAndSet(false, true)) return
         scope.launch {
             runCatching {
                 val ownLink = ensureOwnShareLink() ?: return@launch
@@ -548,7 +588,7 @@ class RemoteSession internal constructor(
             val ss = state.splitStates.getOrPut(container.id) { SplitViewState(initialSession = container) }
             // Route divider drags in this mirror's split tree to the host (idempotent each pass).
             ss.onRemoteDividerDrag = { splitId, ratio, committed -> resizeSplit(container.id, splitId, ratio, committed) }
-            ss.setTree(buildTree(tabNode.tree, container.id), ss.focusedPaneId)
+            ss.setTree(buildTree(tabNode.tree, container.id, controller), ss.focusedPaneId)
 
             // Add to the tab list only AFTER the split tree is populated — so the UI never renders
             // a not-yet-built container, and without switching focus (must not steal the local
@@ -558,10 +598,10 @@ class RemoteSession internal constructor(
     }
 
     /** Map a remote pane tree to a local [SplitNode] tree, reusing pane mirrors by remote paneId. */
-    private fun buildTree(node: PaneTreeNode, containerId: String): SplitNode = when (node) {
+    private fun buildTree(node: PaneTreeNode, containerId: String, controller: TabController): SplitNode = when (node) {
         is PaneTreeNode.Pane -> {
             val session = sessionByPane.getOrPut(node.paneId) {
-                state.tabController!!.createRemoteSession(
+                controller.createRemoteSession(
                     title = node.title,
                     remotePaneId = node.paneId,
                     onUserInput = { data ->
@@ -586,15 +626,15 @@ class RemoteSession internal constructor(
         is PaneTreeNode.Split -> if (node.dir == "h") {
             SplitNode.HorizontalSplit(
                 id = node.id.ifBlank { node.paneIdKey() },
-                top = buildTree(node.a, containerId),
-                bottom = buildTree(node.b, containerId),
+                top = buildTree(node.a, containerId, controller),
+                bottom = buildTree(node.b, containerId, controller),
                 ratio = node.ratio,
             )
         } else {
             SplitNode.VerticalSplit(
                 id = node.id.ifBlank { node.paneIdKey() },
-                left = buildTree(node.a, containerId),
-                right = buildTree(node.b, containerId),
+                left = buildTree(node.a, containerId, controller),
+                right = buildTree(node.b, containerId, controller),
                 ratio = node.ratio,
             )
         }
@@ -611,7 +651,17 @@ class RemoteSession internal constructor(
         state.splitStates.remove(container.id)
         upstreamByTab.remove(container.id)
         val idx = controller?.tabs?.indexOf(container) ?: -1
-        if (idx >= 0) controller?.closeTab(idx) // index-safe removal; closeTab disposes the container
+        if (idx >= 0) {
+            if (controller!!.tabs.size <= 1) {
+                // Don't let a remote-driven teardown close the window via onLastTabClosed (e.g. the
+                // host closes its tab while this mirror is the only tab left). Dispose + remove the
+                // mirror directly, leaving an empty window rather than exiting.
+                runCatching { container.dispose() }
+                controller.tabs.removeAt(idx)
+            } else {
+                controller.closeTab(idx) // index-safe removal; closeTab disposes the container
+            }
+        }
     }
 
     private fun disposeSession(s: TerminalTab) {

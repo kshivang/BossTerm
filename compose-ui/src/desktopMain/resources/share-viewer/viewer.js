@@ -557,14 +557,13 @@
       });
       own.forEach(function (tab) { sidebarEl.appendChild(tabCluster(tab)); });
       // Action row mirroring the host's left bar: Split L/R, Split T/B, then New tab.
-      if (controlGranted) {
-        var actions = document.createElement("div");
-        actions.className = "ltab-actions";
-        actions.appendChild(splitButton("v"));
-        actions.appendChild(splitButton("h"));
-        actions.appendChild(newTabButton("+ New tab"));
-        sidebarEl.appendChild(actions);
-      }
+      // Always shown — when view-only, clicking offers to request control (viewOnlyGate).
+      var actions = document.createElement("div");
+      actions.className = "ltab-actions";
+      actions.appendChild(splitButton("v"));
+      actions.appendChild(splitButton("h"));
+      actions.appendChild(newTabButton("+ New tab"));
+      sidebarEl.appendChild(actions);
       // Upstream groups: tether + bordered box with header (name · via host, offline/read-only
       // badges, ✕ = ask host to disconnect it), chips, and a relayed action row.
       upOrder.forEach(function (key) {
@@ -593,48 +592,46 @@
           eye.onclick = function (ev) { ev.stopPropagation(); requestUpstreamControl(anchorTab(g).id, g.name || "remote"); };
           hd.appendChild(eye);
         }
-        if (controlGranted) {
-          var x = document.createElement("span");
-          x.textContent = "×"; x.title = "Ask the host to disconnect this upstream";
-          x.style.cssText = "cursor:pointer;color:#808080;padding:0 2px;";
-          x.onclick = function (ev) {
-            ev.stopPropagation();
-            if (window.confirm("Ask the host to disconnect from " + (g.name || "this upstream") + "?"))
-              sendMsg({ t: "disconnectUpstream", tabId: g.tabs[0].id });
-          };
-          hd.appendChild(x);
-        }
+        var x = document.createElement("span");
+        x.textContent = "×"; x.title = "Ask the host to disconnect this upstream";
+        x.style.cssText = "cursor:pointer;color:#808080;padding:0 2px;";
+        x.onclick = function (ev) {
+          ev.stopPropagation();
+          if (viewOnlyGate()) return;
+          if (window.confirm("Ask the host to disconnect from " + (g.name || "this upstream") + "?"))
+            sendMsg({ t: "disconnectUpstream", tabId: g.tabs[0].id });
+        };
+        hd.appendChild(x);
         box.appendChild(hd);
         g.tabs.forEach(function (tab) { box.appendChild(tabCluster(tab)); });
-        if (controlGranted) {
-          var act = document.createElement("div");
-          act.className = "ltab-actions";
-          act.appendChild(groupSplitButton("v", g));
-          act.appendChild(groupSplitButton("h", g));
-          var nt = document.createElement("div");
-          nt.className = "newtab"; nt.textContent = "+ New tab";
-          nt.title = "New tab in " + (g.name || "remote");
-          nt.onclick = function () {
-            if (g.readOnly) { requestUpstreamControl(anchorTab(g).id, g.name || "remote"); return; }
-            sendMsg({ t: "newTab", tabId: anchorTab(g).id });
-          };
-          act.appendChild(nt);
-          box.appendChild(act);
-        }
+        // Always shown; view-only clicks route to the request-control dialog (viewOnlyGate).
+        var act = document.createElement("div");
+        act.className = "ltab-actions";
+        act.appendChild(groupSplitButton("v", g));
+        act.appendChild(groupSplitButton("h", g));
+        var nt = document.createElement("div");
+        nt.className = "newtab"; nt.textContent = "+ New tab";
+        nt.title = "New tab in " + (g.name || "remote");
+        nt.onclick = function () {
+          if (viewOnlyGate()) return;
+          if (g.readOnly) { requestUpstreamControl(anchorTab(g).id, g.name || "remote"); return; }
+          sendMsg({ t: "newTab", tabId: anchorTab(g).id });
+        };
+        act.appendChild(nt);
+        box.appendChild(act);
         sidebarEl.appendChild(box);
       });
       // Bottom: ask the host to mirror another BossTerm share here (native "Add remote").
-      if (controlGranted) {
-        var add = document.createElement("div");
-        add.className = "newtab";
-        add.textContent = "☁ Add remote";
-        add.title = "Ask the host to mirror another BossTerm share link";
-        add.onclick = function () {
-          var link = window.prompt("Paste a BossTerm share link — the host will mirror its tabs:");
-          if (link && link.trim()) sendMsg({ t: "offerShare", link: link.trim() });
-        };
-        sidebarEl.appendChild(add);
-      }
+      var add = document.createElement("div");
+      add.className = "newtab";
+      add.textContent = "☁ Add remote";
+      add.title = "Ask the host to mirror another BossTerm share link";
+      add.onclick = function () {
+        if (viewOnlyGate()) return;
+        var link = window.prompt("Paste a BossTerm share link — the host will mirror its tabs:");
+        if (link && link.trim()) sendMsg({ t: "offerShare", link: link.trim() });
+      };
+      sidebarEl.appendChild(add);
     } else {
       tabbarEl.classList.remove("hidden");
       menubtnEl.classList.remove("show");
@@ -651,11 +648,10 @@
         tabbarEl.appendChild(grp);
       });
       // Split buttons sit just left of the new-tab (+), like the host's tab-bar actions.
-      if (controlGranted) {
-        tabbarEl.appendChild(splitButton("v"));
-        tabbarEl.appendChild(splitButton("h"));
-        tabbarEl.appendChild(newTabButton("+"));
-      }
+      // Always shown — when view-only, clicking offers to request control (viewOnlyGate).
+      tabbarEl.appendChild(splitButton("v"));
+      tabbarEl.appendChild(splitButton("h"));
+      tabbarEl.appendChild(newTabButton("+"));
     }
     updateViewPill(); // runs on layout/control/selection changes — keeps the pill current
   }
@@ -702,6 +698,15 @@
     if (currentPaneId) { var ids = {}; collectPaneIds(tab.tree, ids); if (ids[currentPaneId]) return currentPaneId; }
     return defaultPaneId(tab.tree);
   }
+  // View-only fallback for action buttons (the native client's confirm dialog): when we lack
+  // control, offer to request it instead of silently doing nothing. True = handled, caller bails.
+  function viewOnlyGate() {
+    if (controlGranted) return false;
+    if (window.confirm("You're viewing this session read-only — this action needs control. Ask the host for it?"))
+      sendMsg({ t: "requestControl" });
+    return true;
+  }
+
   // kind: "v" = Split Left/Right (vertical divider), "h" = Split Top/Bottom (horizontal divider).
   function splitButton(kind) {
     var b = document.createElement("div");
@@ -710,6 +715,7 @@
     b.innerHTML = kind === "v" ? SVG_VSPLIT : SVG_HSPLIT;
     b.onclick = function (ev) {
       ev.stopPropagation();
+      if (viewOnlyGate()) return;
       var tab = activeTabNode(), pid = activePaneId();
       if (!tab || !pid) return;
       sendMsg({ t: kind === "v" ? "splitVertical" : "splitHorizontal", tabId: tab.id, paneId: pid });
@@ -747,6 +753,7 @@
     b.innerHTML = kind === "v" ? SVG_VSPLIT : SVG_HSPLIT;
     b.onclick = function (ev) {
       ev.stopPropagation();
+      if (viewOnlyGate()) return;
       if (g.readOnly) { requestUpstreamControl(anchorTab(g).id, g.name || "remote"); return; }
       var tab = anchorTab(g);
       var pid = (tab.id === activeTabId ? activePaneId() : null) || defaultPaneId(tab.tree);
@@ -770,7 +777,10 @@
   function newTabButton(label) {
     var el = document.createElement("div");
     el.className = "newtab"; el.textContent = label; el.title = "New tab";
-    el.onclick = function () { sendMsg({ t: "newTab" }); };
+    el.onclick = function () {
+      if (viewOnlyGate()) return;
+      sendMsg({ t: "newTab" });
+    };
     return el;
   }
 
@@ -1017,6 +1027,7 @@
         }
         renderTabBar(); // show/hide the close + new-tab affordances
         buildKeybar();  // show/hide the on-screen control-key bar
+        updateViewPill(); // also directly, in case layout hasn't arrived yet
         break;
     }
   };

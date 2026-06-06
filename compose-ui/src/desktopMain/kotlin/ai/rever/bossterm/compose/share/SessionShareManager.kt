@@ -174,9 +174,23 @@ object SessionShareManager {
             wantsControl = wantsControl,
         )
         _pendingRequests.value = _pendingRequests.value + req
+        notifyApprovalRequest(req)
         val approved = withTimeoutOrNull(2 * 60_000L) { req.decision.await() } ?: false
         _pendingRequests.value = _pendingRequests.value.filterNot { it.id == req.id }
         return approved
+    }
+
+    /**
+     * System notification for an approval request — the in-app toast is easy to miss when the
+     * window is unfocused (same rationale as command-completion notifications).
+     */
+    private fun notifyApprovalRequest(req: PendingShareRequest) {
+        runCatching {
+            ai.rever.bossterm.compose.notification.NotificationService.showNotification(
+                title = "BossTerm session sharing",
+                message = "${req.deviceName} wants ${if (req.wantsControl) "control of" else "to view"} your shared session",
+            )
+        }
     }
 
     fun approveRequest(id: String) = decideRequest(id, true)
@@ -695,6 +709,7 @@ object SessionShareManager {
                     wantsControl = ref.canControl,
                 )
                 _pendingRequests.value = _pendingRequests.value + req
+                notifyApprovalRequest(req)
                 runCatching { ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Pending))) }
                 val approved = withTimeoutOrNull(2 * 60_000L) { req.decision.await() } ?: false
                 _pendingRequests.value = _pendingRequests.value.filterNot { it.id == req.id }

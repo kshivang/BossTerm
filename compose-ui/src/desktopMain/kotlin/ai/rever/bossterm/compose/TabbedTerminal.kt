@@ -900,12 +900,17 @@ fun TabbedTerminal(
             // Tab bar (show when multiple tabs or alwaysShowTabBar is set).
             if (tabBarVisible) {
             val summaryMode = settings.tabBarSummaryMode
+            val rm = state?.remoteSessions
 
             // Resolve the per-tab accent color: a manual color (Color ▸ menu) always
             // wins; otherwise, when color-by-directory is on, derive a stable accent
             // from the session's cwd. Reads MutableState so the bar recomposes live.
             fun colorHexFor(session: TerminalSession): String? {
-                if (session.isRemote) return "0xFF4FC3F7" // cyan accent marks mirrored remote tabs
+                if (session.isRemote) {
+                    // Group accent (set via the remote box header's right-click) wins; the
+                    // default cyan marks mirrored remote tabs.
+                    return rm?.sessionForMirror(session)?.accent?.value ?: "0xFF4FC3F7"
+                }
                 session.tabColor.value?.let { return it }
                 if (settings.tabColorByDirectory) {
                     val cwd = session.workingDirectory.value
@@ -969,12 +974,14 @@ fun TabbedTerminal(
             // Partition local tabs from mirrored remote-session tabs: local tabs render as
             // normal chip clusters; each remote session renders as its own boxed group with
             // a link header + footer actions (split / new tab / disconnect) targeting the host.
-            val rm = state?.remoteSessions
             val tabGroups = tabGroupsWithTab.filter { rm?.sessionForTab(it.first) == null }.map { it.second }
             val remoteGroups = rm?.sessions.orEmpty().mapNotNull { session ->
                 val gs = tabGroupsWithTab.filter { rm?.sessionForTab(it.first) === session }.map { it.second }
                 if (gs.isEmpty()) null else ai.rever.bossterm.compose.tabs.RemoteTabGroup(
-                    header = runCatching { java.net.URI(session.link).host ?: session.link }.getOrDefault(session.link),
+                    id = session.link,
+                    header = session.customName.value
+                        ?: runCatching { java.net.URI(session.link).host ?: session.link }.getOrDefault(session.link),
+                    colorHex = session.accent.value,
                     groups = gs,
                     canControl = session.canControl,
                     onSplitVertical = { session.splitFocused(horizontal = false) },
@@ -987,6 +994,10 @@ fun TabbedTerminal(
                     onChipLaunchAI = { tabIndex, paneId, assistantId ->
                         tabController.tabs.getOrNull(tabIndex)?.let { session.launchAI(it.id, paneId, assistantId) }
                     },
+                    // Local group customization (box header right-click): blank name reverts
+                    // to the link's host; null color reverts to the default remote cyan.
+                    onRename = { session.customName.value = it.trim().ifBlank { null } },
+                    onSetColor = { hex -> session.accent.value = hex },
                 )
             }
             // In summary mode the active tab's single chip carries the tab id; match it

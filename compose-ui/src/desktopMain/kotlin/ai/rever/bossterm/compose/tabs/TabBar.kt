@@ -104,16 +104,22 @@ data class TabBarGroup(val tabIndex: Int, val panes: List<TabBarPane>)
 
 /**
  * A connected remote BossTerm session, rendered (in the left bar) as a bordered box: a
- * [header] (the remote link/host), the session's mirrored [groups] (its tabs), and a footer
- * of actions that target the remote (split + new tab + disconnect).
+ * [header] (a custom name, else the remote link's host), the session's mirrored [groups]
+ * (its tabs), and a footer of actions that target the remote (split + new tab + disconnect).
  *
  * A right-click on any mirrored chip opens the same host-routed menu the browser viewer shows
  * (new tab / split / AI assistant / rename / color / duplicate / close…). [canControl] gates the
  * host-mutating items; [onChipSplit]/[onChipLaunchAI] act on the clicked pane (the rest reuse the
  * shared TabBar callbacks, which route to the host for remote chips).
+ *
+ * A right-click on the box HEADER customizes the group locally: [onRename] sets the header
+ * (inline edit; blank reverts to the host name), [onSetColor] sets [colorHex], the box's
+ * border/icon/chip accent (null reverts to the default remote cyan).
  */
 data class RemoteTabGroup(
+    val id: String,
     val header: String,
+    val colorHex: String?,
     val groups: List<TabBarGroup>,
     val canControl: Boolean,
     val onSplitVertical: () -> Unit,
@@ -122,6 +128,8 @@ data class RemoteTabGroup(
     val onDisconnect: () -> Unit,
     val onChipSplit: (tabIndex: Int, paneId: String, horizontal: Boolean) -> Unit,
     val onChipLaunchAI: (tabIndex: Int, paneId: String, assistantId: String) -> Unit,
+    val onRename: (String) -> Unit,
+    val onSetColor: (String?) -> Unit,
 )
 
 /** AI assistants offered in the remote chip menu — same set the browser viewer mirrors. */
@@ -224,6 +232,28 @@ fun TabBar(
     // opens the host-routed menu instead of the local one.
     val remoteByTabIndex: Map<Int, RemoteTabGroup> =
         remoteGroups.flatMap { rg -> rg.groups.map { it.tabIndex to rg } }.toMap()
+
+    // Remote group box currently renaming its header inline (by RemoteTabGroup.id).
+    var editingRemoteId by remember { mutableStateOf<String?>(null) }
+
+    // Right-click menu on a remote group's HEADER — local customization of the box
+    // (name + accent color) plus Disconnect. Nothing here touches the host.
+    val showRemoteGroupMenu: (RemoteTabGroup) -> Unit = { rg ->
+        val colorSubmenu = ContextMenuController.MenuSubmenu(
+            id = "remote_group_color",
+            label = "Color",
+            items = TAB_COLOR_PRESETS.map { (name, hex) ->
+                ContextMenuController.MenuItem(id = "rg_color_$name", label = name, enabled = true, action = { rg.onSetColor(hex) })
+            } + ContextMenuController.MenuSeparator(id = "rg_color_sep") +
+                ContextMenuController.MenuItem(id = "rg_color_clear", label = "Clear", enabled = true, action = { rg.onSetColor(null) })
+        )
+        contextMenuController.showMenu(0f, 0f, listOf(
+            ContextMenuController.MenuItem(id = "rg_rename", label = "Rename…", enabled = true, action = { editingRemoteId = rg.id }),
+            colorSubmenu,
+            ContextMenuController.MenuSeparator(id = "rg_sep"),
+            ContextMenuController.MenuItem(id = "rg_disconnect", label = "Disconnect remote", enabled = true, action = { rg.onDisconnect() }),
+        ))
+    }
 
     // Right-click menu for a mirrored remote chip — mirrors the browser viewer's menu, all
     // routed to the host. Host-mutating items are gated on control; "Disconnect remote" is the
@@ -350,21 +380,37 @@ fun TabBar(
                     // Each connected remote session: a bordered box with the link header, its
                     // mirrored tab chips, and footer actions that target the remote.
                     remoteGroups.forEach { rg ->
+                        // Group accent: a custom color set via the header's right-click, else the
+                        // default remote cyan. Drives the box border, the cloud icon, and (via
+                        // colorHexFor upstream) the chips' accent stripes.
+                        val groupAccent = parseTabColor(rg.colorHex) ?: RemoteAccent
                         Column(
                             modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
-                                .border(1.dp, RemoteAccent, RoundedCornerShape(8.dp)).padding(4.dp),
+                                .border(1.dp, groupAccent, RoundedCornerShape(8.dp)).padding(4.dp),
                             verticalArrangement = Arrangement.spacedBy(TabChipGap)
                         ) {
                             Row(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 2.dp),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 2.dp)
+                                    .onPointerEvent(PointerEventType.Press) { event ->
+                                        if (event.button == PointerButton.Secondary) showRemoteGroupMenu(rg)
+                                    },
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Icon(Icons.Default.Cloud, contentDescription = null, tint = RemoteAccent, modifier = Modifier.size(13.dp))
-                                Text(
-                                    rg.header, color = Color(0xFFB0B0B0), fontSize = 11.sp,
-                                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
-                                )
+                                Icon(Icons.Default.Cloud, contentDescription = null, tint = groupAccent, modifier = Modifier.size(13.dp))
+                                if (rg.id == editingRemoteId) {
+                                    TabRenameField(
+                                        initial = rg.header,
+                                        onCommit = { editingRemoteId = null; rg.onRename(it) },
+                                        onCancel = { editingRemoteId = null },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                } else {
+                                    Text(
+                                        rg.header, color = Color(0xFFB0B0B0), fontSize = 11.sp,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                                    )
+                                }
                                 Box(
                                     modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = rg.onDisconnect).padding(2.dp)
                                 ) { Icon(Icons.Default.Close, contentDescription = "Disconnect remote", tint = Color(0xFF808080), modifier = Modifier.size(13.dp)) }

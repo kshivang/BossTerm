@@ -70,6 +70,10 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
     /** The remote session that owns [tab] (a mirror tab), or null if it's a local tab. */
     fun sessionForTab(tab: TerminalTab): RemoteSession? = sessions.firstOrNull { it.containsTab(tab) }
 
+    /** Like [sessionForTab] but also matches pane mirrors inside a container's split tree. */
+    fun sessionForMirror(s: ai.rever.bossterm.compose.TerminalSession): RemoteSession? =
+        sessions.firstOrNull { it.ownsMirror(s) }
+
     /** Tear down every remote session (e.g. when the window closes). */
     fun disconnectAll() {
         sessions.toList().forEach { it.close() }
@@ -123,6 +127,17 @@ class RemoteSession internal constructor(
 
     val status: StateFlow<RemoteStatus> get() = conn.status
     val canControl: Boolean get() = conn.canControl
+
+    // Local-only customization of this remote's group box in the left bar (right-click the
+    // box header). Not sent to the host; lives as long as the connection.
+    /** Custom group name; null → the link's host. */
+    val customName = androidx.compose.runtime.mutableStateOf<String?>(null)
+    /** Custom group accent ("0xFFRRGGBB"); null → the default remote cyan. */
+    val accent = androidx.compose.runtime.mutableStateOf<String?>(null)
+
+    /** True if [s] is any of this session's mirrors — the containers or their pane mirrors. */
+    fun ownsMirror(s: ai.rever.bossterm.compose.TerminalSession): Boolean =
+        localTabByRemote.values.any { it === s } || sessionByPane.values.any { it === s }
 
     /**
      * Identifies which share this session mirrors: SHA-256 of [link]'s token. Stamped on this

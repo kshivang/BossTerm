@@ -18,6 +18,15 @@
   var stageEl = document.getElementById("stage");
   var presenceEl = document.getElementById("presence");
   var viewOnlyEl = document.getElementById("viewonly");
+  // The "view only" badge doubles as the request-control affordance (confirm-first, like
+  // the native client's dialog) — the host's user sees its approval toast.
+  viewOnlyEl.style.cursor = "pointer";
+  viewOnlyEl.title = "Request control";
+  viewOnlyEl.onclick = function () {
+    if (controlGranted) return;
+    if (window.confirm("You're viewing this session read-only. Ask the host for control?"))
+      sendMsg({ t: "requestControl" });
+  };
 
   var keybarEl = document.getElementById("keybar");
   var menubtnEl = document.getElementById("menubtn");
@@ -89,6 +98,9 @@
   }
 
   var controlGranted = false;
+  // An upstream control request queued until OUR control is granted (the host only relays
+  // upstream requests from controlling clients) — fired from the "control" handler.
+  var pendingUpstreamControlTab = null;
   var theme = null;               // last Theme message
   var layout = null;              // last Layout message
   var activeTabId = null;         // client-side selected tab
@@ -496,7 +508,7 @@
       sidebarEl.innerHTML = "";
       // One cluster per tab: per-pane sub-tab chips when the tab is split (and the host
       // isn't in summary mode), otherwise a single tab-level chip — like the host.
-      if (layout) layout.tabs.forEach(function (tab) {
+      function tabCluster(tab) {
         var group = document.createElement("div"); group.className = "ltab-group";
         var ps = []; panesInOrder(tab.tree, ps);
         if (!summaryMode && tab.tree && tab.tree.t === "split") {
@@ -504,8 +516,21 @@
         } else {
           group.appendChild(leftChip(tab, null));
         }
-        sidebarEl.appendChild(group);
+        return group;
+      }
+      // Partition like the native client: the host's own tabs render directly; tabs the host
+      // itself mirrors from OTHER sessions render as boxed "via host" groups below.
+      var own = [], upstreams = {}, upOrder = [];
+      if (layout) layout.tabs.forEach(function (t) {
+        if (t.origin) {
+          if (!upstreams[t.origin]) {
+            upstreams[t.origin] = { name: t.originName, readOnly: !!t.originReadOnly, offline: !!t.originOffline, tabs: [] };
+            upOrder.push(t.origin);
+          }
+          upstreams[t.origin].tabs.push(t);
+        } else own.push(t);
       });
+      own.forEach(function (tab) { sidebarEl.appendChild(tabCluster(tab)); });
       // Action row mirroring the host's left bar: Split L/R, Split T/B, then New tab.
       if (controlGranted) {
         var actions = document.createElement("div");
@@ -514,6 +539,76 @@
         actions.appendChild(splitButton("h"));
         actions.appendChild(newTabButton("+ New tab"));
         sidebarEl.appendChild(actions);
+      }
+      // Upstream groups: tether + bordered box with header (name · via host, offline/read-only
+      // badges, ✕ = ask host to disconnect it), chips, and a relayed action row.
+      upOrder.forEach(function (key) {
+        var g = upstreams[key];
+        var tether = document.createElement("div");
+        tether.style.cssText = "width:2px;height:10px;margin-left:13px;background:#4FC3F7;";
+        sidebarEl.appendChild(tether);
+        var box = document.createElement("div");
+        box.style.cssText = "border:1px solid #4FC3F7;border-radius:8px;padding:4px;display:flex;flex-direction:column;gap:4px;";
+        var hd = document.createElement("div");
+        hd.style.cssText = "display:flex;align-items:center;gap:4px;padding:2px;font-size:11px;color:#b0b0b0;";
+        var lbl = document.createElement("span");
+        lbl.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+        lbl.textContent = "☁ " + (g.name || "remote") + " · via " + ((layout && layout.sessionName) || "host");
+        hd.appendChild(lbl);
+        if (g.offline) {
+          var off = document.createElement("span");
+          off.textContent = "· offline"; off.title = "The host lost its connection to this session — content is frozen";
+          off.style.cssText = "color:#E57373;font-size:10px;";
+          hd.appendChild(off);
+        }
+        if (g.readOnly) {
+          var eye = document.createElement("span");
+          eye.textContent = "👁"; eye.title = "Read-only via this host — click to request control";
+          eye.style.cursor = "pointer";
+          eye.onclick = function (ev) { ev.stopPropagation(); requestUpstreamControl(anchorTab(g).id, g.name || "remote"); };
+          hd.appendChild(eye);
+        }
+        if (controlGranted) {
+          var x = document.createElement("span");
+          x.textContent = "×"; x.title = "Ask the host to disconnect this upstream";
+          x.style.cssText = "cursor:pointer;color:#808080;padding:0 2px;";
+          x.onclick = function (ev) {
+            ev.stopPropagation();
+            if (window.confirm("Ask the host to disconnect from " + (g.name || "this upstream") + "?"))
+              sendMsg({ t: "disconnectUpstream", tabId: g.tabs[0].id });
+          };
+          hd.appendChild(x);
+        }
+        box.appendChild(hd);
+        g.tabs.forEach(function (tab) { box.appendChild(tabCluster(tab)); });
+        if (controlGranted) {
+          var act = document.createElement("div");
+          act.className = "ltab-actions";
+          act.appendChild(groupSplitButton("v", g));
+          act.appendChild(groupSplitButton("h", g));
+          var nt = document.createElement("div");
+          nt.className = "newtab"; nt.textContent = "+ New tab";
+          nt.title = "New tab in " + (g.name || "remote");
+          nt.onclick = function () {
+            if (g.readOnly) { requestUpstreamControl(anchorTab(g).id, g.name || "remote"); return; }
+            sendMsg({ t: "newTab", tabId: anchorTab(g).id });
+          };
+          act.appendChild(nt);
+          box.appendChild(act);
+        }
+        sidebarEl.appendChild(box);
+      });
+      // Bottom: ask the host to mirror another BossTerm share here (native "Add remote").
+      if (controlGranted) {
+        var add = document.createElement("div");
+        add.className = "newtab";
+        add.textContent = "☁ Add remote";
+        add.title = "Ask the host to mirror another BossTerm share link";
+        add.onclick = function () {
+          var link = window.prompt("Paste a BossTerm share link — the host will mirror its tabs:");
+          if (link && link.trim()) sendMsg({ t: "offerShare", link: link.trim() });
+        };
+        sidebarEl.appendChild(add);
       }
     } else {
       tabbarEl.classList.remove("hidden");
@@ -592,6 +687,44 @@
       var tab = activeTabNode(), pid = activePaneId();
       if (!tab || !pid) return;
       sendMsg({ t: kind === "v" ? "splitVertical" : "splitHorizontal", tabId: tab.id, paneId: pid });
+    };
+    return b;
+  }
+
+  // ---- upstream ("via host") group helpers — native-client parity ----
+
+  // Footer actions of an upstream group target the active tab when it's in the group, else
+  // the group's first tab (the host relays them to the origin session).
+  function anchorTab(g) {
+    for (var i = 0; i < g.tabs.length; i++) if (g.tabs[i].id === activeTabId) return g.tabs[i];
+    return g.tabs[0];
+  }
+
+  // Confirm-first control request for an upstream session. If we don't control the host yet,
+  // chain: request that first, then the relayed request fires when the grant arrives.
+  function requestUpstreamControl(tabId, name) {
+    if (!window.confirm("Ask for control of " + name + "? Each host along the path approves in turn.")) return;
+    if (!controlGranted) {
+      pendingUpstreamControlTab = tabId;
+      sendMsg({ t: "requestControl" });
+      return;
+    }
+    sendMsg({ t: "requestControl", tabId: tabId });
+  }
+
+  // Split button for an upstream group: relayed by the host to the origin; when the host is
+  // view-only on it, routes to the control request instead of a silent no-op.
+  function groupSplitButton(kind, g) {
+    var b = document.createElement("div");
+    b.className = "splitbtn";
+    b.title = kind === "v" ? "Split vertical (left / right)" : "Split horizontal (top / bottom)";
+    b.innerHTML = kind === "v" ? SVG_VSPLIT : SVG_HSPLIT;
+    b.onclick = function (ev) {
+      ev.stopPropagation();
+      if (g.readOnly) { requestUpstreamControl(anchorTab(g).id, g.name || "remote"); return; }
+      var tab = anchorTab(g);
+      var pid = (tab.id === activeTabId ? activePaneId() : null) || defaultPaneId(tab.tree);
+      if (pid) sendMsg({ t: kind === "v" ? "splitVertical" : "splitHorizontal", tabId: tab.id, paneId: pid });
     };
     return b;
   }
@@ -851,6 +984,11 @@
         controlGranted = !!m.granted;
         viewOnlyEl.style.display = controlGranted ? "none" : "";
         fithostEl.style.display = controlGranted ? "" : "none"; // resizing the host needs control
+        // Second hop of a chained upstream request (view-only → control → relay upstream).
+        if (controlGranted && pendingUpstreamControlTab) {
+          sendMsg({ t: "requestControl", tabId: pendingUpstreamControlTab });
+          pendingUpstreamControlTab = null;
+        }
         renderTabBar(); // show/hide the close + new-tab affordances
         buildKeybar();  // show/hide the on-screen control-key bar
         break;

@@ -997,9 +997,29 @@ fun TabbedTerminal(
                     }
                     if (byWin.size != gsWithTab.size || byWin.isEmpty()) emptyList()
                     else byWin.groupBy { it.first.key }.map { (_, items) ->
+                        // Section actions target THIS host window: the active tab when it's in
+                        // the section, else its first tab (the host routes by tab id). View-only
+                        // routes to the request-control prompt, like the group footer.
+                        val secTabs = items.map { it.second }
+                        fun secAnchor() = secTabs.firstOrNull { it.id == tabController.activeTab?.id } ?: secTabs.first()
+                        fun splitSec(horizontal: Boolean) {
+                            if (!session.canControlState.value) {
+                                requestControlPrompt = { session.requestControl() }
+                                return
+                            }
+                            val t = secAnchor()
+                            val paneId = splitStates[t.id]?.focusedPaneId ?: return
+                            session.splitPane(t.id, paneId, horizontal)
+                        }
                         ai.rever.bossterm.compose.tabs.RemoteWindowSection(
                             label = items.first().first.name ?: "Window",
                             groups = items.map { it.third },
+                            onSplitVertical = { splitSec(horizontal = false) },
+                            onSplitHorizontal = { splitSec(horizontal = true) },
+                            onNewTab = {
+                                if (session.canControlState.value) session.newTabIn(secAnchor().id)
+                                else requestControlPrompt = { session.requestControl() }
+                            },
                         )
                     }
                 }

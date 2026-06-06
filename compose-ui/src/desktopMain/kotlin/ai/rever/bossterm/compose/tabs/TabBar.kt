@@ -155,8 +155,18 @@ data class RemoteTabGroup(
     val windowSections: List<RemoteWindowSection> = emptyList(),
 )
 
-/** One host-window sub-section inside a remote group box (see [RemoteTabGroup.windowSections]). */
-data class RemoteWindowSection(val label: String, val groups: List<TabBarGroup>)
+/**
+ * One host-window sub-section inside a remote group box (see [RemoteTabGroup.windowSections]).
+ * Each section carries its own split/new-tab actions targeting THAT host window (replacing
+ * the group-level footer, which would only ever hit the host's anchor window).
+ */
+data class RemoteWindowSection(
+    val label: String,
+    val groups: List<TabBarGroup>,
+    val onSplitVertical: () -> Unit = {},
+    val onSplitHorizontal: () -> Unit = {},
+    val onNewTab: () -> Unit = {},
+)
 
 /**
  * One upstream session's tabs inside a remote group box (see [RemoteTabGroup.nested]).
@@ -547,18 +557,33 @@ fun TabBar(
                                                     }
                                                 }
                                             }
+                                            // Per-window actions — split/new-tab land in THIS
+                                            // host window (the group footer is hidden below).
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                barButton(Icons.Default.VerticalSplit, "Split Left/Right in ${sec.label}", sec.onSplitVertical)
+                                                barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom in ${sec.label}", sec.onSplitHorizontal)
+                                                barButton(Icons.Default.Add, "New tab in ${sec.label}", sec.onNewTab)
+                                            }
                                         }
                                     }
                                 }
                             }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                barButton(Icons.Default.VerticalSplit, "Split Left/Right", rg.onSplitVertical)
-                                barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom", rg.onSplitHorizontal)
-                                barButton(Icons.Default.Add, "New tab", rg.onNewTab)
+                            // Group-level footer only when not sectioned per window — the
+                            // sections carry their own targeted action rows instead.
+                            if (rg.windowSections.isEmpty()) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    barButton(Icons.Default.VerticalSplit, "Split Left/Right", rg.onSplitVertical)
+                                    barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom", rg.onSplitHorizontal)
+                                    barButton(Icons.Default.Add, "New tab", rg.onNewTab)
+                                }
                             }
                         }
                         // Tabs the host itself mirrors from OTHER sessions: flattened — each

@@ -870,9 +870,9 @@ fun ProperTerminal(
                   remoteFitJob[0] = scope.launch {
                     // Wait for a clear stop before resizing the host's OS window. Each request
                     // physically resizes the host window (and reflows a snapshot), so a long
-                    // trailing debounce keeps a hesitant drag from firing several mid-resize —
-                    // it lands once, like the web viewer's "Fit host to my screen" button.
-                    delay(450)
+                    // trailing debounce keeps a drag from firing several mid-resize — it lands
+                    // once, well after the user has settled on a window size.
+                    delay(3000)
                     hook(cols, rows)
                   }
                 }

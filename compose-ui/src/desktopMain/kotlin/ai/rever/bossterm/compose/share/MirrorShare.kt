@@ -166,6 +166,9 @@ class MirrorShare(
                     vc.controlRequestPending = false
                     if (approved) {
                         vc.canControl = true
+                        // Persist the upgrade into the grant so reconnects (same link + key)
+                        // come back WITH control instead of silently demoting to view-only.
+                        vc.grantKey?.let { SessionShareManager.upgradeGrantToControl(it) }
                         vc.outbox.trySend(ShareProtocol.encodeServer(ServerMessage.Control(granted = true)))
                     }
                 }
@@ -528,4 +531,11 @@ class ViewerConnection(
 
     /** A mid-session control request is awaiting the host's decision (dedupes re-requests). */
     @Volatile var controlRequestPending = false
+
+    /**
+     * This connection's access key — an approved mid-session control upgrade is written back
+     * into its grant, so the device keeps control across silent reconnects (the client redials
+     * the same view link + key; without this each blip demoted it to view-only).
+     */
+    @Volatile var grantKey: String? = null
 }

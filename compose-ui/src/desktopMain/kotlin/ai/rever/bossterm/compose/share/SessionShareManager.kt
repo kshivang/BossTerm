@@ -131,9 +131,16 @@ object SessionShareManager {
         val key: String,
         val shareId: String,
         val clientId: String,
-        val canControl: Boolean,
+        /** Mutable: an approved mid-session control request upgrades the stored role, so the
+         *  device keeps control across silent reconnects (else each drop demoted it back). */
+        @Volatile var canControl: Boolean,
         @Volatile var expiresAtMs: Long,
     )
+
+    /** Persist an approved mid-session control upgrade into [key]'s grant (see [Grant.canControl]). */
+    internal fun upgradeGrantToControl(key: String) {
+        grants[key]?.canControl = true
+    }
 
     /** Access key → grant. Lazily expired on use; cleared when the share ends. */
     private val grants = ConcurrentHashMap<String, Grant>()
@@ -659,6 +666,7 @@ object SessionShareManager {
         val clientId = hello?.clientId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         var canControl = ref.canControl
 
+        var accessKey: String? = null // this connection's grant key (for mid-session role upgrades)
         if (requiresApproval()) {
             val now = System.currentTimeMillis()
             val existing = hello?.key?.let { grants[it] }
@@ -666,6 +674,7 @@ object SessionShareManager {
                 // Known device with a live key → slide the 24h window, skip re-approval.
                 existing.expiresAtMs = now + GRANT_TTL_MS
                 canControl = existing.canControl
+                accessKey = existing.key
                 ws.send(Frame.Text(ShareProtocol.encodeServer(
                     ServerMessage.Grant(existing.key, existing.expiresAtMs, canControl))))
             } else {
@@ -689,6 +698,7 @@ object SessionShareManager {
                 val exp = System.currentTimeMillis() + GRANT_TTL_MS
                 grants[key] = Grant(key, shareId, clientId, ref.canControl, exp)
                 canControl = ref.canControl
+                accessKey = key
                 ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Grant(key, exp, canControl))))
             }
         }
@@ -698,6 +708,7 @@ object SessionShareManager {
         share.initialMessages().forEach { ws.send(Frame.Text(ShareProtocol.encodeServer(it))) }
         ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Control(granted = canControl))))
         val vc = share.addViewer(canControl, hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})")
+        vc.grantKey = accessKey // lets an approved mid-session upgrade persist into the grant
         val writer = ws.launch {
             for (text in vc.outbox) ws.send(Frame.Text(text))
         }

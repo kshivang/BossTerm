@@ -132,6 +132,8 @@ data class RemoteTabGroup(
     val onSetColor: (String?) -> Unit,
     /** Open this remote's share link in the default browser (the web viewer). */
     val onOpenInBrowser: () -> Unit,
+    /** Copy this remote's share link to the clipboard. */
+    val onCopyLink: () -> Unit,
 )
 
 /** AI assistants offered in the remote chip menu — same set the browser viewer mirrors. */
@@ -253,6 +255,7 @@ fun TabBar(
             ContextMenuController.MenuItem(id = "rg_rename", label = "Rename…", enabled = true, action = { editingRemoteId = rg.id }),
             colorSubmenu,
             ContextMenuController.MenuItem(id = "rg_open_browser", label = "Open in Browser", enabled = true, action = { rg.onOpenInBrowser() }),
+            ContextMenuController.MenuItem(id = "rg_copy_link", label = "Copy Link", enabled = true, action = { rg.onCopyLink() }),
             ContextMenuController.MenuSeparator(id = "rg_sep"),
             ContextMenuController.MenuItem(id = "rg_disconnect", label = "Disconnect remote", enabled = true, action = { rg.onDisconnect() }),
         ))

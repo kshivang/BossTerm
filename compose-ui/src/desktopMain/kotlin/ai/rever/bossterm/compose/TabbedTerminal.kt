@@ -901,6 +901,7 @@ fun TabbedTerminal(
             if (tabBarVisible) {
             val summaryMode = settings.tabBarSummaryMode
             val rm = state?.remoteSessions
+            val tabBarClipboard = androidx.compose.ui.platform.LocalClipboardManager.current
 
             // Resolve the per-tab accent color: a manual color (Color ▸ menu) always
             // wins; otherwise, when color-by-directory is on, derive a stable accent
@@ -1000,6 +1001,7 @@ fun TabbedTerminal(
                     onSetColor = { hex -> session.accent.value = hex },
                     // The same share link this group mirrors, in the web viewer.
                     onOpenInBrowser = { HyperlinkDetector.openUrl(session.link) },
+                    onCopyLink = { tabBarClipboard.setText(androidx.compose.ui.text.AnnotatedString(session.link)) },
                 )
             }
             // In summary mode the active tab's single chip carries the tab id; match it

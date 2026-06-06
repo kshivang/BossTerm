@@ -65,6 +65,15 @@ class MirrorShare(
     private val viewers = CopyOnWriteArrayList<ViewerConnection>()
     private val viewerSeq = AtomicInteger(0)
     private val coro = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * The host's name for this shared session, shown to viewers as the default group label
+     * (defaults to the username; editable in the Share window). Compose state — read inside
+     * computeSignature's snapshotFlow, so renames re-broadcast the Layout.
+     */
+    val sessionName = androidx.compose.runtime.mutableStateOf(
+        System.getProperty("user.name")?.takeIf { it.isNotBlank() } ?: "session"
+    )
     private var observerJob: Job? = null
 
     private class TapEntry(val tab: TerminalTab, val prev: ((String) -> Unit)?)
@@ -116,7 +125,7 @@ class MirrorShare(
         val sig = computeSignature()
         val out = ArrayList<ServerMessage>()
         out.add(themeMessage())
-        out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode))
+        out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
             out.add(ServerMessage.PaneSnapshot(id, snapshotText(tab), sz[0], sz[1]))
@@ -299,7 +308,7 @@ class MirrorShare(
                 }
             }
         }
-        broadcast(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode))
+        broadcast(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
         sig.sizes.forEach { (id, sz) -> broadcast(ServerMessage.PaneResize(id, sz[0], sz[1])) }
     }
 
@@ -310,6 +319,7 @@ class MirrorShare(
         val sizes: Map<String, List<Int>>,
         val tabBarOnLeft: Boolean,
         val summaryMode: Boolean,
+        val sessionName: String? = null,
     )
 
     private fun inScopeTabs(state: TabbedTerminalState): List<TerminalTab> = when (scope) {
@@ -348,13 +358,14 @@ class MirrorShare(
                     color = tabColorCss(tab), cwd = tab.workingDirectory.value, branch = tab.gitBranch.value,
                     origin = upstream?.originHash,
                     originName = upstream?.let {
-                        it.customName.value ?: runCatching { java.net.URI(it.link).host }.getOrNull() ?: it.link
+                        it.customName.value ?: it.hostName.value
+                            ?: runCatching { java.net.URI(it.link).host }.getOrNull() ?: it.link
                     },
                     originReadOnly = upstream?.let { !it.canControlState.value },
                 )
             )
         }
-        return WindowSig(tabNodes, activeId, sizes, onLeft, summary)
+        return WindowSig(tabNodes, activeId, sizes, onLeft, summary, sessionName.value)
     }
 
     /** Resolve a tab's accent as CSS (#RRGGBB), mirroring the host's chip color (manual or auto). */

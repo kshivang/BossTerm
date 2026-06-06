@@ -58,6 +58,11 @@ sealed class ServerMessage {
          * false (default) = one chip per split pane (the viewer shows per-pane sub-tabs).
          */
         val summaryMode: Boolean = false,
+        /**
+         * The host's name for this shared session (defaults to its username; editable in the
+         * Share window). Clients use it as the default group label instead of the link's host.
+         */
+        val sessionName: String? = null,
     ) : ServerMessage()
 
     /** One-time initial paint for a pane: scrollback+screen as a raw escape/text blob. */

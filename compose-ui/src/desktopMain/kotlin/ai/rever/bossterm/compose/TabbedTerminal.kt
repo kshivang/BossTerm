@@ -1017,7 +1017,10 @@ fun TabbedTerminal(
                     }
                 if (gs.isEmpty() && nested.isEmpty()) null else ai.rever.bossterm.compose.tabs.RemoteTabGroup(
                     id = session.link,
+                    // Group label precedence: local rename → the host's session name (its
+                    // username by default) → the link's host.
                     header = session.customName.value
+                        ?: session.hostName.value
                         ?: runCatching { java.net.URI(session.link).host ?: session.link }.getOrDefault(session.link),
                     colorHex = session.accent.value,
                     groups = gs,
@@ -1803,6 +1806,8 @@ fun TabbedTerminal(
             tailscaleMode = settings.shareTailscaleMode,
             onTailscaleModeChange = { SettingsManager.instance.updateSetting { copy(shareTailscaleMode = it) } },
             onRefreshLink = { ai.rever.bossterm.compose.share.SessionShareManager.refreshRemoteLink() },
+            sessionName = ai.rever.bossterm.compose.share.SessionShareManager.sessionNameFor(info.tabId) ?: "",
+            onSessionNameChange = { ai.rever.bossterm.compose.share.SessionShareManager.setSessionName(info.tabId, it) },
         )
     }
 

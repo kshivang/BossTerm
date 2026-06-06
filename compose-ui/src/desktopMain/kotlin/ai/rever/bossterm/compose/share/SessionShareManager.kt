@@ -255,6 +255,16 @@ object SessionShareManager {
     fun ownsTokenHash(hash: String): Boolean =
         sharesByToken.keys.any { ShareProtocol.sha256Hex(it) == hash }
 
+    /** The host's name for [tabId]'s share (viewers' default group label), or null if unshared. */
+    fun sessionNameFor(tabId: String): String? = sharesByTab[tabId]?.sessionName?.value
+
+    /** Rename [tabId]'s share; blank reverts to the username default. */
+    fun setSessionName(tabId: String, name: String) {
+        sharesByTab[tabId]?.sessionName?.value = name.trim().ifBlank {
+            System.getProperty("user.name")?.takeIf { it.isNotBlank() } ?: "session"
+        }
+    }
+
     /** The read-only share URL for an active share, or null if not shared / server down. */
     fun urlFor(tabId: String): String? {
         val token = sharesByTab[tabId]?.viewToken ?: return null

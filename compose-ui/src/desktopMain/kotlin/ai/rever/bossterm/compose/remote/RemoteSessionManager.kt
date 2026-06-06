@@ -136,6 +136,12 @@ class RemoteSession internal constructor(
     val accent = androidx.compose.runtime.mutableStateOf<String?>(null)
 
     /**
+     * The host's own name for its session (Layout.sessionName — defaults to its username).
+     * Used as the group label when no local [customName] is set; falls back to the link host.
+     */
+    val hostName = androidx.compose.runtime.mutableStateOf<String?>(null)
+
+    /**
      * [canControl] as Compose state — updated on the host's Control messages, so the tab bar's
      * remote menus rebuild the moment control is granted/revoked (a StateFlow read wouldn't
      * trigger recomposition).
@@ -350,8 +356,11 @@ class RemoteSession internal constructor(
     // ---- message handling ----
     private fun onMessage(msg: ServerMessage) {
         when (msg) {
-            is ServerMessage.Layout -> runCatching { reconcile(msg) }
-                .onFailure { log.warn("remote layout reconcile failed: {}", it.message) }
+            is ServerMessage.Layout -> {
+                msg.sessionName?.takeIf { it.isNotBlank() }?.let { hostName.value = it }
+                runCatching { reconcile(msg) }
+                    .onFailure { log.warn("remote layout reconcile failed: {}", it.message) }
+            }
             is ServerMessage.PaneSnapshot -> {
                 val s = sessionByPane[msg.paneId] ?: return
                 if (msg.cols >= 2 && msg.rows >= 2) s.terminal.resize(TermSize(msg.cols, msg.rows), RequestOrigin.User)

@@ -176,7 +176,10 @@ private fun RemoteSessionRow(session: RemoteSession, onDisconnect: () -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Column(Modifier.weight(1f)) {
-                Text(hostOf(session.link), color = TextPrimary, fontSize = 13.sp, maxLines = 1)
+                Text(
+                    session.customName.value ?: session.hostName.value ?: hostOf(session.link),
+                    color = TextPrimary, fontSize = 13.sp, maxLines = 1
+                )
                 Text(statusLabel(status), color = statusColor(status), fontSize = 11.sp, maxLines = 1)
             }
             val s = status

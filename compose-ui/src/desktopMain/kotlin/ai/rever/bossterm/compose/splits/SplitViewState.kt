@@ -44,6 +44,14 @@ class SplitViewState(
     val paneBounds = mutableStateMapOf<String, Rect>()
 
     /**
+     * Remote mirror hook: when this split tree mirrors a remote session, dragging a divider also
+     * streams the ratio to the host — `(splitId, ratio, committed)`. `committed` is true on drag
+     * end (final value). The local ratio is still updated live for smoothness; the host echoes the
+     * final ratio back via its Layout. Null for ordinary local tabs (no remote routing).
+     */
+    var onRemoteDividerDrag: ((splitId: String, ratio: Float, committed: Boolean) -> Unit)? = null
+
+    /**
      * Check if there's only one pane (no splits).
      */
     val isSinglePane: Boolean

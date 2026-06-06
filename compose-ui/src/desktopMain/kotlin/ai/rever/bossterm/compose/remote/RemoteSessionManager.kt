@@ -69,6 +69,13 @@ class RemoteSession internal constructor(
     // In-memory access key for this link (persistence across restarts is a follow-up).
     @Volatile private var key: String? = null
 
+    // While the user drags a split divider locally we stream the ratio to the host (throttled) and
+    // ignore the host's Layout echoes (which carry the same ratio) so the divider doesn't fight the
+    // drag — mirrors the browser viewer's `splitDragging` guard. Set on the UI thread, read by the
+    // WS IO thread in reconcile().
+    @Volatile private var draggingSplit = false
+    @Volatile private var lastResizeSentAt = 0L
+
     private val conn = RemoteSessionConnection(
         link = link,
         clientId = clientId,
@@ -176,6 +183,28 @@ class RemoteSession internal constructor(
         conn.send(ClientMessage.CloseTabsBelow(rid))
     }
 
+    /**
+     * Drag a split divider: set split node [splitId] in [localTabId]'s tab to [ratio] on the host
+     * (mirrors dragging the divider on the host). During the drag ([committed] = false) sends are
+     * throttled and Layout echoes are ignored (see [draggingSplit]); on release ([committed] =
+     * true) sends the final ratio and resumes reconciling.
+     */
+    fun resizeSplit(localTabId: String, splitId: String, ratio: Float, committed: Boolean) {
+        if (!conn.canControl) return
+        val rid = remoteTabIdFor(localTabId) ?: return
+        if (committed) {
+            draggingSplit = false
+            conn.send(ClientMessage.ResizeSplit(rid, splitId, ratio))
+        } else {
+            draggingSplit = true
+            val now = System.currentTimeMillis()
+            if (now - lastResizeSentAt >= 60L) { // ~16fps, matches the viewer's throttle
+                lastResizeSentAt = now
+                conn.send(ClientMessage.ResizeSplit(rid, splitId, ratio))
+            }
+        }
+    }
+
     /** Map a local container tab id back to its remote tab id. */
     private fun remoteTabIdFor(localTabId: String): String? =
         localTabByRemote.entries.firstOrNull { it.value.id == localTabId }?.key
@@ -236,6 +265,9 @@ class RemoteSession internal constructor(
      * changes — Layout is only resent then. Reuses containers/panes by remote id across rebuilds.
      */
     private fun reconcile(layout: ServerMessage.Layout) {
+        // While a divider is being dragged locally, ignore the host's Layout echoes (they carry the
+        // ratio we just sent) so the drag isn't interrupted — the post-release Layout reconciles.
+        if (draggingSplit) return
         val controller = state.tabController ?: return
         val remoteIds = layout.tabs.map { it.id }.toSet()
 
@@ -279,6 +311,8 @@ class RemoteSession internal constructor(
             // Preserve the client's own focused pane across structural updates (setTree falls back
             // to the first pane if the focused one is gone) — client focus is independent of host.
             val ss = state.splitStates.getOrPut(container.id) { SplitViewState(initialSession = container) }
+            // Route divider drags in this mirror's split tree to the host (idempotent each pass).
+            ss.onRemoteDividerDrag = { splitId, ratio, committed -> resizeSplit(container.id, splitId, ratio, committed) }
             ss.setTree(buildTree(tabNode.tree), ss.focusedPaneId)
 
             // Add to the tab list only AFTER the split tree is populated — so the UI never renders

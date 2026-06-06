@@ -89,8 +89,8 @@
     if (currentPaneId && panes[currentPaneId]) { try { panes[currentPaneId].term.focus(); } catch (e) {} }
   }
   function sendKey(seq) {
-    if (!controlGranted || !currentPaneId) return;
-    sendMsg({ t: "input", paneId: currentPaneId, data: seq });
+    if (!currentPaneId) return;
+    sendInput(currentPaneId, seq);
   }
   function buildKeybar() {
     keybarEl.innerHTML = "";
@@ -267,7 +267,7 @@
     var canRead = controlGranted && navigator.clipboard && navigator.clipboard.readText;
     ctxEl.appendChild(ctxItem("Paste", canRead, function () {
       navigator.clipboard.readText().then(function (txt) {
-        if (txt) sendMsg({ t: "input", paneId: paneId, data: txt });
+        if (txt) sendInput(paneId, txt);
       }).catch(function () {});
     }));
     ctxEl.appendChild(ctxItem("Select all", true, function () { try { term.selectAll(); } catch (e) {} }));
@@ -480,11 +480,7 @@
       ta.setAttribute("spellcheck", "false");
     }
     if (viewerFont) { try { term.options.fontSize = viewerFont; } catch (e) {} }
-    term.onData(function (data) {
-      if (controlGranted && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ t: "input", paneId: paneId, data: data }));
-      }
-    });
+    term.onData(function (data) { sendInput(paneId, data); });
     p = { term: term, host: host };
     panes[paneId] = p;
     return p;
@@ -705,6 +701,34 @@
     if (window.confirm("You're viewing this session read-only — this action needs control. Ask the host for it?"))
       sendMsg({ t: "requestControl" });
     return true;
+  }
+
+  // Typing prompt throttle: buffered keystrokes must not spam confirms — one prompt, then
+  // quiet for 30s (a grant clears the read-only state and re-enables input anyway).
+  var inputPromptQuietUntil = 0;
+  function promptControlForInput(tabId, name) {
+    var now = Date.now();
+    if (now < inputPromptQuietUntil) return;
+    inputPromptQuietUntil = now + 30000;
+    if (tabId) { requestUpstreamControl(tabId, name); return; }
+    if (window.confirm("You're viewing this session read-only — typing needs control. Ask the host for it?"))
+      sendMsg({ t: "requestControl" });
+  }
+  function tabOfPane(paneId) {
+    if (!layout) return null;
+    for (var i = 0; i < layout.tabs.length; i++) {
+      var ids = {}; collectPaneIds(layout.tabs[i].tree, ids);
+      if (ids[paneId]) return layout.tabs[i];
+    }
+    return null;
+  }
+  // Central input path: typing into a read-only context (no control, or the pane's tab is
+  // read-only via an upstream host) prompts to request control instead of vanishing.
+  function sendInput(paneId, data) {
+    if (!controlGranted) { promptControlForInput(null, null); return; }
+    var t = tabOfPane(paneId);
+    if (t && t.origin && t.originReadOnly) { promptControlForInput(t.id, t.originName || "remote"); return; }
+    sendMsg({ t: "input", paneId: paneId, data: data });
   }
 
   // kind: "v" = Split Left/Right (vertical divider), "h" = Split Top/Bottom (horizontal divider).

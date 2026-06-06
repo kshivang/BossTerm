@@ -79,6 +79,26 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
         sessions.toList().forEach { it.close() }
         sessions.clear()
     }
+
+    /** A blocked-typing event awaiting the user's decision ([tabId] != null → relay upstream). */
+    data class BlockedInput(val session: RemoteSession, val tabId: String?)
+
+    /** Non-null while the "typing needs control" prompt should show; cleared by the dialog. */
+    val blockedInput = androidx.compose.runtime.mutableStateOf<BlockedInput?>(null)
+    @Volatile private var inputPromptQuietUntil = 0L
+
+    /** Typing hit a read-only path — surface the request-control prompt (throttled). */
+    internal fun notifyBlockedInput(session: RemoteSession, upstreamTabId: String?) {
+        val now = System.currentTimeMillis()
+        if (now < inputPromptQuietUntil) return
+        inputPromptQuietUntil = now + 2_000 // buffered keystrokes → one prompt
+        blockedInput.value = BlockedInput(session, upstreamTabId)
+    }
+
+    /** The user dismissed the typing prompt — stay quiet a while instead of nagging per key. */
+    internal fun snoozeBlockedInputPrompt() {
+        inputPromptQuietUntil = System.currentTimeMillis() + 30_000
+    }
 }
 
 /** The `t=` token in a share [link], or null if absent/malformed. */
@@ -528,7 +548,7 @@ class RemoteSession internal constructor(
             val ss = state.splitStates.getOrPut(container.id) { SplitViewState(initialSession = container) }
             // Route divider drags in this mirror's split tree to the host (idempotent each pass).
             ss.onRemoteDividerDrag = { splitId, ratio, committed -> resizeSplit(container.id, splitId, ratio, committed) }
-            ss.setTree(buildTree(tabNode.tree), ss.focusedPaneId)
+            ss.setTree(buildTree(tabNode.tree, container.id), ss.focusedPaneId)
 
             // Add to the tab list only AFTER the split tree is populated — so the UI never renders
             // a not-yet-built container, and without switching focus (must not steal the local
@@ -538,13 +558,25 @@ class RemoteSession internal constructor(
     }
 
     /** Map a remote pane tree to a local [SplitNode] tree, reusing pane mirrors by remote paneId. */
-    private fun buildTree(node: PaneTreeNode): SplitNode = when (node) {
+    private fun buildTree(node: PaneTreeNode, containerId: String): SplitNode = when (node) {
         is PaneTreeNode.Pane -> {
             val session = sessionByPane.getOrPut(node.paneId) {
                 state.tabController!!.createRemoteSession(
                     title = node.title,
                     remotePaneId = node.paneId,
-                    onUserInput = { data -> if (conn.canControl) conn.send(ClientMessage.Input(node.paneId, data)) },
+                    onUserInput = { data ->
+                        // Typing into a read-only path (no control of the host, or the host
+                        // itself is view-only on this tab's upstream) prompts to request
+                        // control instead of vanishing — same as the web viewer.
+                        val upstreamReadOnly = upstreamFor(containerId)?.readOnly == true
+                        if (conn.canControl && !upstreamReadOnly) {
+                            conn.send(ClientMessage.Input(node.paneId, data))
+                        } else {
+                            state.remoteSessions.notifyBlockedInput(
+                                this, containerId.takeIf { upstreamReadOnly }
+                            )
+                        }
+                    },
                 )
             }
             session.title.value = node.title
@@ -554,15 +586,15 @@ class RemoteSession internal constructor(
         is PaneTreeNode.Split -> if (node.dir == "h") {
             SplitNode.HorizontalSplit(
                 id = node.id.ifBlank { node.paneIdKey() },
-                top = buildTree(node.a),
-                bottom = buildTree(node.b),
+                top = buildTree(node.a, containerId),
+                bottom = buildTree(node.b, containerId),
                 ratio = node.ratio,
             )
         } else {
             SplitNode.VerticalSplit(
                 id = node.id.ifBlank { node.paneIdKey() },
-                left = buildTree(node.a),
-                right = buildTree(node.b),
+                left = buildTree(node.a, containerId),
+                right = buildTree(node.b, containerId),
                 ratio = node.ratio,
             )
         }

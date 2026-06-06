@@ -1839,6 +1839,24 @@ fun TabbedTerminal(
         )
     }
 
+    // Typing into a read-only mirror (no control, or read-only via an upstream host) surfaces
+    // the same request-control prompt; dismissing snoozes it so it doesn't nag per keystroke.
+    state?.remoteSessions?.let { mgr ->
+        mgr.blockedInput.value?.let { blocked ->
+            ai.rever.bossterm.compose.remote.RequestControlPrompt(
+                onConfirm = {
+                    if (blocked.tabId != null) blocked.session.requestControlFor(blocked.tabId)
+                    else blocked.session.requestControl()
+                    mgr.blockedInput.value = null
+                },
+                onDismiss = {
+                    mgr.snoozeBlockedInputPrompt()
+                    mgr.blockedInput.value = null
+                },
+            )
+        }
+    }
+
     // Disconnect → reconnect dialog (like the web viewer's overlay): prompt for the first
     // remote session that lost its connection and hasn't had this failure dismissed.
     state?.remoteSessions?.let { mgr ->

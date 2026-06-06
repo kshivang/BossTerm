@@ -998,6 +998,8 @@ fun TabbedTerminal(
                     // to the link's host; null color reverts to the default remote cyan.
                     onRename = { session.customName.value = it.trim().ifBlank { null } },
                     onSetColor = { hex -> session.accent.value = hex },
+                    // The same share link this group mirrors, in the web viewer.
+                    onOpenInBrowser = { HyperlinkDetector.openUrl(session.link) },
                 )
             }
             // In summary mode the active tab's single chip carries the tab id; match it

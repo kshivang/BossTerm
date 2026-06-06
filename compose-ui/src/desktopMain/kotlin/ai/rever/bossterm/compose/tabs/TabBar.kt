@@ -130,6 +130,8 @@ data class RemoteTabGroup(
     val onChipLaunchAI: (tabIndex: Int, paneId: String, assistantId: String) -> Unit,
     val onRename: (String) -> Unit,
     val onSetColor: (String?) -> Unit,
+    /** Open this remote's share link in the default browser (the web viewer). */
+    val onOpenInBrowser: () -> Unit,
 )
 
 /** AI assistants offered in the remote chip menu — same set the browser viewer mirrors. */
@@ -250,6 +252,7 @@ fun TabBar(
         contextMenuController.showMenu(0f, 0f, listOf(
             ContextMenuController.MenuItem(id = "rg_rename", label = "Rename…", enabled = true, action = { editingRemoteId = rg.id }),
             colorSubmenu,
+            ContextMenuController.MenuItem(id = "rg_open_browser", label = "Open in Browser", enabled = true, action = { rg.onOpenInBrowser() }),
             ContextMenuController.MenuSeparator(id = "rg_sep"),
             ContextMenuController.MenuItem(id = "rg_disconnect", label = "Disconnect remote", enabled = true, action = { rg.onDisconnect() }),
         ))

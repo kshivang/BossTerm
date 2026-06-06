@@ -918,7 +918,9 @@ fun TabbedTerminal(
             }
 
             // Abbreviate a working directory for the chip's second line (Warp-style):
-            // home → "~", otherwise collapse long paths to "~/…/parent/dir".
+            // collapse long paths to "~/…/parent/dir". At home the title is already "~", so the
+            // second line would collapse to "~" too and get hidden (== title) — instead show the
+            // full home path there, matching the web viewer (its second line is never blank/"~").
             fun abbreviateCwd(path: String?): String? {
                 if (path.isNullOrBlank()) return null
                 val home = System.getProperty("user.home")?.trimEnd('/')
@@ -927,7 +929,8 @@ fun TabbedTerminal(
                     "~" + clean.removePrefix(home) else clean
                 val parts = withTilde.split('/').filter { it.isNotEmpty() }
                 return when {
-                    withTilde == "~" || withTilde == "/" -> withTilde
+                    withTilde == "~" -> clean // home: show the real path (the "~" title carries the tilde)
+                    withTilde == "/" -> "/"
                     parts.size <= 2 -> withTilde
                     withTilde.startsWith("~") -> "~/…/" + parts.takeLast(2).joinToString("/")
                     else -> "/…/" + parts.takeLast(2).joinToString("/")

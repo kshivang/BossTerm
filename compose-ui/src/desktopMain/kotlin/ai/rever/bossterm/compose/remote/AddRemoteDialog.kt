@@ -195,6 +195,44 @@ fun RequestControlPrompt(onConfirm: () -> Unit, onDismiss: () -> Unit) {
     )
 }
 
+/**
+ * Shown when a remote session drops after exhausting its reconnect budget (the native
+ * counterpart of the web viewer's disconnect overlay): Reconnect retries with a fresh
+ * budget; Disconnect removes the session + its mirror tabs; dismissing keeps the frozen
+ * mirror without re-prompting for this failure.
+ */
+@Composable
+fun RemoteDisconnectedDialog(
+    name: String,
+    message: String?,
+    onReconnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = BackgroundColor,
+        title = { Text("Remote disconnected", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
+        text = {
+            Text(
+                "Lost the connection to $name." +
+                    (message?.let { "\n$it" } ?: "") +
+                    "\nIts tabs stay frozen until it reconnects.",
+                color = TextSecondary, fontSize = 12.sp
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onReconnect,
+                colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+            ) { Text("Reconnect") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDisconnect) { Text("Disconnect", color = Danger) }
+        },
+    )
+}
+
 @Composable
 private fun RemoteSessionRow(session: RemoteSession, onDisconnect: () -> Unit) {
     val status by session.status.collectAsState()

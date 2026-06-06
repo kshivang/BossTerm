@@ -156,6 +156,11 @@ data class TabNode(
      * input can't flow through it, so these tabs are effectively read-only for viewers too.
      */
     val originReadOnly: Boolean? = null,
+    /**
+     * When [origin] != null: true if the host's connection to that upstream is currently down
+     * (reconnecting or failed) — these tabs show FROZEN content until it comes back.
+     */
+    val originOffline: Boolean? = null,
 )
 
 /** Recursive split-layout node: either a binary split or a leaf pane. */

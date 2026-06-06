@@ -363,6 +363,9 @@ class MirrorShare(
                             ?: runCatching { java.net.URI(it.link).host }.getOrNull() ?: it.link
                     },
                     originReadOnly = upstream?.let { !it.canControlState.value },
+                    originOffline = upstream?.let {
+                        it.statusState.value !is ai.rever.bossterm.compose.remote.RemoteStatus.Connected
+                    },
                 )
             )
         }

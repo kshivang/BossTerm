@@ -80,6 +80,13 @@ class RemoteSessionConnection(
         scope.launch { runWithReconnect() }
     }
 
+    /** Restart the loop after a terminal [RemoteStatus.Failed] (the disconnect dialog's Reconnect). */
+    fun reconnect() {
+        if (closedByUser || _status.value !is RemoteStatus.Failed) return
+        _status.value = RemoteStatus.Connecting
+        scope.launch { runWithReconnect() } // fresh retry budget (locals reset on entry)
+    }
+
     private suspend fun runWithReconnect() {
         var attempt = 0
         while (scope.isActive && !closedByUser) {

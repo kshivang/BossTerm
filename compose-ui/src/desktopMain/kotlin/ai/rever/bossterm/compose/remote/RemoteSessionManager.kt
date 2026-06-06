@@ -148,6 +148,13 @@ class RemoteSession internal constructor(
      */
     val canControlState = androidx.compose.runtime.mutableStateOf(false)
 
+    /**
+     * Connection status as Compose state — drives the group box's header indicator
+     * (connecting…/disconnected) and, read inside the share signature's snapshotFlow, the
+     * originOffline flag forwarded to nested viewers when WE are someone's upstream host.
+     */
+    val statusState = androidx.compose.runtime.mutableStateOf<RemoteStatus>(RemoteStatus.Connecting)
+
     /** True if [s] is any of this session's mirrors — the containers or their pane mirrors. */
     fun ownsMirror(s: ai.rever.bossterm.compose.TerminalSession): Boolean =
         localTabByRemote.values.any { it === s } || sessionByPane.values.any { it === s }
@@ -157,7 +164,7 @@ class RemoteSession internal constructor(
      * remote): [key] groups tabs of the same upstream, [name] labels the subsection, and
      * [readOnly] means the host can't type into it either — so neither can we through it.
      */
-    data class UpstreamOrigin(val key: String, val name: String?, val readOnly: Boolean)
+    data class UpstreamOrigin(val key: String, val name: String?, val readOnly: Boolean, val offline: Boolean = false)
 
     // localTabId (container) → upstream-origin info; bumping [upstreamRev] re-renders the bar
     // when only this map changed (e.g. the host's upstream control was granted mid-session).
@@ -183,7 +190,23 @@ class RemoteSession internal constructor(
     // (including a tab's first) can never orphan a survivor's output.
     private val sessionByPane = HashMap<String, TerminalTab>()
 
-    fun start() = conn.start()
+    fun start() {
+        // Mirror the connection's StateFlow status into Compose state (see [statusState]).
+        scope.launch { conn.status.collect { statusState.value = it } }
+        conn.start()
+    }
+
+    /**
+     * Don't re-show the disconnect dialog for this failure (its dismiss); reset by [reconnect],
+     * so a later failure prompts again.
+     */
+    val failureDismissed = androidx.compose.runtime.mutableStateOf(false)
+
+    /** Restart a failed connection (the disconnect dialog's Reconnect). */
+    fun reconnect() {
+        failureDismissed.value = false
+        conn.reconnect()
+    }
 
     /** Ask the host to grant write/control (when connected view-only). */
     fun requestControl() = conn.send(ClientMessage.RequestControl())
@@ -492,7 +515,7 @@ class RemoteSession internal constructor(
             // Track whether this host tab itself mirrors ANOTHER session (and our effective
             // writability through it) — the tab bar nests those under a labeled subsection.
             val upstream = tabNode.origin?.let {
-                UpstreamOrigin(it, tabNode.originName, tabNode.originReadOnly == true)
+                UpstreamOrigin(it, tabNode.originName, tabNode.originReadOnly == true, tabNode.originOffline == true)
             }
             if (upstreamByTab[container.id] != upstream) {
                 if (upstream != null) upstreamByTab[container.id] = upstream else upstreamByTab.remove(container.id)

@@ -123,6 +123,10 @@ data class RemoteTabGroup(
     val colorHex: String?,
     val groups: List<TabBarGroup>,
     val canControl: Boolean,
+    /** Connection state shown next to the header when not healthy (e.g. "connecting…",
+     *  "disconnected"); null = connected. [statusError] picks red over amber. */
+    val statusLabel: String? = null,
+    val statusError: Boolean = false,
     val onSplitVertical: () -> Unit,
     val onSplitHorizontal: () -> Unit,
     val onNewTab: () -> Unit,
@@ -154,6 +158,8 @@ data class RemoteTabGroup(
 data class RemoteNestedGroup(
     val label: String,
     val readOnly: Boolean,
+    /** The host's connection to this upstream is down — the tabs show frozen content. */
+    val offline: Boolean = false,
     val groups: List<TabBarGroup>,
     val onSplitVertical: () -> Unit = {},
     val onSplitHorizontal: () -> Unit = {},
@@ -475,6 +481,15 @@ fun TabBar(
                                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
                                     )
                                 }
+                                rg.statusLabel?.let { label ->
+                                    // Connection state (connecting…/disconnected) — amber while
+                                    // it may heal, red when it gave up.
+                                    Text(
+                                        "· $label",
+                                        color = if (rg.statusError) Color(0xFFE57373) else Color(0xFFE0A030),
+                                        fontSize = 10.sp, maxLines = 1
+                                    )
+                                }
                                 if (!rg.canControl) {
                                     // Read-only session: eye badge (right-click → Request Control).
                                     Icon(
@@ -533,6 +548,10 @@ fun TabBar(
                                         "${nest.label} · via ${rg.header}", color = Color(0xFFB0B0B0), fontSize = 11.sp,
                                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
                                     )
+                                    if (nest.offline) {
+                                        // The host lost its upstream — these tabs are frozen.
+                                        Text("· offline", color = Color(0xFFE57373), fontSize = 10.sp, maxLines = 1)
+                                    }
                                     if (nest.readOnly) {
                                         Icon(
                                             Icons.Default.Visibility,

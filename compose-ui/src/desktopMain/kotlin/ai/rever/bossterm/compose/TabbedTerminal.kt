@@ -1010,6 +1010,7 @@ fun TabbedTerminal(
                         ai.rever.bossterm.compose.tabs.RemoteNestedGroup(
                             label = up.name ?: "remote",
                             readOnly = up.readOnly,
+                            offline = up.offline,
                             groups = items.map { it.third },
                             onSplitVertical = { splitNest(horizontal = false) },
                             onSplitHorizontal = { splitNest(horizontal = true) },
@@ -1031,6 +1032,19 @@ fun TabbedTerminal(
                     colorHex = session.accent.value,
                     groups = gs,
                     canControl = session.canControlState.value, // Compose state → menus update on grant
+                    statusLabel = when (session.statusState.value) {
+                        is ai.rever.bossterm.compose.remote.RemoteStatus.Connected -> null
+                        ai.rever.bossterm.compose.remote.RemoteStatus.Connecting -> "connecting…"
+                        ai.rever.bossterm.compose.remote.RemoteStatus.Pending -> "awaiting approval…"
+                        is ai.rever.bossterm.compose.remote.RemoteStatus.Failed -> "disconnected"
+                        is ai.rever.bossterm.compose.remote.RemoteStatus.Denied -> "denied"
+                        ai.rever.bossterm.compose.remote.RemoteStatus.Closed -> "closed"
+                    },
+                    statusError = session.statusState.value.let {
+                        it is ai.rever.bossterm.compose.remote.RemoteStatus.Failed ||
+                            it is ai.rever.bossterm.compose.remote.RemoteStatus.Denied ||
+                            it is ai.rever.bossterm.compose.remote.RemoteStatus.Closed
+                    },
                     // View-only: split/new-tab first confirm via the request-control dialog
                     // (confirming sends the request; the host shows its approval toast).
                     onSplitVertical = {
@@ -1823,6 +1837,23 @@ fun TabbedTerminal(
             onConfirm = { send(); requestControlPrompt = null },
             onDismiss = { requestControlPrompt = null },
         )
+    }
+
+    // Disconnect → reconnect dialog (like the web viewer's overlay): prompt for the first
+    // remote session that lost its connection and hasn't had this failure dismissed.
+    state?.remoteSessions?.let { mgr ->
+        mgr.sessions.firstOrNull {
+            it.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Failed && !it.failureDismissed.value
+        }?.let { failed ->
+            ai.rever.bossterm.compose.remote.RemoteDisconnectedDialog(
+                name = failed.customName.value ?: failed.hostName.value
+                    ?: runCatching { java.net.URI(failed.link).host ?: failed.link }.getOrDefault(failed.link),
+                message = (failed.statusState.value as? ai.rever.bossterm.compose.remote.RemoteStatus.Failed)?.message,
+                onReconnect = { failed.reconnect() },
+                onDisconnect = { mgr.disconnect(failed) },
+                onDismiss = { failed.failureDismissed.value = true },
+            )
+        }
     }
 
     // "Add remote": connect to another BossTerm's shared session and mirror its tabs here.

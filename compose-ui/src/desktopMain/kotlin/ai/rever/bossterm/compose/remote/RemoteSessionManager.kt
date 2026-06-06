@@ -135,6 +135,13 @@ class RemoteSession internal constructor(
     /** Custom group accent ("0xFFRRGGBB"); null → the default remote cyan. */
     val accent = androidx.compose.runtime.mutableStateOf<String?>(null)
 
+    /**
+     * [canControl] as Compose state — updated on the host's Control messages, so the tab bar's
+     * remote menus rebuild the moment control is granted/revoked (a StateFlow read wouldn't
+     * trigger recomposition).
+     */
+    val canControlState = androidx.compose.runtime.mutableStateOf(false)
+
     /** True if [s] is any of this session's mirrors — the containers or their pane mirrors. */
     fun ownsMirror(s: ai.rever.bossterm.compose.TerminalSession): Boolean =
         localTabByRemote.values.any { it === s } || sessionByPane.values.any { it === s }
@@ -323,10 +330,12 @@ class RemoteSession internal constructor(
                 val s = sessionByPane[msg.paneId] ?: return
                 if (msg.cols >= 2 && msg.rows >= 2) s.terminal.resize(TermSize(msg.cols, msg.rows), RequestOrigin.User)
             }
-            is ServerMessage.Control ->
+            is ServerMessage.Control -> {
+                canControlState.value = msg.granted // recompose the tab bar's remote menus
                 // Two-way sharing offers only matter once the host trusts us with control —
                 // it ignores OfferShare from view-only clients anyway.
                 if (msg.granted) maybeOfferShareBack()
+            }
             else -> {} // Theme/Presence/Pending/Grant/Denied handled in the connection
         }
     }

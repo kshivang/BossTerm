@@ -273,6 +273,15 @@ fun TabBar(
     // routed to the host. Host-mutating items are gated on control; "Disconnect remote" is the
     // one native-only affordance and is always enabled.
     val showRemoteChipMenu: (RemoteTabGroup, Int, String) -> Unit = { rg, tabIndex, paneId ->
+        if (!rg.canControl) {
+            // View-only: every chip action mutates the host, so offer just the upgrade path
+            // and the local disconnect instead of a wall of disabled items.
+            contextMenuController.showMenu(0f, 0f, listOf(
+                ContextMenuController.MenuItem(id = "remote_request_control", label = "Request Control", enabled = true, action = { rg.onRequestControl() }),
+                ContextMenuController.MenuSeparator(id = "remote_sep_view"),
+                ContextMenuController.MenuItem(id = "remote_disconnect", label = "Disconnect remote", enabled = true, action = { rg.onDisconnect() }),
+            ))
+        } else {
         val ctl = rg.canControl
         val aiSubmenu = ContextMenuController.MenuSubmenu(
             id = "remote_ai",
@@ -307,6 +316,7 @@ fun TabBar(
             ContextMenuController.MenuItem(id = "remote_disconnect", label = "Disconnect remote", enabled = true, action = { rg.onDisconnect() }),
         )
         contextMenuController.showMenu(0f, 0f, items)
+        }
     }
 
     val newTabButton: @Composable () -> Unit = {

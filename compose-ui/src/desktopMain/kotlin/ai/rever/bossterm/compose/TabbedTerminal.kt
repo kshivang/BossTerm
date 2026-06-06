@@ -984,7 +984,7 @@ fun TabbedTerminal(
                         ?: runCatching { java.net.URI(session.link).host ?: session.link }.getOrDefault(session.link),
                     colorHex = session.accent.value,
                     groups = gs,
-                    canControl = session.canControl,
+                    canControl = session.canControlState.value, // Compose state → menus update on grant
                     onSplitVertical = { session.splitFocused(horizontal = false) },
                     onSplitHorizontal = { session.splitFocused(horizontal = true) },
                     onNewTab = { session.newRemoteTab() },
@@ -1363,6 +1363,15 @@ fun TabbedTerminal(
                         // Find/Split/Close come from the base menu; local-host items (MCP attach,
                         // Share, VCS, shell customization) don't apply to a mirror, so they're omitted.
                         val focusedRemote = splitState.getFocusedSession() as? ai.rever.bossterm.compose.tabs.TerminalTab
+                        // View-only: the host ignores mutating actions, so keep the menu lean —
+                        // the upgrade path instead of host-routed items (the base menu's Copy/
+                        // Paste/Find stay useful; its Split/Close no-op until control is granted).
+                        if (!remoteForActive.canControl) {
+                            items = items + ContextMenuItem(
+                                id = "remote_request_control", label = "Request Control",
+                                action = { remoteForActive.requestControl() }
+                            )
+                        }
                         // Fit host to my screen: resize the REMOTE so its grid matches this pane
                         // (like the viewer's top-bar button). Mutates the host → control only.
                         if (focusedRemote != null && remoteForActive.canControl) {
@@ -1382,21 +1391,23 @@ fun TabbedTerminal(
                                 action = { fitClientWindowToHost(focusedRemote) }
                             )
                         }
-                        items = items + ContextMenuSubmenu(
-                            id = "remote_ai_assistants",
-                            label = "AI Assistant",
-                            items = listOf(
-                                "claude-code" to "Claude Code",
-                                "codex" to "Codex",
-                                "gemini-cli" to "Gemini CLI",
-                                "opencode" to "OpenCode",
-                            ).map { (aid, label) ->
-                                ContextMenuItem(
-                                    id = "remote_ai_$aid", label = label,
-                                    action = { remoteForActive.launchAI(activeTab.id, splitState.focusedPaneId, aid) }
-                                )
-                            }
-                        )
+                        if (remoteForActive.canControl) {
+                            items = items + ContextMenuSubmenu(
+                                id = "remote_ai_assistants",
+                                label = "AI Assistant",
+                                items = listOf(
+                                    "claude-code" to "Claude Code",
+                                    "codex" to "Codex",
+                                    "gemini-cli" to "Gemini CLI",
+                                    "opencode" to "OpenCode",
+                                ).map { (aid, label) ->
+                                    ContextMenuItem(
+                                        id = "remote_ai_$aid", label = label,
+                                        action = { remoteForActive.launchAI(activeTab.id, splitState.focusedPaneId, aid) }
+                                    )
+                                }
+                            )
+                        }
                     } else {
 
                     // Add AI assistant menu items

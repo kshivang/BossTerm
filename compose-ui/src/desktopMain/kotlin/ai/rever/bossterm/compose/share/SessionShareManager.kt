@@ -181,14 +181,15 @@ object SessionShareManager {
     }
 
     /**
-     * System notification for an approval request — the in-app toast is easy to miss when the
-     * window is unfocused (same rationale as command-completion notifications).
+     * System notification for an approval request — fires regardless of focus (an approval is
+     * urgent: someone is waiting), with sound so it's audible even while working in the app.
      */
     private fun notifyApprovalRequest(req: PendingShareRequest) {
         runCatching {
             ai.rever.bossterm.compose.notification.NotificationService.showNotification(
                 title = "BossTerm session sharing",
                 message = "${req.deviceName} wants ${if (req.wantsControl) "control of" else "to view"} your shared session",
+                withSound = true,
             )
         }
     }

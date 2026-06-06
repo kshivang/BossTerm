@@ -944,7 +944,7 @@ fun TabbedTerminal(
             // Each tab contributes a group of pane-chips (one chip per split pane).
             // In summary mode (or before a tab is split) a single chip represents the
             // whole tab, labeled with the tab's title.
-            val tabGroups = tabController.tabs.mapIndexed { index, tab ->
+            val tabGroupsWithTab = tabController.tabs.mapIndexed { index, tab ->
                 val st = splitStates[tab.id]
                 val panes = if (st != null && !summaryMode) {
                     st.getAllPanes().map { p ->
@@ -961,7 +961,23 @@ fun TabbedTerminal(
                         branch = tab.gitBranch.value
                     ))
                 }
-                ai.rever.bossterm.compose.tabs.TabBarGroup(index, panes)
+                tab to ai.rever.bossterm.compose.tabs.TabBarGroup(index, panes)
+            }
+            // Partition local tabs from mirrored remote-session tabs: local tabs render as
+            // normal chip clusters; each remote session renders as its own boxed group with
+            // a link header + footer actions (split / new tab / disconnect) targeting the host.
+            val rm = state?.remoteSessions
+            val tabGroups = tabGroupsWithTab.filter { rm?.sessionForTab(it.first) == null }.map { it.second }
+            val remoteGroups = rm?.sessions.orEmpty().mapNotNull { session ->
+                val gs = tabGroupsWithTab.filter { rm?.sessionForTab(it.first) === session }.map { it.second }
+                if (gs.isEmpty()) null else ai.rever.bossterm.compose.tabs.RemoteTabGroup(
+                    header = runCatching { java.net.URI(session.link).host ?: session.link }.getOrDefault(session.link),
+                    groups = gs,
+                    onSplitVertical = { session.splitFocused(horizontal = false) },
+                    onSplitHorizontal = { session.splitFocused(horizontal = true) },
+                    onNewTab = { session.newRemoteTab() },
+                    onDisconnect = { rm?.disconnect(session) },
+                )
             }
             // In summary mode the active tab's single chip carries the tab id; match it
             // so it highlights. Otherwise highlight the focused split pane.
@@ -969,6 +985,7 @@ fun TabbedTerminal(
                                 else tabController.activeTab?.let { splitStates[it.id]?.focusedPaneId }
             TabBar(
                 groups = tabGroups,
+                remoteGroups = remoteGroups,
                 activeTabIndex = tabController.activeTabIndex,
                 focusedPaneId = focusedPaneId,
                 onPaneSelected = { tabIndex, paneId ->

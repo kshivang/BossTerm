@@ -42,6 +42,9 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
         sessions.remove(session)
     }
 
+    /** The remote session that owns [tab] (a mirror tab), or null if it's a local tab. */
+    fun sessionForTab(tab: TerminalTab): RemoteSession? = sessions.firstOrNull { it.containsTab(tab) }
+
     /** Tear down every remote session (e.g. when the window closes). */
     fun disconnectAll() {
         sessions.toList().forEach { it.close() }
@@ -87,6 +90,30 @@ class RemoteSession internal constructor(
 
     /** Ask the host to grant write/control (when connected view-only). */
     fun requestControl() = conn.send(ClientMessage.RequestControl)
+
+    /** True if [tab] is one of this session's mirror tabs. */
+    fun containsTab(tab: TerminalTab): Boolean = localTabByRemote.values.any { it === tab }
+
+    /** Open a new tab in the remote session (mirrors back as another tab). Control only. */
+    fun newRemoteTab() = conn.send(ClientMessage.NewTab)
+
+    /**
+     * Split the remote session's current pane (the active mirror tab if it belongs to this
+     * session, else this session's first tab) left/right or top/bottom — the host applies it
+     * and it mirrors back. Control only.
+     */
+    fun splitFocused(horizontal: Boolean) {
+        val controller = state.tabController ?: return
+        val tab = controller.tabs.getOrNull(controller.activeTabIndex)?.takeIf { containsTab(it) }
+            ?: localTabByRemote.values.firstOrNull() ?: return
+        val remoteTabId = localTabByRemote.entries.firstOrNull { it.value === tab }?.key ?: return
+        val paneId = state.splitStates[tab.id]?.focusedPaneId?.takeIf { sessionByPane.containsKey(it) }
+            ?: tab.remotePaneId ?: return
+        conn.send(
+            if (horizontal) ClientMessage.SplitHorizontal(remoteTabId, paneId)
+            else ClientMessage.SplitVertical(remoteTabId, paneId)
+        )
+    }
 
     fun close() {
         conn.close()

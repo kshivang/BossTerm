@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.tabs
 import ai.rever.bossterm.compose.features.ContextMenuController
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -58,6 +59,9 @@ enum class TabBarOrientation { TOP, LEFT }
 /** Gap between tab-groups (each group = one tab's panes). Larger than within a group. */
 private val TabGroupGap: Dp = 18.dp
 
+/** Accent for remote (mirrored) sessions — the box border + tab-chip color. */
+private val RemoteAccent: Color = Color(0xFF4FC3F7)
+
 /** Gap between pane chips within the same tab-group. Tight, so they read as one cluster. */
 private val TabChipGap: Dp = 3.dp
 
@@ -99,6 +103,20 @@ data class TabBarPane(
 data class TabBarGroup(val tabIndex: Int, val panes: List<TabBarPane>)
 
 /**
+ * A connected remote BossTerm session, rendered (in the left bar) as a bordered box: a
+ * [header] (the remote link/host), the session's mirrored [groups] (its tabs), and a footer
+ * of actions that target the remote (split + new tab + disconnect).
+ */
+data class RemoteTabGroup(
+    val header: String,
+    val groups: List<TabBarGroup>,
+    val onSplitVertical: () -> Unit,
+    val onSplitHorizontal: () -> Unit,
+    val onNewTab: () -> Unit,
+    val onDisconnect: () -> Unit,
+)
+
+/**
  * Tab bar component for multiple terminal sessions.
  *
  * Displays a strip (top) or column (left) of pane-chips grouped by tab:
@@ -136,6 +154,7 @@ fun TabBar(
     onSplitHorizontal: () -> Unit = {},
     onSettings: () -> Unit = {},
     onAddRemote: () -> Unit = {},
+    remoteGroups: List<RemoteTabGroup> = emptyList(),
     orientation: TabBarOrientation = TabBarOrientation.TOP,
     verticalWidth: Dp = TabBarVerticalWidth,
     modifier: Modifier = Modifier
@@ -263,6 +282,44 @@ fun TabBar(
                             group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
                         }
                     }
+                    // Each connected remote session: a bordered box with the link header, its
+                    // mirrored tab chips, and footer actions that target the remote.
+                    remoteGroups.forEach { rg ->
+                        Column(
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                                .border(1.dp, RemoteAccent, RoundedCornerShape(8.dp)).padding(4.dp),
+                            verticalArrangement = Arrangement.spacedBy(TabChipGap)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(Icons.Default.Cloud, contentDescription = null, tint = RemoteAccent, modifier = Modifier.size(13.dp))
+                                Text(
+                                    rg.header, color = Color(0xFFB0B0B0), fontSize = 11.sp,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                                )
+                                Box(
+                                    modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = rg.onDisconnect).padding(2.dp)
+                                ) { Icon(Icons.Default.Close, contentDescription = "Disconnect remote", tint = Color(0xFF808080), modifier = Modifier.size(13.dp)) }
+                            }
+                            rg.groups.forEach { group ->
+                                Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                                    group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                barButton(Icons.Default.VerticalSplit, "Split Left/Right", rg.onSplitVertical)
+                                barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom", rg.onSplitHorizontal)
+                                barButton(Icons.Default.Add, "New tab", rg.onNewTab)
+                            }
+                        }
+                    }
                 }
                 // Bottom bar — connect to another BossTerm's shared session.
                 Spacer(Modifier.height(8.dp))
@@ -294,7 +351,9 @@ fun TabBar(
                     horizontalArrangement = Arrangement.spacedBy(TabGroupGap),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    groups.forEach { group ->
+                    // Local tab clusters, then remote-session clusters (flattened in the top
+                    // bar — the boxed grouping with header/footer is a left-bar affordance).
+                    (groups + remoteGroups.flatMap { it.groups }).forEach { group ->
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(TabChipGap),
                             verticalAlignment = Alignment.CenterVertically

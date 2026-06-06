@@ -325,14 +325,6 @@ class RemoteSession internal constructor(
             ss.onRemoteDividerDrag = { splitId, ratio, committed -> resizeSplit(container.id, splitId, ratio, committed) }
             ss.setTree(buildTree(tabNode.tree), ss.focusedPaneId)
 
-            // Auto "Fit host to my screen": only a single-pane tab can drive the host window size
-            // from its canvas — wire the lone pane mirror, clear the hook on every other pane.
-            val lone = (tabNode.tree as? PaneTreeNode.Pane)?.let { sessionByPane[it.paneId] }
-            ss.getAllSessions().filterIsInstance<TerminalTab>().forEach { m ->
-                m.onRemoteResizeRequest =
-                    if (m === lone) { { cols, rows -> resizeHost(container.id, cols, rows) } } else null
-            }
-
             // Add to the tab list only AFTER the split tree is populated — so the UI never renders
             // a not-yet-built container, and without switching focus (must not steal the local
             // active tab). New tabs append at the end.

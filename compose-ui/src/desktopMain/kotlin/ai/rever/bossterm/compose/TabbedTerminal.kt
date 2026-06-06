@@ -1203,6 +1203,37 @@ fun TabbedTerminal(
                 if (remoteForActive != null) { { remoteForActive.closeFromChip(activeTab.id, splitState.focusedPaneId) } }
                 else onClosePane
 
+            // "Fit to client": resize THIS window so [focused]'s pane renders the remote's current
+            // grid 1:1 — the reverse of "Fit host to my screen". Mirrors the host's own
+            // resizeHostWindow nudge (per-cell px × the grid delta, window chrome cancels out);
+            // purely local, needs no control. No-op until the canvas has been measured once.
+            fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.TerminalTab) {
+                val cw = focused.terminal.cellWidthPx
+                val ch = focused.terminal.cellHeightPx
+                if (cw <= 0f || ch <= 0f) return
+                val grid = focused.display.termSize.value
+                val hostCols = grid.columns; val hostRows = grid.rows
+                val curCols = focused.remoteFitCols; val curRows = focused.remoteFitRows
+                if (hostCols < 2 || hostRows < 2 || curCols < 2 || curRows < 2) return
+                val win = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }?.awtWindow
+                    ?: WindowManager.windows.firstOrNull { it.awtWindow != null }?.awtWindow ?: return
+                javax.swing.SwingUtilities.invokeLater {
+                    runCatching {
+                        val gc = win.graphicsConfiguration
+                        val sx = gc?.defaultTransform?.scaleX?.takeIf { it > 0 } ?: 1.0
+                        val sy = gc?.defaultTransform?.scaleY?.takeIf { it > 0 } ?: 1.0
+                        var newW = (win.width + (hostCols - curCols) * cw / sx).toInt()
+                        var newH = (win.height + (hostRows - curRows) * ch / sy).toInt()
+                        gc?.bounds?.let { b ->
+                            val maxW = (b.x + b.width - win.x).coerceAtLeast(480)
+                            val maxH = (b.y + b.height - win.y).coerceAtLeast(320)
+                            newW = newW.coerceIn(480, maxW); newH = newH.coerceIn(320, maxH)
+                        }
+                        if (newW != win.width || newH != win.height) { win.setSize(newW, newH); win.validate() }
+                    }
+                }
+            }
+
             val onNavigatePane: (NavigationDirection) -> Unit = { direction ->
                 splitState.navigateFocus(direction)
             }
@@ -1307,11 +1338,31 @@ fun TabbedTerminal(
                     var items = userItems
 
                     if (remoteForActive != null) {
-                        // Remote (mirrored) pane: show the viewer's pane menu — a host-routed AI
-                        // Assistant submenu (runs the host's configured command, honoring its
-                        // YOLO/auto-mode), launched in the focused pane. Copy/Paste/Find/Split/Close
-                        // come from the base menu; local-host items (MCP attach, Share, VCS, shell
-                        // customization) don't apply to a mirror, so they're omitted.
+                        // Remote (mirrored) pane: show the viewer's pane menu — two fit actions plus
+                        // a host-routed AI Assistant submenu (runs the host's configured command,
+                        // honoring its YOLO/auto-mode), launched in the focused pane. Copy/Paste/
+                        // Find/Split/Close come from the base menu; local-host items (MCP attach,
+                        // Share, VCS, shell customization) don't apply to a mirror, so they're omitted.
+                        val focusedRemote = splitState.getFocusedSession() as? ai.rever.bossterm.compose.tabs.TerminalTab
+                        // Fit host to my screen: resize the REMOTE so its grid matches this pane
+                        // (like the viewer's top-bar button). Mutates the host → control only.
+                        if (focusedRemote != null && remoteForActive.canControl) {
+                            items = items + ContextMenuItem(
+                                id = "remote_fit_host", label = "Fit host to my screen",
+                                action = {
+                                    if (focusedRemote.remoteFitCols >= 2 && focusedRemote.remoteFitRows >= 2)
+                                        remoteForActive.resizeHost(activeTab.id, focusedRemote.remoteFitCols, focusedRemote.remoteFitRows)
+                                }
+                            )
+                        }
+                        // Fit my window to host: resize THIS window so the remote's grid renders
+                        // 1:1 here — the reverse direction, and purely local (no control needed).
+                        if (focusedRemote != null) {
+                            items = items + ContextMenuItem(
+                                id = "remote_fit_client", label = "Fit my window to host",
+                                action = { fitClientWindowToHost(focusedRemote) }
+                            )
+                        }
                         items = items + ContextMenuSubmenu(
                             id = "remote_ai_assistants",
                             label = "AI Assistant",

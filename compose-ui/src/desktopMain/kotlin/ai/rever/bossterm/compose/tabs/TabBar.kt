@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.HorizontalSplit
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VerticalSplit
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -433,6 +434,15 @@ fun TabBar(
                                     Text(
                                         rg.header, color = Color(0xFFB0B0B0), fontSize = 11.sp,
                                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                if (!rg.canControl) {
+                                    // Read-only session: eye badge (right-click → Request Control).
+                                    Icon(
+                                        Icons.Default.Visibility,
+                                        contentDescription = "View only — right-click to request control",
+                                        tint = Color(0xFF808080),
+                                        modifier = Modifier.size(12.dp)
                                     )
                                 }
                                 Box(

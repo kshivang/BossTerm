@@ -1,6 +1,8 @@
 package ai.rever.bossterm.compose
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -1257,6 +1259,7 @@ fun TabbedTerminal(
                 splitState.navigateFocus(direction)
             }
 
+            Box(modifier = Modifier.fillMaxSize()) {
             SplitContainer(
                 splitState = splitState,
                 sharedFont = sharedFont,
@@ -1555,6 +1558,28 @@ fun TabbedTerminal(
                 hyperlinkRegistry = hyperlinkRegistry,
                 modifier = Modifier.fillMaxSize()
             )
+            // Read-only indicator: a subtle pill over the pane while this remote session is
+            // view-only; clicking it asks the host for control (same as the menus' Request
+            // Control). Disappears the moment the grant arrives (canControlState is observable).
+            if (remoteForActive != null && !remoteForActive.canControlState.value) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 8.dp, end = 16.dp)
+                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                        .background(Color(0xE6252526))
+                        .border(1.dp, Color(0xFF404040), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                        .clickable { remoteForActive.requestControl() }
+                ) {
+                    androidx.compose.material3.Text(
+                        "View only — click to request control",
+                        color = Color(0xFFB0B0B0),
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            }
+            }
         }
         }
 

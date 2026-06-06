@@ -68,12 +68,10 @@ class MirrorShare(
 
     /**
      * The host's name for this shared session, shown to viewers as the default group label
-     * (defaults to the username; editable in the Share window). Compose state — read inside
-     * computeSignature's snapshotFlow, so renames re-broadcast the Layout.
+     * (defaults to `username_machine`; editable in the Share window). Compose state — read
+     * inside computeSignature's snapshotFlow, so renames re-broadcast the Layout.
      */
-    val sessionName = androidx.compose.runtime.mutableStateOf(
-        System.getProperty("user.name")?.takeIf { it.isNotBlank() } ?: "session"
-    )
+    val sessionName = androidx.compose.runtime.mutableStateOf(SessionShareManager.defaultSessionName())
     private var observerJob: Job? = null
 
     private class TapEntry(val tab: TerminalTab, val prev: ((String) -> Unit)?)

@@ -162,13 +162,13 @@ fun ShareWindow(
                 )
                 Spacer(Modifier.height(16.dp))
                 // What viewers see as this session's label (their remote group header).
-                // Defaults to the username; blank reverts to it.
+                // Defaults to username_machine; blank reverts to it.
                 var nameField by remember(info.tabId) { mutableStateOf(sessionName) }
                 SettingsTextField(
                     label = "Session name",
                     value = nameField,
                     onValueChange = { nameField = it; onSessionNameChange(it) },
-                    placeholder = System.getProperty("user.name") ?: "session",
+                    placeholder = SessionShareManager.defaultSessionName(),
                 )
                 Spacer(Modifier.height(20.dp))
 

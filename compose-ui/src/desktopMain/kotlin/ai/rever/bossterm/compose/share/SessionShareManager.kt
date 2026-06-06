@@ -265,12 +265,21 @@ object SessionShareManager {
     /** The host's name for [tabId]'s share (viewers' default group label), or null if unshared. */
     fun sessionNameFor(tabId: String): String? = sharesByTab[tabId]?.sessionName?.value
 
-    /** Rename [tabId]'s share; blank reverts to the username default. */
+    /** Rename [tabId]'s share; blank reverts to [defaultSessionName]. */
     fun setSessionName(tabId: String, name: String) {
-        sharesByTab[tabId]?.sessionName?.value = name.trim().ifBlank {
-            System.getProperty("user.name")?.takeIf { it.isNotBlank() } ?: "session"
-        }
+        sharesByTab[tabId]?.sessionName?.value = name.trim().ifBlank { defaultSessionName() }
     }
+
+    // Cached — InetAddress.getLocalHost() can stall on bad DNS; compute once, off the hot paths.
+    private val cachedDefaultSessionName by lazy {
+        val user = System.getProperty("user.name")?.takeIf { it.isNotBlank() } ?: "session"
+        val host = runCatching { java.net.InetAddress.getLocalHost().hostName }
+            .getOrNull()?.takeIf { it.isNotBlank() }?.removeSuffix(".local")
+        if (host != null) "${user}_$host" else user
+    }
+
+    /** Default share session name: `username_machine` (e.g. `alice_Alices-MacBook-Pro`). */
+    fun defaultSessionName(): String = cachedDefaultSessionName
 
     /** The read-only share URL for an active share, or null if not shared / server down. */
     fun urlFor(tabId: String): String? {

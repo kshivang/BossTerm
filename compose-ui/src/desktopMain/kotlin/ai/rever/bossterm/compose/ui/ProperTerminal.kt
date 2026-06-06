@@ -160,6 +160,10 @@ fun ProperTerminal(
   var userScrollTrigger by remember { mutableStateOf(0) }  // Tracks user-initiated scrolls for scrollbar visibility
   val scope = rememberCoroutineScope()
   var hasPerformedInitialResize by remember { mutableStateOf(false) }  // Track initial resize
+  // Remote mirror: debounced "fit host to my screen" on canvas resize (single-pane tabs only).
+  // lastRemoteFit dedupes identical requests; remoteFitJob[0] holds the pending debounce send.
+  val lastRemoteFit = remember { intArrayOf(-1, -1) }
+  val remoteFitJob = remember { arrayOfNulls<Job>(1) }
   var isModifierPressed by remember { mutableStateOf(false) }  // Track Ctrl/Cmd for hyperlink clicks
   // Remember whether the last press was forwarded to the TUI so Release can
   // mirror that exact decision (instead of re-reading the modifier on release,
@@ -845,9 +849,33 @@ fun ProperTerminal(
       modifier = Modifier
         .fillMaxSize()
         .onGloballyPositioned { coordinates ->
-          // Remote mirror tabs are sized by the host (PaneResize); don't auto-fit them to the
-          // local canvas — that would fight the host's grid.
-          if (tab.isRemote) return@onGloballyPositioned
+          // Remote mirror tabs are sized by the host (PaneResize), so we don't resize the local
+          // terminal here. Instead, for a single-pane remote tab, ask the host to resize its
+          // window so its grid matches what fits our canvas — auto "Fit host to my screen" on
+          // window resize. The host echoes PaneResize and the mirror follows. Debounced so only
+          // the final size (after the user stops dragging) is sent; multi-pane tabs don't drive
+          // this (onRemoteResizeRequest is null — a split's panes can't each size the window).
+          if (tab.isRemote) {
+            val hook = (tab as? ai.rever.bossterm.compose.tabs.TerminalTab)?.onRemoteResizeRequest
+            if (hook != null && cellWidth > 0f && cellHeight > 0f) {
+              val padding = 4
+              val w = coordinates.size.width - padding
+              val h = coordinates.size.height - padding
+              if (w >= 10 && h >= 10) {
+                val cols = (w / cellWidth).toInt().coerceAtLeast(2)
+                val rows = (h / cellHeight).toInt().coerceAtLeast(2)
+                if (cols != lastRemoteFit[0] || rows != lastRemoteFit[1]) {
+                  lastRemoteFit[0] = cols; lastRemoteFit[1] = rows
+                  remoteFitJob[0]?.cancel()
+                  remoteFitJob[0] = scope.launch {
+                    delay(160) // settle until the user stops dragging the window edge
+                    hook(cols, rows)
+                  }
+                }
+              }
+            }
+            return@onGloballyPositioned
+          }
           // Detect window size changes and resize terminal accordingly
           // Note: This fires frequently, but we validate dimensions carefully to prevent crashes
           // Account for Canvas padding (4dp start, 4dp top) - on desktop 1dp ≈ 1px

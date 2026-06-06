@@ -205,6 +205,16 @@ class RemoteSession internal constructor(
         }
     }
 
+    /**
+     * "Fit host to my screen": ask the host to resize its window so [localTabId]'s grid becomes
+     * about [cols]×[rows] (what fits this client's canvas). The host echoes PaneResize back.
+     */
+    fun resizeHost(localTabId: String, cols: Int, rows: Int) {
+        if (!conn.canControl) return
+        val rid = remoteTabIdFor(localTabId) ?: return
+        conn.send(ClientMessage.ResizeHost(rid, cols, rows))
+    }
+
     /** Map a local container tab id back to its remote tab id. */
     private fun remoteTabIdFor(localTabId: String): String? =
         localTabByRemote.entries.firstOrNull { it.value.id == localTabId }?.key
@@ -314,6 +324,14 @@ class RemoteSession internal constructor(
             // Route divider drags in this mirror's split tree to the host (idempotent each pass).
             ss.onRemoteDividerDrag = { splitId, ratio, committed -> resizeSplit(container.id, splitId, ratio, committed) }
             ss.setTree(buildTree(tabNode.tree), ss.focusedPaneId)
+
+            // Auto "Fit host to my screen": only a single-pane tab can drive the host window size
+            // from its canvas — wire the lone pane mirror, clear the hook on every other pane.
+            val lone = (tabNode.tree as? PaneTreeNode.Pane)?.let { sessionByPane[it.paneId] }
+            ss.getAllSessions().filterIsInstance<TerminalTab>().forEach { m ->
+                m.onRemoteResizeRequest =
+                    if (m === lone) { { cols, rows -> resizeHost(container.id, cols, rows) } } else null
+            }
 
             // Add to the tab list only AFTER the split tree is populated — so the UI never renders
             // a not-yet-built container, and without switching focus (must not steal the local

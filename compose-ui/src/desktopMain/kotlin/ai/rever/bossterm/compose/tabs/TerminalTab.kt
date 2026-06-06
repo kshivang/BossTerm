@@ -301,6 +301,13 @@ data class TerminalTab(
      */
     var onUserInput: ((String) -> Unit)? = null
 
+    /**
+     * When set (a single-pane remote mirror), the canvas resize handler routes here to ask the
+     * host to resize its window so its grid ≈ `(cols, rows)` — auto "Fit host to my screen". Null
+     * for local tabs and for split panes (which can't each size the host window).
+     */
+    var onRemoteResizeRequest: ((cols: Int, rows: Int) -> Unit)? = null
+
     // === Warp-style tab customization (left tab bar) ===
 
     /**

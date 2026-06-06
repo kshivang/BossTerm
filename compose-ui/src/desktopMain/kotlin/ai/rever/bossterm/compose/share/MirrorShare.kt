@@ -352,19 +352,31 @@ class MirrorShare(
             // (so a client connecting to us can skip the ones mirroring its own session), a
             // friendly label, and whether WE are view-only on it (then input can't flow
             // through us — nested viewers should mark those tabs read-only too).
+            //
+            // A mirrored tab may itself mirror a DEEPER session (A→B→C: our B-mirror of B's
+            // C-mirror). Forward the DEEPEST origin — its hash keeps grouping/loop-guarding
+            // correct at the true source — chain the label ("C · via B"), and degrade
+            // read-only/offline if ANY hop along the path is degraded.
             val upstream = state.remoteSessions.sessionForTab(tab)
+            upstream?.upstreamRev?.value // subscribe: deeper-origin changes re-broadcast too
+            val deeper = upstream?.upstreamFor(tab.id)
+            val upstreamName = upstream?.let {
+                it.customName.value ?: it.hostName.value
+                    ?: runCatching { java.net.URI(it.link).host }.getOrNull() ?: it.link
+            }
             tabNodes.add(
                 TabNode(
                     id = tab.id, title = tab.title.value, active = tab.id == activeId, tree = tree,
                     color = tabColorCss(tab), cwd = tab.workingDirectory.value, branch = tab.gitBranch.value,
-                    origin = upstream?.originHash,
-                    originName = upstream?.let {
-                        it.customName.value ?: it.hostName.value
-                            ?: runCatching { java.net.URI(it.link).host }.getOrNull() ?: it.link
+                    origin = deeper?.key ?: upstream?.originHash,
+                    originName = when {
+                        deeper != null -> "${deeper.name ?: "remote"} · via $upstreamName"
+                        else -> upstreamName
                     },
-                    originReadOnly = upstream?.let { !it.canControlState.value },
+                    originReadOnly = upstream?.let { (deeper?.readOnly ?: false) || !it.canControlState.value },
                     originOffline = upstream?.let {
-                        it.statusState.value !is ai.rever.bossterm.compose.remote.RemoteStatus.Connected
+                        (deeper?.offline ?: false) ||
+                            it.statusState.value !is ai.rever.bossterm.compose.remote.RemoteStatus.Connected
                     },
                 )
             )

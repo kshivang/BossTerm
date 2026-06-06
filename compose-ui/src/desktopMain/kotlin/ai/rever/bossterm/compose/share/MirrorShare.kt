@@ -274,7 +274,11 @@ class MirrorShare(
             tabNodes.add(
                 TabNode(
                     id = tab.id, title = tab.title.value, active = tab.id == activeId, tree = tree,
-                    color = tabColorCss(tab), cwd = tab.workingDirectory.value, branch = tab.gitBranch.value
+                    color = tabColorCss(tab), cwd = tab.workingDirectory.value, branch = tab.gitBranch.value,
+                    // Mark tabs that themselves mirror another session with that share's token
+                    // hash, so a client connecting to us can skip the ones mirroring its own
+                    // session (mirroring them back would loop its tabs through us).
+                    origin = state.remoteSessions.sessionForTab(tab)?.originHash,
                 )
             )
         }

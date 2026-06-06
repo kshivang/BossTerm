@@ -229,6 +229,14 @@ object SessionShareManager {
      */
     fun ownsToken(token: String): Boolean = sharesByToken.containsKey(token)
 
+    /**
+     * Is [hash] the SHA-256 of one of THIS instance's active share tokens? Matches
+     * [TabNode.origin] stamped by a host on tabs that mirror a remote session, so a client
+     * connecting to that host can skip the tabs that mirror its own session.
+     */
+    fun ownsTokenHash(hash: String): Boolean =
+        sharesByToken.keys.any { ShareProtocol.sha256Hex(it) == hash }
+
     /** The read-only share URL for an active share, or null if not shared / server down. */
     fun urlFor(tabId: String): String? {
         val token = sharesByTab[tabId]?.viewToken ?: return null

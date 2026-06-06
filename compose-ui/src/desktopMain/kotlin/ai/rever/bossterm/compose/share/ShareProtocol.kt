@@ -32,6 +32,14 @@ object ShareProtocol {
     // Client (native viewer) side — symmetric to the host helpers above.
     fun encodeClient(msg: ClientMessage): String = json.encodeToString(ClientMessage.serializer(), msg)
     fun decodeServer(text: String): ServerMessage = json.decodeFromString(ServerMessage.serializer(), text)
+
+    /**
+     * SHA-256 hex of [s]. Used as [TabNode.origin]: identifies which share a mirror tab came
+     * from without leaking the share token itself to viewers.
+     */
+    fun sha256Hex(s: String): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
 }
 
 /** Host → viewer messages. */
@@ -125,6 +133,13 @@ data class TabNode(
     val color: String? = null,
     val cwd: String? = null,
     val branch: String? = null,
+    /**
+     * For a tab that itself mirrors another BossTerm session (a remote container): the SHA-256
+     * hex of the share token this host dialed ([ShareProtocol.sha256Hex]). Lets a connecting
+     * client recognize — and skip — tabs that mirror its OWN session (mirroring them back would
+     * loop), without leaking the token to viewers. Null for the host's own tabs.
+     */
+    val origin: String? = null,
 )
 
 /** Recursive split-layout node: either a binary split or a leaf pane. */

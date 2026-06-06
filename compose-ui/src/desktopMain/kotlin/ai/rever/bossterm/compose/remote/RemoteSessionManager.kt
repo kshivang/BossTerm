@@ -4,6 +4,7 @@ import ai.rever.bossterm.compose.TabbedTerminalState
 import ai.rever.bossterm.compose.share.ClientMessage
 import ai.rever.bossterm.compose.share.PaneTreeNode
 import ai.rever.bossterm.compose.share.ServerMessage
+import ai.rever.bossterm.compose.share.ShareProtocol
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.splits.SplitViewState
 import ai.rever.bossterm.compose.tabs.TerminalTab
@@ -47,13 +48,6 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
     fun isOwnShareLink(link: String): Boolean =
         tokenOf(link)?.let { ai.rever.bossterm.compose.share.SessionShareManager.ownsToken(it) } == true
 
-    /** The `t=` token in a share [link], or null if absent/malformed. */
-    private fun tokenOf(link: String): String? = runCatching {
-        val raw = java.net.URI(link.trim()).rawQuery ?: return@runCatching null
-        raw.split("&").firstOrNull { it.startsWith("t=") }?.substringAfter("t=")
-            ?.let { java.net.URLDecoder.decode(it, "UTF-8") }?.takeIf { it.isNotBlank() }
-    }.getOrNull()
-
     fun disconnect(session: RemoteSession) {
         session.close()
         sessions.remove(session)
@@ -68,6 +62,13 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
         sessions.clear()
     }
 }
+
+/** The `t=` token in a share [link], or null if absent/malformed. */
+private fun tokenOf(link: String): String? = runCatching {
+    val raw = java.net.URI(link.trim()).rawQuery ?: return@runCatching null
+    raw.split("&").firstOrNull { it.startsWith("t=") }?.substringAfter("t=")
+        ?.let { java.net.URLDecoder.decode(it, "UTF-8") }?.takeIf { it.isNotBlank() }
+}.getOrNull()
 
 /**
  * One live connection to a remote share + its mirrored local tabs. Decodes [ServerMessage]s
@@ -104,6 +105,14 @@ class RemoteSession internal constructor(
 
     val status: StateFlow<RemoteStatus> get() = conn.status
     val canControl: Boolean get() = conn.canControl
+
+    /**
+     * Identifies which share this session mirrors: SHA-256 of [link]'s token. Stamped on this
+     * session's container tabs in OUR outgoing Layout ([TabNode.origin][ai.rever.bossterm.compose.share.TabNode]),
+     * so a client connecting to US can skip tabs that mirror its own session. Null if the link
+     * carries no token.
+     */
+    val originHash: String? = tokenOf(link)?.let { ShareProtocol.sha256Hex(it) }
 
     // remote tabId → the local **container** tab in tabController.tabs. A container is a
     // PTY-less, stream-less shell that owns the chip + the split tree; it is never a pane itself.
@@ -296,7 +305,14 @@ class RemoteSession internal constructor(
         // ratio we just sent) so the drag isn't interrupted — the post-release Layout reconciles.
         if (draggingSplit) return
         val controller = state.tabController ?: return
-        val remoteIds = layout.tabs.map { it.id }.toSet()
+        // Skip the host's tabs that mirror OUR OWN session (their origin is the hash of one of
+        // this instance's share tokens) — mirroring them back here would loop our tabs through
+        // the peer. The host's own tabs, and its mirrors of third sessions, come through as-is.
+        val tabs = layout.tabs.filter { node ->
+            val o = node.origin
+            o == null || !ai.rever.bossterm.compose.share.SessionShareManager.ownsTokenHash(o)
+        }
+        val remoteIds = tabs.map { it.id }.toSet()
 
         // Self-heal: a container the user closed via its chip (×) is gone from the controller but
         // still in our maps — forget it + dispose its pane mirrors so it can be rebuilt fresh.
@@ -307,7 +323,7 @@ class RemoteSession internal constructor(
                 // layout — getAllPanes()/SplitNode.Pane.id are the remote paneIds.
                 val owned = buildSet {
                     state.splitStates[container.id]?.getAllPanes()?.forEach { add(it.id) }
-                    layout.tabs.firstOrNull { it.id == remoteId }?.let { addAll(paneIds(it.tree)) }
+                    tabs.firstOrNull { it.id == remoteId }?.let { addAll(paneIds(it.tree)) }
                 }
                 owned.forEach { pid -> sessionByPane.remove(pid)?.let { disposeSession(it) } }
                 state.splitStates.remove(container.id)
@@ -319,12 +335,12 @@ class RemoteSession internal constructor(
             localTabByRemote.remove(gone)?.let { removeMirrorTab(it) }
         }
         // Drop pane mirrors whose remote paneId vanished (host closed a split pane).
-        val livePaneIds = layout.tabs.flatMap { paneIds(it.tree) }.toSet()
+        val livePaneIds = tabs.flatMap { paneIds(it.tree) }.toSet()
         (sessionByPane.keys - livePaneIds).toList().forEach { gone ->
             sessionByPane.remove(gone)?.let { disposeSession(it) }
         }
 
-        for (tabNode in layout.tabs) {
+        for (tabNode in tabs) {
             // The container — a PTY-less, stream-less tab that owns the chip and hosts the split
             // tree of pane mirrors. It is never itself a pane.
             val isNew = !localTabByRemote.containsKey(tabNode.id)

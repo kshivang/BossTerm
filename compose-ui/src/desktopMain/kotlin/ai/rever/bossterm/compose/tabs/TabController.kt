@@ -574,8 +574,9 @@ class TabController(
      */
     fun createRemoteSession(
         title: String,
-        remotePaneId: String,
-        onUserInput: (String) -> Unit,
+        remotePaneId: String? = null,
+        onUserInput: ((String) -> Unit)? = null,
+        feedsStream: Boolean = true,
     ): TerminalTab {
         val styleState = StyleState()
         val textBuffer = TerminalTextBuffer(80, 24, styleState, settings.bufferMaxLines)
@@ -627,17 +628,21 @@ class TabController(
 
         // Emulator-processing loop: drain bytes appended from the remote stream. Exits when the
         // stream is closed (dispose) — closing dataStream unblocks the blocking `char` read.
-        scope.launch(Dispatchers.Default) {
-            try {
-                while (isActive) {
-                    try {
-                        tab.emulator.processChar(tab.dataStream.char, tab.terminal)
-                    } catch (_: Exception) {
-                        break // EOF on close, or stream error — stop the loop
+        // Skipped for a container tab ([feedsStream] = false): it owns no remote pane of its own
+        // (its panes are separate mirror sessions in the split tree), so it needs no parked thread.
+        if (feedsStream) {
+            scope.launch(Dispatchers.Default) {
+                try {
+                    while (isActive) {
+                        try {
+                            tab.emulator.processChar(tab.dataStream.char, tab.terminal)
+                        } catch (_: Exception) {
+                            break // EOF on close, or stream error — stop the loop
+                        }
                     }
+                } finally {
+                    runCatching { tab.dataStream.close() }
                 }
-            } finally {
-                runCatching { tab.dataStream.close() }
             }
         }
         return tab

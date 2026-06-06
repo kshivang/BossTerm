@@ -995,11 +995,19 @@ fun TabbedTerminal(
                 onPaneClosed = { tabIndex, paneId ->
                     val t = tabController.tabs.getOrNull(tabIndex)
                     if (t != null) {
-                        val st = splitStates[t.id]
-                        // paneId == t.id is a synthetic tab-level chip (summary / single
-                        // pane) — close the whole tab. Real split panes close just the pane.
-                        if (st == null || st.isSinglePane || paneId == t.id) tabController.closeTab(tabIndex)
-                        else st.closePane(paneId)
+                        val session = rm?.sessionForTab(t)
+                        if (session != null) {
+                            // Remote: structure is host-driven. Route the close to the host
+                            // (control only) — the resulting Layout removes it locally. Never
+                            // dispose a mirror locally (the next Layout would resurrect it).
+                            session.closeFromChip(t.id, paneId)
+                        } else {
+                            val st = splitStates[t.id]
+                            // paneId == t.id is a synthetic tab-level chip (summary / single
+                            // pane) — close the whole tab. Real split panes close just the pane.
+                            if (st == null || st.isSinglePane || paneId == t.id) tabController.closeTab(tabIndex)
+                            else st.closePane(paneId)
+                        }
                     }
                 },
                 onNewTab = {

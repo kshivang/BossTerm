@@ -81,9 +81,12 @@ class RemoteSession internal constructor(
     val status: StateFlow<RemoteStatus> get() = conn.status
     val canControl: Boolean get() = conn.canControl
 
-    // remote tabId → the local mirror tab placed in tabController.tabs.
+    // remote tabId → the local **container** tab in tabController.tabs. A container is a
+    // PTY-less, stream-less shell that owns the chip + the split tree; it is never a pane itself.
     private val localTabByRemote = LinkedHashMap<String, TerminalTab>()
-    // remote paneId → the mirror session feeding that pane's terminal.
+    // remote paneId → the mirror session feeding that pane's terminal. Holds ONLY pane mirrors
+    // (every remote pane, even a single one), never a container — so the host closing any pane
+    // (including a tab's first) can never orphan a survivor's output.
     private val sessionByPane = HashMap<String, TerminalTab>()
 
     fun start() = conn.start()
@@ -98,17 +101,35 @@ class RemoteSession internal constructor(
     fun newRemoteTab() = conn.send(ClientMessage.NewTab)
 
     /**
+     * Mirror a local close of a remote chip back to the host (control only): close the whole
+     * remote tab for a tab-level / single-pane chip, else just that pane. Structure is
+     * host-driven — we never dispose a mirror locally (that would be resurrected by the next
+     * Layout); the host's resulting Layout removes it here. No-op when view-only.
+     */
+    fun closeFromChip(localTabId: String, paneId: String) {
+        if (!conn.canControl) return
+        val remoteTabId = localTabByRemote.entries.firstOrNull { it.value.id == localTabId }?.key ?: return
+        val ss = state.splitStates[localTabId]
+        val wholeTab = paneId == localTabId || ss == null || ss.isSinglePane
+        conn.send(
+            if (wholeTab) ClientMessage.CloseTab(remoteTabId)
+            else ClientMessage.ClosePane(remoteTabId, paneId)
+        )
+    }
+
+    /**
      * Split the remote session's current pane (the active mirror tab if it belongs to this
      * session, else this session's first tab) left/right or top/bottom — the host applies it
      * and it mirrors back. Control only.
      */
     fun splitFocused(horizontal: Boolean) {
         val controller = state.tabController ?: return
-        val tab = controller.tabs.getOrNull(controller.activeTabIndex)?.takeIf { containsTab(it) }
+        // The container to split: the active tab if it's one of ours, else this session's first.
+        val container = controller.tabs.getOrNull(controller.activeTabIndex)?.takeIf { containsTab(it) }
             ?: localTabByRemote.values.firstOrNull() ?: return
-        val remoteTabId = localTabByRemote.entries.firstOrNull { it.value === tab }?.key ?: return
-        val paneId = state.splitStates[tab.id]?.focusedPaneId?.takeIf { sessionByPane.containsKey(it) }
-            ?: tab.remotePaneId ?: return
+        val remoteTabId = localTabByRemote.entries.firstOrNull { it.value === container }?.key ?: return
+        // The focused pane id IS a remote paneId (split-tree pane ids are the host's paneIds).
+        val paneId = state.splitStates[container.id]?.focusedPaneId?.takeIf { sessionByPane.containsKey(it) } ?: return
         conn.send(
             if (horizontal) ClientMessage.SplitHorizontal(remoteTabId, paneId)
             else ClientMessage.SplitVertical(remoteTabId, paneId)
@@ -130,7 +151,10 @@ class RemoteSession internal constructor(
             is ServerMessage.PaneSnapshot -> {
                 val s = sessionByPane[msg.paneId] ?: return
                 if (msg.cols >= 2 && msg.rows >= 2) s.terminal.resize(TermSize(msg.cols, msg.rows), RequestOrigin.User)
-                s.dataStream.append(msg.data)
+                // Clear scrollback+screen IN-BAND (processed by the emulator loop, no cross-thread
+                // buffer race) before painting the snapshot — so a reconnect's re-sent snapshot
+                // replaces the old content instead of duplicating it.
+                s.dataStream.append("[3J[2J[H" + msg.data)
             }
             is ServerMessage.PaneOutput -> sessionByPane[msg.paneId]?.dataStream?.append(msg.data)
             is ServerMessage.PaneResize -> {
@@ -142,115 +166,117 @@ class RemoteSession internal constructor(
     }
 
     /**
-     * Rebuild the local mirror tabs from the remote [layout]: create tabs for new remote tabs,
-     * remove vanished ones, and (re)build each tab's split tree (reusing mirror sessions by
-     * remote paneId). Runs whenever the host's structure changes — Layout is only resent then.
+     * Rebuild the local mirror from the remote [layout]. Each remote tab maps to a local
+     * **container** tab (chip + index only); every remote pane — even a lone one — is its own
+     * mirror session living in the container's split tree. So when the host closes a tab's first
+     * pane, the survivors keep streaming (no pane is special). Runs whenever the host's structure
+     * changes — Layout is only resent then. Reuses containers/panes by remote id across rebuilds.
      */
     private fun reconcile(layout: ServerMessage.Layout) {
         val controller = state.tabController ?: return
         val remoteIds = layout.tabs.map { it.id }.toSet()
 
-        // Self-heal: a mirror tab the user closed via its chip (×) is gone from the controller
-        // but still in our maps — forget it (+ its pane sessions) so it can be rebuilt fresh.
-        localTabByRemote.entries.toList().forEach { (remoteId, t) ->
-            if (controller.tabs.none { it === t }) {
+        // Self-heal: a container the user closed via its chip (×) is gone from the controller but
+        // still in our maps — forget it + dispose its pane mirrors so it can be rebuilt fresh.
+        localTabByRemote.entries.toList().forEach { (remoteId, container) ->
+            if (controller.tabs.none { it === container }) {
                 localTabByRemote.remove(remoteId)
-                val panes = state.splitStates[t.id]?.getAllSessions()?.toList() ?: listOf(t)
-                sessionByPane.entries.removeIf { e -> e.value === t || panes.any { it === e.value } }
-                state.splitStates.remove(t.id)
+                // Owned paneIds: from the (maybe still-present) split tree, plus the incoming
+                // layout — getAllPanes()/SplitNode.Pane.id are the remote paneIds.
+                val owned = buildSet {
+                    state.splitStates[container.id]?.getAllPanes()?.forEach { add(it.id) }
+                    layout.tabs.firstOrNull { it.id == remoteId }?.let { addAll(paneIds(it.tree)) }
+                }
+                owned.forEach { pid -> sessionByPane.remove(pid)?.let { disposeSession(it) } }
+                state.splitStates.remove(container.id)
             }
         }
 
-        // Drop mirror tabs for remote tabs that no longer exist.
+        // Drop containers for remote tabs that no longer exist (host closed the whole tab).
         (localTabByRemote.keys - remoteIds).toList().forEach { gone ->
             localTabByRemote.remove(gone)?.let { removeMirrorTab(it) }
         }
-        // Drop pane sessions whose remote paneId vanished.
+        // Drop pane mirrors whose remote paneId vanished (host closed a split pane).
         val livePaneIds = layout.tabs.flatMap { paneIds(it.tree) }.toSet()
         (sessionByPane.keys - livePaneIds).toList().forEach { gone ->
-            sessionByPane.remove(gone)?.let { s ->
-                if (localTabByRemote.values.none { it === s }) disposeSession(s) // not a tab-level session
-            }
+            sessionByPane.remove(gone)?.let { disposeSession(it) }
         }
 
         for (tabNode in layout.tabs) {
-            val firstPane = firstPaneId(tabNode.tree) ?: continue
-            // Ensure the tab-level mirror session exists (it IS the first pane).
-            val tab = localTabByRemote.getOrPut(tabNode.id) {
-                val t = controller.createRemoteSession(
-                    title = tabNode.title.ifBlank { "remote" },
-                    remotePaneId = firstPane,
-                    onUserInput = { data -> if (conn.canControl) conn.send(ClientMessage.Input(firstPane, data)) },
-                )
-                sessionByPane[firstPane] = t
-                controller.tabs.add(t)
-                t
+            // The container — a PTY-less, stream-less tab that owns the chip and hosts the split
+            // tree of pane mirrors. It is never itself a pane.
+            val isNew = !localTabByRemote.containsKey(tabNode.id)
+            val container = localTabByRemote.getOrPut(tabNode.id) {
+                controller.createRemoteSession(title = tabNode.title.ifBlank { "remote" }, feedsStream = false)
             }
-            tab.title.value = tabNode.title.ifBlank { "remote" }
-            tab.workingDirectory.value = tabNode.cwd
+            container.title.value = tabNode.title.ifBlank { "remote" }
+            container.workingDirectory.value = tabNode.cwd
 
-            // Single pane → no split state; multi-pane → (re)build the split tree.
-            if (tabNode.tree is PaneTreeNode.Split) {
-                val ss = state.splitStates.getOrPut(tab.id) { SplitViewState(initialSession = tab) }
-                ss.setTree(buildTree(tabNode.tree, tab, firstPane), firstPane)
-            } else {
-                state.splitStates.remove(tab.id)
-            }
+            // (Re)build the split tree of pane mirrors — always present, even for a single pane.
+            // Preserve the client's own focused pane across structural updates (setTree falls back
+            // to the first pane if the focused one is gone) — client focus is independent of host.
+            val ss = state.splitStates.getOrPut(container.id) { SplitViewState(initialSession = container) }
+            ss.setTree(buildTree(tabNode.tree), ss.focusedPaneId)
+
+            // Add to the tab list only AFTER the split tree is populated — so the UI never renders
+            // a not-yet-built container, and without switching focus (must not steal the local
+            // active tab). New tabs append at the end.
+            if (isNew) controller.tabs.add(container)
         }
     }
 
-    /** Map a remote pane tree to a local [SplitNode] tree, reusing mirror sessions by paneId. */
-    private fun buildTree(node: PaneTreeNode, tabSession: TerminalTab, firstPaneId: String): SplitNode = when (node) {
+    /** Map a remote pane tree to a local [SplitNode] tree, reusing pane mirrors by remote paneId. */
+    private fun buildTree(node: PaneTreeNode): SplitNode = when (node) {
         is PaneTreeNode.Pane -> {
-            val session = if (node.paneId == firstPaneId) tabSession else sessionByPane.getOrPut(node.paneId) {
+            val session = sessionByPane.getOrPut(node.paneId) {
                 state.tabController!!.createRemoteSession(
                     title = node.title,
                     remotePaneId = node.paneId,
                     onUserInput = { data -> if (conn.canControl) conn.send(ClientMessage.Input(node.paneId, data)) },
                 )
             }
+            session.title.value = node.title
+            session.workingDirectory.value = node.cwd
             SplitNode.Pane(id = node.paneId, session = session)
         }
         is PaneTreeNode.Split -> if (node.dir == "h") {
             SplitNode.HorizontalSplit(
                 id = node.id.ifBlank { node.paneIdKey() },
-                top = buildTree(node.a, tabSession, firstPaneId),
-                bottom = buildTree(node.b, tabSession, firstPaneId),
+                top = buildTree(node.a),
+                bottom = buildTree(node.b),
                 ratio = node.ratio,
             )
         } else {
             SplitNode.VerticalSplit(
                 id = node.id.ifBlank { node.paneIdKey() },
-                left = buildTree(node.a, tabSession, firstPaneId),
-                right = buildTree(node.b, tabSession, firstPaneId),
+                left = buildTree(node.a),
+                right = buildTree(node.b),
                 ratio = node.ratio,
             )
         }
     }
 
-    private fun removeMirrorTab(tab: TerminalTab) {
+    private fun removeMirrorTab(container: TerminalTab) {
         val controller = state.tabController
-        // Dispose every mirror session in the tab (the tab itself + any extra split panes).
-        val sessions = state.splitStates[tab.id]?.getAllSessions()?.filterIsInstance<TerminalTab>() ?: listOf(tab)
-        sessions.forEach { sessionByPane.entries.removeIf { e -> e.value === it } ; disposeSession(it) }
-        state.splitStates.remove(tab.id)
-        val idx = controller?.tabs?.indexOf(tab) ?: -1
-        if (idx >= 0) controller?.closeTab(idx) // index-safe removal (no PTY to kill)
+        // Dispose every pane mirror in this container's split tree, then the container itself
+        // (closeTab disposes it). No PTY to kill — these are pure mirrors.
+        state.splitStates[container.id]?.getAllSessions()?.filterIsInstance<TerminalTab>()?.forEach { mirror ->
+            sessionByPane.entries.removeIf { it.value === mirror }
+            disposeSession(mirror)
+        }
+        state.splitStates.remove(container.id)
+        val idx = controller?.tabs?.indexOf(container) ?: -1
+        if (idx >= 0) controller?.closeTab(idx) // index-safe removal; closeTab disposes the container
     }
 
     private fun disposeSession(s: TerminalTab) {
-        runCatching { s.dataStream.close() } // unblocks the emulator loop
+        runCatching { s.dataStream.close() } // unblocks the emulator loop (pane mirrors only)
         runCatching { s.dispose() }
     }
 
     private fun paneIds(node: PaneTreeNode): List<String> = when (node) {
         is PaneTreeNode.Pane -> listOf(node.paneId)
         is PaneTreeNode.Split -> paneIds(node.a) + paneIds(node.b)
-    }
-
-    private fun firstPaneId(node: PaneTreeNode): String? = when (node) {
-        is PaneTreeNode.Pane -> node.paneId
-        is PaneTreeNode.Split -> firstPaneId(node.a) ?: firstPaneId(node.b)
     }
 
     // Fallback stable id for a split node when the host didn't send one (old peer).

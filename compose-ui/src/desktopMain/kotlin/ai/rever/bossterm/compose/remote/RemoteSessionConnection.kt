@@ -68,8 +68,10 @@ class RemoteSessionConnection(
 
     @Volatile private var session: DefaultClientWebSocketSession? = null
     @Volatile private var closedByUser = false
+    @Volatile private var sawData = false // a Layout arrived this connection → it was healthy
 
-    private val wsUrl: String = toWsUrl(link)
+    // Best-effort: a malformed link must not crash construction — it just fails to connect.
+    private val wsUrl: String = runCatching { toWsUrl(link) }.getOrDefault(link)
 
     private val _status = MutableStateFlow<RemoteStatus>(RemoteStatus.Connecting)
     val status: StateFlow<RemoteStatus> = _status.asStateFlow()
@@ -87,6 +89,9 @@ class RemoteSessionConnection(
                 log.warn("remote session ({}) error: {}", wsUrl, t.message)
             }
             if (closedByUser || _status.value is RemoteStatus.Denied) return
+            // A connection that had actually loaded (received a Layout) gets a fresh retry
+            // budget, so an occasional blip over a long session doesn't exhaust it.
+            if (sawData) { attempt = 0; sawData = false }
             attempt++
             if (attempt > MAX_RECONNECTS) {
                 _status.value = RemoteStatus.Failed("Lost connection to the remote session.")
@@ -121,6 +126,7 @@ class RemoteSessionConnection(
             is ServerMessage.Grant -> onGrant(msg.key, msg.expiresAt)
             is ServerMessage.Denied -> _status.value = RemoteStatus.Denied(msg.reason)
             is ServerMessage.Control -> _status.value = RemoteStatus.Connected(msg.granted)
+            is ServerMessage.Layout -> sawData = true // session is up and rendering
             else -> {}
         }
         onServerMessage(msg)
@@ -138,9 +144,8 @@ class RemoteSessionConnection(
     fun close() {
         closedByUser = true
         _status.value = RemoteStatus.Closed
-        scope.launch { runCatching { session?.close() } }
-        scope.cancel()
-        runCatching { client.close() }
+        scope.cancel()              // cancels the read loop → ktor closes the session
+        runCatching { client.close() } // tear down the engine + any open socket
     }
 
     private fun toWsUrl(link: String): String {

@@ -90,8 +90,8 @@ class MirrorShare(
     }
 
     // ---- viewers ----
-    fun addViewer(canControl: Boolean): ViewerConnection {
-        val vc = ViewerConnection(viewerSeq.incrementAndGet(), canControl)
+    fun addViewer(canControl: Boolean, name: String = "Viewer"): ViewerConnection {
+        val vc = ViewerConnection(viewerSeq.incrementAndGet(), canControl, name)
         viewers.add(vc)
         broadcast(ServerMessage.Presence(viewers.size))
         return vc
@@ -126,6 +126,24 @@ class MirrorShare(
 
     /** Route viewer messages — input + tab close/new — to the host (controller role only). */
     fun handleClient(vc: ViewerConnection, msg: ClientMessage) {
+        if (msg is ClientMessage.RequestControl) {
+            // A view-only viewer asking for an upgrade — must run BEFORE the control gate.
+            // Surfaces the same approval toast as a join request; on approve, flip this live
+            // connection's role and tell the viewer. (The viewer's saved key keeps its original
+            // role — a reconnect is view-only again until re-approved.)
+            if (!vc.canControl && !vc.controlRequestPending) {
+                vc.controlRequestPending = true
+                coro.launch {
+                    val approved = SessionShareManager.awaitApproval(tabId, vc.name, wantsControl = true)
+                    vc.controlRequestPending = false
+                    if (approved) {
+                        vc.canControl = true
+                        vc.outbox.trySend(ShareProtocol.encodeServer(ServerMessage.Control(granted = true)))
+                    }
+                }
+            }
+            return
+        }
         if (!vc.canControl) return // all mutating actions require the control role
         when (msg) {
             is ClientMessage.Input ->
@@ -178,7 +196,7 @@ class MirrorShare(
                     ?.let { "$it (BossTerm)" }) ?: "BossTerm"
                 McpTerminalRegistry.findState(tabId)?.remoteSessions?.connect(msg.link, name)
             }
-            else -> {} // Hello / Focus / RequestControl: no-op (focus is viewer-side; control via token)
+            else -> {} // Hello / Focus: no-op (focus is viewer-side; RequestControl handled above)
         }
     }
 
@@ -442,6 +460,15 @@ class MirrorShare(
  * the Ktor route drains it. Bounded + DROP_OLDEST so a slow viewer never stalls the
  * terminal — it just misses intermediate frames (the next snapshot heals it).
  */
-class ViewerConnection(val id: Int, val canControl: Boolean) {
+class ViewerConnection(
+    val id: Int,
+    /** Mutable: a view-only viewer can be upgraded mid-session via an approved RequestControl. */
+    @Volatile var canControl: Boolean,
+    /** Device name from the viewer's Hello — shown in the control-request approval prompt. */
+    val name: String = "Viewer",
+) {
     val outbox: Channel<String> = Channel(capacity = 2048, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+
+    /** A mid-session control request is awaiting the host's decision (dedupes re-requests). */
+    @Volatile var controlRequestPending = false
 }

@@ -134,6 +134,8 @@ data class RemoteTabGroup(
     val onOpenInBrowser: () -> Unit,
     /** Copy this remote's share link to the clipboard. */
     val onCopyLink: () -> Unit,
+    /** Ask the host to upgrade this view-only connection to control (host approves via toast). */
+    val onRequestControl: () -> Unit,
 )
 
 /** AI assistants offered in the remote chip menu — same set the browser viewer mirrors. */
@@ -251,7 +253,13 @@ fun TabBar(
             } + ContextMenuController.MenuSeparator(id = "rg_color_sep") +
                 ContextMenuController.MenuItem(id = "rg_color_clear", label = "Clear", enabled = true, action = { rg.onSetColor(null) })
         )
-        contextMenuController.showMenu(0f, 0f, listOf(
+        // View-only connections get a control-upgrade request at the top (host approves it
+        // via the same toast as join requests).
+        val requestControlItem = if (!rg.canControl) listOf(
+            ContextMenuController.MenuItem(id = "rg_request_control", label = "Request Control", enabled = true, action = { rg.onRequestControl() }),
+            ContextMenuController.MenuSeparator(id = "rg_sep_control"),
+        ) else emptyList()
+        contextMenuController.showMenu(0f, 0f, requestControlItem + listOf(
             ContextMenuController.MenuItem(id = "rg_rename", label = "Rename…", enabled = true, action = { editingRemoteId = rg.id }),
             colorSubmenu,
             ContextMenuController.MenuItem(id = "rg_open_browser", label = "Open in Browser", enabled = true, action = { rg.onOpenInBrowser() }),

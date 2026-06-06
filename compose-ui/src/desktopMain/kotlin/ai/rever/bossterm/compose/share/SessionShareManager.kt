@@ -154,6 +154,24 @@ object SessionShareManager {
     val pendingRequests: StateFlow<List<PendingShareRequest>> = _pendingRequests.asStateFlow()
 
     /** Host approved a pending request (admits the viewer + mints a 24h key). */
+    /**
+     * Enqueue an approval request (e.g. a viewer's mid-session control upgrade) and await the
+     * host's decision — surfaces in the same toast/Share-window UI as join requests. Times out
+     * to denied after 2 minutes.
+     */
+    internal suspend fun awaitApproval(tabId: String, deviceName: String, wantsControl: Boolean): Boolean {
+        val req = PendingShareRequest(
+            id = UUID.randomUUID().toString(),
+            tabId = tabId,
+            deviceName = deviceName,
+            wantsControl = wantsControl,
+        )
+        _pendingRequests.value = _pendingRequests.value + req
+        val approved = withTimeoutOrNull(2 * 60_000L) { req.decision.await() } ?: false
+        _pendingRequests.value = _pendingRequests.value.filterNot { it.id == req.id }
+        return approved
+    }
+
     fun approveRequest(id: String) = decideRequest(id, true)
     /** Host denied a pending request (closes the viewer socket). */
     fun denyRequest(id: String) = decideRequest(id, false)
@@ -669,7 +687,7 @@ object SessionShareManager {
         // only carries output produced after the snapshot (avoids double-rendering).
         share.initialMessages().forEach { ws.send(Frame.Text(ShareProtocol.encodeServer(it))) }
         ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Control(granted = canControl))))
-        val vc = share.addViewer(canControl)
+        val vc = share.addViewer(canControl, hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})")
         val writer = ws.launch {
             for (text in vc.outbox) ws.send(Frame.Text(text))
         }

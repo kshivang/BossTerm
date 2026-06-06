@@ -1002,6 +1002,7 @@ fun TabbedTerminal(
                     // The same share link this group mirrors, in the web viewer.
                     onOpenInBrowser = { HyperlinkDetector.openUrl(session.link) },
                     onCopyLink = { tabBarClipboard.setText(androidx.compose.ui.text.AnnotatedString(session.link)) },
+                    onRequestControl = { session.requestControl() },
                 )
             }
             // In summary mode the active tab's single chip carries the tab id; match it

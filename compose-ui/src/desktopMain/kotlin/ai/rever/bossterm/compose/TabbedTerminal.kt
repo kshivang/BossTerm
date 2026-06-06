@@ -973,10 +973,17 @@ fun TabbedTerminal(
                 if (gs.isEmpty()) null else ai.rever.bossterm.compose.tabs.RemoteTabGroup(
                     header = runCatching { java.net.URI(session.link).host ?: session.link }.getOrDefault(session.link),
                     groups = gs,
+                    canControl = session.canControl,
                     onSplitVertical = { session.splitFocused(horizontal = false) },
                     onSplitHorizontal = { session.splitFocused(horizontal = true) },
                     onNewTab = { session.newRemoteTab() },
                     onDisconnect = { rm?.disconnect(session) },
+                    onChipSplit = { tabIndex, paneId, horizontal ->
+                        tabController.tabs.getOrNull(tabIndex)?.let { session.splitPane(it.id, paneId, horizontal) }
+                    },
+                    onChipLaunchAI = { tabIndex, paneId, assistantId ->
+                        tabController.tabs.getOrNull(tabIndex)?.let { session.launchAI(it.id, paneId, assistantId) }
+                    },
                 )
             }
             // In summary mode the active tab's single chip carries the tab id; match it
@@ -1022,7 +1029,13 @@ fun TabbedTerminal(
                     WindowManager.createWindowWithTab(extractedTab, splitState)
                 },
                 onRename = { tabIndex, paneId, newTitle ->
-                    sessionFor(tabIndex, paneId)?.let { session ->
+                    val t = tabController.tabs.getOrNull(tabIndex)
+                    val remote = t?.let { rm?.sessionForTab(it) }
+                    if (remote != null && t != null) {
+                        // Remote chip: route to the host; the resulting Layout reflects the new
+                        // title locally (don't mutate the mirror's title directly).
+                        remote.renameTab(t.id, paneId, newTitle.trim())
+                    } else sessionFor(tabIndex, paneId)?.let { session ->
                         val trimmed = newTitle.trim()
                         if (trimmed.isBlank()) {
                             // Clear the custom title; wireCwdTitle reverts it to the cwd.
@@ -1034,13 +1047,31 @@ fun TabbedTerminal(
                     }
                 },
                 onSetColor = { tabIndex, paneId, hex ->
-                    sessionFor(tabIndex, paneId)?.let { it.tabColor.value = hex }
+                    val t = tabController.tabs.getOrNull(tabIndex)
+                    val remote = t?.let { rm?.sessionForTab(it) }
+                    if (remote != null && t != null) remote.setTabColor(t.id, paneId, hex)
+                    else sessionFor(tabIndex, paneId)?.let { it.tabColor.value = hex }
                 },
-                onCloseOthers = { tabController.closeOtherTabs(it) },
-                onCloseBelow = { tabController.closeTabsBelow(it) },
+                onCloseOthers = { index ->
+                    val t = tabController.tabs.getOrNull(index)
+                    val remote = t?.let { rm?.sessionForTab(it) }
+                    if (remote != null && t != null) remote.closeOtherTabs(t.id)
+                    else tabController.closeOtherTabs(index)
+                },
+                onCloseBelow = { index ->
+                    val t = tabController.tabs.getOrNull(index)
+                    val remote = t?.let { rm?.sessionForTab(it) }
+                    if (remote != null && t != null) remote.closeTabsBelow(t.id)
+                    else tabController.closeTabsBelow(index)
+                },
                 onDuplicate = { index ->
-                    val wd = tabController.tabs.getOrNull(index)?.workingDirectory?.value
-                    tabController.createTab(workingDir = wd)
+                    val t = tabController.tabs.getOrNull(index)
+                    val remote = t?.let { rm?.sessionForTab(it) }
+                    if (remote != null && t != null) remote.duplicateTab(t.id)
+                    else {
+                        val wd = t?.workingDirectory?.value
+                        tabController.createTab(workingDir = wd)
+                    }
                 },
                 onShareTab = { index ->
                     tabController.tabs.getOrNull(index)?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }

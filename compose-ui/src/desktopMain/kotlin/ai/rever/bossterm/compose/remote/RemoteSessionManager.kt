@@ -108,7 +108,7 @@ class RemoteSession internal constructor(
      */
     fun closeFromChip(localTabId: String, paneId: String) {
         if (!conn.canControl) return
-        val remoteTabId = localTabByRemote.entries.firstOrNull { it.value.id == localTabId }?.key ?: return
+        val remoteTabId = remoteTabIdFor(localTabId) ?: return
         val ss = state.splitStates[localTabId]
         val wholeTab = paneId == localTabId || ss == null || ss.isSinglePane
         conn.send(
@@ -116,6 +116,69 @@ class RemoteSession internal constructor(
             else ClientMessage.ClosePane(remoteTabId, paneId)
         )
     }
+
+    // ---- chip context-menu actions (mirror the browser viewer's menu, routed to the host) ----
+    // Each maps the local container id back to the remote tab id and forwards the host the same
+    // ClientMessage the viewer would send. All are control-only (the host also re-checks control).
+
+    /** Split [paneId] of [localTabId]'s tab on the host (mirrors back via Layout). */
+    fun splitPane(localTabId: String, paneId: String, horizontal: Boolean) {
+        if (!conn.canControl) return
+        val rid = remoteTabIdFor(localTabId) ?: return
+        conn.send(
+            if (horizontal) ClientMessage.SplitHorizontal(rid, paneId)
+            else ClientMessage.SplitVertical(rid, paneId)
+        )
+    }
+
+    /** Launch an AI assistant in [paneId] on the host (runs the host's configured command). */
+    fun launchAI(localTabId: String, paneId: String, assistantId: String) {
+        if (!conn.canControl) return
+        val rid = remoteTabIdFor(localTabId) ?: return
+        conn.send(ClientMessage.LaunchAI(rid, paneId, assistantId))
+    }
+
+    /** Rename a tab/pane chip on the host (blank [title] clears the custom title). */
+    fun renameTab(localTabId: String, paneId: String, title: String) {
+        if (!conn.canControl) return
+        val rid = remoteTabIdFor(localTabId) ?: return
+        conn.send(ClientMessage.RenameTab(rid, paneId, title))
+    }
+
+    /** Set/clear a chip's accent on the host. Native hex "0xFFRRGGBB" → host-expected CSS "#RRGGBB". */
+    fun setTabColor(localTabId: String, paneId: String, nativeHex: String?) {
+        if (!conn.canControl) return
+        val rid = remoteTabIdFor(localTabId) ?: return
+        val css = nativeHex?.removePrefix("0x")?.removePrefix("0X")
+            ?.let { if (it.length == 8) it.substring(2) else it }   // drop the FF alpha
+            ?.let { "#$it" }
+        conn.send(ClientMessage.SetTabColor(rid, paneId, css))
+    }
+
+    /** Duplicate the tab on the host. */
+    fun duplicateTab(localTabId: String) {
+        if (!conn.canControl) return
+        val rid = remoteTabIdFor(localTabId) ?: return
+        conn.send(ClientMessage.DuplicateTab(rid))
+    }
+
+    /** Close every other tab of this remote session on the host. */
+    fun closeOtherTabs(localTabId: String) {
+        if (!conn.canControl) return
+        val rid = remoteTabIdFor(localTabId) ?: return
+        conn.send(ClientMessage.CloseOtherTabs(rid))
+    }
+
+    /** Close all tabs after this one on the host. */
+    fun closeTabsBelow(localTabId: String) {
+        if (!conn.canControl) return
+        val rid = remoteTabIdFor(localTabId) ?: return
+        conn.send(ClientMessage.CloseTabsBelow(rid))
+    }
+
+    /** Map a local container tab id back to its remote tab id. */
+    private fun remoteTabIdFor(localTabId: String): String? =
+        localTabByRemote.entries.firstOrNull { it.value.id == localTabId }?.key
 
     /**
      * Split the remote session's current pane (the active mirror tab if it belongs to this

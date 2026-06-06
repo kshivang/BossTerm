@@ -106,14 +106,30 @@ data class TabBarGroup(val tabIndex: Int, val panes: List<TabBarPane>)
  * A connected remote BossTerm session, rendered (in the left bar) as a bordered box: a
  * [header] (the remote link/host), the session's mirrored [groups] (its tabs), and a footer
  * of actions that target the remote (split + new tab + disconnect).
+ *
+ * A right-click on any mirrored chip opens the same host-routed menu the browser viewer shows
+ * (new tab / split / AI assistant / rename / color / duplicate / close…). [canControl] gates the
+ * host-mutating items; [onChipSplit]/[onChipLaunchAI] act on the clicked pane (the rest reuse the
+ * shared TabBar callbacks, which route to the host for remote chips).
  */
 data class RemoteTabGroup(
     val header: String,
     val groups: List<TabBarGroup>,
+    val canControl: Boolean,
     val onSplitVertical: () -> Unit,
     val onSplitHorizontal: () -> Unit,
     val onNewTab: () -> Unit,
     val onDisconnect: () -> Unit,
+    val onChipSplit: (tabIndex: Int, paneId: String, horizontal: Boolean) -> Unit,
+    val onChipLaunchAI: (tabIndex: Int, paneId: String, assistantId: String) -> Unit,
+)
+
+/** AI assistants offered in the remote chip menu — same set the browser viewer mirrors. */
+private val REMOTE_AI_ASSISTANTS = listOf(
+    "claude-code" to "Claude Code",
+    "codex" to "Codex",
+    "gemini-cli" to "Gemini CLI",
+    "opencode" to "OpenCode",
 )
 
 /**
@@ -204,6 +220,51 @@ fun TabBar(
         contextMenuController.showMenu(0f, 0f, items)
     }
 
+    // Map each mirrored chip's tabIndex → its remote session, so a right-click on a remote chip
+    // opens the host-routed menu instead of the local one.
+    val remoteByTabIndex: Map<Int, RemoteTabGroup> =
+        remoteGroups.flatMap { rg -> rg.groups.map { it.tabIndex to rg } }.toMap()
+
+    // Right-click menu for a mirrored remote chip — mirrors the browser viewer's menu, all
+    // routed to the host. Host-mutating items are gated on control; "Disconnect remote" is the
+    // one native-only affordance and is always enabled.
+    val showRemoteChipMenu: (RemoteTabGroup, Int, String) -> Unit = { rg, tabIndex, paneId ->
+        val ctl = rg.canControl
+        val aiSubmenu = ContextMenuController.MenuSubmenu(
+            id = "remote_ai",
+            label = "AI assistant",
+            items = REMOTE_AI_ASSISTANTS.map { (id, label) ->
+                ContextMenuController.MenuItem(id = "remote_ai_$id", label = label, enabled = ctl,
+                    action = { rg.onChipLaunchAI(tabIndex, paneId, id) })
+            }
+        )
+        val colorSubmenu = ContextMenuController.MenuSubmenu(
+            id = "remote_color",
+            label = "Color",
+            items = TAB_COLOR_PRESETS.map { (name, hex) ->
+                ContextMenuController.MenuItem(id = "remote_color_$name", label = name, enabled = ctl, action = { onSetColor(tabIndex, paneId, hex) })
+            } + ContextMenuController.MenuSeparator(id = "remote_color_sep") +
+                ContextMenuController.MenuItem(id = "remote_color_clear", label = "Clear", enabled = ctl, action = { onSetColor(tabIndex, paneId, null) })
+        )
+        val items = listOf(
+            ContextMenuController.MenuItem(id = "remote_new_tab", label = "New Tab", enabled = ctl, action = { rg.onNewTab() }),
+            ContextMenuController.MenuItem(id = "remote_split_v", label = "Split Left/Right", enabled = ctl, action = { rg.onChipSplit(tabIndex, paneId, false) }),
+            ContextMenuController.MenuItem(id = "remote_split_h", label = "Split Top/Bottom", enabled = ctl, action = { rg.onChipSplit(tabIndex, paneId, true) }),
+            aiSubmenu,
+            ContextMenuController.MenuSeparator(id = "remote_sep_rename"),
+            ContextMenuController.MenuItem(id = "remote_rename", label = "Rename…", enabled = ctl, action = { editingPaneId = paneId }),
+            colorSubmenu,
+            ContextMenuController.MenuSeparator(id = "remote_sep_close"),
+            ContextMenuController.MenuItem(id = "remote_duplicate", label = "Duplicate Tab", enabled = ctl, action = { onDuplicate(tabIndex) }),
+            ContextMenuController.MenuItem(id = "remote_close", label = "Close", enabled = ctl, action = { onPaneClosed(tabIndex, paneId) }),
+            ContextMenuController.MenuItem(id = "remote_close_others", label = "Close Other Tabs", enabled = ctl, action = { onCloseOthers(tabIndex) }),
+            ContextMenuController.MenuItem(id = "remote_close_below", label = "Close Tabs Below", enabled = ctl, action = { onCloseBelow(tabIndex) }),
+            ContextMenuController.MenuSeparator(id = "remote_sep_disconnect"),
+            ContextMenuController.MenuItem(id = "remote_disconnect", label = "Disconnect remote", enabled = true, action = { rg.onDisconnect() }),
+        )
+        contextMenuController.showMenu(0f, 0f, items)
+    }
+
     val newTabButton: @Composable () -> Unit = {
         IconButton(onClick = onNewTab, modifier = Modifier.size(36.dp)) {
             Icon(imageVector = Icons.Default.Add, contentDescription = "New Tab", tint = Color.White)
@@ -252,7 +313,11 @@ fun TabBar(
             },
             onCancelRename = { editingPaneId = null },
             onClose = { onPaneClosed(group.tabIndex, pane.paneId) },
-            onContextMenu = { showChipMenu(group.tabIndex, pane.paneId) },
+            onContextMenu = {
+                val rg = remoteByTabIndex[group.tabIndex]
+                if (rg != null) showRemoteChipMenu(rg, group.tabIndex, pane.paneId)
+                else showChipMenu(group.tabIndex, pane.paneId)
+            },
             modifier = chipModifier
         )
     }

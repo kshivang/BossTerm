@@ -180,7 +180,8 @@ fun RequestControlPrompt(onConfirm: () -> Unit, onDismiss: () -> Unit) {
         text = {
             Text(
                 "You're viewing this session read-only — splits, new tabs, and typing need " +
-                    "control. Ask the host to grant it?",
+                    "control. Ask for it? When the session is reached through another host, " +
+                    "each host is asked in turn and its owner approves.",
                 color = TextSecondary, fontSize = 12.sp
             )
         },

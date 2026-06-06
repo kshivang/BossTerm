@@ -188,12 +188,25 @@ class RemoteSession internal constructor(
     /** Ask the host to grant write/control (when connected view-only). */
     fun requestControl() = conn.send(ClientMessage.RequestControl())
 
+    // An upstream control request queued until OUR control of the host is granted — the host
+    // only relays upstream requests from controlling clients, so (A view-only on B, B view-only
+    // on C) chains as: ask B for control first, then automatically ask C through it.
+    @Volatile private var pendingUpstreamControlTab: String? = null
+
     /**
      * Control request targeted at [localTabId]'s tab: when that tab mirrors an upstream session
-     * on the host (A→B→C), the host relays the request to the origin instead.
+     * on the host (A→B→C), the host relays the request to the origin. If we don't control the
+     * host yet, first request that (its user approves), then the upstream request fires
+     * automatically when the grant arrives.
      */
-    fun requestControlFor(localTabId: String) =
+    fun requestControlFor(localTabId: String) {
+        if (!conn.canControl) {
+            pendingUpstreamControlTab = localTabId
+            conn.send(ClientMessage.RequestControl())
+            return
+        }
         conn.send(ClientMessage.RequestControl(remoteTabIdFor(localTabId)))
+    }
 
     /** New tab in [localTabId]'s session — the host relays upstream for mirrored tabs. */
     fun newTabIn(localTabId: String) {
@@ -376,9 +389,17 @@ class RemoteSession internal constructor(
             }
             is ServerMessage.Control -> {
                 canControlState.value = msg.granted // recompose the tab bar's remote menus
-                // Two-way sharing offers only matter once the host trusts us with control —
-                // it ignores OfferShare from view-only clients anyway.
-                if (msg.granted) maybeOfferShareBack()
+                if (msg.granted) {
+                    // Two-way sharing offers only matter once the host trusts us with control —
+                    // it ignores OfferShare from view-only clients anyway.
+                    maybeOfferShareBack()
+                    // Fire a queued upstream control request (the second hop of the chain):
+                    // now that the host trusts us, it will relay it to the origin.
+                    pendingUpstreamControlTab?.let { tabId ->
+                        pendingUpstreamControlTab = null
+                        conn.send(ClientMessage.RequestControl(remoteTabIdFor(tabId)))
+                    }
+                }
             }
             else -> {} // Theme/Presence/Pending/Grant/Denied handled in the connection
         }

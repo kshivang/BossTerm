@@ -2,20 +2,23 @@ package ai.rever.bossterm.compose.remote
 
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
+import ai.rever.bossterm.compose.settings.components.SettingsTextField
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -62,12 +65,11 @@ fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
                         "marked in cyan; with control granted you can type into them.",
                     color = TextSecondary, fontSize = 12.sp
                 )
-                OutlinedTextField(
+                SettingsTextField(
+                    label = "Share link",
                     value = link,
                     onValueChange = { link = it },
-                    label = { Text("Share link (https://….trycloudflare.com/?t=…)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    placeholder = "https://….trycloudflare.com/?t=…",
                 )
                 if (manager.sessions.isNotEmpty()) {
                     Text("Connected", color = TextMuted, fontSize = 11.sp)
@@ -92,20 +94,22 @@ fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
 @Composable
 private fun RemoteSessionRow(session: RemoteSession, onDisconnect: () -> Unit) {
     val status by session.status.collectAsState()
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(hostOf(session.link), color = TextPrimary, fontSize = 13.sp, maxLines = 1)
-            Text(statusLabel(status), color = statusColor(status), fontSize = 11.sp, maxLines = 1)
+    Surface(color = SurfaceColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(hostOf(session.link), color = TextPrimary, fontSize = 13.sp, maxLines = 1)
+                Text(statusLabel(status), color = statusColor(status), fontSize = 11.sp, maxLines = 1)
+            }
+            val s = status
+            if (s is RemoteStatus.Connected && !s.canControl) {
+                TextButton(onClick = { session.requestControl() }) { Text("Request control", color = AccentColor) }
+            }
+            TextButton(onClick = onDisconnect) { Text("Disconnect", color = Danger) }
         }
-        val s = status
-        if (s is RemoteStatus.Connected && !s.canControl) {
-            TextButton(onClick = { session.requestControl() }) { Text("Request control", color = AccentColor) }
-        }
-        TextButton(onClick = onDisconnect) { Text("Disconnect", color = Danger) }
     }
 }
 

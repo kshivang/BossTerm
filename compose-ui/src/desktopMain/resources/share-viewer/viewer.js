@@ -154,8 +154,9 @@
     var r = sc.getBoundingClientRect();
     var cellW = r.width / p.term.cols, cellH = r.height / p.term.rows;
     if (!(cellW > 0) || !(cellH > 0)) return;
-    var cols = Math.max(20, Math.floor((stageEl.clientWidth - 6) / cellW));
-    var rows = Math.max(6, Math.floor((stageEl.clientHeight - 6) / cellH));
+    var CHROME = 8; // leave room for the pane border (1px/side) + a little slack so it fits
+    var cols = Math.max(20, Math.floor((stageEl.clientWidth - CHROME) / cellW));
+    var rows = Math.max(6, Math.floor((stageEl.clientHeight - CHROME) / cellH));
     sendMsg({ t: "resizeHost", tabId: activeTabId, cols: cols, rows: rows });
   };
 

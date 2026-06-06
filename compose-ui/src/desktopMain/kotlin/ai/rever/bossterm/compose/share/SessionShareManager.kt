@@ -61,15 +61,24 @@ object SessionShareManager {
     private val mutex = Mutex()
 
     private var engine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
-    private var boundPort: Int? = null
+    @Volatile private var boundPort: Int? = null
     private var boundHost: String? = null
     // Remote access (Phase 3): the published public/tunnel URL + which provider is live.
     // [activeRemoteMode] mirrors a TerminalSettings.shareTailscaleMode value:
     // "off" | "serve" | "funnel" (Tailscale) | "cloudflare" (Cloudflare Quick Tunnel).
-    private var remoteUrl: String? = null
-    private var activeRemoteMode: String = "off"
+    // @Volatile: read/written from multiple Dispatchers.IO threads (establish / teardown).
+    @Volatile private var remoteUrl: String? = null
+    @Volatile private var activeRemoteMode: String = "off"
     // For long-lived tunnels (cloudflared): the running process to kill on teardown.
-    private var remoteProcess: Process? = null
+    @Volatile private var remoteProcess: Process? = null
+    // Monotonic token serializing remote-access operations WITHOUT a long-held lock: each
+    // establish/teardown/stop "claims" the next value; a long-running establish (Cloudflare
+    // verify can take tens of seconds) checks it's still current before publishing state or
+    // adopting its tunnel, and otherwise bails and kills its own tunnel — so a concurrent
+    // mode-switch / refresh / unshare can't leak a cloudflared process or stomp shared state.
+    private val remoteOp = java.util.concurrent.atomic.AtomicInteger(0)
+    private fun claimRemoteOp(): Int = remoteOp.incrementAndGet()
+    private fun isCurrentRemoteOp(op: Int): Boolean = remoteOp.get() == op
     private val _remoteUrlFlow = MutableStateFlow<String?>(null)
     /**
      * The published remote-access URL (Tailscale `https://<host>.ts.net` or a Cloudflare
@@ -282,7 +291,8 @@ object SessionShareManager {
             val port = boundPort ?: return@launch
             val mode = SettingsManager.instance.settings.value.shareTailscaleMode
             if (mode == "off") return@launch
-            withContext(Dispatchers.IO) { establishRemote(mode, port) }
+            val op = claimRemoteOp()
+            withContext(Dispatchers.IO) { establishRemote(mode, port, op) }
         }
     }
 
@@ -295,10 +305,11 @@ object SessionShareManager {
     fun applyRemoteMode(mode: String) {
         scope.launch {
             val port = boundPort ?: return@launch
+            val op = claimRemoteOp() // supersede any in-flight establish (it will bail + self-clean)
             withContext(Dispatchers.IO) {
                 teardownRemoteAccess(port)
-                if (mode != "off") establishRemote(mode, port)
-                else _remoteStateFlow.value = RemoteState(RemoteStatus.Off, "off")
+                if (mode != "off") establishRemote(mode, port, op)
+                else if (isCurrentRemoteOp(op)) _remoteStateFlow.value = RemoteState(RemoteStatus.Off, "off")
             }
         }
     }
@@ -308,8 +319,13 @@ object SessionShareManager {
      * confirmed working, and driving [remoteStateFlow] through Starting → Verifying/
      * Retrying → Active, or → FellBack (URL stays unpublished, so [buildUrl] uses the LAN
      * link). Shared by the initial share, manual refresh, and live mode switch.
+     *
+     * [op] is this operation's token: if a newer remote op is claimed while we're working,
+     * we stop publishing state and don't adopt our tunnel (Cloudflare self-cleans), so a
+     * concurrent switch / refresh / stop wins cleanly.
      */
-    private suspend fun establishRemote(mode: String, port: Int) {
+    private suspend fun establishRemote(mode: String, port: Int, op: Int) {
+        if (!isCurrentRemoteOp(op)) return
         activeRemoteMode = mode
         // Drop any stale link while we (re)establish, so the dialog shows the LAN link +
         // progress rather than a soon-to-be-dead URL.
@@ -317,10 +333,11 @@ object SessionShareManager {
         _remoteUrlFlow.value = null
         _remoteStateFlow.value = RemoteState(RemoteStatus.Starting, mode)
         val url: String? = when (mode) {
-            "cloudflare" -> establishCloudflareVerified(port)
+            "cloudflare" -> establishCloudflareVerified(port, op)
             "serve", "funnel" -> TailscaleExposer.enable(mode, port) // stable URL; published as-is
             else -> null
         }
+        if (!isCurrentRemoteOp(op)) return // superseded while establishing — don't publish
         if (url != null) {
             remoteUrl = url
             _remoteUrlFlow.value = url
@@ -342,27 +359,32 @@ object SessionShareManager {
      * still serves the Cloudflare error page. If a tunnel prints a URL but never becomes
      * ready, spin a brand-new one up to [MAX_REFRESHES] times. Returns null (→ caller falls
      * back to LAN) if all attempts fail.
+     *
+     * Each attempt holds its tunnel in a local until it's verified AND still the current
+     * [op]; only then does it kill the prior tunnel and adopt itself as [remoteProcess]. A
+     * failed attempt or a superseded op destroys its own tunnel, so nothing is ever leaked.
      */
-    private suspend fun establishCloudflareVerified(port: Int): String? {
-        runCatching { remoteProcess?.destroyForcibly() } // kill a prior tunnel (refresh/switch)
+    private suspend fun establishCloudflareVerified(port: Int, op: Int): String? {
         var refreshes = 0
-        while (true) {
-            val tunnel = CloudflaredExposer.start(port) ?: run { remoteProcess = null; return null }
-            remoteProcess = tunnel.process
+        while (isCurrentRemoteOp(op)) {
+            val tunnel = CloudflaredExposer.start(port) ?: return null
             val url = withContext(Dispatchers.IO) { tunnel.awaitUrl() }
-            if (url != null) {
+            var ready = false
+            if (url != null && isCurrentRemoteOp(op)) {
                 _remoteStateFlow.value = RemoteState(RemoteStatus.Verifying, "cloudflare")
-                if (withContext(Dispatchers.IO) { tunnel.awaitReady() }) return url
+                ready = withContext(Dispatchers.IO) { tunnel.awaitReady() }
             }
-            if (refreshes >= MAX_REFRESHES) {
-                tunnel.destroy()
-                remoteProcess = null
-                return null
+            if (ready && isCurrentRemoteOp(op)) {
+                runCatching { remoteProcess?.destroyForcibly() } // replace any prior tunnel
+                remoteProcess = tunnel.process
+                return url
             }
+            tunnel.destroy() // failed / superseded — never leak this tunnel
+            if (!isCurrentRemoteOp(op) || refreshes >= MAX_REFRESHES) return null
             refreshes++
             _remoteStateFlow.value = RemoteState(RemoteStatus.Retrying, "cloudflare", refreshes, MAX_REFRESHES)
-            tunnel.destroy()
         }
+        return null
     }
 
     /**
@@ -432,6 +454,7 @@ object SessionShareManager {
         grants.clear()
         failAllPending()
         _sharedTabIds.value = emptySet()
+        claimRemoteOp() // cancel any in-flight establish before tearing down
         teardownRemoteAccess(boundPort)
         val e = engine ?: return
         runCatching { e.stop(200, 800) }
@@ -517,7 +540,8 @@ object SessionShareManager {
                     val mode = settings.shareTailscaleMode
                     val rPort = port
                     activeRemoteMode = mode // claim it now so this fires once per lifecycle
-                    scope.launch { establishRemote(mode, rPort) }
+                    val op = claimRemoteOp()
+                    scope.launch { establishRemote(mode, rPort, op) }
                 }
                 return true
             } catch (e: Throwable) {
@@ -537,6 +561,8 @@ object SessionShareManager {
     private suspend fun stopEngineLocked() {
         val e = engine ?: return
         // Tear down any active remote-access exposure first (best-effort, off the UI thread).
+        // Bump the op so an in-flight establish bails + self-cleans instead of racing teardown.
+        claimRemoteOp()
         withContext(Dispatchers.IO) { teardownRemoteAccess(boundPort) }
         try {
             withContext(Dispatchers.IO) { e.stop(300, 1000) }

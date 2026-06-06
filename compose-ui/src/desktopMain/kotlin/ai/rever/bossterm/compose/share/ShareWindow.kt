@@ -355,6 +355,10 @@ private fun RemoteAccessSetupSection(
     var pendingMode by remember { mutableStateOf<String?>(null) } // a mode awaiting the user's confirm
     val remote by SessionShareManager.remoteStateFlow.collectAsState()
     val active = remote.status == SessionShareManager.RemoteStatus.Active
+    // A switch/establish is in progress — don't let the picker queue a second one mid-flight.
+    val busy = remote.status == SessionShareManager.RemoteStatus.Starting ||
+        remote.status == SessionShareManager.RemoteStatus.Verifying ||
+        remote.status == SessionShareManager.RemoteStatus.Retrying
     val isCloudflare = mode == "cloudflare"
     val tool = if (isCloudflare) "cloudflared" else "Tailscale"
     // Install detection + one-click Homebrew install for the selected provider's CLI.
@@ -444,11 +448,12 @@ private fun RemoteAccessSetupSection(
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     // Clicking a different mode asks for confirmation (pendingMode) — the
-                    // actual switch happens on confirm in the AlertDialog above.
-                    Seg("Off", mode == "off") { if (mode != "off") pendingMode = "off" }
-                    Seg("Serve", mode == "serve") { if (mode != "serve") pendingMode = "serve" }
-                    Seg("Funnel", mode == "funnel") { if (mode != "funnel") pendingMode = "funnel" }
-                    Seg("Cloudflare", isCloudflare) { if (mode != "cloudflare") pendingMode = "cloudflare" }
+                    // actual switch happens on confirm in the AlertDialog above. Ignored while
+                    // an establish is already in progress (busy) so switches can't pile up.
+                    Seg("Off", mode == "off") { if (!busy && mode != "off") pendingMode = "off" }
+                    Seg("Serve", mode == "serve") { if (!busy && mode != "serve") pendingMode = "serve" }
+                    Seg("Funnel", mode == "funnel") { if (!busy && mode != "funnel") pendingMode = "funnel" }
+                    Seg("Cloudflare", isCloudflare) { if (!busy && mode != "cloudflare") pendingMode = "cloudflare" }
                 }
                 Text(
                     when (mode) {

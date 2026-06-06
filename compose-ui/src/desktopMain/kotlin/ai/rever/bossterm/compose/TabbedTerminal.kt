@@ -790,6 +790,9 @@ fun TabbedTerminal(
     var shareDialog by remember { mutableStateOf<ai.rever.bossterm.compose.share.SessionShareManager.ShareInfo?>(null) }
     // "Add remote": connect to another BossTerm's shared session (native client).
     var showAddRemote by remember { mutableStateOf(false) }
+    // Pending "request control?" confirmation: a view-only group's split/new-tab click stores
+    // the actual request here; confirming the dialog runs it, dismissing drops it.
+    var requestControlPrompt by remember { mutableStateOf<(() -> Unit)?>(null) }
     // Bumped every time the share window is opened/reopened; ShareWindow brings its OS
     // window to the front when this changes, so clicking the share button while a share
     // window is already open raises that window instead of leaving it behind.
@@ -996,7 +999,10 @@ fun TabbedTerminal(
                         // of a silent no-op.
                         fun anchor() = nestTabs.firstOrNull { it.id == tabController.activeTab?.id } ?: nestTabs.first()
                         fun splitNest(horizontal: Boolean) {
-                            if (up.readOnly) { session.requestControlFor(anchor().id); return }
+                            if (up.readOnly) {
+                                requestControlPrompt = { session.requestControlFor(anchor().id) }
+                                return
+                            }
                             val t = anchor()
                             val paneId = splitStates[t.id]?.focusedPaneId ?: return
                             session.splitPane(t.id, paneId, horizontal)
@@ -1008,7 +1014,7 @@ fun TabbedTerminal(
                             onSplitVertical = { splitNest(horizontal = false) },
                             onSplitHorizontal = { splitNest(horizontal = true) },
                             onNewTab = {
-                                if (up.readOnly) session.requestControlFor(anchor().id)
+                                if (up.readOnly) requestControlPrompt = { session.requestControlFor(anchor().id) }
                                 else session.newTabIn(anchor().id)
                             },
                             onClose = { session.disconnectUpstream(nestTabs.first().id) },
@@ -1025,19 +1031,19 @@ fun TabbedTerminal(
                     colorHex = session.accent.value,
                     groups = gs,
                     canControl = session.canControlState.value, // Compose state → menus update on grant
-                    // View-only: split/new-tab route to the control request (the host shows
-                    // its approval prompt) instead of silently doing nothing.
+                    // View-only: split/new-tab first confirm via the request-control dialog
+                    // (confirming sends the request; the host shows its approval toast).
                     onSplitVertical = {
                         if (session.canControlState.value) session.splitFocused(horizontal = false)
-                        else session.requestControl()
+                        else requestControlPrompt = { session.requestControl() }
                     },
                     onSplitHorizontal = {
                         if (session.canControlState.value) session.splitFocused(horizontal = true)
-                        else session.requestControl()
+                        else requestControlPrompt = { session.requestControl() }
                     },
                     onNewTab = {
                         if (session.canControlState.value) session.newRemoteTab()
-                        else session.requestControl()
+                        else requestControlPrompt = { session.requestControl() }
                     },
                     onDisconnect = { rm?.disconnect(session) },
                     onChipSplit = { tabIndex, paneId, horizontal ->
@@ -1808,6 +1814,14 @@ fun TabbedTerminal(
             onRefreshLink = { ai.rever.bossterm.compose.share.SessionShareManager.refreshRemoteLink() },
             sessionName = ai.rever.bossterm.compose.share.SessionShareManager.sessionNameFor(info.tabId) ?: "",
             onSessionNameChange = { ai.rever.bossterm.compose.share.SessionShareManager.setSessionName(info.tabId, it) },
+        )
+    }
+
+    // Confirm-before-requesting-control (a view-only group's split/new-tab click).
+    requestControlPrompt?.let { send ->
+        ai.rever.bossterm.compose.remote.RequestControlPrompt(
+            onConfirm = { send(); requestControlPrompt = null },
+            onDismiss = { requestControlPrompt = null },
         )
     }
 

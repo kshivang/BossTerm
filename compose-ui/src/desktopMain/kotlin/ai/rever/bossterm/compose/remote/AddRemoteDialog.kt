@@ -166,6 +166,34 @@ fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
     }
 }
 
+/**
+ * Confirmation shown when a view-only action needs control (e.g. the sidebar's split/new-tab
+ * icons on a view-only group): explains the state and asks before sending the host a control
+ * request — the host then sees its usual approval toast.
+ */
+@Composable
+fun RequestControlPrompt(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = BackgroundColor,
+        title = { Text("View-only session", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
+        text = {
+            Text(
+                "You're viewing this session read-only — splits, new tabs, and typing need " +
+                    "control. Ask the host to grant it?",
+                color = TextSecondary, fontSize = 12.sp
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+            ) { Text("Request Control") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = TextSecondary) } },
+    )
+}
+
 @Composable
 private fun RemoteSessionRow(session: RemoteSession, onDisconnect: () -> Unit) {
     val status by session.status.collectAsState()

@@ -27,6 +27,31 @@
     if (window.confirm("You're viewing this session read-only. Ask the host for control?"))
       sendMsg({ t: "requestControl" });
   };
+  // Floating read-only pill over the stage (native parity): our own view-only connection, or
+  // — with control — an active tab whose upstream is read-only for the host. Click = request.
+  var viewPillEl = document.getElementById("viewpill");
+  function updateViewPill() {
+    if (!controlGranted) {
+      viewPillEl.textContent = "View only — click to request control";
+      viewPillEl.style.display = "";
+      viewPillEl.onclick = function () {
+        if (window.confirm("You're viewing this session read-only. Ask the host for control?"))
+          sendMsg({ t: "requestControl" });
+      };
+      return;
+    }
+    var t = null;
+    if (layout) for (var i = 0; i < layout.tabs.length; i++)
+      if (layout.tabs[i].id === activeTabId) { t = layout.tabs[i]; break; }
+    if (t && t.origin && t.originReadOnly) {
+      var name = t.originName || "remote";
+      viewPillEl.textContent = "View only — click to request control of " + name;
+      viewPillEl.style.display = "";
+      viewPillEl.onclick = function () { requestUpstreamControl(t.id, name); };
+      return;
+    }
+    viewPillEl.style.display = "none";
+  }
 
   var keybarEl = document.getElementById("keybar");
   var menubtnEl = document.getElementById("menubtn");
@@ -632,6 +657,7 @@
         tabbarEl.appendChild(newTabButton("+"));
       }
     }
+    updateViewPill(); // runs on layout/control/selection changes — keeps the pill current
   }
 
   // Panes of a tab in split-tree order (left/top before right/bottom).

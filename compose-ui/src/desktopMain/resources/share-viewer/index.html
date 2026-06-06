@@ -124,6 +124,12 @@
                               background: #1e1e1e; color: #ddd; font-size: 13px; cursor: pointer; }
     #overlay-actions button:hover { border-color: #4a90e2; }
     #overlay-actions button.primary { background: #4a90e2; border-color: #4a90e2; color: #fff; }
+    /* Floating read-only pill over the stage (native-client parity): shows for our own
+       view-only connection or an upstream-read-only active tab; click = control request. */
+    #viewpill { position: fixed; top: 44px; right: 16px; z-index: 30; padding: 4px 10px;
+      border-radius: 12px; background: rgba(37,37,38,.92); border: 1px solid #404040;
+      color: #b0b0b0; font-size: 11px; cursor: pointer; display: none; }
+    #viewpill:hover { border-color: #4a90e2; }
   </style>
 </head>
 <body>
@@ -145,6 +151,7 @@
     <div id="sidebar"></div>
     <div id="stage"></div>
   </div>
+  <div id="viewpill"></div>
   <div id="keybar"></div>
   <div id="ctxmenu"></div>
 

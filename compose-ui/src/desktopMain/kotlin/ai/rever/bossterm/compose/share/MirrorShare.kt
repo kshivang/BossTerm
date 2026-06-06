@@ -297,14 +297,20 @@ class MirrorShare(
                     color = tabColorCss(tab), branch = tab.gitBranch.value
                 )
             }
+            // Mark tabs that themselves mirror another session with that share's token hash
+            // (so a client connecting to us can skip the ones mirroring its own session), a
+            // friendly label, and whether WE are view-only on it (then input can't flow
+            // through us — nested viewers should mark those tabs read-only too).
+            val upstream = state.remoteSessions.sessionForTab(tab)
             tabNodes.add(
                 TabNode(
                     id = tab.id, title = tab.title.value, active = tab.id == activeId, tree = tree,
                     color = tabColorCss(tab), cwd = tab.workingDirectory.value, branch = tab.gitBranch.value,
-                    // Mark tabs that themselves mirror another session with that share's token
-                    // hash, so a client connecting to us can skip the ones mirroring its own
-                    // session (mirroring them back would loop its tabs through us).
-                    origin = state.remoteSessions.sessionForTab(tab)?.originHash,
+                    origin = upstream?.originHash,
+                    originName = upstream?.let {
+                        it.customName.value ?: runCatching { java.net.URI(it.link).host }.getOrNull() ?: it.link
+                    },
+                    originReadOnly = upstream?.let { !it.canControlState.value },
                 )
             )
         }

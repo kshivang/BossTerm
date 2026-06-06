@@ -140,6 +140,17 @@ data class TabNode(
      * loop), without leaking the token to viewers. Null for the host's own tabs.
      */
     val origin: String? = null,
+    /**
+     * When [origin] != null: a friendly label for that upstream session (the host's custom
+     * group name, else its link's host) — lets a nested viewer group these tabs under a
+     * labeled subsection instead of mixing them with the host's own tabs.
+     */
+    val originName: String? = null,
+    /**
+     * When [origin] != null: true if the HOST itself is view-only on that upstream session —
+     * input can't flow through it, so these tabs are effectively read-only for viewers too.
+     */
+    val originReadOnly: Boolean? = null,
 )
 
 /** Recursive split-layout node: either a binary split or a leaf pane. */

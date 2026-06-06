@@ -147,6 +147,21 @@ class RemoteSession internal constructor(
         localTabByRemote.values.any { it === s } || sessionByPane.values.any { it === s }
 
     /**
+     * Upstream-origin info for a host tab that itself mirrors ANOTHER session (the host's
+     * remote): [key] groups tabs of the same upstream, [name] labels the subsection, and
+     * [readOnly] means the host can't type into it either — so neither can we through it.
+     */
+    data class UpstreamOrigin(val key: String, val name: String?, val readOnly: Boolean)
+
+    // localTabId (container) → upstream-origin info; bumping [upstreamRev] re-renders the bar
+    // when only this map changed (e.g. the host's upstream control was granted mid-session).
+    private val upstreamByTab = HashMap<String, UpstreamOrigin>()
+    val upstreamRev = androidx.compose.runtime.mutableStateOf(0)
+
+    /** The upstream origin of [localTabId]'s host tab, or null if it's the host's own tab. */
+    fun upstreamFor(localTabId: String): UpstreamOrigin? = upstreamByTab[localTabId]
+
+    /**
      * Identifies which share this session mirrors: SHA-256 of [link]'s token. Stamped on this
      * session's container tabs in OUR outgoing Layout ([TabNode.origin][ai.rever.bossterm.compose.share.TabNode]),
      * so a client connecting to US can skip tabs that mirror its own session. Null if the link
@@ -310,6 +325,7 @@ class RemoteSession internal constructor(
         localTabByRemote.values.toList().forEach { removeMirrorTab(it) }
         localTabByRemote.clear()
         sessionByPane.clear()
+        upstreamByTab.clear()
     }
 
     // ---- message handling ----
@@ -400,6 +416,7 @@ class RemoteSession internal constructor(
                 }
                 owned.forEach { pid -> sessionByPane.remove(pid)?.let { disposeSession(it) } }
                 state.splitStates.remove(container.id)
+                upstreamByTab.remove(container.id)
             }
         }
 
@@ -422,6 +439,16 @@ class RemoteSession internal constructor(
             }
             container.title.value = tabNode.title.ifBlank { "remote" }
             container.workingDirectory.value = tabNode.cwd
+
+            // Track whether this host tab itself mirrors ANOTHER session (and our effective
+            // writability through it) — the tab bar nests those under a labeled subsection.
+            val upstream = tabNode.origin?.let {
+                UpstreamOrigin(it, tabNode.originName, tabNode.originReadOnly == true)
+            }
+            if (upstreamByTab[container.id] != upstream) {
+                if (upstream != null) upstreamByTab[container.id] = upstream else upstreamByTab.remove(container.id)
+                upstreamRev.value++
+            }
 
             // (Re)build the split tree of pane mirrors — always present, even for a single pane.
             // Preserve the client's own focused pane across structural updates (setTree falls back
@@ -478,6 +505,7 @@ class RemoteSession internal constructor(
             disposeSession(mirror)
         }
         state.splitStates.remove(container.id)
+        upstreamByTab.remove(container.id)
         val idx = controller?.tabs?.indexOf(container) ?: -1
         if (idx >= 0) controller?.closeTab(idx) // index-safe removal; closeTab disposes the container
     }

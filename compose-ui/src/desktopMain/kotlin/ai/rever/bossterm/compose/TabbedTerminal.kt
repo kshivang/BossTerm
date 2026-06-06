@@ -979,8 +979,22 @@ fun TabbedTerminal(
             // a link header + footer actions (split / new tab / disconnect) targeting the host.
             val tabGroups = tabGroupsWithTab.filter { rm?.sessionForTab(it.first) == null }.map { it.second }
             val remoteGroups = rm?.sessions.orEmpty().mapNotNull { session ->
-                val gs = tabGroupsWithTab.filter { rm?.sessionForTab(it.first) === session }.map { it.second }
-                if (gs.isEmpty()) null else ai.rever.bossterm.compose.tabs.RemoteTabGroup(
+                session.upstreamRev.value // subscribe: re-partition when upstream info changes
+                val mine = tabGroupsWithTab.filter { rm?.sessionForTab(it.first) === session }
+                // The host's own tabs render directly; tabs the host itself mirrors from OTHER
+                // sessions nest under a labeled subsection per upstream (read-only flagged).
+                val gs = mine.filter { session.upstreamFor(it.first.id) == null }.map { it.second }
+                val nested = mine
+                    .mapNotNull { (t, g) -> session.upstreamFor(t.id)?.let { up -> up to g } }
+                    .groupBy({ it.first.key }, { it })
+                    .map { (_, items) ->
+                        ai.rever.bossterm.compose.tabs.RemoteNestedGroup(
+                            label = items.first().first.name ?: "remote",
+                            readOnly = items.first().first.readOnly,
+                            groups = items.map { it.second },
+                        )
+                    }
+                if (gs.isEmpty() && nested.isEmpty()) null else ai.rever.bossterm.compose.tabs.RemoteTabGroup(
                     id = session.link,
                     header = session.customName.value
                         ?: runCatching { java.net.URI(session.link).host ?: session.link }.getOrDefault(session.link),
@@ -1005,6 +1019,7 @@ fun TabbedTerminal(
                     onOpenInBrowser = { HyperlinkDetector.openUrl(session.link) },
                     onCopyLink = { tabBarClipboard.setText(androidx.compose.ui.text.AnnotatedString(session.link)) },
                     onRequestControl = { session.requestControl() },
+                    nested = nested,
                 )
             }
             // In summary mode the active tab's single chip carries the tab id; match it

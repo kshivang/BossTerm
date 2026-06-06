@@ -137,6 +137,19 @@ data class RemoteTabGroup(
     val onCopyLink: () -> Unit,
     /** Ask the host to upgrade this view-only connection to control (host approves via toast). */
     val onRequestControl: () -> Unit,
+    /**
+     * Tabs the host itself mirrors from OTHER sessions, nested as labeled subsections inside
+     * this box (instead of mixing with the host's own tabs). [RemoteNestedGroup.readOnly]
+     * means the host is view-only on that upstream — input can't flow through it.
+     */
+    val nested: List<RemoteNestedGroup> = emptyList(),
+)
+
+/** One upstream session's tabs inside a remote group box (see [RemoteTabGroup.nested]). */
+data class RemoteNestedGroup(
+    val label: String,
+    val readOnly: Boolean,
+    val groups: List<TabBarGroup>,
 )
 
 /** AI assistants offered in the remote chip menu — same set the browser viewer mirrors. */
@@ -457,6 +470,40 @@ fun TabBar(
                                         group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
                                     }
                                 }
+                                // Tabs the host itself mirrors from OTHER sessions: a labeled,
+                                // slightly indented subsection per upstream (eye = the host is
+                                // view-only on it, so input can't flow through).
+                                rg.nested.forEach { nest ->
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(start = 6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(TabChipGap)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(Icons.Default.Cloud, contentDescription = null, tint = Color(0xFF808080), modifier = Modifier.size(11.dp))
+                                            Text(
+                                                nest.label, color = Color(0xFF909090), fontSize = 10.sp,
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
+                                            )
+                                            if (nest.readOnly) {
+                                                Icon(
+                                                    Icons.Default.Visibility,
+                                                    contentDescription = "Read-only via this host",
+                                                    tint = Color(0xFF808080),
+                                                    modifier = Modifier.size(11.dp)
+                                                )
+                                            }
+                                        }
+                                        nest.groups.forEach { group ->
+                                            Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                                                group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -502,7 +549,7 @@ fun TabBar(
                 ) {
                     // Local tab clusters, then remote-session clusters (flattened in the top
                     // bar — the boxed grouping with header/footer is a left-bar affordance).
-                    (groups + remoteGroups.flatMap { it.groups }).forEach { group ->
+                    (groups + remoteGroups.flatMap { it.groups + it.nested.flatMap { n -> n.groups } }).forEach { group ->
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(TabChipGap),
                             verticalAlignment = Alignment.CenterVertically

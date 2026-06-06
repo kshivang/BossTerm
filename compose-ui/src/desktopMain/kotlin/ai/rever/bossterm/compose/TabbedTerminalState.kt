@@ -90,6 +90,14 @@ class TabbedTerminalState {
     private var initialized = false
 
     /**
+     * Stable identity of this state for the life of the process — i.e. of the window that
+     * owns it. Used by ALL-scope session shares to group tabs by window on the wire
+     * ([ai.rever.bossterm.compose.share.TabNode.windowId]); display names ("Window 1")
+     * may renumber as windows close, this key never does.
+     */
+    val windowTag: String = java.util.UUID.randomUUID().toString()
+
+    /**
      * Split view states per tab (tab.id -> SplitViewState).
      * Stored here to persist across recomposition when TabbedTerminal unmounts.
      */

@@ -591,83 +591,127 @@
         }
         return group;
       }
-      // Partition like the native client: the host's own tabs render directly; tabs the host
-      // itself mirrors from OTHER sessions render as boxed "via host" groups below.
-      var own = [], upstreams = {}, upOrder = [];
-      if (layout) layout.tabs.forEach(function (t) {
-        if (t.origin) {
-          if (!upstreams[t.origin]) {
-            upstreams[t.origin] = { name: t.originName, readOnly: !!t.originReadOnly, offline: !!t.originOffline, tabs: [] };
-            upOrder.push(t.origin);
+      // Render one set of tabs into [container], partitioned like the native client: the
+      // host's own tabs as direct chips + an action row; tabs the host itself mirrors from
+      // OTHER sessions as boxed "via host" groups below. [windowBox] = the set is one window
+      // of an all-windows share, so split/new-tab must target THAT window (by tabId — the
+      // host routes actions to the named tab's owning window).
+      function renderTabSet(container, tabs, windowBox) {
+        var own = [], upstreams = {}, upOrder = [];
+        tabs.forEach(function (t) {
+          if (t.origin) {
+            if (!upstreams[t.origin]) {
+              upstreams[t.origin] = { name: t.originName, readOnly: !!t.originReadOnly, offline: !!t.originOffline, tabs: [] };
+              upOrder.push(t.origin);
+            }
+            upstreams[t.origin].tabs.push(t);
+          } else own.push(t);
+        });
+        own.forEach(function (tab) { container.appendChild(tabCluster(tab)); });
+        // Action row mirroring the host's left bar: Split L/R, Split T/B, then New tab.
+        // Always shown — when view-only, clicking offers to request control (viewOnlyGate).
+        // A window box whose tabs are ALL upstream mirrors gets none (a bare "new tab in
+        // this window" can't be expressed — the mirrors' ids route upstream instead).
+        if (!windowBox || own.length) {
+          var actions = document.createElement("div");
+          actions.className = "ltab-actions";
+          if (windowBox) {
+            var wg = { tabs: own };
+            actions.appendChild(groupSplitButton("v", wg));
+            actions.appendChild(groupSplitButton("h", wg));
+            var wnt = document.createElement("div");
+            wnt.className = "newtab"; wnt.textContent = "+ New tab";
+            wnt.title = "New tab in this window";
+            wnt.onclick = function () {
+              if (viewOnlyGate()) return;
+              sendMsg({ t: "newTab", tabId: anchorTab(wg).id });
+            };
+            actions.appendChild(wnt);
+          } else {
+            actions.appendChild(splitButton("v"));
+            actions.appendChild(splitButton("h"));
+            actions.appendChild(newTabButton("+ New tab"));
           }
-          upstreams[t.origin].tabs.push(t);
-        } else own.push(t);
+          container.appendChild(actions);
+        }
+        // Upstream groups: tether + bordered box with header (name · via host, offline/read-only
+        // badges, ✕ = ask host to disconnect it), chips, and a relayed action row.
+        upOrder.forEach(function (key) {
+          var g = upstreams[key];
+          var tether = document.createElement("div");
+          tether.style.cssText = "width:2px;height:10px;margin-left:13px;background:#4FC3F7;";
+          container.appendChild(tether);
+          var box = document.createElement("div");
+          box.style.cssText = "border:1px solid #4FC3F7;border-radius:8px;padding:4px;display:flex;flex-direction:column;gap:4px;";
+          var hd = document.createElement("div");
+          hd.style.cssText = "display:flex;align-items:center;gap:4px;padding:2px;font-size:11px;color:#b0b0b0;";
+          var lbl = document.createElement("span");
+          lbl.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+          lbl.textContent = "☁ " + (g.name || "remote") + " · via " + ((layout && layout.sessionName) || "host");
+          hd.appendChild(lbl);
+          if (g.offline) {
+            var off = document.createElement("span");
+            off.textContent = "· offline"; off.title = "The host lost its connection to this session — content is frozen";
+            off.style.cssText = "color:#E57373;font-size:10px;";
+            hd.appendChild(off);
+          }
+          if (g.readOnly) {
+            var eye = document.createElement("span");
+            eye.textContent = "👁"; eye.title = "Read-only via this host — click to request control";
+            eye.style.cursor = "pointer";
+            eye.onclick = function (ev) { ev.stopPropagation(); requestUpstreamControl(anchorTab(g).id, g.name || "remote"); };
+            hd.appendChild(eye);
+          }
+          var x = document.createElement("span");
+          x.textContent = "×"; x.title = "Ask the host to disconnect this upstream";
+          x.style.cssText = "cursor:pointer;color:#808080;padding:0 2px;";
+          x.onclick = function (ev) {
+            ev.stopPropagation();
+            if (viewOnlyGate()) return;
+            if (window.confirm("Ask the host to disconnect from " + (g.name || "this upstream") + "?"))
+              sendMsg({ t: "disconnectUpstream", tabId: g.tabs[0].id });
+          };
+          hd.appendChild(x);
+          box.appendChild(hd);
+          g.tabs.forEach(function (tab) { box.appendChild(tabCluster(tab)); });
+          // Always shown; view-only clicks route to the request-control dialog (viewOnlyGate).
+          var act = document.createElement("div");
+          act.className = "ltab-actions";
+          act.appendChild(groupSplitButton("v", g));
+          act.appendChild(groupSplitButton("h", g));
+          var nt = document.createElement("div");
+          nt.className = "newtab"; nt.textContent = "+ New tab";
+          nt.title = "New tab in " + (g.name || "remote");
+          nt.onclick = function () {
+            if (viewOnlyGate()) return;
+            if (g.readOnly) { requestUpstreamControl(anchorTab(g).id, g.name || "remote"); return; }
+            sendMsg({ t: "newTab", tabId: anchorTab(g).id });
+          };
+          act.appendChild(nt);
+          box.appendChild(act);
+          container.appendChild(box);
+        });
+      }
+      // An all-windows share stamps each tab with its owning window — group those into
+      // neutral-bordered boxes (one per window); unstamped tabs render flat as before.
+      var flat = [], wins = {}, winOrder = [];
+      if (layout) layout.tabs.forEach(function (t) {
+        if (t.windowId) {
+          if (!wins[t.windowId]) { wins[t.windowId] = { name: t.windowName, tabs: [] }; winOrder.push(t.windowId); }
+          wins[t.windowId].tabs.push(t);
+        } else flat.push(t);
       });
-      own.forEach(function (tab) { sidebarEl.appendChild(tabCluster(tab)); });
-      // Action row mirroring the host's left bar: Split L/R, Split T/B, then New tab.
-      // Always shown — when view-only, clicking offers to request control (viewOnlyGate).
-      var actions = document.createElement("div");
-      actions.className = "ltab-actions";
-      actions.appendChild(splitButton("v"));
-      actions.appendChild(splitButton("h"));
-      actions.appendChild(newTabButton("+ New tab"));
-      sidebarEl.appendChild(actions);
-      // Upstream groups: tether + bordered box with header (name · via host, offline/read-only
-      // badges, ✕ = ask host to disconnect it), chips, and a relayed action row.
-      upOrder.forEach(function (key) {
-        var g = upstreams[key];
-        var tether = document.createElement("div");
-        tether.style.cssText = "width:2px;height:10px;margin-left:13px;background:#4FC3F7;";
-        sidebarEl.appendChild(tether);
-        var box = document.createElement("div");
-        box.style.cssText = "border:1px solid #4FC3F7;border-radius:8px;padding:4px;display:flex;flex-direction:column;gap:4px;";
-        var hd = document.createElement("div");
-        hd.style.cssText = "display:flex;align-items:center;gap:4px;padding:2px;font-size:11px;color:#b0b0b0;";
-        var lbl = document.createElement("span");
-        lbl.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-        lbl.textContent = "☁ " + (g.name || "remote") + " · via " + ((layout && layout.sessionName) || "host");
-        hd.appendChild(lbl);
-        if (g.offline) {
-          var off = document.createElement("span");
-          off.textContent = "· offline"; off.title = "The host lost its connection to this session — content is frozen";
-          off.style.cssText = "color:#E57373;font-size:10px;";
-          hd.appendChild(off);
-        }
-        if (g.readOnly) {
-          var eye = document.createElement("span");
-          eye.textContent = "👁"; eye.title = "Read-only via this host — click to request control";
-          eye.style.cursor = "pointer";
-          eye.onclick = function (ev) { ev.stopPropagation(); requestUpstreamControl(anchorTab(g).id, g.name || "remote"); };
-          hd.appendChild(eye);
-        }
-        var x = document.createElement("span");
-        x.textContent = "×"; x.title = "Ask the host to disconnect this upstream";
-        x.style.cssText = "cursor:pointer;color:#808080;padding:0 2px;";
-        x.onclick = function (ev) {
-          ev.stopPropagation();
-          if (viewOnlyGate()) return;
-          if (window.confirm("Ask the host to disconnect from " + (g.name || "this upstream") + "?"))
-            sendMsg({ t: "disconnectUpstream", tabId: g.tabs[0].id });
-        };
-        hd.appendChild(x);
-        box.appendChild(hd);
-        g.tabs.forEach(function (tab) { box.appendChild(tabCluster(tab)); });
-        // Always shown; view-only clicks route to the request-control dialog (viewOnlyGate).
-        var act = document.createElement("div");
-        act.className = "ltab-actions";
-        act.appendChild(groupSplitButton("v", g));
-        act.appendChild(groupSplitButton("h", g));
-        var nt = document.createElement("div");
-        nt.className = "newtab"; nt.textContent = "+ New tab";
-        nt.title = "New tab in " + (g.name || "remote");
-        nt.onclick = function () {
-          if (viewOnlyGate()) return;
-          if (g.readOnly) { requestUpstreamControl(anchorTab(g).id, g.name || "remote"); return; }
-          sendMsg({ t: "newTab", tabId: anchorTab(g).id });
-        };
-        act.appendChild(nt);
-        box.appendChild(act);
-        sidebarEl.appendChild(box);
+      if (flat.length || !winOrder.length) renderTabSet(sidebarEl, flat, false);
+      winOrder.forEach(function (wk) {
+        var w = wins[wk];
+        var wbox = document.createElement("div");
+        wbox.style.cssText = "border:1px solid #555;border-radius:8px;padding:4px;display:flex;flex-direction:column;gap:4px;margin-top:6px;";
+        var whd = document.createElement("div");
+        whd.style.cssText = "padding:2px;font-size:11px;color:#b0b0b0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+        whd.textContent = "🗔 " + (w.name || "Window");
+        wbox.appendChild(whd);
+        renderTabSet(wbox, w.tabs, true);
+        sidebarEl.appendChild(wbox);
       });
       // Bottom: ask the host to mirror another BossTerm share here (native "Add remote").
       var add = document.createElement("div");

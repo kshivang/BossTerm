@@ -161,6 +161,15 @@ data class TabNode(
      * (reconnecting or failed) — these tabs show FROZEN content until it comes back.
      */
     val originOffline: Boolean? = null,
+    /**
+     * For an ALL-scope share spanning >1 window: the stable key of the window owning this tab
+     * ([ai.rever.bossterm.compose.TabbedTerminalState.windowTag]), so viewers can group tabs
+     * by window. Null for TAB/WINDOW shares and single-window ALL shares — those frames stay
+     * identical to pre-ALL ones, and old clients ignore the field either way.
+     */
+    val windowId: String? = null,
+    /** When [windowId] != null: the display label for that window (e.g. "Window 2"). */
+    val windowName: String? = null,
 )
 
 /** Recursive split-layout node: either a binary split or a leaf pane. */

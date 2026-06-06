@@ -126,4 +126,27 @@ class ShareProtocolTest {
         assertIs<PaneTreeNode.Split>(split)
         assertEquals("", split.id)
     }
+
+    @Test
+    fun `window identity round-trips and defaults null for old payloads`() {
+        // ALL-scope share spanning windows: tabs carry windowId/windowName for viewer grouping.
+        val tab = TabNode(
+            "t1", "~", active = true,
+            tree = PaneTreeNode.Pane("p1", "zsh", "/home", focused = true),
+            windowId = "w-abc", windowName = "Window 2",
+        )
+        val json = ShareProtocol.encodeServer(ServerMessage.Layout(listOf(tab), "t1"))
+        assertTrue(json.contains("\"windowId\":\"w-abc\"") && json.contains("\"windowName\":\"Window 2\""), json)
+        val back = ShareProtocol.decodeServer(json)
+        assertIs<ServerMessage.Layout>(back)
+        assertEquals("w-abc", back.tabs[0].windowId)
+        assertEquals("Window 2", back.tabs[0].windowName)
+
+        // TAB/WINDOW (and pre-ALL) payloads carry no window fields — they decode to null.
+        val flat = """{"t":"layout","tabs":[{"id":"t1","title":"~","active":true,"tree":{"t":"pane","paneId":"p1","title":"z","cwd":null,"focused":true}}],"activeTabId":"t1"}"""
+        val flatBack = ShareProtocol.json.decodeFromString(ServerMessage.serializer(), flat)
+        assertIs<ServerMessage.Layout>(flatBack)
+        assertEquals(null, flatBack.tabs[0].windowId)
+        assertEquals(null, flatBack.tabs[0].windowName)
+    }
 }

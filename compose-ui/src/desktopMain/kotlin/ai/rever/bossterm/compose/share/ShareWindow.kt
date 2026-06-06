@@ -99,7 +99,6 @@ fun ShareWindow(
     onSessionNameChange: (String) -> Unit = {},
 ) {
     val clipboard = LocalClipboardManager.current
-    val isWindow = info.scope == ShareScope.WINDOW
     val loopbackOnly = info.url.contains("://127.0.0.1") || info.url.contains("://localhost")
     var controlQr by remember { mutableStateOf(false) }
     // Remote-access lifecycle (starting/verifying/retrying/active/fell-back) drives the
@@ -138,7 +137,11 @@ fun ShareWindow(
 
     Window(
         onCloseRequest = onDismiss,
-        title = if (isWindow) "BossTerm — Share Window" else "BossTerm — Share Tab",
+        title = when (info.scope) {
+            ShareScope.TAB -> "BossTerm — Share Tab"
+            ShareScope.WINDOW -> "BossTerm — Share Window"
+            ShareScope.ALL -> "BossTerm — Share All Windows"
+        },
         resizable = false,
         state = rememberWindowState(size = DpSize(600.dp, 680.dp))
     ) {
@@ -213,12 +216,26 @@ fun ShareWindow(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        SegToggle("Tab", "Window", rightSelected = isWindow) { win ->
-                            onScopeChange(if (win) ShareScope.WINDOW else ShareScope.TAB)
+                        SegPicker(
+                            listOf("Tab", "Window", "All windows"),
+                            selectedIndex = when (info.scope) {
+                                ShareScope.TAB -> 0
+                                ShareScope.WINDOW -> 1
+                                ShareScope.ALL -> 2
+                            }
+                        ) { i ->
+                            onScopeChange(when (i) {
+                                0 -> ShareScope.TAB
+                                1 -> ShareScope.WINDOW
+                                else -> ShareScope.ALL
+                            })
                         }
                         Text(
-                            if (isWindow) "Sharing all tabs in this window — switchable in the viewer, with splits."
-                            else "Sharing this tab and its splits.",
+                            when (info.scope) {
+                                ShareScope.TAB -> "Sharing this tab and its splits."
+                                ShareScope.WINDOW -> "Sharing all tabs in this window — switchable in the viewer, with splits."
+                                ShareScope.ALL -> "Sharing every window — viewers see tabs grouped by window."
+                            },
                             color = TextMuted, fontSize = 11.sp,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
@@ -308,13 +325,20 @@ private fun ShareSection(
 /** Two-option segmented toggle in BossTerm's compact style (no Material min-size). */
 @Composable
 private fun SegToggle(left: String, right: String, rightSelected: Boolean, onSelect: (Boolean) -> Unit) {
+    SegPicker(listOf(left, right), if (rightSelected) 1 else 0) { onSelect(it == 1) }
+}
+
+/** N-option segmented picker — same compact style as [SegToggle]. */
+@Composable
+private fun SegPicker(options: List<String>, selectedIndex: Int, onSelect: (Int) -> Unit) {
     Row(
         modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(Track)
             .border(1.dp, BorderColor, RoundedCornerShape(6.dp)).padding(2.dp),
         horizontalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        Seg(left, !rightSelected) { onSelect(false) }
-        Seg(right, rightSelected) { onSelect(true) }
+        options.forEachIndexed { i, label ->
+            Seg(label, i == selectedIndex) { onSelect(i) }
+        }
     }
 }
 

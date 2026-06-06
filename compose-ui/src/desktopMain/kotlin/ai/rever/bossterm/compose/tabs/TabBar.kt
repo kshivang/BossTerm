@@ -210,6 +210,7 @@ fun TabBar(
     onDuplicate: (Int) -> Unit = {},
     onShareTab: (Int) -> Unit = {},
     onShareWindow: (Int) -> Unit = {},
+    onShareAll: (Int) -> Unit = {},
     onStopShare: (Int) -> Unit = {},
     isSharing: (Int) -> Boolean = { false },
     onSplitVertical: () -> Unit = {},
@@ -258,7 +259,8 @@ fun TabBar(
                     label = "Share",
                     items = listOf(
                         ContextMenuController.MenuItem(id = "share_tab", label = "Tab…", enabled = true, action = { onShareTab(tabIndex) }),
-                        ContextMenuController.MenuItem(id = "share_window", label = "Window…", enabled = true, action = { onShareWindow(tabIndex) })
+                        ContextMenuController.MenuItem(id = "share_window", label = "Window…", enabled = true, action = { onShareWindow(tabIndex) }),
+                        ContextMenuController.MenuItem(id = "share_all", label = "All Windows…", enabled = true, action = { onShareAll(tabIndex) })
                     )
                 )
             )

@@ -1170,6 +1170,9 @@ fun TabbedTerminal(
                 onShareWindow = { index ->
                     tabController.tabs.getOrNull(index)?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.WINDOW) }
                 },
+                onShareAll = { index ->
+                    tabController.tabs.getOrNull(index)?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.ALL) }
+                },
                 onStopShare = { index ->
                     tabController.tabs.getOrNull(index)?.let {
                         ai.rever.bossterm.compose.share.SessionShareManager.unshare(it.id)
@@ -1548,6 +1551,11 @@ fun TabbedTerminal(
                                         id = "share_window",
                                         label = "Window…",
                                         action = { startShare(activeTab.id, ai.rever.bossterm.compose.share.ShareScope.WINDOW) }
+                                    ),
+                                    ContextMenuItem(
+                                        id = "share_all",
+                                        label = "All Windows…",
+                                        action = { startShare(activeTab.id, ai.rever.bossterm.compose.share.ShareScope.ALL) }
                                     )
                                 )
                             )
@@ -1745,6 +1753,10 @@ fun TabbedTerminal(
                                     ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
                                         id = "share_window", label = "Share Whole Window", enabled = true,
                                         action = { startShare(active.id, ai.rever.bossterm.compose.share.ShareScope.WINDOW) }
+                                    ),
+                                    ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
+                                        id = "share_all", label = "Share All Windows", enabled = true,
+                                        action = { startShare(active.id, ai.rever.bossterm.compose.share.ShareScope.ALL) }
                                     ),
                                 ))
                             }

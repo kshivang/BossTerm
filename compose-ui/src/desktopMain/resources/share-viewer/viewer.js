@@ -510,7 +510,7 @@
     el.addEventListener("touchstart", function (e) {
       if (!e.touches || e.touches.length !== 1) return;
       sx = e.touches[0].clientX; sy = e.touches[0].clientY;
-      t = setTimeout(function () { t = null; showTabMenu(sx, sy, tab, pane); }, 900);
+      t = setTimeout(function () { t = null; showTabMenu(sx, sy, tab, pane); }, 600);
     }, { passive: true });
     function cancel(e) {
       if (t && e && e.touches && e.touches[0]) {
@@ -1181,13 +1181,13 @@
       wrap.addEventListener("contextmenu", function (e) {
         e.preventDefault(); setClientFocus(pid); showContextMenu(e.clientX, e.clientY, pid);
       });
-      // Mobile long-press (~900ms — deliberately long so scroll/tap gestures never
-      // trip it) → same menu, anchored at the touch point.
+      // Mobile long-press (~600ms — a touch above the 500ms platform default so scroll
+      // and slow taps don't trip it) → same menu, anchored at the touch point.
       var lpTimer = null, lpX = 0, lpY = 0;
       wrap.addEventListener("touchstart", function (e) {
         if (!e.touches || e.touches.length !== 1) return;
         lpX = e.touches[0].clientX; lpY = e.touches[0].clientY; setClientFocus(pid);
-        lpTimer = setTimeout(function () { lpTimer = null; showContextMenu(lpX, lpY, pid); }, 900);
+        lpTimer = setTimeout(function () { lpTimer = null; showContextMenu(lpX, lpY, pid); }, 600);
       }, { passive: true });
       function cancelLongPress(e) {
         if (lpTimer && e && e.touches && e.touches[0]) {

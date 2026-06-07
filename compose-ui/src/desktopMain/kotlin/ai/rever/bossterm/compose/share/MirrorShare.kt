@@ -259,7 +259,7 @@ class MirrorShare(
                 stateFor(msg.tabId)?.closeOtherTabs(msg.tabId)
             is ClientMessage.CloseTabsBelow ->
                 stateFor(msg.tabId)?.closeTabsBelow(msg.tabId)
-            is ClientMessage.ResizeHost -> resizeHostWindow(msg.cols, msg.rows)
+            is ClientMessage.ResizeHost -> resizeHostWindow(msg.tabId, msg.cols, msg.rows)
             is ClientMessage.ResizeSplit ->
                 upstreamSession(msg.tabId)?.resizeSplit(msg.tabId, msg.splitId, msg.ratio, committed = true)
                     ?: stateFor(msg.tabId)?.splitStates?.get(msg.tabId)?.updateSplitRatio(msg.splitId, msg.ratio)
@@ -286,13 +286,39 @@ class MirrorShare(
      * measurement and the window chrome (left tab bar, title) cancels out of the delta.
      * Best-effort and single-pane-oriented; multi-window picks the focused (else first) window.
      */
-    private fun resizeHostWindow(cols: Int, rows: Int) {
+    private fun resizeHostWindow(targetTabId: String?, cols: Int, rows: Int) {
         if (cols < 2 || rows < 2) return
-        val tab = McpTerminalRegistry.findTab(tabId) ?: return
+        // The TAB THE VIEWER IS WATCHING (it names itself in the message), not the share's
+        // anchor — its cell size / current grid drive the window delta. Fall back to anchor.
+        val tab = targetTabId?.let { McpTerminalRegistry.findTab(it) }
+            ?: McpTerminalRegistry.findTab(tabId) ?: return
         val cw = tab.terminal.cellWidthPx
         val ch = tab.terminal.cellHeightPx
         if (cw <= 0f || ch <= 0f) return
         val cur = tab.display.termSize.value
+        // A BACKGROUND tab's grid only re-measures when it becomes visible (the canvas
+        // auto-fit runs for the composed tab only) — resizing just the window would leave
+        // the viewer on the old grid until the host user switches to that tab. Resize the
+        // target's terminal + PTY directly too (single-pane tabs; a split's panes share
+        // the window area and re-measure on focus).
+        val st = McpTerminalRegistry.findState(tab.id)
+        if (st != null && st.activeTabId != tab.id) {
+            val ss = st.splitStates[tab.id]
+            val session = when {
+                ss == null -> tab
+                ss.getAllPanes().size == 1 -> ss.getAllPanes().first().session as? TerminalTab
+                else -> null
+            }
+            if (session != null) {
+                runCatching {
+                    session.terminal.resize(
+                        ai.rever.bossterm.core.util.TermSize(cols, rows),
+                        ai.rever.bossterm.terminal.RequestOrigin.User
+                    )
+                }
+                coro.launch { runCatching { session.processHandle.value?.resize(cols, rows) } }
+            }
+        }
         val win = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }?.awtWindow
             ?: WindowManager.windows.firstOrNull { it.awtWindow != null }?.awtWindow
             ?: return

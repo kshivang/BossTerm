@@ -2073,13 +2073,32 @@ fun TabbedTerminal(
     }
 }
 
+/** One-shot Swing timer (EDT) — used to let layout settle between fit passes. */
+private fun swingTimerOnce(delayMs: Int, action: () -> Unit) {
+    val t = javax.swing.Timer(delayMs) { action() }
+    t.isRepeats = false
+    t.start()
+}
+
 /**
  * "Fit my window to host": resize THIS window so [focused]'s pane renders the remote's
- * current grid 1:1 — the reverse of "Fit host to my screen". Mirrors the host's own
- * resizeHostWindow nudge (per-cell px × the grid delta, window chrome cancels out);
- * purely local, needs no control. No-op until the canvas has been measured once.
+ * current grid 1:1 — the reverse of "Fit host to my screen". Purely local, needs no control.
+ *
+ * Multi-pass, because a single nudge can land off-target:
+ *  - pass 0 clears any previous font shrink so cell metrics re-measure at the user's font;
+ *  - pass 1 applies the window delta (per-cell px × the grid delta — chrome cancels out);
+ *  - when the host grid CAN'T fit this screen (smaller/differently-scaled monitor), the
+ *    window grows to the screen limit and the MIRROR's font shrinks so the whole grid
+ *    still renders (the native analogue of the web viewer's fit-screen);
+ *  - passes 2-3 re-measure after layout settles and correct rounding / per-monitor-scale
+ *    drift of a column or two.
  */
-private fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.TerminalTab) {
+private fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.TerminalTab, attempt: Int = 0) {
+    if (attempt == 0 && focused.fontSizeOverride.value != null) {
+        focused.fontSizeOverride.value = null
+        swingTimerOnce(240) { fitClientWindowToHost(focused, attempt = 1) }
+        return
+    }
     val cw = focused.terminal.cellWidthPx
     val ch = focused.terminal.cellHeightPx
     if (cw <= 0f || ch <= 0f) return
@@ -2087,6 +2106,7 @@ private fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.Termin
     val hostCols = grid.columns; val hostRows = grid.rows
     val curCols = focused.remoteFitCols; val curRows = focused.remoteFitRows
     if (hostCols < 2 || hostRows < 2 || curCols < 2 || curRows < 2) return
+    if (hostCols == curCols && hostRows == curRows) return // converged — 1:1
     val tw = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }
         ?: WindowManager.windows.firstOrNull { it.awtWindow != null } ?: return
     val win = tw.awtWindow ?: return
@@ -2095,8 +2115,9 @@ private fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.Termin
             val gc = win.graphicsConfiguration
             val sx = gc?.defaultTransform?.scaleX?.takeIf { it > 0 } ?: 1.0
             val sy = gc?.defaultTransform?.scaleY?.takeIf { it > 0 } ?: 1.0
-            var newW = (win.width + (hostCols - curCols) * cw / sx).toInt()
-            var newH = (win.height + (hostRows - curRows) * ch / sy).toInt()
+            val wantW = (win.width + (hostCols - curCols) * cw / sx).toInt()
+            val wantH = (win.height + (hostRows - curRows) * ch / sy).toInt()
+            var newW = wantW; var newH = wantH
             gc?.bounds?.let { b ->
                 val maxW = (b.x + b.width - win.x).coerceAtLeast(480)
                 val maxH = (b.y + b.height - win.y).coerceAtLeast(320)
@@ -2107,6 +2128,20 @@ private fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.Termin
                 // together — no unpainted strip), else setSize + heal nudge.
                 ai.rever.bossterm.compose.share.MirrorShare.applyWindowSize(tw, win, newW, newH)
             }
+            if (newW < wantW || newH < wantH) {
+                // Screen-clamped: the host grid is too big for this monitor at the current
+                // font. Shrink the mirror's font so the full grid fits the clamped window.
+                val availCols = curCols + (newW - win.width) * sx / cw
+                val availRows = curRows + (newH - win.height) * sy / ch
+                val scale = minOf(availCols / hostCols, availRows / hostRows).toFloat()
+                if (scale < 0.999f) {
+                    val curFont = focused.fontSizeOverride.value
+                        ?: SettingsManager.instance.settings.value.fontSize
+                    focused.fontSizeOverride.value = (curFont * scale).coerceAtLeast(6f)
+                }
+            }
+            // Verify after layout settles; correct residual drift (rounding, mixed-DPI).
+            if (attempt < 3) swingTimerOnce(420) { fitClientWindowToHost(focused, attempt + 1) }
         }
     }
 }

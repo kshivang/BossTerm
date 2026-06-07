@@ -601,16 +601,22 @@ fun ProperTerminal(
   // Use shared font loaded once by Main.kt (performance optimization for multiple tabs)
   // Font loading is expensive and should only happen once, not per tab
 
-  val measurementStyle = remember(sharedFont, settings.fontSize, density) {
+  // Per-tab override (remote mirrors fitting an oversized host grid) wins over the
+  // global settings font. The renderer's measurement cache is keyed by font size, so
+  // tabs at different sizes coexist safely.
+  val effectiveFontSize =
+    (tab as? ai.rever.bossterm.compose.tabs.TerminalTab)?.fontSizeOverride?.value ?: settings.fontSize
+
+  val measurementStyle = remember(sharedFont, effectiveFontSize, density) {
     TextStyle(
       fontFamily = sharedFont,
-      fontSize = settings.fontSize.sp,
+      fontSize = effectiveFontSize.sp,
       fontWeight = FontWeight.Normal
     )
   }
 
   // Invalidate measurement cache when font, size, or display density changes (issue #147, #206)
-  LaunchedEffect(sharedFont, settings.fontSize, density) {
+  LaunchedEffect(sharedFont, effectiveFontSize, density) {
     ai.rever.bossterm.compose.rendering.TerminalCanvasRenderer.invalidateMeasurementCache()
   }
 
@@ -1801,7 +1807,7 @@ fun ProperTerminal(
             visibleRows = visibleRows,
             textMeasurer = textMeasurer,
             measurementFontFamily = sharedFont,
-            fontSize = settings.fontSize,
+            fontSize = effectiveFontSize,
             settings = settings,
             ambiguousCharsAreDoubleWidth = display.ambiguousCharsAreDoubleWidth(),
             selectionStart = effectiveSelectionStart,

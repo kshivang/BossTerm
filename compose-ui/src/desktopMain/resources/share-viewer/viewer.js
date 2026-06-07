@@ -80,24 +80,46 @@
     };
   })();
 
-  // Soft keyboard: PUSH the whole UI up by the keyboard's overlap — no font/zoom
-  // changes, just a translate. Translating <body> also makes its fixed children (the
-  // key bar) position against the shifted box, so the bar rides exactly on top of the
-  // keyboard. iOS Safari never resizes the layout viewport for the keyboard, so the
-  // visualViewport inset is the only truth; Android shrinks the window itself (inset 0).
-  var appliedShift = "";
+  // Soft keyboard: PUSH the UI up — no font/zoom changes, just a translate — and only
+  // as far as the CURSOR needs. If the blinking cursor already sits above the keyboard
+  // (and the key bar), nothing moves; if it's hidden, shift by exactly the overlap,
+  // capped at the keyboard inset. Re-evaluated as the cursor moves while typing.
+  // iOS Safari never resizes the layout viewport for the keyboard, so the visualViewport
+  // inset is the only truth; Android shrinks the window itself (inset 0 → no-op).
+  var appliedShiftPx = 0;
+  var keyboardOpen = false;
+  // Bottom edge (layout-viewport px, with the current shift un-applied) of the focused
+  // pane's cursor line — null when the cursor is scrolled off-screen / nothing focused.
+  function cursorBottomPx() {
+    var p = currentPaneId && panes[currentPaneId]; if (!p) return null;
+    var b = p.term.buffer && p.term.buffer.active; if (!b) return null;
+    var sc = p.host.querySelector(".xterm-screen"); if (!sc) return null;
+    var r = sc.getBoundingClientRect();
+    if (!(r.height > 0) || !(p.term.rows > 0)) return null;
+    var visRow = b.baseY + b.cursorY - b.viewportY;
+    if (visRow < 0 || visRow >= p.term.rows) return null;
+    return r.top + appliedShiftPx + (visRow + 1) * (r.height / p.term.rows);
+  }
   function layoutForKeyboard() {
     var vv = window.visualViewport;
     var inset = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
-    var open = vv ? (window.innerHeight - vv.height) > 60 : false;
-    var shift = open ? "translateY(-" + Math.round(inset) + "px)" : "";
-    if (shift !== appliedShift) {
-      appliedShift = shift;
-      document.body.style.transform = shift;
+    keyboardOpen = vv ? (window.innerHeight - vv.height) > 60 : false;
+    var shift = 0;
+    if (keyboardOpen) {
+      var visibleBottom = vv.offsetTop + vv.height;
+      var clear = (keybarEl.style.display !== "none" ? keybarEl.offsetHeight : 0) + 8;
+      var cb = cursorBottomPx();
+      // Unknown cursor → fall back to the full push (old behavior).
+      shift = cb === null ? Math.round(inset)
+        : Math.round(Math.max(0, Math.min(inset, cb - visibleBottom + clear)));
     }
-    // Transformed: the bar is body-relative, bottom 0 = the pushed-up bottom edge.
-    // Untransformed: viewport-relative, ride any residual inset (≈0 when closed).
-    keybarEl.style.bottom = open ? "0px" : inset + "px";
+    if (shift !== appliedShiftPx) {
+      appliedShiftPx = shift;
+      document.body.style.transform = shift ? "translateY(-" + shift + "px)" : "";
+    }
+    // The key bar rides the keyboard top regardless of how far the body shifted
+    // (under a transform, fixed children position against the shifted body box).
+    keybarEl.style.bottom = Math.max(0, Math.round(inset) - shift) + "px";
     bodyEl.style.paddingBottom = (keybarEl.style.display !== "none" && keybarEl.offsetHeight)
       ? keybarEl.offsetHeight + "px" : "0px";
   }
@@ -603,6 +625,9 @@
     }
     if (viewerFont) { try { term.options.fontSize = viewerFont; } catch (e) {} }
     term.onData(function (data) { sendInput(paneId, data); });
+    // Cursor-aware keyboard push: as the cursor moves (typing, newlines, TUI redraws),
+    // re-check whether the UI needs shifting above the soft keyboard.
+    term.onCursorMove(function () { if (keyboardOpen && paneId === currentPaneId) layoutForKeyboard(); });
     attachTouchScroll(host, term);
     p = { term: term, host: host };
     panes[paneId] = p;

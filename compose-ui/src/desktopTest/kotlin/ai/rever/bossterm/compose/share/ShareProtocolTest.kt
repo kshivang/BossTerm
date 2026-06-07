@@ -2,6 +2,8 @@ package ai.rever.bossterm.compose.share
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.assertIs
 
@@ -67,6 +69,23 @@ class ShareProtocolTest {
         val cw = ShareProtocol.decodeClient("""{"t":"closeWindow","windowId":"w1"}""")
         assertIs<ClientMessage.CloseWindow>(cw)
         assertEquals("w1", cw.windowId)
+    }
+
+    @Test
+    fun `decodeKex distinguishes a Kex from a Hello (the E2E vs plaintext fork)`() {
+        // The host's serveViewer relies entirely on decodeKex returning null for a non-Kex first
+        // frame to pick the legacy plaintext path. Lock that behavior down.
+        val kex = ShareProtocol.decodeKex("""{"t":"kex","v":1,"salt":"YWJjZGVm"}""")
+        assertNotNull(kex)
+        assertEquals(1, kex.v)
+        assertEquals("YWJjZGVm", kex.salt)
+
+        // A real Hello has no salt → must NOT decode as a Kex (→ plaintext path).
+        assertNull(ShareProtocol.decodeKex("""{"t":"hello","name":"phone","clientId":"c1"}"""))
+        // A saltless object likewise fails (salt is required, no default).
+        assertNull(ShareProtocol.decodeKex("""{"v":1}"""))
+        // Garbage / non-JSON is tolerated (null, not a throw).
+        assertNull(ShareProtocol.decodeKex("not json"))
     }
 
     @Test

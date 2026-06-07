@@ -58,6 +58,13 @@ class MirrorShare(
     val viewToken: String = secureToken()
     val controlToken: String = secureToken()
 
+    // E2E session secret (issue: end-to-end encryption). One per share, shared by the view +
+    // control links — it travels ONLY in the link's URL fragment (`#k=`), which the relay never
+    // sees, and each connection derives fresh AES-GCM keys from it ([SessionCrypto]). Role
+    // (view/control) stays enforced server-side by which token is presented.
+    val sessionSecret: ByteArray = SessionCrypto.newSessionSecret()
+    val sessionSecretB64: String = SessionCrypto.encodeSecretB64Url(sessionSecret)
+
     // Observable so the layout observer re-emits when the scope is toggled live
     // (Tab ↔ Window) — same tokens/viewers, just a different set of mirrored tabs.
     private var scopeVar by mutableStateOf(initialScope)

@@ -245,6 +245,13 @@ fun ShareWindow(
                 Spacer(Modifier.height(20.dp))
 
                 ShareSection("Links", headerAction = headerActions) {
+                    info.e2eCode?.let { code ->
+                        Text(
+                            "🔒 End-to-end encrypted · code $code — the relay can't read this session. " +
+                                "The same code shows on the viewer; matching codes confirm the key end-to-end.",
+                            color = AccentColor, fontSize = 11.sp
+                        )
+                    }
                     LinkRow("View (read-only)", info.url, clipboard)
                     LinkRow("Control (can type)", info.controlUrl, clipboard)
                     Text(

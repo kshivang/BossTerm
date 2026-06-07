@@ -247,6 +247,12 @@ object SessionShareManager {
         val secure: Boolean = true,
         /** Whether this share covers one tab or the whole window. */
         val scope: ShareScope = ShareScope.TAB,
+        /**
+         * Short verification code (first 8 hex of SHA-256 of the E2E secret) when the link is
+         * end-to-end encrypted; null when it's a plaintext link. Compare it against the code the
+         * viewer shows to confirm the same untampered key end-to-end.
+         */
+        val e2eCode: String? = null,
     )
 
     /** Begin observing settings. Idempotent. Call once from main(). */
@@ -307,7 +313,7 @@ object SessionShareManager {
         val share = sharesByTab[tabId] ?: return null
         val url = buildUrl(share.viewToken) ?: return null
         val controlUrl = buildUrl(share.controlToken) ?: url
-        return ShareInfo(tabId, url, share.viewToken, controlUrl, isSecureUrl(url), share.scope)
+        return ShareInfo(tabId, url, share.viewToken, controlUrl, isSecureUrl(url), share.scope, e2eCodeOf(url))
     }
 
     /**
@@ -338,7 +344,7 @@ object SessionShareManager {
                     url
                 )
             }
-            ShareInfo(tabId, url, share.viewToken, controlUrl, secure, share.scope)
+            ShareInfo(tabId, url, share.viewToken, controlUrl, secure, share.scope, e2eCodeOf(url))
         }
     }
 
@@ -686,8 +692,73 @@ object SessionShareManager {
         val share = ref.share
         val shareId = share.viewToken
 
-        // Handshake: the viewer's first frame carries its clientId + any prior access key.
-        val hello = readHello(ws)
+        // E2E handshake (issue: end-to-end encryption). The very first frame is either a
+        // plaintext Kex (a client that holds the link's `#k` secret → encrypt everything) or a
+        // plaintext Hello (a legacy / plain-LAN client → today's plaintext path). The host
+        // always knows the secret, so it follows whichever the client speaks — no per-share
+        // flag, and a relay can't force a downgrade (it never sees `#k`, can't forge a Kex).
+        val first = withTimeoutOrNull(10_000L) { runCatching { ws.incoming.receive() }.getOrNull() }
+        val kex = (first as? Frame.Text)?.let { ShareProtocol.decodeKex(it.readText()) }
+        var serverCipher: SessionCrypto.FrameCipher? = null
+        var clientCipher: SessionCrypto.FrameCipher? = null
+        val hello: ClientMessage.Hello?
+        if (kex != null) {
+            if (kex.v != 1) { ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Unsupported encryption version")); return }
+            val saltC = runCatching { SessionCrypto.decodeSecretB64Url(kex.salt) }.getOrNull()
+            if (saltC == null) { ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Bad handshake")); return }
+            val saltS = SessionCrypto.randomSalt()
+            val keys = SessionCrypto.deriveKeys(share.sessionSecret, saltC, saltS)
+            serverCipher = SessionCrypto.FrameCipher(keys.kS2c, SessionCrypto.DIR_S2C)
+            clientCipher = SessionCrypto.FrameCipher(keys.kC2s, SessionCrypto.DIR_C2S)
+            ws.send(Frame.Text(ShareProtocol.encodeKex(
+                Kex(v = 1, salt = SessionCrypto.encodeSecretB64Url(saltS), confirm = keys.confirmB64))))
+            // The next frame is the encrypted Hello. Distinguish the failure modes so the close
+            // reason is honest: a drop/late frame is a timeout, not a wrong key.
+            val helloFrame = withTimeoutOrNull(10_000L) { runCatching { ws.incoming.receive() }.getOrNull() }
+            if (helloFrame == null) {
+                ws.close(CloseReason(CloseReason.Codes.GOING_AWAY, "Handshake timeout")); return
+            }
+            if (helloFrame !is Frame.Binary) {
+                ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Expected an encrypted handshake")); return
+            }
+            val helloText = runCatching { clientCipher.decrypt(helloFrame.data) }.getOrNull()
+            if (helloText == null) {
+                ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Wrong or missing encryption key")); return
+            }
+            hello = runCatching { ShareProtocol.decodeClient(helloText) }.getOrNull() as? ClientMessage.Hello
+        } else {
+            // A plaintext first-frame: allowed on LAN/loopback (no relay), but refused on a
+            // public tunnel/Funnel share — there it'd stream unencrypted through the relay, so an
+            // old/keyless client must update rather than silently downgrade. Send a plaintext
+            // Denied first (old clients render its reason; a bare WS close shows nothing), then close.
+            if (requireE2E()) {
+                runCatching {
+                    ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Denied(
+                        "This shared session is end-to-end encrypted. Update BossTerm to a version that supports it."))))
+                }
+                ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Encryption required"))
+                return
+            }
+            hello = (first as? Frame.Text)?.let {
+                runCatching { ShareProtocol.decodeClient(it.readText()) }.getOrNull()
+            } as? ClientMessage.Hello
+        }
+
+        // Send/receive helpers: encrypted binary frames when a cipher was negotiated, else
+        // plaintext text frames (legacy). All the handshake/admit/stream code below funnels
+        // through these so the encryption seam lives in one place.
+        suspend fun send(m: ServerMessage) {
+            val text = ShareProtocol.encodeServer(m)
+            serverCipher?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
+        }
+        fun decodeIncoming(frame: Frame): ClientMessage? = when {
+            clientCipher != null && frame is Frame.Binary ->
+                runCatching { ShareProtocol.decodeClient(clientCipher.decrypt(frame.data)) }.getOrNull()
+            clientCipher == null && frame is Frame.Text ->
+                runCatching { ShareProtocol.decodeClient(frame.readText()) }.getOrNull()
+            else -> null
+        }
+
         val clientId = hello?.clientId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         var canControl = ref.canControl
 
@@ -700,8 +771,7 @@ object SessionShareManager {
                 existing.expiresAtMs = now + GRANT_TTL_MS
                 canControl = existing.canControl
                 accessKey = existing.key
-                ws.send(Frame.Text(ShareProtocol.encodeServer(
-                    ServerMessage.Grant(existing.key, existing.expiresAtMs, canControl))))
+                send(ServerMessage.Grant(existing.key, existing.expiresAtMs, canControl))
             } else {
                 hello?.key?.let { grants.remove(it) } // drop a stale/expired key
                 val req = PendingShareRequest(
@@ -712,11 +782,11 @@ object SessionShareManager {
                 )
                 _pendingRequests.value = _pendingRequests.value + req
                 notifyApprovalRequest(req)
-                runCatching { ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Pending))) }
+                runCatching { send(ServerMessage.Pending) }
                 val approved = withTimeoutOrNull(2 * 60_000L) { req.decision.await() } ?: false
                 _pendingRequests.value = _pendingRequests.value.filterNot { it.id == req.id }
                 if (!approved) {
-                    runCatching { ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Denied("Not approved")))) }
+                    runCatching { send(ServerMessage.Denied("Not approved")) }
                     ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Not approved"))
                     return
                 }
@@ -725,25 +795,26 @@ object SessionShareManager {
                 grants[key] = Grant(key, shareId, clientId, ref.canControl, exp)
                 canControl = ref.canControl
                 accessKey = key
-                ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Grant(key, exp, canControl))))
+                send(ServerMessage.Grant(key, exp, canControl))
             }
         }
 
         // Admit: Theme + Layout + a PaneSnapshot per pane, THEN register so the outbox
         // only carries output produced after the snapshot (avoids double-rendering).
-        share.initialMessages().forEach { ws.send(Frame.Text(ShareProtocol.encodeServer(it))) }
-        ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Control(granted = canControl))))
+        share.initialMessages().forEach { send(it) }
+        send(ServerMessage.Control(granted = canControl))
         val vc = share.addViewer(canControl, hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})")
         vc.grantKey = accessKey // lets an approved mid-session upgrade persist into the grant
+        val sc = serverCipher
         val writer = ws.launch {
-            for (text in vc.outbox) ws.send(Frame.Text(text))
+            for (text in vc.outbox) {
+                sc?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
+            }
         }
         try {
             for (frame in ws.incoming) {
-                if (frame is Frame.Text) {
-                    val msg = runCatching { ShareProtocol.decodeClient(frame.readText()) }.getOrNull()
-                    if (msg != null) share.handleClient(vc, msg)  // input gated by role inside
-                }
+                val msg = decodeIncoming(frame)
+                if (msg != null) share.handleClient(vc, msg)  // input gated by role inside
             }
         } catch (_: Throwable) {
             // client gone
@@ -751,15 +822,6 @@ object SessionShareManager {
             writer.cancel()
             share.removeViewer(vc)
         }
-    }
-
-    /** Read the first frame as a [ClientMessage.Hello] (best-effort, short timeout). */
-    private suspend fun readHello(
-        ws: io.ktor.server.websocket.DefaultWebSocketServerSession
-    ): ClientMessage.Hello? {
-        val frame = withTimeoutOrNull(10_000L) { runCatching { ws.incoming.receive() }.getOrNull() } ?: return null
-        if (frame !is Frame.Text) return null
-        return runCatching { ShareProtocol.decodeClient(frame.readText()) }.getOrNull() as? ClientMessage.Hello
     }
 
     /**
@@ -770,11 +832,46 @@ object SessionShareManager {
      * WS scheme from the page.
      */
     private fun buildUrl(token: String): String? {
-        remoteUrl?.let { return "${it.trimEnd('/')}/?t=$token" }
-        val publicUrl = SettingsManager.instance.settings.value.sessionSharingPublicUrl
-        if (publicUrl.isNotBlank()) return "${publicUrl.trimEnd('/')}/?t=$token"
-        val port = boundPort ?: return null
-        return "http://${advertisedHost()}:$port/?t=$token"
+        val base = remoteUrl?.let { "${it.trimEnd('/')}/?t=$token" }
+            ?: SettingsManager.instance.settings.value.sessionSharingPublicUrl.takeIf { it.isNotBlank() }
+                ?.let { "${it.trimEnd('/')}/?t=$token" }
+            ?: boundPort?.let { "http://${advertisedHost()}:$it/?t=$token" }
+            ?: return null
+        // Append the E2E secret as a URL fragment — never transmitted to the relay — but only
+        // when the browser will have WebCrypto (a secure context: https tunnel/Tailscale, or
+        // loopback). Plain-LAN http (no relay, no crypto.subtle) stays plaintext as before.
+        // The native client uses #k whenever present, regardless of transport.
+        if (e2eCapable(base)) {
+            sharesByToken[token]?.share?.sessionSecretB64?.let { return "$base#k=$it" }
+        }
+        return base
+    }
+
+    /** The E2E verification code for a link that carries a `#k=` fragment, else null. */
+    private fun e2eCodeOf(url: String): String? {
+        val k = url.substringAfter("#k=", "").substringBefore('&').takeIf { it.isNotBlank() } ?: return null
+        return runCatching { SessionCrypto.fingerprint(SessionCrypto.decodeSecretB64Url(k)) }.getOrNull()
+    }
+
+    /** True when a browser at this URL would have `crypto.subtle` (https or loopback). */
+    private fun e2eCapable(url: String): Boolean {
+        if (url.startsWith("https://", ignoreCase = true)) return true
+        val h = hostOf(url).lowercase()
+        return h == "localhost" || h == "::1" || h.startsWith("127.")
+    }
+
+    /**
+     * Whether the host should REQUIRE end-to-end encryption (reject a plaintext handshake). True
+     * only when the session is reachable over a public tunnel/Funnel (or a configured public
+     * https URL): there the relay is the threat and every link we hand out carries `#k`, so a
+     * plaintext client is an out-of-date one that would otherwise stream unencrypted through the
+     * relay. Plain-LAN/loopback http has no relay, so plaintext stays allowed there.
+     */
+    private fun requireE2E(): Boolean {
+        val url = remoteUrl
+            ?: SettingsManager.instance.settings.value.sessionSharingPublicUrl.takeIf { it.isNotBlank() }
+            ?: return false
+        return e2eCapable(url)
     }
 
     /**

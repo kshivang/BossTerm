@@ -736,6 +736,42 @@ fun TabbedTerminal(
     }
 
     // Cleanup split states when tabs are closed
+    // Keep BACKGROUND tabs' grids in step with the window. Only the composed tab's canvas
+    // auto-fits (ProperTerminal.onGloballyPositioned), so without this a background shell
+    // gets its SIGWINCH only when focused — apps reflow late, and shared viewers watching
+    // an unfocused tab see a stale grid. Whenever the ACTIVE tab settles on a new
+    // single-pane grid, propagate it to every other LOCAL single-pane tab of this window.
+    // Splits re-measure per-pane on focus (their grids depend on ratios); remote mirrors
+    // are host-driven and excluded.
+    LaunchedEffect(tabController) {
+        snapshotFlow {
+            val active = tabController.activeTab ?: return@snapshotFlow null
+            val ss = splitStates[active.id]
+            if (ss != null && ss.getAllPanes().size > 1) null
+            else active.id to active.display.termSize.value
+        }.collect { sized ->
+            val (activeId, size) = sized ?: return@collect
+            if (size.columns < 2 || size.rows < 2) return@collect
+            tabController.tabs.forEach { t ->
+                if (t.id == activeId || t.isRemote) return@forEach
+                val ss = splitStates[t.id]
+                val session = when {
+                    ss == null -> t
+                    ss.getAllPanes().size == 1 ->
+                        ss.getAllPanes().first().session as? ai.rever.bossterm.compose.tabs.TerminalTab
+                    else -> null
+                } ?: return@forEach
+                if (session.isRemote) return@forEach
+                val cur = session.display.termSize.value
+                if (cur.columns == size.columns && cur.rows == size.rows) return@forEach
+                runCatching {
+                    session.terminal.resize(size, ai.rever.bossterm.terminal.RequestOrigin.User)
+                }
+                launch { runCatching { session.processHandle.value?.resize(size.columns, size.rows) } }
+            }
+        }
+    }
+
     LaunchedEffect(tabController.tabs.size) {
         val currentTabIds = tabController.tabs.map { it.id }.toSet()
         // Find orphaned split states (tabs that were closed)

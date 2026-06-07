@@ -600,31 +600,37 @@
     return p;
   }
 
-  // ---- touch scrollback (phones) ----
-  // xterm only scrolls its buffer from WHEEL events — its scrollable .xterm-viewport sits
-  // UNDER the screen/canvas, so a finger never reaches a scrollable element and Safari
-  // pans the page instead. Own the gesture: a vertical swipe drags the scrollback via
-  // term.scrollLines() (with flick momentum); horizontal swipes are left to native pan
-  // (wide grids when zoomed past fit). Desktop is untouched.
+  // ---- touch scrolling (phones) ----
+  // A vertical swipe synthesizes WHEEL events at the touch point, so xterm's own wheel
+  // pipeline decides what scrolling means — exactly like a desktop mouse wheel:
+  //  · normal buffer → scrollback scrolls,
+  //  · TUI app with mouse reporting (claude, vim, htop) → wheel escape codes to the app,
+  //  · alternateScroll mode (1007) → arrow keys.
+  // (term.scrollLines() alone only covered the first case — TUIs never scrolled.)
+  // Horizontal swipes are left to native pan (wide grids when zoomed past fit).
   function attachTouchScroll(host, term) {
-    var startX = 0, startY = 0, lastY = 0, lastT = 0, axis = null, acc = 0, vel = 0, momentum = null;
-    function rowPx() {
-      var sc = host.querySelector(".xterm-screen");
-      var h = sc ? sc.getBoundingClientRect().height : 0;
-      return (h > 0 && term.rows > 0) ? (h / term.rows) : 16;
-    }
+    var startX = 0, startY = 0, lastX = 0, lastY = 0, lastT = 0, axis = null, vel = 0, momentum = null;
     function stopMomentum() { if (momentum) { cancelAnimationFrame(momentum); momentum = null; } }
-    function scrollByPx(px) {
-      acc += px;
-      var lines = (acc < 0 ? Math.ceil : Math.floor)(acc / rowPx());
-      if (lines !== 0) { acc -= lines * rowPx(); try { term.scrollLines(lines); } catch (e) {} }
+    function dispatchWheel(dy) {
+      // Target the screen element (what a real wheel event hits) so coordinates map to
+      // the right cell for mouse reporting; bubbles to wherever xterm's listener sits.
+      var target = host.querySelector(".xterm-screen") || host;
+      try {
+        target.dispatchEvent(new WheelEvent("wheel", {
+          deltaY: dy, deltaMode: 0, clientX: lastX, clientY: lastY,
+          bubbles: true, cancelable: true,
+        }));
+      } catch (e) {
+        // Ancient browser without the WheelEvent constructor: scroll the buffer directly.
+        try { term.scrollLines(dy > 0 ? 1 : -1); } catch (e2) {}
+      }
     }
     // Capture phase: see the touches even if something inside xterm stops propagation.
     host.addEventListener("touchstart", function (e) {
       if (!isPhone() || e.touches.length !== 1) { axis = "skip"; return; }
       stopMomentum();
-      axis = null; acc = 0; vel = 0;
-      startX = e.touches[0].clientX; startY = lastY = e.touches[0].clientY;
+      axis = null; vel = 0;
+      startX = lastX = e.touches[0].clientX; startY = lastY = e.touches[0].clientY;
       lastT = e.timeStamp;
     }, { passive: true, capture: true });
     host.addEventListener("touchmove", function (e) {
@@ -634,15 +640,15 @@
         var ax = Math.abs(x - startX), ay = Math.abs(y - startY);
         if (ax < 6 && ay < 6) return;          // not decided yet
         axis = ay >= ax ? "y" : "skip";        // horizontal → native pan
-        if (axis === "y") lastY = y;
+        if (axis === "y") { lastX = x; lastY = y; }
       }
       if (axis !== "y") return;
       if (e.cancelable) e.preventDefault();     // we own the vertical gesture
       var dy = lastY - y;                       // finger up = scroll toward bottom
       var dt = Math.max(1, e.timeStamp - lastT);
       vel = 0.8 * vel + 0.2 * (dy / dt);        // smoothed px/ms for the flick
-      lastY = y; lastT = e.timeStamp;
-      scrollByPx(dy);
+      lastX = x; lastY = y; lastT = e.timeStamp;
+      dispatchWheel(dy);
     }, { passive: false, capture: true });
     host.addEventListener("touchend", function (e) {
       if (axis !== "y") { axis = null; return; }
@@ -652,7 +658,7 @@
       var prev = e.timeStamp || performance.now();
       function step(now) {
         var dt = Math.min(48, now - prev); prev = now;
-        scrollByPx(v * dt);
+        dispatchWheel(v * dt);
         v *= Math.pow(0.95, dt / 16);           // frame-rate-independent decay
         momentum = Math.abs(v) >= 0.03 ? requestAnimationFrame(step) : null;
       }

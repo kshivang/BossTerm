@@ -1,7 +1,9 @@
 package ai.rever.bossterm.compose.remote
 
 import ai.rever.bossterm.compose.share.ClientMessage
+import ai.rever.bossterm.compose.share.Kex
 import ai.rever.bossterm.compose.share.ServerMessage
+import ai.rever.bossterm.compose.share.SessionCrypto
 import ai.rever.bossterm.compose.share.ShareProtocol
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -77,6 +79,9 @@ class RemoteSessionConnection(
 
     // Best-effort: a malformed link must not crash construction — it just fails to connect.
     private val wsUrl: String = runCatching { toWsUrl(link) }.getOrDefault(link)
+    // E2E secret from the link's `#k=` fragment (never sent to the relay). Null → plaintext
+    // (a legacy / plain-LAN link). When present, the connection runs the encrypted handshake.
+    private val sessionSecret: ByteArray? = runCatching { secretOf(link) }.getOrNull()
     // Host portion only — safe to log (the token, a bearer credential, must never hit logs).
     private val safeUrl: String = wsUrl.substringBefore("/ws/").substringBefore("?").ifBlank { "remote" } + "/…"
 
@@ -84,6 +89,14 @@ class RemoteSessionConnection(
     val status: StateFlow<RemoteStatus> = _status.asStateFlow()
 
     fun start() {
+        // An https link must carry its `#k` secret — without it we'd only be able to connect
+        // in plaintext through the relay, which defeats the point. Fail loudly instead.
+        if (sessionSecret == null && isHttpsLink(link)) {
+            _status.value = RemoteStatus.Failed(
+                "This link is missing its encryption key. Re-copy the full link from BossTerm (including the part after #)."
+            )
+            return
+        }
         scope.launch { runWithReconnect() }
     }
 
@@ -123,19 +136,58 @@ class RemoteSessionConnection(
             // so messages queued while disconnected aren't replayed stale on reconnect.
             val box = kotlinx.coroutines.channels.Channel<ClientMessage>(kotlinx.coroutines.channels.Channel.BUFFERED)
             outbox = box
-            // Handshake first, ahead of any queued input.
-            send(Frame.Text(ShareProtocol.encodeClient(
-                ClientMessage.Hello(name = deviceName, clientId = clientId, key = keyProvider()))))
+
+            // E2E handshake (issue: end-to-end encryption). When the link carried a `#k` secret,
+            // exchange salts (plaintext Kex), derive per-connection AES-GCM keys, and verify the
+            // host's key-confirmation tag before sending anything sensitive. Fresh salt each
+            // connection → keys rotate on every reconnect even though the secret is stable.
+            var clientCipher: SessionCrypto.FrameCipher? = null
+            var serverCipher: SessionCrypto.FrameCipher? = null
+            val secret = sessionSecret
+            if (secret != null) {
+                val saltC = SessionCrypto.randomSalt()
+                send(Frame.Text(ShareProtocol.encodeKex(
+                    Kex(v = 1, salt = SessionCrypto.encodeSecretB64Url(saltC)))))
+                val reply = (incoming.receive() as? Frame.Text)?.let { ShareProtocol.decodeKex(it.readText()) }
+                val saltS = reply?.salt?.let { runCatching { SessionCrypto.decodeSecretB64Url(it) }.getOrNull() }
+                if (reply == null || saltS == null) {
+                    _status.value = RemoteStatus.Failed("Encrypted handshake failed")
+                    return@webSocket
+                }
+                val keys = SessionCrypto.deriveKeys(secret, saltC, saltS)
+                if (!SessionCrypto.confirmMatches(keys.confirm, reply.confirm)) {
+                    // Wrong/missing key — terminal, no point retrying with the same bad secret.
+                    closedByUser = true
+                    _status.value = RemoteStatus.Denied(
+                        "This link's encryption key is wrong. Re-copy the full link from BossTerm."
+                    )
+                    return@webSocket
+                }
+                clientCipher = SessionCrypto.FrameCipher(keys.kC2s, SessionCrypto.DIR_C2S)
+                serverCipher = SessionCrypto.FrameCipher(keys.kS2c, SessionCrypto.DIR_S2C)
+            }
+            val cc = clientCipher
+            val scph = serverCipher
+
+            // Handshake first, ahead of any queued input (encrypted when E2E).
+            val helloText = ShareProtocol.encodeClient(
+                ClientMessage.Hello(name = deviceName, clientId = clientId, key = keyProvider()))
+            if (cc != null) send(Frame.Binary(true, cc.encrypt(helloText))) else send(Frame.Text(helloText))
             val writer = launch {
-                for (m in box) runCatching { send(Frame.Text(ShareProtocol.encodeClient(m))) }
-                    .onFailure { log.debug("ws send failed: {}", it.message) }
+                for (m in box) runCatching {
+                    val t = ShareProtocol.encodeClient(m)
+                    if (cc != null) send(Frame.Binary(true, cc.encrypt(t))) else send(Frame.Text(t))
+                }.onFailure { log.debug("ws send failed: {}", it.message) }
             }
             try {
                 for (frame in incoming) {
-                    if (frame is Frame.Text) {
-                        val msg = runCatching { ShareProtocol.decodeServer(frame.readText()) }.getOrNull() ?: continue
-                        handle(msg)
-                    }
+                    val text = when {
+                        scph != null && frame is Frame.Binary -> runCatching { scph.decrypt(frame.data) }.getOrNull()
+                        scph == null && frame is Frame.Text -> frame.readText()
+                        else -> null
+                    } ?: continue
+                    val msg = runCatching { ShareProtocol.decodeServer(text) }.getOrNull() ?: continue
+                    handle(msg)
                 }
             } finally {
                 outbox = null
@@ -186,6 +238,18 @@ class RemoteSessionConnection(
         val port = if (uri.port != -1) ":${uri.port}" else ""
         return "$wsScheme://$host$port/ws/$token"
     }
+
+    // Visible for tests. The E2E secret lives in the link's `#k=` fragment (never transmitted to
+    // any server); null when absent (a legacy / plain-LAN link). `toWsUrl` ignores the fragment.
+    internal fun secretOf(link: String): ByteArray? {
+        val frag = URI(link.trim()).fragment ?: return null
+        val k = frag.split("&").firstOrNull { it.startsWith("k=") }?.substringAfter("k=")?.takeIf { it.isNotBlank() }
+            ?: return null
+        return runCatching { SessionCrypto.decodeSecretB64Url(k) }.getOrNull()
+    }
+
+    private fun isHttpsLink(link: String): Boolean =
+        runCatching { URI(link.trim()).scheme?.equals("https", ignoreCase = true) == true }.getOrDefault(false)
 
     private companion object {
         const val MAX_RECONNECTS = 5

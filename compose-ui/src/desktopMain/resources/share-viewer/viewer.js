@@ -12,6 +12,96 @@
   var params = new URLSearchParams(location.search);
   var token = params.get("t");
 
+  // ---- end-to-end encryption ----
+  // The session secret rides in the URL fragment (#k=…), which the browser never sends to any
+  // server — so the relay (e.g. a Cloudflare tunnel that terminates TLS) never sees it. From it
+  // we derive per-connection AES-GCM keys and encrypt every frame, exactly mirroring the host's
+  // SessionCrypto.kt. Requires a secure context (https / localhost) for crypto.subtle; a
+  // plain-LAN http link (no #k, no subtle) stays on the legacy plaintext path unchanged.
+  var hashParams = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+  var secretB64 = hashParams.get("k");
+  var canE2E = !!(secretB64 && window.isSecureContext && window.crypto && crypto.subtle);
+  // Secure context + crypto, but the link lost its #k → a truncated link. A current host always
+  // mints #k for https, so this isn't an old-host case (the host serves this very script). Refuse
+  // rather than silently downgrade to plaintext over the relay.
+  var e2eMissing = !secretB64 && window.isSecureContext && !!(window.crypto && crypto.subtle);
+  var enc = new TextEncoder(), dec = new TextDecoder();
+  var crypState = { ready: false, kc2s: null, ks2c: null }; // AES-GCM CryptoKeys, post-handshake
+  var saltC = null, secretBytes = null;
+  var sendChain = Promise.resolve(), recvChain = Promise.resolve(); // ORDERING queues (see sendMsg/onmessage)
+  function b64urlToBytes(s) {
+    s = String(s).replace(/-/g, "+").replace(/_/g, "/");
+    while (s.length % 4) s += "=";
+    var bin = atob(s), b = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
+    return b;
+  }
+  function bytesToB64url(b) {
+    var s = "";
+    for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  function randBytes(n) { var b = new Uint8Array(n); crypto.getRandomValues(b); return b; }
+  function concatBytes(a, b) { var c = new Uint8Array(a.length + b.length); c.set(a, 0); c.set(b, a.length); return c; }
+  function hkdf256(baseKey, salt, infoStr) {
+    return crypto.subtle.deriveBits(
+      { name: "HKDF", hash: "SHA-256", salt: salt, info: enc.encode(infoStr) }, baseKey, 256);
+  }
+  // Derive {kc2s, ks2c, confirm} from secret + both salts — same labels as the host.
+  function deriveSessionKeys(secret, sc, ss) {
+    var salt = concatBytes(sc, ss);
+    return crypto.subtle.importKey("raw", secret, "HKDF", false, ["deriveBits"]).then(function (base) {
+      return Promise.all([
+        hkdf256(base, salt, "bossterm-c2s-v1"),
+        hkdf256(base, salt, "bossterm-s2c-v1"),
+        hkdf256(base, salt, "bossterm-kc-v1"),
+      ]).then(function (r) {
+        return Promise.all([
+          crypto.subtle.importKey("raw", r[0], "AES-GCM", false, ["encrypt"]),
+          crypto.subtle.importKey("raw", r[1], "AES-GCM", false, ["decrypt"]),
+        ]).then(function (keys) {
+          return { kc2s: keys[0], ks2c: keys[1], confirmB64: bytesToB64url(new Uint8Array(r[2])) };
+        });
+      });
+    });
+  }
+  // Frame = nonce(12) || AES-256-GCM(ciphertext||tag), AAD = 1 direction byte (0x00 c2s, 0x01 s2c).
+  function encryptFrame(text) {
+    var iv = randBytes(12);
+    return crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: iv, additionalData: new Uint8Array([0x00]), tagLength: 128 },
+      crypState.kc2s, enc.encode(text)
+    ).then(function (ct) { return concatBytes(iv, new Uint8Array(ct)).buffer; });
+  }
+  function decryptFrame(buf) {
+    var u = new Uint8Array(buf), iv = u.subarray(0, 12), body = u.subarray(12);
+    return crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: iv, additionalData: new Uint8Array([0x01]), tagLength: 128 },
+      crypState.ks2c, body
+    ).then(function (pt) { return dec.decode(pt); });
+  }
+  // Show the verification code (first 8 hex of SHA-256 of the secret) so the user can compare
+  // it against the host's Share dialog — matching codes confirm the same untampered key.
+  function showE2EBadge() {
+    var el = document.getElementById("e2e");
+    if (!el || !secretBytes) return;
+    crypto.subtle.digest("SHA-256", secretBytes).then(function (h) {
+      var b = new Uint8Array(h), s = "";
+      for (var i = 0; i < 4; i++) s += ("0" + b[i].toString(16)).slice(-2);
+      el.textContent = "🔒 " + s;
+      el.style.display = "";
+    }).catch(function () {});
+  }
+  var cryptoFailed = false;
+  function onCryptoFailure() {
+    if (cryptoFailed) return;
+    cryptoFailed = true;
+    sessionEnded = true; // terminal — don't let "Disconnected" overwrite it
+    showOverlay("This link is missing its key",
+      "Re-copy the full share link from BossTerm — it must include the part after #.", false);
+    try { ws.close(); } catch (e) {}
+  }
+
   var statusEl = document.getElementById("status");
   var tabbarEl = document.getElementById("tabbar");
   var sidebarEl = document.getElementById("sidebar");
@@ -75,7 +165,18 @@
     if (tsaClearTimer) clearTimeout(tsaClearTimer);
     tsaClearTimer = setTimeout(function () { touchScrollActive = false; tsaClearTimer = null; }, 250);
   }
-  function sendMsg(o) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); }
+  // Send a client message. E2E: encrypt then send, through an ORDERED promise chain so two
+  // rapid keystrokes can't be reordered by async encrypt resolution. Plaintext: send directly.
+  function sendMsg(o) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (canE2E) {
+      sendChain = sendChain.then(function () { return encryptFrame(JSON.stringify(o)); })
+        .then(function (buf) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(buf); })
+        .catch(function () {});
+    } else {
+      ws.send(JSON.stringify(o));
+    }
+  }
 
   // ☰ toggles the left tab drawer (phone); tapping a tab closes it (see selectPane).
   menubtnEl.onclick = function () { sidebarEl.classList.toggle("open"); };
@@ -1386,14 +1487,46 @@
   // ---- websocket ----
   var wsProto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(wsProto + "://" + location.host + "/ws/" + encodeURIComponent(token));
+  if (canE2E) { ws.binaryType = "arraybuffer"; secretBytes = b64urlToBytes(secretB64); saltC = randBytes(16); }
+  var sentHello = false;
+  function sendHello() { sentHello = true; sendMsg({ t: "hello", name: deviceName(), clientId: clientId, key: loadKey() }); }
 
   ws.onopen = function () {
+    if (e2eMissing) { onCryptoFailure(); return; } // truncated link — don't downgrade to plaintext
     setStatus("live");
-    ws.send(JSON.stringify({ t: "hello", name: deviceName(), clientId: clientId, key: loadKey() }));
+    // E2E: open with a plaintext Kex (our salt); the Hello waits until keys are derived from
+    // the host's reply. Plaintext: send the Hello immediately, as before.
+    if (canE2E) ws.send(JSON.stringify({ t: "kex", v: 1, salt: bytesToB64url(saltC) }));
+    else sendHello();
   };
 
   ws.onmessage = function (ev) {
+    // E2E handshake: the host's reply is a plaintext Kex (a string frame). Derive keys, verify
+    // its confirmation tag (wrong/missing #k ⇒ fail loudly), then send the encrypted Hello.
+    if (canE2E && !crypState.ready) {
+      if (typeof ev.data !== "string") return;
+      var k; try { k = JSON.parse(ev.data); } catch (e) { return; }
+      if (k.salt == null) return;
+      deriveSessionKeys(secretBytes, saltC, b64urlToBytes(k.salt)).then(function (keys) {
+        if (!k.confirm || keys.confirmB64 !== k.confirm) { onCryptoFailure(); return; }
+        crypState.kc2s = keys.kc2s; crypState.ks2c = keys.ks2c; crypState.ready = true;
+        showE2EBadge();
+        if (!sentHello) sendHello();
+      }).catch(function () { onCryptoFailure(); });
+      return;
+    }
+    // E2E steady state: decrypt (ORDERED, so PaneOutput applies in order) then dispatch.
+    if (canE2E) {
+      recvChain = recvChain.then(function () { return decryptFrame(ev.data); })
+        .then(function (text) { var m; try { m = JSON.parse(text); } catch (e) { return; } dispatch(m); })
+        .catch(function () { onCryptoFailure(); });
+      return;
+    }
     var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    dispatch(m);
+  };
+
+  function dispatch(m) {
     switch (m.t) {
       case "pending":
         showOverlay("Waiting for host approval…",

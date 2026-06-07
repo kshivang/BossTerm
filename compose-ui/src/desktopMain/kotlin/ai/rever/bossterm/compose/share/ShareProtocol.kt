@@ -33,6 +33,14 @@ object ShareProtocol {
     fun encodeClient(msg: ClientMessage): String = json.encodeToString(ClientMessage.serializer(), msg)
     fun decodeServer(text: String): ServerMessage = json.decodeFromString(ServerMessage.serializer(), text)
 
+    // ---- E2E key-exchange handshake ([SessionCrypto]) ----
+    // The ONLY plaintext frames once a connection is encrypted: client sends its salt, host
+    // replies with its salt + a key-confirmation tag. After this both sides derive per-connection
+    // AES-GCM keys and every subsequent frame is an encrypted binary frame. Sent/parsed on its own
+    // (not a Server/ClientMessage — those become the encrypted payloads).
+    fun encodeKex(k: Kex): String = json.encodeToString(Kex.serializer(), k)
+    fun decodeKex(text: String): Kex? = runCatching { json.decodeFromString(Kex.serializer(), text) }.getOrNull()
+
     /**
      * SHA-256 hex of [s]. Used as [TabNode.origin]: identifies which share a mirror tab came
      * from without leaking the share token itself to viewers.
@@ -41,6 +49,19 @@ object ShareProtocol {
         java.security.MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
 }
+
+/**
+ * E2E key-exchange frame ([SessionCrypto]). [v] = protocol version; [salt] = this side's 16-byte
+ * HKDF salt (base64url); [confirm] = the host's key-confirmation tag (base64url), null on the
+ * client's opening frame. Plaintext — it carries no secret (salts are public; the key lives only
+ * in the link fragment).
+ */
+@Serializable
+data class Kex(
+    val v: Int = 1,
+    val salt: String,
+    val confirm: String? = null,
+)
 
 /** Host → viewer messages. */
 @Serializable

@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.remote
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlin.test.assertFailsWith
 
 /**
@@ -54,5 +55,22 @@ class RemoteLinkParsingTest {
     @Test
     fun `toWsUrl rejects a hostless link instead of producing wss to null`() {
         assertFailsWith<IllegalArgumentException> { conn().toWsUrl("file:///foo?t=tok") }
+    }
+
+    @Test
+    fun `secretOf extracts the e2e key from the fragment`() {
+        val secret = ai.rever.bossterm.compose.share.SessionCrypto.newSessionSecret()
+        val k = ai.rever.bossterm.compose.share.SessionCrypto.encodeSecretB64Url(secret)
+        val c = conn()
+        assertTrue(secret.contentEquals(c.secretOf("https://h/?t=tok#k=$k")))        // sole fragment param
+        assertTrue(secret.contentEquals(c.secretOf("https://h/?t=tok#x=1&k=$k")))    // mixed with others
+    }
+
+    @Test
+    fun `secretOf is null when the fragment is absent or has no k`() {
+        val c = conn()
+        assertNull(c.secretOf("https://h/?t=tok"))      // no fragment (plaintext / LAN link)
+        assertNull(c.secretOf("https://h/?t=tok#x=1"))   // fragment without k=
+        assertNull(c.secretOf("https://h/?t=tok#k="))    // blank key
     }
 }

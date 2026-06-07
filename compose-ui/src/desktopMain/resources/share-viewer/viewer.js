@@ -148,6 +148,10 @@
   // x, so we can't get native horizontal scroll from it — instead we expose the full
   // width by sizing the pane to content and letting #stage scroll both axes. Vertical
   // scrollback stays inside xterm; pinch-zoom works on top. Splits keep the fill layout.)
+  // Phone = the same breakpoint as the drawer/splits-as-tabs defaults (≤700px).
+  function isPhone() {
+    return !!(window.matchMedia && window.matchMedia("(max-width: 700px)").matches);
+  }
   function relayoutSinglePane() {
     if (!layout) return;
     var tab = null, i;
@@ -157,12 +161,20 @@
     if (!pid) return;
     var p = panes[pid]; if (!p) return;
     requestAnimationFrame(function () {
+      // Phone: the pane is bounded to the stage box (renderStage) so xterm's own viewport
+      // is THE vertical scroller — never re-grow it to the grid's natural width here.
+      if (isPhone()) { p.host.style.width = "100%"; return; }
       var sc = p.host.querySelector(".xterm-screen");
       if (sc) { var w = Math.ceil(sc.getBoundingClientRect().width); if (w > 0) p.host.style.width = w + "px"; }
     });
   }
-  window.addEventListener("resize", relayoutSinglePane);
-  window.addEventListener("orientationchange", relayoutSinglePane);
+  function onViewportChange() {
+    relayoutSinglePane();
+    autoFitPending = true;
+    maybeAutoFit();
+  }
+  window.addEventListener("resize", onViewportChange);
+  window.addEventListener("orientationchange", onViewportChange);
 
   // ---- zoom (viewer-local font size) ----
   var viewerFont = 0; // 0 = use the host/theme size
@@ -186,9 +198,56 @@
     var avail = stageEl.clientWidth - 2, w = screen.getBoundingClientRect().width;
     if (avail > 0 && w > 0) applyFont(curFont() * (avail / w));
   }
-  document.getElementById("zoomin").onclick = function () { applyFont(curFont() + 1); };
-  document.getElementById("zoomout").onclick = function () { applyFont(curFont() - 1); };
-  document.getElementById("zoomfit").onclick = fitWidth;
+  // Fit the active pane's font so the whole GRID (cols AND rows) fits the stage box —
+  // the phone default: nothing overflows, so a vertical swipe scrolls SCROLLBACK.
+  function fitScreen() {
+    var tab = activeTabNode(); if (!tab) return;
+    var pid = displayedSinglePaneId(tab); if (!pid) return;
+    var p = panes[pid]; if (!p) return;
+    var screen = p.host.querySelector(".xterm-screen"); if (!screen) return;
+    var r = screen.getBoundingClientRect();
+    var availW = stageEl.clientWidth - 2, availH = stageEl.clientHeight - 2;
+    if (!(r.width > 0) || !(r.height > 0) || availW <= 0 || availH <= 0) return;
+    applyFont(curFont() * Math.min(availW / r.width, availH / r.height));
+  }
+  // Phones default to fit-screen; the user's explicit choice persists (like splits-as-tabs).
+  var fitMode = (function () {
+    var saved = null;
+    try { saved = localStorage.getItem("bossterm-fit-mode"); } catch (e) {}
+    if (saved === "screen" || saved === "off") return saved;
+    return isPhone() ? "screen" : "off";
+  })();
+  var zoomfitBtn = document.getElementById("zoomfit");
+  function refreshFitBtn() {
+    var on = isPhone() && fitMode === "screen";
+    zoomfitBtn.style.background = on ? "#4a90e2" : "";
+    zoomfitBtn.style.color = on ? "#fff" : "";
+    zoomfitBtn.style.borderColor = on ? "#4a90e2" : "";
+  }
+  function setFitMode(m) {
+    fitMode = m;
+    try { localStorage.setItem("bossterm-fit-mode", m); } catch (e) {}
+    refreshFitBtn();
+  }
+  // Re-fit once per fresh-geometry event (layout / snapshot / host resize / rotation) —
+  // never on plain output, and never against a manual zoom (zoom +/- flips fitMode off).
+  var autoFitPending = false;
+  var fithostPulsed = false; // one-time "Fit host" highlight when control lands on a phone
+  function maybeAutoFit() {
+    if (fitMode !== "screen" || !autoFitPending) return;
+    autoFitPending = false;
+    requestAnimationFrame(fitScreen);
+  }
+  document.getElementById("zoomin").onclick = function () { setFitMode("off"); applyFont(curFont() + 1); };
+  document.getElementById("zoomout").onclick = function () { setFitMode("off"); applyFont(curFont() - 1); };
+  zoomfitBtn.onclick = function () {
+    if (isPhone()) {
+      // Toggle fit-screen: on = fit now (and track geometry changes); off = host font size.
+      if (fitMode === "screen") { setFitMode("off"); viewerFont = 0; applyFont(curFont()); }
+      else { setFitMode("screen"); fitScreen(); }
+    } else fitWidth();
+  };
+  refreshFitBtn();
 
   // ---- "splits as tabs" (viewer-local) ----
   // Render only the selected pane of a split tab, full-screen — switch panes via the
@@ -199,7 +258,7 @@
     try { saved = localStorage.getItem("bossterm-splits-as-tabs"); } catch (e) {}
     if (saved === "1") return true;
     if (saved === "0") return false;
-    return !!(window.matchMedia && window.matchMedia("(max-width: 700px)").matches);
+    return isPhone();
   })();
   var splitTabsBtn = document.getElementById("splittabs");
   function refreshSplitTabsBtn() {
@@ -1105,12 +1164,23 @@
     }
     var root = buildNode(tree);
     if (tree.t === "pane") {
-      // single pane → natural width, scrollable in #stage (don't stretch/clip)
-      root.style.flex = "0 0 auto";
-      root.style.height = "100%";
-      root.style.overflow = "visible";
       var sp = panes[tree.paneId];
-      if (sp) { sp.host.style.overflow = "visible"; sp.host.style.height = "100%"; }
+      if (isPhone()) {
+        // Phone: bound the pane to the stage box — xterm's own viewport becomes THE
+        // vertical scroller (native touch scrollback) instead of #stage panning the
+        // whole container. Fit-screen (the phone default) keeps the grid inside it.
+        root.style.flex = "1 1 0";
+        root.style.width = "100%";
+        root.style.height = "100%";
+        root.style.overflow = "hidden";
+        if (sp) { sp.host.style.overflow = "hidden"; sp.host.style.width = "100%"; sp.host.style.height = "100%"; }
+      } else {
+        // Desktop: single pane → natural width, scrollable in #stage (don't stretch/clip)
+        root.style.flex = "0 0 auto";
+        root.style.height = "100%";
+        root.style.overflow = "visible";
+        if (sp) { sp.host.style.overflow = "visible"; sp.host.style.height = "100%"; }
+      }
     } else {
       root.style.flex = "1 1 0"; // splits fill the stage
     }
@@ -1137,6 +1207,8 @@
     // Mid divider-drag, the host echoes ratio changes back as layouts — don't rebuild the
     // stage (it would destroy the divider under the pointer); onUp re-renders to settle.
     if (!splitDragging) renderStage();
+    autoFitPending = true;
+    maybeAutoFit();
   }
 
   function collectPaneIds(node, out) {
@@ -1180,11 +1252,17 @@
         if (m.data) p.term.write(m.data);
         relayoutSinglePane();
         updateDims();
+        autoFitPending = true;
+        maybeAutoFit();
         break;
       }
       case "paneOutput": if (m.data) getPane(m.paneId).term.write(m.data); break;
       case "paneResize":
-        if (m.cols && m.rows) { getPane(m.paneId).term.resize(m.cols, m.rows); relayoutSinglePane(); updateDims(); }
+        if (m.cols && m.rows) {
+          getPane(m.paneId).term.resize(m.cols, m.rows); relayoutSinglePane(); updateDims();
+          autoFitPending = true;
+          maybeAutoFit();
+        }
         break;
       case "presence":
         presenceEl.textContent = m.viewers === 1 ? "1 viewer" : m.viewers + " viewers"; break;
@@ -1192,6 +1270,13 @@
         controlGranted = !!m.granted;
         viewOnlyEl.style.display = controlGranted ? "none" : "";
         fithostEl.style.display = controlGranted ? "" : "none"; // resizing the host needs control
+        // Phone + control: briefly highlight "Fit host" — resizing the host grid to the
+        // phone is the best scrolling experience. Discoverable, never auto-fired.
+        if (controlGranted && isPhone() && !fithostPulsed) {
+          fithostPulsed = true;
+          fithostEl.style.boxShadow = "0 0 0 2px #4a90e2";
+          setTimeout(function () { fithostEl.style.boxShadow = ""; }, 4000);
+        }
         // Second hop of a chained upstream request (view-only → control → relay upstream).
         if (controlGranted && pendingUpstreamControlTab) {
           sendMsg({ t: "requestControl", tabId: pendingUpstreamControlTab });

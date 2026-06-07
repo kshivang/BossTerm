@@ -172,6 +172,7 @@
     relayoutSinglePane();
     autoFitPending = true;
     maybeAutoFit();
+    scheduleScrollDot();
   }
   window.addEventListener("resize", onViewportChange);
   window.addEventListener("orientationchange", onViewportChange);
@@ -592,6 +593,7 @@
     }
     if (viewerFont) { try { term.options.fontSize = viewerFont; } catch (e) {} }
     term.onData(function (data) { sendInput(paneId, data); });
+    term.onScroll(function () { scheduleScrollDot(); });
     attachTouchScroll(host, term);
     p = { term: term, host: host };
     panes[paneId] = p;
@@ -617,13 +619,14 @@
       var lines = (acc < 0 ? Math.ceil : Math.floor)(acc / rowPx());
       if (lines !== 0) { acc -= lines * rowPx(); try { term.scrollLines(lines); } catch (e) {} }
     }
+    // Capture phase: see the touches even if something inside xterm stops propagation.
     host.addEventListener("touchstart", function (e) {
       if (!isPhone() || e.touches.length !== 1) { axis = "skip"; return; }
       stopMomentum();
       axis = null; acc = 0; vel = 0;
       startX = e.touches[0].clientX; startY = lastY = e.touches[0].clientY;
       lastT = e.timeStamp;
-    }, { passive: true });
+    }, { passive: true, capture: true });
     host.addEventListener("touchmove", function (e) {
       if (axis === "skip" || e.touches.length !== 1) return;
       var x = e.touches[0].clientX, y = e.touches[0].clientY;
@@ -634,13 +637,13 @@
         if (axis === "y") lastY = y;
       }
       if (axis !== "y") return;
-      e.preventDefault();                       // we own the vertical gesture
+      if (e.cancelable) e.preventDefault();     // we own the vertical gesture
       var dy = lastY - y;                       // finger up = scroll toward bottom
       var dt = Math.max(1, e.timeStamp - lastT);
       vel = 0.8 * vel + 0.2 * (dy / dt);        // smoothed px/ms for the flick
       lastY = y; lastT = e.timeStamp;
       scrollByPx(dy);
-    }, { passive: false });
+    }, { passive: false, capture: true });
     host.addEventListener("touchend", function (e) {
       if (axis !== "y") { axis = null; return; }
       axis = null;
@@ -654,9 +657,65 @@
         momentum = Math.abs(v) >= 0.03 ? requestAnimationFrame(step) : null;
       }
       momentum = requestAnimationFrame(step);
-    }, { passive: true });
-    host.addEventListener("touchcancel", function () { axis = null; vel = 0; }, { passive: true });
+    }, { passive: true, capture: true });
+    host.addEventListener("touchcancel", function () { axis = null; vel = 0; }, { passive: true, capture: true });
   }
+
+  // ---- thumb scroll handle (phones) ----
+  // A pointer-captured drag pill on the right edge — guaranteed touch scrolling even on
+  // browsers where the terminal swallows swipe gestures (same mechanism as the split
+  // dividers, which work everywhere). Maps drag position → scrollback position.
+  var scrollDotEl = document.getElementById("scrolldot");
+  var scrollDotRaf = 0;
+  function displayedPane() {
+    var tab = activeTabNode(); if (!tab) return null;
+    var pid = displayedSinglePaneId(tab); if (!pid) return null;
+    return panes[pid] || null;
+  }
+  function updateScrollDot() {
+    scrollDotRaf = 0;
+    if (!isPhone()) { scrollDotEl.style.display = "none"; return; }
+    var p = displayedPane();
+    var b = p && p.term.buffer && p.term.buffer.active;
+    // Nothing to scroll (no history yet, or an alt-screen app owns the screen) → hide.
+    if (!b || b.type === "alternate" || b.baseY <= 0) { scrollDotEl.style.display = "none"; return; }
+    var r = stageEl.getBoundingClientRect();
+    var h = scrollDotEl.offsetHeight || 56;
+    var track = r.height - h - 8;
+    if (track <= 0) { scrollDotEl.style.display = "none"; return; }
+    var ratio = Math.max(0, Math.min(1, b.viewportY / b.baseY));
+    scrollDotEl.style.display = "block";
+    scrollDotEl.style.top = (r.top + 4 + ratio * track) + "px";
+  }
+  function scheduleScrollDot() {
+    if (!scrollDotRaf) scrollDotRaf = requestAnimationFrame(updateScrollDot);
+  }
+  (function () {
+    var dragging = false;
+    scrollDotEl.addEventListener("pointerdown", function (e) {
+      if (!displayedPane()) return;
+      dragging = true;
+      scrollDotEl.classList.add("drag");
+      try { scrollDotEl.setPointerCapture(e.pointerId); } catch (err) {}
+      e.preventDefault();
+    });
+    scrollDotEl.addEventListener("pointermove", function (e) {
+      if (!dragging) return;
+      var p = displayedPane();
+      var b = p && p.term.buffer && p.term.buffer.active;
+      if (!b || b.baseY <= 0) return;
+      var r = stageEl.getBoundingClientRect();
+      var h = scrollDotEl.offsetHeight || 56;
+      var track = r.height - h - 8;
+      if (track <= 0) return;
+      var ratio = Math.max(0, Math.min(1, (e.clientY - r.top - 4 - h / 2) / track));
+      try { p.term.scrollToLine(Math.round(ratio * b.baseY)); } catch (err) {}
+      scheduleScrollDot();
+    });
+    function endDrag() { dragging = false; scrollDotEl.classList.remove("drag"); }
+    scrollDotEl.addEventListener("pointerup", endDrag);
+    scrollDotEl.addEventListener("pointercancel", endDrag);
+  })();
 
   function applyThemeToOpts(opts) {
     var a = theme.ansi || [];
@@ -1248,6 +1307,7 @@
     stageEl.appendChild(root);
     relayoutSinglePane(); // size a single pane to its natural width for horizontal scroll
     updateDims();
+    scheduleScrollDot();
   }
 
   function onLayout(m) {
@@ -1317,7 +1377,9 @@
         maybeAutoFit();
         break;
       }
-      case "paneOutput": if (m.data) getPane(m.paneId).term.write(m.data); break;
+      case "paneOutput":
+        if (m.data) { getPane(m.paneId).term.write(m.data); scheduleScrollDot(); }
+        break;
       case "paneResize":
         if (m.cols && m.rows) {
           getPane(m.paneId).term.resize(m.cols, m.rows); relayoutSinglePane(); updateDims();

@@ -112,6 +112,13 @@
        the page (the phone "whole container scrolls" jank). Desktop-safe: only affects
        scroll chaining at the extremes. */
     .xterm .xterm-viewport { overscroll-behavior: contain; }
+    /* Thumb scroll handle (phones): a translucent pill hugging the right edge of the
+       stage — drag it to move through the scrollback. Pointer-captured, so it works on
+       any touch browser regardless of how the terminal swallows touch gestures. */
+    #scrolldot { display: none; position: fixed; right: 4px; width: 18px; height: 56px; z-index: 15;
+                 border-radius: 9px; background: rgba(170,170,170,0.30);
+                 border: 1px solid rgba(255,255,255,0.25); touch-action: none; }
+    #scrolldot.drag { background: rgba(74,144,226,0.55); border-color: #4a90e2; }
     /* right-click / long-press context menu */
     #ctxmenu { position: fixed; z-index: 40; display: none; min-width: 168px; background: #2b2b2b;
                border: 1px solid #505050; border-radius: 6px; padding: 4px; box-shadow: 0 6px 18px rgba(0,0,0,0.55); }
@@ -177,6 +184,7 @@
     <div id="sidebar"></div>
     <div id="stage"></div>
   </div>
+  <div id="scrolldot"></div>
   <div id="viewpill"></div>
   <div id="keybar"></div>
   <div id="ctxmenu"></div>

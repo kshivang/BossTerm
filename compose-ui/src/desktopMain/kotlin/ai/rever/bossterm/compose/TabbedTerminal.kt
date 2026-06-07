@@ -54,6 +54,7 @@ import ai.rever.bossterm.compose.vcs.GitUtils
 import ai.rever.bossterm.compose.vcs.VersionControlMenuProvider
 import ai.rever.bossterm.compose.shell.ShellCustomizationMenuProvider
 import ai.rever.bossterm.compose.menu.MenuActions
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.util.loadTerminalFont
@@ -836,27 +837,44 @@ fun TabbedTerminal(
             ai.rever.bossterm.compose.tabs.TerminalTab,
             ai.rever.bossterm.compose.tabs.TerminalTab>?>(null)
     }
-    val remoteFitPromptShown = remember { mutableSetOf<String>() }
-    // First view of a remote mirror tab whose host grid doesn't render 1:1 in this window →
-    // offer (once per session) to fit OUR window to the host, or — with control — the host
-    // to us. Mirrors the web viewer's "fit host to this phone?" offer.
-    LaunchedEffect(tabController.activeTabId) {
-        val active = tabController.activeTab ?: return@LaunchedEffect
-        val session = state?.remoteSessions?.sessionForTab(active) ?: return@LaunchedEffect
-        if (session.link in remoteFitPromptShown) return@LaunchedEffect
-        // Let the pane render once so remoteFitCols/Rows (what fits OUR canvas) are recorded.
-        kotlinx.coroutines.delay(700)
-        if (tabController.activeTab !== active) return@LaunchedEffect
-        val pane = splitStates[active.id]?.getFocusedSession() as? ai.rever.bossterm.compose.tabs.TerminalTab
-            ?: return@LaunchedEffect
-        val grid = pane.display.termSize.value
-        val fitC = pane.remoteFitCols
-        val fitR = pane.remoteFitRows
-        if (fitC < 2 || fitR < 2 || grid.columns < 2 || grid.rows < 2) return@LaunchedEffect
-        // Roughly 1:1 already → nothing to offer.
-        if (kotlin.math.abs(grid.columns - fitC) <= 2 && kotlin.math.abs(grid.rows - fitR) <= 2) return@LaunchedEffect
-        remoteFitPromptShown += session.link
-        remoteFitPrompt = Triple(session, active, pane)
+    // session.link → "cols×rows" the dialog was last offered for. Re-offering only when the
+    // HOST's grid changes to a NEW mismatching size means a dismissal isn't nagged again,
+    // but a host-side window resize re-raises the question.
+    val remoteFitPromptShown = remember { mutableMapOf<String, String>() }
+    // Viewing a remote mirror whose host grid doesn't render 1:1 in this window — on first
+    // view AND whenever the host's grid changes — offer to fit OUR window to the host, or
+    // (control) the host to us. Mirrors the web viewer's "fit host to this phone?" offer.
+    LaunchedEffect(tabController) {
+        data class FitCheck(
+            val session: ai.rever.bossterm.compose.remote.RemoteSession,
+            val container: ai.rever.bossterm.compose.tabs.TerminalTab,
+            val pane: ai.rever.bossterm.compose.tabs.TerminalTab,
+            val cols: Int,
+            val rows: Int,
+        )
+        snapshotFlow {
+            val active = tabController.activeTab ?: return@snapshotFlow null
+            val session = state?.remoteSessions?.sessionForTab(active) ?: return@snapshotFlow null
+            val pane = splitStates[active.id]?.getFocusedSession() as? ai.rever.bossterm.compose.tabs.TerminalTab
+                ?: return@snapshotFlow null
+            val grid = pane.display.termSize.value
+            FitCheck(session, active, pane, grid.columns, grid.rows)
+        }.collectLatest { check ->
+            check ?: return@collectLatest
+            // Debounce: a host window drag streams sizes — wait for it to settle, and let
+            // the local canvas measure once (remoteFitCols/Rows) on a fresh tab.
+            kotlinx.coroutines.delay(800)
+            val fitC = check.pane.remoteFitCols
+            val fitR = check.pane.remoteFitRows
+            if (fitC < 2 || fitR < 2 || check.cols < 2 || check.rows < 2) return@collectLatest
+            // Roughly 1:1 already → nothing to offer.
+            if (kotlin.math.abs(check.cols - fitC) <= 2 && kotlin.math.abs(check.rows - fitR) <= 2) return@collectLatest
+            val key = "${check.cols}x${check.rows}"
+            if (remoteFitPromptShown[check.session.link] == key) return@collectLatest // already offered for this grid
+            if (remoteFitPrompt != null) return@collectLatest // a prompt is already up
+            remoteFitPromptShown[check.session.link] = key
+            remoteFitPrompt = Triple(check.session, check.container, check.pane)
+        }
     }
     // Bumped every time the share window is opened/reopened; ShareWindow brings its OS
     // window to the front when this changes, so clicking the share button while a share

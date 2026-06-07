@@ -592,9 +592,70 @@
     }
     if (viewerFont) { try { term.options.fontSize = viewerFont; } catch (e) {} }
     term.onData(function (data) { sendInput(paneId, data); });
+    attachTouchScroll(host, term);
     p = { term: term, host: host };
     panes[paneId] = p;
     return p;
+  }
+
+  // ---- touch scrollback (phones) ----
+  // xterm only scrolls its buffer from WHEEL events — its scrollable .xterm-viewport sits
+  // UNDER the screen/canvas, so a finger never reaches a scrollable element and Safari
+  // pans the page instead. Own the gesture: a vertical swipe drags the scrollback via
+  // term.scrollLines() (with flick momentum); horizontal swipes are left to native pan
+  // (wide grids when zoomed past fit). Desktop is untouched.
+  function attachTouchScroll(host, term) {
+    var startX = 0, startY = 0, lastY = 0, lastT = 0, axis = null, acc = 0, vel = 0, momentum = null;
+    function rowPx() {
+      var sc = host.querySelector(".xterm-screen");
+      var h = sc ? sc.getBoundingClientRect().height : 0;
+      return (h > 0 && term.rows > 0) ? (h / term.rows) : 16;
+    }
+    function stopMomentum() { if (momentum) { cancelAnimationFrame(momentum); momentum = null; } }
+    function scrollByPx(px) {
+      acc += px;
+      var lines = (acc < 0 ? Math.ceil : Math.floor)(acc / rowPx());
+      if (lines !== 0) { acc -= lines * rowPx(); try { term.scrollLines(lines); } catch (e) {} }
+    }
+    host.addEventListener("touchstart", function (e) {
+      if (!isPhone() || e.touches.length !== 1) { axis = "skip"; return; }
+      stopMomentum();
+      axis = null; acc = 0; vel = 0;
+      startX = e.touches[0].clientX; startY = lastY = e.touches[0].clientY;
+      lastT = e.timeStamp;
+    }, { passive: true });
+    host.addEventListener("touchmove", function (e) {
+      if (axis === "skip" || e.touches.length !== 1) return;
+      var x = e.touches[0].clientX, y = e.touches[0].clientY;
+      if (axis === null) {
+        var ax = Math.abs(x - startX), ay = Math.abs(y - startY);
+        if (ax < 6 && ay < 6) return;          // not decided yet
+        axis = ay >= ax ? "y" : "skip";        // horizontal → native pan
+        if (axis === "y") lastY = y;
+      }
+      if (axis !== "y") return;
+      e.preventDefault();                       // we own the vertical gesture
+      var dy = lastY - y;                       // finger up = scroll toward bottom
+      var dt = Math.max(1, e.timeStamp - lastT);
+      vel = 0.8 * vel + 0.2 * (dy / dt);        // smoothed px/ms for the flick
+      lastY = y; lastT = e.timeStamp;
+      scrollByPx(dy);
+    }, { passive: false });
+    host.addEventListener("touchend", function (e) {
+      if (axis !== "y") { axis = null; return; }
+      axis = null;
+      var v = vel; vel = 0;
+      if (Math.abs(v) < 0.25) return;           // no flick — just a drag
+      var prev = e.timeStamp || performance.now();
+      function step(now) {
+        var dt = Math.min(48, now - prev); prev = now;
+        scrollByPx(v * dt);
+        v *= Math.pow(0.95, dt / 16);           // frame-rate-independent decay
+        momentum = Math.abs(v) >= 0.03 ? requestAnimationFrame(step) : null;
+      }
+      momentum = requestAnimationFrame(step);
+    }, { passive: true });
+    host.addEventListener("touchcancel", function () { axis = null; vel = 0; }, { passive: true });
   }
 
   function applyThemeToOpts(opts) {

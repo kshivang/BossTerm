@@ -92,6 +92,14 @@
       el.style.display = "";
     }).catch(function () {});
   }
+  // Length-checked constant-time string compare for the key-confirmation tag (matches the
+  // host's MessageDigest.isEqual). No network oracle exists here, but it costs nothing.
+  function constantTimeEq(a, b) {
+    if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+    var diff = 0;
+    for (var i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    return diff === 0;
+  }
   var cryptoFailed = false;
   function onCryptoFailure() {
     if (cryptoFailed) return;
@@ -172,7 +180,7 @@
     if (canE2E) {
       sendChain = sendChain.then(function () { return encryptFrame(JSON.stringify(o)); })
         .then(function (buf) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(buf); })
-        .catch(function () {});
+        .catch(function () { onCryptoFailure(); }); // never silently drop a keystroke
     } else {
       ws.send(JSON.stringify(o));
     }
@@ -1507,8 +1515,14 @@
       if (typeof ev.data !== "string") return;
       var k; try { k = JSON.parse(ev.data); } catch (e) { return; }
       if (k.salt == null) return;
+      if (k.v && k.v !== 1) { // a newer host we can't speak to
+        sessionEnded = true;
+        showOverlay("Update BossTerm", "This session uses a newer encryption version than this viewer.", false);
+        try { ws.close(); } catch (e) {}
+        return;
+      }
       deriveSessionKeys(secretBytes, saltC, b64urlToBytes(k.salt)).then(function (keys) {
-        if (!k.confirm || keys.confirmB64 !== k.confirm) { onCryptoFailure(); return; }
+        if (!constantTimeEq(keys.confirmB64, k.confirm)) { onCryptoFailure(); return; }
         crypState.kc2s = keys.kc2s; crypState.ks2c = keys.ks2c; crypState.ready = true;
         showE2EBadge();
         if (!sentHello) sendHello();
@@ -1519,6 +1533,8 @@
     if (canE2E) {
       recvChain = recvChain.then(function () { return decryptFrame(ev.data); })
         .then(function (text) { var m; try { m = JSON.parse(text); } catch (e) { return; } dispatch(m); })
+        // A decrypt failure ends the session (onCryptoFailure closes the socket, so no further
+        // frames arrive); don't rethrow — that would leave a dangling unhandled rejection.
         .catch(function () { onCryptoFailure(); });
       return;
     }

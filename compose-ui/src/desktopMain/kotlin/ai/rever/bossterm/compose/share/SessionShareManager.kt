@@ -703,6 +703,7 @@ object SessionShareManager {
         var clientCipher: SessionCrypto.FrameCipher? = null
         val hello: ClientMessage.Hello?
         if (kex != null) {
+            if (kex.v != 1) { ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Unsupported encryption version")); return }
             val saltC = runCatching { SessionCrypto.decodeSecretB64Url(kex.salt) }.getOrNull()
             if (saltC == null) { ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Bad handshake")); return }
             val saltS = SessionCrypto.randomSalt()
@@ -711,14 +712,18 @@ object SessionShareManager {
             clientCipher = SessionCrypto.FrameCipher(keys.kC2s, SessionCrypto.DIR_C2S)
             ws.send(Frame.Text(ShareProtocol.encodeKex(
                 Kex(v = 1, salt = SessionCrypto.encodeSecretB64Url(saltS), confirm = keys.confirmB64))))
-            // The next frame is the encrypted Hello; a decrypt failure ⇒ wrong/missing key.
+            // The next frame is the encrypted Hello. Distinguish the failure modes so the close
+            // reason is honest: a drop/late frame is a timeout, not a wrong key.
             val helloFrame = withTimeoutOrNull(10_000L) { runCatching { ws.incoming.receive() }.getOrNull() }
-            val helloText = (helloFrame as? Frame.Binary)?.let {
-                runCatching { clientCipher.decrypt(it.data) }.getOrNull()
+            if (helloFrame == null) {
+                ws.close(CloseReason(CloseReason.Codes.GOING_AWAY, "Handshake timeout")); return
             }
+            if (helloFrame !is Frame.Binary) {
+                ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Expected an encrypted handshake")); return
+            }
+            val helloText = runCatching { clientCipher.decrypt(helloFrame.data) }.getOrNull()
             if (helloText == null) {
-                ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Wrong or missing encryption key"))
-                return
+                ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Wrong or missing encryption key")); return
             }
             hello = runCatching { ShareProtocol.decodeClient(helloText) }.getOrNull() as? ClientMessage.Hello
         } else {

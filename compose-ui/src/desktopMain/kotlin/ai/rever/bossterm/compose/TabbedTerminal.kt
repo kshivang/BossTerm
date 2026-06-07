@@ -1954,23 +1954,28 @@ fun TabbedTerminal(
     }
 
     // First-view size reconcile for a remote mirror (set by the activeTabId effect above).
-    remoteFitPrompt?.let { (session, container, pane) ->
+    // The actions re-resolve the focused pane + its measurements AT CLICK TIME — exactly
+    // what the right-click menu items do — rather than using the values captured when the
+    // prompt was scheduled (the canvas may still have been settling then).
+    remoteFitPrompt?.let { (session, container, _) ->
         ai.rever.bossterm.compose.remote.RemoteFitPrompt(
             hostName = session.customName.value ?: session.hostName.value
                 ?: runCatching { java.net.URI(session.link).host }.getOrNull() ?: "the host",
             onFitMyWindow = {
-                fitClientWindowToHost(pane)
                 remoteFitPrompt = null
+                (splitStates[container.id]?.getFocusedSession() as? ai.rever.bossterm.compose.tabs.TerminalTab)
+                    ?.let { fitClientWindowToHost(it) }
             },
             onFitHost = {
+                remoteFitPrompt = null
                 if (session.canControlState.value) {
-                    if (pane.remoteFitCols >= 2 && pane.remoteFitRows >= 2)
-                        session.resizeHost(container.id, pane.remoteFitCols, pane.remoteFitRows)
+                    val p = splitStates[container.id]?.getFocusedSession() as? ai.rever.bossterm.compose.tabs.TerminalTab
+                    if (p != null && p.remoteFitCols >= 2 && p.remoteFitRows >= 2)
+                        session.resizeHost(container.id, p.remoteFitCols, p.remoteFitRows)
                 } else {
                     // View-only: resizing the host needs control — confirm + request it.
                     requestControlPrompt = { session.requestControl() }
                 }
-                remoteFitPrompt = null
             },
             onDismiss = { remoteFitPrompt = null },
         )

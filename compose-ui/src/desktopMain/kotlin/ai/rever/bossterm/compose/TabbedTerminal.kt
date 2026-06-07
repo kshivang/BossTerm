@@ -1413,8 +1413,9 @@ fun TabbedTerminal(
                 val hostCols = grid.columns; val hostRows = grid.rows
                 val curCols = focused.remoteFitCols; val curRows = focused.remoteFitRows
                 if (hostCols < 2 || hostRows < 2 || curCols < 2 || curRows < 2) return
-                val win = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }?.awtWindow
-                    ?: WindowManager.windows.firstOrNull { it.awtWindow != null }?.awtWindow ?: return
+                val tw = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }
+                    ?: WindowManager.windows.firstOrNull { it.awtWindow != null } ?: return
+                val win = tw.awtWindow ?: return
                 javax.swing.SwingUtilities.invokeLater {
                     runCatching {
                         val gc = win.graphicsConfiguration
@@ -1428,22 +1429,9 @@ fun TabbedTerminal(
                             newW = newW.coerceIn(480, maxW); newH = newH.coerceIn(320, maxH)
                         }
                         if (newW != win.width || newH != win.height) {
-                            win.setSize(newW, newH)
-                            win.validate()
-                            win.repaint()
-                            // Compose's Skia surface lags a programmatic resize by one event
-                            // (unpainted strip until the next real resize) — nudge 1px and
-                            // back a beat later so it re-measures at the final size.
-                            val nudge = javax.swing.Timer(100) {
-                                runCatching {
-                                    win.setSize(newW, newH + 1)
-                                    win.setSize(newW, newH)
-                                    win.validate()
-                                    win.repaint()
-                                }
-                            }
-                            nudge.isRepeats = false
-                            nudge.start()
+                            // Through Compose's WindowState when wired (frame + surface move
+                            // together — no unpainted strip), else setSize + heal nudge.
+                            ai.rever.bossterm.compose.share.MirrorShare.applyWindowSize(tw, win, newW, newH)
                         }
                     }
                 }

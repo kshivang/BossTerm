@@ -247,6 +247,9 @@ fun main() {
 
                         // Store AWT window reference for global hotkey toggle
                         window.awtWindow = awtWindow
+                        // And the Compose WindowState — programmatic resizes (viewer "Fit
+                        // host") go through it so the frame + Skia surface move together.
+                        window.composeWindowState = windowState
 
                         // Configure window transparency and blur (only for custom title bar mode)
                         if (!useNativeTitleBar) {
@@ -260,6 +263,7 @@ fun main() {
                         onDispose {
                             awtWindow.removeWindowFocusListener(focusListener)
                             window.awtWindow = null
+                            window.composeWindowState = null
                         }
                     }
 

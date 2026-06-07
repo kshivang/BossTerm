@@ -296,6 +296,9 @@ class MirrorShare(
         val ch = tab.terminal.cellHeightPx
         if (cw <= 0f || ch <= 0f) return
         val cur = tab.display.termSize.value
+        val tw = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }
+            ?: WindowManager.windows.firstOrNull { it.awtWindow != null }
+            ?: return
         // A BACKGROUND tab's grid only re-measures when it becomes visible (the canvas
         // auto-fit runs for the composed tab only) — resizing just the window would leave
         // the viewer on the old grid until the host user switches to that tab. Resize the
@@ -319,9 +322,7 @@ class MirrorShare(
                 coro.launch { runCatching { session.processHandle.value?.resize(cols, rows) } }
             }
         }
-        val win = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }?.awtWindow
-            ?: WindowManager.windows.firstOrNull { it.awtWindow != null }?.awtWindow
-            ?: return
+        val win = tw.awtWindow ?: return
         // AWT window size is in points; cell px is physical — divide by the display scale.
         javax.swing.SwingUtilities.invokeLater {
             runCatching {
@@ -339,26 +340,47 @@ class MirrorShare(
                     newH = newH.coerceIn(320, maxH)
                 }
                 if (newW != win.width || newH != win.height) {
+                    applyWindowSize(tw, win, newW, newH)
+                }
+            }
+        }
+    }
+
+    companion object {
+        /**
+         * Resize a window programmatically. PREFER the Compose [WindowState] — Compose then
+         * moves the AWT frame and its Skia surface together, so no unpainted strip can
+         * appear. Poking awtWindow.setSize directly lets the surface (sometimes) lag one
+         * resize event behind; for embedders without a wired state, fall back to setSize +
+         * a delayed 1px nudge that replays the heal a real resize provides.
+         */
+        internal fun applyWindowSize(
+            tw: ai.rever.bossterm.compose.window.TerminalWindow,
+            win: java.awt.Window,
+            newW: Int,
+            newH: Int,
+        ) {
+            val cs = tw.composeWindowState
+            if (cs != null) {
+                cs.size = androidx.compose.ui.unit.DpSize(
+                    androidx.compose.ui.unit.Dp(newW.toFloat()),
+                    androidx.compose.ui.unit.Dp(newH.toFloat()),
+                )
+                return
+            }
+            win.setSize(newW, newH)
+            win.validate()
+            win.repaint()
+            val nudge = javax.swing.Timer(100) {
+                runCatching {
+                    win.setSize(newW, newH + 1)
                     win.setSize(newW, newH)
                     win.validate()
                     win.repaint()
-                    // Compose's Skia surface lags a PROGRAMMATIC resize by one event,
-                    // leaving an unpainted strip below the content until the next real
-                    // resize (a manual drag heals it instantly). Replay that heal: nudge
-                    // the height 1px and back a beat later so the surface re-measures
-                    // at the final size.
-                    val nudge = javax.swing.Timer(100) {
-                        runCatching {
-                            win.setSize(newW, newH + 1)
-                            win.setSize(newW, newH)
-                            win.validate()
-                            win.repaint()
-                        }
-                    }
-                    nudge.isRepeats = false
-                    nudge.start()
                 }
             }
+            nudge.isRepeats = false
+            nudge.start()
         }
     }
 

@@ -729,10 +729,14 @@ object SessionShareManager {
         } else {
             // A plaintext first-frame: allowed on LAN/loopback (no relay), but refused on a
             // public tunnel/Funnel share — there it'd stream unencrypted through the relay, so an
-            // old/keyless client must update rather than silently downgrade.
+            // old/keyless client must update rather than silently downgrade. Send a plaintext
+            // Denied first (old clients render its reason; a bare WS close shows nothing), then close.
             if (requireE2E()) {
-                ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT,
-                    "This shared session is end-to-end encrypted — update BossTerm to connect."))
+                runCatching {
+                    ws.send(Frame.Text(ShareProtocol.encodeServer(ServerMessage.Denied(
+                        "This shared session is end-to-end encrypted. Update BossTerm to a version that supports it."))))
+                }
+                ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Encryption required"))
                 return
             }
             hello = (first as? Frame.Text)?.let {

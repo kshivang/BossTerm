@@ -201,8 +201,16 @@ class RemoteSession internal constructor(
      * Upstream-origin info for a host tab that itself mirrors ANOTHER session (the host's
      * remote): [key] groups tabs of the same upstream, [name] labels the subsection, and
      * [readOnly] means the host can't type into it either — so neither can we through it.
+     * [window] is the ORIGIN's window for this tab when the upstream shared all its windows
+     * (forwarded by the host) — sections the nested box per origin window.
      */
-    data class UpstreamOrigin(val key: String, val name: String?, val readOnly: Boolean, val offline: Boolean = false)
+    data class UpstreamOrigin(
+        val key: String,
+        val name: String?,
+        val readOnly: Boolean,
+        val offline: Boolean = false,
+        val window: HostWindow? = null,
+    )
 
     // localTabId (container) → upstream-origin info; bumping [upstreamRev] re-renders the bar
     // when only this map changed (e.g. the host's upstream control was granted mid-session).
@@ -212,6 +220,20 @@ class RemoteSession internal constructor(
 
     /** The upstream origin of [localTabId]'s host tab, or null if it's the host's own tab. */
     fun upstreamFor(localTabId: String): UpstreamOrigin? = upstreamByTab[localTabId]
+
+    /**
+     * The host window a tab belongs to, for a host sharing ALL its windows: [key] groups
+     * tabs of the same window ([TabNode.windowId][ai.rever.bossterm.compose.share.TabNode]),
+     * [name] labels the section ("Window 2"). Absent for single-window hosts.
+     */
+    data class HostWindow(val key: String, val name: String?)
+
+    // localTabId (container) → host-window identity; changes bump [upstreamRev] (the bar's
+    // metadata-revision tick). Concurrent for the same reason as [upstreamByTab].
+    private val windowByTab = java.util.concurrent.ConcurrentHashMap<String, HostWindow>()
+
+    /** The host window of [localTabId]'s tab, or null when the host didn't stamp one. */
+    fun windowFor(localTabId: String): HostWindow? = windowByTab[localTabId]
 
     /**
      * Identifies which share this session mirrors: SHA-256 of [link]'s token. Stamped on this
@@ -443,6 +465,7 @@ class RemoteSession internal constructor(
         localTabByRemote.clear()
         sessionByPane.clear()
         upstreamByTab.clear()
+        windowByTab.clear()
     }
 
     // ---- message handling ----
@@ -549,6 +572,7 @@ class RemoteSession internal constructor(
                 owned.forEach { pid -> sessionByPane.remove(pid)?.let { disposeSession(it) } }
                 state.splitStates.remove(container.id)
                 upstreamByTab.remove(container.id)
+                windowByTab.remove(container.id)
             }
         }
 
@@ -575,10 +599,21 @@ class RemoteSession internal constructor(
             // Track whether this host tab itself mirrors ANOTHER session (and our effective
             // writability through it) — the tab bar nests those under a labeled subsection.
             val upstream = tabNode.origin?.let {
-                UpstreamOrigin(it, tabNode.originName, tabNode.originReadOnly == true, tabNode.originOffline == true)
+                UpstreamOrigin(
+                    it, tabNode.originName, tabNode.originReadOnly == true, tabNode.originOffline == true,
+                    window = tabNode.originWindowId?.let { w -> HostWindow(w, tabNode.originWindowName) },
+                )
             }
             if (upstreamByTab[container.id] != upstream) {
                 if (upstream != null) upstreamByTab[container.id] = upstream else upstreamByTab.remove(container.id)
+                upstreamRev.value++
+            }
+
+            // Track which host WINDOW the tab belongs to (stamped by ALL-scope hosts) — the
+            // tab bar sections the group's own tabs per window, like the web viewer's boxes.
+            val win = tabNode.windowId?.let { HostWindow(it, tabNode.windowName) }
+            if (windowByTab[container.id] != win) {
+                if (win != null) windowByTab[container.id] = win else windowByTab.remove(container.id)
                 upstreamRev.value++
             }
 
@@ -650,6 +685,7 @@ class RemoteSession internal constructor(
         }
         state.splitStates.remove(container.id)
         upstreamByTab.remove(container.id)
+        windowByTab.remove(container.id)
         val idx = controller?.tabs?.indexOf(container) ?: -1
         if (idx >= 0) {
             if (controller!!.tabs.size <= 1) {

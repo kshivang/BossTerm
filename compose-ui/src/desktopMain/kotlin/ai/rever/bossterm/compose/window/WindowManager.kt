@@ -18,6 +18,14 @@ data class TerminalWindow(
     val isWindowFocused: MutableState<Boolean> = mutableStateOf(true),
     /** AWT window reference for global hotkey toggle (set after Window composable renders) */
     var awtWindow: java.awt.Window? = null,
+    /**
+     * The Compose [androidx.compose.ui.window.WindowState] driving this window (set after the
+     * Window composable renders). Programmatic resizes (e.g. a viewer's "Fit host to my
+     * screen") must go through THIS — Compose then moves the AWT frame and its Skia surface
+     * together. Calling awtWindow.setSize directly lets the surface lag a resize event
+     * behind, leaving an unpainted strip until the next real resize.
+     */
+    var composeWindowState: androidx.compose.ui.window.WindowState? = null,
     /** Window number for global hotkey (1-9, or 0 if no hotkey assigned) */
     val windowNumber: Int = 0
 )

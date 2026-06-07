@@ -626,6 +626,23 @@ class TabController(
             this.onUserInput = onUserInput
         }
 
+        // Mouse reports (wheel scrolling in mouse-tracking TUIs like claude/vim/htop) are
+        // emitted by the terminal through its TerminalOutputStream — a PTY-less mirror had
+        // none, so they were silently dropped (keyboard goes via writeUserInput instead).
+        // Forward USER-initiated output through the same remote-input hook as keystrokes;
+        // drop automatic protocol replies (DSR/DA/CPR) — the ORIGIN's terminal already
+        // answers those, and a mirror echoing them too would double the app's input.
+        if (onUserInput != null) {
+            terminal.setTerminalOutput(object : ai.rever.bossterm.terminal.TerminalOutputStream {
+                override fun sendBytes(response: ByteArray, userInput: Boolean) {
+                    if (userInput) tab.writeUserInput(String(response, Charsets.UTF_8))
+                }
+                override fun sendString(string: String, userInput: Boolean) {
+                    if (userInput) tab.writeUserInput(string)
+                }
+            })
+        }
+
         // Emulator-processing loop: drain bytes appended from the remote stream. Exits when the
         // stream is closed (dispose) — closing dataStream unblocks the blocking `char` read.
         // Skipped for a container tab ([feedsStream] = false): it owns no remote pane of its own

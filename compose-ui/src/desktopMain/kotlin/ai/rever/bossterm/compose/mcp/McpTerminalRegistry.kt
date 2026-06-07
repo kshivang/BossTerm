@@ -29,16 +29,26 @@ object McpTerminalRegistry {
 
     private val states = CopyOnWriteArrayList<TabbedTerminalState>()
 
+    /**
+     * Compose revision bumped on register/unregister. The states list itself is not
+     * snapshot-observable; reading this inside a `snapshotFlow` (e.g. an ALL-scope
+     * share's layout signature) makes window open/close re-emit.
+     */
+    val statesRev = androidx.compose.runtime.mutableStateOf(0)
+
     /** Register a state. Idempotent — duplicate registrations are ignored. */
     fun register(state: TabbedTerminalState) {
         if (!states.contains(state)) {
             states.add(state)
+            statesRev.value++
         }
     }
 
     /** Unregister a state. No-op if not present. */
     fun unregister(state: TabbedTerminalState) {
-        states.remove(state)
+        if (states.remove(state)) {
+            statesRev.value++
+        }
     }
 
     /** All tabs across all registered states, in registration order. */

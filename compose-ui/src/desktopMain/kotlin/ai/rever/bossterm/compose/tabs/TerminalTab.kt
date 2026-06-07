@@ -309,6 +309,15 @@ data class TerminalTab(
     var remoteFitCols: Int = 0
     var remoteFitRows: Int = 0
 
+    /**
+     * Per-tab font-size override (sp). Used by remote mirrors when the host's grid can't
+     * physically fit this screen at the user's font — the mirror renders smaller so the
+     * whole grid stays visible (the native analogue of the web viewer's fit-screen).
+     * Null = the global settings font. Cleared on the next "Fit my window to host".
+     */
+    val fontSizeOverride: androidx.compose.runtime.MutableState<Float?> =
+        androidx.compose.runtime.mutableStateOf(null)
+
     // === Warp-style tab customization (left tab bar) ===
 
     /**

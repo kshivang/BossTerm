@@ -311,8 +311,9 @@ object SessionShareManager {
     }
 
     /**
-     * Start sharing — [ShareScope.TAB] (this tab + its splits) or [ShareScope.WINDOW]
-     * (all tabs of the owning window). Boots the share server if needed. Returns null
+     * Start sharing — [ShareScope.TAB] (this tab + its splits), [ShareScope.WINDOW]
+     * (all tabs of the owning window), or [ShareScope.ALL] (every tab of every window,
+     * grouped by window in the viewer). Boots the share server if needed. Returns null
      * when sharing is disabled or the server can't bind. Idempotent per [tabId].
      */
     suspend fun share(tabId: String, scope: ShareScope = ShareScope.TAB): ShareInfo? {

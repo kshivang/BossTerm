@@ -161,6 +161,23 @@ data class TabNode(
      * (reconnecting or failed) — these tabs show FROZEN content until it comes back.
      */
     val originOffline: Boolean? = null,
+    /**
+     * For an ALL-scope share spanning >1 window: the stable key of the window owning this tab
+     * ([ai.rever.bossterm.compose.TabbedTerminalState.windowTag]), so viewers can group tabs
+     * by window. Null for TAB/WINDOW shares and single-window ALL shares — those frames stay
+     * identical to pre-ALL ones, and old clients ignore the field either way.
+     */
+    val windowId: String? = null,
+    /** When [windowId] != null: the display label for that window (e.g. "Window 2"). */
+    val windowName: String? = null,
+    /**
+     * When [origin] != null and the UPSTREAM session shared all ITS windows: the upstream's
+     * window key for this tab — so viewers can section a "via host" group per origin window
+     * (distinct from [windowId], which is the relaying host's OWN window).
+     */
+    val originWindowId: String? = null,
+    /** When [originWindowId] != null: the upstream window's display label. */
+    val originWindowName: String? = null,
 )
 
 /** Recursive split-layout node: either a binary split or a leaf pane. */
@@ -254,6 +271,15 @@ sealed class ClientMessage {
     @Serializable
     @SerialName("disconnectUpstream")
     data class DisconnectUpstream(val tabId: String) : ClientMessage()
+
+    /**
+     * Close a whole host window — every tab of the window keyed [windowId]
+     * ([TabNode.windowId], stamped by ALL-scope shares). The ✕ on a viewer's window
+     * box. Controller role only; old hosts ignore it.
+     */
+    @Serializable
+    @SerialName("closeWindow")
+    data class CloseWindow(val windowId: String) : ClientMessage()
 
     /**
      * Split [paneId] in [tabId] into left/right panes (vertical divider) — the host's

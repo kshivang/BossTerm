@@ -196,6 +196,50 @@ fun RequestControlPrompt(onConfirm: () -> Unit, onDismiss: () -> Unit) {
 }
 
 /**
+ * One-time offer when a remote mirror tab is first viewed and the host's grid doesn't render
+ * 1:1 in this window (the native counterpart of the web viewer's "fit host to this phone?"
+ * confirm): fit OUR window to the host's grid (purely local), or — control only — resize the
+ * HOST's window to match ours instead.
+ */
+@Composable
+fun RemoteFitPrompt(
+    hostName: String,
+    onFitMyWindow: () -> Unit,
+    /** With control: resizes the host. View-only: the caller routes to a control request. */
+    onFitHost: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = BackgroundColor,
+        title = { Text("Match window sizes?", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
+        text = {
+            // Both directions as stacked full-width buttons (a side-by-side row overflows
+            // the dialog and can hide one option).
+            androidx.compose.foundation.layout.Column(
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "This tab mirrors $hostName — its terminal grid doesn't fit this window 1:1.",
+                    color = TextSecondary, fontSize = 12.sp
+                )
+                Button(
+                    onClick = onFitMyWindow,
+                    modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                ) { Text("Fit my window to host") }
+                Button(
+                    onClick = onFitHost,
+                    modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A3A), contentColor = TextPrimary)
+                ) { Text("Fit host to my window") }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Not now", color = TextSecondary) } },
+    )
+}
+
+/**
  * Shown when a remote session drops after exhausting its reconnect budget (the native
  * counterpart of the web viewer's disconnect overlay): Reconnect retries with a fresh
  * budget; Disconnect removes the session + its mirror tabs; dismissing keeps the frozen

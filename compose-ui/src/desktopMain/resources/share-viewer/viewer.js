@@ -63,10 +63,26 @@
   var summaryMode = false;        // host's tabBarSummaryMode: 1 chip/tab vs 1 chip/pane
   var splitDragging = false;      // a divider is being dragged → suppress layout re-renders
   var currentPaneId = null;       // pane the on-screen key bar targets
+  // A touch gesture has been claimed as a scroll/pan → suppress long-press + contextmenu
+  // (Android fires contextmenu during our preventDefault'ed scrolls; iOS slow drags could
+  // outlive the long-press timer). Cleared shortly after the finger lifts.
+  var touchScrollActive = false, tsaClearTimer = null;
+  function markTouchScroll() {
+    touchScrollActive = true;
+    if (tsaClearTimer) { clearTimeout(tsaClearTimer); tsaClearTimer = null; }
+  }
+  function unmarkTouchScrollSoon() {
+    if (tsaClearTimer) clearTimeout(tsaClearTimer);
+    tsaClearTimer = setTimeout(function () { touchScrollActive = false; tsaClearTimer = null; }, 250);
+  }
   function sendMsg(o) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); }
 
   // ☰ toggles the left tab drawer (phone); tapping a tab closes it (see selectPane).
   menubtnEl.onclick = function () { sidebarEl.classList.toggle("open"); };
+  // Any interaction with the terminal area also closes the drawer (capture phase so it
+  // fires even when the pane swallows the event).
+  stageEl.addEventListener("pointerdown", function () { sidebarEl.classList.remove("open"); }, true);
+  stageEl.addEventListener("touchstart", function () { sidebarEl.classList.remove("open"); }, { passive: true, capture: true });
 
   // Install banner: shown until dismissed (persists across visits).
   (function () {
@@ -80,10 +96,46 @@
     };
   })();
 
-  // Keep the fixed key bar just above the soft keyboard (and reserve space for it).
+  // Soft keyboard: PUSH the UI up — no font/zoom changes, just a translate — and only
+  // as far as the CURSOR needs. If the blinking cursor already sits above the keyboard
+  // (and the key bar), nothing moves; if it's hidden, shift by exactly the overlap,
+  // capped at the keyboard inset. Re-evaluated as the cursor moves while typing.
+  // iOS Safari never resizes the layout viewport for the keyboard, so the visualViewport
+  // inset is the only truth; Android shrinks the window itself (inset 0 → no-op).
+  var appliedShiftPx = 0;
+  var keyboardOpen = false;
+  // Bottom edge (layout-viewport px, with the current shift un-applied) of the focused
+  // pane's cursor line — null when the cursor is scrolled off-screen / nothing focused.
+  function cursorBottomPx() {
+    var p = currentPaneId && panes[currentPaneId]; if (!p) return null;
+    var b = p.term.buffer && p.term.buffer.active; if (!b) return null;
+    var sc = p.host.querySelector(".xterm-screen"); if (!sc) return null;
+    var r = sc.getBoundingClientRect();
+    if (!(r.height > 0) || !(p.term.rows > 0)) return null;
+    var visRow = b.baseY + b.cursorY - b.viewportY;
+    if (visRow < 0 || visRow >= p.term.rows) return null;
+    return r.top + appliedShiftPx + (visRow + 1) * (r.height / p.term.rows);
+  }
   function layoutForKeyboard() {
     var vv = window.visualViewport;
-    if (vv) keybarEl.style.bottom = Math.max(0, window.innerHeight - vv.height - vv.offsetTop) + "px";
+    var inset = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
+    keyboardOpen = vv ? (window.innerHeight - vv.height) > 60 : false;
+    var shift = 0;
+    if (keyboardOpen) {
+      var visibleBottom = vv.offsetTop + vv.height;
+      var clear = (keybarEl.style.display !== "none" ? keybarEl.offsetHeight : 0) + 8;
+      var cb = cursorBottomPx();
+      // Unknown cursor → fall back to the full push (old behavior).
+      shift = cb === null ? Math.round(inset)
+        : Math.round(Math.max(0, Math.min(inset, cb - visibleBottom + clear)));
+    }
+    if (shift !== appliedShiftPx) {
+      appliedShiftPx = shift;
+      document.body.style.transform = shift ? "translateY(-" + shift + "px)" : "";
+    }
+    // The key bar rides the keyboard top regardless of how far the body shifted
+    // (under a transform, fixed children position against the shifted body box).
+    keybarEl.style.bottom = Math.max(0, Math.round(inset) - shift) + "px";
     bodyEl.style.paddingBottom = (keybarEl.style.display !== "none" && keybarEl.offsetHeight)
       ? keybarEl.offsetHeight + "px" : "0px";
   }
@@ -148,6 +200,10 @@
   // x, so we can't get native horizontal scroll from it — instead we expose the full
   // width by sizing the pane to content and letting #stage scroll both axes. Vertical
   // scrollback stays inside xterm; pinch-zoom works on top. Splits keep the fill layout.)
+  // Phone = the same breakpoint as the drawer/splits-as-tabs defaults (≤700px).
+  function isPhone() {
+    return !!(window.matchMedia && window.matchMedia("(max-width: 700px)").matches);
+  }
   function relayoutSinglePane() {
     if (!layout) return;
     var tab = null, i;
@@ -161,8 +217,13 @@
       if (sc) { var w = Math.ceil(sc.getBoundingClientRect().width); if (w > 0) p.host.style.width = w + "px"; }
     });
   }
-  window.addEventListener("resize", relayoutSinglePane);
-  window.addEventListener("orientationchange", relayoutSinglePane);
+  function onViewportChange() {
+    relayoutSinglePane();
+    autoFitPending = true;
+    maybeAutoFit();
+  }
+  window.addEventListener("resize", onViewportChange);
+  window.addEventListener("orientationchange", onViewportChange);
 
   // ---- zoom (viewer-local font size) ----
   var viewerFont = 0; // 0 = use the host/theme size
@@ -186,9 +247,56 @@
     var avail = stageEl.clientWidth - 2, w = screen.getBoundingClientRect().width;
     if (avail > 0 && w > 0) applyFont(curFont() * (avail / w));
   }
-  document.getElementById("zoomin").onclick = function () { applyFont(curFont() + 1); };
-  document.getElementById("zoomout").onclick = function () { applyFont(curFont() - 1); };
-  document.getElementById("zoomfit").onclick = fitWidth;
+  // Fit the active pane's font so the whole GRID (cols AND rows) fits the stage box —
+  // the phone default: nothing overflows, so a vertical swipe scrolls SCROLLBACK.
+  function fitScreen() {
+    var tab = activeTabNode(); if (!tab) return;
+    var pid = displayedSinglePaneId(tab); if (!pid) return;
+    var p = panes[pid]; if (!p) return;
+    var screen = p.host.querySelector(".xterm-screen"); if (!screen) return;
+    var r = screen.getBoundingClientRect();
+    var availW = stageEl.clientWidth - 2, availH = stageEl.clientHeight - 2;
+    if (!(r.width > 0) || !(r.height > 0) || availW <= 0 || availH <= 0) return;
+    applyFont(curFont() * Math.min(availW / r.width, availH / r.height));
+  }
+  // Phones default to fit-screen; the user's explicit choice persists (like splits-as-tabs).
+  var fitMode = (function () {
+    var saved = null;
+    try { saved = localStorage.getItem("bossterm-fit-mode"); } catch (e) {}
+    if (saved === "screen" || saved === "off") return saved;
+    return isPhone() ? "screen" : "off";
+  })();
+  var zoomfitBtn = document.getElementById("zoomfit");
+  function refreshFitBtn() {
+    var on = isPhone() && fitMode === "screen";
+    zoomfitBtn.style.background = on ? "#4a90e2" : "";
+    zoomfitBtn.style.color = on ? "#fff" : "";
+    zoomfitBtn.style.borderColor = on ? "#4a90e2" : "";
+  }
+  function setFitMode(m) {
+    fitMode = m;
+    try { localStorage.setItem("bossterm-fit-mode", m); } catch (e) {}
+    refreshFitBtn();
+  }
+  // Re-fit once per fresh-geometry event (layout / snapshot / host resize / rotation) —
+  // never on plain output, and never against a manual zoom (zoom +/- flips fitMode off).
+  var autoFitPending = false;
+  var fithostPrompted = false; // one-time "fit host to this phone?" offer when control lands
+  function maybeAutoFit() {
+    if (fitMode !== "screen" || !autoFitPending) return;
+    autoFitPending = false;
+    requestAnimationFrame(fitScreen);
+  }
+  document.getElementById("zoomin").onclick = function () { setFitMode("off"); applyFont(curFont() + 1); };
+  document.getElementById("zoomout").onclick = function () { setFitMode("off"); applyFont(curFont() - 1); };
+  zoomfitBtn.onclick = function () {
+    if (isPhone()) {
+      // Toggle fit-screen: on = fit now (and track geometry changes); off = host font size.
+      if (fitMode === "screen") { setFitMode("off"); viewerFont = 0; applyFont(curFont()); }
+      else { setFitMode("screen"); fitScreen(); }
+    } else fitWidth();
+  };
+  refreshFitBtn();
 
   // ---- "splits as tabs" (viewer-local) ----
   // Render only the selected pane of a split tab, full-screen — switch panes via the
@@ -199,7 +307,7 @@
     try { saved = localStorage.getItem("bossterm-splits-as-tabs"); } catch (e) {}
     if (saved === "1") return true;
     if (saved === "0") return false;
-    return !!(window.matchMedia && window.matchMedia("(max-width: 700px)").matches);
+    return isPhone();
   })();
   var splitTabsBtn = document.getElementById("splittabs");
   function refreshSplitTabsBtn() {
@@ -236,18 +344,30 @@
   }
   // "Fit host to my screen": measure the client's cell size + viewport, work out the grid
   // that fills it, and ask the host to resize its window to match (control only).
-  fithostEl.onclick = function () {
+  function fitHostGrid() {
     var id = activePaneId(), p = id && panes[id];
-    if (!p || !p.term || !p.term.cols) return;
-    var sc = p.host.querySelector(".xterm-screen"); if (!sc) return;
+    if (!p || !p.term || !p.term.cols) return null;
+    var sc = p.host.querySelector(".xterm-screen"); if (!sc) return null;
     var r = sc.getBoundingClientRect();
-    var cellW = r.width / p.term.cols, cellH = r.height / p.term.rows;
-    if (!(cellW > 0) || !(cellH > 0)) return;
+    // Normalize cell metrics to the HOST's font size: "fit host to my screen" means a
+    // grid this screen can show at a READABLE font. With fit-screen active (the phone
+    // default) the current font is shrunk so the whole grid fits — measuring at THAT
+    // font would conclude the grid "already fits" and ask for nothing.
+    var scale = (((theme && theme.fontSize) || 13) / curFont()) || 1;
+    var cellW = (r.width / p.term.cols) * scale, cellH = (r.height / p.term.rows) * scale;
+    if (!(cellW > 0) || !(cellH > 0)) return null;
     var CHROME = 8; // leave room for the pane border (1px/side) + a little slack so it fits
-    var cols = Math.max(20, Math.floor((stageEl.clientWidth - CHROME) / cellW));
-    var rows = Math.max(6, Math.floor((stageEl.clientHeight - CHROME) / cellH));
-    sendMsg({ t: "resizeHost", tabId: activeTabId, cols: cols, rows: rows });
-  };
+    return {
+      cols: Math.max(20, Math.floor((stageEl.clientWidth - CHROME) / cellW)),
+      rows: Math.max(6, Math.floor((stageEl.clientHeight - CHROME) / cellH)),
+      curCols: p.term.cols, curRows: p.term.rows,
+    };
+  }
+  function fitHostNow() {
+    var g = fitHostGrid(); if (!g) return;
+    sendMsg({ t: "resizeHost", tabId: activeTabId, cols: g.cols, rows: g.rows });
+  }
+  fithostEl.onclick = fitHostNow;
 
   // ---- right-click / long-press context menu ----
   // Copy via the async Clipboard API where available (needs a secure context: https /
@@ -410,16 +530,24 @@
     el.addEventListener("contextmenu", function (e) {
       e.preventDefault(); e.stopPropagation(); showTabMenu(e.clientX, e.clientY, tab, pane);
     });
-    var t = null, sx = 0, sy = 0;
+    var t = null, sx = 0, sy = 0, moved = 0;
     el.addEventListener("touchstart", function (e) {
-      if (!e.touches || e.touches.length !== 1) return;
-      sx = e.touches[0].clientX; sy = e.touches[0].clientY;
-      t = setTimeout(function () { t = null; showTabMenu(sx, sy, tab, pane); }, 500);
+      if (!e.touches || e.touches.length !== 1) {
+        if (t) { clearTimeout(t); t = null; }
+        return;
+      }
+      sx = e.touches[0].clientX; sy = e.touches[0].clientY; moved = 0;
+      t = setTimeout(function () {
+        t = null;
+        if (touchScrollActive || moved >= 6) return; // scrolling, not pressing
+        showTabMenu(sx, sy, tab, pane);
+      }, 500);
     }, { passive: true });
     function cancel(e) {
-      if (t && e && e.touches && e.touches[0]) {
+      if (e && e.touches && e.touches.length === 1 && e.touches[0]) {
         var dx = Math.abs(e.touches[0].clientX - sx), dy = Math.abs(e.touches[0].clientY - sy);
-        if (dx < 10 && dy < 10) return;
+        moved = Math.max(moved, dx, dy);
+        if (t && dx < 6 && dy < 6) return;
       }
       if (t) { clearTimeout(t); t = null; }
     }
@@ -522,6 +650,16 @@
     if (theme) applyThemeToOpts(opts);
     var term = new Terminal(opts);
     term.open(host);
+    // GPU rendering (WebGL addon) — the DOM renderer rebuilds row nodes on every scroll
+    // step, which reads as jank next to the native client's Skia pipeline. Best-effort:
+    // no WebGL2 (old devices) or a lost context falls back to the DOM renderer.
+    try {
+      if (window.WebglAddon && window.WebglAddon.WebglAddon) {
+        var gl = new window.WebglAddon.WebglAddon();
+        gl.onContextLoss(function () { try { gl.dispose(); } catch (e) {} });
+        term.loadAddon(gl);
+      }
+    } catch (e) { /* DOM renderer fallback */ }
     // Terminals want raw keystrokes — disable the soft keyboard's autocorrect /
     // predictive-text / autocapitalize / spellcheck on xterm's hidden input.
     var ta = term.textarea || host.querySelector(".xterm-helper-textarea");
@@ -533,10 +671,86 @@
     }
     if (viewerFont) { try { term.options.fontSize = viewerFont; } catch (e) {} }
     term.onData(function (data) { sendInput(paneId, data); });
+    // Cursor-aware keyboard push: as the cursor moves (typing, newlines, TUI redraws),
+    // re-check whether the UI needs shifting above the soft keyboard.
+    term.onCursorMove(function () { if (keyboardOpen && paneId === currentPaneId) layoutForKeyboard(); });
+    attachTouchScroll(host, term);
     p = { term: term, host: host };
     panes[paneId] = p;
     return p;
   }
+
+  // ---- touch scrolling (phones) ----
+  // A vertical swipe synthesizes WHEEL events at the touch point, so xterm's own wheel
+  // pipeline decides what scrolling means — exactly like a desktop mouse wheel:
+  //  · normal buffer → scrollback scrolls,
+  //  · TUI app with mouse reporting (claude, vim, htop) → wheel escape codes to the app,
+  //  · alternateScroll mode (1007) → arrow keys.
+  // (term.scrollLines() alone only covered the first case — TUIs never scrolled.)
+  // Horizontal swipes are left to native pan (wide grids when zoomed past fit).
+  function attachTouchScroll(host, term) {
+    var startX = 0, startY = 0, lastX = 0, lastY = 0, lastT = 0, axis = null, vel = 0, momentum = null;
+    function stopMomentum() { if (momentum) { cancelAnimationFrame(momentum); momentum = null; } }
+    function dispatchWheel(dy) {
+      // Target the screen element (what a real wheel event hits) so coordinates map to
+      // the right cell for mouse reporting; bubbles to wherever xterm's listener sits.
+      var target = host.querySelector(".xterm-screen") || host;
+      try {
+        target.dispatchEvent(new WheelEvent("wheel", {
+          deltaY: dy, deltaMode: 0, clientX: lastX, clientY: lastY,
+          bubbles: true, cancelable: true,
+        }));
+      } catch (e) {
+        // Ancient browser without the WheelEvent constructor: scroll the buffer directly.
+        try { term.scrollLines(dy > 0 ? 1 : -1); } catch (e2) {}
+      }
+    }
+    // Capture phase: see the touches even if something inside xterm stops propagation.
+    host.addEventListener("touchstart", function (e) {
+      if (!isPhone() || e.touches.length !== 1) { axis = "skip"; return; }
+      // Catching a fling is part of the scroll, not a press — keep menus suppressed.
+      if (momentum) markTouchScroll();
+      stopMomentum();
+      axis = null; vel = 0;
+      startX = lastX = e.touches[0].clientX; startY = lastY = e.touches[0].clientY;
+      lastT = e.timeStamp;
+    }, { passive: true, capture: true });
+    host.addEventListener("touchmove", function (e) {
+      if (axis === "skip" || e.touches.length !== 1) return;
+      var x = e.touches[0].clientX, y = e.touches[0].clientY;
+      if (axis === null) {
+        var ax = Math.abs(x - startX), ay = Math.abs(y - startY);
+        if (ax < 6 && ay < 6) return;          // not decided yet
+        axis = ay >= ax ? "y" : "skip";        // horizontal → native pan
+        markTouchScroll();                      // the gesture is a scroll/pan, not a press
+        if (axis === "y") { lastX = x; lastY = y; }
+      }
+      if (axis !== "y") return;
+      if (e.cancelable) e.preventDefault();     // we own the vertical gesture
+      var dy = lastY - y;                       // finger up = scroll toward bottom
+      var dt = Math.max(1, e.timeStamp - lastT);
+      vel = 0.8 * vel + 0.2 * (dy / dt);        // smoothed px/ms for the flick
+      lastX = x; lastY = y; lastT = e.timeStamp;
+      dispatchWheel(dy);
+    }, { passive: false, capture: true });
+    host.addEventListener("touchend", function (e) {
+      unmarkTouchScrollSoon();
+      if (axis !== "y") { axis = null; return; }
+      axis = null;
+      var v = vel; vel = 0;
+      if (Math.abs(v) < 0.25) return;           // no flick — just a drag
+      var prev = e.timeStamp || performance.now();
+      function step(now) {
+        var dt = Math.min(48, now - prev); prev = now;
+        dispatchWheel(v * dt);
+        v *= Math.pow(0.95, dt / 16);           // frame-rate-independent decay
+        momentum = Math.abs(v) >= 0.03 ? requestAnimationFrame(step) : null;
+      }
+      momentum = requestAnimationFrame(step);
+    }, { passive: true, capture: true });
+    host.addEventListener("touchcancel", function () { axis = null; vel = 0; unmarkTouchScrollSoon(); }, { passive: true, capture: true });
+  }
+
 
   function applyThemeToOpts(opts) {
     var a = theme.ansi || [];
@@ -591,83 +805,172 @@
         }
         return group;
       }
-      // Partition like the native client: the host's own tabs render directly; tabs the host
-      // itself mirrors from OTHER sessions render as boxed "via host" groups below.
-      var own = [], upstreams = {}, upOrder = [];
-      if (layout) layout.tabs.forEach(function (t) {
-        if (t.origin) {
-          if (!upstreams[t.origin]) {
-            upstreams[t.origin] = { name: t.originName, readOnly: !!t.originReadOnly, offline: !!t.originOffline, tabs: [] };
-            upOrder.push(t.origin);
+      // Render one set of tabs into [container], partitioned like the native client: the
+      // host's own tabs as direct chips + an action row; tabs the host itself mirrors from
+      // OTHER sessions as boxed "via host" groups below. [windowBox] = the set is one window
+      // of an all-windows share, so split/new-tab must target THAT window (by tabId — the
+      // host routes actions to the named tab's owning window).
+      function renderTabSet(container, tabs, windowBox) {
+        var own = [], upstreams = {}, upOrder = [];
+        tabs.forEach(function (t) {
+          if (t.origin) {
+            if (!upstreams[t.origin]) {
+              upstreams[t.origin] = { name: t.originName, readOnly: !!t.originReadOnly, offline: !!t.originOffline, tabs: [] };
+              upOrder.push(t.origin);
+            }
+            upstreams[t.origin].tabs.push(t);
+          } else own.push(t);
+        });
+        own.forEach(function (tab) { container.appendChild(tabCluster(tab)); });
+        // Action row mirroring the host's left bar: Split L/R, Split T/B, then New tab.
+        // Always shown — when view-only, clicking offers to request control (viewOnlyGate).
+        // A window box whose tabs are ALL upstream mirrors gets none (a bare "new tab in
+        // this window" can't be expressed — the mirrors' ids route upstream instead).
+        if (!windowBox || own.length) {
+          var actions = document.createElement("div");
+          actions.className = "ltab-actions";
+          if (windowBox) {
+            var wg = { tabs: own };
+            actions.appendChild(groupSplitButton("v", wg));
+            actions.appendChild(groupSplitButton("h", wg));
+            var wnt = document.createElement("div");
+            wnt.className = "newtab"; wnt.textContent = "+ New tab";
+            wnt.title = "New tab in this window";
+            wnt.onclick = function () {
+              if (viewOnlyGate()) return;
+              sendMsg({ t: "newTab", tabId: anchorTab(wg).id });
+            };
+            actions.appendChild(wnt);
+          } else {
+            actions.appendChild(splitButton("v"));
+            actions.appendChild(splitButton("h"));
+            actions.appendChild(newTabButton("+ New tab"));
           }
-          upstreams[t.origin].tabs.push(t);
-        } else own.push(t);
+          container.appendChild(actions);
+        }
+        // Upstream groups: tether + bordered box with header (name · via host, offline/read-only
+        // badges, ✕ = ask host to disconnect it), chips, and a relayed action row.
+        upOrder.forEach(function (key) {
+          var g = upstreams[key];
+          var tether = document.createElement("div");
+          tether.style.cssText = "width:2px;height:10px;margin-left:13px;background:#4FC3F7;";
+          container.appendChild(tether);
+          var box = document.createElement("div");
+          box.style.cssText = "border:1px solid #4FC3F7;border-radius:8px;padding:4px;display:flex;flex-direction:column;gap:4px;";
+          var hd = document.createElement("div");
+          hd.style.cssText = "display:flex;align-items:center;gap:4px;padding:2px;font-size:11px;color:#b0b0b0;";
+          var lbl = document.createElement("span");
+          lbl.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+          lbl.textContent = "☁ " + (g.name || "remote") + " · via " + ((layout && layout.sessionName) || "host");
+          hd.appendChild(lbl);
+          if (g.offline) {
+            var off = document.createElement("span");
+            off.textContent = "· offline"; off.title = "The host lost its connection to this session — content is frozen";
+            off.style.cssText = "color:#E57373;font-size:10px;";
+            hd.appendChild(off);
+          }
+          if (g.readOnly) {
+            var eye = document.createElement("span");
+            eye.textContent = "👁"; eye.title = "Read-only via this host — click to request control";
+            eye.style.cursor = "pointer";
+            eye.onclick = function (ev) { ev.stopPropagation(); requestUpstreamControl(anchorTab(g).id, g.name || "remote"); };
+            hd.appendChild(eye);
+          }
+          var x = document.createElement("span");
+          x.textContent = "×"; x.title = "Ask the host to disconnect this upstream";
+          x.style.cssText = "cursor:pointer;color:#808080;padding:0 2px;";
+          x.onclick = function (ev) {
+            ev.stopPropagation();
+            if (viewOnlyGate()) return;
+            if (window.confirm("Ask the host to disconnect from " + (g.name || "this upstream") + "?"))
+              sendMsg({ t: "disconnectUpstream", tabId: g.tabs[0].id });
+          };
+          hd.appendChild(x);
+          box.appendChild(hd);
+          // Relayed action row (split/new-tab targeting [sg]'s tabs). Always shown;
+          // view-only clicks route to the request-control dialog (viewOnlyGate).
+          function upstreamActions(sg) {
+            var act = document.createElement("div");
+            act.className = "ltab-actions";
+            act.appendChild(groupSplitButton("v", sg));
+            act.appendChild(groupSplitButton("h", sg));
+            var nt = document.createElement("div");
+            nt.className = "newtab"; nt.textContent = "+ New tab";
+            nt.title = "New tab in " + (g.name || "remote");
+            nt.onclick = function () {
+              if (viewOnlyGate()) return;
+              if (g.readOnly) { requestUpstreamControl(anchorTab(sg).id, g.name || "remote"); return; }
+              sendMsg({ t: "newTab", tabId: anchorTab(sg).id });
+            };
+            act.appendChild(nt);
+            return act;
+          }
+          // The upstream itself may share ALL its windows — those tabs carry the ORIGIN's
+          // window identity; section them (dim sub-title + per-window actions), like the
+          // native client. Unstamped tabs render flat with one box-level action row.
+          var wsecs = {}, wsecOrder = [], wflat = [];
+          g.tabs.forEach(function (tab) {
+            if (tab.originWindowId) {
+              if (!wsecs[tab.originWindowId]) {
+                wsecs[tab.originWindowId] = { name: tab.originWindowName, tabs: [] };
+                wsecOrder.push(tab.originWindowId);
+              }
+              wsecs[tab.originWindowId].tabs.push(tab);
+            } else wflat.push(tab);
+          });
+          wflat.forEach(function (tab) { box.appendChild(tabCluster(tab)); });
+          if (wflat.length || !wsecOrder.length) box.appendChild(upstreamActions({ tabs: wflat.length ? wflat : g.tabs, readOnly: g.readOnly, name: g.name }));
+          wsecOrder.forEach(function (sk) {
+            var sec = wsecs[sk];
+            var sh = document.createElement("div");
+            sh.style.cssText = "display:flex;align-items:center;gap:4px;padding:2px 2px 0;font-size:10px;color:#8a8a8a;";
+            var sl = document.createElement("span");
+            sl.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+            sl.textContent = sec.name || "Window";
+            sh.appendChild(sl);
+            var hr = document.createElement("span");
+            hr.style.cssText = "flex:1;height:1px;background:#3a3a3a;";
+            sh.appendChild(hr);
+            box.appendChild(sh);
+            sec.tabs.forEach(function (tab) { box.appendChild(tabCluster(tab)); });
+            box.appendChild(upstreamActions({ tabs: sec.tabs, readOnly: g.readOnly, name: g.name }));
+          });
+          container.appendChild(box);
+        });
+      }
+      // An all-windows share stamps each tab with its owning window — group those into
+      // neutral-bordered boxes (one per window); unstamped tabs render flat as before.
+      var flat = [], wins = {}, winOrder = [];
+      if (layout) layout.tabs.forEach(function (t) {
+        if (t.windowId) {
+          if (!wins[t.windowId]) { wins[t.windowId] = { name: t.windowName, tabs: [] }; winOrder.push(t.windowId); }
+          wins[t.windowId].tabs.push(t);
+        } else flat.push(t);
       });
-      own.forEach(function (tab) { sidebarEl.appendChild(tabCluster(tab)); });
-      // Action row mirroring the host's left bar: Split L/R, Split T/B, then New tab.
-      // Always shown — when view-only, clicking offers to request control (viewOnlyGate).
-      var actions = document.createElement("div");
-      actions.className = "ltab-actions";
-      actions.appendChild(splitButton("v"));
-      actions.appendChild(splitButton("h"));
-      actions.appendChild(newTabButton("+ New tab"));
-      sidebarEl.appendChild(actions);
-      // Upstream groups: tether + bordered box with header (name · via host, offline/read-only
-      // badges, ✕ = ask host to disconnect it), chips, and a relayed action row.
-      upOrder.forEach(function (key) {
-        var g = upstreams[key];
-        var tether = document.createElement("div");
-        tether.style.cssText = "width:2px;height:10px;margin-left:13px;background:#4FC3F7;";
-        sidebarEl.appendChild(tether);
-        var box = document.createElement("div");
-        box.style.cssText = "border:1px solid #4FC3F7;border-radius:8px;padding:4px;display:flex;flex-direction:column;gap:4px;";
-        var hd = document.createElement("div");
-        hd.style.cssText = "display:flex;align-items:center;gap:4px;padding:2px;font-size:11px;color:#b0b0b0;";
-        var lbl = document.createElement("span");
-        lbl.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-        lbl.textContent = "☁ " + (g.name || "remote") + " · via " + ((layout && layout.sessionName) || "host");
-        hd.appendChild(lbl);
-        if (g.offline) {
-          var off = document.createElement("span");
-          off.textContent = "· offline"; off.title = "The host lost its connection to this session — content is frozen";
-          off.style.cssText = "color:#E57373;font-size:10px;";
-          hd.appendChild(off);
-        }
-        if (g.readOnly) {
-          var eye = document.createElement("span");
-          eye.textContent = "👁"; eye.title = "Read-only via this host — click to request control";
-          eye.style.cursor = "pointer";
-          eye.onclick = function (ev) { ev.stopPropagation(); requestUpstreamControl(anchorTab(g).id, g.name || "remote"); };
-          hd.appendChild(eye);
-        }
-        var x = document.createElement("span");
-        x.textContent = "×"; x.title = "Ask the host to disconnect this upstream";
-        x.style.cssText = "cursor:pointer;color:#808080;padding:0 2px;";
-        x.onclick = function (ev) {
+      if (flat.length || !winOrder.length) renderTabSet(sidebarEl, flat, false);
+      winOrder.forEach(function (wk) {
+        var w = wins[wk];
+        var wbox = document.createElement("div");
+        wbox.style.cssText = "border:1px solid #555;border-radius:8px;padding:4px;display:flex;flex-direction:column;gap:4px;margin-top:6px;";
+        var whd = document.createElement("div");
+        whd.style.cssText = "display:flex;align-items:center;gap:4px;padding:2px;font-size:11px;color:#b0b0b0;";
+        var wlbl = document.createElement("span");
+        wlbl.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+        wlbl.textContent = "🗔 " + (w.name || "Window");
+        whd.appendChild(wlbl);
+        var wx = document.createElement("span");
+        wx.textContent = "×"; wx.title = "Close this window on the host";
+        wx.style.cssText = "cursor:pointer;color:#808080;padding:0 2px;";
+        wx.onclick = function (ev) {
           ev.stopPropagation();
           if (viewOnlyGate()) return;
-          if (window.confirm("Ask the host to disconnect from " + (g.name || "this upstream") + "?"))
-            sendMsg({ t: "disconnectUpstream", tabId: g.tabs[0].id });
+          if (window.confirm("Close " + (w.name || "this window") + " on the host? All its tabs will close."))
+            sendMsg({ t: "closeWindow", windowId: wk });
         };
-        hd.appendChild(x);
-        box.appendChild(hd);
-        g.tabs.forEach(function (tab) { box.appendChild(tabCluster(tab)); });
-        // Always shown; view-only clicks route to the request-control dialog (viewOnlyGate).
-        var act = document.createElement("div");
-        act.className = "ltab-actions";
-        act.appendChild(groupSplitButton("v", g));
-        act.appendChild(groupSplitButton("h", g));
-        var nt = document.createElement("div");
-        nt.className = "newtab"; nt.textContent = "+ New tab";
-        nt.title = "New tab in " + (g.name || "remote");
-        nt.onclick = function () {
-          if (viewOnlyGate()) return;
-          if (g.readOnly) { requestUpstreamControl(anchorTab(g).id, g.name || "remote"); return; }
-          sendMsg({ t: "newTab", tabId: anchorTab(g).id });
-        };
-        act.appendChild(nt);
-        box.appendChild(act);
-        sidebarEl.appendChild(box);
+        whd.appendChild(wx);
+        wbox.appendChild(whd);
+        renderTabSet(wbox, w.tabs, true);
+        sidebarEl.appendChild(wbox);
       });
       // Bottom: ask the host to mirror another BossTerm share here (native "Add remote").
       var add = document.createElement("div");
@@ -920,21 +1223,36 @@
       wrap.appendChild(getPane(pid).host);
       // Clicking/tapping a pane focuses it on the client (border + key-bar / typing target).
       wrap.addEventListener("pointerdown", function () { setClientFocus(pid); });
-      // Desktop right-click → context menu.
+      // Desktop right-click → context menu. (Android also synthesizes contextmenu on
+      // long-press — ignore it while a touch scroll owns the gesture.)
       wrap.addEventListener("contextmenu", function (e) {
-        e.preventDefault(); setClientFocus(pid); showContextMenu(e.clientX, e.clientY, pid);
+        e.preventDefault();
+        if (touchScrollActive) return;
+        setClientFocus(pid); showContextMenu(e.clientX, e.clientY, pid);
       });
-      // Mobile long-press (~500ms) → same menu, anchored at the touch point.
-      var lpTimer = null, lpX = 0, lpY = 0;
+      // Mobile long-press (500ms, the platform default) → same menu, anchored at the
+      // touch point. Total movement is re-checked AT FIRE TIME (not only when a move
+      // event happens to cross the threshold), a second finger cancels outright, and an
+      // active scroll gesture (incl. catching a fling) suppresses it.
+      var lpTimer = null, lpX = 0, lpY = 0, lpMoved = 0;
       wrap.addEventListener("touchstart", function (e) {
-        if (!e.touches || e.touches.length !== 1) return;
-        lpX = e.touches[0].clientX; lpY = e.touches[0].clientY; setClientFocus(pid);
-        lpTimer = setTimeout(function () { lpTimer = null; showContextMenu(lpX, lpY, pid); }, 500);
+        if (!e.touches || e.touches.length !== 1) {
+          if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+          return;
+        }
+        lpX = e.touches[0].clientX; lpY = e.touches[0].clientY; lpMoved = 0;
+        setClientFocus(pid);
+        lpTimer = setTimeout(function () {
+          lpTimer = null;
+          if (touchScrollActive || lpMoved >= 6) return; // scrolling, not pressing
+          showContextMenu(lpX, lpY, pid);
+        }, 500);
       }, { passive: true });
       function cancelLongPress(e) {
-        if (lpTimer && e && e.touches && e.touches[0]) {
+        if (e && e.touches && e.touches.length === 1 && e.touches[0]) {
           var dx = Math.abs(e.touches[0].clientX - lpX), dy = Math.abs(e.touches[0].clientY - lpY);
-          if (dx < 10 && dy < 10) return; // small jitter — keep the timer
+          lpMoved = Math.max(lpMoved, dx, dy);
+          if (lpTimer && dx < 6 && dy < 6) return; // jitter (6px = the scroll axis-lock slop)
         }
         if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
       }
@@ -1016,12 +1334,20 @@
     }
     var root = buildNode(tree);
     if (tree.t === "pane") {
-      // single pane → natural width, scrollable in #stage (don't stretch/clip)
+      // Single pane → natural width so a wide grid pans left/right inside #stage
+      // (horizontal swipes stay native on phones — the axis-lock skips them).
+      var sp = panes[tree.paneId];
       root.style.flex = "0 0 auto";
       root.style.height = "100%";
-      root.style.overflow = "visible";
-      var sp = panes[tree.paneId];
-      if (sp) { sp.host.style.overflow = "visible"; sp.host.style.height = "100%"; }
+      if (isPhone()) {
+        // Phone: clip vertical spill — vertical touch is owned by the wheel-synthesis
+        // scroll (scrollback / TUI wheel reports), never by #stage panning the page.
+        root.style.overflow = "hidden";
+        if (sp) { sp.host.style.overflow = "hidden"; sp.host.style.height = "100%"; }
+      } else {
+        root.style.overflow = "visible";
+        if (sp) { sp.host.style.overflow = "visible"; sp.host.style.height = "100%"; }
+      }
     } else {
       root.style.flex = "1 1 0"; // splits fill the stage
     }
@@ -1048,6 +1374,8 @@
     // Mid divider-drag, the host echoes ratio changes back as layouts — don't rebuild the
     // stage (it would destroy the divider under the pointer); onUp re-renders to settle.
     if (!splitDragging) renderStage();
+    autoFitPending = true;
+    maybeAutoFit();
   }
 
   function collectPaneIds(node, out) {
@@ -1091,11 +1419,17 @@
         if (m.data) p.term.write(m.data);
         relayoutSinglePane();
         updateDims();
+        autoFitPending = true;
+        maybeAutoFit();
         break;
       }
       case "paneOutput": if (m.data) getPane(m.paneId).term.write(m.data); break;
       case "paneResize":
-        if (m.cols && m.rows) { getPane(m.paneId).term.resize(m.cols, m.rows); relayoutSinglePane(); updateDims(); }
+        if (m.cols && m.rows) {
+          getPane(m.paneId).term.resize(m.cols, m.rows); relayoutSinglePane(); updateDims();
+          autoFitPending = true;
+          maybeAutoFit();
+        }
         break;
       case "presence":
         presenceEl.textContent = m.viewers === 1 ? "1 viewer" : m.viewers + " viewers"; break;
@@ -1103,6 +1437,29 @@
         controlGranted = !!m.granted;
         viewOnlyEl.style.display = controlGranted ? "none" : "";
         fithostEl.style.display = controlGranted ? "" : "none"; // resizing the host needs control
+        // Phone + control: a phone-sized HOST grid is the best experience — offer it
+        // once with an explicit confirm (resizing the host stays user-approved). Skips
+        // when the grid already (roughly) fits; declining highlights the Fit-host
+        // button instead, as a reminder it's there.
+        if (controlGranted && isPhone() && !fithostPrompted) {
+          fithostPrompted = true;
+          var offerFitHost = function (retriesLeft) {
+            var g = fitHostGrid();
+            if (!g) { // panes not measurable yet — try again shortly
+              if (retriesLeft > 0) setTimeout(function () { offerFitHost(retriesLeft - 1); }, 1200);
+              return;
+            }
+            if (g.curCols <= g.cols + 2 && g.curRows <= g.rows + 2) return; // already fits
+            if (window.confirm("Fit the host's window to this phone screen? Its BossTerm window will resize."))
+              sendMsg({ t: "resizeHost", tabId: activeTabId, cols: g.cols, rows: g.rows });
+            else {
+              fithostEl.style.boxShadow = "0 0 0 2px #4a90e2";
+              setTimeout(function () { fithostEl.style.boxShadow = ""; }, 4000);
+            }
+          };
+          // Let the layout/snapshot settle so the grid measurement is real.
+          setTimeout(function () { offerFitHost(2); }, 800);
+        }
         // Second hop of a chained upstream request (view-only → control → relay upstream).
         if (controlGranted && pendingUpstreamControlTab) {
           sendMsg({ t: "requestControl", tabId: pendingUpstreamControlTab });

@@ -103,13 +103,27 @@ class BlockingTerminalDataStream(
     var debugCallback: ((String) -> Unit)? = null
 
     /**
-     * Optional callback invoked with each complete chunk of raw PTY output as it
-     * is appended (before emulator processing), independent of debug mode. Used by
+     * Listeners invoked with each complete chunk of raw PTY output as it is
+     * appended (before emulator processing), independent of debug mode. Used by
      * session sharing to relay the raw byte/escape stream to remote viewers, which
      * re-emulate it with xterm.js. Same data the emulator consumes, so fidelity is
-     * exact. Null when nothing is observing. Set/cleared by [ai.rever.bossterm.compose.share.SharedSession].
+     * exact. A list (not a single slot) so overlapping observers — e.g. an
+     * all-windows share and a window share of the same pane — can attach and
+     * detach independently without clobbering each other.
      */
-    var onRawOutput: ((String) -> Unit)? = null
+    private val rawOutputListeners = java.util.concurrent.CopyOnWriteArrayList<(String) -> Unit>()
+
+    fun addRawOutputListener(listener: (String) -> Unit) {
+        rawOutputListeners.addIfAbsent(listener)
+    }
+
+    fun removeRawOutputListener(listener: (String) -> Unit) {
+        rawOutputListeners.remove(listener)
+    }
+
+    private fun notifyRawOutput(data: String) {
+        for (l in rawOutputListeners) l(data)
+    }
 
     /**
      * Optional callback invoked when terminal state changes (data arrives from PTY).
@@ -163,13 +177,13 @@ class BlockingTerminalDataStream(
                 dataQueue.offer(completeData)
                 // Invoke debug callback only for complete data
                 debugCallback?.invoke(completeData)
-                onRawOutput?.invoke(completeData)
+                notifyRawOutput(completeData)
             }
         } else {
             // All graphemes are complete
             dataQueue.offer(fullData)
             debugCallback?.invoke(fullData)
-            onRawOutput?.invoke(fullData)
+            notifyRawOutput(fullData)
         }
     }
 

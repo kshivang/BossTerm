@@ -32,13 +32,15 @@ import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
-/** Whether a share covers one tab (incl. its splits) or the whole window (all tabs). */
-enum class ShareScope { TAB, WINDOW }
+/** Whether a share covers one tab (incl. its splits), the whole window (all tabs), or every window. */
+enum class ShareScope { TAB, WINDOW, ALL }
 
 /**
  * One active share (issue #276) mirroring a window→tabs→panes model to browser viewers.
  * TAB scope mirrors the single initiating tab (with its splits); WINDOW scope mirrors
- * every tab of the owning [TabbedTerminalState], reactive to tab add/remove.
+ * every tab of the owning [TabbedTerminalState], reactive to tab add/remove; ALL scope
+ * mirrors every tab of every registered window (reactive to window open/close too) and
+ * stamps each [TabNode] with its window identity so viewers can group by window.
  *
  * A `snapshotFlow` over the window's structure (tabs, each tab's split `rootNode`,
  * focus, per-pane size, titles) drives: (re)installing a raw-output tap on every pane,
@@ -74,7 +76,7 @@ class MirrorShare(
     val sessionName = androidx.compose.runtime.mutableStateOf(SessionShareManager.defaultSessionName())
     private var observerJob: Job? = null
 
-    private class TapEntry(val tab: TerminalTab, val prev: ((String) -> Unit)?)
+    private class TapEntry(val tab: TerminalTab, val listener: (String) -> Unit)
     private val taps = HashMap<String, TapEntry>()
 
     fun start() {
@@ -88,7 +90,7 @@ class MirrorShare(
     fun stop() {
         observerJob?.cancel()
         synchronized(taps) {
-            taps.values.forEach { e -> runCatching { e.tab.dataStream.onRawOutput = e.prev } }
+            taps.values.forEach { e -> runCatching { e.tab.dataStream.removeRawOutputListener(e.listener) } }
             taps.clear()
         }
         viewers.forEach { it.outbox.close() }
@@ -139,10 +141,23 @@ class MirrorShare(
      */
     private fun upstreamSession(targetTabId: String?): ai.rever.bossterm.compose.remote.RemoteSession? {
         if (targetTabId == null) return null
-        val st = McpTerminalRegistry.findState(tabId) ?: return null
+        // Resolve by the TARGET tab's owning window (== the anchor's for TAB/WINDOW; any
+        // registered window for ALL) so relays work on mirrors living in other windows.
+        val st = McpTerminalRegistry.findState(targetTabId) ?: return null
         val tab = st.tabs.firstOrNull { it.id == targetTabId } ?: return null
         return st.remoteSessions.sessionForTab(tab)
     }
+
+    /**
+     * The window state a viewer action should mutate: the target tab's owner when the
+     * action names a tab (it can live in any window under ALL scope), else the anchor's
+     * (e.g. a bare NewTab), else — anchor window already closed under ALL — the first
+     * remaining in-scope window.
+     */
+    private fun stateFor(targetTabId: String?): TabbedTerminalState? =
+        targetTabId?.let { McpTerminalRegistry.findState(it) }
+            ?: McpTerminalRegistry.findState(tabId)
+            ?: inScopeStates().firstOrNull()
 
     fun handleClient(vc: ViewerConnection, msg: ClientMessage) {
         if (msg is ClientMessage.RequestControl) {
@@ -181,17 +196,19 @@ class MirrorShare(
                 (taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId])?.writeUserInput(msg.data)
             is ClientMessage.CloseTab ->
                 upstreamSession(msg.tabId)?.closeFromChip(msg.tabId, msg.tabId)
-                    ?: McpTerminalRegistry.findState(tabId)?.closeTab(msg.tabId)
+                    ?: stateFor(msg.tabId)?.closeTab(msg.tabId)
             is ClientMessage.NewTab ->
                 // Background: a viewer creating a tab shouldn't switch the host user's active tab.
-                upstreamSession(msg.tabId)?.newRemoteTab()
-                    ?: McpTerminalRegistry.findState(tabId)?.createTab(activate = false)
+                // Relay TARGETED (newTabIn maps to the upstream tab id) so the new tab opens in
+                // the origin window the viewer pointed at, not the upstream's anchor window.
+                upstreamSession(msg.tabId)?.newTabIn(msg.tabId!!)
+                    ?: stateFor(msg.tabId)?.createTab(activate = false)
             is ClientMessage.SplitVertical ->
                 upstreamSession(msg.tabId)?.splitPane(msg.tabId, msg.paneId, horizontal = false)
-                    ?: McpTerminalRegistry.findState(tabId)?.splitVerticalFromPane(msg.tabId, msg.paneId)
+                    ?: stateFor(msg.tabId)?.splitVerticalFromPane(msg.tabId, msg.paneId)
             is ClientMessage.SplitHorizontal ->
                 upstreamSession(msg.tabId)?.splitPane(msg.tabId, msg.paneId, horizontal = true)
-                    ?: McpTerminalRegistry.findState(tabId)?.splitHorizontalFromPane(msg.tabId, msg.paneId)
+                    ?: stateFor(msg.tabId)?.splitHorizontalFromPane(msg.tabId, msg.paneId)
             is ClientMessage.ClosePane -> {
                 val upstream = upstreamSession(msg.tabId)
                 if (upstream != null) {
@@ -199,14 +216,22 @@ class MirrorShare(
                 } else {
                     // Target the clicked pane (focus it), then close; closeFocusedPane closes
                     // the whole tab when it's the only pane (matches the host's behavior).
-                    val st = McpTerminalRegistry.findState(tabId)
+                    val st = stateFor(msg.tabId)
                     st?.splitStates?.get(msg.tabId)?.setFocusedPane(msg.paneId)
                     st?.closeFocusedPane(msg.tabId)
                 }
             }
             is ClientMessage.DisconnectUpstream ->
                 upstreamSession(msg.tabId)?.let { up ->
-                    McpTerminalRegistry.findState(tabId)?.remoteSessions?.disconnect(up)
+                    stateFor(msg.tabId)?.remoteSessions?.disconnect(up)
+                }
+            is ClientMessage.CloseWindow ->
+                // ALL scope only — windowIds are stamped by our own Layout, so the viewer can
+                // only name windows this share covers. Closing every tab closes the window
+                // (the last tab's close fires the window's onLastTabClosed).
+                if (scope == ShareScope.ALL) {
+                    McpTerminalRegistry.allStates().firstOrNull { it.windowTag == msg.windowId }
+                        ?.let { st -> st.tabs.map { it.id }.forEach { id -> st.closeTab(id) } }
                 }
             is ClientMessage.LaunchAI -> {
                 val upstream = upstreamSession(msg.tabId)
@@ -225,19 +250,19 @@ class MirrorShare(
             }
             // ---- tab-chip context menu (mirrors the host's chip menu) ----
             is ClientMessage.RenameTab ->
-                McpTerminalRegistry.findState(tabId)?.renameChip(msg.tabId, msg.paneId, msg.title)
+                stateFor(msg.tabId)?.renameChip(msg.tabId, msg.paneId, msg.title)
             is ClientMessage.SetTabColor ->
-                McpTerminalRegistry.findState(tabId)?.setChipColor(msg.tabId, msg.paneId, msg.color)
+                stateFor(msg.tabId)?.setChipColor(msg.tabId, msg.paneId, msg.color)
             is ClientMessage.DuplicateTab ->
-                McpTerminalRegistry.findState(tabId)?.duplicateTab(msg.tabId)
+                stateFor(msg.tabId)?.duplicateTab(msg.tabId)
             is ClientMessage.CloseOtherTabs ->
-                McpTerminalRegistry.findState(tabId)?.closeOtherTabs(msg.tabId)
+                stateFor(msg.tabId)?.closeOtherTabs(msg.tabId)
             is ClientMessage.CloseTabsBelow ->
-                McpTerminalRegistry.findState(tabId)?.closeTabsBelow(msg.tabId)
-            is ClientMessage.ResizeHost -> resizeHostWindow(msg.cols, msg.rows)
+                stateFor(msg.tabId)?.closeTabsBelow(msg.tabId)
+            is ClientMessage.ResizeHost -> resizeHostWindow(msg.tabId, msg.cols, msg.rows)
             is ClientMessage.ResizeSplit ->
                 upstreamSession(msg.tabId)?.resizeSplit(msg.tabId, msg.splitId, msg.ratio, committed = true)
-                    ?: McpTerminalRegistry.findState(tabId)?.splitStates?.get(msg.tabId)?.updateSplitRatio(msg.splitId, msg.ratio)
+                    ?: stateFor(msg.tabId)?.splitStates?.get(msg.tabId)?.updateSplitRatio(msg.splitId, msg.ratio)
             is ClientMessage.OfferShare -> {
                 // Two-way sharing: mirror the offering client's session back into this window.
                 // NOTE (trust boundary): this makes the host open an OUTBOUND WebSocket to a URL
@@ -248,7 +273,7 @@ class MirrorShare(
                 // either side's tabs from bouncing back.
                 val name = (System.getProperty("user.name")?.takeIf { it.isNotBlank() }
                     ?.let { "$it (BossTerm)" }) ?: "BossTerm"
-                McpTerminalRegistry.findState(tabId)?.remoteSessions?.connect(msg.link, name)
+                stateFor(null)?.remoteSessions?.connect(msg.link, name)
             }
             else -> {} // Hello / Focus: no-op (focus is viewer-side; RequestControl handled above)
         }
@@ -261,16 +286,43 @@ class MirrorShare(
      * measurement and the window chrome (left tab bar, title) cancels out of the delta.
      * Best-effort and single-pane-oriented; multi-window picks the focused (else first) window.
      */
-    private fun resizeHostWindow(cols: Int, rows: Int) {
+    private fun resizeHostWindow(targetTabId: String?, cols: Int, rows: Int) {
         if (cols < 2 || rows < 2) return
-        val tab = McpTerminalRegistry.findTab(tabId) ?: return
+        // The TAB THE VIEWER IS WATCHING (it names itself in the message), not the share's
+        // anchor — its cell size / current grid drive the window delta. Fall back to anchor.
+        val tab = targetTabId?.let { McpTerminalRegistry.findTab(it) }
+            ?: McpTerminalRegistry.findTab(tabId) ?: return
         val cw = tab.terminal.cellWidthPx
         val ch = tab.terminal.cellHeightPx
         if (cw <= 0f || ch <= 0f) return
         val cur = tab.display.termSize.value
-        val win = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }?.awtWindow
-            ?: WindowManager.windows.firstOrNull { it.awtWindow != null }?.awtWindow
+        val tw = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }
+            ?: WindowManager.windows.firstOrNull { it.awtWindow != null }
             ?: return
+        // A BACKGROUND tab's grid only re-measures when it becomes visible (the canvas
+        // auto-fit runs for the composed tab only) — resizing just the window would leave
+        // the viewer on the old grid until the host user switches to that tab. Resize the
+        // target's terminal + PTY directly too (single-pane tabs; a split's panes share
+        // the window area and re-measure on focus).
+        val st = McpTerminalRegistry.findState(tab.id)
+        if (st != null && st.activeTabId != tab.id) {
+            val ss = st.splitStates[tab.id]
+            val session = when {
+                ss == null -> tab
+                ss.getAllPanes().size == 1 -> ss.getAllPanes().first().session as? TerminalTab
+                else -> null
+            }
+            if (session != null) {
+                runCatching {
+                    session.terminal.resize(
+                        ai.rever.bossterm.core.util.TermSize(cols, rows),
+                        ai.rever.bossterm.terminal.RequestOrigin.User
+                    )
+                }
+                coro.launch { runCatching { session.processHandle.value?.resize(cols, rows) } }
+            }
+        }
+        val win = tw.awtWindow ?: return
         // AWT window size is in points; cell px is physical — divide by the display scale.
         javax.swing.SwingUtilities.invokeLater {
             runCatching {
@@ -288,10 +340,47 @@ class MirrorShare(
                     newH = newH.coerceIn(320, maxH)
                 }
                 if (newW != win.width || newH != win.height) {
-                    win.setSize(newW, newH)
-                    win.validate()
+                    applyWindowSize(tw, win, newW, newH)
                 }
             }
+        }
+    }
+
+    companion object {
+        /**
+         * Resize a window programmatically. PREFER the Compose [WindowState] — Compose then
+         * moves the AWT frame and its Skia surface together, so no unpainted strip can
+         * appear. Poking awtWindow.setSize directly lets the surface (sometimes) lag one
+         * resize event behind; for embedders without a wired state, fall back to setSize +
+         * a delayed 1px nudge that replays the heal a real resize provides.
+         */
+        internal fun applyWindowSize(
+            tw: ai.rever.bossterm.compose.window.TerminalWindow,
+            win: java.awt.Window,
+            newW: Int,
+            newH: Int,
+        ) {
+            val cs = tw.composeWindowState
+            if (cs != null) {
+                cs.size = androidx.compose.ui.unit.DpSize(
+                    androidx.compose.ui.unit.Dp(newW.toFloat()),
+                    androidx.compose.ui.unit.Dp(newH.toFloat()),
+                )
+                return
+            }
+            win.setSize(newW, newH)
+            win.validate()
+            win.repaint()
+            val nudge = javax.swing.Timer(100) {
+                runCatching {
+                    win.setSize(newW, newH + 1)
+                    win.setSize(newW, newH)
+                    win.validate()
+                    win.repaint()
+                }
+            }
+            nudge.isRepeats = false
+            nudge.start()
         }
     }
 
@@ -301,13 +390,13 @@ class MirrorShare(
         if (paneMap.isEmpty()) { onEnded(); return }
         synchronized(taps) {
             (taps.keys - paneMap.keys).toList().forEach { id ->
-                taps.remove(id)?.let { e -> runCatching { e.tab.dataStream.onRawOutput = e.prev } }
+                taps.remove(id)?.let { e -> runCatching { e.tab.dataStream.removeRawOutputListener(e.listener) } }
             }
             for ((id, tab) in paneMap) {
                 if (id !in taps) {
-                    val prev = tab.dataStream.onRawOutput
-                    taps[id] = TapEntry(tab, prev)
-                    tab.dataStream.onRawOutput = { d -> prev?.invoke(d); broadcast(ServerMessage.PaneOutput(id, d)) }
+                    val listener: (String) -> Unit = { d -> broadcast(ServerMessage.PaneOutput(id, d)) }
+                    taps[id] = TapEntry(tab, listener)
+                    tab.dataStream.addRawOutputListener(listener)
                     val sz = sig.sizes[id] ?: listOf(80, 24)
                     broadcast(ServerMessage.PaneSnapshot(id, snapshotText(tab), sz[0], sz[1]))
                 }
@@ -327,63 +416,88 @@ class MirrorShare(
         val sessionName: String? = null,
     )
 
+    /** The windows a share covers: every registered one for ALL, else the anchor tab's. */
+    private fun inScopeStates(): List<TabbedTerminalState> = when (scope) {
+        ShareScope.ALL -> McpTerminalRegistry.allStates()
+        else -> listOfNotNull(McpTerminalRegistry.findState(tabId))
+    }
+
     private fun inScopeTabs(state: TabbedTerminalState): List<TerminalTab> = when (scope) {
-        ShareScope.WINDOW -> state.tabs
+        ShareScope.WINDOW, ShareScope.ALL -> state.tabs
         ShareScope.TAB -> state.tabs.filter { it.id == tabId }
     }
 
     private fun computeSignature(): WindowSig {
-        val state = McpTerminalRegistry.findState(tabId) ?: return WindowSig(emptyList(), null, emptyMap(), false, false)
+        if (scope == ShareScope.ALL) McpTerminalRegistry.statesRev.value // subscribe: window open/close re-emits
+        val states = inScopeStates()
+        if (states.isEmpty()) return WindowSig(emptyList(), null, emptyMap(), false, false)
         val tabNodes = ArrayList<TabNode>()
         val sizes = HashMap<String, List<Int>>()
-        val activeId = if (scope == ShareScope.TAB) tabId else state.activeTabId
+        // ALL: the anchor window's active tab (falling back to the first window) — focus
+        // isn't snapshot-observable across windows, and the anchor is where the share lives.
+        val anchorState = McpTerminalRegistry.findState(tabId) ?: states.first()
+        val activeId = if (scope == ShareScope.TAB) tabId else anchorState.activeTabId
         val settings = SettingsManager.instance.settings.value
         val onLeft = settings.tabBarPosition == "left"
         val summary = settings.tabBarSummaryMode
-        for (tab in inScopeTabs(state)) {
-            val ss = state.splitStates[tab.id]
-            val tree: PaneTreeNode = if (ss != null) {
-                sigNode(ss.rootNode, ss.focusedPaneId, sizes)
-            } else {
-                val s = tab.display.termSize.value
-                sizes[tab.id] = listOf(s.columns, s.rows)
-                PaneTreeNode.Pane(
-                    tab.id, tab.title.value, tab.workingDirectory.value, true,
-                    color = tabColorCss(tab), branch = tab.gitBranch.value
+        // Stamp window identity only when the share actually spans windows — a single-window
+        // ALL share stays frame-identical to WINDOW, and old viewers just ignore the fields.
+        val multiWindow = scope == ShareScope.ALL && states.size > 1
+        for ((wIdx, state) in states.withIndex()) {
+            val windowId = if (multiWindow) state.windowTag else null
+            val windowName = if (multiWindow) "Window ${wIdx + 1}" else null
+            for (tab in inScopeTabs(state)) {
+                val ss = state.splitStates[tab.id]
+                val tree: PaneTreeNode = if (ss != null) {
+                    sigNode(ss.rootNode, ss.focusedPaneId, sizes)
+                } else {
+                    val s = tab.display.termSize.value
+                    sizes[tab.id] = listOf(s.columns, s.rows)
+                    PaneTreeNode.Pane(
+                        tab.id, tab.title.value, tab.workingDirectory.value, true,
+                        color = tabColorCss(tab), branch = tab.gitBranch.value
+                    )
+                }
+                // Mark tabs that themselves mirror another session with that share's token hash
+                // (so a client connecting to us can skip the ones mirroring its own session), a
+                // friendly label, and whether WE are view-only on it (then input can't flow
+                // through us — nested viewers should mark those tabs read-only too).
+                //
+                // A mirrored tab may itself mirror a DEEPER session (A→B→C: our B-mirror of B's
+                // C-mirror). Forward the DEEPEST origin — its hash keeps grouping/loop-guarding
+                // correct at the true source — chain the label ("C · via B"), and degrade
+                // read-only/offline if ANY hop along the path is degraded.
+                val upstream = state.remoteSessions.sessionForTab(tab)
+                upstream?.upstreamRev?.value // subscribe: deeper-origin changes re-broadcast too
+                val deeper = upstream?.upstreamFor(tab.id)
+                val upstreamName = upstream?.let {
+                    it.customName.value ?: it.hostName.value
+                        ?: runCatching { java.net.URI(it.link).host }.getOrNull() ?: it.link
+                }
+                // The upstream's own window for this tab (it shared ALL its windows) — forward
+                // it so OUR viewers can section the "via host" group per origin window.
+                val upstreamWindow = upstream?.windowFor(tab.id)
+                tabNodes.add(
+                    TabNode(
+                        id = tab.id, title = tab.title.value, active = tab.id == activeId, tree = tree,
+                        color = tabColorCss(tab), cwd = tab.workingDirectory.value, branch = tab.gitBranch.value,
+                        origin = deeper?.key ?: upstream?.originHash,
+                        originName = when {
+                            deeper != null -> "${deeper.name ?: "remote"} · via $upstreamName"
+                            else -> upstreamName
+                        },
+                        originReadOnly = upstream?.let { (deeper?.readOnly ?: false) || !it.canControlState.value },
+                        originOffline = upstream?.let {
+                            (deeper?.offline ?: false) ||
+                                it.statusState.value !is ai.rever.bossterm.compose.remote.RemoteStatus.Connected
+                        },
+                        windowId = windowId,
+                        windowName = windowName,
+                        originWindowId = upstreamWindow?.key,
+                        originWindowName = upstreamWindow?.name,
+                    )
                 )
             }
-            // Mark tabs that themselves mirror another session with that share's token hash
-            // (so a client connecting to us can skip the ones mirroring its own session), a
-            // friendly label, and whether WE are view-only on it (then input can't flow
-            // through us — nested viewers should mark those tabs read-only too).
-            //
-            // A mirrored tab may itself mirror a DEEPER session (A→B→C: our B-mirror of B's
-            // C-mirror). Forward the DEEPEST origin — its hash keeps grouping/loop-guarding
-            // correct at the true source — chain the label ("C · via B"), and degrade
-            // read-only/offline if ANY hop along the path is degraded.
-            val upstream = state.remoteSessions.sessionForTab(tab)
-            upstream?.upstreamRev?.value // subscribe: deeper-origin changes re-broadcast too
-            val deeper = upstream?.upstreamFor(tab.id)
-            val upstreamName = upstream?.let {
-                it.customName.value ?: it.hostName.value
-                    ?: runCatching { java.net.URI(it.link).host }.getOrNull() ?: it.link
-            }
-            tabNodes.add(
-                TabNode(
-                    id = tab.id, title = tab.title.value, active = tab.id == activeId, tree = tree,
-                    color = tabColorCss(tab), cwd = tab.workingDirectory.value, branch = tab.gitBranch.value,
-                    origin = deeper?.key ?: upstream?.originHash,
-                    originName = when {
-                        deeper != null -> "${deeper.name ?: "remote"} · via $upstreamName"
-                        else -> upstreamName
-                    },
-                    originReadOnly = upstream?.let { (deeper?.readOnly ?: false) || !it.canControlState.value },
-                    originOffline = upstream?.let {
-                        (deeper?.offline ?: false) ||
-                            it.statusState.value !is ai.rever.bossterm.compose.remote.RemoteStatus.Connected
-                    },
-                )
-            )
         }
         return WindowSig(tabNodes, activeId, sizes, onLeft, summary, sessionName.value)
     }
@@ -418,14 +532,15 @@ class MirrorShare(
             PaneTreeNode.Split("h", node.ratio, sigNode(node.top, focusedId, sizes), sigNode(node.bottom, focusedId, sizes), node.id)
     }
 
-    /** Current paneId → owning session, across all in-scope tabs. */
+    /** Current paneId → owning session, across all in-scope tabs (all windows for ALL). */
     private fun paneTabMap(): Map<String, TerminalTab> {
-        val state = McpTerminalRegistry.findState(tabId) ?: return emptyMap()
         val m = LinkedHashMap<String, TerminalTab>()
-        for (tab in inScopeTabs(state)) {
-            val ss = state.splitStates[tab.id]
-            if (ss != null) ss.getAllPanes().forEach { p -> (p.session as? TerminalTab)?.let { m[p.id] = it } }
-            else m[tab.id] = tab
+        for (state in inScopeStates()) {
+            for (tab in inScopeTabs(state)) {
+                val ss = state.splitStates[tab.id]
+                if (ss != null) ss.getAllPanes().forEach { p -> (p.session as? TerminalTab)?.let { m[p.id] = it } }
+                else m[tab.id] = tab
+            }
         }
         return m
     }

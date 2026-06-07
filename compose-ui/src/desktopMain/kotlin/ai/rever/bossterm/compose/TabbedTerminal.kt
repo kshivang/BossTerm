@@ -1962,13 +1962,16 @@ fun TabbedTerminal(
                 fitClientWindowToHost(pane)
                 remoteFitPrompt = null
             },
-            onFitHost = if (session.canControlState.value) {
-                {
+            onFitHost = {
+                if (session.canControlState.value) {
                     if (pane.remoteFitCols >= 2 && pane.remoteFitRows >= 2)
                         session.resizeHost(container.id, pane.remoteFitCols, pane.remoteFitRows)
-                    remoteFitPrompt = null
+                } else {
+                    // View-only: resizing the host needs control — confirm + request it.
+                    requestControlPrompt = { session.requestControl() }
                 }
-            } else null,
+                remoteFitPrompt = null
+            },
             onDismiss = { remoteFitPrompt = null },
         )
     }

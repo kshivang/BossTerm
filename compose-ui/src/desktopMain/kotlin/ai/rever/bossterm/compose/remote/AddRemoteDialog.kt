@@ -205,8 +205,8 @@ fun RequestControlPrompt(onConfirm: () -> Unit, onDismiss: () -> Unit) {
 fun RemoteFitPrompt(
     hostName: String,
     onFitMyWindow: () -> Unit,
-    /** Null when view-only — resizing the host needs control. */
-    onFitHost: (() -> Unit)?,
+    /** With control: resizes the host. View-only: the caller routes to a control request. */
+    onFitHost: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     androidx.compose.material3.AlertDialog(
@@ -214,27 +214,28 @@ fun RemoteFitPrompt(
         containerColor = BackgroundColor,
         title = { Text("Match window sizes?", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
         text = {
-            Text(
-                "This tab mirrors $hostName, whose terminal grid doesn't fit this window 1:1. " +
-                    "Fit your window to the host's grid" +
-                    (if (onFitHost != null) ", or resize the host's window to match yours." else "."),
-                color = TextSecondary, fontSize = 12.sp
-            )
-        },
-        confirmButton = {
-            androidx.compose.foundation.layout.Row(
-                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
+            // Both directions as stacked full-width buttons (a side-by-side row overflows
+            // the dialog and can hide one option).
+            androidx.compose.foundation.layout.Column(
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)
             ) {
-                if (onFitHost != null) {
-                    TextButton(onClick = onFitHost) { Text("Fit host to my window", color = TextSecondary) }
-                }
+                Text(
+                    "This tab mirrors $hostName — its terminal grid doesn't fit this window 1:1.",
+                    color = TextSecondary, fontSize = 12.sp
+                )
                 Button(
                     onClick = onFitMyWindow,
+                    modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
                 ) { Text("Fit my window to host") }
+                Button(
+                    onClick = onFitHost,
+                    modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A3A), contentColor = TextPrimary)
+                ) { Text("Fit host to my window") }
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Not now", color = TextSecondary) } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Not now", color = TextSecondary) } },
     )
 }
 

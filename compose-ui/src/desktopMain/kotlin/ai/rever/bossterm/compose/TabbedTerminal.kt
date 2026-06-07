@@ -1391,7 +1391,24 @@ fun TabbedTerminal(
                             val maxH = (b.y + b.height - win.y).coerceAtLeast(320)
                             newW = newW.coerceIn(480, maxW); newH = newH.coerceIn(320, maxH)
                         }
-                        if (newW != win.width || newH != win.height) { win.setSize(newW, newH); win.validate() }
+                        if (newW != win.width || newH != win.height) {
+                            win.setSize(newW, newH)
+                            win.validate()
+                            win.repaint()
+                            // Compose's Skia surface lags a programmatic resize by one event
+                            // (unpainted strip until the next real resize) — nudge 1px and
+                            // back a beat later so it re-measures at the final size.
+                            val nudge = javax.swing.Timer(100) {
+                                runCatching {
+                                    win.setSize(newW, newH + 1)
+                                    win.setSize(newW, newH)
+                                    win.validate()
+                                    win.repaint()
+                                }
+                            }
+                            nudge.isRepeats = false
+                            nudge.start()
+                        }
                     }
                 }
             }

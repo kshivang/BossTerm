@@ -315,6 +315,22 @@ class MirrorShare(
                 if (newW != win.width || newH != win.height) {
                     win.setSize(newW, newH)
                     win.validate()
+                    win.repaint()
+                    // Compose's Skia surface lags a PROGRAMMATIC resize by one event,
+                    // leaving an unpainted strip below the content until the next real
+                    // resize (a manual drag heals it instantly). Replay that heal: nudge
+                    // the height 1px and back a beat later so the surface re-measures
+                    // at the final size.
+                    val nudge = javax.swing.Timer(100) {
+                        runCatching {
+                            win.setSize(newW, newH + 1)
+                            win.setSize(newW, newH)
+                            win.validate()
+                            win.repaint()
+                        }
+                    }
+                    nudge.isRepeats = false
+                    nudge.start()
                 }
             }
         }

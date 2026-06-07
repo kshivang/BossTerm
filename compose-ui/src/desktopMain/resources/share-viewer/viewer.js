@@ -281,7 +281,7 @@
   // Re-fit once per fresh-geometry event (layout / snapshot / host resize / rotation) —
   // never on plain output, and never against a manual zoom (zoom +/- flips fitMode off).
   var autoFitPending = false;
-  var fithostPulsed = false; // one-time "Fit host" highlight when control lands on a phone
+  var fithostPrompted = false; // one-time "fit host to this phone?" offer when control lands
   function maybeAutoFit() {
     if (fitMode !== "screen" || !autoFitPending) return;
     autoFitPending = false;
@@ -344,18 +344,25 @@
   }
   // "Fit host to my screen": measure the client's cell size + viewport, work out the grid
   // that fills it, and ask the host to resize its window to match (control only).
-  fithostEl.onclick = function () {
+  function fitHostGrid() {
     var id = activePaneId(), p = id && panes[id];
-    if (!p || !p.term || !p.term.cols) return;
-    var sc = p.host.querySelector(".xterm-screen"); if (!sc) return;
+    if (!p || !p.term || !p.term.cols) return null;
+    var sc = p.host.querySelector(".xterm-screen"); if (!sc) return null;
     var r = sc.getBoundingClientRect();
     var cellW = r.width / p.term.cols, cellH = r.height / p.term.rows;
-    if (!(cellW > 0) || !(cellH > 0)) return;
+    if (!(cellW > 0) || !(cellH > 0)) return null;
     var CHROME = 8; // leave room for the pane border (1px/side) + a little slack so it fits
-    var cols = Math.max(20, Math.floor((stageEl.clientWidth - CHROME) / cellW));
-    var rows = Math.max(6, Math.floor((stageEl.clientHeight - CHROME) / cellH));
-    sendMsg({ t: "resizeHost", tabId: activeTabId, cols: cols, rows: rows });
-  };
+    return {
+      cols: Math.max(20, Math.floor((stageEl.clientWidth - CHROME) / cellW)),
+      rows: Math.max(6, Math.floor((stageEl.clientHeight - CHROME) / cellH)),
+      curCols: p.term.cols, curRows: p.term.rows,
+    };
+  }
+  function fitHostNow() {
+    var g = fitHostGrid(); if (!g) return;
+    sendMsg({ t: "resizeHost", tabId: activeTabId, cols: g.cols, rows: g.rows });
+  }
+  fithostEl.onclick = fitHostNow;
 
   // ---- right-click / long-press context menu ----
   // Copy via the async Clipboard API where available (needs a secure context: https /
@@ -1425,12 +1432,22 @@
         controlGranted = !!m.granted;
         viewOnlyEl.style.display = controlGranted ? "none" : "";
         fithostEl.style.display = controlGranted ? "" : "none"; // resizing the host needs control
-        // Phone + control: briefly highlight "Fit host" — resizing the host grid to the
-        // phone is the best scrolling experience. Discoverable, never auto-fired.
-        if (controlGranted && isPhone() && !fithostPulsed) {
-          fithostPulsed = true;
-          fithostEl.style.boxShadow = "0 0 0 2px #4a90e2";
-          setTimeout(function () { fithostEl.style.boxShadow = ""; }, 4000);
+        // Phone + control: a phone-sized HOST grid is the best experience — offer it
+        // once with an explicit confirm (resizing the host stays user-approved). Skips
+        // when the grid already (roughly) fits; declining highlights the Fit-host
+        // button instead, as a reminder it's there.
+        if (controlGranted && isPhone() && !fithostPrompted) {
+          fithostPrompted = true;
+          setTimeout(function () {
+            var g = fitHostGrid(); if (!g) return;
+            if (g.curCols <= g.cols + 2 && g.curRows <= g.rows + 2) return; // already fits
+            if (window.confirm("Fit the host's window to this phone screen? Its BossTerm window will resize."))
+              sendMsg({ t: "resizeHost", tabId: activeTabId, cols: g.cols, rows: g.rows });
+            else {
+              fithostEl.style.boxShadow = "0 0 0 2px #4a90e2";
+              setTimeout(function () { fithostEl.style.boxShadow = ""; }, 4000);
+            }
+          }, 800); // let the layout/snapshot settle so the grid measurement is real
         }
         // Second hop of a chained upstream request (view-only → control → relay upstream).
         if (controlGranted && pendingUpstreamControlTab) {

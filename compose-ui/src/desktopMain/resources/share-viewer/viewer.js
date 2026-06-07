@@ -161,9 +161,6 @@
     if (!pid) return;
     var p = panes[pid]; if (!p) return;
     requestAnimationFrame(function () {
-      // Phone: the pane is bounded to the stage box (renderStage) so xterm's own viewport
-      // is THE vertical scroller — never re-grow it to the grid's natural width here.
-      if (isPhone()) { p.host.style.width = "100%"; return; }
       var sc = p.host.querySelector(".xterm-screen");
       if (sc) { var w = Math.ceil(sc.getBoundingClientRect().width); if (w > 0) p.host.style.width = w + "px"; }
     });
@@ -172,7 +169,6 @@
     relayoutSinglePane();
     autoFitPending = true;
     maybeAutoFit();
-    scheduleScrollDot();
   }
   window.addEventListener("resize", onViewportChange);
   window.addEventListener("orientationchange", onViewportChange);
@@ -593,7 +589,6 @@
     }
     if (viewerFont) { try { term.options.fontSize = viewerFont; } catch (e) {} }
     term.onData(function (data) { sendInput(paneId, data); });
-    term.onScroll(function () { scheduleScrollDot(); });
     attachTouchScroll(host, term);
     p = { term: term, host: host };
     panes[paneId] = p;
@@ -667,61 +662,6 @@
     host.addEventListener("touchcancel", function () { axis = null; vel = 0; }, { passive: true, capture: true });
   }
 
-  // ---- thumb scroll handle (phones) ----
-  // A pointer-captured drag pill on the right edge — guaranteed touch scrolling even on
-  // browsers where the terminal swallows swipe gestures (same mechanism as the split
-  // dividers, which work everywhere). Maps drag position → scrollback position.
-  var scrollDotEl = document.getElementById("scrolldot");
-  var scrollDotRaf = 0;
-  function displayedPane() {
-    var tab = activeTabNode(); if (!tab) return null;
-    var pid = displayedSinglePaneId(tab); if (!pid) return null;
-    return panes[pid] || null;
-  }
-  function updateScrollDot() {
-    scrollDotRaf = 0;
-    if (!isPhone()) { scrollDotEl.style.display = "none"; return; }
-    var p = displayedPane();
-    var b = p && p.term.buffer && p.term.buffer.active;
-    // Nothing to scroll (no history yet, or an alt-screen app owns the screen) → hide.
-    if (!b || b.type === "alternate" || b.baseY <= 0) { scrollDotEl.style.display = "none"; return; }
-    var r = stageEl.getBoundingClientRect();
-    var h = scrollDotEl.offsetHeight || 56;
-    var track = r.height - h - 8;
-    if (track <= 0) { scrollDotEl.style.display = "none"; return; }
-    var ratio = Math.max(0, Math.min(1, b.viewportY / b.baseY));
-    scrollDotEl.style.display = "block";
-    scrollDotEl.style.top = (r.top + 4 + ratio * track) + "px";
-  }
-  function scheduleScrollDot() {
-    if (!scrollDotRaf) scrollDotRaf = requestAnimationFrame(updateScrollDot);
-  }
-  (function () {
-    var dragging = false;
-    scrollDotEl.addEventListener("pointerdown", function (e) {
-      if (!displayedPane()) return;
-      dragging = true;
-      scrollDotEl.classList.add("drag");
-      try { scrollDotEl.setPointerCapture(e.pointerId); } catch (err) {}
-      e.preventDefault();
-    });
-    scrollDotEl.addEventListener("pointermove", function (e) {
-      if (!dragging) return;
-      var p = displayedPane();
-      var b = p && p.term.buffer && p.term.buffer.active;
-      if (!b || b.baseY <= 0) return;
-      var r = stageEl.getBoundingClientRect();
-      var h = scrollDotEl.offsetHeight || 56;
-      var track = r.height - h - 8;
-      if (track <= 0) return;
-      var ratio = Math.max(0, Math.min(1, (e.clientY - r.top - 4 - h / 2) / track));
-      try { p.term.scrollToLine(Math.round(ratio * b.baseY)); } catch (err) {}
-      scheduleScrollDot();
-    });
-    function endDrag() { dragging = false; scrollDotEl.classList.remove("drag"); }
-    scrollDotEl.addEventListener("pointerup", endDrag);
-    scrollDotEl.addEventListener("pointercancel", endDrag);
-  })();
 
   function applyThemeToOpts(opts) {
     var a = theme.ansi || [];
@@ -1290,20 +1230,17 @@
     }
     var root = buildNode(tree);
     if (tree.t === "pane") {
+      // Single pane → natural width so a wide grid pans left/right inside #stage
+      // (horizontal swipes stay native on phones — the axis-lock skips them).
       var sp = panes[tree.paneId];
+      root.style.flex = "0 0 auto";
+      root.style.height = "100%";
       if (isPhone()) {
-        // Phone: bound the pane to the stage box — xterm's own viewport becomes THE
-        // vertical scroller (native touch scrollback) instead of #stage panning the
-        // whole container. Fit-screen (the phone default) keeps the grid inside it.
-        root.style.flex = "1 1 0";
-        root.style.width = "100%";
-        root.style.height = "100%";
+        // Phone: clip vertical spill — vertical touch is owned by the wheel-synthesis
+        // scroll (scrollback / TUI wheel reports), never by #stage panning the page.
         root.style.overflow = "hidden";
-        if (sp) { sp.host.style.overflow = "hidden"; sp.host.style.width = "100%"; sp.host.style.height = "100%"; }
+        if (sp) { sp.host.style.overflow = "hidden"; sp.host.style.height = "100%"; }
       } else {
-        // Desktop: single pane → natural width, scrollable in #stage (don't stretch/clip)
-        root.style.flex = "0 0 auto";
-        root.style.height = "100%";
         root.style.overflow = "visible";
         if (sp) { sp.host.style.overflow = "visible"; sp.host.style.height = "100%"; }
       }
@@ -1313,7 +1250,6 @@
     stageEl.appendChild(root);
     relayoutSinglePane(); // size a single pane to its natural width for horizontal scroll
     updateDims();
-    scheduleScrollDot();
   }
 
   function onLayout(m) {
@@ -1383,9 +1319,7 @@
         maybeAutoFit();
         break;
       }
-      case "paneOutput":
-        if (m.data) { getPane(m.paneId).term.write(m.data); scheduleScrollDot(); }
-        break;
+      case "paneOutput": if (m.data) getPane(m.paneId).term.write(m.data); break;
       case "paneResize":
         if (m.cols && m.rows) {
           getPane(m.paneId).term.resize(m.cols, m.rows); relayoutSinglePane(); updateDims();

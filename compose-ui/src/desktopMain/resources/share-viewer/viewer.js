@@ -80,25 +80,26 @@
     };
   })();
 
-  // Keep the fixed key bar just above the soft keyboard, and shrink the whole app to the
-  // VISIBLE viewport while the keyboard is up — the terminal moves above the keyboard
-  // (fit-screen re-fits the grid into the reduced box) instead of hiding underneath it.
-  // iOS Safari doesn't resize the layout viewport for the keyboard; visualViewport is
-  // the only truth there. Android shrinks innerHeight itself, so this is a no-op (inset 0).
-  var appliedBodyH = "100%";
+  // Soft keyboard: PUSH the whole UI up by the keyboard's overlap — no font/zoom
+  // changes, just a translate. Translating <body> also makes its fixed children (the
+  // key bar) position against the shifted box, so the bar rides exactly on top of the
+  // keyboard. iOS Safari never resizes the layout viewport for the keyboard, so the
+  // visualViewport inset is the only truth; Android shrinks the window itself (inset 0).
+  var appliedShift = "";
   function layoutForKeyboard() {
     var vv = window.visualViewport;
-    if (vv) keybarEl.style.bottom = Math.max(0, window.innerHeight - vv.height - vv.offsetTop) + "px";
+    var inset = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
+    var open = vv ? (window.innerHeight - vv.height) > 60 : false;
+    var shift = open ? "translateY(-" + Math.round(inset) + "px)" : "";
+    if (shift !== appliedShift) {
+      appliedShift = shift;
+      document.body.style.transform = shift;
+    }
+    // Transformed: the bar is body-relative, bottom 0 = the pushed-up bottom edge.
+    // Untransformed: viewport-relative, ride any residual inset (≈0 when closed).
+    keybarEl.style.bottom = open ? "0px" : inset + "px";
     bodyEl.style.paddingBottom = (keybarEl.style.display !== "none" && keybarEl.offsetHeight)
       ? keybarEl.offsetHeight + "px" : "0px";
-    var open = vv ? (window.innerHeight - vv.height) > 60 : false;
-    var target = open ? Math.round(vv.height) + "px" : "100%";
-    if (target !== appliedBodyH) {
-      appliedBodyH = target;
-      document.body.style.height = target;
-      if (open) window.scrollTo(0, 0); // undo Safari's focus auto-pan
-      onViewportChange(); // stage box changed → relayout + re-fit (fit-screen mode)
-    }
   }
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", layoutForKeyboard);

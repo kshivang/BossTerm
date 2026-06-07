@@ -727,6 +727,14 @@ object SessionShareManager {
             }
             hello = runCatching { ShareProtocol.decodeClient(helloText) }.getOrNull() as? ClientMessage.Hello
         } else {
+            // A plaintext first-frame: allowed on LAN/loopback (no relay), but refused on a
+            // public tunnel/Funnel share — there it'd stream unencrypted through the relay, so an
+            // old/keyless client must update rather than silently downgrade.
+            if (requireE2E()) {
+                ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT,
+                    "This shared session is end-to-end encrypted — update BossTerm to connect."))
+                return
+            }
             hello = (first as? Frame.Text)?.let {
                 runCatching { ShareProtocol.decodeClient(it.readText()) }.getOrNull()
             } as? ClientMessage.Hello
@@ -846,6 +854,20 @@ object SessionShareManager {
         if (url.startsWith("https://", ignoreCase = true)) return true
         val h = hostOf(url).lowercase()
         return h == "localhost" || h == "::1" || h.startsWith("127.")
+    }
+
+    /**
+     * Whether the host should REQUIRE end-to-end encryption (reject a plaintext handshake). True
+     * only when the session is reachable over a public tunnel/Funnel (or a configured public
+     * https URL): there the relay is the threat and every link we hand out carries `#k`, so a
+     * plaintext client is an out-of-date one that would otherwise stream unencrypted through the
+     * relay. Plain-LAN/loopback http has no relay, so plaintext stays allowed there.
+     */
+    private fun requireE2E(): Boolean {
+        val url = remoteUrl
+            ?: SettingsManager.instance.settings.value.sessionSharingPublicUrl.takeIf { it.isNotBlank() }
+            ?: return false
+        return e2eCapable(url)
     }
 
     /**

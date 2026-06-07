@@ -80,12 +80,25 @@
     };
   })();
 
-  // Keep the fixed key bar just above the soft keyboard (and reserve space for it).
+  // Keep the fixed key bar just above the soft keyboard, and shrink the whole app to the
+  // VISIBLE viewport while the keyboard is up — the terminal moves above the keyboard
+  // (fit-screen re-fits the grid into the reduced box) instead of hiding underneath it.
+  // iOS Safari doesn't resize the layout viewport for the keyboard; visualViewport is
+  // the only truth there. Android shrinks innerHeight itself, so this is a no-op (inset 0).
+  var appliedBodyH = "100%";
   function layoutForKeyboard() {
     var vv = window.visualViewport;
     if (vv) keybarEl.style.bottom = Math.max(0, window.innerHeight - vv.height - vv.offsetTop) + "px";
     bodyEl.style.paddingBottom = (keybarEl.style.display !== "none" && keybarEl.offsetHeight)
       ? keybarEl.offsetHeight + "px" : "0px";
+    var open = vv ? (window.innerHeight - vv.height) > 60 : false;
+    var target = open ? Math.round(vv.height) + "px" : "100%";
+    if (target !== appliedBodyH) {
+      appliedBodyH = target;
+      document.body.style.height = target;
+      if (open) window.scrollTo(0, 0); // undo Safari's focus auto-pan
+      onViewportChange(); // stage box changed → relayout + re-fit (fit-screen mode)
+    }
   }
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", layoutForKeyboard);

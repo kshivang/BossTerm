@@ -196,6 +196,49 @@ fun RequestControlPrompt(onConfirm: () -> Unit, onDismiss: () -> Unit) {
 }
 
 /**
+ * One-time offer when a remote mirror tab is first viewed and the host's grid doesn't render
+ * 1:1 in this window (the native counterpart of the web viewer's "fit host to this phone?"
+ * confirm): fit OUR window to the host's grid (purely local), or — control only — resize the
+ * HOST's window to match ours instead.
+ */
+@Composable
+fun RemoteFitPrompt(
+    hostName: String,
+    onFitMyWindow: () -> Unit,
+    /** Null when view-only — resizing the host needs control. */
+    onFitHost: (() -> Unit)?,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = BackgroundColor,
+        title = { Text("Match window sizes?", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
+        text = {
+            Text(
+                "This tab mirrors $hostName, whose terminal grid doesn't fit this window 1:1. " +
+                    "Fit your window to the host's grid" +
+                    (if (onFitHost != null) ", or resize the host's window to match yours." else "."),
+                color = TextSecondary, fontSize = 12.sp
+            )
+        },
+        confirmButton = {
+            androidx.compose.foundation.layout.Row(
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
+            ) {
+                if (onFitHost != null) {
+                    TextButton(onClick = onFitHost) { Text("Fit host to my window", color = TextSecondary) }
+                }
+                Button(
+                    onClick = onFitMyWindow,
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                ) { Text("Fit my window to host") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Not now", color = TextSecondary) } },
+    )
+}
+
+/**
  * Shown when a remote session drops after exhausting its reconnect budget (the native
  * counterpart of the web viewer's disconnect overlay): Reconnect retries with a fresh
  * budget; Disconnect removes the session + its mirror tabs; dismissing keeps the frozen

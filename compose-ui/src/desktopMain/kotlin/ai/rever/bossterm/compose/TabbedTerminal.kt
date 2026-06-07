@@ -829,6 +829,35 @@ fun TabbedTerminal(
     // Pending "request control?" confirmation: a view-only group's split/new-tab click stores
     // the actual request here; confirming the dialog runs it, dismissing drops it.
     var requestControlPrompt by remember { mutableStateOf<(() -> Unit)?>(null) }
+    // One-time size-reconcile offer when a remote mirror tab is first viewed and the host's
+    // grid doesn't render 1:1 here: (session, container tab, focused pane mirror).
+    var remoteFitPrompt by remember {
+        mutableStateOf<Triple<ai.rever.bossterm.compose.remote.RemoteSession,
+            ai.rever.bossterm.compose.tabs.TerminalTab,
+            ai.rever.bossterm.compose.tabs.TerminalTab>?>(null)
+    }
+    val remoteFitPromptShown = remember { mutableSetOf<String>() }
+    // First view of a remote mirror tab whose host grid doesn't render 1:1 in this window →
+    // offer (once per session) to fit OUR window to the host, or — with control — the host
+    // to us. Mirrors the web viewer's "fit host to this phone?" offer.
+    LaunchedEffect(tabController.activeTabId) {
+        val active = tabController.activeTab ?: return@LaunchedEffect
+        val session = state?.remoteSessions?.sessionForTab(active) ?: return@LaunchedEffect
+        if (session.link in remoteFitPromptShown) return@LaunchedEffect
+        // Let the pane render once so remoteFitCols/Rows (what fits OUR canvas) are recorded.
+        kotlinx.coroutines.delay(700)
+        if (tabController.activeTab !== active) return@LaunchedEffect
+        val pane = splitStates[active.id]?.getFocusedSession() as? ai.rever.bossterm.compose.tabs.TerminalTab
+            ?: return@LaunchedEffect
+        val grid = pane.display.termSize.value
+        val fitC = pane.remoteFitCols
+        val fitR = pane.remoteFitRows
+        if (fitC < 2 || fitR < 2 || grid.columns < 2 || grid.rows < 2) return@LaunchedEffect
+        // Roughly 1:1 already → nothing to offer.
+        if (kotlin.math.abs(grid.columns - fitC) <= 2 && kotlin.math.abs(grid.rows - fitR) <= 2) return@LaunchedEffect
+        remoteFitPromptShown += session.link
+        remoteFitPrompt = Triple(session, active, pane)
+    }
     // Bumped every time the share window is opened/reopened; ShareWindow brings its OS
     // window to the front when this changes, so clicking the share button while a share
     // window is already open raises that window instead of leaving it behind.
@@ -1401,42 +1430,6 @@ fun TabbedTerminal(
                 if (remoteForActive != null) { { remoteForActive.closeFromChip(activeTab.id, splitState.focusedPaneId) } }
                 else onClosePane
 
-            // "Fit to client": resize THIS window so [focused]'s pane renders the remote's current
-            // grid 1:1 — the reverse of "Fit host to my screen". Mirrors the host's own
-            // resizeHostWindow nudge (per-cell px × the grid delta, window chrome cancels out);
-            // purely local, needs no control. No-op until the canvas has been measured once.
-            fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.TerminalTab) {
-                val cw = focused.terminal.cellWidthPx
-                val ch = focused.terminal.cellHeightPx
-                if (cw <= 0f || ch <= 0f) return
-                val grid = focused.display.termSize.value
-                val hostCols = grid.columns; val hostRows = grid.rows
-                val curCols = focused.remoteFitCols; val curRows = focused.remoteFitRows
-                if (hostCols < 2 || hostRows < 2 || curCols < 2 || curRows < 2) return
-                val tw = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }
-                    ?: WindowManager.windows.firstOrNull { it.awtWindow != null } ?: return
-                val win = tw.awtWindow ?: return
-                javax.swing.SwingUtilities.invokeLater {
-                    runCatching {
-                        val gc = win.graphicsConfiguration
-                        val sx = gc?.defaultTransform?.scaleX?.takeIf { it > 0 } ?: 1.0
-                        val sy = gc?.defaultTransform?.scaleY?.takeIf { it > 0 } ?: 1.0
-                        var newW = (win.width + (hostCols - curCols) * cw / sx).toInt()
-                        var newH = (win.height + (hostRows - curRows) * ch / sy).toInt()
-                        gc?.bounds?.let { b ->
-                            val maxW = (b.x + b.width - win.x).coerceAtLeast(480)
-                            val maxH = (b.y + b.height - win.y).coerceAtLeast(320)
-                            newW = newW.coerceIn(480, maxW); newH = newH.coerceIn(320, maxH)
-                        }
-                        if (newW != win.width || newH != win.height) {
-                            // Through Compose's WindowState when wired (frame + surface move
-                            // together — no unpainted strip), else setSize + heal nudge.
-                            ai.rever.bossterm.compose.share.MirrorShare.applyWindowSize(tw, win, newW, newH)
-                        }
-                    }
-                }
-            }
-
             val onNavigatePane: (NavigationDirection) -> Unit = { direction ->
                 splitState.navigateFocus(direction)
             }
@@ -1960,6 +1953,26 @@ fun TabbedTerminal(
         )
     }
 
+    // First-view size reconcile for a remote mirror (set by the activeTabId effect above).
+    remoteFitPrompt?.let { (session, container, pane) ->
+        ai.rever.bossterm.compose.remote.RemoteFitPrompt(
+            hostName = session.customName.value ?: session.hostName.value
+                ?: runCatching { java.net.URI(session.link).host }.getOrNull() ?: "the host",
+            onFitMyWindow = {
+                fitClientWindowToHost(pane)
+                remoteFitPrompt = null
+            },
+            onFitHost = if (session.canControlState.value) {
+                {
+                    if (pane.remoteFitCols >= 2 && pane.remoteFitRows >= 2)
+                        session.resizeHost(container.id, pane.remoteFitCols, pane.remoteFitRows)
+                    remoteFitPrompt = null
+                }
+            } else null,
+            onDismiss = { remoteFitPrompt = null },
+        )
+    }
+
     // Typing into a read-only mirror (no control, or read-only via an upstream host) surfaces
     // the same request-control prompt; dismissing snoozes it so it doesn't nag per keystroke.
     state?.remoteSessions?.let { mgr ->
@@ -2049,5 +2062,43 @@ fun TabbedTerminal(
             detector = aiState.detector,
             onDismiss = { s.cancelAIInstallation() }
         )
+    }
+}
+
+/**
+ * "Fit my window to host": resize THIS window so [focused]'s pane renders the remote's
+ * current grid 1:1 — the reverse of "Fit host to my screen". Mirrors the host's own
+ * resizeHostWindow nudge (per-cell px × the grid delta, window chrome cancels out);
+ * purely local, needs no control. No-op until the canvas has been measured once.
+ */
+private fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.TerminalTab) {
+    val cw = focused.terminal.cellWidthPx
+    val ch = focused.terminal.cellHeightPx
+    if (cw <= 0f || ch <= 0f) return
+    val grid = focused.display.termSize.value
+    val hostCols = grid.columns; val hostRows = grid.rows
+    val curCols = focused.remoteFitCols; val curRows = focused.remoteFitRows
+    if (hostCols < 2 || hostRows < 2 || curCols < 2 || curRows < 2) return
+    val tw = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }
+        ?: WindowManager.windows.firstOrNull { it.awtWindow != null } ?: return
+    val win = tw.awtWindow ?: return
+    javax.swing.SwingUtilities.invokeLater {
+        runCatching {
+            val gc = win.graphicsConfiguration
+            val sx = gc?.defaultTransform?.scaleX?.takeIf { it > 0 } ?: 1.0
+            val sy = gc?.defaultTransform?.scaleY?.takeIf { it > 0 } ?: 1.0
+            var newW = (win.width + (hostCols - curCols) * cw / sx).toInt()
+            var newH = (win.height + (hostRows - curRows) * ch / sy).toInt()
+            gc?.bounds?.let { b ->
+                val maxW = (b.x + b.width - win.x).coerceAtLeast(480)
+                val maxH = (b.y + b.height - win.y).coerceAtLeast(320)
+                newW = newW.coerceIn(480, maxW); newH = newH.coerceIn(320, maxH)
+            }
+            if (newW != win.width || newH != win.height) {
+                // Through Compose's WindowState when wired (frame + surface move
+                // together — no unpainted strip), else setSize + heal nudge.
+                ai.rever.bossterm.compose.share.MirrorShare.applyWindowSize(tw, win, newW, newH)
+            }
+        }
     }
 }

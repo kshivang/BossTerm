@@ -63,6 +63,18 @@
   var summaryMode = false;        // host's tabBarSummaryMode: 1 chip/tab vs 1 chip/pane
   var splitDragging = false;      // a divider is being dragged → suppress layout re-renders
   var currentPaneId = null;       // pane the on-screen key bar targets
+  // A touch gesture has been claimed as a scroll/pan → suppress long-press + contextmenu
+  // (Android fires contextmenu during our preventDefault'ed scrolls; iOS slow drags could
+  // outlive the long-press timer). Cleared shortly after the finger lifts.
+  var touchScrollActive = false, tsaClearTimer = null;
+  function markTouchScroll() {
+    touchScrollActive = true;
+    if (tsaClearTimer) { clearTimeout(tsaClearTimer); tsaClearTimer = null; }
+  }
+  function unmarkTouchScrollSoon() {
+    if (tsaClearTimer) clearTimeout(tsaClearTimer);
+    tsaClearTimer = setTimeout(function () { touchScrollActive = false; tsaClearTimer = null; }, 250);
+  }
   function sendMsg(o) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(o)); }
 
   // ☰ toggles the left tab drawer (phone); tapping a tab closes it (see selectPane).
@@ -510,7 +522,7 @@
     el.addEventListener("touchstart", function (e) {
       if (!e.touches || e.touches.length !== 1) return;
       sx = e.touches[0].clientX; sy = e.touches[0].clientY;
-      t = setTimeout(function () { t = null; showTabMenu(sx, sy, tab, pane); }, 600);
+      t = setTimeout(function () { t = null; if (touchScrollActive) return; showTabMenu(sx, sy, tab, pane); }, 500);
     }, { passive: true });
     function cancel(e) {
       if (t && e && e.touches && e.touches[0]) {
@@ -678,6 +690,7 @@
         var ax = Math.abs(x - startX), ay = Math.abs(y - startY);
         if (ax < 6 && ay < 6) return;          // not decided yet
         axis = ay >= ax ? "y" : "skip";        // horizontal → native pan
+        markTouchScroll();                      // the gesture is a scroll/pan, not a press
         if (axis === "y") { lastX = x; lastY = y; }
       }
       if (axis !== "y") return;
@@ -689,6 +702,7 @@
       dispatchWheel(dy);
     }, { passive: false, capture: true });
     host.addEventListener("touchend", function (e) {
+      unmarkTouchScrollSoon();
       if (axis !== "y") { axis = null; return; }
       axis = null;
       var v = vel; vel = 0;
@@ -702,7 +716,7 @@
       }
       momentum = requestAnimationFrame(step);
     }, { passive: true, capture: true });
-    host.addEventListener("touchcancel", function () { axis = null; vel = 0; }, { passive: true, capture: true });
+    host.addEventListener("touchcancel", function () { axis = null; vel = 0; unmarkTouchScrollSoon(); }, { passive: true, capture: true });
   }
 
 
@@ -1177,22 +1191,29 @@
       wrap.appendChild(getPane(pid).host);
       // Clicking/tapping a pane focuses it on the client (border + key-bar / typing target).
       wrap.addEventListener("pointerdown", function () { setClientFocus(pid); });
-      // Desktop right-click → context menu.
+      // Desktop right-click → context menu. (Android also synthesizes contextmenu on
+      // long-press — ignore it while a touch scroll owns the gesture.)
       wrap.addEventListener("contextmenu", function (e) {
-        e.preventDefault(); setClientFocus(pid); showContextMenu(e.clientX, e.clientY, pid);
+        e.preventDefault();
+        if (touchScrollActive) return;
+        setClientFocus(pid); showContextMenu(e.clientX, e.clientY, pid);
       });
-      // Mobile long-press (~600ms — a touch above the 500ms platform default so scroll
-      // and slow taps don't trip it) → same menu, anchored at the touch point.
+      // Mobile long-press (500ms, the platform default) → same menu, anchored at the
+      // touch point. Movement cancels it; an active scroll gesture suppresses it.
       var lpTimer = null, lpX = 0, lpY = 0;
       wrap.addEventListener("touchstart", function (e) {
         if (!e.touches || e.touches.length !== 1) return;
         lpX = e.touches[0].clientX; lpY = e.touches[0].clientY; setClientFocus(pid);
-        lpTimer = setTimeout(function () { lpTimer = null; showContextMenu(lpX, lpY, pid); }, 600);
+        lpTimer = setTimeout(function () {
+          lpTimer = null;
+          if (touchScrollActive) return; // the finger is scrolling, not pressing
+          showContextMenu(lpX, lpY, pid);
+        }, 500);
       }, { passive: true });
       function cancelLongPress(e) {
         if (lpTimer && e && e.touches && e.touches[0]) {
           var dx = Math.abs(e.touches[0].clientX - lpX), dy = Math.abs(e.touches[0].clientY - lpY);
-          if (dx < 10 && dy < 10) return; // small jitter — keep the timer
+          if (dx < 6 && dy < 6) return; // small jitter — keep the timer (6px = the scroll axis-lock slop)
         }
         if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
       }

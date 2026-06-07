@@ -191,6 +191,9 @@
   </div>
 
   <script src="vendor/xterm.js"></script>
+  <!-- GPU renderer (vendored @xterm/addon-webgl): smooth scrolling, esp. on phones.
+       Optional — viewer.js falls back to xterm's DOM renderer if it can't load. -->
+  <script src="vendor/addon-webgl.js"></script>
   <script src="viewer.js"></script>
 </body>
 </html>

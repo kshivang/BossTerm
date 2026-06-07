@@ -638,6 +638,16 @@
     if (theme) applyThemeToOpts(opts);
     var term = new Terminal(opts);
     term.open(host);
+    // GPU rendering (WebGL addon) — the DOM renderer rebuilds row nodes on every scroll
+    // step, which reads as jank next to the native client's Skia pipeline. Best-effort:
+    // no WebGL2 (old devices) or a lost context falls back to the DOM renderer.
+    try {
+      if (window.WebglAddon && window.WebglAddon.WebglAddon) {
+        var gl = new window.WebglAddon.WebglAddon();
+        gl.onContextLoss(function () { try { gl.dispose(); } catch (e) {} });
+        term.loadAddon(gl);
+      }
+    } catch (e) { /* DOM renderer fallback */ }
     // Terminals want raw keystrokes — disable the soft keyboard's autocorrect /
     // predictive-text / autocapitalize / spellcheck on xterm's hidden input.
     var ta = term.textarea || host.querySelector(".xterm-helper-textarea");

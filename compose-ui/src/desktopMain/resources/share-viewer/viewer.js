@@ -518,16 +518,24 @@
     el.addEventListener("contextmenu", function (e) {
       e.preventDefault(); e.stopPropagation(); showTabMenu(e.clientX, e.clientY, tab, pane);
     });
-    var t = null, sx = 0, sy = 0;
+    var t = null, sx = 0, sy = 0, moved = 0;
     el.addEventListener("touchstart", function (e) {
-      if (!e.touches || e.touches.length !== 1) return;
-      sx = e.touches[0].clientX; sy = e.touches[0].clientY;
-      t = setTimeout(function () { t = null; if (touchScrollActive) return; showTabMenu(sx, sy, tab, pane); }, 500);
+      if (!e.touches || e.touches.length !== 1) {
+        if (t) { clearTimeout(t); t = null; }
+        return;
+      }
+      sx = e.touches[0].clientX; sy = e.touches[0].clientY; moved = 0;
+      t = setTimeout(function () {
+        t = null;
+        if (touchScrollActive || moved >= 6) return; // scrolling, not pressing
+        showTabMenu(sx, sy, tab, pane);
+      }, 500);
     }, { passive: true });
     function cancel(e) {
-      if (t && e && e.touches && e.touches[0]) {
+      if (e && e.touches && e.touches.length === 1 && e.touches[0]) {
         var dx = Math.abs(e.touches[0].clientX - sx), dy = Math.abs(e.touches[0].clientY - sy);
-        if (dx < 10 && dy < 10) return;
+        moved = Math.max(moved, dx, dy);
+        if (t && dx < 6 && dy < 6) return;
       }
       if (t) { clearTimeout(t); t = null; }
     }
@@ -678,6 +686,8 @@
     // Capture phase: see the touches even if something inside xterm stops propagation.
     host.addEventListener("touchstart", function (e) {
       if (!isPhone() || e.touches.length !== 1) { axis = "skip"; return; }
+      // Catching a fling is part of the scroll, not a press — keep menus suppressed.
+      if (momentum) markTouchScroll();
       stopMomentum();
       axis = null; vel = 0;
       startX = lastX = e.touches[0].clientX; startY = lastY = e.touches[0].clientY;
@@ -1199,21 +1209,28 @@
         setClientFocus(pid); showContextMenu(e.clientX, e.clientY, pid);
       });
       // Mobile long-press (500ms, the platform default) → same menu, anchored at the
-      // touch point. Movement cancels it; an active scroll gesture suppresses it.
-      var lpTimer = null, lpX = 0, lpY = 0;
+      // touch point. Total movement is re-checked AT FIRE TIME (not only when a move
+      // event happens to cross the threshold), a second finger cancels outright, and an
+      // active scroll gesture (incl. catching a fling) suppresses it.
+      var lpTimer = null, lpX = 0, lpY = 0, lpMoved = 0;
       wrap.addEventListener("touchstart", function (e) {
-        if (!e.touches || e.touches.length !== 1) return;
-        lpX = e.touches[0].clientX; lpY = e.touches[0].clientY; setClientFocus(pid);
+        if (!e.touches || e.touches.length !== 1) {
+          if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+          return;
+        }
+        lpX = e.touches[0].clientX; lpY = e.touches[0].clientY; lpMoved = 0;
+        setClientFocus(pid);
         lpTimer = setTimeout(function () {
           lpTimer = null;
-          if (touchScrollActive) return; // the finger is scrolling, not pressing
+          if (touchScrollActive || lpMoved >= 6) return; // scrolling, not pressing
           showContextMenu(lpX, lpY, pid);
         }, 500);
       }, { passive: true });
       function cancelLongPress(e) {
-        if (lpTimer && e && e.touches && e.touches[0]) {
+        if (e && e.touches && e.touches.length === 1 && e.touches[0]) {
           var dx = Math.abs(e.touches[0].clientX - lpX), dy = Math.abs(e.touches[0].clientY - lpY);
-          if (dx < 6 && dy < 6) return; // small jitter — keep the timer (6px = the scroll axis-lock slop)
+          lpMoved = Math.max(lpMoved, dx, dy);
+          if (lpTimer && dx < 6 && dy < 6) return; // jitter (6px = the scroll axis-lock slop)
         }
         if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
       }

@@ -1063,14 +1063,22 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
         val npmPackages = aiToInstall.joinToString(" ") { it.second }
         // Build cleanup command to remove any corrupted/partial npm installations (fixes ENOTEMPTY error)
         val packagesToClean = aiToInstall.map { it.second }
+        // $NPM_SUDO (set per-branch below) elevates only when npm's global dir isn't
+        // user-writable, so cleanup + install match the install's privilege level.
         val unixCleanup = packagesToClean.joinToString("; ") { pkg ->
-            "rm -rf \"\$(npm prefix -g 2>/dev/null)/lib/node_modules/$pkg\" 2>/dev/null || true"
+            "\$NPM_SUDO rm -rf \"\$(npm prefix -g 2>/dev/null)/lib/node_modules/$pkg\" 2>/dev/null || true"
         }
         val nodeCheckAndInstall = when {
             isMac -> {
                 "{ command -v npm >/dev/null 2>&1 || { echo 'Installing Node.js via Homebrew...' && brew install node; }; } && " +
+                // npm's global modules dir is root-owned when Node was installed via the
+                // official .pkg (prefix /usr/local) rather than Homebrew — `npm install -g`
+                // then EACCES'es. Use sudo ONLY when it isn't user-writable (creds are
+                // pre-authed; see needsSudo below). Homebrew prefixes stay sudo-free.
+                "NPM_MODULES=\"\$(npm prefix -g 2>/dev/null)/lib/node_modules\" && " +
+                "if [ -w \"\$NPM_MODULES\" ] || { [ ! -e \"\$NPM_MODULES\" ] && [ -w \"\$(dirname \"\$NPM_MODULES\")\" ]; }; then NPM_SUDO=''; else NPM_SUDO='sudo'; fi && " +
                 "echo 'Cleaning up any partial installations...' && $unixCleanup && " +
-                "npm install -g $npmPackages"
+                "\$NPM_SUDO npm install -g $npmPackages"
             }
             isWindows -> {
                 // Use winget or Chocolatey to install Node.js if npm is not available
@@ -1102,9 +1110,9 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
                 "if [ \"\$NODE_VER\" != \"none\" ] && [ \"\$NODE_VER\" != \"system\" ]; then nvm uninstall \"\$NODE_VER\" 2>/dev/null; fi && " +
                 "nvm install --lts && nvm alias default node; " +
                 "fi && " +
-                "nvm use default && " +
+                "nvm use default && NPM_SUDO='' && " + // nvm's prefix (~/.nvm) is user-owned → no sudo
                 "echo 'Cleaning up any partial installations...' && $unixCleanup && " +
-                "npm install -g $npmPackages"
+                "\$NPM_SUDO npm install -g $npmPackages"
             }
         }
         userCommands.add(nodeCheckAndInstall)
@@ -1135,7 +1143,10 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
     val allCommands = mutableListOf<String>()
 
     // Authenticate sudo upfront for Unix (Starship and other tools internally use sudo)
-    val needsSudo = !isWindows && (sudoCommands.isNotEmpty() || userCommands.any { it.contains("starship") })
+    // Pre-auth sudo when any step may need it: explicit sudo commands, Starship (creates
+    // /usr/local/bin), or mac AI installs (a root-owned npm global prefix → sudo npm).
+    val needsSudo = !isWindows && (sudoCommands.isNotEmpty() || userCommands.any { it.contains("starship") } ||
+        (isMac && aiToInstall.isNotEmpty()))
     if (needsSudo) {
         allCommands.add("echo '🔐 Authenticating administrator access...'")
         // Use sudo -S to read password from stdin (provided via env var)

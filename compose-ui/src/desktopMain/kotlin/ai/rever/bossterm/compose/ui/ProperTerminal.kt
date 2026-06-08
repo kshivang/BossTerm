@@ -829,6 +829,11 @@ fun ProperTerminal(
     modifier = modifier
       .fillMaxSize()
       .onPreviewKeyEvent { keyEvent ->
+        if (keyEvent.type == KeyEventType.KeyDown) {
+          // The host user is interacting with this pane — release any remote
+          // "fit host to my screen" resize (no-op unless a fit is active here).
+          ai.rever.bossterm.compose.share.SessionShareManager.notifyHostInteraction(tab.id)
+        }
         // Handle Cmd+F toggle at the top level so it works regardless of which child has focus
         if (keyEvent.type == KeyEventType.KeyDown) {
           val action = actionRegistry.getAction("search")
@@ -914,6 +919,9 @@ fun ProperTerminal(
           // Skip if event was already consumed by an overlay (SearchBar, DebugPanel, etc.)
           if (change.isConsumed) return@onPointerEvent
           if (change.pressed && change.previousPressed.not()) {
+            // Host user clicked into this pane — release any remote "fit host"
+            // resize (no-op unless a fit is active here).
+            ai.rever.bossterm.compose.share.SessionShareManager.notifyHostInteraction(tab.id)
             // FIRST: Set pane focus before any other processing
             // This ensures split pane focus is set even when mouse events are
             // forwarded to terminal applications (like nvim with mouse reporting)

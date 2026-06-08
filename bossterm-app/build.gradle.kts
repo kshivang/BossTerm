@@ -3,6 +3,13 @@ import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import java.util.Properties
 import javax.inject.Inject
 import org.gradle.process.ExecOperations
+import java.io.File
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+import java.security.MessageDigest
+import java.time.Duration
 
 // Interface for injecting ExecOperations into tasks
 // Replaces deprecated project.exec() calls for Gradle 9.0 compatibility
@@ -185,12 +192,30 @@ compose.desktop {
 // above) bundles the staged dir into the .app / .deb / .rpm.
 val cliVersion = project.version.toString().removeSuffix("-SNAPSHOT")
 
+// cloudflared release pin — the SAME single source of truth the runtime reads
+// (compose-ui/.../resources/cloudflared-pin.properties). Used to fetch + bundle the binary into
+// the app so session sharing works offline; the runtime auto-downloads it elsewhere as a fallback.
+val cloudflaredPin = Properties().apply {
+    rootProject.file("compose-ui/src/desktopMain/resources/cloudflared-pin.properties")
+        .inputStream().use { load(it) }
+}
+val cloudflaredVersion: String = cloudflaredPin.getProperty("version")
+    ?: error("cloudflared-pin.properties is missing 'version'")
+// fetchCloudflaredBinary stages the verified binary here; processCliResources copies it into the
+// `common/` bucket alongside the CLI script. A SEPARATE dir (not common/) so the Sync stays the
+// single owner of common/ and can't clobber the binary.
+val cloudflaredStaging = layout.buildDirectory.dir("cloudflared-staging")
+
 tasks.register<Sync>("processCliResources") {
     description = "Stage cli-resources/ with @@BOSSTERM_VERSION@@ substituted to project.version"
     group = "build"
 
+    // Fetch cloudflared first, then fold its staging dir into common/ as an extra source — so the
+    // bundled binary survives this Sync's prune instead of being deleted by it.
+    dependsOn("fetchCloudflaredBinary")
     inputs.property("cliVersion", cliVersion)
     from(rootProject.file("cli-resources"))
+    from(cloudflaredStaging) // adds `cloudflared` (when bundled for this target) under common/
     // Stage under `common/`: Compose Desktop's appResourcesRootDir only bundles files inside
     // an OS bucket (`common` / `macos` / `linux` / `<os>-<arch>`) — files placed flat at the
     // root are silently dropped, so a packaged .app/.deb/.rpm never got the `bossterm` script
@@ -211,9 +236,117 @@ tasks.register<Sync>("processCliResources") {
 
 // `appResourcesRootDir` points at the staged dir, so prepareAppResources (the
 // gradle.plugin.compose Desktop task that copies into the bundle) depends on
-// processCliResources.
+// processCliResources (which itself dependsOn fetchCloudflaredBinary).
 tasks.matching { it.name == "prepareAppResources" }.configureEach {
     dependsOn("processCliResources")
+}
+
+// Download + SHA-256-verify the cloudflared binary for THIS build's target and stage it for
+// bundling, so a packaged BossTerm can open a Cloudflare quick tunnel offline with zero download.
+// Each CI runner builds natively (host arch == target arch). Unsupported OS/arch → bundle nothing
+// (the runtime auto-downloads instead); a SHA mismatch is always fatal. Hashes/version come from
+// cloudflared-pin.properties (shared with the runtime). Optionally hard-fail on RELEASE_BUILD so a
+// release never silently ships without the binary.
+tasks.register("fetchCloudflaredBinary") {
+    description = "Download + SHA-256-verify cloudflared for the host target and stage it for bundling"
+    group = "build"
+
+    val osNameProp = System.getProperty("os.name").lowercase()
+    val osArchProp = System.getProperty("os.arch").lowercase()
+    inputs.property("cloudflaredVersion", cloudflaredVersion)
+    inputs.property("osName", osNameProp)
+    inputs.property("osArch", osArchProp)
+    val outFile = cloudflaredStaging.map { it.file("cloudflared") }
+    outputs.file(outFile)
+
+    val pin = cloudflaredPin
+    val version = cloudflaredVersion
+    val cacheDirProvider = layout.buildDirectory.dir("cloudflared-cache")
+    val releaseBuild = System.getenv("RELEASE_BUILD") != null
+    val injected = project.objects.newInstance<InjectedExecOps>()
+
+    doLast {
+        fun sha256(f: File): String {
+            val md = MessageDigest.getInstance("SHA-256")
+            f.inputStream().use { input ->
+                val buf = ByteArray(64 * 1024)
+                while (true) { val n = input.read(buf); if (n < 0) break; md.update(buf, 0, n) }
+            }
+            return md.digest().joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+        }
+        fun download(url: String, dest: File): Boolean {
+            val client = HttpClient.newBuilder()
+                .followRedirects(HttpClient.Redirect.NORMAL) // github.com 302 → CDN
+                .connectTimeout(Duration.ofSeconds(20)).build()
+            repeat(3) { i ->
+                dest.delete()
+                try {
+                    val req = HttpRequest.newBuilder(URI.create(url))
+                        .timeout(Duration.ofMinutes(5)).header("User-Agent", "BossTerm-build").GET().build()
+                    val resp = client.send(req, HttpResponse.BodyHandlers.ofFile(dest.toPath()))
+                    val size = if (dest.exists()) dest.length() else 0L
+                    if (resp.statusCode() == 200 && size > 1_000_000L) return true
+                    logger.warn("cloudflared download attempt ${i + 1} failed (HTTP ${resp.statusCode()}, $size bytes)")
+                } catch (e: Exception) {
+                    logger.warn("cloudflared download attempt ${i + 1} error: ${e.message}")
+                }
+                if (i < 2) Thread.sleep(2_000)
+            }
+            return false
+        }
+
+        val stagingDir = outFile.get().asFile.parentFile.also { it.mkdirs() }
+        val staged = File(stagingDir, "cloudflared")
+        staged.delete() // a stale copy from a prior build target must not be bundled
+
+        val isMac = osNameProp.contains("mac")
+        val isLinux = osNameProp.contains("linux")
+        val arch = when (osArchProp) {            // mirror CloudflaredExposer.linuxArch/macArch
+            "amd64", "x86_64" -> "amd64"
+            "aarch64", "arm64" -> "arm64"
+            "arm", "armv7l", "armv7", "armhf" -> "arm"
+            "i386", "i486", "i586", "i686", "x86" -> "386"
+            else -> null
+        }
+        if (!isMac && !isLinux) {
+            logger.lifecycle("cloudflared: no bundle for OS '$osNameProp' (runtime auto-downloads); skipping"); return@doLast
+        }
+        if (arch == null) {
+            logger.lifecycle("cloudflared: unsupported arch '$osArchProp'; skipping (runtime auto-downloads)"); return@doLast
+        }
+        val asset = if (isMac) "cloudflared-darwin-$arch.tgz" else "cloudflared-linux-$arch"
+        val expectedSha = pin.getProperty("sha256.$asset")
+        if (expectedSha.isNullOrBlank()) {
+            if (releaseBuild) error("cloudflared: no pinned SHA for $asset (RELEASE_BUILD)")
+            logger.warn("cloudflared: no pinned SHA for $asset; skipping"); return@doLast
+        }
+        val url = "https://github.com/cloudflare/cloudflared/releases/download/$version/$asset"
+
+        val cacheDir = cacheDirProvider.get().asFile.also { it.mkdirs() }
+        val cached = File(cacheDir, "$version-$asset")
+        if (!(cached.isFile && sha256(cached).equals(expectedSha, ignoreCase = true))) {
+            logger.lifecycle("cloudflared: downloading $asset (v$version)…")
+            if (!download(url, cached)) {
+                cached.delete()
+                if (releaseBuild) error("cloudflared: download failed for $url (RELEASE_BUILD)")
+                logger.warn("cloudflared: download failed; skipping bundle (runtime auto-downloads)"); return@doLast
+            }
+            val actual = sha256(cached)
+            if (!actual.equals(expectedSha, ignoreCase = true)) {
+                cached.delete(); error("cloudflared: SHA-256 mismatch for $asset (expected $expectedSha, got $actual)")
+            }
+        }
+
+        if (isMac) {
+            // The .tgz holds a single `cloudflared` binary at its root → extracts to staging/cloudflared.
+            injected.execOps.exec { commandLine("tar", "-xzf", cached.absolutePath, "-C", stagingDir.absolutePath) }
+            require(staged.isFile) { "cloudflared: missing after extracting $asset" }
+        } else {
+            cached.copyTo(staged, overwrite = true)
+        }
+        staged.setExecutable(true, false)
+        logger.lifecycle("cloudflared: staged ${staged.absolutePath} (v$version)")
+    }
 }
 
 // Sign PTY4J native binaries with hardened runtime for macOS notarization
@@ -329,6 +462,27 @@ tasks.register("signPty4jBinaries") {
                 } finally {
                     // Clean up temp directory
                     tempDir.deleteRecursively()
+                }
+
+                // Sign the bundled cloudflared binary (if this target bundled one). It's a Mach-O
+                // executable inside a hardened-runtime, notarized bundle, so it MUST be signed with
+                // --options runtime or notarization rejects the app. Search the bundle (rather than
+                // hardcode a path) so we sign it wherever Compose placed the app resources. The
+                // --deep re-sign below then seals it. (pty4j is a hard dependency, so this branch
+                // always runs in practice.)
+                appFile.walkTopDown().filter { it.isFile && it.name == "cloudflared" }.forEach { cf ->
+                    println("  Signing bundled cloudflared: ${cf.relativeTo(appFile)}")
+                    cf.setExecutable(true)
+                    try {
+                        injected.execOps.exec {
+                            commandLine("codesign", "--force", "--options", "runtime",
+                                "--sign", developerId, "--timestamp", cf.absolutePath)
+                        }
+                        injected.execOps.exec { commandLine("codesign", "-vv", cf.absolutePath) }
+                        println("    ✅ Successfully signed cloudflared")
+                    } catch (e: Exception) {
+                        println("    ⚠️ Warning: Failed to sign cloudflared: ${e.message}")
+                    }
                 }
 
                 // CRITICAL: Re-sign the entire app bundle after modifying the JAR

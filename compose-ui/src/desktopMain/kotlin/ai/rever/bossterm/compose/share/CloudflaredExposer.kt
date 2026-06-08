@@ -11,6 +11,7 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.time.Duration
+import java.util.Properties
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
@@ -42,15 +43,56 @@ object CloudflaredExposer {
 
     private val log = LoggerFactory.getLogger(CloudflaredExposer::class.java)
 
+    /** Binary name — Windows needs the `.exe` extension to be runnable. */
+    private val binName: String = if (ShellCustomizationUtils.isWindows()) "cloudflared.exe" else "cloudflared"
+
     /**
-     * BossTerm-managed cloudflared, dropped here by [linuxDirectInstall] so we never need
+     * BossTerm-managed cloudflared, dropped here by the direct-install paths so we never need
      * root or a package manager. Invoked by absolute path, so it needs no PATH entry.
      */
-    private val managedBin: File = File(System.getProperty("user.home"), ".bossterm/bin/cloudflared")
+    private val managedBin: File = File(System.getProperty("user.home"), ".bossterm/bin/$binName")
 
-    // "cloudflared" first (honors PATH), then our managed copy, then typical Homebrew locations.
-    private fun candidates(): List<String> =
-        listOf("cloudflared", managedBin.absolutePath, "/opt/homebrew/bin/cloudflared", "/usr/local/bin/cloudflared")
+    /**
+     * A cloudflared binary bundled INSIDE the packaged app — the build (bossterm-app) drops it
+     * into Compose Desktop's resources dir, so sharing works offline with zero download.
+     * Discovered exactly like [ai.rever.bossterm.compose.cli.CLIInstaller] reads its CLI script:
+     * Compose flattens the `common/` bucket into `compose.application.resources.dir`, but some
+     * dev/run setups leave it under `common/` — try both. Returns an *executable* absolute path
+     * or null when there's no bundled copy (Maven-library consumers, or a platform/arch the build
+     * didn't bundle — both fall through to the auto-download path).
+     *
+     * COORDINATION WITH THE BUILD: the bundled file must be named exactly [binName] and live in
+     * the `common` resources bucket, so it resolves at `<resourcesDir>/$binName`.
+     */
+    private fun bundledBin(): String? {
+        val dir = System.getProperty("compose.application.resources.dir") ?: return null
+        val found = File(dir, binName).takeIf { it.isFile }
+            ?: File(File(dir, "common"), binName).takeIf { it.isFile }
+            ?: return null
+        // The resources dir may be read-only / mounted noexec. Ensure an executable copy.
+        if (!ShellCustomizationUtils.isWindows() && !found.canExecute()) {
+            return runCatching {
+                managedBin.parentFile?.mkdirs()
+                if (!managedBin.exists() || managedBin.length() != found.length()) {
+                    Files.copy(found.toPath(), managedBin.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                    managedBin.setExecutable(true, false)
+                }
+                managedBin.absolutePath
+            }.getOrNull()
+        }
+        return found.absolutePath
+    }
+
+    // Bundled copy first (zero download), then PATH, then our managed copy, then Homebrew (Unix only).
+    private fun candidates(): List<String> = buildList {
+        bundledBin()?.let { add(it) }
+        add(binName)
+        add(managedBin.absolutePath)
+        if (!ShellCustomizationUtils.isWindows()) {
+            add("/opt/homebrew/bin/cloudflared")
+            add("/usr/local/bin/cloudflared")
+        }
+    }
     private fun bin(): String? = candidates().firstOrNull { runCmd(listOf(it, "--version"), 5) != null }
 
     /** True if a working `cloudflared` CLI is present. Blocking — call off the UI thread. */
@@ -66,18 +108,43 @@ object CloudflaredExposer {
     fun canAutoInstall(): Boolean = when {
         ShellCustomizationUtils.isMacOS() -> brewAvailable() || macArch() != null
         ShellCustomizationUtils.isLinux() -> linuxArch() != null
+        ShellCustomizationUtils.isWindows() -> winArch() != null
         else -> false
     }
 
     /**
      * One-click install for the current platform. Blocking and slow (downloads) — call off
-     * the UI thread. Returns true on success (or if it's already installed). macOS prefers
-     * Homebrew when present (managed updates + on PATH); otherwise it downloads directly.
+     * the UI thread. Returns true on success (or if it's already installed).
+     *
+     * macOS prefers Homebrew when present (managed updates + on PATH); otherwise it downloads
+     * directly. Pass [preferManaged] = true for automatic/silent installs to skip Homebrew and
+     * go straight to the self-contained managed download — `brew install` is slow, global, and
+     * can stall, which is wrong for a background install the user didn't click.
      */
-    fun autoInstall(): Boolean = when {
-        ShellCustomizationUtils.isMacOS() -> if (brewAvailable()) brewInstall() else macDirectInstall()
+    fun autoInstall(preferManaged: Boolean = false): Boolean = when {
+        ShellCustomizationUtils.isMacOS() ->
+            if (!preferManaged && brewAvailable()) brewInstall() else macDirectInstall()
         ShellCustomizationUtils.isLinux() -> linuxDirectInstall()
+        ShellCustomizationUtils.isWindows() -> windowsDirectInstall()
         else -> false
+    }
+
+    private val ensureLock = Any()
+
+    /**
+     * Idempotent, silent-friendly "make sure cloudflared is usable". A no-op if a bundled / PATH /
+     * managed binary already runs; otherwise installs via the self-contained managed download
+     * (never Homebrew — see [autoInstall]). Serialized so a concurrent eager prefetch and a lazy
+     * share-time call don't both download the same ~tens of MB (the download itself is already
+     * atomic, so the lock only spares a redundant fetch). Blocking — call off the UI thread.
+     * Returns true if cloudflared is usable afterwards.
+     */
+    fun ensureInstalled(): Boolean {
+        if (isInstalled()) return true
+        synchronized(ensureLock) {
+            if (isInstalled()) return true // won the race against another caller
+            return autoInstall(preferManaged = true)
+        }
     }
 
     // Common Homebrew locations (Apple-silicon, Intel, then PATH).
@@ -100,24 +167,27 @@ object CloudflaredExposer {
     }
 
     /**
-     * The cloudflared release we install directly, with per-asset SHA-256.
+     * The cloudflared release we install directly + per-asset SHA-256, loaded from the bundled
+     * `cloudflared-pin.properties` (single source of truth, shared with the app build that bundles
+     * the binary — see that file for the security rationale and update steps).
      *
-     * cloudflared publishes no checksums/signatures on its GitHub releases, so transport TLS
-     * only guarantees "the bytes the CDN served" — not that they're the bytes Cloudflare built.
-     * We close that gap by pinning a known-good hash here at BUILD time (out-of-band from the
-     * download channel) and refusing to `chmod +x` / run anything that doesn't match. The
-     * hashes were verified against the published artifacts. Bump VERSION + the hashes together
-     * when updating cloudflared (auto-update is disabled in [start], so a pinned build is fine).
+     * cloudflared publishes no checksums/signatures on its GitHub releases, so transport TLS only
+     * guarantees "the bytes the CDN served" — not that they're the bytes Cloudflare built. We close
+     * that gap by pinning known-good hashes at BUILD time (compiled into the jar, out-of-band from
+     * the download channel) and refusing to `chmod +x` / run anything that doesn't match. If the
+     * resource is somehow missing, [PINNED_VERSION] / [pinnedSha] return empty/null so every install
+     * fails safely (we never run unverified bytes).
      */
-    private const val PINNED_VERSION = "2026.5.2"
-    private val PINNED_SHA256 = mapOf(
-        "cloudflared-linux-amd64"      to "5286698547f03df745adb2355f04c12dde52ef425491e81f433642d695521886",
-        "cloudflared-linux-arm64"      to "5a4e8ce2701105271412059f44b6a0bf1ae4542b4d98ff3180c0c019443a5815",
-        "cloudflared-linux-arm"        to "70a4c869a037bd69af6ce2ad0c4da4a7680d94fcfb8d4c70ecddae24d560762f",
-        "cloudflared-linux-386"        to "ad82d1dbed8bbb9d702807cbd97df932cc774d29e9da5c109b7a3c7f7aee2065",
-        "cloudflared-darwin-amd64.tgz" to "7240f709506bc2c1eb9da4d89cf2555499c60280ecb854b7d80e8f17d4b7903d",
-        "cloudflared-darwin-arm64.tgz" to "ba94054c9fd4297645093d59d51442e5e546d07bb0516120e694a13d5b216d38",
-    )
+    private val pin: Properties by lazy {
+        Properties().apply {
+            val res = CloudflaredExposer::class.java.classLoader
+                ?.getResourceAsStream("cloudflared-pin.properties")
+            if (res == null) log.error("cloudflared-pin.properties not on classpath; auto-install disabled")
+            else res.use { load(it) }
+        }
+    }
+    private val PINNED_VERSION: String get() = pin.getProperty("version", "")
+    private fun pinnedSha(asset: String): String? = pin.getProperty("sha256.$asset")?.takeIf { it.isNotBlank() }
     private fun assetUrl(name: String) =
         "https://github.com/cloudflare/cloudflared/releases/download/$PINNED_VERSION/$name"
 
@@ -138,6 +208,17 @@ object CloudflaredExposer {
     }
 
     /**
+     * cloudflared's Windows GitHub asset suffix for this CPU, or null if unsupported. cloudflared
+     * ships only `windows-amd64.exe` and `windows-386.exe` — there is no arm64 Windows build, so
+     * arm64 Windows returns null (no auto-install; the UI offers the manual download link).
+     */
+    private fun winArch(): String? = when (System.getProperty("os.arch").lowercase()) {
+        "amd64", "x86_64" -> "amd64"
+        "x86", "i386", "i486", "i586", "i686", "386" -> "386"
+        else -> null
+    }
+
+    /**
      * Seamless Linux install: download cloudflared's single static binary straight from its
      * GitHub releases into [managedBin], `chmod +x`, and verify it runs. No sudo, no package
      * manager, no PATH changes — works on any distro. Blocking and slow (downloads ~tens of
@@ -149,7 +230,7 @@ object CloudflaredExposer {
             log.warn("no cloudflared Linux binary for arch '{}'", System.getProperty("os.arch")); return false
         }
         val asset = "cloudflared-linux-$arch"
-        val sha = PINNED_SHA256[asset] ?: run { log.warn("no pinned hash for {}", asset); return false }
+        val sha = pinnedSha(asset) ?: run { log.warn("no pinned hash for {}", asset); return false }
         if (!downloadWithRetries(assetUrl(asset), managedBin, sha)) return false
         managedBin.setExecutable(true, false)
         val ok = isInstalled()
@@ -170,7 +251,7 @@ object CloudflaredExposer {
             log.warn("no cloudflared macOS binary for arch '{}'", System.getProperty("os.arch")); return false
         }
         val asset = "cloudflared-darwin-$arch.tgz"
-        val sha = PINNED_SHA256[asset] ?: run { log.warn("no pinned hash for {}", asset); return false }
+        val sha = pinnedSha(asset) ?: run { log.warn("no pinned hash for {}", asset); return false }
         val tgz = File(managedBin.parentFile, "cloudflared.tgz")
         if (!downloadWithRetries(assetUrl(asset), tgz, sha)) return false
         return try {
@@ -189,6 +270,26 @@ object CloudflaredExposer {
         } catch (e: Exception) {
             log.warn("cloudflared macOS extract error: {}", e.message); tgz.delete(); false
         }
+    }
+
+    /**
+     * Seamless Windows install: download cloudflared's single `.exe` straight from its GitHub
+     * releases into [managedBin] and verify it runs. No installer, no admin, no PATH changes.
+     * Blocking and slow (downloads ~tens of MB) — call off the UI thread. Returns true on success
+     * (or if it's already installed). (No `chmod` — Windows ignores the exec bit; the `--version`
+     * probe in [bin] is the real verification.)
+     */
+    fun windowsDirectInstall(): Boolean {
+        if (isInstalled()) return true
+        val arch = winArch() ?: run {
+            log.warn("no cloudflared Windows binary for arch '{}'", System.getProperty("os.arch")); return false
+        }
+        val asset = "cloudflared-windows-$arch.exe"
+        val sha = pinnedSha(asset) ?: run { log.warn("no pinned hash for {}", asset); return false }
+        if (!downloadWithRetries(assetUrl(asset), managedBin, sha)) return false
+        val ok = isInstalled()
+        log.info("cloudflared direct install {}", if (ok) "→ ${managedBin.absolutePath}" else "failed verification")
+        return ok
     }
 
     /**

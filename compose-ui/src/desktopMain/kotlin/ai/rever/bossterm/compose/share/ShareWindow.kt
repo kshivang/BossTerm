@@ -414,6 +414,9 @@ private fun RemoteAccessSetupSection(
     // download on Linux; Tailscale: Homebrew only). When false, we fall back to a manual link.
     var autoInstallOk by remember { mutableStateOf(true) }
     var installing by remember { mutableStateOf(false) }
+    // A one-click install was attempted but didn't yield a working binary (e.g. offline, proxy,
+    // or persistent GitHub 504s). Surfaces an error + the manual download link as a fallback.
+    var installFailed by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     fun toolInstalled() = if (isCloudflare) CloudflaredExposer.isInstalled() else TailscaleExposer.isInstalled()
     fun toolCanAutoInstall() = if (isCloudflare) CloudflaredExposer.canAutoInstall() else TailscaleExposer.brewAvailable()
@@ -421,6 +424,7 @@ private fun RemoteAccessSetupSection(
     LaunchedEffect(expanded, mode) {
         if (expanded && mode != "off" && !installing) {
             installed = null
+            installFailed = false
             val ins = withContext(Dispatchers.IO) { toolInstalled() }
             installed = ins
             autoInstallOk = if (ins) true else withContext(Dispatchers.IO) { toolCanAutoInstall() }
@@ -519,11 +523,15 @@ private fun RemoteAccessSetupSection(
                         installed = installed,
                         installing = installing,
                         autoInstallOk = autoInstallOk,
+                        installFailed = installFailed,
                         onInstall = {
                             installing = true
+                            installFailed = false
                             scope.launch {
                                 withContext(Dispatchers.IO) { toolAutoInstall() }
-                                installed = withContext(Dispatchers.IO) { toolInstalled() }
+                                val ins = withContext(Dispatchers.IO) { toolInstalled() }
+                                installed = ins
+                                installFailed = !ins // attempt finished but no working binary
                                 installing = false
                             }
                         }
@@ -573,6 +581,7 @@ private fun ProviderInstallRow(
     installed: Boolean?,
     installing: Boolean,
     autoInstallOk: Boolean,
+    installFailed: Boolean,
     onInstall: () -> Unit,
 ) {
     Surface(color = SurfaceColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
@@ -593,12 +602,19 @@ private fun ProviderInstallRow(
                         installed == null -> "Checking…"
                         installed == true -> if (isCloudflared) "Installed ✓ — ready (no sign-in needed)."
                                              else "Installed ✓ — now sign in (menu-bar app, or `tailscale up`)."
+                        installFailed -> "Install failed — check your connection and Retry, or install manually."
                         autoInstallOk -> if (isCloudflared) "Not found — install it." else "Not found — install it, then sign in."
                         else -> "Not found — install manually."
                     },
-                    color = if (installed == true) Color(0xFF4CAF50) else TextSecondary, fontSize = 11.sp
+                    color = when {
+                        installed == true -> Color(0xFF4CAF50)
+                        installFailed -> Danger
+                        else -> TextSecondary
+                    },
+                    fontSize = 11.sp
                 )
-                if (installed == false && !autoInstallOk && !installing) {
+                // Reveal the manual link whenever the in-app install isn't an option OR it failed.
+                if (installed == false && !installing && (!autoInstallOk || installFailed)) {
                     LinkText("Download $label →", downloadUrl)
                 }
             }
@@ -607,7 +623,7 @@ private fun ProviderInstallRow(
                     onClick = onInstall,
                     enabled = !installing,
                     colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
-                ) { Text(if (installing) "Installing…" else "Install") }
+                ) { Text(if (installing) "Installing…" else if (installFailed) "Retry" else "Install") }
             }
         }
     }

@@ -9,6 +9,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -98,6 +99,28 @@ object CloudflaredExposer {
         return ok || isInstalled()
     }
 
+    /**
+     * The cloudflared release we install directly, with per-asset SHA-256.
+     *
+     * cloudflared publishes no checksums/signatures on its GitHub releases, so transport TLS
+     * only guarantees "the bytes the CDN served" — not that they're the bytes Cloudflare built.
+     * We close that gap by pinning a known-good hash here at BUILD time (out-of-band from the
+     * download channel) and refusing to `chmod +x` / run anything that doesn't match. The
+     * hashes were verified against the published artifacts. Bump VERSION + the hashes together
+     * when updating cloudflared (auto-update is disabled in [start], so a pinned build is fine).
+     */
+    private const val PINNED_VERSION = "2026.5.2"
+    private val PINNED_SHA256 = mapOf(
+        "cloudflared-linux-amd64"      to "5286698547f03df745adb2355f04c12dde52ef425491e81f433642d695521886",
+        "cloudflared-linux-arm64"      to "5a4e8ce2701105271412059f44b6a0bf1ae4542b4d98ff3180c0c019443a5815",
+        "cloudflared-linux-arm"        to "70a4c869a037bd69af6ce2ad0c4da4a7680d94fcfb8d4c70ecddae24d560762f",
+        "cloudflared-linux-386"        to "ad82d1dbed8bbb9d702807cbd97df932cc774d29e9da5c109b7a3c7f7aee2065",
+        "cloudflared-darwin-amd64.tgz" to "7240f709506bc2c1eb9da4d89cf2555499c60280ecb854b7d80e8f17d4b7903d",
+        "cloudflared-darwin-arm64.tgz" to "ba94054c9fd4297645093d59d51442e5e546d07bb0516120e694a13d5b216d38",
+    )
+    private fun assetUrl(name: String) =
+        "https://github.com/cloudflare/cloudflared/releases/download/$PINNED_VERSION/$name"
+
     /** cloudflared's Linux GitHub asset suffix for this CPU, or null if unsupported. */
     private fun linuxArch(): String? = when (System.getProperty("os.arch").lowercase()) {
         "amd64", "x86_64" -> "amd64"
@@ -125,8 +148,9 @@ object CloudflaredExposer {
         val arch = linuxArch() ?: run {
             log.warn("no cloudflared Linux binary for arch '{}'", System.getProperty("os.arch")); return false
         }
-        val url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$arch"
-        if (!downloadWithRetries(url, managedBin)) return false
+        val asset = "cloudflared-linux-$arch"
+        val sha = PINNED_SHA256[asset] ?: run { log.warn("no pinned hash for {}", asset); return false }
+        if (!downloadWithRetries(assetUrl(asset), managedBin, sha)) return false
         managedBin.setExecutable(true, false)
         val ok = isInstalled()
         log.info("cloudflared direct install {}", if (ok) "→ ${managedBin.absolutePath}" else "failed verification")
@@ -145,9 +169,10 @@ object CloudflaredExposer {
         val arch = macArch() ?: run {
             log.warn("no cloudflared macOS binary for arch '{}'", System.getProperty("os.arch")); return false
         }
-        val url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-$arch.tgz"
+        val asset = "cloudflared-darwin-$arch.tgz"
+        val sha = PINNED_SHA256[asset] ?: run { log.warn("no pinned hash for {}", asset); return false }
         val tgz = File(managedBin.parentFile, "cloudflared.tgz")
-        if (!downloadWithRetries(url, tgz)) return false
+        if (!downloadWithRetries(assetUrl(asset), tgz, sha)) return false
         return try {
             // The tarball holds a single `cloudflared` binary at its root → extracts to managedBin.
             val extracted = runCmd(
@@ -167,12 +192,19 @@ object CloudflaredExposer {
     }
 
     /**
-     * Download [url] → [dest] (replacing any existing file), tolerating the intermittent 504s
-     * / timeouts GitHub's release-download path throws even when the API is healthy. Succeeds
-     * only on HTTP 200 with a body of at least [minBytes], so a tiny HTML error page can never
-     * be mistaken for the real payload. Retries a few times with backoff. Blocking.
+     * Download [url] → [dest] (replacing any existing file) and verify it against
+     * [expectedSha256] before committing it into place — so a tampered or corrupted artifact is
+     * never moved to where we'll `chmod +x` and run it. Also tolerates the intermittent 504s /
+     * timeouts GitHub's release-download path throws even when the API is healthy: a non-200, a
+     * body below [minBytes] (e.g. a tiny HTML error page), or a hash mismatch each just fails
+     * that attempt and retries with backoff. Blocking. Returns true only on a verified download.
      */
-    private fun downloadWithRetries(url: String, dest: File, minBytes: Long = 1_000_000L): Boolean {
+    private fun downloadWithRetries(
+        url: String,
+        dest: File,
+        expectedSha256: String,
+        minBytes: Long = 1_000_000L,
+    ): Boolean {
         val dir = dest.parentFile
         if (!dir.exists() && !dir.mkdirs()) { log.warn("could not create {}", dir); return false }
         val tmp = File(dir, dest.name + ".download")
@@ -194,11 +226,18 @@ object CloudflaredExposer {
                     .build()
                 val resp = client.send(req, HttpResponse.BodyHandlers.ofFile(tmp.toPath()))
                 val size = if (tmp.exists()) tmp.length() else 0L
-                if (resp.statusCode() == 200 && size >= minBytes) {
-                    Files.move(tmp.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                    return true
+                if (resp.statusCode() != 200 || size < minBytes) {
+                    log.warn("download attempt {} failed (HTTP {}, {} bytes)", i + 1, resp.statusCode(), size)
+                } else {
+                    val actual = sha256(tmp)
+                    if (!actual.equals(expectedSha256, ignoreCase = true)) {
+                        log.warn("download attempt {} rejected: SHA-256 mismatch (expected {}, got {})",
+                            i + 1, expectedSha256, actual)
+                    } else {
+                        Files.move(tmp.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                        return true
+                    }
                 }
-                log.warn("download attempt {} failed (HTTP {}, {} bytes)", i + 1, resp.statusCode(), size)
             } catch (e: Exception) {
                 log.warn("download attempt {} error: {}", i + 1, e.message)
             }
@@ -206,6 +245,20 @@ object CloudflaredExposer {
         }
         tmp.delete()
         return false
+    }
+
+    /** Lowercase hex SHA-256 of [file]'s contents. */
+    private fun sha256(file: File): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it.toInt() and 0xFF) }
     }
 
     /**

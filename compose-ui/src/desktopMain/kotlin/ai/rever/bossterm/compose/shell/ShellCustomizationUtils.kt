@@ -200,7 +200,11 @@ object ShellCustomizationUtils {
             "fish" -> "mkdir -p ~/.config/fish && grep -q 'starship init fish' ~/.config/fish/config.fish 2>/dev/null || echo 'starship init fish | source' >> ~/.config/fish/config.fish"
             else -> "grep -q 'starship init zsh' ~/.zshrc 2>/dev/null || echo 'eval \"\$(starship init zsh)\"' >> ~/.zshrc"
         }
-        return "curl -sS https://starship.rs/install.sh | sh -s -- -y && $configCommand && echo '✓ Starship configured'"
+        // Ensure /usr/local/bin exists — Starship's installer defaults its bin-dir there and
+        // aborts if it's missing (the default on Apple Silicon Macs, where Homebrew lives in
+        // /opt/homebrew). Run from a terminal, the sudo mkdir prompts interactively; the guard
+        // skips it when the dir already exists.
+        return "{ [ -d /usr/local/bin ] || sudo mkdir -p /usr/local/bin; } && curl -sS https://starship.rs/install.sh | sh -s -- -y && $configCommand && echo '✓ Starship configured'"
     }
 
     /**

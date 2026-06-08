@@ -949,8 +949,13 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
                         if (installed.prezto) {
                             userCommands.add(uninstallPrezto)
                         }
-                        // Starship install script + shell config + PATH setup
-                        userCommands.add("curl -sS https://starship.rs/install.sh | sh -s -- -y")
+                        // Starship install script + shell config + PATH setup.
+                        // Ensure /usr/local/bin exists first — Starship's installer defaults
+                        // its bin-dir there and aborts if it's missing, which it is by default
+                        // on Apple Silicon Macs (Homebrew uses /opt/homebrew). sudo is already
+                        // authenticated upfront (needsSudo includes starship), so the mkdir is
+                        // non-interactive; the guard skips it when the dir already exists.
+                        userCommands.add("{ [ -d /usr/local/bin ] || sudo mkdir -p /usr/local/bin; } && curl -sS https://starship.rs/install.sh | sh -s -- -y")
                         postInstallCommands.add(
                             "SHELL_NAME=\$(basename \"\$SHELL\") && " +
                             "if [ \"\$SHELL_NAME\" = \"zsh\" ]; then " +

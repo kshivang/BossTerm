@@ -288,46 +288,45 @@
       b.style.background = on ? "#4a90e2" : ""; b.style.color = on ? "#fff" : "";
       b.style.borderColor = on ? "#4a90e2" : "";
     }
+    function fire() { if (seq != null) sendKey(seq); focusCurrent(); }
     var sx = 0, sy = 0, moved = false, touched = false;
-    // iOS Safari: only preventDefault on the TOUCH events keeps focus on the terminal's
-    // hidden textarea — pointer/mouse preventDefault does NOT cancel the focus shift, so a
-    // tap blurs it and the keyboard drops. touchstart preventDefault also blocks the
-    // synthetic click; we send on touchend instead.
+    // The keys are <div>s, NOT <button>s: a non-focusable element doesn't steal focus from
+    // the terminal's hidden textarea on iOS, so the soft keyboard stays up WITHOUT a
+    // touchstart preventDefault — which means a horizontal swipe still scrolls the key bar
+    // natively (overflow-x). A 10px move-guard tells a swipe from a tap.
     b.addEventListener("touchstart", function (e) {
-      e.preventDefault();
       touched = true; moved = false;
       var t = e.touches[0]; if (t) { sx = t.clientX; sy = t.clientY; }
       hl(true);
-    }, { passive: false });
+    }, { passive: true });
     b.addEventListener("touchmove", function (e) {
       var t = e.touches[0]; if (!t) return;
-      if (Math.abs(t.clientX - sx) > 10 || Math.abs(t.clientY - sy) > 10) moved = true;
-    }, { passive: false });
+      if (Math.abs(t.clientX - sx) > 10 || Math.abs(t.clientY - sy) > 10) { moved = true; hl(false); }
+    }, { passive: true });
     b.addEventListener("touchend", function (e) {
-      e.preventDefault();
       hl(false);
-      if (!moved) { sendKey(seq); focusCurrent(); }
+      if (!moved) { e.preventDefault(); fire(); } // preventDefault stops the synthetic click
     }, { passive: false });
     b.addEventListener("touchcancel", function () { hl(false); });
-    // Desktop mouse: preventDefault on mousedown keeps focus; the click sends. (Suppressed
-    // after a touch sequence so a touch device doesn't double-fire via synthetic click.)
+    // Desktop mouse: keep focus on mousedown; the click fires. (Suppressed after a touch
+    // sequence so a touch device doesn't double-fire via the synthetic click.)
     b.addEventListener("mousedown", function (e) { e.preventDefault(); });
     b.addEventListener("click", function () {
       if (touched) { touched = false; return; }
-      sendKey(seq); focusCurrent();
+      fire();
     });
   }
   function buildKeybar() {
     keybarEl.innerHTML = "";
     if (!controlGranted) { keybarEl.style.display = "none"; layoutForKeyboard(); return; }
     keybarEl.style.display = "flex";
-    var kb = document.createElement("button");
+    var kb = document.createElement("div");
     kb.className = "keybtn"; kb.textContent = "⌨"; kb.title = "Show keyboard";
-    kb.onclick = focusCurrent;
+    wireKeyButton(kb, null); // null seq → just (re)focuses to summon the keyboard
     keybarEl.appendChild(kb);
     KEY_ROW.forEach(function (k) {
-      var b = document.createElement("button");
-      b.className = "keybtn"; b.textContent = k[0]; b.type = "button";
+      var b = document.createElement("div");
+      b.className = "keybtn"; b.textContent = k[0];
       wireKeyButton(b, k[1]);
       keybarEl.appendChild(b);
     });

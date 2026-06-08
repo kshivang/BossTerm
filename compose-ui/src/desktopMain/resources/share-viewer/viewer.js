@@ -131,7 +131,12 @@
     }
     if (shift !== appliedShiftPx) {
       appliedShiftPx = shift;
+      // Transforming the focused textarea's ancestor blurs it on iOS (the keyboard drops —
+      // most visibly right after Enter advances the prompt). Re-assert focus afterward when
+      // the keyboard is up and the textarea was the active element.
+      var wasFocused = keyboardOpen && document.activeElement === activeTextarea();
       document.body.style.transform = shift ? "translateY(-" + shift + "px)" : "";
+      if (wasFocused) { var ta = activeTextarea(); if (ta) try { ta.focus({ preventScroll: true }); } catch (e) {} }
     }
     // The key bar rides the keyboard top regardless of how far the body shifted
     // (under a transform, fixed children position against the shifted body box).
@@ -149,8 +154,16 @@
     ["Esc", "\x1b"], ["Tab", "\t"], ["⏎", "\r"], ["^C", "\x03"], ["^D", "\x04"], ["^Z", "\x1a"], ["^L", "\x0c"],
     ["←", "\x1b[D"], ["↑", "\x1b[A"], ["↓", "\x1b[B"], ["→", "\x1b[C"]
   ];
+  function activeTextarea() {
+    var p = currentPaneId && panes[currentPaneId];
+    return p ? (p.term.textarea || p.host.querySelector(".xterm-helper-textarea")) : null;
+  }
   function focusCurrent() {
-    if (currentPaneId && panes[currentPaneId]) { try { panes[currentPaneId].term.focus(); } catch (e) {} }
+    // Focus the hidden textarea directly (term.focus() doesn't always re-summon the iOS
+    // soft keyboard); must run inside a user gesture for iOS to show the keyboard.
+    var ta = activeTextarea();
+    if (ta) { try { ta.focus({ preventScroll: true }); } catch (e) { try { ta.focus(); } catch (e2) {} } }
+    else if (currentPaneId && panes[currentPaneId]) { try { panes[currentPaneId].term.focus(); } catch (e) {} }
   }
   function sendKey(seq) {
     if (!currentPaneId) return;
@@ -162,24 +175,38 @@
   // pointerup with a move-guard so a horizontal scroll of the bar doesn't send a key; refocus
   // the textarea defensively to keep the keyboard up.
   function wireKeyButton(b, seq) {
-    var px = 0, py = 0, moved = false;
-    b.addEventListener("pointerdown", function (e) {
-      e.preventDefault(); // keep focus on the terminal → keyboard stays up
-      px = e.clientX; py = e.clientY; moved = false;
-      b.style.background = "#4a90e2"; b.style.color = "#fff"; b.style.borderColor = "#4a90e2";
-    });
-    b.addEventListener("pointermove", function (e) {
-      if (Math.abs(e.clientX - px) > 10 || Math.abs(e.clientY - py) > 10) moved = true;
-    });
-    function clear() { b.style.background = ""; b.style.color = ""; b.style.borderColor = ""; }
-    b.addEventListener("pointerup", function (e) {
+    function hl(on) {
+      b.style.background = on ? "#4a90e2" : ""; b.style.color = on ? "#fff" : "";
+      b.style.borderColor = on ? "#4a90e2" : "";
+    }
+    var sx = 0, sy = 0, moved = false, touched = false;
+    // iOS Safari: only preventDefault on the TOUCH events keeps focus on the terminal's
+    // hidden textarea — pointer/mouse preventDefault does NOT cancel the focus shift, so a
+    // tap blurs it and the keyboard drops. touchstart preventDefault also blocks the
+    // synthetic click; we send on touchend instead.
+    b.addEventListener("touchstart", function (e) {
       e.preventDefault();
-      clear();
+      touched = true; moved = false;
+      var t = e.touches[0]; if (t) { sx = t.clientX; sy = t.clientY; }
+      hl(true);
+    }, { passive: false });
+    b.addEventListener("touchmove", function (e) {
+      var t = e.touches[0]; if (!t) return;
+      if (Math.abs(t.clientX - sx) > 10 || Math.abs(t.clientY - sy) > 10) moved = true;
+    }, { passive: false });
+    b.addEventListener("touchend", function (e) {
+      e.preventDefault();
+      hl(false);
       if (!moved) { sendKey(seq); focusCurrent(); }
+    }, { passive: false });
+    b.addEventListener("touchcancel", function () { hl(false); });
+    // Desktop mouse: preventDefault on mousedown keeps focus; the click sends. (Suppressed
+    // after a touch sequence so a touch device doesn't double-fire via synthetic click.)
+    b.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    b.addEventListener("click", function () {
+      if (touched) { touched = false; return; }
+      sendKey(seq); focusCurrent();
     });
-    b.addEventListener("pointercancel", function () { clear(); moved = true; });
-    // Mouse fallback for any browser without pointer events.
-    if (!window.PointerEvent) b.onclick = function () { sendKey(seq); focusCurrent(); };
   }
   function buildKeybar() {
     keybarEl.innerHTML = "";

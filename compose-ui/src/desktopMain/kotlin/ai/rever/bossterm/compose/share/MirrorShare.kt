@@ -313,17 +313,26 @@ class MirrorShare(
                 stateFor(null)?.remoteSessions?.connect(msg.link, name)
             }
             // ---- MCP pill (mirrors the host's MCP indicator menu) ----
-            is ClientMessage.SetMcpEnabled ->
-                SettingsManager.instance.updateSetting { copy(mcpEnabled = msg.enabled) }
+            // tabId naming an upstream-mirrored tab → relay to that origin's MCP; else our own.
+            is ClientMessage.SetMcpEnabled -> {
+                val up = upstreamSession(msg.tabId)
+                if (up != null) up.setRemoteMcpEnabled(msg.enabled)
+                else SettingsManager.instance.updateSetting { copy(mcpEnabled = msg.enabled) }
+            }
             is ClientMessage.AttachMcp -> {
-                val target = ai.rever.bossterm.compose.mcp.McpAttachTarget.fromPersistenceKey(msg.target)
-                val port = McpTerminalRegistry.runningPort.value
-                if (target != null && port != null) {
-                    coro.launch {
-                        runCatching {
-                            val result = ai.rever.bossterm.compose.mcp.McpCliAttacher.attach(target, MCP_SERVER_NAME, port)
-                            if (result is ai.rever.bossterm.compose.mcp.McpAttachResult.Success) {
-                                McpTerminalRegistry.markAttached(target) // → re-broadcasts McpStatus
+                val up = upstreamSession(msg.tabId)
+                if (up != null) {
+                    up.attachRemoteMcp(msg.target)
+                } else {
+                    val target = ai.rever.bossterm.compose.mcp.McpAttachTarget.fromPersistenceKey(msg.target)
+                    val port = McpTerminalRegistry.runningPort.value
+                    if (target != null && port != null) {
+                        coro.launch {
+                            runCatching {
+                                val result = ai.rever.bossterm.compose.mcp.McpCliAttacher.attach(target, MCP_SERVER_NAME, port)
+                                if (result is ai.rever.bossterm.compose.mcp.McpAttachResult.Success) {
+                                    McpTerminalRegistry.markAttached(target) // → re-broadcasts McpStatus
+                                }
                             }
                         }
                     }
@@ -543,6 +552,9 @@ class MirrorShare(
                 // The upstream's own window for this tab (it shared ALL its windows) — forward
                 // it so OUR viewers can section the "via host" group per origin window.
                 val upstreamWindow = upstream?.windowFor(tab.id)
+                // The upstream's MCP state — forward so OUR viewers can show + manage it on the
+                // "via host" group (chain: viewer → us → upstream). Subscribed via the read.
+                val upstreamMcp = upstream?.mcpStatus?.value
                 tabNodes.add(
                     TabNode(
                         id = tab.id, title = tab.title.value, active = tab.id == activeId, tree = tree,
@@ -561,6 +573,9 @@ class MirrorShare(
                         windowName = windowName,
                         originWindowId = upstreamWindow?.key,
                         originWindowName = upstreamWindow?.name,
+                        originMcpEnabled = upstreamMcp?.enabled,
+                        originMcpRunning = upstreamMcp?.running,
+                        originMcpAttached = upstreamMcp?.attached ?: emptyList(),
                     )
                 )
             }

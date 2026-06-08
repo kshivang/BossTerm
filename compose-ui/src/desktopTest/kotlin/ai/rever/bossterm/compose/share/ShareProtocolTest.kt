@@ -77,6 +77,35 @@ class ShareProtocolTest {
         val attach = ShareProtocol.decodeClient("""{"t":"attachMcp","target":"CLAUDE_CODE"}""")
         assertIs<ClientMessage.AttachMcp>(attach)
         assertEquals("CLAUDE_CODE", attach.target)
+        assertEquals(null, attach.tabId) // null → host's own MCP
+
+        // tabId routes the action to an upstream "via host" group's origin MCP.
+        val attachUp = ShareProtocol.decodeClient("""{"t":"attachMcp","target":"CODEX","tabId":"t9"}""")
+        assertIs<ClientMessage.AttachMcp>(attachUp)
+        assertEquals("t9", attachUp.tabId)
+        val setUp = ShareProtocol.decodeClient("""{"t":"setMcpEnabled","enabled":false,"tabId":"t9"}""")
+        assertIs<ClientMessage.SetMcpEnabled>(setUp)
+        assertEquals("t9", setUp.tabId)
+    }
+
+    @Test
+    fun `TabNode forwards an upstream's MCP for the via-host group`() {
+        val tab = TabNode(
+            "t1", "~", active = true,
+            tree = PaneTreeNode.Pane("p1", "zsh", "/home", focused = true),
+            origin = "hash", originName = "C", originMcpEnabled = true, originMcpRunning = true,
+            originMcpAttached = listOf("CLAUDE_CODE"),
+        )
+        val back = ShareProtocol.decodeServer(ShareProtocol.encodeServer(ServerMessage.Layout(listOf(tab), "t1")))
+        assertIs<ServerMessage.Layout>(back)
+        assertEquals(true, back.tabs[0].originMcpRunning)
+        assertEquals(listOf("CLAUDE_CODE"), back.tabs[0].originMcpAttached)
+
+        // A non-mirror tab leaves them null/empty (no pill).
+        val own = ShareProtocol.decodeServer("""{"t":"layout","tabs":[{"id":"t1","title":"~","active":true,"tree":{"t":"pane","paneId":"p1","title":"z","cwd":null,"focused":true}}],"activeTabId":"t1"}""")
+        assertIs<ServerMessage.Layout>(own)
+        assertEquals(null, own.tabs[0].originMcpRunning)
+        assertEquals(emptyList(), own.tabs[0].originMcpAttached)
     }
 
     @Test

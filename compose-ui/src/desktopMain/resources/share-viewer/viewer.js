@@ -146,7 +146,7 @@
 
   // ---- on-screen key bar (mobile control keys) ----
   var KEY_ROW = [
-    ["Esc", "\x1b"], ["Tab", "\t"], ["^C", "\x03"], ["^D", "\x04"], ["^Z", "\x1a"], ["^L", "\x0c"],
+    ["Esc", "\x1b"], ["Tab", "\t"], ["⏎", "\r"], ["^C", "\x03"], ["^D", "\x04"], ["^Z", "\x1a"], ["^L", "\x0c"],
     ["←", "\x1b[D"], ["↑", "\x1b[A"], ["↓", "\x1b[B"], ["→", "\x1b[C"]
   ];
   function focusCurrent() {

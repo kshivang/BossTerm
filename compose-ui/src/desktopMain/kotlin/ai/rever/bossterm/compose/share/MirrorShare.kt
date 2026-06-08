@@ -117,6 +117,8 @@ class MirrorShare(
         if (viewers.remove(vc)) {
             vc.outbox.close()
             broadcast(ServerMessage.Presence(viewers.size))
+            // Last viewer gone → undo any "fit host to my screen" resize.
+            if (viewers.isEmpty()) SessionShareManager.releaseEmbeddedFit(tabId)
         }
     }
 
@@ -303,6 +305,12 @@ class MirrorShare(
         val ch = tab.terminal.cellHeightPx
         if (cw <= 0f || ch <= 0f) return
         val cur = tab.display.termSize.value
+        // Embedded host (e.g. BossConsole): BossTerm doesn't own the OS window, so
+        // hand the resize to the embedder as a physical-px delta. It converts to its
+        // own units and resizes the window/pane (and restores it when the fit ends).
+        val dWpx = (cols - cur.columns) * cw
+        val dHpx = (rows - cur.rows) * ch
+        if (SessionShareManager.requestEmbeddedFit(tab.id, dWpx, dHpx)) return
         val tw = WindowManager.windows.firstOrNull { it.isWindowFocused.value && it.awtWindow != null }
             ?: WindowManager.windows.firstOrNull { it.awtWindow != null }
             ?: return

@@ -60,6 +60,49 @@ object SessionShareManager {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
 
+    /**
+     * Embedder hook for "Fit host to my screen" when BossTerm is hosted inside
+     * another app (e.g. BossConsole) and does NOT own its OS window — so
+     * [MirrorShare]'s own window-resize can't run (its [WindowManager] is
+     * empty). The embedder resizes its window/pane so the shared tab's grid
+     * approximates the viewer's, then restores it when the fit is released.
+     * Set once at startup by the embedder; left null in standalone bossterm-app
+     * (which resizes its real window directly).
+     */
+    interface FitHostEmbedder {
+        /** Grow/shrink the host so [tabId]'s grid ≈ the viewer's. Deltas are in
+         *  physical px (cellPx × grid-delta); the embedder converts to its own units. */
+        fun onFitHost(tabId: String, deltaWidthPx: Float, deltaHeightPx: Float)
+        /** Undo a prior [onFitHost] for [tabId] (sharing stopped / host interacted). */
+        fun onRestoreHostSize(tabId: String)
+    }
+
+    @Volatile
+    var fitHostEmbedder: FitHostEmbedder? = null
+    private val fitActiveTabs = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Apply an embedded "fit host" if an embedder is registered. Returns true if
+     * handled (caller skips the standalone window-resize path), false otherwise.
+     */
+    internal fun requestEmbeddedFit(tabId: String, deltaWidthPx: Float, deltaHeightPx: Float): Boolean {
+        val embedder = fitHostEmbedder ?: return false
+        fitActiveTabs.add(tabId)
+        runCatching { embedder.onFitHost(tabId, deltaWidthPx, deltaHeightPx) }
+        return true
+    }
+
+    /** Release a fit for [tabId] (if active) so the embedder restores its size. */
+    fun releaseEmbeddedFit(tabId: String) {
+        if (fitActiveTabs.remove(tabId)) {
+            runCatching { fitHostEmbedder?.onRestoreHostSize(tabId) }
+        }
+    }
+
+    /** Call from the terminal UI when the host user interacts with [tabId]; if a
+     *  remote-driven fit is active on that tab, it's released (window restores). */
+    fun notifyHostInteraction(tabId: String) = releaseEmbeddedFit(tabId)
+
     private var engine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     @Volatile private var boundPort: Int? = null
     private var boundHost: String? = null
@@ -507,6 +550,7 @@ object SessionShareManager {
                 sharesByToken.remove(share.controlToken)
                 grants.values.removeIf { it.shareId == share.viewToken }
                 failPendingFor(tabId)
+                releaseEmbeddedFit(tabId) // sharing stopped → restore any fit-resized host window
                 share.stop()
                 _sharedTabIds.value = sharesByTab.keys.toSet()
                 if (sharesByTab.isEmpty()) stopEngineLocked()

@@ -428,10 +428,15 @@ object CLIInstaller {
      * from the existing two.
      */
     private fun findCliResource(relativePath: String): String? {
-        // 1. Compose Desktop's runtime resources dir.
+        // 1. Compose Desktop's runtime resources dir. In a packaged app Compose flattens the
+        //    `common/` bucket into this dir, so the file is at `<dir>/<rel>`. When the property
+        //    instead points at the unflattened staged root (some dev/run setups), the file is
+        //    under `<dir>/common/<rel>` — try both.
         System.getProperty("compose.application.resources.dir")?.let { dir ->
             val candidate = File(dir, relativePath)
             if (candidate.isFile) return candidate.readText()
+            val common = File(File(dir, "common"), relativePath)
+            if (common.isFile) return common.readText()
         }
         // 2. Classpath fallback. Replace path separators just in case the
         //    OS we're running on rejects forward slashes; the JAR side

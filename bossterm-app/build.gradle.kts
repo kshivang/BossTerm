@@ -191,7 +191,13 @@ tasks.register<Sync>("processCliResources") {
 
     inputs.property("cliVersion", cliVersion)
     from(rootProject.file("cli-resources"))
-    into(layout.buildDirectory.dir("cli-resources"))
+    // Stage under `common/`: Compose Desktop's appResourcesRootDir only bundles files inside
+    // an OS bucket (`common` / `macos` / `linux` / `<os>-<arch>`) — files placed flat at the
+    // root are silently dropped, so a packaged .app/.deb/.rpm never got the `bossterm` script
+    // (the in-app CLI installer then errored). `common` ships to every OS; at runtime Compose
+    // flattens it into `compose.application.resources.dir`, so the script lands at
+    // `<resources.dir>/bossterm` where CLIInstaller.findCliResource looks.
+    into(layout.buildDirectory.dir("cli-resources/common"))
     // Substitute the version placeholder in the canonical script only.
     // bossterm-mcp.py and bossterm.1 don't carry the token; filtering them
     // would be wasted work (and a line-based filter on the troff source

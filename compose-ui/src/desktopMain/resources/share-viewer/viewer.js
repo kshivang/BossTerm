@@ -265,6 +265,31 @@
     if (!currentPaneId) return;
     sendInput(currentPaneId, seq);
   }
+  // Wire a key-strip button so pressing it NEVER dismisses the soft keyboard: preventDefault
+  // on pointerdown stops the button from stealing focus off the terminal's hidden textarea
+  // (a plain click — esp. Enter/⏎ — otherwise blurs it and drops the keyboard). Fire on
+  // pointerup with a move-guard so a horizontal scroll of the bar doesn't send a key; refocus
+  // the textarea defensively to keep the keyboard up.
+  function wireKeyButton(b, seq) {
+    var px = 0, py = 0, moved = false;
+    b.addEventListener("pointerdown", function (e) {
+      e.preventDefault(); // keep focus on the terminal → keyboard stays up
+      px = e.clientX; py = e.clientY; moved = false;
+      b.style.background = "#4a90e2"; b.style.color = "#fff"; b.style.borderColor = "#4a90e2";
+    });
+    b.addEventListener("pointermove", function (e) {
+      if (Math.abs(e.clientX - px) > 10 || Math.abs(e.clientY - py) > 10) moved = true;
+    });
+    function clear() { b.style.background = ""; b.style.color = ""; b.style.borderColor = ""; }
+    b.addEventListener("pointerup", function (e) {
+      e.preventDefault();
+      clear();
+      if (!moved) { sendKey(seq); focusCurrent(); }
+    });
+    b.addEventListener("pointercancel", function () { clear(); moved = true; });
+    // Mouse fallback for any browser without pointer events.
+    if (!window.PointerEvent) b.onclick = function () { sendKey(seq); focusCurrent(); };
+  }
   function buildKeybar() {
     keybarEl.innerHTML = "";
     if (!controlGranted) { keybarEl.style.display = "none"; layoutForKeyboard(); return; }
@@ -275,10 +300,8 @@
     keybarEl.appendChild(kb);
     KEY_ROW.forEach(function (k) {
       var b = document.createElement("button");
-      b.className = "keybtn"; b.textContent = k[0];
-      // Don't steal focus from the terminal's input, so the soft keyboard stays up.
-      b.addEventListener("mousedown", function (e) { e.preventDefault(); });
-      b.onclick = function () { sendKey(k[1]); };
+      b.className = "keybtn"; b.textContent = k[0]; b.type = "button";
+      wireKeyButton(b, k[1]);
       keybarEl.appendChild(b);
     });
     layoutForKeyboard(); // reserve space + position above the keyboard

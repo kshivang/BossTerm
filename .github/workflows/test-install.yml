@@ -6,11 +6,15 @@ on:
     paths:
       - 'install.sh'
       - '.github/workflows/test-install.yml'
+      - 'compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/onboarding/**'
+      - 'compose-ui/src/desktopTest/kotlin/ai/rever/bossterm/compose/onboarding/**'
   pull_request:
     branches: [master]
     paths:
       - 'install.sh'
       - '.github/workflows/test-install.yml'
+      - 'compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/onboarding/**'
+      - 'compose-ui/src/desktopTest/kotlin/ai/rever/bossterm/compose/onboarding/**'
   workflow_dispatch:
     inputs:
       run_real_install:
@@ -388,3 +392,51 @@ jobs:
           needs.test-ubuntu.result == 'failure' ||
           needs.test-windows-ps.result == 'failure'
         run: exit 1
+
+  # ============================================================================
+  # Onboarding wizard: live install of the DEFAULT tool selection on Ubuntu.
+  # Non-blocking (continue-on-error) — npm/apt/github network flakiness must not
+  # gate merges; the deterministic OnboardingInstallScriptTest in test.yml is the
+  # required guard. This job proves the generated script actually runs end-to-end.
+  # ============================================================================
+  onboarding-install-ubuntu:
+    name: Onboarding tool install (Ubuntu, live)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Emit the wizard's default install script
+        run: |
+          BOSSTERM_EMIT_INSTALL_SCRIPT="$PWD/onboarding-install.sh" \
+            ./gradlew :compose-ui:desktopTest \
+            --tests "ai.rever.bossterm.compose.onboarding.OnboardingInstallScriptTest" --no-daemon
+          echo "----- generated script -----"
+          cat onboarding-install.sh
+
+      - name: Run the generated install script (Starship + git/gh + AI CLIs)
+        env:
+          BOSSTERM_SUDO_PWD: ""   # passwordless sudo on the runner; sudo -S ignores it
+        run: bash onboarding-install.sh
+
+      - name: Verify the tools landed
+        run: |
+          set -e
+          export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" || true
+          command -v starship && starship --version
+          command -v git && git --version
+          # AI CLIs install under the npm global prefix/bin — add it to PATH and assert at
+          # least one resolves, so this job truly proves the install produced runnable tools.
+          export PATH="$(npm prefix -g 2>/dev/null)/bin:$PATH"
+          npm ls -g --depth=0 2>/dev/null || true
+          command -v claude && echo "✓ claude CLI installed"

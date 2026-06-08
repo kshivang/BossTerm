@@ -15,11 +15,22 @@ object CLIInstaller {
     private val isLinux = ShellCustomizationUtils.isLinux()
 
     /**
+     * Test-only seams (set by `:compose-ui:desktopTest`). [testInstallDir] redirects the
+     * mac/Linux install dir + path to a temp location so the dir-creation/write logic can be
+     * exercised without touching the real /usr/local; when [testScript] is non-null it stands
+     * in for the bundled CLI script (and signals test mode, so the MCP-helper/man-page side
+     * installs are skipped). Both default null = production behavior.
+     */
+    @Volatile internal var testInstallDir: String? = null
+    @Volatile internal var testScript: String? = null
+
+    /**
      * Get the install path based on platform.
      * Windows: %LOCALAPPDATA%\BossTerm\bossterm.cmd (no admin needed)
      * macOS/Linux: /usr/local/bin/bossterm
      */
     private fun getInstallPath(): String {
+        testInstallDir?.let { return "$it/$CLI_NAME" }
         return if (isWindows) {
             val localAppData = System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home")
             "$localAppData\\BossTerm\\bossterm.cmd"
@@ -32,6 +43,7 @@ object CLIInstaller {
      * Get the install directory based on platform.
      */
     private fun getInstallDir(): String {
+        testInstallDir?.let { return it }
         return if (isWindows) {
             val localAppData = System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home")
             "$localAppData\\BossTerm"
@@ -113,8 +125,9 @@ object CLIInstaller {
 
             // Try to write directly (might work if user has permissions)
             val targetFile = File(getInstallPath())
-            val mcpHelperContent = getMcpHelperScript()  // may be null on Windows-only setups
-            val manPageContent = getManPageContent()     // may be null on Windows
+            // In test mode skip the helper/man side-installs (they'd touch real user paths).
+            val mcpHelperContent = if (testScript != null) null else getMcpHelperScript()
+            val manPageContent = if (testScript != null) null else getManPageContent()
             try {
                 FileOutputStream(targetFile).use { out ->
                     out.write(scriptContent.toByteArray())
@@ -392,6 +405,7 @@ object CLIInstaller {
      * script doesn't cover it; that's tracked separately.
      */
     private fun getCLIScript(): String? {
+        testScript?.let { return it }
         if (isWindows) return EMBEDDED_WINDOWS_CLI_SCRIPT
         return findCliResource("bossterm")
     }

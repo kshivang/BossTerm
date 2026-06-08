@@ -431,8 +431,12 @@ jobs:
 
       - name: Verify the tools landed
         run: |
+          set -e
           export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" || true
           command -v starship && starship --version
           command -v git && git --version
-          # AI CLIs live under the npm global prefix; surface what installed (best-effort).
+          # AI CLIs install under the npm global prefix/bin — add it to PATH and assert at
+          # least one resolves, so this job truly proves the install produced runnable tools.
+          export PATH="$(npm prefix -g 2>/dev/null)/bin:$PATH"
           npm ls -g --depth=0 2>/dev/null || true
+          command -v claude && echo "✓ claude CLI installed"

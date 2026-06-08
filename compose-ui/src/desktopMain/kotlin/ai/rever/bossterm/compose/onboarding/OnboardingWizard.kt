@@ -1077,8 +1077,12 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
                 // pre-authed; see needsSudo below). Homebrew prefixes stay sudo-free.
                 "NPM_MODULES=\"\$(npm prefix -g 2>/dev/null)/lib/node_modules\" && " +
                 "if [ -w \"\$NPM_MODULES\" ] || { [ ! -e \"\$NPM_MODULES\" ] && [ -w \"\$(dirname \"\$NPM_MODULES\")\" ]; }; then NPM_SUDO=''; else NPM_SUDO='sudo'; fi && " +
+                // Resolve npm's absolute path: `sudo npm` would otherwise fail with
+                // command-not-found, since macOS sudo's env_reset can drop /usr/local/bin
+                // from PATH — and that's exactly where the official .pkg's npm lives.
+                "NPM_BIN=\"\$(command -v npm)\" && " +
                 "echo 'Cleaning up any partial installations...' && $unixCleanup && " +
-                "\$NPM_SUDO npm install -g $npmPackages"
+                "\$NPM_SUDO \"\$NPM_BIN\" install -g $npmPackages"
             }
             isWindows -> {
                 // Use winget or Chocolatey to install Node.js if npm is not available
@@ -1111,8 +1115,9 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
                 "nvm install --lts && nvm alias default node; " +
                 "fi && " +
                 "nvm use default && NPM_SUDO='' && " + // nvm's prefix (~/.nvm) is user-owned → no sudo
+                "NPM_BIN=\"\$(command -v npm)\" && " +
                 "echo 'Cleaning up any partial installations...' && $unixCleanup && " +
-                "\$NPM_SUDO npm install -g $npmPackages"
+                "\$NPM_SUDO \"\$NPM_BIN\" install -g $npmPackages"
             }
         }
         userCommands.add(nodeCheckAndInstall)
@@ -1120,8 +1125,10 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
         // Add npm global bin to PATH if not already present
         if (!isWindows) {
             postInstallCommands.add(
-                "NPM_BIN=\$(npm bin -g 2>/dev/null) && " +
-                "if [ -n \"\$NPM_BIN\" ] && [ -d \"\$NPM_BIN\" ]; then " +
+                // `npm bin -g` was removed in npm v9 (returns empty) — derive the global bin
+                // from the prefix so the just-installed CLIs actually get onto PATH.
+                "NPM_BIN=\"\$(npm prefix -g 2>/dev/null)/bin\" && " +
+                "if [ -d \"\$NPM_BIN\" ]; then " +
                 "  SHELL_NAME=\$(basename \"\$SHELL\") && " +
                 "  if [ \"\$SHELL_NAME\" = \"zsh\" ]; then " +
                 "    grep -q \"\$NPM_BIN\" ~/.zshrc 2>/dev/null || grep -q \"\$NPM_BIN\" ~/.zprofile 2>/dev/null || " +

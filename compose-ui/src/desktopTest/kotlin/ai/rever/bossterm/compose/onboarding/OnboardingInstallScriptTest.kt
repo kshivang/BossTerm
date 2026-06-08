@@ -51,11 +51,12 @@ class OnboardingInstallScriptTest {
             script.contains("[ -d /usr/local/bin ]"),
             "Starship install must guard /usr/local/bin existence:\n$script"
         )
-        // AI-CLI npm global install must go through the writability-gated \$NPM_SUDO, never a bare
-        // `npm install -g` (which EACCES'es on a root-owned global prefix).
+        // AI-CLI npm global install must go through the writability-gated \$NPM_SUDO with npm
+        // resolved to an absolute path (\$NPM_BIN) — a bare `npm install -g` EACCES'es on a
+        // root-owned prefix, and a bare `sudo npm` can hit command-not-found under env_reset.
         assertTrue(
-            script.contains("\$NPM_SUDO npm install -g"),
-            "AI-CLI npm install must use the \$NPM_SUDO guard:\n$script"
+            script.contains("\$NPM_SUDO \"\$NPM_BIN\" install -g"),
+            "AI-CLI npm install must use \$NPM_SUDO + resolved \$NPM_BIN:\n$script"
         )
         // Defaults include Starship → sudo is pre-authed so the guarded sudo calls run unattended.
         assertTrue(

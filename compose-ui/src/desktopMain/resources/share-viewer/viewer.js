@@ -240,7 +240,12 @@
     }
     if (shift !== appliedShiftPx) {
       appliedShiftPx = shift;
+      // Transforming the focused textarea's ancestor blurs it on iOS (the keyboard drops —
+      // most visibly right after Enter advances the prompt). Re-assert focus afterward when
+      // the keyboard is up and the textarea was the active element.
+      var wasFocused = keyboardOpen && document.activeElement === activeTextarea();
       document.body.style.transform = shift ? "translateY(-" + shift + "px)" : "";
+      if (wasFocused) { var ta = activeTextarea(); if (ta) try { ta.focus({ preventScroll: true }); } catch (e) {} }
     }
     // The key bar rides the keyboard top regardless of how far the body shifted
     // (under a transform, fixed children position against the shifted body box).
@@ -255,30 +260,74 @@
 
   // ---- on-screen key bar (mobile control keys) ----
   var KEY_ROW = [
-    ["Esc", "\x1b"], ["Tab", "\t"], ["^C", "\x03"], ["^D", "\x04"], ["^Z", "\x1a"], ["^L", "\x0c"],
+    ["Esc", "\x1b"], ["Tab", "\t"], ["⏎", "\r"], ["^C", "\x03"], ["^D", "\x04"], ["^Z", "\x1a"], ["^L", "\x0c"],
     ["←", "\x1b[D"], ["↑", "\x1b[A"], ["↓", "\x1b[B"], ["→", "\x1b[C"]
   ];
+  function activeTextarea() {
+    var p = currentPaneId && panes[currentPaneId];
+    return p ? (p.term.textarea || p.host.querySelector(".xterm-helper-textarea")) : null;
+  }
   function focusCurrent() {
-    if (currentPaneId && panes[currentPaneId]) { try { panes[currentPaneId].term.focus(); } catch (e) {} }
+    // Focus the hidden textarea directly (term.focus() doesn't always re-summon the iOS
+    // soft keyboard); must run inside a user gesture for iOS to show the keyboard.
+    var ta = activeTextarea();
+    if (ta) { try { ta.focus({ preventScroll: true }); } catch (e) { try { ta.focus(); } catch (e2) {} } }
+    else if (currentPaneId && panes[currentPaneId]) { try { panes[currentPaneId].term.focus(); } catch (e) {} }
   }
   function sendKey(seq) {
     if (!currentPaneId) return;
     sendInput(currentPaneId, seq);
   }
+  // Wire a key-strip button so pressing it NEVER dismisses the soft keyboard: preventDefault
+  // on pointerdown stops the button from stealing focus off the terminal's hidden textarea
+  // (a plain click — esp. Enter/⏎ — otherwise blurs it and drops the keyboard). Fire on
+  // pointerup with a move-guard so a horizontal scroll of the bar doesn't send a key; refocus
+  // the textarea defensively to keep the keyboard up.
+  function wireKeyButton(b, seq) {
+    function hl(on) {
+      b.style.background = on ? "#4a90e2" : ""; b.style.color = on ? "#fff" : "";
+      b.style.borderColor = on ? "#4a90e2" : "";
+    }
+    function fire() { if (seq != null) sendKey(seq); focusCurrent(); }
+    var sx = 0, sy = 0, moved = false, touched = false;
+    // The keys are <div>s, NOT <button>s: a non-focusable element doesn't steal focus from
+    // the terminal's hidden textarea on iOS, so the soft keyboard stays up WITHOUT a
+    // touchstart preventDefault — which means a horizontal swipe still scrolls the key bar
+    // natively (overflow-x). A 10px move-guard tells a swipe from a tap.
+    b.addEventListener("touchstart", function (e) {
+      touched = true; moved = false;
+      var t = e.touches[0]; if (t) { sx = t.clientX; sy = t.clientY; }
+      hl(true);
+    }, { passive: true });
+    b.addEventListener("touchmove", function (e) {
+      var t = e.touches[0]; if (!t) return;
+      if (Math.abs(t.clientX - sx) > 10 || Math.abs(t.clientY - sy) > 10) { moved = true; hl(false); }
+    }, { passive: true });
+    b.addEventListener("touchend", function (e) {
+      hl(false);
+      if (!moved) { e.preventDefault(); fire(); } // preventDefault stops the synthetic click
+    }, { passive: false });
+    b.addEventListener("touchcancel", function () { hl(false); });
+    // Desktop mouse: keep focus on mousedown; the click fires. (Suppressed after a touch
+    // sequence so a touch device doesn't double-fire via the synthetic click.)
+    b.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    b.addEventListener("click", function () {
+      if (touched) { touched = false; return; }
+      fire();
+    });
+  }
   function buildKeybar() {
     keybarEl.innerHTML = "";
     if (!controlGranted) { keybarEl.style.display = "none"; layoutForKeyboard(); return; }
     keybarEl.style.display = "flex";
-    var kb = document.createElement("button");
+    var kb = document.createElement("div");
     kb.className = "keybtn"; kb.textContent = "⌨"; kb.title = "Show keyboard";
-    kb.onclick = focusCurrent;
+    wireKeyButton(kb, null); // null seq → just (re)focuses to summon the keyboard
     keybarEl.appendChild(kb);
     KEY_ROW.forEach(function (k) {
-      var b = document.createElement("button");
+      var b = document.createElement("div");
       b.className = "keybtn"; b.textContent = k[0];
-      // Don't steal focus from the terminal's input, so the soft keyboard stays up.
-      b.addEventListener("mousedown", function (e) { e.preventDefault(); });
-      b.onclick = function () { sendKey(k[1]); };
+      wireKeyButton(b, k[1]);
       keybarEl.appendChild(b);
     });
     layoutForKeyboard(); // reserve space + position above the keyboard

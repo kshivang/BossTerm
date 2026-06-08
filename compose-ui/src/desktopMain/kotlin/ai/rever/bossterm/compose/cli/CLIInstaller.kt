@@ -99,10 +99,16 @@ object CLIInstaller {
                 return installWindows(scriptContent)
             }
 
-            // macOS/Linux: Check if /usr/local/bin exists
+            // macOS/Linux: ensure the bin dir exists. On Apple Silicon Macs /usr/local/bin
+            // doesn't exist by default (Homebrew lives in /opt/homebrew) — create it rather
+            // than erroring. If we can't make it without elevation, hand off to the privileged
+            // installer (which mkdir -p's under sudo) instead of failing.
             val installDir = File(getInstallDir())
             if (!installDir.exists()) {
-                return InstallResult.Error("Directory ${getInstallDir()} does not exist")
+                runCatching { installDir.mkdirs() }
+                if (!installDir.exists()) {
+                    return installWithAdminPrivileges(scriptContent)
+                }
             }
 
             // Try to write directly (might work if user has permissions)
@@ -290,15 +296,18 @@ object CLIInstaller {
             tempFile.setExecutable(true)
 
             val installPath = getInstallPath()
+            val installDir = getInstallDir()
+            // mkdir -p the bin dir under elevation first — it may not exist (Apple Silicon
+            // has no /usr/local/bin by default), and creating it needs root just like the copy.
             val process = if (isMacOS) {
                 // macOS: Use osascript to run with admin privileges
                 val script = """
-                    do shell script "cp '${tempFile.absolutePath}' '$installPath' && chmod +x '$installPath'" with administrator privileges
+                    do shell script "mkdir -p '$installDir' && cp '${tempFile.absolutePath}' '$installPath' && chmod +x '$installPath'" with administrator privileges
                 """.trimIndent()
                 ProcessBuilder("osascript", "-e", script)
             } else if (isLinux) {
                 // Linux: Use pkexec (PolicyKit) for GUI privilege escalation
-                ProcessBuilder("pkexec", "sh", "-c", "cp '${tempFile.absolutePath}' '$installPath' && chmod +x '$installPath'")
+                ProcessBuilder("pkexec", "sh", "-c", "mkdir -p '$installDir' && cp '${tempFile.absolutePath}' '$installPath' && chmod +x '$installPath'")
             } else {
                 tempFile.delete()
                 return InstallResult.Error("Unsupported platform. Please manually copy the script to $installPath")

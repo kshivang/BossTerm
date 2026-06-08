@@ -195,7 +195,8 @@ class RemoteSession internal constructor(
 
     /**
      * The remote host's BossTerm-MCP state (from [ServerMessage.McpStatus]), or null until it
-     * arrives. Drives the "Remote MCP" pill in [ai.rever.bossterm.compose.share.StatusStrip].
+     * arrives. Drives the "MCP" pill in this remote's tab-group header (rendered by
+     * [ai.rever.bossterm.compose.tabs.RemoteTabGroup] in the tab bar).
      */
     val mcpStatus = androidx.compose.runtime.mutableStateOf<RemoteMcpStatus?>(null)
 
@@ -244,12 +245,11 @@ class RemoteSession internal constructor(
      */
     data class HostWindow(val key: String, val name: String?)
 
-    /** The remote host's MCP state for the "Remote MCP" pill. [attached] = persistence keys. */
+    /** The remote host's MCP state for its group-header "MCP" pill. [attached] = persistence keys. */
     data class RemoteMcpStatus(
         val enabled: Boolean,
         val running: Boolean,
         val attached: List<String>,
-        val serverLabel: String?,
     )
 
     // localTabId (container) → host-window identity; changes bump [upstreamRev] (the bar's
@@ -533,8 +533,7 @@ class RemoteSession internal constructor(
             }
             is ServerMessage.McpStatus -> {
                 mcpStatus.value = RemoteMcpStatus(
-                    enabled = msg.enabled, running = msg.running,
-                    attached = msg.attached, serverLabel = msg.serverLabel,
+                    enabled = msg.enabled, running = msg.running, attached = msg.attached,
                 )
             }
             else -> {} // Theme/Presence/Pending/Grant/Denied handled in the connection

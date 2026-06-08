@@ -2192,7 +2192,9 @@ private fun remoteMcpMenuItems(
         ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
             id = "rmcp_att_${t.persistenceKey}",
             label = (if (t.persistenceKey in attached) "✓ " else "") + t.displayName,
-            enabled = true,
+            // Attach is a no-op while the remote's MCP server is off — disable it (mirrors the
+            // host's local indicator menu) so the click isn't a silent nothing.
+            enabled = st.running,
             action = { gate { s.attachRemoteMcp(t.persistenceKey) } },
         )
     }

@@ -416,11 +416,12 @@ class MirrorShare(
     }
 
     companion object {
-        // MCP server name/label as the CLI attachers register it. The embedder's
-        // BossTermMcpConfig is a Compose CompositionLocal (unavailable here); these match its
-        // standalone-app defaults (BossTermMcpConfig.serverName / displayName fallback).
-        private const val MCP_SERVER_NAME = "bossterm"
-        private const val MCP_SERVER_LABEL = "BossTerm"
+        // MCP server name/label as the CLI attachers register it / as broadcast to viewers.
+        // The embedder's BossTermMcpConfig is a Compose CompositionLocal (unavailable in this
+        // non-Composable class), so BossTermMcpManager publishes the resolved values to the
+        // registry — read here so a customized embedder isn't forced to the standalone defaults.
+        private val MCP_SERVER_NAME get() = McpTerminalRegistry.mcpServerName
+        private val MCP_SERVER_LABEL get() = McpTerminalRegistry.mcpServerLabel
 
         /**
          * Resize a window programmatically. PREFER the Compose [WindowState] — Compose then

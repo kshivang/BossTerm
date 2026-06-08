@@ -143,7 +143,8 @@
     ctxEl.appendChild(ctxSep());
     MCP_TARGETS.forEach(function (t) {
       var mark = attached.indexOf(t.key) >= 0 ? "✓ " : "";
-      ctxEl.appendChild(ctxItem(mark + "Attach " + t.label, true, function () {
+      // Attach is a no-op while the server is off — disable it (mirrors the host indicator).
+      ctxEl.appendChild(ctxItem(mark + "Attach " + t.label, !!mcp.running, function () {
         sendMsg({ t: "attachMcp", target: t.key });
       }));
     });
@@ -166,7 +167,7 @@
     ctxEl.appendChild(ctxSep());
     MCP_TARGETS.forEach(function (t) {
       var mark = attached.indexOf(t.key) >= 0 ? "✓ " : "";
-      ctxEl.appendChild(ctxItem(mark + "Attach " + t.label, true, function () {
+      ctxEl.appendChild(ctxItem(mark + "Attach " + t.label, !!g.mcp.running, function () {
         sendMsg({ t: "attachMcp", target: t.key, tabId: tabId });
       }));
     });

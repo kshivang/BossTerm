@@ -89,6 +89,14 @@ class ShareProtocolTest {
     }
 
     @Test
+    fun `MCP attach-target keys match the hardcoded set the web viewer mirrors`() {
+        // viewer.js can't read the Kotlin enum, so MCP_TARGETS there hardcodes these keys/labels.
+        // If a target is renamed/added/removed, this trips CI as a reminder to update viewer.js.
+        val keys = ai.rever.bossterm.compose.mcp.McpAttachTarget.entries.map { it.persistenceKey }.toSet()
+        assertEquals(setOf("CLAUDE_CODE", "CODEX", "GEMINI", "OPENCODE"), keys)
+    }
+
+    @Test
     fun `TabNode forwards an upstream's MCP for the via-host group`() {
         val tab = TabNode(
             "t1", "~", active = true,

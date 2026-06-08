@@ -111,6 +111,24 @@ object McpTerminalRegistry {
         _runningPort.value = null
     }
 
+    /**
+     * The embedder's MCP server name + display label (from [BossTermMcpConfig]). Defaults match
+     * the standalone app; an embedder's [BossTermMcpManager] overrides them at construction.
+     * Non-Compose readers (e.g. [ai.rever.bossterm.compose.share.MirrorShare] relaying a remote
+     * client's MCP toggle/attach) use these instead of the Compose-only `LocalBossTermMcpConfig`,
+     * so a customized embedder registers CLIs under the right name + broadcasts the right label.
+     */
+    @Volatile var mcpServerName: String = "bossterm"
+        private set
+    @Volatile var mcpServerLabel: String = "BossTerm"
+        private set
+
+    /** @suppress Manager-only. Publish the embedder's MCP server name/label. */
+    internal fun setServerInfo(name: String, label: String) {
+        mcpServerName = name
+        mcpServerLabel = label
+    }
+
     // -----------------------------------------------------------------
     // Attached-CLI tracking — written by McpCliAttacher's callers when an
     // attach succeeds; read by the Settings panel and the right-click menus

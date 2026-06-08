@@ -111,6 +111,11 @@ class BossTermMcpManager(
     fun start() {
         if (watcherJob?.isActive == true) return
 
+        // Publish the embedder's server name/label to the registry so non-Compose readers
+        // (MirrorShare relaying a remote client's MCP attach/toggle) use the right values
+        // instead of the standalone defaults — matching the Compose LocalBossTermMcpConfig path.
+        registry.setServerInfo(config.serverName, config.displayName ?: "BossTerm")
+
         // Hydrate the runtime attached-targets set from persisted settings so
         // the indicator/menu reflect prior-session state immediately, and
         // the auto-reattach loop below has the right targets to refresh.

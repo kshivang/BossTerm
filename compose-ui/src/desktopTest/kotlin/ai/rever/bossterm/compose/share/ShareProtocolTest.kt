@@ -69,6 +69,34 @@ class ShareProtocolTest {
         val cw = ShareProtocol.decodeClient("""{"t":"closeWindow","windowId":"w1"}""")
         assertIs<ClientMessage.CloseWindow>(cw)
         assertEquals("w1", cw.windowId)
+
+        val setMcp = ShareProtocol.decodeClient("""{"t":"setMcpEnabled","enabled":true}""")
+        assertIs<ClientMessage.SetMcpEnabled>(setMcp)
+        assertEquals(true, setMcp.enabled)
+
+        val attach = ShareProtocol.decodeClient("""{"t":"attachMcp","target":"CLAUDE_CODE"}""")
+        assertIs<ClientMessage.AttachMcp>(attach)
+        assertEquals("CLAUDE_CODE", attach.target)
+    }
+
+    @Test
+    fun `McpStatus round-trips (the MCP pill state)`() {
+        val json = ShareProtocol.encodeServer(
+            ServerMessage.McpStatus(enabled = true, running = true, attached = listOf("CLAUDE_CODE", "CODEX"), serverLabel = "BossTerm")
+        )
+        assertTrue(json.contains("\"t\":\"mcpStatus\""), json)
+        val back = ShareProtocol.decodeServer(json)
+        assertIs<ServerMessage.McpStatus>(back)
+        assertEquals(true, back.enabled)
+        assertEquals(true, back.running)
+        assertEquals(listOf("CLAUDE_CODE", "CODEX"), back.attached)
+        assertEquals("BossTerm", back.serverLabel)
+
+        // Defaults tolerate an older/leaner host payload.
+        val lean = ShareProtocol.decodeServer("""{"t":"mcpStatus","enabled":false,"running":false}""")
+        assertIs<ServerMessage.McpStatus>(lean)
+        assertEquals(emptyList(), lean.attached)
+        assertEquals(null, lean.serverLabel)
     }
 
     @Test

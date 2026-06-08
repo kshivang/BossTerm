@@ -21,6 +21,10 @@
     #bar::-webkit-scrollbar { display: none; }
     #status { width: 8px; height: 8px; border-radius: 50%; background: #888; flex: 0 0 auto; }
     #status.live { background: #4caf50; } #status.down { background: #f44336; }
+    /* host MCP pill — dot color mirrors the host StatusStrip (green=running, gray=off) */
+    #mcppill { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+    #mcppill .dot { width: 7px; height: 7px; border-radius: 50%; background: #6b6b6b; display: inline-block; }
+    #mcppill.on .dot { background: #4caf50; }
     #tabbar { display: flex; gap: 12px; overflow-x: auto; flex: 1 1 auto; align-items: center; }
     #tabbar.hidden { display: none; }
     /* one cluster per tab; panes of a tab sit tight together, tabs spaced apart */
@@ -167,6 +171,7 @@
     <button id="menubtn" title="Tabs">☰</button>
     <div id="tabbar"></div>
     <span class="badge" id="viewonly">view only</span>
+    <span class="badge" id="mcppill" style="display:none" title="Host MCP — click to manage"><span class="dot"></span>MCP</span>
     <span class="badge" id="presence"></span>
     <span class="badge" id="e2e" title="End-to-end encrypted — compare this code with the one in the host's Share dialog" style="display:none"></span>
     <span class="badge" id="dims" title="Host terminal size (columns × rows)"></span>

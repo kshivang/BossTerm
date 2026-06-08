@@ -193,6 +193,22 @@ class RemoteSession internal constructor(
      */
     val statusState = androidx.compose.runtime.mutableStateOf<RemoteStatus>(RemoteStatus.Connecting)
 
+    /**
+     * The remote host's BossTerm-MCP state (from [ServerMessage.McpStatus]), or null until it
+     * arrives. Drives the "Remote MCP" pill in [ai.rever.bossterm.compose.share.StatusStrip].
+     */
+    val mcpStatus = androidx.compose.runtime.mutableStateOf<RemoteMcpStatus?>(null)
+
+    /** Toggle the remote host's MCP server (the pill's on/off). No-op when view-only. */
+    fun setRemoteMcpEnabled(enabled: Boolean) {
+        if (canControlState.value) conn.send(ClientMessage.SetMcpEnabled(enabled))
+    }
+
+    /** Attach a CLI on the remote host ([McpAttachTarget] persistence key). No-op when view-only. */
+    fun attachRemoteMcp(targetKey: String) {
+        if (canControlState.value) conn.send(ClientMessage.AttachMcp(targetKey))
+    }
+
     /** True if [s] is any of this session's mirrors — the containers or their pane mirrors. */
     fun ownsMirror(s: ai.rever.bossterm.compose.TerminalSession): Boolean =
         localTabByRemote.values.any { it === s } || sessionByPane.values.any { it === s }
@@ -227,6 +243,14 @@ class RemoteSession internal constructor(
      * [name] labels the section ("Window 2"). Absent for single-window hosts.
      */
     data class HostWindow(val key: String, val name: String?)
+
+    /** The remote host's MCP state for the "Remote MCP" pill. [attached] = persistence keys. */
+    data class RemoteMcpStatus(
+        val enabled: Boolean,
+        val running: Boolean,
+        val attached: List<String>,
+        val serverLabel: String?,
+    )
 
     // localTabId (container) → host-window identity; changes bump [upstreamRev] (the bar's
     // metadata-revision tick). Concurrent for the same reason as [upstreamByTab].
@@ -506,6 +530,12 @@ class RemoteSession internal constructor(
                         conn.send(ClientMessage.RequestControl(remoteTabIdFor(tabId)))
                     }
                 }
+            }
+            is ServerMessage.McpStatus -> {
+                mcpStatus.value = RemoteMcpStatus(
+                    enabled = msg.enabled, running = msg.running,
+                    attached = msg.attached, serverLabel = msg.serverLabel,
+                )
             }
             else -> {} // Theme/Presence/Pending/Grant/Denied handled in the connection
         }

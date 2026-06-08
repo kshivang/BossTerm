@@ -111,6 +111,20 @@ sealed class ServerMessage {
     @SerialName("control")
     data class Control(val granted: Boolean) : ServerMessage()
 
+    /**
+     * The host's BossTerm-MCP state, so a client can show + manage it (the "MCP" pill).
+     * Broadcast on connect and whenever it changes. [attached] holds
+     * [ai.rever.bossterm.compose.mcp.McpAttachTarget] persistence keys the host has attached.
+     */
+    @Serializable
+    @SerialName("mcpStatus")
+    data class McpStatus(
+        val enabled: Boolean,
+        val running: Boolean,
+        val attached: List<String> = emptyList(),
+        val serverLabel: String? = null,
+    ) : ServerMessage()
+
     /** Host requires approval and this viewer's request is awaiting the host's decision. */
     @Serializable
     @SerialName("pending")
@@ -388,4 +402,17 @@ sealed class ClientMessage {
     @Serializable
     @SerialName("offerShare")
     data class OfferShare(val link: String) : ClientMessage()
+
+    /** Turn the host's BossTerm MCP server on/off (the MCP pill toggle). Controller role only. */
+    @Serializable
+    @SerialName("setMcpEnabled")
+    data class SetMcpEnabled(val enabled: Boolean) : ClientMessage()
+
+    /**
+     * Attach a CLI to the host's MCP server (the MCP pill's "Attach ▸"). [target] is an
+     * [ai.rever.bossterm.compose.mcp.McpAttachTarget] persistence key. Controller role only.
+     */
+    @Serializable
+    @SerialName("attachMcp")
+    data class AttachMcp(val target: String) : ClientMessage()
 }

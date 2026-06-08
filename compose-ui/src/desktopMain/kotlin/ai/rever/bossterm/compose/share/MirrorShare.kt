@@ -25,6 +25,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.security.SecureRandom
@@ -82,6 +83,7 @@ class MirrorShare(
      */
     val sessionName = androidx.compose.runtime.mutableStateOf(SessionShareManager.defaultSessionName())
     private var observerJob: Job? = null
+    private var mcpJob: Job? = null
 
     private class TapEntry(val tab: TerminalTab, val listener: (String) -> Unit)
     private val taps = HashMap<String, TapEntry>()
@@ -92,10 +94,27 @@ class MirrorShare(
                 .distinctUntilChanged()
                 .collect { sig -> reconcile(sig) }
         }
+        // Push the host's MCP state (the "MCP" pill) to viewers whenever it changes —
+        // server on/off, the user's enable toggle, or the set of attached CLIs.
+        mcpJob = coro.launch {
+            combine(
+                SettingsManager.instance.settings,
+                McpTerminalRegistry.runningPort,
+                McpTerminalRegistry.attachedTargets,
+            ) { settings, port, attached ->
+                ServerMessage.McpStatus(
+                    enabled = settings.mcpEnabled,
+                    running = port != null,
+                    attached = attached.map { it.persistenceKey },
+                    serverLabel = MCP_SERVER_LABEL,
+                )
+            }.distinctUntilChanged().collect { broadcast(it) }
+        }
     }
 
     fun stop() {
         observerJob?.cancel()
+        mcpJob?.cancel()
         synchronized(taps) {
             taps.values.forEach { e -> runCatching { e.tab.dataStream.removeRawOutputListener(e.listener) } }
             taps.clear()
@@ -134,6 +153,7 @@ class MirrorShare(
         val sig = computeSignature()
         val out = ArrayList<ServerMessage>()
         out.add(themeMessage())
+        out.add(mcpStatusMessage())
         out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
@@ -141,6 +161,14 @@ class MirrorShare(
         }
         return out
     }
+
+    /** Current host MCP state as a [ServerMessage.McpStatus] (snapshot for a new viewer). */
+    private fun mcpStatusMessage(): ServerMessage.McpStatus = ServerMessage.McpStatus(
+        enabled = SettingsManager.instance.settings.value.mcpEnabled,
+        running = McpTerminalRegistry.runningPort.value != null,
+        attached = McpTerminalRegistry.attachedTargets.value.map { it.persistenceKey },
+        serverLabel = MCP_SERVER_LABEL,
+    )
 
     /** Route viewer messages — input + tab close/new — to the host (controller role only). */
     /**
@@ -284,6 +312,23 @@ class MirrorShare(
                     ?.let { "$it (BossTerm)" }) ?: "BossTerm"
                 stateFor(null)?.remoteSessions?.connect(msg.link, name)
             }
+            // ---- MCP pill (mirrors the host's MCP indicator menu) ----
+            is ClientMessage.SetMcpEnabled ->
+                SettingsManager.instance.updateSetting { copy(mcpEnabled = msg.enabled) }
+            is ClientMessage.AttachMcp -> {
+                val target = ai.rever.bossterm.compose.mcp.McpAttachTarget.fromPersistenceKey(msg.target)
+                val port = McpTerminalRegistry.runningPort.value
+                if (target != null && port != null) {
+                    coro.launch {
+                        runCatching {
+                            val result = ai.rever.bossterm.compose.mcp.McpCliAttacher.attach(target, MCP_SERVER_NAME, port)
+                            if (result is ai.rever.bossterm.compose.mcp.McpAttachResult.Success) {
+                                McpTerminalRegistry.markAttached(target) // → re-broadcasts McpStatus
+                            }
+                        }
+                    }
+                }
+            }
             else -> {} // Hello / Focus: no-op (focus is viewer-side; RequestControl handled above)
         }
     }
@@ -362,6 +407,12 @@ class MirrorShare(
     }
 
     companion object {
+        // MCP server name/label as the CLI attachers register it. The embedder's
+        // BossTermMcpConfig is a Compose CompositionLocal (unavailable here); these match its
+        // standalone-app defaults (BossTermMcpConfig.serverName / displayName fallback).
+        private const val MCP_SERVER_NAME = "bossterm"
+        private const val MCP_SERVER_LABEL = "BossTerm"
+
         /**
          * Resize a window programmatically. PREFER the Compose [WindowState] — Compose then
          * moves the AWT frame and its Skia surface together, so no unpainted strip can

@@ -116,6 +116,44 @@
   var stageEl = document.getElementById("stage");
   var presenceEl = document.getElementById("presence");
   var viewOnlyEl = document.getElementById("viewonly");
+  // Host MCP state (the "MCP" pill) — null until the host's mcpStatus arrives. Mirrors the
+  // host's StatusStrip: dot green when the MCP server is running; click (control only) opens
+  // a Turn on/off + Attach▸ menu relayed to the host. attached = McpAttachTarget persistence keys.
+  var mcp = null;
+  var mcpPillEl = document.getElementById("mcppill");
+  // Attach targets mirror the host's McpAttachTarget enum (persistenceKey → label).
+  var MCP_TARGETS = [
+    { key: "CLAUDE_CODE", label: "Claude Code" },
+    { key: "CODEX", label: "Codex" },
+    { key: "GEMINI", label: "Gemini CLI" },
+    { key: "OPENCODE", label: "OpenCode" },
+  ];
+  function updateMcpPill() {
+    if (!mcp) { mcpPillEl.style.display = "none"; return; }
+    mcpPillEl.style.display = "";
+    mcpPillEl.className = "badge" + (mcp.running ? " on" : "");
+  }
+  // Menu (reuses the context-menu primitives): Turn MCP on/off + Attach▸ targets (✓ attached).
+  function showMcpMenu(x, y) {
+    var attached = (mcp.attached || []);
+    ctxEl.innerHTML = "";
+    ctxEl.appendChild(ctxItem(mcp.enabled ? "Turn MCP off" : "Turn MCP on", true, function () {
+      sendMsg({ t: "setMcpEnabled", enabled: !mcp.enabled });
+    }));
+    ctxEl.appendChild(ctxSep());
+    MCP_TARGETS.forEach(function (t) {
+      var mark = attached.indexOf(t.key) >= 0 ? "✓ " : "";
+      ctxEl.appendChild(ctxItem(mark + "Attach " + t.label, true, function () {
+        sendMsg({ t: "attachMcp", target: t.key });
+      }));
+    });
+    positionMenu(x, y);
+  }
+  mcpPillEl.onclick = function (e) {
+    if (!mcp) return;
+    if (viewOnlyGate()) return; // view-only → request-control prompt
+    showMcpMenu(e.clientX, e.clientY);
+  };
   // The "view only" badge doubles as the request-control affordance (confirm-first, like
   // the native client's dialog) — the host's user sees its approval toast.
   viewOnlyEl.style.cursor = "pointer";
@@ -1687,6 +1725,8 @@
         break;
       case "presence":
         presenceEl.textContent = m.viewers === 1 ? "1 viewer" : m.viewers + " viewers"; break;
+      case "mcpStatus":
+        mcp = m; updateMcpPill(); break;
       case "control":
         controlGranted = !!m.granted;
         viewOnlyEl.style.display = controlGranted ? "none" : "";

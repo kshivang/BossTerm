@@ -37,8 +37,12 @@ fun StatusStrip(
     sharingCount: Int,
     onSharingClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /** "Remote MCP" segment — shown when this window is connected to a remote whose MCP we mirror. */
+    showRemoteMcp: Boolean = false,
+    remoteMcpOn: Boolean = false,
+    onRemoteMcpClick: () -> Unit = {},
 ) {
-    if (!showMcp && !showSharing) return
+    if (!showMcp && !showSharing && !showRemoteMcp) return
     Surface(
         modifier = modifier,
         color = Color(0xFF2B2B2B),
@@ -50,13 +54,19 @@ fun StatusStrip(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            // Tracks whether a divider is needed before the next segment.
+            var prior = false
             if (showMcp) {
                 Segment(dot = if (mcpOn) ON else OFF, label = "MCP", onClick = onMcpClick)
+                prior = true
             }
-            if (showMcp && showSharing) {
-                Text("|", color = Color(0xFF555555), fontSize = 12.sp)
+            if (showRemoteMcp) {
+                if (prior) Text("|", color = Color(0xFF555555), fontSize = 12.sp)
+                Segment(dot = if (remoteMcpOn) ON else OFF, label = "Remote MCP", onClick = onRemoteMcpClick)
+                prior = true
             }
             if (showSharing) {
+                if (prior) Text("|", color = Color(0xFF555555), fontSize = 12.sp)
                 val label = if (sharingCount > 1) "Sharing ($sharingCount)" else "Sharing"
                 Segment(dot = if (sharingCount > 0) ON else OFF, label = label, onClick = onSharingClick)
             }

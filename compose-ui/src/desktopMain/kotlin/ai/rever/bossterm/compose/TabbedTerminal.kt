@@ -1226,6 +1226,17 @@ fun TabbedTerminal(
                     onRequestControl = { session.requestControl() },
                     nested = nested,
                     windowSections = windowSections,
+                    // This remote's MCP — pill in the group header; click opens its toggle/attach
+                    // menu (control-gated, else the view-only request-control prompt).
+                    mcpShown = session.mcpStatus.value != null,
+                    mcpRunning = session.mcpStatus.value?.running == true,
+                    onMcpClick = {
+                        session.mcpStatus.value?.let { st ->
+                            mcpMenu.showMenu(0f, 0f, remoteMcpMenuItems(session, st) {
+                                requestControlPrompt = { session.requestControl() }
+                            })
+                        }
+                    },
                 )
             }
             // In summary mode the active tab's single chip carries the tab id; match it
@@ -1823,45 +1834,7 @@ fun TabbedTerminal(
                 tabController.activeTab?.id?.let { id -> s.upstreamFor(id)?.takeIf { it.readOnly } }
             }
         } else null
-        // "Remote MCP" pill: connected remote session(s) that reported their MCP state. Reading
-        // each session's mcpStatus Compose state here recomposes the strip when it changes.
-        val remoteMcpList = state?.remoteSessions?.sessions.orEmpty().mapNotNull { s ->
-            s.mcpStatus.value?.let { s to it }
-        }
-        val showRemoteMcp = remoteMcpList.isNotEmpty()
-        val remoteMcpOn = remoteMcpList.any { it.second.running }
-        // Build the toggle + Attach▸ items for one remote session (mirrors the local MCP menu
-        // minus the native "Settings…"); control-gated actions fall back to the request-control
-        // prompt when we're view-only on that remote.
-        fun remoteMcpItems(
-            s: ai.rever.bossterm.compose.remote.RemoteSession,
-            st: ai.rever.bossterm.compose.remote.RemoteSession.RemoteMcpStatus,
-        ): List<ai.rever.bossterm.compose.features.ContextMenuController.MenuElement> {
-            val attached = st.attached.toSet()
-            val gate: (() -> Unit) -> Unit = { act ->
-                if (s.canControlState.value) act() else requestControlPrompt = { s.requestControl() }
-            }
-            val attachSub = ai.rever.bossterm.compose.mcp.McpAttachTarget.entries.map { t ->
-                ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
-                    id = "rmcp_att_${t.persistenceKey}",
-                    label = (if (t.persistenceKey in attached) "✓ " else "") + t.displayName,
-                    enabled = true,
-                    action = { gate { s.attachRemoteMcp(t.persistenceKey) } },
-                )
-            }
-            return listOf(
-                ai.rever.bossterm.compose.features.ContextMenuController.MenuSubmenu(
-                    id = "rmcp_attach", label = "Attach", items = attachSub
-                ),
-                ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
-                    id = "rmcp_toggle",
-                    label = if (st.enabled) "Turn MCP off" else "Turn MCP on",
-                    enabled = true,
-                    action = { gate { s.setRemoteMcpEnabled(!st.enabled) } },
-                ),
-            )
-        }
-        if (showMcpStatus || showSharingStatus || showRemoteMcp || attachStatus != null || pendingShareRequests.isNotEmpty() ||
+        if (showMcpStatus || showSharingStatus || attachStatus != null || pendingShareRequests.isNotEmpty() ||
             viewOnlyRemote != null || upstreamReadOnly != null) {
             Column(
                 modifier = Modifier
@@ -1892,25 +1865,6 @@ fun TabbedTerminal(
                             onTurnOffRequest = { SettingsManager.instance.updateSetting { copy(mcpEnabled = false) } },
                             onTurnOnRequest = { SettingsManager.instance.updateSetting { copy(mcpEnabled = true) } },
                         ))
-                    },
-                    showRemoteMcp = showRemoteMcp,
-                    remoteMcpOn = remoteMcpOn,
-                    onRemoteMcpClick = {
-                        val items = if (remoteMcpList.size == 1) {
-                            val (s, st) = remoteMcpList.first()
-                            remoteMcpItems(s, st)
-                        } else {
-                            // Multiple remotes → one submenu per remote, labelled by its name.
-                            remoteMcpList.map { (s, st) ->
-                                ai.rever.bossterm.compose.features.ContextMenuController.MenuSubmenu(
-                                    id = "rmcp_sess_${s.link.hashCode()}",
-                                    label = s.customName.value ?: s.hostName.value
-                                        ?: runCatching { java.net.URI(s.link).host }.getOrNull() ?: "remote",
-                                    items = remoteMcpItems(s, st),
-                                )
-                            }
-                        }
-                        mcpMenu.showMenu(0f, 0f, items)
                     },
                     showSharing = showSharingStatus,
                     sharingCount = sharedTabIds.size,
@@ -2219,4 +2173,38 @@ private fun fitClientWindowToHost(focused: ai.rever.bossterm.compose.tabs.Termin
             if (attempt < 3) swingTimerOnce(420) { fitClientWindowToHost(focused, attempt + 1) }
         }
     }
+}
+
+/**
+ * Toggle + Attach▸ menu items for a connected remote's MCP (the "MCP" pill in its tab-group
+ * header). Mirrors the local MCP indicator menu minus the native "Settings…". Control-gated:
+ * when we're view-only on the remote, an action runs [onNeedControl] (the request-control
+ * prompt) instead. [st.attached] are McpAttachTarget persistence keys (✓-marked).
+ */
+private fun remoteMcpMenuItems(
+    s: ai.rever.bossterm.compose.remote.RemoteSession,
+    st: ai.rever.bossterm.compose.remote.RemoteSession.RemoteMcpStatus,
+    onNeedControl: () -> Unit,
+): List<ai.rever.bossterm.compose.features.ContextMenuController.MenuElement> {
+    val attached = st.attached.toSet()
+    fun gate(act: () -> Unit) { if (s.canControlState.value) act() else onNeedControl() }
+    val attachSub = ai.rever.bossterm.compose.mcp.McpAttachTarget.entries.map { t ->
+        ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
+            id = "rmcp_att_${t.persistenceKey}",
+            label = (if (t.persistenceKey in attached) "✓ " else "") + t.displayName,
+            enabled = true,
+            action = { gate { s.attachRemoteMcp(t.persistenceKey) } },
+        )
+    }
+    return listOf(
+        ai.rever.bossterm.compose.features.ContextMenuController.MenuSubmenu(
+            id = "rmcp_attach", label = "Attach", items = attachSub
+        ),
+        ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
+            id = "rmcp_toggle",
+            label = if (st.enabled) "Turn MCP off" else "Turn MCP on",
+            enabled = true,
+            action = { gate { s.setRemoteMcpEnabled(!st.enabled) } },
+        ),
+    )
 }

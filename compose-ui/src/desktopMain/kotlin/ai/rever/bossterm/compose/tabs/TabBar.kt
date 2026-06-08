@@ -153,6 +153,14 @@ data class RemoteTabGroup(
      * single-window host, [groups] renders flat. The sections' groups union == [groups].
      */
     val windowSections: List<RemoteWindowSection> = emptyList(),
+    /**
+     * This remote host's MCP state, when it reported one — drives the small "MCP" pill in the
+     * group header (green dot = the remote's MCP server is running). [onMcpClick] opens the
+     * toggle/attach menu (control-gated by the owner). Null/false = no pill.
+     */
+    val mcpShown: Boolean = false,
+    val mcpRunning: Boolean = false,
+    val onMcpClick: () -> Unit = {},
 )
 
 /**
@@ -515,6 +523,22 @@ fun TabBar(
                                         color = if (rg.statusError) Color(0xFFE57373) else Color(0xFFE0A030),
                                         fontSize = 10.sp, maxLines = 1
                                     )
+                                }
+                                if (rg.mcpShown) {
+                                    // This remote's MCP — dot (green = running) + "MCP"; click opens
+                                    // the toggle/attach menu (control-gated by the session).
+                                    Row(
+                                        modifier = Modifier.clip(RoundedCornerShape(4.dp))
+                                            .clickable(onClick = rg.onMcpClick).padding(horizontal = 3.dp, vertical = 1.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        Box(Modifier.size(6.dp).background(
+                                            if (rg.mcpRunning) Color(0xFF4CAF50) else Color(0xFF6B6B6B),
+                                            androidx.compose.foundation.shape.CircleShape
+                                        ))
+                                        Text("MCP", color = Color(0xFFB0B0B0), fontSize = 10.sp, maxLines = 1)
+                                    }
                                 }
                                 if (!rg.canControl) {
                                     // Read-only session: eye badge (right-click → Request Control).

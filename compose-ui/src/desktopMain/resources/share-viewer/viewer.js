@@ -173,6 +173,24 @@
     if (tsaClearTimer) clearTimeout(tsaClearTimer);
     tsaClearTimer = setTimeout(function () { touchScrollActive = false; tsaClearTimer = null; }, 250);
   }
+  // A long-press has armed a touch text-selection drag → scrolling is suppressed for the
+  // rest of this gesture (see attachTouchScroll) and finger moves extend the selection.
+  var touchSelecting = false;
+  // Drive xterm's OWN selection model with synthetic mouse events: coordinate-safe (pixels),
+  // and it inherits cross-row extension, auto-scroll-at-edges, and WebGL/DOM rendering for
+  // free — the same trick attachTouchScroll uses for wheel scrolling. Move/up go to the
+  // document, where xterm registers its drag listeners after a mousedown on the screen.
+  // downTarget is only used for mousedown (xterm registers its drag move/up listeners on
+  // the document after a mousedown on the screen), so move/up callers pass null.
+  function dispatchMouse(type, downTarget, x, y, detail, buttons) {
+    var target = (type === "mousedown") ? downTarget : document;
+    try {
+      target.dispatchEvent(new MouseEvent(type, {
+        clientX: x, clientY: y, button: 0, buttons: buttons || 0, detail: detail || 1,
+        bubbles: true, cancelable: true, view: window,
+      }));
+    } catch (e) {}
+  }
   // Send a client message. E2E: encrypt then send, through an ORDERED promise chain so two
   // rapid keystrokes can't be reordered by async encrypt resolution. Plaintext: send directly.
   function sendMsg(o) {
@@ -818,6 +836,15 @@
         term.loadAddon(gl);
       }
     } catch (e) { /* DOM renderer fallback */ }
+    // Clickable URLs: detect http(s) links and open them in a new tab on click/tap. The
+    // link opens in the VIEWER's browser (client-side) — nothing is sent to the host.
+    try {
+      if (window.WebLinksAddon && window.WebLinksAddon.WebLinksAddon) {
+        term.loadAddon(new window.WebLinksAddon.WebLinksAddon(function (event, uri) {
+          window.open(uri, "_blank", "noopener,noreferrer");
+        }));
+      }
+    } catch (e) { /* no link support */ }
     // Terminals want raw keystrokes — disable the soft keyboard's autocorrect /
     // predictive-text / autocapitalize / spellcheck on xterm's hidden input.
     var ta = term.textarea || host.querySelector(".xterm-helper-textarea");
@@ -874,6 +901,7 @@
       lastT = e.timeStamp;
     }, { passive: true, capture: true });
     host.addEventListener("touchmove", function (e) {
+      if (touchSelecting) return;             // a selection drag owns the gesture
       if (axis === "skip" || e.touches.length !== 1) return;
       var x = e.touches[0].clientX, y = e.touches[0].clientY;
       if (axis === null) {
@@ -1388,14 +1416,24 @@
         if (touchScrollActive) return;
         setClientFocus(pid); showContextMenu(e.clientX, e.clientY, pid);
       });
-      // Mobile long-press (500ms, the platform default) → same menu, anchored at the
-      // touch point. Total movement is re-checked AT FIRE TIME (not only when a move
-      // event happens to cross the threshold), a second finger cancels outright, and an
-      // active scroll gesture (incl. catching a fling) suppresses it.
+      // Mobile long-press (500ms) ARMS a text selection (iOS-style): it word-selects under
+      // the finger, then a drag extends the selection and lifting opens the context menu
+      // (Copy now has something to copy). A long-press that doesn't move still opens the
+      // menu on lift. Pre-fire movement (>6px) means it was a scroll → no selection, no menu.
       var lpTimer = null, lpX = 0, lpY = 0, lpMoved = 0;
+      function screenEl() { return getPane(pid).host.querySelector(".xterm-screen"); }
+      function endSelectionGesture(showMenu, mx, my) {
+        if (!touchSelecting) return;
+        dispatchMouse("mouseup", null, mx, my, 1, 0); // up goes to document; no element needed
+        if (showMenu) showContextMenu(mx, my, pid);
+        // Clear after a tick so the synthesized click that follows touchend can't re-fire
+        // scrolling or dismiss the just-opened menu.
+        setTimeout(function () { touchSelecting = false; }, 0);
+      }
       wrap.addEventListener("touchstart", function (e) {
         if (!e.touches || e.touches.length !== 1) {
           if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+          endSelectionGesture(false, lpX, lpY); // a 2nd finger (e.g. pinch) cancels a selection
           return;
         }
         lpX = e.touches[0].clientX; lpY = e.touches[0].clientY; lpMoved = 0;
@@ -1403,20 +1441,38 @@
         lpTimer = setTimeout(function () {
           lpTimer = null;
           if (touchScrollActive || lpMoved >= 6) return; // scrolling, not pressing
-          showContextMenu(lpX, lpY, pid);
+          // Arm selection: a double-click-flavored mousedown word-selects at the point;
+          // subsequent moves extend it. xterm renders the highlight (DOM or WebGL).
+          var sc = screenEl(); if (!sc) return;
+          touchSelecting = true;
+          dispatchMouse("mousedown", sc, lpX, lpY, 2, 1);
         }, 500);
       }, { passive: true });
-      function cancelLongPress(e) {
-        if (e && e.touches && e.touches.length === 1 && e.touches[0]) {
-          var dx = Math.abs(e.touches[0].clientX - lpX), dy = Math.abs(e.touches[0].clientY - lpY);
+      wrap.addEventListener("touchmove", function (e) {
+        var t = e.touches && e.touches[0];
+        if (touchSelecting) {
+          if (e.cancelable) e.preventDefault();   // own the gesture; don't scroll
+          if (t) dispatchMouse("mousemove", null, t.clientX, t.clientY, 1, 1);
+          return;
+        }
+        if (t) {
+          var dx = Math.abs(t.clientX - lpX), dy = Math.abs(t.clientY - lpY);
           lpMoved = Math.max(lpMoved, dx, dy);
           if (lpTimer && dx < 6 && dy < 6) return; // jitter (6px = the scroll axis-lock slop)
         }
         if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
-      }
-      wrap.addEventListener("touchmove", cancelLongPress, { passive: true });
-      wrap.addEventListener("touchend", cancelLongPress);
-      wrap.addEventListener("touchcancel", cancelLongPress);
+      }, { passive: false });
+      wrap.addEventListener("touchend", function (e) {
+        if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+        if (touchSelecting) {
+          var t = (e.changedTouches && e.changedTouches[0]) || null;
+          endSelectionGesture(true, t ? t.clientX : lpX, t ? t.clientY : lpY);
+        }
+      });
+      wrap.addEventListener("touchcancel", function () {
+        if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+        endSelectionGesture(false, lpX, lpY);
+      });
       return wrap;
     }
     // split

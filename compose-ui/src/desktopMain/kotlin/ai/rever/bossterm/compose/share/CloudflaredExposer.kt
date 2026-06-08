@@ -57,22 +57,24 @@ object CloudflaredExposer {
 
     /**
      * True if we can install cloudflared without the user leaving the app. Blocking.
-     * - macOS: via Homebrew (if present).
-     * - Linux: always (we download the static binary directly — see [linuxDirectInstall]),
-     *   provided the CPU arch is one cloudflared ships a binary for.
+     * - macOS: via Homebrew if present, else by downloading the notarized binary directly
+     *   (see [macDirectInstall]) — so users without Homebrew get the same one-click flow.
+     * - Linux: by downloading the static binary directly (see [linuxDirectInstall]).
+     * Either way it requires a CPU arch cloudflared ships a binary for.
      */
     fun canAutoInstall(): Boolean = when {
-        ShellCustomizationUtils.isMacOS() -> brewAvailable()
+        ShellCustomizationUtils.isMacOS() -> brewAvailable() || macArch() != null
         ShellCustomizationUtils.isLinux() -> linuxArch() != null
         else -> false
     }
 
     /**
      * One-click install for the current platform. Blocking and slow (downloads) — call off
-     * the UI thread. Returns true on success (or if it's already installed).
+     * the UI thread. Returns true on success (or if it's already installed). macOS prefers
+     * Homebrew when present (managed updates + on PATH); otherwise it downloads directly.
      */
     fun autoInstall(): Boolean = when {
-        ShellCustomizationUtils.isMacOS() -> brewInstall()
+        ShellCustomizationUtils.isMacOS() -> if (brewAvailable()) brewInstall() else macDirectInstall()
         ShellCustomizationUtils.isLinux() -> linuxDirectInstall()
         else -> false
     }
@@ -96,12 +98,19 @@ object CloudflaredExposer {
         return ok || isInstalled()
     }
 
-    /** cloudflared's GitHub asset suffix for this CPU, or null if unsupported. */
+    /** cloudflared's Linux GitHub asset suffix for this CPU, or null if unsupported. */
     private fun linuxArch(): String? = when (System.getProperty("os.arch").lowercase()) {
         "amd64", "x86_64" -> "amd64"
         "aarch64", "arm64" -> "arm64"
         "arm", "armv7l", "armv7", "armhf" -> "arm"
         "i386", "i486", "i586", "i686", "x86" -> "386"
+        else -> null
+    }
+
+    /** cloudflared's macOS GitHub asset suffix for this CPU, or null if unsupported. */
+    private fun macArch(): String? = when (System.getProperty("os.arch").lowercase()) {
+        "aarch64", "arm64" -> "arm64"
+        "x86_64", "amd64" -> "amd64"
         else -> null
     }
 
@@ -114,27 +123,70 @@ object CloudflaredExposer {
     fun linuxDirectInstall(): Boolean {
         if (isInstalled()) return true
         val arch = linuxArch() ?: run {
-            log.warn("no cloudflared binary for arch '{}'", System.getProperty("os.arch")); return false
+            log.warn("no cloudflared Linux binary for arch '{}'", System.getProperty("os.arch")); return false
         }
         val url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$arch"
+        if (!downloadWithRetries(url, managedBin)) return false
+        managedBin.setExecutable(true, false)
+        val ok = isInstalled()
+        log.info("cloudflared direct install {}", if (ok) "→ ${managedBin.absolutePath}" else "failed verification")
+        return ok
+    }
 
-        val dir = managedBin.parentFile
+    /**
+     * Seamless macOS install for users without Homebrew: download cloudflared's notarized
+     * release tarball (`cloudflared-darwin-<arch>.tgz`), extract the single binary into
+     * [managedBin] with the bundled `tar`, `chmod +x`, and verify. No sudo, no Homebrew, no
+     * PATH changes. Blocking and slow (downloads) — call off the UI thread. Returns true on
+     * success (or if it's already installed).
+     */
+    fun macDirectInstall(): Boolean {
+        if (isInstalled()) return true
+        val arch = macArch() ?: run {
+            log.warn("no cloudflared macOS binary for arch '{}'", System.getProperty("os.arch")); return false
+        }
+        val url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-$arch.tgz"
+        val tgz = File(managedBin.parentFile, "cloudflared.tgz")
+        if (!downloadWithRetries(url, tgz)) return false
+        return try {
+            // The tarball holds a single `cloudflared` binary at its root → extracts to managedBin.
+            val extracted = runCmd(
+                listOf("tar", "-xzf", tgz.absolutePath, "-C", managedBin.parentFile.absolutePath), 120
+            ) != null
+            tgz.delete()
+            if (!extracted || !managedBin.exists()) {
+                log.warn("failed to extract cloudflared from tarball"); return false
+            }
+            managedBin.setExecutable(true, false)
+            val ok = isInstalled()
+            log.info("cloudflared direct install {}", if (ok) "→ ${managedBin.absolutePath}" else "failed verification")
+            ok
+        } catch (e: Exception) {
+            log.warn("cloudflared macOS extract error: {}", e.message); tgz.delete(); false
+        }
+    }
+
+    /**
+     * Download [url] → [dest] (replacing any existing file), tolerating the intermittent 504s
+     * / timeouts GitHub's release-download path throws even when the API is healthy. Succeeds
+     * only on HTTP 200 with a body of at least [minBytes], so a tiny HTML error page can never
+     * be mistaken for the real payload. Retries a few times with backoff. Blocking.
+     */
+    private fun downloadWithRetries(url: String, dest: File, minBytes: Long = 1_000_000L): Boolean {
+        val dir = dest.parentFile
         if (!dir.exists() && !dir.mkdirs()) { log.warn("could not create {}", dir); return false }
-        val tmp = File(dir, "cloudflared.download")
+        val tmp = File(dir, dest.name + ".download")
 
         val client = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NORMAL) // github.com 302 → CDN (https→https)
             .connectTimeout(Duration.ofSeconds(20))
             .build()
 
-        // GitHub's release-download path intermittently returns 504s / times out even when the
-        // API is healthy (the body is then a tiny HTML error page) — retry a few times. The
-        // size guard means such an error page can never be mistaken for the real binary.
         val attempts = 3
         repeat(attempts) { i ->
             tmp.delete()
             try {
-                log.info("Downloading cloudflared (attempt {}/{}): {}", i + 1, attempts, url)
+                log.info("Downloading (attempt {}/{}): {}", i + 1, attempts, url)
                 val req = HttpRequest.newBuilder(URI.create(url))
                     .timeout(Duration.ofMinutes(5))
                     .header("User-Agent", "BossTerm")
@@ -142,16 +194,13 @@ object CloudflaredExposer {
                     .build()
                 val resp = client.send(req, HttpResponse.BodyHandlers.ofFile(tmp.toPath()))
                 val size = if (tmp.exists()) tmp.length() else 0L
-                if (resp.statusCode() == 200 && size >= 1_000_000L) { // real binary is tens of MB
-                    Files.move(tmp.toPath(), managedBin.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                    managedBin.setExecutable(true, false)
-                    val ok = isInstalled()
-                    log.info("cloudflared direct install {}", if (ok) "→ ${managedBin.absolutePath}" else "failed verification")
-                    return ok
+                if (resp.statusCode() == 200 && size >= minBytes) {
+                    Files.move(tmp.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                    return true
                 }
-                log.warn("cloudflared download attempt {} failed (HTTP {}, {} bytes)", i + 1, resp.statusCode(), size)
+                log.warn("download attempt {} failed (HTTP {}, {} bytes)", i + 1, resp.statusCode(), size)
             } catch (e: Exception) {
-                log.warn("cloudflared download attempt {} error: {}", i + 1, e.message)
+                log.warn("download attempt {} error: {}", i + 1, e.message)
             }
             if (i < attempts - 1) runCatching { Thread.sleep(2_000) }
         }

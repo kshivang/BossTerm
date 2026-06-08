@@ -9,7 +9,6 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.components.SettingsSection
 import ai.rever.bossterm.compose.settings.components.SettingsTextField
-import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -587,9 +586,9 @@ private fun ProviderInstallRow(
                 Text("1. $label", color = TextMuted, fontSize = 11.sp)
                 Text(
                     when {
-                        // Linux pulls the cloudflared static binary down directly; macOS uses Homebrew.
-                        installing -> if (ShellCustomizationUtils.isLinux() && isCloudflared)
-                                          "Downloading cloudflared… (this can take a minute)"
+                        // cloudflared installs in-app on every platform (direct binary on Linux /
+                        // Homebrew-less macOS, Homebrew otherwise); Tailscale is Homebrew-only.
+                        installing -> if (isCloudflared) "Installing cloudflared… (this can take a minute)"
                                       else "Installing via Homebrew… (this can take a minute)"
                         installed == null -> "Checking…"
                         installed == true -> if (isCloudflared) "Installed ✓ — ready (no sign-in needed)."

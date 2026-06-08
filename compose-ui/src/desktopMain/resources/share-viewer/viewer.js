@@ -180,8 +180,10 @@
   // and it inherits cross-row extension, auto-scroll-at-edges, and WebGL/DOM rendering for
   // free — the same trick attachTouchScroll uses for wheel scrolling. Move/up go to the
   // document, where xterm registers its drag listeners after a mousedown on the screen.
-  function dispatchMouse(type, screenEl, x, y, detail, buttons) {
-    var target = (type === "mousedown") ? screenEl : document;
+  // downTarget is only used for mousedown (xterm registers its drag move/up listeners on
+  // the document after a mousedown on the screen), so move/up callers pass null.
+  function dispatchMouse(type, downTarget, x, y, detail, buttons) {
+    var target = (type === "mousedown") ? downTarget : document;
     try {
       target.dispatchEvent(new MouseEvent(type, {
         clientX: x, clientY: y, button: 0, buttons: buttons || 0, detail: detail || 1,
@@ -1422,7 +1424,7 @@
       function screenEl() { return getPane(pid).host.querySelector(".xterm-screen"); }
       function endSelectionGesture(showMenu, mx, my) {
         if (!touchSelecting) return;
-        var sc = screenEl(); if (sc) dispatchMouse("mouseup", sc, mx, my, 1, 0);
+        dispatchMouse("mouseup", null, mx, my, 1, 0); // up goes to document; no element needed
         if (showMenu) showContextMenu(mx, my, pid);
         // Clear after a tick so the synthesized click that follows touchend can't re-fire
         // scrolling or dismiss the just-opened menu.
@@ -1431,6 +1433,7 @@
       wrap.addEventListener("touchstart", function (e) {
         if (!e.touches || e.touches.length !== 1) {
           if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+          endSelectionGesture(false, lpX, lpY); // a 2nd finger (e.g. pinch) cancels a selection
           return;
         }
         lpX = e.touches[0].clientX; lpY = e.touches[0].clientY; lpMoved = 0;
@@ -1449,7 +1452,7 @@
         var t = e.touches && e.touches[0];
         if (touchSelecting) {
           if (e.cancelable) e.preventDefault();   // own the gesture; don't scroll
-          if (t) dispatchMouse("mousemove", screenEl(), t.clientX, t.clientY, 1, 1);
+          if (t) dispatchMouse("mousemove", null, t.clientX, t.clientY, 1, 1);
           return;
         }
         if (t) {

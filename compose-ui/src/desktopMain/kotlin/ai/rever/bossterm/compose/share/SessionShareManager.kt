@@ -132,7 +132,7 @@ object SessionShareManager {
     val remoteUrlFlow: StateFlow<String?> = _remoteUrlFlow.asStateFlow()
 
     /** Lifecycle of the remote-access link, surfaced in the share dialog. */
-    enum class RemoteStatus { Off, Starting, Verifying, Active, Retrying, FellBack }
+    enum class RemoteStatus { Off, Starting, Installing, Verifying, Active, Retrying, FellBack }
 
     /** Remote-access status snapshot: phase + provider [mode] + retry progress. */
     data class RemoteState(
@@ -164,6 +164,11 @@ object SessionShareManager {
     val sharedTabIds: StateFlow<Set<String>> = _sharedTabIds.asStateFlow()
 
     private var watcherJob: Job? = null
+
+    // Eager cloudflared prefetch: when sharing is enabled in cloudflare mode we fetch the binary
+    // in the background so the first share is instant. @Volatile + the isActive guard keep it
+    // single-flight across rapid settings emissions.
+    @Volatile private var prefetchJob: Job? = null
 
     // ---- Approval handshake + 24h rolling access keys (issue #276) ----
 
@@ -303,9 +308,23 @@ object SessionShareManager {
         if (watcherJob?.isActive == true) return
         watcherJob = scope.launch {
             SettingsManager.instance.settings
-                .map { it.sessionSharingEnabled }
+                .map { it.sessionSharingEnabled to it.shareTailscaleMode }
                 .distinctUntilChanged()
-                .collect { enabled -> if (!enabled) stopAll() }
+                .collect { (enabled, mode) ->
+                    if (!enabled) { stopAll(); return@collect }
+                    // EAGER prefetch: as soon as cloudflare sharing is enabled, fetch cloudflared in
+                    // the background so the first share doesn't pay the download. No-op when a
+                    // bundled/PATH/managed binary already works; single-flight via prefetchJob.
+                    if (mode == "cloudflare" && prefetchJob?.isActive != true) {
+                        prefetchJob = scope.launch(Dispatchers.IO) {
+                            if (!CloudflaredExposer.isInstalled() && CloudflaredExposer.canAutoInstall()) {
+                                log.info("Prefetching cloudflared for session sharing…")
+                                val ok = CloudflaredExposer.ensureInstalled()
+                                log.info("cloudflared prefetch {}", if (ok) "ready" else "failed (will retry at share time)")
+                            }
+                        }
+                    }
+                }
         }
     }
 
@@ -488,6 +507,20 @@ object SessionShareManager {
      * failed attempt or a superseded op destroys its own tunnel, so nothing is ever leaked.
      */
     private suspend fun establishCloudflareVerified(port: Int, op: Int): String? {
+        // Make sure cloudflared is present before we try to start a tunnel. If the eager prefetch
+        // already installed it (or a bundled copy exists), this is an instant no-op; otherwise we
+        // install now — surfacing "installing…" — instead of silently dropping to the LAN link.
+        if (!CloudflaredExposer.isInstalled()) {
+            if (!isCurrentRemoteOp(op)) return null
+            if (!CloudflaredExposer.canAutoInstall()) return null // unsupported → LAN fallback (manual install offered in UI)
+            _remoteStateFlow.value = RemoteState(RemoteStatus.Installing, "cloudflare")
+            val installed = withContext(Dispatchers.IO) { CloudflaredExposer.ensureInstalled() }
+            if (!isCurrentRemoteOp(op)) return null
+            if (!installed) {
+                log.warn("cloudflared install failed; falling back to LAN link")
+                return null
+            }
+        }
         var refreshes = 0
         // Already runs on Dispatchers.IO (manager scope / caller's withContext), so the
         // blocking awaitUrl/awaitReady don't need their own withContext.

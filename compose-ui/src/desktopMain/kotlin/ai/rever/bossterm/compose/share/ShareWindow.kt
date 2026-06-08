@@ -402,6 +402,7 @@ private fun RemoteAccessSetupSection(
     val active = remote.status == SessionShareManager.RemoteStatus.Active
     // A switch/establish is in progress — don't let the picker queue a second one mid-flight.
     val busy = remote.status == SessionShareManager.RemoteStatus.Starting ||
+        remote.status == SessionShareManager.RemoteStatus.Installing ||
         remote.status == SessionShareManager.RemoteStatus.Verifying ||
         remote.status == SessionShareManager.RemoteStatus.Retrying
     val isCloudflare = mode == "cloudflare"
@@ -475,6 +476,7 @@ private fun RemoteAccessSetupSection(
                 when (remote.status) {
                     SessionShareManager.RemoteStatus.Off -> "LAN only"
                     SessionShareManager.RemoteStatus.Starting -> "${remote.mode} · starting…"
+                    SessionShareManager.RemoteStatus.Installing -> "${remote.mode} · installing…"
                     SessionShareManager.RemoteStatus.Verifying -> "${remote.mode} · verifying link…"
                     SessionShareManager.RemoteStatus.Retrying ->
                         "${remote.mode} · retrying (${remote.attempt}/${remote.maxAttempts})…"
@@ -563,7 +565,7 @@ private fun RemoteAccessSetupSection(
                     if (!active) {
                         Text(
                             "Not active yet — the links above still use the LAN address. " +
-                                if (isCloudflare) "Install cloudflared, then re-share." else "Finish the steps, then re-share.",
+                                if (isCloudflare) "Share to bring up the public link (cloudflared installs automatically)." else "Finish the steps, then re-share.",
                             color = TextMuted, fontSize = 11.sp
                         )
                     }
@@ -595,16 +597,20 @@ private fun ProviderInstallRow(
                 Text("1. $label", color = TextMuted, fontSize = 11.sp)
                 Text(
                     when {
-                        // cloudflared installs in-app on every platform (direct binary on Linux /
-                        // Homebrew-less macOS, Homebrew otherwise); Tailscale is Homebrew-only.
-                        installing -> if (isCloudflared) "Installing cloudflared… (this can take a minute)"
+                        // cloudflared is installed automatically (eager prefetch + at share time) on
+                        // every supported platform, so its copy reflects an automatic flow rather than
+                        // a manual step; Tailscale is still a manual Homebrew + sign-in.
+                        installing -> if (isCloudflared) "Installing cloudflared automatically… (this can take a minute)"
                                       else "Installing via Homebrew… (this can take a minute)"
                         installed == null -> "Checking…"
-                        installed == true -> if (isCloudflared) "Installed ✓ — ready (no sign-in needed)."
+                        installed == true -> if (isCloudflared) "Ready ✓ — installed automatically (no sign-in needed)."
                                              else "Installed ✓ — now sign in (menu-bar app, or `tailscale up`)."
-                        installFailed -> "Install failed — check your connection and Retry, or install manually."
-                        autoInstallOk -> if (isCloudflared) "Not found — install it." else "Not found — install it, then sign in."
-                        else -> "Not found — install manually."
+                        installFailed -> if (isCloudflared) "Automatic install failed — check your connection and Retry, or install manually."
+                                         else "Install failed — check your connection and Retry, or install manually."
+                        autoInstallOk -> if (isCloudflared) "Installs automatically when you share — no setup needed."
+                                         else "Not found — install it, then sign in."
+                        else -> if (isCloudflared) "Not supported on this platform — install manually."
+                                else "Not found — install manually."
                     },
                     color = when {
                         installed == true -> Color(0xFF4CAF50)
@@ -618,7 +624,12 @@ private fun ProviderInstallRow(
                     LinkText("Download $label →", downloadUrl)
                 }
             }
-            if (installed == false && autoInstallOk) {
+            // cloudflared installs itself (eager prefetch + at share time), so only surface the
+            // manual button if that automatic install actually failed. Tailscale always needs the
+            // explicit click (Homebrew install + sign-in).
+            val showInstallButton = installed == false && autoInstallOk &&
+                (if (isCloudflared) installFailed else true)
+            if (showInstallButton) {
                 Button(
                     onClick = onInstall,
                     enabled = !installing,

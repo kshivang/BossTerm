@@ -73,8 +73,14 @@ object CloudflaredExposer {
         if (!ShellCustomizationUtils.isWindows() && !found.canExecute()) {
             return runCatching {
                 managedBin.parentFile?.mkdirs()
-                if (!managedBin.exists() || managedBin.length() != found.length()) {
-                    Files.copy(found.toPath(), managedBin.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                // Refresh when size OR mtime differs — length alone can collide across versions /
+                // a stale prior auto-download. COPY_ATTRIBUTES carries the source mtime over so the
+                // comparison stays stable and we don't re-copy ~tens of MB on every probe.
+                if (!managedBin.exists() ||
+                    managedBin.length() != found.length() ||
+                    managedBin.lastModified() != found.lastModified()) {
+                    Files.copy(found.toPath(), managedBin.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES)
                     managedBin.setExecutable(true, false)
                 }
                 managedBin.absolutePath

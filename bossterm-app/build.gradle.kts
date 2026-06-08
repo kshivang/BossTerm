@@ -296,6 +296,9 @@ tasks.register("fetchCloudflaredBinary") {
         }
 
         val stagingDir = outFile.get().asFile.parentFile.also { it.mkdirs() }
+        // Always "cloudflared" (no extension) — only mac/linux are bundled today. NOTE: if Windows
+        // bundling is ever added, stage it as "cloudflared.exe" so it matches CloudflaredExposer's
+        // binName; otherwise the runtime's bundledBin() looks for the wrong name and silently misses it.
         val staged = File(stagingDir, "cloudflared")
         staged.delete() // a stale copy from a prior build target must not be bundled
 
@@ -315,6 +318,10 @@ tasks.register("fetchCloudflaredBinary") {
             logger.lifecycle("cloudflared: unsupported arch '$osArchProp'; skipping (runtime auto-downloads)"); return@doLast
         }
         val asset = if (isMac) "cloudflared-darwin-$arch.tgz" else "cloudflared-linux-$arch"
+        // Surface the resolved target on every run (cache hit or miss) so a mis-arched build — e.g.
+        // an x86/Rosetta JVM on Apple Silicon — is obvious in release logs. The app's bundled JRE
+        // follows this same build-JVM arch, so the binary always matches the app it ships in.
+        logger.lifecycle("cloudflared: bundling for os='$osNameProp' arch='$osArchProp' → $asset (v$version)")
         val expectedSha = pin.getProperty("sha256.$asset")
         if (expectedSha.isNullOrBlank()) {
             if (releaseBuild) error("cloudflared: no pinned SHA for $asset (RELEASE_BUILD)")
@@ -341,6 +348,9 @@ tasks.register("fetchCloudflaredBinary") {
             // The .tgz holds a single `cloudflared` binary at its root → extracts to staging/cloudflared.
             injected.execOps.exec { commandLine("tar", "-xzf", cached.absolutePath, "-C", stagingDir.absolutePath) }
             require(staged.isFile) { "cloudflared: missing after extracting $asset" }
+            // The archive is SHA-pinned (binary only), but prune any unexpected sibling entries so
+            // the Sync that folds this dir into common/ can only ever bundle the cloudflared binary.
+            stagingDir.listFiles()?.forEach { if (it != staged) it.deleteRecursively() }
         } else {
             cached.copyTo(staged, overwrite = true)
         }

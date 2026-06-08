@@ -15,11 +15,22 @@ object CLIInstaller {
     private val isLinux = ShellCustomizationUtils.isLinux()
 
     /**
+     * Test-only seams (set by `:compose-ui:desktopTest`). [testInstallDir] redirects the
+     * mac/Linux install dir + path to a temp location so the dir-creation/write logic can be
+     * exercised without touching the real /usr/local; when [testScript] is non-null it stands
+     * in for the bundled CLI script (and signals test mode, so the MCP-helper/man-page side
+     * installs are skipped). Both default null = production behavior.
+     */
+    @Volatile internal var testInstallDir: String? = null
+    @Volatile internal var testScript: String? = null
+
+    /**
      * Get the install path based on platform.
      * Windows: %LOCALAPPDATA%\BossTerm\bossterm.cmd (no admin needed)
      * macOS/Linux: /usr/local/bin/bossterm
      */
     private fun getInstallPath(): String {
+        testInstallDir?.let { return "$it/$CLI_NAME" }
         return if (isWindows) {
             val localAppData = System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home")
             "$localAppData\\BossTerm\\bossterm.cmd"
@@ -32,6 +43,7 @@ object CLIInstaller {
      * Get the install directory based on platform.
      */
     private fun getInstallDir(): String {
+        testInstallDir?.let { return it }
         return if (isWindows) {
             val localAppData = System.getenv("LOCALAPPDATA") ?: System.getProperty("user.home")
             "$localAppData\\BossTerm"
@@ -99,16 +111,23 @@ object CLIInstaller {
                 return installWindows(scriptContent)
             }
 
-            // macOS/Linux: Check if /usr/local/bin exists
+            // macOS/Linux: ensure the bin dir exists. On Apple Silicon Macs /usr/local/bin
+            // doesn't exist by default (Homebrew lives in /opt/homebrew) — create it rather
+            // than erroring. If we can't make it without elevation, hand off to the privileged
+            // installer (which mkdir -p's under sudo) instead of failing.
             val installDir = File(getInstallDir())
             if (!installDir.exists()) {
-                return InstallResult.Error("Directory ${getInstallDir()} does not exist")
+                runCatching { installDir.mkdirs() }
+                if (!installDir.exists()) {
+                    return installWithAdminPrivileges(scriptContent)
+                }
             }
 
             // Try to write directly (might work if user has permissions)
             val targetFile = File(getInstallPath())
-            val mcpHelperContent = getMcpHelperScript()  // may be null on Windows-only setups
-            val manPageContent = getManPageContent()     // may be null on Windows
+            // In test mode skip the helper/man side-installs (they'd touch real user paths).
+            val mcpHelperContent = if (testScript != null) null else getMcpHelperScript()
+            val manPageContent = if (testScript != null) null else getManPageContent()
             try {
                 FileOutputStream(targetFile).use { out ->
                     out.write(scriptContent.toByteArray())
@@ -290,15 +309,18 @@ object CLIInstaller {
             tempFile.setExecutable(true)
 
             val installPath = getInstallPath()
+            val installDir = getInstallDir()
+            // mkdir -p the bin dir under elevation first — it may not exist (Apple Silicon
+            // has no /usr/local/bin by default), and creating it needs root just like the copy.
             val process = if (isMacOS) {
                 // macOS: Use osascript to run with admin privileges
                 val script = """
-                    do shell script "cp '${tempFile.absolutePath}' '$installPath' && chmod +x '$installPath'" with administrator privileges
+                    do shell script "mkdir -p '$installDir' && cp '${tempFile.absolutePath}' '$installPath' && chmod +x '$installPath'" with administrator privileges
                 """.trimIndent()
                 ProcessBuilder("osascript", "-e", script)
             } else if (isLinux) {
                 // Linux: Use pkexec (PolicyKit) for GUI privilege escalation
-                ProcessBuilder("pkexec", "sh", "-c", "cp '${tempFile.absolutePath}' '$installPath' && chmod +x '$installPath'")
+                ProcessBuilder("pkexec", "sh", "-c", "mkdir -p '$installDir' && cp '${tempFile.absolutePath}' '$installPath' && chmod +x '$installPath'")
             } else {
                 tempFile.delete()
                 return InstallResult.Error("Unsupported platform. Please manually copy the script to $installPath")
@@ -383,6 +405,7 @@ object CLIInstaller {
      * script doesn't cover it; that's tracked separately.
      */
     private fun getCLIScript(): String? {
+        testScript?.let { return it }
         if (isWindows) return EMBEDDED_WINDOWS_CLI_SCRIPT
         return findCliResource("bossterm")
     }

@@ -9,6 +9,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.components.SettingsSection
 import ai.rever.bossterm.compose.settings.components.SettingsTextField
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -410,18 +411,20 @@ private fun RemoteAccessSetupSection(
     // Checked off the UI thread (the probes shell out to the CLI / brew); re-checked when
     // the mode changes (so switching Tailscale↔Cloudflare re-probes the right binary).
     var installed by remember { mutableStateOf<Boolean?>(null) }
-    var brewOk by remember { mutableStateOf(true) }
+    // Whether we can install the CLI in-app (cloudflared: Homebrew on macOS, direct binary
+    // download on Linux; Tailscale: Homebrew only). When false, we fall back to a manual link.
+    var autoInstallOk by remember { mutableStateOf(true) }
     var installing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     fun toolInstalled() = if (isCloudflare) CloudflaredExposer.isInstalled() else TailscaleExposer.isInstalled()
-    fun toolBrewOk() = if (isCloudflare) CloudflaredExposer.brewAvailable() else TailscaleExposer.brewAvailable()
-    fun toolBrewInstall() = if (isCloudflare) CloudflaredExposer.brewInstall() else TailscaleExposer.brewInstall()
+    fun toolCanAutoInstall() = if (isCloudflare) CloudflaredExposer.canAutoInstall() else TailscaleExposer.brewAvailable()
+    fun toolAutoInstall() = if (isCloudflare) CloudflaredExposer.autoInstall() else TailscaleExposer.brewInstall()
     LaunchedEffect(expanded, mode) {
         if (expanded && mode != "off" && !installing) {
             installed = null
             val ins = withContext(Dispatchers.IO) { toolInstalled() }
             installed = ins
-            brewOk = if (ins) true else withContext(Dispatchers.IO) { toolBrewOk() }
+            autoInstallOk = if (ins) true else withContext(Dispatchers.IO) { toolCanAutoInstall() }
         }
     }
     // Confirm before switching provider — it tears down the current tunnel and brings up a
@@ -516,11 +519,11 @@ private fun RemoteAccessSetupSection(
                         else "https://tailscale.com/download",
                         installed = installed,
                         installing = installing,
-                        brewOk = brewOk,
+                        autoInstallOk = autoInstallOk,
                         onInstall = {
                             installing = true
                             scope.launch {
-                                withContext(Dispatchers.IO) { toolBrewInstall() }
+                                withContext(Dispatchers.IO) { toolAutoInstall() }
                                 installed = withContext(Dispatchers.IO) { toolInstalled() }
                                 installing = false
                             }
@@ -563,14 +566,14 @@ private fun RemoteAccessSetupSection(
     }
 }
 
-/** Step 1 of remote-access setup: live install check + a one-click `brew install <tool>`. */
+/** Step 1 of remote-access setup: live install check + a one-click in-app install. */
 @Composable
 private fun ProviderInstallRow(
     label: String,
     downloadUrl: String,
     installed: Boolean?,
     installing: Boolean,
-    brewOk: Boolean,
+    autoInstallOk: Boolean,
     onInstall: () -> Unit,
 ) {
     Surface(color = SurfaceColor, shape = RoundedCornerShape(6.dp), modifier = Modifier.fillMaxWidth()) {
@@ -584,20 +587,23 @@ private fun ProviderInstallRow(
                 Text("1. $label", color = TextMuted, fontSize = 11.sp)
                 Text(
                     when {
-                        installing -> "Installing via Homebrew… (this can take a minute)"
+                        // Linux pulls the cloudflared static binary down directly; macOS uses Homebrew.
+                        installing -> if (ShellCustomizationUtils.isLinux() && isCloudflared)
+                                          "Downloading cloudflared… (this can take a minute)"
+                                      else "Installing via Homebrew… (this can take a minute)"
                         installed == null -> "Checking…"
                         installed == true -> if (isCloudflared) "Installed ✓ — ready (no sign-in needed)."
                                              else "Installed ✓ — now sign in (menu-bar app, or `tailscale up`)."
-                        brewOk -> if (isCloudflared) "Not found — install it." else "Not found — install it, then sign in."
-                        else -> "Not found, and Homebrew isn't available — install manually."
+                        autoInstallOk -> if (isCloudflared) "Not found — install it." else "Not found — install it, then sign in."
+                        else -> "Not found — install manually."
                     },
                     color = if (installed == true) Color(0xFF4CAF50) else TextSecondary, fontSize = 11.sp
                 )
-                if (installed == false && !brewOk && !installing) {
+                if (installed == false && !autoInstallOk && !installing) {
                     LinkText("Download $label →", downloadUrl)
                 }
             }
-            if (installed == false && brewOk) {
+            if (installed == false && autoInstallOk) {
                 Button(
                     onClick = onInstall,
                     enabled = !installing,

@@ -111,6 +111,20 @@ sealed class ServerMessage {
     @SerialName("control")
     data class Control(val granted: Boolean) : ServerMessage()
 
+    /**
+     * The host's BossTerm-MCP state, so a client can show + manage it (the "MCP" pill).
+     * Broadcast on connect and whenever it changes. [attached] holds
+     * [ai.rever.bossterm.compose.mcp.McpAttachTarget] persistence keys the host has attached.
+     */
+    @Serializable
+    @SerialName("mcpStatus")
+    data class McpStatus(
+        val enabled: Boolean,
+        val running: Boolean,
+        val attached: List<String> = emptyList(),
+        val serverLabel: String? = null,
+    ) : ServerMessage()
+
     /** Host requires approval and this viewer's request is awaiting the host's decision. */
     @Serializable
     @SerialName("pending")
@@ -199,6 +213,14 @@ data class TabNode(
     val originWindowId: String? = null,
     /** When [originWindowId] != null: the upstream window's display label. */
     val originWindowName: String? = null,
+    /**
+     * When [origin] != null: the upstream session's MCP state, forwarded so a viewer can show +
+     * manage it on the "via host" group (chain: viewer → host → upstream). Null = the upstream
+     * never reported MCP (no pill). [originMcpAttached] = McpAttachTarget persistence keys.
+     */
+    val originMcpEnabled: Boolean? = null,
+    val originMcpRunning: Boolean? = null,
+    val originMcpAttached: List<String> = emptyList(),
 )
 
 /** Recursive split-layout node: either a binary split or a leaf pane. */
@@ -388,4 +410,22 @@ sealed class ClientMessage {
     @Serializable
     @SerialName("offerShare")
     data class OfferShare(val link: String) : ClientMessage()
+
+    /**
+     * Turn an MCP server on/off (the MCP pill toggle). Controller role only. [tabId] null →
+     * the host's own MCP; a [tabId] naming a tab the host mirrors from an upstream → relayed to
+     * that upstream (manage the origin's MCP on a "via host" group).
+     */
+    @Serializable
+    @SerialName("setMcpEnabled")
+    data class SetMcpEnabled(val enabled: Boolean, val tabId: String? = null) : ClientMessage()
+
+    /**
+     * Attach a CLI to an MCP server (the MCP pill's "Attach ▸"). [target] is an
+     * [ai.rever.bossterm.compose.mcp.McpAttachTarget] persistence key. [tabId] routes like
+     * [SetMcpEnabled] (null = host; upstream tab id = relayed). Controller role only.
+     */
+    @Serializable
+    @SerialName("attachMcp")
+    data class AttachMcp(val target: String, val tabId: String? = null) : ClientMessage()
 }

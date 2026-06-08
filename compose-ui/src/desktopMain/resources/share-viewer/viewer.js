@@ -116,6 +116,63 @@
   var stageEl = document.getElementById("stage");
   var presenceEl = document.getElementById("presence");
   var viewOnlyEl = document.getElementById("viewonly");
+  // Host MCP state (the "MCP" pill) — null until the host's mcpStatus arrives. Mirrors the
+  // host's StatusStrip: dot green when the MCP server is running; click (control only) opens
+  // a Turn on/off + Attach▸ menu relayed to the host. attached = McpAttachTarget persistence keys.
+  var mcp = null;
+  var mcpPillEl = document.getElementById("mcppill");
+  // Attach targets mirror the host's McpAttachTarget enum (persistenceKey → label).
+  var MCP_TARGETS = [
+    { key: "CLAUDE_CODE", label: "Claude Code" },
+    { key: "CODEX", label: "Codex" },
+    { key: "GEMINI", label: "Gemini CLI" },
+    { key: "OPENCODE", label: "OpenCode" },
+  ];
+  function updateMcpPill() {
+    if (!mcp) { mcpPillEl.style.display = "none"; return; }
+    mcpPillEl.style.display = "";
+    mcpPillEl.className = "badge" + (mcp.running ? " on" : "");
+  }
+  // Menu (reuses the context-menu primitives): Turn MCP on/off + Attach▸ targets (✓ attached).
+  function showMcpMenu(x, y) {
+    var attached = (mcp.attached || []);
+    ctxEl.innerHTML = "";
+    ctxEl.appendChild(ctxItem(mcp.enabled ? "Turn MCP off" : "Turn MCP on", true, function () {
+      sendMsg({ t: "setMcpEnabled", enabled: !mcp.enabled });
+    }));
+    ctxEl.appendChild(ctxSep());
+    MCP_TARGETS.forEach(function (t) {
+      var mark = attached.indexOf(t.key) >= 0 ? "✓ " : "";
+      // Attach is a no-op while the server is off — disable it (mirrors the host indicator).
+      ctxEl.appendChild(ctxItem(mark + "Attach " + t.label, !!mcp.running, function () {
+        sendMsg({ t: "attachMcp", target: t.key });
+      }));
+    });
+    positionMenu(x, y);
+  }
+  mcpPillEl.onclick = function (e) {
+    if (!mcp) return;
+    if (viewOnlyGate()) return; // view-only → request-control prompt
+    showMcpMenu(e.clientX, e.clientY);
+  };
+  // Same menu for an upstream "via host" group's MCP — toggle/attach are relayed by the host
+  // to the origin via the named tabId (anchorTab(g)).
+  function showUpstreamMcpMenu(x, y, g) {
+    var tabId = anchorTab(g).id;
+    var attached = (g.mcp.attached || []);
+    ctxEl.innerHTML = "";
+    ctxEl.appendChild(ctxItem(g.mcp.enabled ? "Turn MCP off" : "Turn MCP on", true, function () {
+      sendMsg({ t: "setMcpEnabled", enabled: !g.mcp.enabled, tabId: tabId });
+    }));
+    ctxEl.appendChild(ctxSep());
+    MCP_TARGETS.forEach(function (t) {
+      var mark = attached.indexOf(t.key) >= 0 ? "✓ " : "";
+      ctxEl.appendChild(ctxItem(mark + "Attach " + t.label, !!g.mcp.running, function () {
+        sendMsg({ t: "attachMcp", target: t.key, tabId: tabId });
+      }));
+    });
+    positionMenu(x, y);
+  }
   // The "view only" badge doubles as the request-control affordance (confirm-first, like
   // the native client's dialog) — the host's user sees its approval toast.
   viewOnlyEl.style.cursor = "pointer";
@@ -1001,7 +1058,13 @@
         tabs.forEach(function (t) {
           if (t.origin) {
             if (!upstreams[t.origin]) {
-              upstreams[t.origin] = { name: t.originName, readOnly: !!t.originReadOnly, offline: !!t.originOffline, tabs: [] };
+              upstreams[t.origin] = {
+                name: t.originName, readOnly: !!t.originReadOnly, offline: !!t.originOffline, tabs: [],
+                // The origin's MCP, forwarded by the host (null = never reported → no pill).
+                mcp: (typeof t.originMcpRunning === "boolean")
+                  ? { enabled: !!t.originMcpEnabled, running: !!t.originMcpRunning, attached: t.originMcpAttached || [] }
+                  : null,
+              };
               upOrder.push(t.origin);
             }
             upstreams[t.origin].tabs.push(t);
@@ -1054,6 +1117,24 @@
             off.textContent = "· offline"; off.title = "The host lost its connection to this session — content is frozen";
             off.style.cssText = "color:#E57373;font-size:10px;";
             hd.appendChild(off);
+          }
+          if (g.mcp) {
+            // This origin's MCP pill — dot (green = running) + "MCP"; click opens the
+            // toggle/attach menu relayed through the host to the origin. Read-only via the
+            // host → request control first.
+            var mp = document.createElement("span");
+            mp.style.cssText = "cursor:pointer;display:inline-flex;align-items:center;gap:4px;font-size:10px;color:#b0b0b0;";
+            var mpdot = document.createElement("span");
+            mpdot.style.cssText = "width:6px;height:6px;border-radius:50%;background:" + (g.mcp.running ? "#4caf50" : "#6b6b6b") + ";";
+            mp.appendChild(mpdot);
+            mp.appendChild(document.createTextNode("MCP"));
+            mp.onclick = function (ev) {
+              ev.stopPropagation();
+              if (viewOnlyGate()) return;
+              if (g.readOnly) { requestUpstreamControl(anchorTab(g).id, g.name || "remote"); return; }
+              showUpstreamMcpMenu(ev.clientX, ev.clientY, g);
+            };
+            hd.appendChild(mp);
           }
           if (g.readOnly) {
             var eye = document.createElement("span");
@@ -1687,6 +1768,8 @@
         break;
       case "presence":
         presenceEl.textContent = m.viewers === 1 ? "1 viewer" : m.viewers + " viewers"; break;
+      case "mcpStatus":
+        mcp = m; updateMcpPill(); break;
       case "control":
         controlGranted = !!m.granted;
         viewOnlyEl.style.display = controlGranted ? "none" : "";

@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.share
 
+import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import io.ktor.http.CacheControl
@@ -22,10 +23,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -282,6 +285,17 @@ object SessionShareManager {
         }
     }
 
+    /**
+     * Keep the engine + remote tunnel alive when the last tab is unshared, so re-shares are
+     * instant (no re-establish). True while sharing is enabled and a remote provider is selected
+     * — the same condition under which we pre-warm. Disabling sharing / switching to "off" still
+     * tears everything down (the settings observer's stopAll, and applyRemoteMode).
+     */
+    private fun keepWarm(): Boolean {
+        val s = SettingsManager.instance.settings.value
+        return s.sessionSharingEnabled && s.shareTailscaleMode != "off"
+    }
+
     private fun newKey(): String = UUID.randomUUID().toString().replace("-", "")
 
     /** Public info handed back to the UI when a share starts. */
@@ -325,6 +339,10 @@ object SessionShareManager {
                             }
                         }
                     }
+                    // PRE-WARM: bind the engine and bring the tunnel up now, before the user shares,
+                    // so the verified public URL is already published when the share dialog opens
+                    // (the QR shows the Cloudflare link instantly instead of after a 5-15s verify).
+                    if (mode != "off") scope.launch { prewarmRemote() }
                 }
         }
     }
@@ -377,6 +395,31 @@ object SessionShareManager {
         val url = buildUrl(share.viewToken) ?: return null
         val controlUrl = buildUrl(share.controlToken) ?: url
         return ShareInfo(tabId, url, share.viewToken, controlUrl, isSecureUrl(url), share.scope, e2eCodeOf(url))
+    }
+
+    /**
+     * Pre-warm remote access: bind the engine and establish the tunnel before any tab is shared,
+     * so the verified public URL is already published when the user clicks Share. A no-op when
+     * sharing is off or no remote provider is selected, or when the engine is already up (the
+     * inline establish kick in [ensureEngineLocked] fires once per lifecycle). Off the UI thread.
+     */
+    private suspend fun prewarmRemote() {
+        val settings = SettingsManager.instance.settings.value
+        if (!settings.sessionSharingEnabled || settings.shareTailscaleMode == "off") return
+        // Let the BossTerm MCP server claim its port FIRST. It shares the 7676+ range with the
+        // share server; pre-warm runs at app launch concurrently with the MCP server, so if both
+        // probe the same free port before either binds, the share server's wildcard bind coexists
+        // with the MCP server's loopback bind on the same port — and cloudflared (which dials
+        // 127.0.0.1) then hits the MCP server's DNS-rebinding guard (403) instead of the viewer.
+        // Waiting until the MCP port is known lets ensureEngineLocked's port loop skip it.
+        // Bounded, and only when MCP is enabled, so a disabled MCP server never stalls pre-warm.
+        if (settings.mcpEnabled) {
+            withTimeoutOrNull(5000) { McpTerminalRegistry.runningPort.first { it != null } }
+        }
+        mutex.withLock {
+            if (engine == null) log.info("Pre-warming session-sharing remote access ({})", settings.shareTailscaleMode)
+            ensureEngineLocked(settings) // binds the server + kicks establishRemote once
+        }
     }
 
     /**
@@ -486,6 +529,10 @@ object SessionShareManager {
             _remoteUrlFlow.value = url
             _remoteStateFlow.value = RemoteState(RemoteStatus.Active, mode)
             log.info("Session-sharing reachable via {}: {}", mode, url)
+            // A kept-warm Cloudflare tunnel can drop while idle — auto-respawn it so the published
+            // link stays live. Only cloudflare has a long-lived process; Tailscale leaves
+            // remoteProcess null, so the gate naturally skips it.
+            if (mode == "cloudflare") remoteProcess?.let { registerRespawn(it, port, op) }
         } else {
             _remoteStateFlow.value = RemoteState(RemoteStatus.FellBack, mode)
             log.warn(
@@ -493,6 +540,32 @@ object SessionShareManager {
                     "For tailscale check `tailscale status`; for cloudflare ensure `cloudflared` is installed.",
                 mode
             )
+        }
+    }
+
+    /**
+     * Re-establish the Cloudflare tunnel if [proc] exits on its own (an idle kept-warm tunnel can
+     * drop). The op-token is the authority: every cooperative teardown — [stopEngineLocked],
+     * [applyRemoteMode], [refreshRemoteLink], [shutdown] — bumps the op BEFORE killing the
+     * process, so a kill we initiated leaves [op] stale and this self-cancels; only an unattended
+     * death (op unchanged) respawns. The closure captures [op] (never re-reads the live op). A
+     * persistent failure goes FellBack with no adopted process, so no onExit is registered and it
+     * can't hot-loop; the 2s backoff guards the rare flapping case.
+     */
+    private fun registerRespawn(proc: Process, port: Int, op: Int) {
+        proc.onExit().thenAccept {
+            scope.launch {
+                if (!isCurrentRemoteOp(op)) return@launch // a cooperative teardown/switch superseded us
+                val s = SettingsManager.instance.settings.value
+                if (!s.sessionSharingEnabled || s.shareTailscaleMode != "cloudflare") return@launch
+                if (engine == null) return@launch
+                delay(2000) // brief backoff; a teardown during this window bumps the op
+                if (!isCurrentRemoteOp(op)) return@launch
+                val p = boundPort ?: return@launch
+                log.info("cloudflared tunnel exited; re-establishing the warm link")
+                val newOp = claimRemoteOp()
+                withContext(Dispatchers.IO) { establishRemote("cloudflare", p, newOp) }
+            }
         }
     }
 
@@ -587,7 +660,9 @@ object SessionShareManager {
                 releaseEmbeddedFit(tabId) // sharing stopped → restore any fit-resized host window
                 share.stop()
                 _sharedTabIds.value = sharesByTab.keys.toSet()
-                if (sharesByTab.isEmpty()) stopEngineLocked()
+                // Keep the engine + tunnel warm when sharing stays enabled with a remote provider,
+                // so a re-share is instant; otherwise tear down as before.
+                if (sharesByTab.isEmpty() && !keepWarm()) stopEngineLocked()
             }
         }
     }
@@ -672,6 +747,17 @@ object SessionShareManager {
         for (offset in 0 until MAX_PORT_FALLBACK) {
             val port = desiredPort + offset
             if (port > 65535) break
+            // Never take the BossTerm MCP server's port. It's loopback-only in the same 7676+
+            // range; our `bind=lan` wildcard bind can coexist with its loopback bind on the same
+            // port, and cloudflared (dials 127.0.0.1) would then reach the MCP server's rebinding
+            // guard (403) instead of the viewer. portBindable's loopback probe already rejects a
+            // port the MCP server holds (and prewarmRemote waits for it to bind first); this
+            // explicit check states the intent and guards the case where its port is known but the
+            // socket probe would otherwise race.
+            if (port == McpTerminalRegistry.runningPort.value) {
+                log.warn("Session-sharing port {} is the BossTerm MCP port, trying next", port)
+                continue
+            }
             // CIO binds its listening socket asynchronously (in the acceptJob coroutine),
             // so a port-already-in-use surfaces as an UNCAUGHT BindException instead of
             // throwing from start(). Probe the port synchronously first and skip it if

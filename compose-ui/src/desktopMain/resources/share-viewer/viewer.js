@@ -288,11 +288,14 @@
   // inset is the only truth; Android shrinks the window itself (inset 0 → no-op).
   var appliedShiftPx = 0;
   var keyboardOpen = false;
+  var followRaf = 0;
   // Rewriting document.body's transform blurs the focused textarea on iOS — and re-focusing
-  // outside a user gesture can't re-summon the keyboard. So the transform is rewritten ONLY when
-  // the keyboard actually opens or closes (see layoutForKeyboard), never on terminal output or
-  // scroll. A thinking TUI moves the cursor and makes iOS auto-scroll to the caret, but it can't
-  // change the keyboard height, so it can't flip open↔closed and the keyboard stays up.
+  // outside a user gesture can't re-summon the keyboard. So the open/close push lives in
+  // layoutForKeyboard (driven by visualViewport geometry, which output can't trigger). The one
+  // other writer is followCursor (below), which ONLY ever increases the push to lift a cursor
+  // that moved BELOW the keyboard fold (e.g. a TUI taking over and dropping its prompt to the
+  // bottom) — it never churns the shift back down on ordinary output moves, so a thinking TUI
+  // with a visible cursor writes nothing and the keyboard stays put.
 
   // Bottom edge (layout-viewport px, with the current shift un-applied) of the focused
   // pane's cursor line — null when the cursor is scrolled off-screen / nothing focused.
@@ -348,6 +351,26 @@
     bodyEl.style.paddingBottom = (keybarEl.style.display !== "none" && keybarEl.offsetHeight)
       ? keybarEl.offsetHeight + "px" : "0px";
   }
+  // While the keyboard is up, keep the cursor visible above it. Only pushes FURTHER up (never
+  // reduces the shift) and only when the cursor sits below the visible fold — so the common
+  // case (cursor already visible, output streaming) writes nothing. This is what brings the
+  // input line back into view when a TUI takes over and moves the cursor to the bottom after
+  // the keyboard was already raised; without it the input hides until the keyboard is toggled.
+  function followCursor() {
+    if (!keyboardOpen) return;
+    var vv = window.visualViewport; if (!vv) return;
+    var cb = cursorBottomPx(); if (cb === null) return;
+    var kbH = Math.max(0, window.innerHeight - vv.height);
+    var visibleBottom = vv.offsetTop + vv.height;
+    var clear = (keybarEl.style.display !== "none" ? keybarEl.offsetHeight : 0) + 8;
+    var want = Math.round(Math.max(0, Math.min(kbH, cb - visibleBottom + clear)));
+    if (want <= appliedShiftPx) return; // cursor already clear of the keyboard — don't churn
+    appliedShiftPx = want;
+    var wasFocused = document.activeElement === activeTextarea();
+    document.body.style.transform = "translateY(-" + want + "px)";
+    if (wasFocused) { var ta = activeTextarea(); if (ta) try { ta.focus({ preventScroll: true }); } catch (e) {} }
+    keybarEl.style.bottom = Math.max(0, Math.round(kbH) - appliedShiftPx) + "px";
+  }
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", layoutForKeyboard);
     window.visualViewport.addEventListener("scroll", layoutForKeyboard);
@@ -369,6 +392,15 @@
     if (ta) { try { ta.focus({ preventScroll: true }); } catch (e) { try { ta.focus(); } catch (e2) {} } }
     else if (currentPaneId && panes[currentPaneId]) { try { panes[currentPaneId].term.focus(); } catch (e) {} }
   }
+  // The ⌨ keybar button toggles the soft keyboard: blur the focused textarea to dismiss it when
+  // it's up, or focus to summon it when it's down. Runs inside the button's tap gesture, so iOS
+  // honours the focus() to re-show. "Up" = a keyboard inset OR the textarea already focused.
+  function toggleKeyboard() {
+    var ta = activeTextarea();
+    var up = softKeyboardUp() || (ta != null && document.activeElement === ta);
+    if (up) { if (ta) try { ta.blur(); } catch (e) {} }
+    else focusCurrent();
+  }
   function sendKey(seq) {
     if (!currentPaneId) return;
     sendInput(currentPaneId, seq);
@@ -378,12 +410,13 @@
   // (a plain click — esp. Enter/⏎ — otherwise blurs it and drops the keyboard). Fire on
   // pointerup with a move-guard so a horizontal scroll of the bar doesn't send a key; refocus
   // the textarea defensively to keep the keyboard up.
-  function wireKeyButton(b, seq) {
+  function wireKeyButton(b, seq, onTap) {
     function hl(on) {
       b.style.background = on ? "#4a90e2" : ""; b.style.color = on ? "#fff" : "";
       b.style.borderColor = on ? "#4a90e2" : "";
     }
-    function fire() { if (seq != null) sendKey(seq); focusCurrent(); }
+    // onTap overrides the default action (used by the ⌨ toggle, which manages focus itself).
+    function fire() { if (onTap) { onTap(); return; } if (seq != null) sendKey(seq); focusCurrent(); }
     var sx = 0, sy = 0, moved = false, touched = false;
     // The keys are <div>s, NOT <button>s: a non-focusable element doesn't steal focus from
     // the terminal's hidden textarea on iOS, so the soft keyboard stays up WITHOUT a
@@ -416,8 +449,8 @@
     if (!controlGranted) { keybarEl.style.display = "none"; layoutForKeyboard(); return; }
     keybarEl.style.display = "flex";
     var kb = document.createElement("div");
-    kb.className = "keybtn"; kb.textContent = "⌨"; kb.title = "Show keyboard";
-    wireKeyButton(kb, null); // null seq → just (re)focuses to summon the keyboard
+    kb.className = "keybtn"; kb.textContent = "⌨"; kb.title = "Show / hide keyboard";
+    wireKeyButton(kb, null, toggleKeyboard); // toggles the soft keyboard up/down
     keybarEl.appendChild(kb);
     KEY_ROW.forEach(function (k) {
       var b = document.createElement("div");
@@ -942,10 +975,15 @@
     }
     if (viewerFont) { try { term.options.fontSize = viewerFont; } catch (e) {} }
     term.onData(function (data) { sendInput(paneId, data); });
-    // Deliberately NO onCursorMove → layoutForKeyboard coupling: a thinking TUI streams
-    // cursor moves at output frequency, and each transform rewrite blurred the textarea and
-    // dropped the soft keyboard. The keyboard push is driven solely by visualViewport
-    // geometry events (open/close/inset), which output can't trigger.
+    // Keep the cursor above the keyboard as it moves (e.g. a TUI dropping its prompt to the
+    // bottom after the keyboard was raised). followCursor only ever pushes further up and only
+    // when the cursor is hidden, so a thinking TUI with a visible cursor never rewrites the
+    // transform — which is what dropped the keyboard before (that, plus the now-fixed renderStage
+    // detach / autofit re-render). Coalesced to one check per frame.
+    term.onCursorMove(function () {
+      if (!keyboardOpen || paneId !== currentPaneId || followRaf) return;
+      followRaf = requestAnimationFrame(function () { followRaf = 0; followCursor(); });
+    });
     attachTouchScroll(host, term);
     p = { term: term, host: host };
     panes[paneId] = p;

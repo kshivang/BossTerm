@@ -658,13 +658,23 @@ private fun LinkText(text: String, url: String) {
     )
 }
 
-/** Render [text] as a QR code into a Compose [ImageBitmap], or null on failure. */
-private fun qrImageBitmap(text: String, size: Int = 256): ImageBitmap? = runCatching {
+/** Render [text] as a crisp QR code into a Compose [ImageBitmap], or null on failure. */
+private fun qrImageBitmap(text: String, target: Int = 512): ImageBitmap? = runCatching {
+    // Asking ZXing for a fixed pixel size (e.g. 256) makes it scale the code by an integer module
+    // multiple and center it — the leftover slack is baked in as a fat white border. Instead pass
+    // size 1 so it emits a TIGHT 1px-per-module matrix (just the MARGIN=1 single-module quiet
+    // zone, no slack), then upscale by an integer factor so module edges stay sharp.
     val hints = mapOf(EncodeHintType.MARGIN to 1)
-    val matrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size, hints)
-    val image = BufferedImage(size, size, BufferedImage.TYPE_INT_RGB)
+    val matrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, 1, 1, hints)
+    val n = matrix.width // module grid incl. the 1-module quiet zone each side (square)
+    val scale = (target / n).coerceAtLeast(1)
+    val px = n * scale
+    val image = BufferedImage(px, px, BufferedImage.TYPE_INT_RGB)
     val black = 0xFF000000.toInt()
     val white = 0xFFFFFFFF.toInt()
-    for (y in 0 until size) for (x in 0 until size) image.setRGB(x, y, if (matrix[x, y]) black else white)
+    for (my in 0 until n) for (mx in 0 until n) {
+        val color = if (matrix[mx, my]) black else white
+        for (dy in 0 until scale) for (dx in 0 until scale) image.setRGB(mx * scale + dx, my * scale + dy, color)
+    }
     image.toComposeImageBitmap()
 }.getOrNull()

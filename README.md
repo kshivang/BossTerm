@@ -1,13 +1,23 @@
+<div align="center">
+
+<img src="BossTerm.png" alt="BossTerm" width="140">
+
 # BossTerm
+
+**A blazing-fast terminal you can embed, share to any device, and hand to your AI.**
 
 [![CI](https://github.com/kshivang/BossTerm/actions/workflows/test.yml/badge.svg)](https://github.com/kshivang/BossTerm/actions/workflows/test.yml)
 [![Release](https://github.com/kshivang/BossTerm/actions/workflows/release.yml/badge.svg)](https://github.com/kshivang/BossTerm/releases)
 [![Download DMG](https://img.shields.io/github/v/release/kshivang/BossTerm?label=Download%20DMG&logo=apple)](https://github.com/kshivang/BossTerm/releases/latest)
 [![Maven Central](https://img.shields.io/maven-central/v/com.risaboss/bossterm-core)](https://central.sonatype.com/namespace/com.risaboss)
 
-A modern terminal emulator built with **Kotlin** and **Compose Desktop**.
+</div>
 
-BossTerm is a high-performance terminal emulator designed for developers who want a fast, customizable, and feature-rich terminal experience on macOS, Linux, and Windows.
+| ⚡ [**Fast**](#performance) | 📱 [**Share**](#session-sharing) | 🤖 [**MCP for AI**](#bossterm-mcp) | 🧩 [**Embeddable**](#embedding-in-your-app) |
+|:--:|:--:|:--:|:--:|
+| 1,645 MB/s — edges out Alacritty | Watch & control from any device | Expose tabs to Claude Code & co. | Drop it into your Compose app |
+
+A modern terminal emulator built with **Kotlin** and **Compose Desktop** — high-performance, deeply customizable, and feature-rich on macOS, Linux, and Windows.
 
 ## Performance
 
@@ -206,6 +216,10 @@ cd BossTerm
 - **Debug Tools** - Built-in terminal debugging with Ctrl+Shift+D
 - **Welcome Wizard** - First-time setup wizard for shell, tools, and AI assistants
 - **Customizable** - JSON-based settings at `~/.bossterm/settings.json`
+- **Session Sharing** - Watch or control a tab / window / all windows from any device — self-hosted, with a QR code and a mobile-friendly web viewer (LAN, Tailscale, or a zero-config Cloudflare tunnel)
+- **Remote Control** - End-to-end encrypted; viewers get typing access on approval, or connect from another BossTerm as a native remote client
+- **AI / MCP Server** - Built-in [Model Context Protocol](https://modelcontextprotocol.io) server exposes your terminals to Claude Code, Codex, Gemini CLI, and OpenCode
+- **Embeddable** - Drop the terminal into your own Kotlin/Compose Desktop app as a library (`com.risaboss:bossterm-compose`)
 
 ## Keyboard Shortcuts
 
@@ -455,6 +469,35 @@ fun MyApp() {
 }
 ```
 
+## Session Sharing
+
+Watch — or hand over — a live terminal to any device, with **no cloud relay and no account**.
+BossTerm runs the share server itself; viewers open a link (or scan a QR code) in any browser, or
+connect from another BossTerm as a native client.
+
+- **Scope**: share a single **tab** (with its splits), a whole **window**, or **all windows**
+  (viewers see tabs grouped by window).
+- **View or Control**: hand out a read-only **view** link or a **control** link (typing access).
+  View-only viewers can request control mid-session and you approve from a prompt — required for
+  public links by default, skipped on the LAN.
+- **Reach**: LAN out of the box, or a public URL via **Tailscale** (Serve/Funnel) or a zero-config
+  **Cloudflare** quick tunnel (the default — `cloudflared` is fetched automatically, no account).
+  The tunnel is pre-warmed so the QR is ready the moment you hit Share.
+- **Mobile web viewer**: xterm.js-based and touch-tuned — soft-keyboard push, an on-screen key bar
+  (Esc / Tab / Ctrl / arrows + a ⌨ toggle), pinch-zoom, fit-to-screen, and clickable links.
+- **Native remote client**: "Add remote" in BossTerm to mirror another machine's shared tabs into
+  your own window — including its **Remote MCP** — with control relayed up the chain.
+- **End-to-end encrypted**: the session key rides in the URL **fragment** (`#k=…`), which browsers
+  never send to the server — so even a tunnel relay can't read your session. Frames use
+  per-connection AES-256-GCM, and a short verification code lets both ends confirm the same key.
+
+Enable it under **Settings → Session Sharing** (off by default), then **Share** from a tab's menu.
+Defaults: binds the LAN on port `7677`, Cloudflare remote mode, approval required only for public
+links.
+
+See **[docs/session-sharing.md](docs/session-sharing.md)** for the full guide — scopes,
+remote-access setup, the viewer, the native client, the encryption design, and every setting.
+
 ## BossTerm MCP
 
 BossTerm ships an in-process [Model Context Protocol](https://modelcontextprotocol.io)
@@ -471,6 +514,9 @@ code (`run_command` — recommended default shell for AI clients).
   `Host` headers (DNS-rebinding defense). Any local process running as your
   user can reach it while it is enabled.
 - **Opt-in**: disabled by default. Toggle on under Settings → BossTerm MCP.
+- **Remote MCP**: when you [share a session](#session-sharing), the host's MCP can be driven from
+  the web viewer (an "MCP pill" toggles it and attaches CLIs) or from a native remote client —
+  calls on shared tabs are relayed to the host.
 
 ### Turning it on (as a user)
 
@@ -599,6 +645,7 @@ Run `man bossterm` after installation for the complete reference.
 
 - [Embedding Guide](docs/embedding.md) - Embed a single terminal with custom context menus
 - [Tabbed Terminal Guide](docs/tabbed-terminal.md) - Full-featured tabbed terminal with splits
+- [Session Sharing](docs/session-sharing.md) - Watch & control a terminal from any device (web viewer, QR, tunnels, E2E)
 - [BossTerm MCP Server](docs/mcp-server.md) - Expose tabs to MCP clients (Claude Code, Codex, Gemini, OpenCode)
 - [BossTerm CLI](docs/bossterm.1) - `man bossterm` reference (troff)
 - [Onboarding Wizard](docs/onboarding.md) - First-time setup wizard for users

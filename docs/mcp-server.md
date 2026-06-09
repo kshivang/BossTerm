@@ -505,6 +505,22 @@ under the button. **Codex caveat**: registration succeeds with codex-cli 0.130,
 but Codex currently speaks streamable HTTP only, so the runtime connection
 will fail against the SSE endpoint until BossTerm's MCP SDK is upgraded.
 
+## Remote MCP (over a shared session)
+
+The MCP server is loopback-only, but [session sharing](session-sharing.md) carries it to remote
+devices. When a window with MCP enabled is shared:
+
+- The web viewer shows an **MCP pill** that mirrors the host's MCP state; from it a viewer can
+  toggle the server and attach AI CLIs — the operations execute on the **host**, not the viewer.
+- MCP tool calls against shared tabs are **relayed to the host's** MCP server, using the host's
+  configured `serverName` and bound port.
+- A native "Add remote" BossTerm client surfaces the same control as **Remote MCP** in the remote
+  tab group.
+
+This lets a phone or a second machine drive the host's terminals through an AI client over the
+shared session, without exposing the loopback endpoint directly. See
+[docs/session-sharing.md](session-sharing.md#remote-mcp) for the sharing side.
+
 ## Using as Claude Code's default shell
 
 > **Opt-in.** `run_command` is exposed by default, but the agent only uses it

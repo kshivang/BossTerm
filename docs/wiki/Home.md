@@ -13,6 +13,7 @@ Welcome to the **BossTerm** wiki! BossTerm is a modern, high-performance termina
 | [[Configuration]] | Settings and customization options |
 | [[Keyboard-Shortcuts]] | Full keyboard shortcut reference |
 | [[Shell-Integration]] | OSC 7 and OSC 133 shell setup |
+| [[Session-Sharing]] | Watch & control a terminal from any device (web viewer, QR, tunnels, E2E) |
 
 ---
 

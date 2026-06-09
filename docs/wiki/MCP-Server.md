@@ -369,6 +369,16 @@ upgraded.
 
 ---
 
+## Remote MCP (over a shared session)
+
+The MCP server is loopback-only, but [[Session Sharing|Session-Sharing]] carries it to remote
+devices. When a window with MCP enabled is shared, the web viewer shows an **MCP pill** that
+mirrors and toggles the host's MCP (and attaches AI CLIs, executed on the host), and MCP tool
+calls against shared tabs are **relayed to the host's** server using its configured name and port.
+A native "Add remote" BossTerm client surfaces the same control as **Remote MCP**.
+
+---
+
 ## Settings reference
 
 All MCP-related fields are persisted to `~/.bossterm/settings.json`.

@@ -11,11 +11,15 @@
 - [[Keyboard Shortcuts|Keyboard-Shortcuts]]
 - [[Shell Integration|Shell-Integration]]
 
+### Sharing & AI
+
+- [[Session Sharing|Session-Sharing]]
+- [[BossTerm MCP Server|MCP-Server]]
+
 ### Embedding
 
 - [[Embedding Guide|Embedding-Guide]]
 - [[Tabbed Terminal Guide|Tabbed-Terminal-Guide]]
-- [[BossTerm MCP Server|MCP-Server]]
 - [[API Reference|API-Reference]]
 
 ### Help

@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.share
 
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import io.ktor.http.CacheControl
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
@@ -686,7 +687,15 @@ object SessionShareManager {
                         webSocket("/ws/{token}") { serveViewer(this) }
                         // Static web viewer (index.html + viewer.js + css). Share URL:
                         // http://<host>:<port>/?t=<token>
-                        staticResources("/", "share-viewer", index = "index.html")
+                        // no-cache (revalidate, don't blindly reuse): the asset filenames aren't
+                        // content-hashed, so without this a phone keeps running the viewer JS/HTML
+                        // from a previous app version (iOS Safari has no real hard-reload). The
+                        // browser still caches but must revalidate each load — unchanged assets
+                        // come back 304 (Ktor sets Last-Modified from the jar entry), so only a
+                        // genuinely updated viewer is re-downloaded.
+                        staticResources("/", "share-viewer", index = "index.html") {
+                            cacheControl { listOf(CacheControl.NoCache(null)) }
+                        }
                     }
                 }
                 started.start(wait = false)

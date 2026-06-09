@@ -288,6 +288,12 @@
   // inset is the only truth; Android shrinks the window itself (inset 0 → no-op).
   var appliedShiftPx = 0;
   var keyboardOpen = false;
+  // Rewriting document.body's transform blurs the focused textarea on iOS — and re-focusing
+  // outside a user gesture can't re-summon the keyboard. So the transform is rewritten ONLY when
+  // the keyboard actually opens or closes (see layoutForKeyboard), never on terminal output or
+  // scroll. A thinking TUI moves the cursor and makes iOS auto-scroll to the caret, but it can't
+  // change the keyboard height, so it can't flip open↔closed and the keyboard stays up.
+
   // Bottom edge (layout-viewport px, with the current shift un-applied) of the focused
   // pane's cursor line — null when the cursor is scrolled off-screen / nothing focused.
   function cursorBottomPx() {
@@ -302,29 +308,43 @@
   }
   function layoutForKeyboard() {
     var vv = window.visualViewport;
-    var inset = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
-    keyboardOpen = vv ? (window.innerHeight - vv.height) > 60 : false;
-    var shift = 0;
-    if (keyboardOpen) {
-      var visibleBottom = vv.offsetTop + vv.height;
-      var clear = (keybarEl.style.display !== "none" ? keybarEl.offsetHeight : 0) + 8;
-      var cb = cursorBottomPx();
-      // Unknown cursor → fall back to the full push (old behavior).
-      shift = cb === null ? Math.round(inset)
-        : Math.round(Math.max(0, Math.min(inset, cb - visibleBottom + clear)));
+    // Keyboard height from the visual viewport, independent of scroll: window.innerHeight is the
+    // keyboard-invariant layout height; vv.height shrinks only for the keyboard. Crucially this
+    // EXCLUDES vv.offsetTop — iOS changes offsetTop when it auto-scrolls to keep the caret visible
+    // as a TUI streams output, and folding that in made plain output look like a geometry change.
+    var kbH = vv ? Math.max(0, window.innerHeight - vv.height) : 0;
+    var open = kbH > 60;
+    // Rewrite the body transform ONLY on an actual open↔close transition. Terminal output can't
+    // change kbH, so it can't flip `open`, so a thinking TUI never disturbs the focused textarea
+    // (the keyboard stays up). We forgo re-pushing for mid-open inset changes (predictive bar,
+    // etc.) — rare, and not worth risking a blur.
+    if (open !== keyboardOpen) {
+      keyboardOpen = open;
+      var shift = 0;
+      if (open) {
+        var visibleBottom = vv.offsetTop + vv.height;
+        var clear = (keybarEl.style.display !== "none" ? keybarEl.offsetHeight : 0) + 8;
+        var cb = cursorBottomPx();
+        // Unknown cursor → fall back to the full push (old behavior).
+        shift = cb === null ? Math.round(kbH)
+          : Math.round(Math.max(0, Math.min(kbH, cb - visibleBottom + clear)));
+      }
+      if (shift !== appliedShiftPx) {
+        appliedShiftPx = shift;
+        // Transforming the focused textarea's ancestor blurs it on iOS. This now runs only on a
+        // genuine, gesture-adjacent open/close; re-assert focus when the keyboard is up and the
+        // textarea was active.
+        var wasFocused = open && document.activeElement === activeTextarea();
+        document.body.style.transform = shift ? "translateY(-" + shift + "px)" : "";
+        if (wasFocused) { var ta = activeTextarea(); if (ta) try { ta.focus({ preventScroll: true }); } catch (e) {} }
+      }
+      // Keyboard just closed → apply any auto-fit we deferred while it was up.
+      if (!open) maybeAutoFit();
     }
-    if (shift !== appliedShiftPx) {
-      appliedShiftPx = shift;
-      // Transforming the focused textarea's ancestor blurs it on iOS (the keyboard drops —
-      // most visibly right after Enter advances the prompt). Re-assert focus afterward when
-      // the keyboard is up and the textarea was the active element.
-      var wasFocused = keyboardOpen && document.activeElement === activeTextarea();
-      document.body.style.transform = shift ? "translateY(-" + shift + "px)" : "";
-      if (wasFocused) { var ta = activeTextarea(); if (ta) try { ta.focus({ preventScroll: true }); } catch (e) {} }
-    }
-    // The key bar rides the keyboard top regardless of how far the body shifted
-    // (under a transform, fixed children position against the shifted body box).
-    keybarEl.style.bottom = Math.max(0, Math.round(inset) - shift) + "px";
+    // Blur-safe (touches no textarea ancestor): keep the key bar riding the keyboard top and
+    // reserve body padding. Uses the scroll-invariant kbH so it doesn't jitter, and is safe to
+    // run on every event — including output-driven scroll events.
+    keybarEl.style.bottom = Math.max(0, Math.round(kbH) - appliedShiftPx) + "px";
     bodyEl.style.paddingBottom = (keybarEl.style.display !== "none" && keybarEl.offsetHeight)
       ? keybarEl.offsetHeight + "px" : "0px";
   }
@@ -450,6 +470,10 @@
       if (sc) { var w = Math.ceil(sc.getBoundingClientRect().width); if (w > 0) p.host.style.width = w + "px"; }
     });
   }
+  function softKeyboardUp() {
+    var vv = window.visualViewport;
+    return !!vv && (window.innerHeight - vv.height) > 60;
+  }
   function onViewportChange() {
     relayoutSinglePane();
     autoFitPending = true;
@@ -517,6 +541,11 @@
   var fithostPrompted = false; // one-time "fit host to this phone?" offer when control lands
   function maybeAutoFit() {
     if (fitMode !== "screen" || !autoFitPending) return;
+    // Never refit while the soft keyboard is up: fitScreen→applyFont changes the font size, which
+    // re-renders xterm and blurs the focused textarea, dropping the keyboard mid-typing. Safari
+    // fires window.resize (toolbar/keyboard) on the user's cadence, so this is THE drop trigger.
+    // Keep the pending flag and refit when the keyboard closes (layoutForKeyboard calls back).
+    if (softKeyboardUp()) return;
     autoFitPending = false;
     requestAnimationFrame(fitScreen);
   }
@@ -913,9 +942,10 @@
     }
     if (viewerFont) { try { term.options.fontSize = viewerFont; } catch (e) {} }
     term.onData(function (data) { sendInput(paneId, data); });
-    // Cursor-aware keyboard push: as the cursor moves (typing, newlines, TUI redraws),
-    // re-check whether the UI needs shifting above the soft keyboard.
-    term.onCursorMove(function () { if (keyboardOpen && paneId === currentPaneId) layoutForKeyboard(); });
+    // Deliberately NO onCursorMove → layoutForKeyboard coupling: a thinking TUI streams
+    // cursor moves at output frequency, and each transform rewrite blurred the textarea and
+    // dropped the soft keyboard. The keyboard push is driven solely by visualViewport
+    // geometry events (open/close/inset), which output can't trigger.
     attachTouchScroll(host, term);
     p = { term: term, host: host };
     panes[paneId] = p;
@@ -1613,6 +1643,29 @@
     });
   }
 
+  // Signature of what renderStage would draw: the active tab, the shown-pane mode, and the
+  // pane tree's STRUCTURE (pane ids + split nesting) only. Volatile per-tab fields (title,
+  // cursor, mcp flags…) must be excluded — the host re-broadcasts layout ~1/s during streaming
+  // with those fields changing, and a full-tree JSON compare would rebuild every time, detaching
+  // the focused textarea and dropping the soft keyboard (no blur on iOS). See onLayout.
+  var lastStageSig = "";
+  function treeSkeleton(n) {
+    if (!n) return "";
+    // Pane: id only — title/cwd/focused/color change during streaming and must NOT count.
+    if (n.t === "pane") return "p" + n.paneId;
+    // Split: dir + ratio (change only on a real resize, so safe to compare and keeps the
+    // divider in sync) + recursive children.
+    return "s" + n.dir + (n.ratio != null ? Number(n.ratio).toFixed(3) : "") +
+      "[" + treeSkeleton(n.a) + "," + treeSkeleton(n.b) + "]";
+  }
+  function stageSignature() {
+    if (!layout) return "";
+    var tab = null;
+    for (var i = 0; i < layout.tabs.length; i++) if (layout.tabs[i].id === activeTabId) tab = layout.tabs[i];
+    if (!tab) tab = layout.tabs[0];
+    if (!tab) return "";
+    return activeTabId + "|" + (splitsAsTabs ? "S" : "F") + "|" + currentPaneId + "|" + treeSkeleton(tab.tree);
+  }
   function renderStage() {
     stageEl.innerHTML = "";
     if (!layout) return;
@@ -1649,6 +1702,7 @@
     stageEl.appendChild(root);
     relayoutSinglePane(); // size a single pane to its natural width for horizontal scroll
     updateDims();
+    lastStageSig = stageSignature();
   }
 
   function onLayout(m) {
@@ -1668,7 +1722,13 @@
     renderTabBar();
     // Mid divider-drag, the host echoes ratio changes back as layouts — don't rebuild the
     // stage (it would destroy the divider under the pointer); onUp re-renders to settle.
-    if (!splitDragging) renderStage();
+    // Also skip the rebuild when the rendered structure is unchanged: the host re-broadcasts
+    // layout during streaming, and renderStage's innerHTML="" detaches the focused textarea,
+    // which SILENTLY drops the soft keyboard on iOS (removing a focused node fires no blur).
+    if (!splitDragging) {
+      var sig = stageSignature();
+      if (sig !== lastStageSig) renderStage();
+    }
     autoFitPending = true;
     maybeAutoFit();
   }

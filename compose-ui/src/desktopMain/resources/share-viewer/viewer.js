@@ -288,11 +288,14 @@
   // inset is the only truth; Android shrinks the window itself (inset 0 → no-op).
   var appliedShiftPx = 0;
   var keyboardOpen = false;
+  var followRaf = 0;
   // Rewriting document.body's transform blurs the focused textarea on iOS — and re-focusing
-  // outside a user gesture can't re-summon the keyboard. So the transform is rewritten ONLY when
-  // the keyboard actually opens or closes (see layoutForKeyboard), never on terminal output or
-  // scroll. A thinking TUI moves the cursor and makes iOS auto-scroll to the caret, but it can't
-  // change the keyboard height, so it can't flip open↔closed and the keyboard stays up.
+  // outside a user gesture can't re-summon the keyboard. So the open/close push lives in
+  // layoutForKeyboard (driven by visualViewport geometry, which output can't trigger). The one
+  // other writer is followCursor (below), which ONLY ever increases the push to lift a cursor
+  // that moved BELOW the keyboard fold (e.g. a TUI taking over and dropping its prompt to the
+  // bottom) — it never churns the shift back down on ordinary output moves, so a thinking TUI
+  // with a visible cursor writes nothing and the keyboard stays put.
 
   // Bottom edge (layout-viewport px, with the current shift un-applied) of the focused
   // pane's cursor line — null when the cursor is scrolled off-screen / nothing focused.
@@ -347,6 +350,26 @@
     keybarEl.style.bottom = Math.max(0, Math.round(kbH) - appliedShiftPx) + "px";
     bodyEl.style.paddingBottom = (keybarEl.style.display !== "none" && keybarEl.offsetHeight)
       ? keybarEl.offsetHeight + "px" : "0px";
+  }
+  // While the keyboard is up, keep the cursor visible above it. Only pushes FURTHER up (never
+  // reduces the shift) and only when the cursor sits below the visible fold — so the common
+  // case (cursor already visible, output streaming) writes nothing. This is what brings the
+  // input line back into view when a TUI takes over and moves the cursor to the bottom after
+  // the keyboard was already raised; without it the input hides until the keyboard is toggled.
+  function followCursor() {
+    if (!keyboardOpen) return;
+    var vv = window.visualViewport; if (!vv) return;
+    var cb = cursorBottomPx(); if (cb === null) return;
+    var kbH = Math.max(0, window.innerHeight - vv.height);
+    var visibleBottom = vv.offsetTop + vv.height;
+    var clear = (keybarEl.style.display !== "none" ? keybarEl.offsetHeight : 0) + 8;
+    var want = Math.round(Math.max(0, Math.min(kbH, cb - visibleBottom + clear)));
+    if (want <= appliedShiftPx) return; // cursor already clear of the keyboard — don't churn
+    appliedShiftPx = want;
+    var wasFocused = document.activeElement === activeTextarea();
+    document.body.style.transform = "translateY(-" + want + "px)";
+    if (wasFocused) { var ta = activeTextarea(); if (ta) try { ta.focus({ preventScroll: true }); } catch (e) {} }
+    keybarEl.style.bottom = Math.max(0, Math.round(kbH) - appliedShiftPx) + "px";
   }
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", layoutForKeyboard);
@@ -952,10 +975,15 @@
     }
     if (viewerFont) { try { term.options.fontSize = viewerFont; } catch (e) {} }
     term.onData(function (data) { sendInput(paneId, data); });
-    // Deliberately NO onCursorMove → layoutForKeyboard coupling: a thinking TUI streams
-    // cursor moves at output frequency, and each transform rewrite blurred the textarea and
-    // dropped the soft keyboard. The keyboard push is driven solely by visualViewport
-    // geometry events (open/close/inset), which output can't trigger.
+    // Keep the cursor above the keyboard as it moves (e.g. a TUI dropping its prompt to the
+    // bottom after the keyboard was raised). followCursor only ever pushes further up and only
+    // when the cursor is hidden, so a thinking TUI with a visible cursor never rewrites the
+    // transform — which is what dropped the keyboard before (that, plus the now-fixed renderStage
+    // detach / autofit re-render). Coalesced to one check per frame.
+    term.onCursorMove(function () {
+      if (!keyboardOpen || paneId !== currentPaneId || followRaf) return;
+      followRaf = requestAnimationFrame(function () { followRaf = 0; followCursor(); });
+    });
     attachTouchScroll(host, term);
     p = { term: term, host: host };
     panes[paneId] = p;

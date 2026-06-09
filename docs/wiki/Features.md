@@ -89,6 +89,21 @@ BossTerm is packed with features for modern terminal workflows.
 
 ---
 
+## Sharing & AI
+
+| Feature | Description |
+|---------|-------------|
+| **Session Sharing** | Watch or control a tab / window / all windows from any device — self-hosted, no cloud relay |
+| **Web Viewer** | Mobile-friendly xterm.js viewer over LAN, Tailscale, or a zero-config Cloudflare tunnel, with a QR code |
+| **Remote Control** | View-only or full typing access on approval; connect from another BossTerm as a native client |
+| **End-to-End Encryption** | Per-connection AES-256-GCM; the key rides the URL fragment and never reaches the relay |
+| **BossTerm MCP** | Built-in Model Context Protocol server exposes tabs to Claude Code, Codex, Gemini, OpenCode |
+| **Remote MCP** | Drive the host's MCP from a shared web viewer or native remote client |
+
+See [[Session-Sharing]] and [[MCP-Server]] for details.
+
+---
+
 ## See Also
 
 - [[Keyboard-Shortcuts]] - Full shortcut reference

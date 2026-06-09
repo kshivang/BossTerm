@@ -369,6 +369,15 @@
     if (ta) { try { ta.focus({ preventScroll: true }); } catch (e) { try { ta.focus(); } catch (e2) {} } }
     else if (currentPaneId && panes[currentPaneId]) { try { panes[currentPaneId].term.focus(); } catch (e) {} }
   }
+  // The ⌨ keybar button toggles the soft keyboard: blur the focused textarea to dismiss it when
+  // it's up, or focus to summon it when it's down. Runs inside the button's tap gesture, so iOS
+  // honours the focus() to re-show. "Up" = a keyboard inset OR the textarea already focused.
+  function toggleKeyboard() {
+    var ta = activeTextarea();
+    var up = softKeyboardUp() || (ta != null && document.activeElement === ta);
+    if (up) { if (ta) try { ta.blur(); } catch (e) {} }
+    else focusCurrent();
+  }
   function sendKey(seq) {
     if (!currentPaneId) return;
     sendInput(currentPaneId, seq);
@@ -378,12 +387,13 @@
   // (a plain click — esp. Enter/⏎ — otherwise blurs it and drops the keyboard). Fire on
   // pointerup with a move-guard so a horizontal scroll of the bar doesn't send a key; refocus
   // the textarea defensively to keep the keyboard up.
-  function wireKeyButton(b, seq) {
+  function wireKeyButton(b, seq, onTap) {
     function hl(on) {
       b.style.background = on ? "#4a90e2" : ""; b.style.color = on ? "#fff" : "";
       b.style.borderColor = on ? "#4a90e2" : "";
     }
-    function fire() { if (seq != null) sendKey(seq); focusCurrent(); }
+    // onTap overrides the default action (used by the ⌨ toggle, which manages focus itself).
+    function fire() { if (onTap) { onTap(); return; } if (seq != null) sendKey(seq); focusCurrent(); }
     var sx = 0, sy = 0, moved = false, touched = false;
     // The keys are <div>s, NOT <button>s: a non-focusable element doesn't steal focus from
     // the terminal's hidden textarea on iOS, so the soft keyboard stays up WITHOUT a
@@ -416,8 +426,8 @@
     if (!controlGranted) { keybarEl.style.display = "none"; layoutForKeyboard(); return; }
     keybarEl.style.display = "flex";
     var kb = document.createElement("div");
-    kb.className = "keybtn"; kb.textContent = "⌨"; kb.title = "Show keyboard";
-    wireKeyButton(kb, null); // null seq → just (re)focuses to summon the keyboard
+    kb.className = "keybtn"; kb.textContent = "⌨"; kb.title = "Show / hide keyboard";
+    wireKeyButton(kb, null, toggleKeyboard); // toggles the soft keyboard up/down
     keybarEl.appendChild(kb);
     KEY_ROW.forEach(function (k) {
       var b = document.createElement("div");

@@ -46,12 +46,7 @@ object SessionStore {
         classDiscriminator = "type"
     }
 
-    private fun file(): File {
-        val override = System.getProperty("bossterm.settings.dir")?.takeIf { it.isNotBlank() }
-        val dir = if (override != null) File(override) else File(System.getProperty("user.home"), ".bossterm")
-        if (!dir.exists()) dir.mkdirs()
-        return File(dir, "session.json")
-    }
+    private fun file(): File = ai.rever.bossterm.compose.daemon.BossTermPaths.sessionFile()
 
     fun save(snap: SessionSnap) {
         runCatching { file().writeText(json.encodeToString(snap)) }

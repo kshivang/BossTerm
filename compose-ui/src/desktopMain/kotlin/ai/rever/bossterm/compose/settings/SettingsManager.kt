@@ -63,11 +63,8 @@ class SettingsManager(private val customSettingsPath: String? = null) {
      * `mcpEnabled`/`mcpPort` state. When the property is unset or blank, falls
      * back to the historical `~/.bossterm` so standalone BossTerm is unchanged.
      */
-    private fun defaultSettingsDir(): File {
-        val override = System.getProperty("bossterm.settings.dir")?.takeIf { it.isNotBlank() }
-        val dir = if (override != null) File(override) else File(System.getProperty("user.home"), ".bossterm")
-        return dir.apply { if (!exists()) mkdirs() }
-    }
+    private fun defaultSettingsDir(): File =
+        ai.rever.bossterm.compose.daemon.BossTermPaths.dir()
 
     private val settingsFile: File by lazy {
         if (customSettingsPath != null) {

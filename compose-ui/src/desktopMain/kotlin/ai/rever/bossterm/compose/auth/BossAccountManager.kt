@@ -103,21 +103,42 @@ object BossAccountManager {
     fun handleAuthDeepLink(raw: String) {
         val link = parseAuthDeepLink(raw) ?: return
         _state.value = AccountState.Verifying
-        scope.launch {
-            try {
-                // Tokens are single-use: a 401/403 here is terminal for this link, never retried.
-                val resp = gotrue("verify", json.encodeToString(VerifyRequest.serializer(), VerifyRequest(link.type, link.tokenHash)))
-                if (resp.status.value in 200..299) {
-                    val session = json.decodeFromString<SessionResponse>(resp.bodyAsText())
-                    adoptSession(session)
-                    (state.value as? AccountState.SignedIn)?.let { _signInEvents.tryEmit(it.email) }
-                } else {
-                    _state.value = AccountState.Error(errorFrom(resp, AuthPhase.VERIFY))
-                }
-            } catch (e: Exception) {
-                log.warn("Magic-link verify failed: {}", e.message)
-                _state.value = AccountState.Error(mapAuthError(0, null, AuthPhase.VERIFY))
+        scope.launch { verify(link.tokenHash, link.type) }
+    }
+
+    /**
+     * Manual "paste the sign-in link" fallback (Sign In dialog): redeem whatever the user pastes —
+     * the bossterm:// deep link, the branded email's redirect URL, or the raw confirmation URL.
+     * Unlike [handleAuthDeepLink] (which silently ignores non-auth URIs from the OS), this surfaces
+     * a friendly error when no token can be found.
+     */
+    fun verifyPastedLink(raw: String) {
+        val link = parseAuthInput(raw)
+        if (link == null) {
+            _state.value = AccountState.Error(
+                "Couldn't find a sign-in token in that link — paste the whole link from the email."
+            )
+            return
+        }
+        _state.value = AccountState.Verifying
+        scope.launch { verify(link.tokenHash, link.type) }
+    }
+
+    /** POST /verify and adopt the session, or surface an error. Tokens are single-use: a 401/403
+     *  is terminal for this link and never retried. */
+    private suspend fun verify(tokenHash: String, type: String) {
+        try {
+            val resp = gotrue("verify", json.encodeToString(VerifyRequest.serializer(), VerifyRequest(type, tokenHash)))
+            if (resp.status.value in 200..299) {
+                val session = json.decodeFromString<SessionResponse>(resp.bodyAsText())
+                adoptSession(session)
+                (state.value as? AccountState.SignedIn)?.let { _signInEvents.tryEmit(it.email) }
+            } else {
+                _state.value = AccountState.Error(errorFrom(resp, AuthPhase.VERIFY))
             }
+        } catch (e: Exception) {
+            log.warn("Magic-link verify failed: {}", e.message)
+            _state.value = AccountState.Error(mapAuthError(0, null, AuthPhase.VERIFY))
         }
     }
 

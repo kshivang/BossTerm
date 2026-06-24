@@ -7,6 +7,8 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.components.SettingsSection
 import ai.rever.bossterm.compose.settings.components.SettingsTextField
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -53,6 +55,9 @@ fun SignInWindow(
 ) {
     val accountState by BossAccountManager.state.collectAsState()
     var email by remember { mutableStateOf("") }
+    // Manual fallback: paste the sign-in link when the deep link can't open the app.
+    var showPaste by remember { mutableStateOf(false) }
+    var pastedLink by remember { mutableStateOf("") }
     // GoTrue rate-limits link requests (~60s per email) — mirror that client-side.
     var cooldownUntil by remember { mutableStateOf(0L) }
     var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -76,7 +81,7 @@ fun SignInWindow(
         onCloseRequest = onDismiss,
         title = "BossTerm — Sign In",
         resizable = false,
-        state = rememberWindowState(size = DpSize(440.dp, 420.dp))
+        state = rememberWindowState(size = DpSize(440.dp, 480.dp))
     ) {
         // Raise an already-open window when the menu item is clicked again.
         LaunchedEffect(focusTick) {
@@ -85,7 +90,7 @@ fun SignInWindow(
         }
         Surface(color = BackgroundColor, modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.fillMaxSize()) {
-                Column(modifier = Modifier.weight(1f).fillMaxWidth().padding(20.dp)) {
+                Column(modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp)) {
                     Text("Sign in to BossTerm", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(4.dp))
                     Text(
@@ -128,6 +133,13 @@ fun SignInWindow(
                                         Text("Use a different email", color = AccentColor, fontSize = 13.sp)
                                     }
                                 }
+                                PasteLinkSection(
+                                    show = showPaste,
+                                    onToggle = { showPaste = !showPaste },
+                                    value = pastedLink,
+                                    onValueChange = { pastedLink = it },
+                                    onVerify = { BossAccountManager.verifyPastedLink(pastedLink) },
+                                )
                             }
                         }
 
@@ -158,6 +170,13 @@ fun SignInWindow(
                             ) {
                                 Text(if (cooldownLeft > 0) "Send sign-in link (${cooldownLeft}s)" else "Send sign-in link", fontSize = 13.sp)
                             }
+                            PasteLinkSection(
+                                show = showPaste,
+                                onToggle = { showPaste = !showPaste },
+                                value = pastedLink,
+                                onValueChange = { pastedLink = it },
+                                onVerify = { BossAccountManager.verifyPastedLink(pastedLink) },
+                            )
                         }
                     }
                 }
@@ -173,5 +192,42 @@ fun SignInWindow(
                 }
             }
         }
+    }
+}
+
+/**
+ * Collapsible manual fallback for when the bossterm:// link can't open the app (dev builds,
+ * unregistered scheme, another device): paste the link from the email — or the redirect page's
+ * "Open BossTerm" link — and verify it directly. Mirrors BossConsole's "paste magic link" flow.
+ */
+@Composable
+private fun PasteLinkSection(
+    show: Boolean,
+    onToggle: () -> Unit,
+    value: String,
+    onValueChange: (String) -> Unit,
+    onVerify: () -> Unit,
+) {
+    Spacer(Modifier.height(14.dp))
+    TextButton(onClick = onToggle, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+        Text(
+            if (show) "Hide" else "Link didn't open the app? Paste it here",
+            color = TextMuted, fontSize = 12.sp,
+        )
+    }
+    if (show) {
+        Spacer(Modifier.height(8.dp))
+        SettingsTextField(
+            label = "Sign-in link",
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = "Paste the link from the email",
+        )
+        Spacer(Modifier.height(10.dp))
+        Button(
+            onClick = onVerify,
+            enabled = value.isNotBlank(),
+            colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White),
+        ) { Text("Verify link", fontSize = 13.sp) }
     }
 }

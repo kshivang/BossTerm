@@ -977,6 +977,13 @@ fun TabbedTerminal(
     // Sign In appears only in standalone BossTerm: inside an embedder (e.g. BossConsole's
     // terminal-tab plugin, which has its own account + owns the boss:// scheme) it's hidden.
     val signInVisible = mcpServerName == "bossterm"
+    // Once signed in, the menu item becomes an account row showing the email instead of
+    // "Sign In…" (clicking still opens the window, which then offers "Sign out"). The account
+    // glyph is drawn as a Swing Icon in ContextMenuController — NOT an emoji in the label,
+    // which corrupts AWT menu text metrics.
+    val accountState by ai.rever.bossterm.compose.auth.BossAccountManager.state.collectAsState()
+    val signInLabel = (accountState as? ai.rever.bossterm.compose.auth.BossAccountManager.AccountState.SignedIn)
+        ?.email ?: "Sign In…"
     val openSignIn: () -> Unit = { showSignInWindow = true; signInFocusTick++ }
     val fireMcpAttach: (McpAttachTarget) -> Unit = { target ->
         // De-dupe: ignore clicks while an attach is in flight from any
@@ -1360,6 +1367,7 @@ fun TabbedTerminal(
                     tabController.tabs.getOrNull(index)?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.ALL) }
                 },
                 onSignIn = if (signInVisible) openSignIn else null,
+                signInLabel = signInLabel,
                 onStopShare = { index ->
                     tabController.tabs.getOrNull(index)?.let {
                         ai.rever.bossterm.compose.share.SessionShareManager.unshare(it.id)
@@ -1716,7 +1724,7 @@ fun TabbedTerminal(
                                 ) + (if (signInVisible) listOf(
                                     ContextMenuItem(
                                         id = "sign_in",
-                                        label = "Sign In…",
+                                        label = signInLabel,
                                         action = openSignIn
                                     )
                                 ) else emptyList())
@@ -1922,7 +1930,7 @@ fun TabbedTerminal(
                                     ),
                                 ) + (if (signInVisible) listOf(
                                     ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
-                                        id = "sign_in", label = "Sign In…", enabled = true,
+                                        id = "sign_in", label = signInLabel, enabled = true,
                                         action = openSignIn
                                     )
                                 ) else emptyList()))

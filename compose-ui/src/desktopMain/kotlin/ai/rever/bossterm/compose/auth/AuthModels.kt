@@ -93,6 +93,46 @@ fun parseAuthDeepLink(raw: String): AuthDeepLink? {
     return AuthDeepLink(tokenHash = tokenHash, type = params["type"]?.takeIf { it.isNotBlank() } ?: "magiclink")
 }
 
+/**
+ * Lenient parse for the MANUAL "paste the sign-in link" fallback — a superset of
+ * [parseAuthDeepLink] that pulls the token out of whatever the user pastes: the clean
+ * `bossterm://auth/verify` deep link (the redirect page's "Open BossTerm" link), the
+ * branded email's redirect URL, or the raw Supabase confirmation URL — percent-encoded
+ * or not. Returns null when no token is found.
+ *
+ * Like BossConsole's manual path, this is deliberate substring extraction rather than
+ * strict URI parsing: the email link's `?url=<ConfirmationURL>` embeds `token=…&type=…`
+ * and GoTrue's text/template emits it UNencoded, so the params sit at the top level —
+ * scanning for `token=` finds them in every shape. (Keep [parseAuthDeepLink] strict for
+ * the OS deep-link path; this is only for user-pasted input.)
+ */
+fun parseAuthInput(raw: String): AuthDeepLink? {
+    val trimmed = raw.trim()
+    if (trimmed.isEmpty()) return null
+    // Clean bossterm:// deep link first.
+    parseAuthDeepLink(trimmed)?.let { return it }
+    // Else scan the raw text, then a once-URL-decoded copy (covers a %26type%3D… email URL).
+    for (s in listOf(trimmed, runCatching { URLDecoder.decode(trimmed, StandardCharsets.UTF_8) }.getOrNull())) {
+        if (s == null) continue
+        val token = paramValue(s, "token_hash") ?: paramValue(s, "token")
+        if (token != null) return AuthDeepLink(tokenHash = token, type = paramValue(s, "type") ?: "magiclink")
+    }
+    return null
+}
+
+/** Value of `<name>=…` up to the next `&`, whitespace, `#`, or end — URL-decoded; null if absent/blank. */
+private fun paramValue(s: String, name: String): String? {
+    val key = "$name="
+    val at = s.indexOf(key)
+    if (at < 0) return null
+    val start = at + key.length
+    var end = start
+    while (end < s.length && s[end] != '&' && s[end] != '#' && !s[end].isWhitespace()) end++
+    val v = s.substring(start, end)
+    if (v.isBlank()) return null
+    return runCatching { URLDecoder.decode(v, StandardCharsets.UTF_8) }.getOrDefault(v)
+}
+
 // ---- Error mapping (pure; unit-tested) ----
 
 /** Map a GoTrue failure to the user-facing message shown in the sign-in window. */

@@ -60,6 +60,42 @@ class AuthModelsTest {
         assertNull(parseAuthDeepLink(""))
     }
 
+    // ---- lenient paste parsing (manual "paste the sign-in link" fallback) ----
+
+    @Test
+    fun `parseAuthInput accepts the clean bossterm deep link`() {
+        val l = parseAuthInput("  bossterm://auth/verify?token_hash=abc&type=signup  ")
+        assertEquals(AuthDeepLink("abc", "signup"), l)
+    }
+
+    @Test
+    fun `parseAuthInput extracts token + type from a confirmation URL`() {
+        val l = parseAuthInput("https://api.risaboss.com/auth/v1/verify?token=HASH123&type=magiclink&redirect_to=bossterm://auth/verify")
+        assertEquals("HASH123", l?.tokenHash)
+        assertEquals("magiclink", l?.type)
+    }
+
+    @Test
+    fun `parseAuthInput handles the percent-encoded redirect URL (decode fallback)`() {
+        // The email button href: /redirect?url=<encoded ConfirmationURL with token%3D…%26type%3Dsignup>
+        val l = parseAuthInput("https://api.risaboss.com/functions/v1/redirect?url=https%3A%2F%2Fp.co%2Fverify%3Ftoken%3DTOK9%26type%3Dsignup")
+        assertEquals("TOK9", l?.tokenHash)
+        assertEquals("signup", l?.type)
+    }
+
+    @Test
+    fun `parseAuthInput prefers token_hash and defaults type to magiclink`() {
+        assertEquals("xyz", parseAuthInput("foo?token_hash=xyz&token=other")?.tokenHash)
+        assertEquals("magiclink", parseAuthInput("anything?token=t")?.type)
+    }
+
+    @Test
+    fun `parseAuthInput returns null for junk with no token`() {
+        assertNull(parseAuthInput("https://example.com/nothing-here"))
+        assertNull(parseAuthInput("   "))
+        assertNull(parseAuthInput("token="))
+    }
+
     // ---- error mapping ----
 
     @Test

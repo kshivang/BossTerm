@@ -81,14 +81,31 @@ fun main() {
         serverName = "bossterm",
         serverVersion = "1.0"
     )
+    // Session daemon (tmux-style): when enabled, a long-lived background process owns the MCP
+    // server (and, in later phases, sessions + sharing) so they survive the GUI closing. The GUI
+    // then does NOT host the in-process MCP — the daemon owns the loopback endpoint + mcp.port.
+    // Default off: BossTerm behaves exactly as before until the user opts in.
+    val daemonEnabled = SettingsManager.instance.settings.value.daemonEnabled
+    val daemonScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val daemonClient = if (daemonEnabled) {
+        ai.rever.bossterm.compose.daemon.DaemonClient().also { client ->
+            // Spawn/connect off the main thread; the daemon outlives this GUI process.
+            daemonScope.launch {
+                val ep = client.ensureConnected()
+                if (ep != null) println("BossTerm daemon connected on control port ${ep.port}")
+                else System.err.println("BossTerm daemon unavailable; MCP/sharing not hosted this session")
+            }
+        }
+    } else null
+
     val mcpScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val mcpManager = BossTermMcpManager(
+    val mcpManager = if (!daemonEnabled) BossTermMcpManager(
         registry = McpTerminalRegistry,
         settingsManager = SettingsManager.instance,
         parentScope = mcpScope,
         config = mcpConfig
-    )
-    mcpManager.start()
+    ) else null
+    mcpManager?.start()
 
     // Session sharing (issue #276): app-singleton lifecycle for the self-hosted
     // web-viewer server. Inert until the user enables it in settings AND shares a
@@ -96,11 +113,14 @@ fun main() {
     ai.rever.bossterm.compose.share.SessionShareManager.start()
 
     Runtime.getRuntime().addShutdownHook(Thread {
-        mcpManager.stop()
-        // Tear down session sharing synchronously so a Tailscale serve/funnel mapping
-        // isn't left published after the app exits (issue #276).
+        // When daemonEnabled, MCP is owned by the daemon (mcpManager is null) and intentionally
+        // NOT torn down here — the daemon outlives the GUI. Sharing is still GUI-owned until it
+        // moves into the daemon (Phase 2), so it's always shut down to avoid leaving a tunnel
+        // published after exit (issue #276).
+        mcpManager?.stop()
         ai.rever.bossterm.compose.share.SessionShareManager.shutdown()
         mcpScope.cancel()
+        daemonScope.cancel()
     })
 
     application {

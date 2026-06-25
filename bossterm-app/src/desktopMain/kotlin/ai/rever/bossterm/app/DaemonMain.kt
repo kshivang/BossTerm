@@ -3,6 +3,7 @@ package ai.rever.bossterm.app
 import ai.rever.bossterm.compose.daemon.BossTermPaths
 import ai.rever.bossterm.compose.daemon.DaemonControlChannel
 import ai.rever.bossterm.compose.daemon.DaemonControlHandler
+import ai.rever.bossterm.compose.daemon.DaemonMcpServer
 import ai.rever.bossterm.compose.daemon.SessionHost
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.update.Version
@@ -35,6 +36,14 @@ fun main(args: Array<String>) {
     val settings = SettingsManager.instance.settings.value
     val sessionHost = SessionHost(settings)
 
+    // Host MCP in the daemon when enabled, so agent access (read scrollback, run commands,
+    // send input) keeps working even while the GUI is closed. Binds the same loopback endpoint
+    // + writes ~/.bossterm/mcp.port exactly as the in-process server, so existing CLI/hook config
+    // is unchanged.
+    val mcpServer = if (settings.mcpEnabled) DaemonMcpServer(sessionHost) else null
+    val mcpPort = mcpServer?.start(settings.mcpPort)
+    if (mcpServer != null && mcpPort == null) log.warn("Daemon MCP server failed to bind; continuing without it")
+
     val stopLatch = CountDownLatch(1)
 
     val handler = DaemonControlHandler(
@@ -42,7 +51,7 @@ fun main(args: Array<String>) {
         version = version,
         protocolVersion = DaemonControlChannel.PROTOCOL_VERSION,
         uptimeMs = ::uptimeMs,
-        mcpPort = { null }, // wired in Phase 1 (MCP) — none yet
+        mcpPort = { mcpServer?.boundPort },
         onShutdown = { killSessions ->
             log.info("Daemon SHUTDOWN requested (killSessions={})", killSessions)
             if (killSessions) sessionHost.shutdownAll()
@@ -65,8 +74,9 @@ fun main(args: Array<String>) {
     log.info("Daemon listening on 127.0.0.1:{}", port)
 
     Runtime.getRuntime().addShutdownHook(Thread {
-        log.info("Daemon shutdown hook: closing control channel")
+        log.info("Daemon shutdown hook: closing control channel + MCP")
         control.stop()
+        mcpServer?.stop()
     })
 
     try {
@@ -75,6 +85,7 @@ fun main(args: Array<String>) {
         Thread.currentThread().interrupt()
     }
     control.stop()
+    mcpServer?.stop()
     sessionHost.shutdownAll()
     log.info("BossTerm daemon stopped")
 }

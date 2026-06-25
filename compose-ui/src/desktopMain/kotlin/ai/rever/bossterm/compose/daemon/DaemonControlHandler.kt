@@ -13,6 +13,7 @@ class DaemonControlHandler(
     private val protocolVersion: Int,
     private val uptimeMs: () -> Long,
     private val mcpPort: () -> Int?,
+    private val attachPort: () -> Int? = { null },
     private val onShutdown: (killSessions: Boolean) -> Unit,
 ) {
     private val log = LoggerFactory.getLogger(DaemonControlHandler::class.java)
@@ -30,6 +31,7 @@ class DaemonControlHandler(
                         uptimeMs = uptimeMs(),
                         sessionCount = sessionHost.count(),
                         mcpPort = mcpPort(),
+                        attachPort = attachPort(),
                     )
                 )
             )

@@ -52,5 +52,7 @@ object DaemonProtocol {
         val uptimeMs: Long,
         val sessionCount: Int,
         val mcpPort: Int? = null,
+        /** Loopback port of the GUI-attach WebSocket, or null if not running. */
+        val attachPort: Int? = null,
     )
 }

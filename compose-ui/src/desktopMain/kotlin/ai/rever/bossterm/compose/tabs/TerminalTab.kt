@@ -310,6 +310,14 @@ data class TerminalTab(
     var remoteFitRows: Int = 0
 
     /**
+     * For a daemon-attached mirror tab (Phase 4 thin-client): invoked when the GUI canvas's fit
+     * grid changes, so the GUI can drive the daemon session's size (GUI is the real display). Null
+     * for ordinary remote mirrors, where the HOST is authoritative and the mirror only records the
+     * fit (see [remoteFitCols]/[remoteFitRows]).
+     */
+    var onRemoteFit: ((cols: Int, rows: Int) -> Unit)? = null
+
+    /**
      * Per-tab font-size override (sp). Used by remote mirrors when the host's grid can't
      * physically fit this screen at the user's font — the mirror renders smaller so the
      * whole grid stays visible (the native analogue of the web viewer's fit-screen).

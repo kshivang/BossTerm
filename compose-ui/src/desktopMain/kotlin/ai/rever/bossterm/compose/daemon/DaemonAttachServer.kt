@@ -1,0 +1,165 @@
+package ai.rever.bossterm.compose.daemon
+
+import ai.rever.bossterm.compose.share.TerminalSnapshotEncoder
+import io.ktor.server.application.install
+import io.ktor.server.cio.CIO
+import io.ktor.server.cio.CIOApplicationEngine
+import io.ktor.server.engine.EmbeddedServer
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.routing.routing
+import io.ktor.server.websocket.WebSockets
+import io.ktor.server.websocket.webSocket
+import io.ktor.websocket.Frame
+import io.ktor.websocket.close
+import io.ktor.websocket.readText
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import org.slf4j.LoggerFactory
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.security.MessageDigest
+
+/**
+ * Serves the daemon's [SessionHost] sessions to attached GUI clients over a loopback WebSocket,
+ * so the GUI can render and steer daemon-hosted terminals as if they were local. Each GUI mirrors
+ * a session as a tab (`TabController.createRemoteSession`) fed by [DaemonAttachProtocol.Server.Output].
+ *
+ * Loopback + secret-gated (the daemon's control secret, presented as `?token=`), so no E2E/approval
+ * is needed — that's only for untrusted remote viewers ([ai.rever.bossterm.compose.share.MirrorShare]).
+ * Output is pushed via each session's raw-output tap; a per-connection bounded DROP_OLDEST outbox
+ * means a stalled GUI never blocks the PTY (the next snapshot heals it).
+ */
+class DaemonAttachServer(
+    private val host: SessionHost,
+    private val secret: String,
+) {
+    private val log = LoggerFactory.getLogger(DaemonAttachServer::class.java)
+
+    @Volatile private var engine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
+    @Volatile var boundPort: Int = -1
+        private set
+
+    /** Bind on loopback, trying [desiredPort]..+9. Returns the bound port or -1. */
+    fun start(desiredPort: Int = 7682): Int {
+        for (offset in 0 until 10) {
+            val port = desiredPort + offset
+            if (port > 65535) break
+            if (!portAvailable(port)) continue
+            try {
+                val srv = embeddedServer(CIO, host = HOST, port = port) {
+                    install(WebSockets)
+                    routing { webSocket("/attach") { serve(this) } }
+                }
+                srv.start(wait = false)
+                engine = srv
+                boundPort = port
+                log.info("Daemon attach server on ws://{}:{}/attach", HOST, port)
+                return port
+            } catch (e: Throwable) {
+                log.warn("attach bind {}:{} failed: {}", HOST, port, e.message)
+            }
+        }
+        log.error("Daemon attach server could not bind in [{},{}]", desiredPort, desiredPort + 9)
+        return -1
+    }
+
+    fun stop() {
+        runCatching { engine?.stop(200, 600) }
+        engine = null
+        boundPort = -1
+    }
+
+    private suspend fun serve(ws: io.ktor.server.websocket.DefaultWebSocketServerSession) {
+        val presented = ws.call.request.queryParameters["token"] ?: ""
+        if (!constantTimeEquals(presented, secret)) {
+            log.warn("attach: rejected connection with bad token")
+            runCatching { ws.close() }
+            return
+        }
+
+        // Per-connection outbox: taps + layout pushes enqueue; this coroutine drains to the socket.
+        val outbox = Channel<String>(capacity = 4096, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+        // sessionId → its raw-output tap, so we can detach on disconnect / session close.
+        val taps = HashMap<String, (String) -> Unit>()
+
+        fun send(m: DaemonAttachProtocol.Server) { outbox.trySend(DaemonAttachProtocol.encodeServer(m)) }
+
+        fun metaOf(core: TerminalSessionCore): DaemonAttachProtocol.SessionMeta {
+            val sz = core.display.termSizeFlow.value
+            return DaemonAttachProtocol.SessionMeta(
+                id = core.id,
+                title = core.windowTitle.value.ifBlank { core.workingDirectory.value ?: "shell" },
+                cwd = core.workingDirectory.value,
+                cols = sz.columns, rows = sz.rows,
+            )
+        }
+
+        // Attach a tap + send the initial snapshot for a session not yet streamed to this client.
+        fun beginSession(core: TerminalSessionCore) {
+            if (taps.containsKey(core.id)) return
+            val sz = core.display.termSizeFlow.value
+            send(DaemonAttachProtocol.Server.Snapshot(
+                core.id,
+                TerminalSnapshotEncoder.encode(core.textBuffer.createSnapshot(), core.terminal.cursorX, core.terminal.cursorY),
+                sz.columns, sz.rows,
+            ))
+            val listener: (String) -> Unit = { d -> send(DaemonAttachProtocol.Server.Output(core.id, d)) }
+            taps[core.id] = listener
+            core.addRawOutputListener(listener)
+        }
+
+        // Re-sync the client's session set to the host's: announce the list, begin new ones,
+        // announce closed ones, and drop their taps.
+        fun resync() {
+            val live = host.list().map { it.id }.toSet()
+            send(DaemonAttachProtocol.Server.SessionList(host.list().map {
+                DaemonAttachProtocol.SessionMeta(it.id, it.title, it.cwd)
+            }))
+            (taps.keys - live).toList().forEach { id ->
+                taps.remove(id)?.let { l -> host.get(id)?.removeRawOutputListener(l) }
+                send(DaemonAttachProtocol.Server.Closed(id))
+            }
+            host.list().forEach { info -> host.get(info.id)?.let { beginSession(it) } }
+        }
+
+        val onChange: () -> Unit = { resync() }
+        host.addChangeListener(onChange)
+
+        // Drain outbox to the socket.
+        val writer = ws.launch {
+            try { for (text in outbox) ws.send(Frame.Text(text)) } catch (_: Exception) {}
+        }
+
+        try {
+            resync() // initial paint
+            for (frame in ws.incoming) {
+                if (frame !is Frame.Text) continue
+                val msg = runCatching { DaemonAttachProtocol.decodeClient(frame.readText()) }.getOrNull() ?: continue
+                when (msg) {
+                    is DaemonAttachProtocol.Client.Input -> host.get(msg.id)?.writeInput(msg.data)
+                    is DaemonAttachProtocol.Client.Resize -> host.get(msg.id)?.resize(msg.cols, msg.rows)
+                    is DaemonAttachProtocol.Client.Open -> host.openSession(cwd = msg.cwd, cols = msg.cols, rows = msg.rows)
+                    is DaemonAttachProtocol.Client.Close -> host.closeSession(msg.id)
+                }
+            }
+        } catch (e: Exception) {
+            log.debug("attach connection ended: {}", e.message)
+        } finally {
+            host.removeChangeListener(onChange)
+            taps.forEach { (id, l) -> host.get(id)?.removeRawOutputListener(l) }
+            taps.clear()
+            outbox.close()
+            writer.cancel()
+        }
+    }
+
+    private fun portAvailable(port: Int): Boolean =
+        runCatching { ServerSocket().use { it.reuseAddress = false; it.bind(InetSocketAddress(HOST, port)); true } }.getOrDefault(false)
+
+    private fun constantTimeEquals(a: String, b: String): Boolean =
+        MessageDigest.isEqual(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))
+
+    private companion object { const val HOST = "127.0.0.1" }
+}

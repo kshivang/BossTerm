@@ -19,6 +19,12 @@ class SessionHost(
     private val log = LoggerFactory.getLogger(SessionHost::class.java)
     private val sessions = ConcurrentHashMap<String, TerminalSessionCore>()
 
+    /** Listeners notified when the session set changes (open/close/exit) — drives attach Layout pushes. */
+    private val changeListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+    fun addChangeListener(l: () -> Unit) { changeListeners.add(l) }
+    fun removeChangeListener(l: () -> Unit) { changeListeners.remove(l) }
+    private fun notifyChanged() = changeListeners.forEach { runCatching { it() } }
+
     /** Lightweight, serializable view of a session for LIST_SESSIONS / status. */
     @Serializable
     data class SessionInfo(
@@ -46,9 +52,10 @@ class SessionHost(
         )
         sessions[core.id] = core
         // Reap on exit so a dead shell doesn't linger in the registry.
-        core.onExit = { sessions.remove(core.id) }
+        core.onExit = { sessions.remove(core.id); notifyChanged() }
         core.start()
         log.info("opened session {} (cwd={}, cmd={})", core.id, cwd, command ?: "<default shell>")
+        notifyChanged()
         return core.id
     }
 
@@ -58,6 +65,7 @@ class SessionHost(
         sessions.remove(id)?.let {
             it.close()
             log.info("closed session {}", id)
+            notifyChanged()
         }
     }
 

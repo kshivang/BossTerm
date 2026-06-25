@@ -1,6 +1,7 @@
 package ai.rever.bossterm.app
 
 import ai.rever.bossterm.compose.daemon.BossTermPaths
+import ai.rever.bossterm.compose.daemon.DaemonAttachServer
 import ai.rever.bossterm.compose.daemon.DaemonControlChannel
 import ai.rever.bossterm.compose.daemon.DaemonControlHandler
 import ai.rever.bossterm.compose.daemon.DaemonMcpServer
@@ -46,12 +47,17 @@ fun main(args: Array<String>) {
 
     val stopLatch = CountDownLatch(1)
 
+    // Holder so the control handler's STATUS can report the attach port (the attach server is
+    // created after the control channel, since it shares the channel's secret).
+    var attachServer: DaemonAttachServer? = null
+
     val handler = DaemonControlHandler(
         sessionHost = sessionHost,
         version = version,
         protocolVersion = DaemonControlChannel.PROTOCOL_VERSION,
         uptimeMs = ::uptimeMs,
         mcpPort = { mcpServer?.boundPort },
+        attachPort = { attachServer?.boundPort?.takeIf { it > 0 } },
         onShutdown = { killSessions ->
             log.info("Daemon SHUTDOWN requested (killSessions={})", killSessions)
             if (killSessions) sessionHost.shutdownAll()
@@ -73,10 +79,17 @@ fun main(args: Array<String>) {
     }
     log.info("Daemon listening on 127.0.0.1:{}", port)
 
+    // GUI-attach WebSocket: lets the GUI render/steer daemon sessions as thin-client tabs.
+    // Shares the control secret for auth. Always started (the GUI attaches over it).
+    attachServer = DaemonAttachServer(sessionHost, control.secretValue).also {
+        if (it.start() < 0) log.warn("Daemon attach server failed to bind; GUI cannot render daemon sessions")
+    }
+
     Runtime.getRuntime().addShutdownHook(Thread {
-        log.info("Daemon shutdown hook: closing control channel + MCP")
+        log.info("Daemon shutdown hook: closing control channel + MCP + attach")
         control.stop()
         mcpServer?.stop()
+        attachServer?.stop()
     })
 
     try {
@@ -86,6 +99,7 @@ fun main(args: Array<String>) {
     }
     control.stop()
     mcpServer?.stop()
+    attachServer?.stop()
     sessionHost.shutdownAll()
     log.info("BossTerm daemon stopped")
 }

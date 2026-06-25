@@ -92,8 +92,13 @@ fun main() {
             // Spawn/connect off the main thread; the daemon outlives this GUI process.
             daemonScope.launch {
                 val ep = client.ensureConnected()
-                if (ep != null) println("BossTerm daemon connected on control port ${ep.port}")
-                else System.err.println("BossTerm daemon unavailable; MCP/sharing not hosted this session")
+                if (ep != null) {
+                    println("BossTerm daemon connected on control port ${ep.port}")
+                    // Discover the attach endpoint so windows can render daemon sessions.
+                    ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.onConnected(client)
+                } else {
+                    System.err.println("BossTerm daemon unavailable; MCP/sharing not hosted this session")
+                }
             }
         }
     } else null
@@ -247,7 +252,17 @@ fun main() {
                     // only join/leave the registry.
                     DisposableEffect(tabbedState) {
                         McpTerminalRegistry.register(tabbedState)
-                        onDispose { McpTerminalRegistry.unregister(tabbedState) }
+                        // Daemon thin-client: attach this window to the daemon (v1: first window
+                        // only) so daemon-hosted sessions render as tabs. Inert unless daemonEnabled.
+                        if (daemonEnabled) {
+                            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.register(tabbedState, scope)
+                        }
+                        onDispose {
+                            McpTerminalRegistry.unregister(tabbedState)
+                            if (daemonEnabled) {
+                                ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.unregister(tabbedState)
+                            }
+                        }
                     }
 
                     // Track window focus for command completion notifications

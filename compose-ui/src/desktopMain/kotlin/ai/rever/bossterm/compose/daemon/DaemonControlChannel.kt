@@ -43,6 +43,9 @@ class DaemonControlChannel(
     /** Bound port, or -1 before [start]. */
     val port: Int get() = serverSocket?.localPort ?: -1
 
+    /** The per-launch secret (also written to daemon.port). Shared with the attach WS for auth. */
+    val secretValue: String get() = secret
+
     /**
      * Bind the loopback socket, write [BossTermPaths.daemonPortFile], and start accepting.
      * Idempotent-ish: throws if already started. Returns the bound port.

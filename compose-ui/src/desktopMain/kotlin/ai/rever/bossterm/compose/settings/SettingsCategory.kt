@@ -123,6 +123,11 @@ enum class SettingsCategory(
         icon = Icons.Default.Share,
         description = "In-process Model Context Protocol endpoint for AI clients"
     ),
+    DAEMON(
+        displayName = "Session Daemon",
+        icon = Icons.Default.Cloud,
+        description = "Background process that keeps sessions alive across the app lifecycle"
+    ),
     ABOUT(
         displayName = "About",
         icon = Icons.Default.Favorite,

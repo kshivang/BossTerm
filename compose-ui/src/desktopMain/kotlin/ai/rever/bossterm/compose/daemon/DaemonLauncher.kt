@@ -31,21 +31,25 @@ object DaemonLauncher {
      * the JRE couldn't be located. Callers then poll [BossTermPaths.daemonPortFile] /
      * [DaemonControlChannel.readEndpoint] for readiness — process-start does not imply listening.
      */
-    fun spawn(
+    /**
+     * The exact `java … DaemonMain` command used to launch the daemon, or null if the JRE/classpath
+     * can't be resolved. Shared by [spawn] (on-demand) and the login service ([LoginServiceManager]),
+     * so an at-login daemon is launched identically to an on-demand one. Paths are absolute.
+     */
+    fun buildCommand(
         mainClass: String = DEFAULT_DAEMON_MAIN_CLASS,
         extraArgs: List<String> = emptyList(),
-    ): Process? {
+    ): List<String>? {
         val javaBin = resolveJavaBinary() ?: run {
             log.error("DaemonLauncher: could not locate a java binary under java.home={}", System.getProperty("java.home"))
             return null
         }
         val classpath = System.getProperty("java.class.path")
         if (classpath.isNullOrBlank()) {
-            log.error("DaemonLauncher: empty java.class.path; cannot spawn daemon")
+            log.error("DaemonLauncher: empty java.class.path; cannot build daemon command")
             return null
         }
-
-        val command = buildList {
+        return buildList {
             add(javaBin.absolutePath)
             add("-Djava.awt.headless=true")
             // Propagate the props that affect path/resource/version resolution so the daemon
@@ -58,7 +62,13 @@ object DaemonLauncher {
             add(mainClass)
             addAll(extraArgs)
         }
+    }
 
+    fun spawn(
+        mainClass: String = DEFAULT_DAEMON_MAIN_CLASS,
+        extraArgs: List<String> = emptyList(),
+    ): Process? {
+        val command = buildCommand(mainClass, extraArgs) ?: return null
         val logFile = BossTermPaths.daemonLogFile()
         return try {
             ProcessBuilder(command)

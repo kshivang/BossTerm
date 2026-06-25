@@ -392,6 +392,11 @@ private fun SettingsContent(
                 onSettingsChange = onSettingsChange,
                 onSettingsSave = onSettingsSave
             )
+            SettingsCategory.DAEMON -> ai.rever.bossterm.compose.settings.sections.DaemonSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange,
+                onSettingsSave = onSettingsSave
+            )
             SettingsCategory.SESSION_SHARING -> SessionSharingSettingsSection(
                 settings = settings,
                 onSettingsChange = onSettingsChange

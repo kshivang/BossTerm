@@ -81,47 +81,58 @@ class DaemonAttachServer(
 
         // Per-connection outbox: taps + layout pushes enqueue; this coroutine drains to the socket.
         val outbox = Channel<String>(capacity = 4096, onBufferOverflow = BufferOverflow.DROP_OLDEST)
-        // sessionId → its raw-output tap, so we can detach on disconnect / session close.
-        val taps = HashMap<String, (String) -> Unit>()
+        // sessionId → its output tap + size-collector job. Mutated from BOTH the incoming-frame
+        // coroutine and the SessionHost change listener (arbitrary threads), so guarded by [lock].
+        val attachments = HashMap<String, Attachment>()
+        val lock = Any()
 
         fun send(m: DaemonAttachProtocol.Server) { outbox.trySend(DaemonAttachProtocol.encodeServer(m)) }
 
-        fun metaOf(core: TerminalSessionCore): DaemonAttachProtocol.SessionMeta {
-            val sz = core.display.termSizeFlow.value
-            return DaemonAttachProtocol.SessionMeta(
-                id = core.id,
-                title = core.windowTitle.value.ifBlank { core.workingDirectory.value ?: "shell" },
-                cwd = core.workingDirectory.value,
-                cols = sz.columns, rows = sz.rows,
-            )
-        }
+        fun sessionList(): DaemonAttachProtocol.Server.SessionList =
+            DaemonAttachProtocol.Server.SessionList(host.list().map { info ->
+                val sz = host.get(info.id)?.display?.termSizeFlow?.value
+                DaemonAttachProtocol.SessionMeta(info.id, info.title, info.cwd, sz?.columns ?: 80, sz?.rows ?: 24)
+            })
 
-        // Attach a tap + send the initial snapshot for a session not yet streamed to this client.
-        fun beginSession(core: TerminalSessionCore) {
-            if (taps.containsKey(core.id)) return
+        // Attach output tap + size collector + send the initial snapshot. Caller holds [lock].
+        fun beginLocked(core: TerminalSessionCore) {
+            if (attachments.containsKey(core.id)) return
             val sz = core.display.termSizeFlow.value
             send(DaemonAttachProtocol.Server.Snapshot(
                 core.id,
                 TerminalSnapshotEncoder.encode(core.textBuffer.createSnapshot(), core.terminal.cursorX, core.terminal.cursorY),
                 sz.columns, sz.rows,
             ))
-            val listener: (String) -> Unit = { d -> send(DaemonAttachProtocol.Server.Output(core.id, d)) }
-            taps[core.id] = listener
-            core.addRawOutputListener(listener)
+            val tap: (String) -> Unit = { d -> send(DaemonAttachProtocol.Server.Output(core.id, d)) }
+            core.addRawOutputListener(tap)
+            // Push Resized whenever the grid changes (GUI-driven resize OR a TUI resizing it) so the
+            // attached mirror's buffer follows — without this it stays stuck at the snapshot size.
+            val sizeJob = ws.launch {
+                core.display.termSizeFlow.collect { send(DaemonAttachProtocol.Server.Resized(core.id, it.columns, it.rows)) }
+            }
+            attachments[core.id] = Attachment(tap, sizeJob)
+        }
+
+        // Detach a session's tap + size job. Caller holds [lock].
+        fun endLocked(id: String) {
+            attachments.remove(id)?.let { a ->
+                host.get(id)?.removeRawOutputListener(a.tap)
+                a.sizeJob.cancel()
+            }
         }
 
         // Re-sync the client's session set to the host's: announce the list, begin new ones,
-        // announce closed ones, and drop their taps.
+        // close vanished ones.
         fun resync() {
-            val live = host.list().map { it.id }.toSet()
-            send(DaemonAttachProtocol.Server.SessionList(host.list().map {
-                DaemonAttachProtocol.SessionMeta(it.id, it.title, it.cwd)
-            }))
-            (taps.keys - live).toList().forEach { id ->
-                taps.remove(id)?.let { l -> host.get(id)?.removeRawOutputListener(l) }
-                send(DaemonAttachProtocol.Server.Closed(id))
+            send(sessionList())
+            synchronized(lock) {
+                val liveIds = host.list().map { it.id }.toSet()
+                (attachments.keys - liveIds).toList().forEach { id ->
+                    endLocked(id)
+                    send(DaemonAttachProtocol.Server.Closed(id))
+                }
+                host.list().forEach { info -> host.get(info.id)?.let { beginLocked(it) } }
             }
-            host.list().forEach { info -> host.get(info.id)?.let { beginSession(it) } }
         }
 
         val onChange: () -> Unit = { resync() }
@@ -148,12 +159,16 @@ class DaemonAttachServer(
             log.debug("attach connection ended: {}", e.message)
         } finally {
             host.removeChangeListener(onChange)
-            taps.forEach { (id, l) -> host.get(id)?.removeRawOutputListener(l) }
-            taps.clear()
+            synchronized(lock) {
+                attachments.keys.toList().forEach { endLocked(it) }
+            }
             outbox.close()
             writer.cancel()
         }
     }
+
+    /** Per-connection, per-session attachment: the output tap + the size-change collector job. */
+    private class Attachment(val tap: (String) -> Unit, val sizeJob: kotlinx.coroutines.Job)
 
     private fun portAvailable(port: Int): Boolean =
         runCatching { ServerSocket().use { it.reuseAddress = false; it.bind(InetSocketAddress(HOST, port)); true } }.getOrDefault(false)

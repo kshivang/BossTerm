@@ -128,8 +128,27 @@ object LoginServiceManager {
 
     // ---- pure content generators (unit-tested) ----
 
-    /** Quote a single arg for a Windows command-line value (wrap in double quotes if it has spaces). */
-    internal fun winQuote(arg: String): String = if (arg.any { it == ' ' || it == '\t' }) "\"$arg\"" else arg
+    /**
+     * Quote a single arg for a Windows command-line value per the CommandLineToArgvW rules: wrap in
+     * double quotes if it contains whitespace or a quote, escaping interior `"` as `\"` and doubling
+     * any run of backslashes that immediately precedes the closing quote (so a path ending in `\`
+     * doesn't escape the closing quote). Realistically jar paths don't hit these, but be correct.
+     */
+    internal fun winQuote(arg: String): String {
+        if (arg.isNotEmpty() && arg.none { it == ' ' || it == '\t' || it == '"' }) return arg
+        val sb = StringBuilder("\"")
+        var backslashes = 0
+        for (c in arg) {
+            when (c) {
+                '\\' -> backslashes++
+                '"' -> { repeat(backslashes * 2 + 1) { sb.append('\\') }; backslashes = 0; sb.append('"') }
+                else -> { repeat(backslashes) { sb.append('\\') }; backslashes = 0; sb.append(c) }
+            }
+        }
+        repeat(backslashes * 2) { sb.append('\\') } // trailing backslashes before the closing quote
+        sb.append('"')
+        return sb.toString()
+    }
 
     internal fun windowsRunValue(command: List<String>): String = command.joinToString(" ") { winQuote(it) }
 

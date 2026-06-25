@@ -79,6 +79,51 @@ class DaemonAttachServerTest {
     }
 
     @Test
+    fun `attach echoes a client resize back as Resized`() {
+        if (ShellCustomizationUtils.isWindows()) return
+        val host = SessionHost(TerminalSettings.DEFAULT)
+        val server = DaemonAttachServer(host, secret = "rz")
+        try {
+            val port = server.start(desiredPort = 7760)
+            assertTrue(port > 0)
+            val id = host.openSession(command = "/bin/cat", arguments = emptyList())
+            val client = HttpClient(CIO) { install(WebSockets) }
+            try {
+                val resized = runBlocking {
+                    var ok = false
+                    runCatching {
+                        withTimeout(10_000) {
+                            client.webSocket("ws://127.0.0.1:$port/attach?token=rz") {
+                                var sent = false
+                                for (frame in incoming) {
+                                    if (frame !is Frame.Text) continue
+                                    val msg = DaemonAttachProtocol.decodeServer(frame.readText())
+                                    if (!sent && msg is DaemonAttachProtocol.Server.SessionList && msg.sessions.any { it.id == id }) {
+                                        sent = true
+                                        send(Frame.Text(DaemonAttachProtocol.encodeClient(
+                                            DaemonAttachProtocol.Client.Resize(id, 100, 40)
+                                        )))
+                                    }
+                                    if (msg is DaemonAttachProtocol.Server.Resized && msg.id == id && msg.cols == 100 && msg.rows == 40) {
+                                        ok = true; return@webSocket
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ok
+                }
+                assertTrue(resized, "a client Resize should drive the session and echo back as Resized(100,40)")
+            } finally {
+                client.close()
+            }
+        } finally {
+            server.stop()
+            host.shutdownAll()
+        }
+    }
+
+    @Test
     fun `attach rejects a bad token`() {
         val host = SessionHost(TerminalSettings.DEFAULT)
         val server = DaemonAttachServer(host, secret = "right")

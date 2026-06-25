@@ -61,7 +61,10 @@ fun main(args: Array<String>) {
         onShutdown = { killSessions ->
             log.info("Daemon SHUTDOWN requested (killSessions={})", killSessions)
             if (killSessions) sessionHost.shutdownAll()
-            stopLatch.countDown()
+            // Trip the latch slightly after this returns so the control handler can flush its
+            // "OK stopping" reply before main tears down the (daemon-thread) socket and exits.
+            Thread { runCatching { Thread.sleep(200) }; stopLatch.countDown() }
+                .apply { isDaemon = true }.start()
         },
     )
 

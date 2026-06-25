@@ -6,7 +6,6 @@ import ai.rever.bossterm.core.util.TermSize
 import ai.rever.bossterm.terminal.RequestOrigin
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.websocket.Frame
@@ -17,7 +16,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
@@ -42,11 +40,16 @@ class DaemonSessionBridge(
     private val log = LoggerFactory.getLogger(DaemonSessionBridge::class.java)
     private val client = HttpClient(CIO) { install(WebSockets) }
     private val io = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val outbox = Channel<String>(capacity = 1024)
+    // Recreated per connection so messages queued during a dropped connection aren't replayed
+    // (stale Input/Resize) against a fresh socket.
+    @Volatile private var outbox: Channel<String>? = null
 
     /** daemon sessionId → its GUI mirror tab. */
     private val tabs = ConcurrentHashMap<String, TerminalTab>()
     @Volatile private var running = false
+    // Open one daemon session the first time we attach to an empty daemon, so the user sees a
+    // daemon-backed terminal. Once-only (closing all daemon tabs won't re-spawn one).
+    @Volatile private var autoOpened = false
 
     fun start() {
         if (running) return
@@ -56,7 +59,7 @@ class DaemonSessionBridge(
 
     fun stop() {
         running = false
-        outbox.close()
+        outbox?.close()
         io.cancel()
         runCatching { client.close() }
     }
@@ -67,7 +70,7 @@ class DaemonSessionBridge(
     }
 
     private fun send(m: DaemonAttachProtocol.Client) {
-        outbox.trySend(DaemonAttachProtocol.encodeClient(m))
+        outbox?.trySend(DaemonAttachProtocol.encodeClient(m))
     }
 
     private suspend fun runWithReconnect() {
@@ -87,10 +90,12 @@ class DaemonSessionBridge(
 
     private suspend fun connectOnce() {
         val url = "ws://127.0.0.1:$attachPort/attach?token=$secret"
+        val out = Channel<String>(capacity = 1024)
+        outbox = out
         client.webSocket(url) {
-            // Pump outbox → socket.
+            // Pump this connection's outbox → socket.
             val writer = launch {
-                try { for (text in outbox) send(Frame.Text(text)) } catch (_: Exception) {}
+                try { for (text in out) send(Frame.Text(text)) } catch (_: Exception) {}
             }
             try {
                 for (frame in incoming) {
@@ -100,6 +105,8 @@ class DaemonSessionBridge(
                 }
             } finally {
                 writer.cancel()
+                out.close()
+                if (outbox === out) outbox = null
             }
         }
     }
@@ -116,6 +123,12 @@ class DaemonSessionBridge(
 
     /** Create mirror tabs for new daemon sessions; close tabs for sessions that disappeared. */
     private suspend fun reconcile(sessions: List<DaemonAttachProtocol.SessionMeta>) {
+        // First attach to an empty daemon → open one session so the user sees a daemon terminal.
+        if (sessions.isEmpty() && !autoOpened) {
+            autoOpened = true
+            openSession()
+            return
+        }
         val live = sessions.associateBy { it.id }
         // Remove vanished sessions.
         (tabs.keys - live.keys).toList().forEach { closeMirror(it) }

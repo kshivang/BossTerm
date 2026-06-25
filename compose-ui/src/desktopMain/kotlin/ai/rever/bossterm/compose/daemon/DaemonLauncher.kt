@@ -96,6 +96,9 @@ object DaemonLauncher {
         } else {
             listOf(File(bin, "java"))
         }
-        return candidates.firstOrNull { it.canExecute() }
+        // Prefer an executable candidate, but fall back to mere existence: some packaging /
+        // mounts under-report the exec bit, and ProcessBuilder.start() will surface the real
+        // failure rather than us silently no-op'ing the whole daemon.
+        return candidates.firstOrNull { it.canExecute() } ?: candidates.firstOrNull { it.exists() }
     }
 }

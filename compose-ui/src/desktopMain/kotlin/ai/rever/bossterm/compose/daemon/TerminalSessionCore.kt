@@ -17,6 +17,7 @@ import ai.rever.bossterm.terminal.model.StyleState
 import ai.rever.bossterm.terminal.model.TerminalApplicationTitleListener
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import ai.rever.bossterm.terminal.util.GraphemeBoundaryUtils
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -93,6 +94,10 @@ class TerminalSessionCore(
     @Volatile private var started = false
     @Volatile private var closed = false
 
+    // Completes true once the PTY is spawned (Connected), false on failure/close. The write
+    // consumer waits on it so input sent immediately after openSession() is buffered, not dropped.
+    private val connected = CompletableDeferred<Boolean>()
+
     sealed class State {
         object Initializing : State()
         object Connected : State()
@@ -147,10 +152,12 @@ class TerminalSessionCore(
                 val h = platformServices.getProcessService().spawnProcess(config)
                 if (h == null) {
                     _connectionState.value = State.Error("Failed to spawn process")
+                    connected.complete(false)
                     return@launch
                 }
                 handle = h
                 _connectionState.value = State.Connected
+                connected.complete(true)
                 terminal.setTerminalOutput(PtyTerminalOutput(h))
 
                 // Emulator processing loop — drains the data stream into the terminal model.
@@ -200,6 +207,7 @@ class TerminalSessionCore(
                 runCatching { onExit?.invoke() }
             } catch (e: Exception) {
                 _connectionState.value = State.Error("Terminal initialization failed: ${e.message}")
+                connected.complete(false)
                 log.error("session {} init failed: {}", id, e.message)
             }
         }
@@ -226,10 +234,18 @@ class TerminalSessionCore(
     fun close() {
         if (closed) return
         closed = true
+        connected.complete(false) // release a write consumer still waiting to start
         writeChannel.close()
-        scope.launch { runCatching { handle?.kill() } }
+        val h = handle
         runCatching { dataStream.close() }
         scope.cancel()
+        // Kill on a dedicated thread — NOT a child of `scope` (we just cancelled it), so the
+        // blocking destroy actually runs instead of being cancelled before dispatch (which would
+        // orphan the shell). kill() closes streams + destroys + waits up to 2s.
+        if (h != null) {
+            Thread({ runCatching { runBlocking { h.kill() } } }, "bossterm-session-kill-$id")
+                .apply { isDaemon = true }.start()
+        }
     }
 
     // ---- internals ----
@@ -241,6 +257,9 @@ class TerminalSessionCore(
 
     private val writeChannel = Channel<WriteOp>(capacity = 256)
     private val writeConsumer = scope.launch(Dispatchers.IO) {
+        // Don't drain until the PTY is up, so input sent right after open isn't written to a null
+        // handle and dropped. If we never connect (spawn failed / closed early), just exit.
+        if (!connected.await()) return@launch
         for (op in writeChannel) {
             try {
                 when (op) {

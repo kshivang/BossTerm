@@ -84,6 +84,57 @@ class TerminalSessionCoreTest {
     }
 
     @Test
+    fun `close kills the pty process (no orphan)`() {
+        if (ShellCustomizationUtils.isWindows()) return
+        val core = TerminalSessionCore(
+            settings = TerminalSettings.DEFAULT,
+            workingDir = System.getProperty("java.io.tmpdir"),
+            command = "/bin/sh",
+            arguments = listOf("-c", "sleep 30"),
+        )
+        core.start()
+        assertTrue(awaitTrue(5000) { core.isAlive() }, "session should start")
+        core.close()
+        // The kill runs on a dedicated thread (NOT the cancelled scope), so the process must die.
+        assertTrue(awaitTrue(6000) { !core.isAlive() }, "close() must terminate the PTY, not orphan it")
+    }
+
+    @Test
+    fun `input sent immediately after start is not dropped`() {
+        if (ShellCustomizationUtils.isWindows()) return
+        val marker = "EARLY_INPUT_1212"
+        val raw = StringBuilder()
+        val seen = CountDownLatch(1)
+        val core = TerminalSessionCore(
+            settings = TerminalSettings.DEFAULT,
+            workingDir = System.getProperty("java.io.tmpdir"),
+            command = "/bin/cat",
+            arguments = emptyList(),
+        )
+        core.addRawOutputListener { chunk ->
+            synchronized(raw) { raw.append(chunk) }
+            if (raw.contains(marker)) seen.countDown()
+        }
+        core.start()
+        // Write BEFORE the PTY is necessarily spawned — must be buffered until connected, not dropped.
+        core.writeInput("$marker\n")
+        try {
+            assertTrue(seen.await(10, TimeUnit.SECONDS), "input queued before connect must flush once connected")
+        } finally {
+            core.close()
+        }
+    }
+
+    private fun awaitTrue(timeoutMs: Long, predicate: () -> Boolean): Boolean {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        while (System.nanoTime() < deadline) {
+            if (predicate()) return true
+            Thread.sleep(50)
+        }
+        return false
+    }
+
+    @Test
     fun `holds a reference to the marker without leaking`() {
         // Trivial guard so the suite has a non-PTY test on Windows too (keeps the class non-empty there).
         val ref = AtomicReference("ok")

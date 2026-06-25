@@ -5,7 +5,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /**
@@ -110,12 +109,13 @@ class DaemonMcpTools(private val host: SessionHost) {
         return ok()
     }
 
-    // ---- json helpers ----
-    private fun JsonObject.str(key: String): String? = this[key]?.jsonPrimitive?.contentOrNullSafe()
+    // ---- json helpers (defensive: a non-primitive/absent arg yields null, never throws) ----
+    private fun JsonObject.str(key: String): String? = runCatching {
+        (this[key] as? kotlinx.serialization.json.JsonPrimitive)
+            ?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.content
+    }.getOrNull()
     private fun JsonObject.intOr(key: String, default: Int): Int =
-        runCatching { this[key]?.jsonPrimitive?.int }.getOrNull() ?: default
-    private fun kotlinx.serialization.json.JsonPrimitive.contentOrNullSafe(): String? =
-        runCatching { if (this is kotlinx.serialization.json.JsonNull) null else content }.getOrNull()
+        runCatching { (this[key] as? kotlinx.serialization.json.JsonPrimitive)?.int }.getOrNull() ?: default
 
     private fun ok(): String = buildJsonObject { put("ok", true) }.toString()
     private fun err(message: String): String = buildJsonObject { put("error", message) }.toString()

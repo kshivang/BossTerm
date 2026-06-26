@@ -40,6 +40,16 @@ class DaemonInfraTest {
         assertTrue(tagA != tagB, "different dirs → different tags")
     }
 
+    // ---- DaemonLauncher ----
+
+    @Test
+    fun `daemon main class is the Kotlin facade (Kt suffix)`() {
+        // A Kotlin file-level `fun main` in DaemonMain.kt compiles to the facade class DaemonMainKt.
+        // Without the Kt suffix, `java -cp … ai.rever.bossterm.app.DaemonMain` throws
+        // ClassNotFoundException and the daemon never spawns (caught by the out-of-process smoke test).
+        assertEquals("ai.rever.bossterm.app.DaemonMainKt", DaemonLauncher.DEFAULT_DAEMON_MAIN_CLASS)
+    }
+
     // ---- DaemonControlChannel ----
 
     @Test

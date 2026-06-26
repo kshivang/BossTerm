@@ -23,8 +23,14 @@ import java.io.File
 object DaemonLauncher {
     private val log = LoggerFactory.getLogger(DaemonLauncher::class.java)
 
-    /** Fully-qualified main class of the daemon (in bossterm-app; referenced by name only). */
-    const val DEFAULT_DAEMON_MAIN_CLASS = "ai.rever.bossterm.app.DaemonMain"
+    /**
+     * Fully-qualified main class of the daemon (in bossterm-app; referenced by name only).
+     * NOTE the `Kt` suffix: the daemon entry point is a Kotlin file-level `fun main` in
+     * DaemonMain.kt, which compiles to the facade class `DaemonMainKt`. Without the suffix
+     * `java -cp … ai.rever.bossterm.app.DaemonMain` fails with ClassNotFoundException and the
+     * daemon never starts. (Caught by the out-of-process smoke test, not the in-process unit tests.)
+     */
+    const val DEFAULT_DAEMON_MAIN_CLASS = "ai.rever.bossterm.app.DaemonMainKt"
 
     /**
      * Launch the daemon. Returns the spawned [Process] (already running, detached), or null if

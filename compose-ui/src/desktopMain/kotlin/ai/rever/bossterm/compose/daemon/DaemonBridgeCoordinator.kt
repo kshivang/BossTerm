@@ -42,6 +42,11 @@ object DaemonBridgeCoordinator {
         val status = runCatching {
             DaemonProtocol.json.decodeFromString(DaemonProtocol.Status.serializer(), payload)
         }.getOrNull() ?: run { log.warn("daemon STATUS unparseable: {}", resp); return }
+        // MCP is hosted by the daemon in daemon mode (the in-process BossTermMcpManager isn't
+        // started), so the GUI's MCP status indicator — which reads McpTerminalRegistry.runningPort —
+        // would otherwise show "not running" even though the daemon serves it. Reflect the daemon's
+        // bound MCP port so the indicator is accurate.
+        status.mcpPort?.let { ai.rever.bossterm.compose.mcp.McpTerminalRegistry.setRunning(it) }
         val ap = status.attachPort ?: run { log.warn("daemon reported no attach port"); return }
         attach = Attach(ap, ep.secret)
         log.info("Daemon attach endpoint: ws://127.0.0.1:{}/attach", ap)

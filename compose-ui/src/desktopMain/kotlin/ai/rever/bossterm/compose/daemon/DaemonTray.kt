@@ -4,26 +4,20 @@ import org.slf4j.LoggerFactory
 import java.awt.Color
 import java.awt.Font
 import java.awt.GraphicsEnvironment
+import java.awt.MenuItem
+import java.awt.PopupMenu
 import java.awt.RenderingHints
 import java.awt.SystemTray
 import java.awt.TrayIcon
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
-import javax.swing.JMenuItem
-import javax.swing.JPopupMenu
-import javax.swing.JWindow
-import javax.swing.SwingUtilities
-import javax.swing.event.PopupMenuEvent
-import javax.swing.event.PopupMenuListener
 
 /**
  * Menu-bar (macOS) / system-tray (Windows/Linux) presence for the running daemon, so a long-lived
  * background process isn't invisible. Standard background-agent pattern (Docker, Dropbox, …).
  *
- * Click behavior (macOS-native): **left-click opens BossTerm**, **right-click shows a menu** with
- * the session count + Quit. AWT's built-in `TrayIcon` popup would show on left-click, so we handle
- * clicks ourselves (no AWT popup) and show a Swing [JPopupMenu] on the popup trigger.
+ * Uses the standard AWT [PopupMenu] on the [TrayIcon] (clicking shows it). The menu offers
+ * "Open BossTerm" + "Quit BossTerm" and a live session count; double-clicking the icon also opens
+ * BossTerm.
  *
  * Requires a non-headless JVM with tray support; on a headless/no-display host it no-ops and the
  * daemon runs without an icon.
@@ -32,10 +26,11 @@ object DaemonTray {
     private val log = LoggerFactory.getLogger(DaemonTray::class.java)
 
     @Volatile private var trayIcon: TrayIcon? = null
+    @Volatile private var sessionsItem: MenuItem? = null
 
     /**
-     * Install the tray icon. [onOpenApp] runs on left-click (and the menu's "Open BossTerm");
-     * [onQuit] runs from the right-click menu. The session count shown is read fresh on each menu open.
+     * Install the tray icon + popup menu. [onOpenApp] runs from "Open BossTerm" (and on double-click);
+     * [onQuit] from "Quit BossTerm". The session count refreshes periodically.
      */
     fun install(version: String, sessionCount: () -> Int, onOpenApp: (() -> Unit)?, onQuit: () -> Unit): Boolean {
         if (GraphicsEnvironment.isHeadless() || !SystemTray.isSupported()) {
@@ -43,26 +38,25 @@ object DaemonTray {
             return false
         }
         return try {
-            val icon = TrayIcon(renderWordmark(), "BossTerm").apply {
+            val popup = PopupMenu()
+            popup.add(MenuItem("BossTerm v$version").apply { isEnabled = false })
+            val sessions = MenuItem("Sessions: ${sessionCount()}").apply { isEnabled = false }
+            sessionsItem = sessions
+            popup.add(sessions)
+            popup.addSeparator()
+            if (onOpenApp != null) {
+                popup.add(MenuItem("Open BossTerm").apply { addActionListener { runCatching { onOpenApp() } } })
+            }
+            popup.add(MenuItem("Quit BossTerm").apply { addActionListener { runCatching { onQuit() } } })
+
+            val icon = TrayIcon(renderWordmark(), "BossTerm", popup).apply {
                 isImageAutoSize = false
-                addMouseListener(object : MouseAdapter() {
-                    // Popup trigger fires on press on macOS, on release elsewhere — handle both.
-                    override fun mousePressed(e: MouseEvent) = onMouse(e)
-                    override fun mouseReleased(e: MouseEvent) = onMouse(e)
-                    override fun mouseClicked(e: MouseEvent) {
-                        if (!e.isPopupTrigger && SwingUtilities.isLeftMouseButton(e)) {
-                            runCatching { onOpenApp?.invoke() }
-                        }
-                    }
-                    private fun onMouse(e: MouseEvent) {
-                        if (e.isPopupTrigger || SwingUtilities.isRightMouseButton(e)) {
-                            showMenu(e.x, e.y, version, sessionCount, onOpenApp, onQuit)
-                        }
-                    }
-                })
+                // Double-click opens BossTerm (single click shows the menu, which also has it).
+                addActionListener { runCatching { onOpenApp?.invoke() } }
             }
             SystemTray.getSystemTray().add(icon)
             trayIcon = icon
+            startRefresh(sessionCount)
             log.info("Daemon menu-bar icon installed")
             true
         } catch (e: Throwable) {
@@ -76,36 +70,12 @@ object DaemonTray {
         trayIcon = null
     }
 
-    @Volatile private var menuShowing = false
-
-    /** Show a fresh right-click menu at screen [x],[y] via the standard invisible-invoker-window trick. */
-    private fun showMenu(
-        x: Int, y: Int, version: String, sessionCount: () -> Int,
-        onOpenApp: (() -> Unit)?, onQuit: () -> Unit,
-    ) {
-        if (menuShowing) return
-        menuShowing = true
-        val popup = JPopupMenu()
-        popup.add(JMenuItem("BossTerm v$version").apply { isEnabled = false })
-        popup.add(JMenuItem("Sessions: ${sessionCount()}").apply { isEnabled = false })
-        popup.addSeparator()
-        if (onOpenApp != null) {
-            popup.add(JMenuItem("Open BossTerm").apply { addActionListener { runCatching { onOpenApp() } } })
-        }
-        popup.add(JMenuItem("Quit BossTerm").apply { addActionListener { runCatching { onQuit() } } })
-
-        // A JPopupMenu needs a visible invoker; the tray icon isn't a Component, so park a 1px
-        // borderless window at the click point and anchor the menu to it, disposing it on close.
-        val invoker = JWindow().apply { setLocation(x, y); setSize(1, 1); isVisible = true; toFront() }
-        popup.addPopupMenuListener(object : PopupMenuListener {
-            override fun popupMenuWillBecomeVisible(e: PopupMenuEvent) {}
-            override fun popupMenuWillBecomeInvisible(e: PopupMenuEvent) {
-                menuShowing = false
-                SwingUtilities.invokeLater { invoker.dispose() }
-            }
-            override fun popupMenuCanceled(e: PopupMenuEvent) { menuShowing = false }
-        })
-        popup.show(invoker, 0, 0)
+    private fun startRefresh(sessionCount: () -> Int) {
+        java.util.Timer("bossterm-tray-refresh", true).scheduleAtFixedRate(
+            object : java.util.TimerTask() {
+                override fun run() { runCatching { sessionsItem?.label = "Sessions: ${sessionCount()}" } }
+            }, 2000L, 3000L,
+        )
     }
 
     /**

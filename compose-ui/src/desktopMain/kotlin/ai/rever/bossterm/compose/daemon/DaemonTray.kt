@@ -43,7 +43,7 @@ object DaemonTray {
             return false
         }
         return try {
-            val icon = TrayIcon(renderWordmark(), "BossTerm daemon").apply {
+            val icon = TrayIcon(renderWordmark(), "BossTerm").apply {
                 isImageAutoSize = false
                 addMouseListener(object : MouseAdapter() {
                     // Popup trigger fires on press on macOS, on release elsewhere — handle both.
@@ -86,13 +86,13 @@ object DaemonTray {
         if (menuShowing) return
         menuShowing = true
         val popup = JPopupMenu()
-        popup.add(JMenuItem("BossTerm daemon v$version").apply { isEnabled = false })
+        popup.add(JMenuItem("BossTerm v$version").apply { isEnabled = false })
         popup.add(JMenuItem("Sessions: ${sessionCount()}").apply { isEnabled = false })
         popup.addSeparator()
         if (onOpenApp != null) {
             popup.add(JMenuItem("Open BossTerm").apply { addActionListener { runCatching { onOpenApp() } } })
         }
-        popup.add(JMenuItem("Quit BossTerm Daemon").apply { addActionListener { runCatching { onQuit() } } })
+        popup.add(JMenuItem("Quit BossTerm").apply { addActionListener { runCatching { onQuit() } } })
 
         // A JPopupMenu needs a visible invoker; the tray icon isn't a Component, so park a 1px
         // borderless window at the click point and anchor the menu to it, disposing it on close.

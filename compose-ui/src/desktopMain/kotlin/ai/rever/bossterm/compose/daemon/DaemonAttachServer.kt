@@ -43,6 +43,15 @@ class DaemonAttachServer(
     @Volatile var boundPort: Int = -1
         private set
 
+    // Per-connection senders, so the daemon can push to attached GUIs (e.g. "focus your window").
+    private val clients = java.util.concurrent.CopyOnWriteArrayList<(DaemonAttachProtocol.Server) -> Unit>()
+
+    /** Ask every attached GUI to bring its window forward. Returns how many clients were notified. */
+    fun focusClients(): Int {
+        clients.forEach { runCatching { it(DaemonAttachProtocol.Server.Focus) } }
+        return clients.size
+    }
+
     /** Bind on loopback, trying [desiredPort]..+9. Returns the bound port or -1. */
     fun start(desiredPort: Int = 7682): Int {
         for (offset in 0 until 10) {
@@ -89,6 +98,8 @@ class DaemonAttachServer(
         val lock = Any()
 
         fun send(m: DaemonAttachProtocol.Server) { outbox.trySend(DaemonAttachProtocol.encodeServer(m)) }
+        val sender: (DaemonAttachProtocol.Server) -> Unit = { send(it) }
+        clients.add(sender)
 
         fun sessionList(): DaemonAttachProtocol.Server.SessionList =
             DaemonAttachProtocol.Server.SessionList(host.list().map { info ->
@@ -168,6 +179,7 @@ class DaemonAttachServer(
         } catch (e: Exception) {
             log.debug("attach connection ended: {}", e.message)
         } finally {
+            clients.remove(sender)
             host.removeChangeListener(onChange)
             synchronized(lock) {
                 attachments.keys.toList().forEach { endLocked(it) }

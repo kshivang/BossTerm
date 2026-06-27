@@ -46,6 +46,10 @@ object DaemonAttachProtocol {
         /** A session exited / was closed. */
         @Serializable @SerialName("closed")
         data class Closed(val id: String) : Server()
+
+        /** Bring the attached GUI's window(s) to the front (menu-bar "Open BossTerm" with a window already open). */
+        @Serializable @SerialName("focus")
+        data object Focus : Server()
     }
 
     @Serializable

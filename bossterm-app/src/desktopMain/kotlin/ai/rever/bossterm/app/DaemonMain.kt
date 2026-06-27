@@ -94,9 +94,11 @@ fun main(args: Array<String>) {
     ai.rever.bossterm.compose.daemon.DaemonTray.install(
         version = version,
         sessionCount = { sessionHost.count() },
-        // Focus/launch the GUI (packaged: `open` the .app; dev: spawn a GUI instance). It attaches
-        // to this daemon and renders its sessions.
-        onOpenApp = { ai.rever.bossterm.compose.daemon.DaemonLauncher.openGui() },
+        // Open BossTerm: if a GUI is already attached, ask it to focus its window; only launch a
+        // new one when none is attached (packaged: `open` the .app; dev: spawn a GUI instance).
+        onOpenApp = {
+            if ((attachServer?.focusClients() ?: 0) == 0) ai.rever.bossterm.compose.daemon.DaemonLauncher.openGui()
+        },
         onQuit = { log.info("Quit requested from menu bar"); stopLatch.countDown() },
     )
 

@@ -115,6 +115,28 @@ class DaemonSessionBridge(
             is DaemonAttachProtocol.Server.Output -> tabs[msg.id]?.dataStream?.append(msg.data)
             is DaemonAttachProtocol.Server.Resized -> resizeMirror(msg.id, msg.cols, msg.rows)
             is DaemonAttachProtocol.Server.Closed -> closeMirror(msg.id)
+            is DaemonAttachProtocol.Server.Focus -> focusWindows()
+        }
+    }
+
+    /** Bring this GUI's window(s) to the front — daemon's "Open BossTerm" when a window is already open. */
+    private suspend fun focusWindows() {
+        withContext(Dispatchers.Main) {
+            // macOS: best-effort app activation so the window actually comes forward from the
+            // background (reflective — the class is absent on other platforms / future JDKs).
+            runCatching {
+                val appCls = Class.forName("com.apple.eawt.Application")
+                val app = appCls.getMethod("getApplication").invoke(null)
+                appCls.getMethod("requestForeground", java.lang.Boolean.TYPE).invoke(app, true)
+            }
+            ai.rever.bossterm.compose.window.WindowManager.windows.forEach { w ->
+                w.awtWindow?.let { win ->
+                    (win as? java.awt.Frame)?.let { if (it.state == java.awt.Frame.ICONIFIED) it.state = java.awt.Frame.NORMAL }
+                    win.isVisible = true
+                    win.toFront()
+                    win.requestFocus()
+                }
+            }
         }
     }
 

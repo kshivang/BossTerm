@@ -11,12 +11,16 @@ import kotlin.test.assertEquals
  */
 class LoginServiceTest {
 
+    // Use the real daemon main class (the `…Kt` facade name) so the fixture matches what
+    // DaemonLauncher actually bakes — referencing the constant keeps it in sync if it ever changes.
+    private val mainClass = DaemonLauncher.DEFAULT_DAEMON_MAIN_CLASS
+
     private val command = listOf(
         "/Applications/BossTerm.app/Contents/runtime/Contents/Home/bin/java",
         "-Djava.awt.headless=true",
         "-cp",
         "/Applications/BossTerm.app/Contents/app/compose-ui.jar:/Applications/BossTerm.app/Contents/app/has space.jar",
-        "ai.rever.bossterm.app.DaemonMain",
+        mainClass,
     )
 
     @Test
@@ -26,7 +30,7 @@ class LoginServiceTest {
         assertTrue(plist.contains("<key>Label</key>"))
         assertTrue(plist.contains("<string>ai.rever.bossterm.daemon</string>"))
         assertTrue(plist.contains("<key>RunAtLoad</key>"))
-        assertTrue(plist.contains("ai.rever.bossterm.app.DaemonMain"))
+        assertTrue(plist.contains(mainClass))
         assertTrue(plist.contains("daemon.log"))
         // Every command arg appears as a ProgramArguments <string>.
         command.forEach { assertTrue(plist.contains("<string>$it</string>"), "missing arg: $it") }
@@ -36,7 +40,7 @@ class LoginServiceTest {
     fun `systemd unit restarts on failure and starts at login`() {
         val unit = LoginServiceManager.systemdUnit(command)
         assertTrue(unit.contains("ExecStart="))
-        assertTrue(unit.contains("ai.rever.bossterm.app.DaemonMain"))
+        assertTrue(unit.contains(mainClass))
         assertTrue(unit.contains("Restart=on-failure"))
         assertTrue(unit.contains("WantedBy=default.target"))
         // An arg with a space must be POSIX-quoted in ExecStart.
@@ -48,7 +52,7 @@ class LoginServiceTest {
         val d = LoginServiceManager.xdgDesktop(command)
         assertTrue(d.contains("[Desktop Entry]"))
         assertTrue(d.contains("Exec="))
-        assertTrue(d.contains("ai.rever.bossterm.app.DaemonMain"))
+        assertTrue(d.contains(mainClass))
     }
 
     @Test
@@ -57,6 +61,6 @@ class LoginServiceTest {
         assertEquals("\"has space\"", LoginServiceManager.winQuote("has space"))
         val value = LoginServiceManager.windowsRunValue(command)
         assertTrue(value.contains("\"/Applications/BossTerm.app/Contents/app/compose-ui.jar:/Applications/BossTerm.app/Contents/app/has space.jar\""))
-        assertTrue(value.contains("ai.rever.bossterm.app.DaemonMain"))
+        assertTrue(value.contains(mainClass))
     }
 }

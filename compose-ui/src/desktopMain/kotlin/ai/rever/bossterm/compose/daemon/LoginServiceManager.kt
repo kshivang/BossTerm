@@ -66,15 +66,30 @@ object LoginServiceManager {
         val file = macPlistFile()
         file.parentFile?.mkdirs()
         file.writeText(macPlist(serviceId(), command, BossTermPaths.daemonLogFile().absolutePath))
-        // Immediate load (best-effort; RunAtLoad makes it start next login regardless).
+        // Prefer the modern `bootstrap`/`bootout` (load/unload are deprecated and unreliable on
+        // recent macOS); fall back to load/unload on older systems or if bootstrap fails. RunAtLoad
+        // makes it start next login regardless. Re-bootstrapping refreshes the baked command.
+        val uid = uid()
+        if (uid != null) {
+            run("launchctl", "bootout", "gui/$uid", file.absolutePath) // clear any prior reg (ok to fail)
+            val (code, _) = runCapture("launchctl", "bootstrap", "gui/$uid", file.absolutePath)
+            if (code == 0) return
+        }
         run("launchctl", "unload", file.absolutePath)
         run("launchctl", "load", "-w", file.absolutePath)
     }
 
     private fun uninstallMac() {
         val file = macPlistFile()
-        run("launchctl", "unload", "-w", file.absolutePath)
+        uid()?.let { run("launchctl", "bootout", "gui/$it", file.absolutePath) }
+        run("launchctl", "unload", "-w", file.absolutePath) // older-OS fallback
         file.delete()
+    }
+
+    /** Current user's numeric uid for `launchctl … gui/<uid>`, or null if it can't be read. */
+    private fun uid(): String? {
+        val (code, out) = runCapture("id", "-u")
+        return if (code == 0) out.trim().takeIf { it.isNotEmpty() } else null
     }
 
     // ---- Linux ----

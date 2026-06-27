@@ -86,7 +86,8 @@ class DaemonSessionBridge(
     }
 
     private suspend fun connectOnce() {
-        val url = "ws://127.0.0.1:$attachPort/attach?token=$secret"
+        // Report our pid so the daemon can activate this GUI window on "Open BossTerm".
+        val url = "ws://127.0.0.1:$attachPort/attach?token=$secret&pid=${ProcessHandle.current().pid()}"
         val out = Channel<String>(capacity = 1024)
         outbox = out
         client.webSocket(url) {

@@ -43,12 +43,21 @@ class DaemonAttachServer(
     @Volatile var boundPort: Int = -1
         private set
 
-    // Per-connection senders, so the daemon can push to attached GUIs (e.g. "focus your window").
-    private val clients = java.util.concurrent.CopyOnWriteArrayList<(DaemonAttachProtocol.Server) -> Unit>()
+    // Attached GUIs: a push channel (for the Focus message) + the GUI's OS pid (for activation).
+    private class Client(val pid: Long?, val send: (DaemonAttachProtocol.Server) -> Unit)
+    private val clients = java.util.concurrent.CopyOnWriteArrayList<Client>()
 
-    /** Ask every attached GUI to bring its window forward. Returns how many clients were notified. */
+    /**
+     * Bring attached GUIs forward. Sends a Focus message (the GUI tries alwaysOnTop — no permission)
+     * AND, on macOS, activates the GUI process by pid via [DaemonLauncher.activatePid] (a background
+     * app can't self-activate on modern macOS, but the daemon activating *another* process works —
+     * may prompt for Accessibility once). Returns the number of attached clients.
+     */
     fun focusClients(): Int {
-        clients.forEach { runCatching { it(DaemonAttachProtocol.Server.Focus) } }
+        clients.forEach { c ->
+            runCatching { c.send(DaemonAttachProtocol.Server.Focus) }
+            c.pid?.let { DaemonLauncher.activatePid(it) }
+        }
         return clients.size
     }
 
@@ -83,6 +92,14 @@ class DaemonAttachServer(
     }
 
     private suspend fun serve(ws: io.ktor.server.websocket.DefaultWebSocketServerSession) {
+        // DNS-rebinding defense (parity with the MCP server): only accept Host headers naming a
+        // loopback target, so a browser pointed at a name resolving to 127.0.0.1 can't connect.
+        val hostHeader = (ws.call.request.headers["Host"] ?: "").substringBefore(':').lowercase()
+        if (hostHeader.isNotEmpty() && hostHeader != "127.0.0.1" && hostHeader != "localhost") {
+            log.warn("attach: rejected connection with non-loopback Host '{}'", hostHeader)
+            runCatching { ws.close() }
+            return
+        }
         val presented = ws.call.request.queryParameters["token"] ?: ""
         if (!constantTimeEquals(presented, secret)) {
             log.warn("attach: rejected connection with bad token")
@@ -98,8 +115,8 @@ class DaemonAttachServer(
         val lock = Any()
 
         fun send(m: DaemonAttachProtocol.Server) { outbox.trySend(DaemonAttachProtocol.encodeServer(m)) }
-        val sender: (DaemonAttachProtocol.Server) -> Unit = { send(it) }
-        clients.add(sender)
+        val client = Client(ws.call.request.queryParameters["pid"]?.toLongOrNull(), { send(it) })
+        clients.add(client)
 
         fun sessionList(): DaemonAttachProtocol.Server.SessionList =
             DaemonAttachProtocol.Server.SessionList(host.list().map { info ->
@@ -145,8 +162,11 @@ class DaemonAttachServer(
         // Re-sync the client's session set to the host's: announce the list, begin new ones,
         // close vanished ones.
         fun resync() {
-            send(sessionList())
+            // All sends for one resync happen under the lock so concurrent resyncs (WS coroutine vs
+            // SessionHost.notifyChanged from an exit/control thread) can't interleave their
+            // SessionList/Snapshot/Closed frames.
             synchronized(lock) {
+                send(sessionList())
                 val liveIds = host.list().map { it.id }.toSet()
                 (attachments.keys - liveIds).toList().forEach { id ->
                     endLocked(id)
@@ -179,7 +199,7 @@ class DaemonAttachServer(
         } catch (e: Exception) {
             log.debug("attach connection ended: {}", e.message)
         } finally {
-            clients.remove(sender)
+            clients.remove(client)
             host.removeChangeListener(onChange)
             synchronized(lock) {
                 attachments.keys.toList().forEach { endLocked(it) }

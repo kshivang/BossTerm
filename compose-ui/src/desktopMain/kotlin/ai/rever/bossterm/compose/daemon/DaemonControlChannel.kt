@@ -136,7 +136,25 @@ class DaemonControlChannel(
 
     private fun writePortFile(port: Int, secret: String) {
         val file = BossTermPaths.daemonPortFile()
-        file.writeText("$port\n$secret\n$version $protocolVersion\n", StandardCharsets.UTF_8)
+        // Write to a temp file made owner-only BEFORE the secret touches it, then atomically rename
+        // in: closes both the "secret briefly world-readable on a fresh file" window and the
+        // "reader sees a half-written file" race (readEndpoint is polled every 50–400ms by the GUI).
+        val tmp = java.io.File(file.parentFile, ".daemon.port.tmp")
+        runCatching { tmp.createNewFile() }
+        restrictToOwner(tmp)
+        tmp.writeText("$port\n$secret\n$version $protocolVersion\n", StandardCharsets.UTF_8)
+        runCatching {
+            java.nio.file.Files.move(
+                tmp.toPath(), file.toPath(),
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+            )
+        }.onFailure {
+            // Filesystems without atomic rename (rare): fall back to in-place, still owner-first.
+            restrictToOwner(file)
+            file.writeText("$port\n$secret\n$version $protocolVersion\n", StandardCharsets.UTF_8)
+            restrictToOwner(file)
+            runCatching { tmp.delete() }
+        }
         restrictToOwner(file)
         file.deleteOnExit()
         runCatching {

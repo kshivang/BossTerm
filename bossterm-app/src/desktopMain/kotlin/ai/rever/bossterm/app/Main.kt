@@ -100,6 +100,13 @@ fun main() {
                     System.err.println("BossTerm daemon unavailable; MCP/sharing not hosted this session")
                 }
             }
+            // Refresh the at-login service so its baked java/classpath stay current after an app
+            // update (stale paths would silently fail to start the daemon at next login).
+            if (SettingsManager.instance.settings.value.startDaemonAtLogin) {
+                daemonScope.launch {
+                    runCatching { ai.rever.bossterm.compose.daemon.LoginServiceManager.install() }
+                }
+            }
         }
     } else null
 

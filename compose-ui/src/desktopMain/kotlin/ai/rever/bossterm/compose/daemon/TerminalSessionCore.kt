@@ -201,10 +201,16 @@ class TerminalSessionCore(
                     }
                 }
 
-                // Exit monitor.
-                h.waitFor()
-                _connectionState.value = State.Exited
-                runCatching { onExit?.invoke() }
+                // Exit monitor on a DEDICATED thread — not this coroutine — so we don't pin a
+                // Dispatchers.IO pool thread (shared with the reader loops) in a blocking waitFor for
+                // the whole life of the session. On exit we self-close so the scope + write consumer
+                // + write channel are torn down (otherwise a naturally-exited shell leaks them).
+                Thread({
+                    runCatching { runBlocking { h.waitFor() } }
+                    _connectionState.value = State.Exited
+                    runCatching { onExit?.invoke() }
+                    close()
+                }, "bossterm-session-exit-$id").apply { isDaemon = true }.start()
             } catch (e: Exception) {
                 _connectionState.value = State.Error("Terminal initialization failed: ${e.message}")
                 connected.complete(false)
@@ -230,9 +236,13 @@ class TerminalSessionCore(
 
     fun isAlive(): Boolean = handle?.isAlive() == true
 
-    /** Kill the PTY and cancel all loops. */
-    fun close() {
-        if (closed) return
+    /**
+     * Kill the PTY and cancel all loops. Idempotent. Returns the kill thread (or null) so a caller
+     * tearing the daemon down can [Thread.join] it — otherwise the JVM may exit before the blocking
+     * destroy finishes, orphaning the child shell (Unix doesn't reap children on parent exit).
+     */
+    fun close(): Thread? {
+        if (closed) return null
         closed = true
         connected.complete(false) // release a write consumer still waiting to start
         writeChannel.close()
@@ -240,12 +250,12 @@ class TerminalSessionCore(
         runCatching { dataStream.close() }
         scope.cancel()
         // Kill on a dedicated thread — NOT a child of `scope` (we just cancelled it), so the
-        // blocking destroy actually runs instead of being cancelled before dispatch (which would
-        // orphan the shell). kill() closes streams + destroys + waits up to 2s.
-        if (h != null) {
+        // blocking destroy actually runs instead of being cancelled before dispatch. kill() closes
+        // streams + destroys + waits up to 2s. (No-op fast when the process already exited.)
+        return if (h != null) {
             Thread({ runCatching { runBlocking { h.kill() } } }, "bossterm-session-kill-$id")
-                .apply { isDaemon = true }.start()
-        }
+                .apply { isDaemon = true; start() }
+        } else null
     }
 
     // ---- internals ----

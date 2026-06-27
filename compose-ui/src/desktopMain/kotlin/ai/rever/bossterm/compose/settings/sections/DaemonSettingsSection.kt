@@ -100,15 +100,17 @@ fun DaemonSettingsSection(
 
                 Button(
                     onClick = {
+                        busy = true
                         scope.launch(Dispatchers.IO) {
                             val client = DaemonClient()
                             val ep = client.ensureConnected(spawnIfAbsent = false)
                             val msg = if (ep == null) "No daemon running."
                             else (client.request(DaemonProtocol.SHUTDOWN, "{\"killSessions\":true}")?.let { "Daemon stopped." }
                                 ?: "Quit request failed.")
-                            withContext(Dispatchers.Main) { status = msg }
+                            withContext(Dispatchers.Main) { status = msg; busy = false }
                         }
                     },
+                    enabled = !busy,
                     colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF6B2B2B), contentColor = Color.White),
                 ) { Text("Quit daemon", fontSize = 13.sp) }
             }

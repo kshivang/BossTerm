@@ -23,7 +23,16 @@ class SessionHost(
     private val changeListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
     fun addChangeListener(l: () -> Unit) { changeListeners.add(l) }
     fun removeChangeListener(l: () -> Unit) { changeListeners.remove(l) }
-    private fun notifyChanged() = changeListeners.forEach { runCatching { it() } }
+
+    // Listeners snapshot-encode (DaemonAttachServer.beginLocked), which can be heavy; run them on a
+    // dedicated single thread so a slow/back-pressured attach client never blocks the PTY-exit or
+    // control-request thread that fired the change. Single thread also preserves notification order.
+    private val notifier = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "bossterm-session-notify").apply { isDaemon = true }
+    }
+    private fun notifyChanged() {
+        runCatching { notifier.execute { changeListeners.forEach { l -> runCatching { l() } } } }
+    }
 
     /** Lightweight, serializable view of a session for LIST_SESSIONS / status. */
     @Serializable
@@ -82,8 +91,15 @@ class SessionHost(
 
     /** Kill every session — used on daemon SHUTDOWN {killSessions:true}. */
     fun shutdownAll() {
-        sessions.values.forEach { runCatching { it.close() } }
+        // close() kills each PTY on a detached thread; join them (bounded) so the JVM doesn't exit
+        // before the shells are actually destroyed (which would orphan them).
+        val killThreads = sessions.values.mapNotNull { runCatching { it.close() }.getOrNull() }
         sessions.clear()
+        val deadline = System.currentTimeMillis() + 3000
+        killThreads.forEach { t ->
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining > 0) runCatching { t.join(remaining) }
+        }
     }
 
     private fun labelFor(path: String?): String {

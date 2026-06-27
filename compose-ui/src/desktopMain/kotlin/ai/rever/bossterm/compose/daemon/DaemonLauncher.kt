@@ -118,6 +118,21 @@ object DaemonLauncher {
             .onFailure { log.warn("openGui: spawn failed: {}", it.message) }
     }
 
+    /**
+     * Bring a process to the foreground by OS pid (macOS only). A background app can't self-activate
+     * on modern macOS, but the daemon activating *another* process via System Events works — may
+     * prompt for Accessibility permission the first time. No-op off macOS / on failure.
+     */
+    fun activatePid(pid: Long) {
+        if (!ShellCustomizationUtils.isMacOS()) return
+        runCatching {
+            ProcessBuilder(
+                "osascript", "-e",
+                "tell application \"System Events\" to set frontmost of (first process whose unix id is $pid) to true",
+            ).start()
+        }.onFailure { log.debug("activatePid({}) failed: {}", pid, it.message) }
+    }
+
     /** The packaged .app bundle path, derived from java.home, or null in dev / non-bundle runs. */
     private fun macAppBundlePath(): String? {
         if (!ShellCustomizationUtils.isMacOS()) return null

@@ -94,7 +94,9 @@ fun main(args: Array<String>) {
     ai.rever.bossterm.compose.daemon.DaemonTray.install(
         version = version,
         sessionCount = { sessionHost.count() },
-        onOpenApp = null, // "Open BossTerm" relaunch is a future nicety (needs the packaged app path)
+        // Focus/launch the GUI (packaged: `open` the .app; dev: spawn a GUI instance). It attaches
+        // to this daemon and renders its sessions.
+        onOpenApp = { ai.rever.bossterm.compose.daemon.DaemonLauncher.openGui() },
         onQuit = { log.info("Quit requested from menu bar"); stopLatch.countDown() },
     )
 

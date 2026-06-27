@@ -92,6 +92,59 @@ object DaemonLauncher {
         }
     }
 
+    /** Main class of the GUI app (Kotlin file-level main in Main.kt → MainKt facade). */
+    const val GUI_MAIN_CLASS = "ai.rever.bossterm.app.MainKt"
+
+    /**
+     * Show the BossTerm GUI — invoked from the daemon's menu-bar item. Packaged macOS: `open` the
+     * .app, which focuses it if already running and launches it otherwise (single-instance focus).
+     * Dev / other platforms: spawn a fresh GUI instance via the same JRE + classpath (it attaches
+     * to the daemon and renders its sessions). Best-effort; logs on failure.
+     */
+    fun openGui() {
+        macAppBundlePath()?.let { app ->
+            runCatching { ProcessBuilder("open", app).start() }
+                .onSuccess { log.info("openGui: focused/launched {}", app) }
+                .onFailure { log.warn("openGui: `open {}` failed: {}", app, it.message) }
+            return
+        }
+        val cmd = buildGuiCommand() ?: run { log.warn("openGui: cannot build GUI launch command"); return }
+        runCatching {
+            ProcessBuilder(cmd)
+                .redirectOutput(ProcessBuilder.Redirect.appendTo(BossTermPaths.daemonLogFile()))
+                .redirectError(ProcessBuilder.Redirect.appendTo(BossTermPaths.daemonLogFile()))
+                .start()
+        }.onSuccess { log.info("openGui: spawned GUI pid={}", it.pid()) }
+            .onFailure { log.warn("openGui: spawn failed: {}", it.message) }
+    }
+
+    /** The packaged .app bundle path, derived from java.home, or null in dev / non-bundle runs. */
+    private fun macAppBundlePath(): String? {
+        if (!ShellCustomizationUtils.isMacOS()) return null
+        val jh = System.getProperty("java.home")?.takeIf { it.isNotBlank() } ?: return null
+        return if (jh.contains(".app/Contents/")) jh.substringBefore(".app/Contents/") + ".app" else null
+    }
+
+    /** Launch the GUI in a normal (non-headless, non-agent) JVM via the same JRE + classpath. */
+    private fun buildGuiCommand(): List<String>? {
+        val javaBin = resolveJavaBinary() ?: return null
+        val classpath = System.getProperty("java.class.path")?.takeIf { it.isNotBlank() } ?: return null
+        return buildList {
+            add(javaBin.absolutePath)
+            // GUI is a normal foreground app: do NOT pass headless or UIElement.
+            passthroughProp(BossTermPaths.SETTINGS_DIR_PROPERTY)?.let { add(it) }
+            passthroughProp("bossterm.version")?.let { add(it) }
+            passthroughProp("compose.application.resources.dir")?.let { add(it) }
+            // Mirror the GUI launcher's AWT --add-opens (global hotkeys / window integration).
+            add("--add-opens"); add("java.desktop/java.awt=ALL-UNNAMED")
+            if (ShellCustomizationUtils.isMacOS()) { add("--add-opens"); add("java.desktop/sun.lwawt.macosx=ALL-UNNAMED") }
+            if (ShellCustomizationUtils.isLinux()) { add("--add-opens"); add("java.desktop/sun.awt.X11=ALL-UNNAMED") }
+            add("-cp")
+            add(classpath)
+            add(GUI_MAIN_CLASS)
+        }
+    }
+
     /** `-Dkey=value` for a currently-set system property, or null if unset/blank. */
     private fun passthroughProp(key: String): String? =
         System.getProperty(key)?.takeIf { it.isNotBlank() }?.let { "-D$key=$it" }

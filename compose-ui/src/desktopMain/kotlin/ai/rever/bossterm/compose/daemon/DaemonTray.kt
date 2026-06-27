@@ -51,8 +51,9 @@ object DaemonTray {
             val icon = TrayIcon(renderWordmark(), "BossTerm daemon", popup).apply {
                 // Keep the natural (wide) aspect of the wordmark — autoSize would squish it square.
                 isImageAutoSize = false
-                // Keep the session count fresh whenever the user opens the menu.
-                addActionListener { sessionsItem?.label = "Sessions: ${sessionCount()}" }
+                // Double-click opens BossTerm (single-click shows the menu, which also has "Open
+                // BossTerm"). The session-count label is kept fresh by the periodic refresh below.
+                addActionListener { runCatching { onOpenApp?.invoke() } }
             }
             // Also refresh the label just before the popup shows (action listener doesn't always fire
             // on the menu open across platforms); a lightweight periodic refresh covers it.

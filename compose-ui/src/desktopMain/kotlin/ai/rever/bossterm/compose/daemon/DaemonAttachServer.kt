@@ -14,6 +14,8 @@ import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
@@ -110,14 +112,22 @@ class DaemonAttachServer(
             val sizeJob = ws.launch {
                 core.display.termSizeFlow.collect { send(DaemonAttachProtocol.Server.Resized(core.id, it.columns, it.rows)) }
             }
-            attachments[core.id] = Attachment(tap, sizeJob)
+            // Push an updated SessionList when this session's cwd or title changes (OSC 7 / OSC 0,2),
+            // so the attached client's tab name + secondary cwd update live. drop(1) skips the
+            // initial combined emit already conveyed by the SessionList/Snapshot above.
+            val metaJob = ws.launch {
+                combine(core.workingDirectory, core.windowTitle) { cwd, title -> cwd to title }
+                    .drop(1)
+                    .collect { send(sessionList()) }
+            }
+            attachments[core.id] = Attachment(tap, listOf(sizeJob, metaJob))
         }
 
-        // Detach a session's tap + size job. Caller holds [lock].
+        // Detach a session's tap + collector jobs. Caller holds [lock].
         fun endLocked(id: String) {
             attachments.remove(id)?.let { a ->
                 host.get(id)?.removeRawOutputListener(a.tap)
-                a.sizeJob.cancel()
+                a.jobs.forEach { it.cancel() }
             }
         }
 
@@ -167,8 +177,8 @@ class DaemonAttachServer(
         }
     }
 
-    /** Per-connection, per-session attachment: the output tap + the size-change collector job. */
-    private class Attachment(val tap: (String) -> Unit, val sizeJob: kotlinx.coroutines.Job)
+    /** Per-connection, per-session attachment: the output tap + its collector jobs (size, meta). */
+    private class Attachment(val tap: (String) -> Unit, val jobs: List<kotlinx.coroutines.Job>)
 
     private fun portAvailable(port: Int): Boolean =
         runCatching { ServerSocket().use { it.reuseAddress = false; it.bind(InetSocketAddress(HOST, port)); true } }.getOrDefault(false)

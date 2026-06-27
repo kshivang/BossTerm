@@ -25,6 +25,15 @@ object DaemonBridgeCoordinator {
     @Volatile private var activeState: TabbedTerminalState? = null
     @Volatile private var bridge: DaemonSessionBridge? = null
 
+    // Process-wide one-shot guard for "auto-open a session when attaching to an empty daemon".
+    // Must live here, NOT on the bridge: a bridge can be recreated (window re-attach), and a
+    // stopped bridge's daemon session persists, so a per-bridge flag would auto-open again and
+    // accumulate sessions. CAS so exactly one auto-open ever happens per GUI process.
+    private val autoOpenClaimed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Returns true to exactly one caller — the first bridge that finds the daemon empty. */
+    fun claimAutoOpen(): Boolean = autoOpenClaimed.compareAndSet(false, true)
+
     /** Record the daemon's attach endpoint after [DaemonClient.ensureConnected] succeeds (blocking STATUS). */
     fun onConnected(client: DaemonClient) {
         val ep = client.current ?: return

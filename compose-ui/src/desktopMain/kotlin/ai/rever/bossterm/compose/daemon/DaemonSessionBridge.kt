@@ -47,9 +47,6 @@ class DaemonSessionBridge(
     /** daemon sessionId → its GUI mirror tab. */
     private val tabs = ConcurrentHashMap<String, TerminalTab>()
     @Volatile private var running = false
-    // Open one daemon session the first time we attach to an empty daemon, so the user sees a
-    // daemon-backed terminal. Once-only (closing all daemon tabs won't re-spawn one).
-    @Volatile private var autoOpened = false
 
     fun start() {
         if (running) return
@@ -121,20 +118,31 @@ class DaemonSessionBridge(
         }
     }
 
-    /** Create mirror tabs for new daemon sessions; close tabs for sessions that disappeared. */
+    /** Create mirror tabs for new daemon sessions; update existing ones; close vanished ones. */
     private suspend fun reconcile(sessions: List<DaemonAttachProtocol.SessionMeta>) {
         // First attach to an empty daemon → open one session so the user sees a daemon terminal.
-        if (sessions.isEmpty() && !autoOpened) {
-            autoOpened = true
-            openSession()
+        // The guard is process-wide (coordinator), so bridge churn can't accumulate sessions.
+        if (sessions.isEmpty()) {
+            if (DaemonBridgeCoordinator.claimAutoOpen()) openSession()
             return
         }
         val live = sessions.associateBy { it.id }
         // Remove vanished sessions.
         (tabs.keys - live.keys).toList().forEach { closeMirror(it) }
-        // Add new ones (on the UI thread — mutates the Compose tabs list).
         for (meta in sessions) {
-            if (tabs.containsKey(meta.id)) continue
+            val existing = tabs[meta.id]
+            if (existing != null) {
+                // Reflect daemon-side title/cwd changes (the mirror tab has no local cwd/title
+                // tracking of its own, so the tab-bar name + secondary cwd come from here).
+                if (existing.title.value != meta.title || existing.workingDirectory.value != meta.cwd) {
+                    withContext(Dispatchers.Main) {
+                        existing.title.value = meta.title
+                        existing.workingDirectory.value = meta.cwd
+                    }
+                }
+                continue
+            }
+            // New session → create a mirror tab (on the UI thread — mutates the Compose tabs list).
             withContext(Dispatchers.Main) {
                 val tab = controller.createRemoteSession(
                     title = meta.title,
@@ -142,6 +150,7 @@ class DaemonSessionBridge(
                     onUserInput = { data -> send(DaemonAttachProtocol.Client.Input(meta.id, data)) },
                 )
                 tab.onRemoteFit = { cols, rows -> send(DaemonAttachProtocol.Client.Resize(meta.id, cols, rows)) }
+                tab.workingDirectory.value = meta.cwd
                 tabs[meta.id] = tab
                 controller.createTabFromExistingSession(tab)
             }

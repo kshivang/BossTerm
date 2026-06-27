@@ -38,6 +38,7 @@ import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -655,28 +656,53 @@ fun ProperTerminal(
     terminal.setCellDimensions(cellWidth, cellHeight)
   }
 
-  // SLOW_BLINK animation timer (configurable via settings.slowTextBlinkMs)
-  // Wrapped with enableTextBlinking master toggle for accessibility
-  if (settings.enableTextBlinking) {
-    LaunchedEffect(settings.slowTextBlinkMs) {
-      while (true) {
-        delay(settings.slowTextBlinkMs.toLong())
-        slowBlinkVisible = !slowBlinkVisible
-      }
-    }
+  // Window focus + tab visibility gate every blink animation. The Canvas draw lambda
+  // reads cursorBlinkVisible / slowBlinkVisible / rapidBlinkVisible, so each toggle
+  // repaints the ENTIRE terminal canvas. Letting those loops run while the window is in
+  // the background — or for a tab that isn't the visible one — wakes the CPU/GPU twice a
+  // second forever for no visible benefit (a major battery drain). Gate them so an idle
+  // or backgrounded terminal produces zero periodic repaints, matching iTerm2/Terminal.app
+  // (the cursor stops blinking when the app isn't frontmost). When a loop is parked we
+  // freeze its flag to "visible" so the cursor shows solid and blink-attributed text stays
+  // readable; the renderer still draws the unfocused cursor style from `isFocused`.
+  val blinkActive = isActiveTab && LocalWindowInfo.current.isWindowFocused
 
-    // RAPID_BLINK animation timer (configurable via settings.rapidTextBlinkMs)
-    LaunchedEffect(settings.rapidTextBlinkMs) {
-      while (true) {
-        delay(settings.rapidTextBlinkMs.toLong())
-        rapidBlinkVisible = !rapidBlinkVisible
-      }
+  // SLOW_BLINK animation timer (configurable via settings.slowTextBlinkMs).
+  // enableTextBlinking is the master accessibility toggle. A non-positive interval means
+  // "no blink" (also guards against a delay(0) busy-loop pegging a core).
+  LaunchedEffect(blinkActive, settings.enableTextBlinking, settings.slowTextBlinkMs) {
+    if (!blinkActive || !settings.enableTextBlinking || settings.slowTextBlinkMs <= 0) {
+      slowBlinkVisible = true
+      return@LaunchedEffect
+    }
+    while (isActive) {
+      delay(settings.slowTextBlinkMs.toLong())
+      slowBlinkVisible = !slowBlinkVisible
     }
   }
 
-  // Cursor blink animation timer (configurable via settings.caretBlinkMs)
-  LaunchedEffect(settings.caretBlinkMs) {
-    while (true) {
+  // RAPID_BLINK animation timer (configurable via settings.rapidTextBlinkMs).
+  LaunchedEffect(blinkActive, settings.enableTextBlinking, settings.rapidTextBlinkMs) {
+    if (!blinkActive || !settings.enableTextBlinking || settings.rapidTextBlinkMs <= 0) {
+      rapidBlinkVisible = true
+      return@LaunchedEffect
+    }
+    while (isActive) {
+      delay(settings.rapidTextBlinkMs.toLong())
+      rapidBlinkVisible = !rapidBlinkVisible
+    }
+  }
+
+  // Cursor blink animation timer (configurable via settings.caretBlinkMs).
+  // caretBlinkMs <= 0 means "solid cursor, never blink" (the settings slider exposes 0 as
+  // "Off"); the old code turned that into delay(0) in a tight loop, which pegged a CPU
+  // core instead of disabling the blink. The guard now makes "Off" actually off.
+  LaunchedEffect(blinkActive, settings.caretBlinkMs) {
+    if (!blinkActive || settings.caretBlinkMs <= 0) {
+      cursorBlinkVisible = true
+      return@LaunchedEffect
+    }
+    while (isActive) {
       delay(settings.caretBlinkMs.toLong())
       cursorBlinkVisible = !cursorBlinkVisible
     }
@@ -1828,7 +1854,11 @@ fun ProperTerminal(
             cursorX = effectiveCursorX,
             cursorY = cursorY,
             cursorVisible = cursorVisible,
-            cursorBlinkVisible = cursorBlinkVisible,
+            // The text pass no longer draws the cursor (it lives in its own overlay Canvas
+            // below), so pass a constant here. Reading the real cursorBlinkVisible state in
+            // this draw lambda would re-subscribe the whole text canvas to the blink and
+            // defeat the optimization.
+            cursorBlinkVisible = true,
             cursorShape = cursorShape,
             cursorColor = baseCursorColor,
             isFocused = isFocused,
@@ -1852,6 +1882,35 @@ fun ProperTerminal(
             // Update cache for next frame
             cachedHyperlinks = detectedHyperlinks
             lastHyperlinkVersionHash = currentVersionHash
+          }
+        }
+
+        // Cursor overlay — drawn in its own Canvas, stacked on top of the text canvas above
+        // (same modifier, so coordinates line up exactly). This is the ONLY place that reads
+        // cursorBlinkVisible, so the ~0.5s blink invalidates just this tiny layer instead of
+        // re-running the full text render. Cursor position is read from the same
+        // composition-scoped snapshots the text canvas uses, so it stays in sync as content
+        // and scroll change. The cursor is a translucent overlay, so a separate layer is
+        // visually identical to drawing it last in one canvas.
+        Canvas(modifier = Modifier.padding(start = 4.dp, top = 4.dp).fillMaxSize().clipToBounds()) {
+          if (size.width < cellWidth || size.height < cellHeight) return@Canvas
+          val customCursorColor = terminal.cursorColor
+          val baseCursorColor = if (customCursorColor != null) {
+            Color(customCursorColor.red, customCursorColor.green, customCursorColor.blue)
+          } else null
+          with(TerminalCanvasRenderer) {
+            renderCursorOverlay(
+              cursorVisible = cursorVisible,
+              cursorBlinkVisible = cursorBlinkVisible,
+              cursorShape = cursorShape,
+              cursorX = effectiveCursorX,
+              cursorY = cursorY,
+              scrollOffset = scrollOffset,
+              cellWidth = cellWidth,
+              cellHeight = cellHeight,
+              isFocused = isFocused,
+              cursorColor = baseCursorColor,
+            )
           }
         }
 
@@ -2118,18 +2177,6 @@ fun ProperTerminal(
             TerminalDisplay.ProgressState.HIDDEN -> Color.Transparent
           }
 
-          // Animated offset for indeterminate gradient - seamless loop
-          val infiniteTransition = rememberInfiniteTransition(label = "progress")
-          val animatedOffset by infiniteTransition.animateFloat(
-            initialValue = -0.3f,
-            targetValue = 1.3f,
-            animationSpec = infiniteRepeatable(
-              animation = tween(2500, easing = LinearEasing),
-              repeatMode = RepeatMode.Restart
-            ),
-            label = "progressOffset"
-          )
-
           val progressAlignment = if (settings.progressBarPosition == "top") Alignment.TopStart else Alignment.BottomStart
           Box(
             modifier = Modifier
@@ -2139,7 +2186,22 @@ fun ProperTerminal(
               .background(progressColor.copy(alpha = 0.15f))
           ) {
             if (progressState == TerminalDisplay.ProgressState.INDETERMINATE) {
-              // Indeterminate: animated gradient bar with seamless loop
+              // Indeterminate: animated gradient bar with seamless loop.
+              // The infinite transition is created INSIDE this branch on purpose: it
+              // drives the Compose frame clock continuously (~60fps), so it must only run
+              // while an indeterminate bar is actually on screen. A determinate bar ignores
+              // animatedOffset entirely — keeping the transition in the outer scope pinned
+              // the compositor at 60fps for the bar's whole (possibly minutes-long) life.
+              val infiniteTransition = rememberInfiniteTransition(label = "progress")
+              val animatedOffset by infiniteTransition.animateFloat(
+                initialValue = -0.3f,
+                targetValue = 1.3f,
+                animationSpec = infiniteRepeatable(
+                  animation = tween(2500, easing = LinearEasing),
+                  repeatMode = RepeatMode.Restart
+                ),
+                label = "progressOffset"
+              )
               // Gradient width is 30% of bar, animates from -30% to 130% for smooth entry/exit
               Canvas(modifier = Modifier.fillMaxSize()) {
                 val gradientWidth = size.width * 0.35f

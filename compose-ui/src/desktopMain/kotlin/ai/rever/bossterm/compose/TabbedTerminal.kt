@@ -297,14 +297,23 @@ fun TabbedTerminal(
         )
     }
 
+    // Daemon mode (tmux-style): when on, tabs are daemon-hosted — the GUI skips its own local
+    // startup tab and routes new-tab requests to the daemon (which renders them as mirror tabs).
+    // Gated entirely on the startup-read daemonEnabled flag, so OFF is byte-for-byte the pre-daemon
+    // behavior. Falls back to a local tab if the daemon bridge isn't attached (daemon unreachable).
+    val daemonMode = settings.daemonEnabled
+    val requestNewTab: () -> Unit = {
+        if (daemonMode && ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached) {
+            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession()
+        } else {
+            tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
+        }
+    }
+
     // Wire up menu actions for tab management
     LaunchedEffect(menuActions, tabController) {
         menuActions?.apply {
-            onNewTab = {
-                // New tabs always start in home directory (no working dir inheritance)
-                // Use initial command from settings if configured
-                tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
-            }
+            onNewTab = { requestNewTab() }
             onCloseTab = {
                 tabController.closeTab(tabController.activeTabIndex)
             }
@@ -600,6 +609,19 @@ fun TabbedTerminal(
                 // Restore split state if present
                 if (pendingSplitState != null) {
                     splitStates[pendingTab.id] = pendingSplitState
+                }
+            } else if (daemonMode) {
+                // Daemon mode: the daemon owns this window's sessions and the attach bridge populates
+                // tabs (auto-opening one if the daemon is empty). Skip the local startup tab so we
+                // don't end up with a stray local tab alongside the daemon-hosted ones. Safety: if the
+                // bridge never attaches (daemon unreachable), fall back to a local tab after a grace
+                // period so the window isn't stuck empty.
+                var waited = 0
+                while (waited < 8000 && tabController.tabs.isEmpty()) {
+                    kotlinx.coroutines.delay(200); waited += 200
+                }
+                if (tabController.tabs.isEmpty()) {
+                    tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
                 }
             } else {
                 // Phase 6: restore the saved session (tabs + split layout + cwds) if enabled.
@@ -1270,11 +1292,7 @@ fun TabbedTerminal(
                         }
                     }
                 },
-                onNewTab = {
-                    // New tabs always start in home directory (no working dir inheritance)
-                    // Use initial command from settings if configured
-                    tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
-                },
+                onNewTab = { requestNewTab() },
                 onTabMoveToNewWindow = { index ->
                     val tab = tabController.tabs.getOrNull(index) ?: return@TabBar
                     val splitState = splitStates.remove(tab.id)
@@ -1470,11 +1488,7 @@ fun TabbedTerminal(
                 onTabTitleChange = { newTitle ->
                     activeTab.title.value = newTitle
                 },
-                onNewTab = {
-                    // New tabs always start in home directory (no working dir inheritance)
-                    // Use initial command from settings if configured
-                    tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
-                },
+                onNewTab = { requestNewTab() },
                 onSwitchShell = { shell ->
                     // Windows: switch to different shell (close current, open new with selected shell)
                     val currentIndex = tabController.activeTabIndex

@@ -122,19 +122,26 @@ class DaemonSessionBridge(
     /** Bring this GUI's window(s) to the front — daemon's "Open BossTerm" when a window is already open. */
     private suspend fun focusWindows() {
         withContext(Dispatchers.Main) {
-            // macOS: best-effort app activation so the window actually comes forward from the
-            // background (reflective — the class is absent on other platforms / future JDKs).
-            runCatching {
-                val appCls = Class.forName("com.apple.eawt.Application")
-                val app = appCls.getMethod("getApplication").invoke(null)
-                appCls.getMethod("requestForeground", java.lang.Boolean.TYPE).invoke(app, true)
-            }
-            ai.rever.bossterm.compose.window.WindowManager.windows.forEach { w ->
-                w.awtWindow?.let { win ->
-                    (win as? java.awt.Frame)?.let { if (it.state == java.awt.Frame.ICONIFIED) it.state = java.awt.Frame.NORMAL }
-                    win.isVisible = true
-                    win.toFront()
-                    win.requestFocus()
+            val windows = ai.rever.bossterm.compose.window.WindowManager.windows
+            log.info("Focus requested by daemon; raising {} window(s)", windows.size)
+            windows.forEach { w ->
+                val win = w.awtWindow ?: return@forEach
+                (win as? java.awt.Frame)?.let { f ->
+                    if (f.extendedState and java.awt.Frame.ICONIFIED != 0) {
+                        f.extendedState = f.extendedState and java.awt.Frame.ICONIFIED.inv() // de-minimize
+                    }
+                }
+                win.isVisible = true
+                // macOS won't let a background app activate itself (com.apple.eawt is gone in modern
+                // JDKs), but momentarily floating the window above others raises it without focus-
+                // stealing APIs; revert alwaysOnTop shortly after so it isn't pinned on top.
+                val wasOnTop = win.isAlwaysOnTop
+                runCatching { win.isAlwaysOnTop = true }
+                win.toFront()
+                win.requestFocus()
+                if (!wasOnTop) {
+                    javax.swing.Timer(450) { runCatching { win.isAlwaysOnTop = false } }
+                        .apply { isRepeats = false; start() }
                 }
             }
         }

@@ -48,7 +48,7 @@ object DaemonTray {
             }
             popup.add(MenuItem("Quit BossTerm Daemon").apply { addActionListener { runCatching { onQuit() } } })
 
-            val icon = TrayIcon(renderIcon(), "BossTerm daemon", popup).apply {
+            val icon = TrayIcon(loadIcon(), "BossTerm daemon", popup).apply {
                 isImageAutoSize = true
                 // Keep the session count fresh whenever the user opens the menu.
                 addActionListener { sessionsItem?.label = "Sessions: ${sessionCount()}" }
@@ -81,8 +81,31 @@ object DaemonTray {
         )
     }
 
+    /** The BossTerm logo scaled to menu-bar size; falls back to a drawn ">_" glyph if unavailable. */
+    private fun loadIcon(): BufferedImage {
+        val n = 22
+        val stream = DaemonTray::class.java.getResourceAsStream("/icons/bossterm-tray.png")
+        if (stream != null) {
+            val scaled = runCatching {
+                stream.use { javax.imageio.ImageIO.read(it) }?.let { src ->
+                    BufferedImage(n, n, BufferedImage.TYPE_INT_ARGB).also { out ->
+                        val g = out.createGraphics()
+                        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+                        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+                        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                        g.drawImage(src, 0, 0, n, n, null)
+                        g.dispose()
+                    }
+                }
+            }.getOrNull()
+            if (scaled != null) return scaled
+            log.warn("Could not decode bundled BossTerm tray icon; using drawn glyph")
+        }
+        return drawGlyphFallback()
+    }
+
     /** A small white ">_" terminal glyph — readable on the typical dark menu bar. */
-    private fun renderIcon(): BufferedImage {
+    private fun drawGlyphFallback(): BufferedImage {
         val n = 22
         val img = BufferedImage(n, n, BufferedImage.TYPE_INT_ARGB)
         val g = img.createGraphics()

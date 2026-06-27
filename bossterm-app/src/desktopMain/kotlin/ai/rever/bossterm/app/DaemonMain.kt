@@ -19,17 +19,18 @@ import java.util.concurrent.CountDownLatch
  * session-sharing are layered on in later phases; this already lets the daemon spawn, hold sessions,
  * and survive the GUI closing.
  *
- * Launched by [ai.rever.bossterm.compose.daemon.DaemonLauncher] with `-Djava.awt.headless=true` and
- * the GUI's `-Dbossterm.settings.dir` / version / resources props propagated.
+ * Launched by [ai.rever.bossterm.compose.daemon.DaemonLauncher]; runs as a macOS UIElement agent
+ * (menu-bar item via [ai.rever.bossterm.compose.daemon.DaemonTray], no Dock icon) with the GUI's
+ * `-Dbossterm.settings.dir` / version / resources props propagated.
  */
 private val log = LoggerFactory.getLogger("ai.rever.bossterm.app.DaemonMain")
 private val startNanos = System.nanoTime()
 private fun uptimeMs(): Long = (System.nanoTime() - startNanos) / 1_000_000
 
 fun main(args: Array<String>) {
-    // The daemon must never create a UI surface. pty4j, Ktor and the MCP SDK are all AWT-free.
-    System.setProperty("java.awt.headless", "true")
-
+    // NOT headless: the daemon shows a menu-bar/tray icon so a background process isn't invisible.
+    // On macOS DaemonLauncher passes -Dapple.awt.UIElement=true so it's an agent (menu-bar item,
+    // no Dock icon). On a no-display host the JVM auto-detects headless and the tray no-ops.
     val version = Version.CURRENT.toString()
     log.info("BossTerm daemon starting (v{} proto{}) settingsDir={}",
         version, DaemonControlChannel.PROTOCOL_VERSION, BossTermPaths.dir().absolutePath)
@@ -88,8 +89,18 @@ fun main(args: Array<String>) {
         if (it.start() < 0) log.warn("Daemon attach server failed to bind; GUI cannot render daemon sessions")
     }
 
+    // Menu-bar / tray presence so the background daemon is visible + quittable without the GUI.
+    // No-ops on a headless/no-display host.
+    ai.rever.bossterm.compose.daemon.DaemonTray.install(
+        version = version,
+        sessionCount = { sessionHost.count() },
+        onOpenApp = null, // "Open BossTerm" relaunch is a future nicety (needs the packaged app path)
+        onQuit = { log.info("Quit requested from menu bar"); stopLatch.countDown() },
+    )
+
     Runtime.getRuntime().addShutdownHook(Thread {
         log.info("Daemon shutdown hook: closing control channel + MCP + attach")
+        ai.rever.bossterm.compose.daemon.DaemonTray.remove()
         control.stop()
         mcpServer?.stop()
         attachServer?.stop()
@@ -100,6 +111,7 @@ fun main(args: Array<String>) {
     } catch (e: InterruptedException) {
         Thread.currentThread().interrupt()
     }
+    ai.rever.bossterm.compose.daemon.DaemonTray.remove()
     control.stop()
     mcpServer?.stop()
     attachServer?.stop()

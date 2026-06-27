@@ -57,7 +57,11 @@ object DaemonLauncher {
         }
         return buildList {
             add(javaBin.absolutePath)
-            add("-Djava.awt.headless=true")
+            // NOT headless: the daemon shows a menu-bar/tray icon (DaemonTray) so a background
+            // process isn't invisible. On a no-display host the JVM auto-detects headless and the
+            // tray simply no-ops. On macOS run as a UIElement agent so there's a menu-bar item but
+            // NO Dock icon / app menu (the daemon isn't a foreground app).
+            if (ShellCustomizationUtils.isMacOS()) add("-Dapple.awt.UIElement=true")
             // Propagate the props that affect path/resource/version resolution so the daemon
             // and GUI agree on settings dir, bundled-resource location, and reported version.
             passthroughProp(BossTermPaths.SETTINGS_DIR_PROPERTY)?.let { add(it) }

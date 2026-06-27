@@ -4,31 +4,38 @@ import org.slf4j.LoggerFactory
 import java.awt.Color
 import java.awt.Font
 import java.awt.GraphicsEnvironment
-import java.awt.MenuItem
-import java.awt.PopupMenu
 import java.awt.RenderingHints
 import java.awt.SystemTray
 import java.awt.TrayIcon
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
+import javax.swing.JMenuItem
+import javax.swing.JPopupMenu
+import javax.swing.JWindow
+import javax.swing.SwingUtilities
+import javax.swing.event.PopupMenuEvent
+import javax.swing.event.PopupMenuListener
 
 /**
  * Menu-bar (macOS) / system-tray (Windows/Linux) presence for the running daemon, so a long-lived
- * background process isn't invisible — you can see it's alive and quit it without opening the GUI.
- * Standard pattern for background agents (Docker, Dropbox, …).
+ * background process isn't invisible. Standard background-agent pattern (Docker, Dropbox, …).
  *
- * Requires a non-headless JVM with tray support; on a headless/no-display host (CI, SSH) it no-ops
- * and the daemon runs without an icon. On macOS the daemon is launched as a UIElement agent (no
- * Dock icon) — see [DaemonLauncher].
+ * Click behavior (macOS-native): **left-click opens BossTerm**, **right-click shows a menu** with
+ * the session count + Quit. AWT's built-in `TrayIcon` popup would show on left-click, so we handle
+ * clicks ourselves (no AWT popup) and show a Swing [JPopupMenu] on the popup trigger.
+ *
+ * Requires a non-headless JVM with tray support; on a headless/no-display host it no-ops and the
+ * daemon runs without an icon.
  */
 object DaemonTray {
     private val log = LoggerFactory.getLogger(DaemonTray::class.java)
 
     @Volatile private var trayIcon: TrayIcon? = null
-    @Volatile private var sessionsItem: MenuItem? = null
 
     /**
-     * Install the tray icon + menu. Returns true if installed. [onQuit] is invoked from the menu's
-     * "Quit" item. The session count is refreshed on each menu open via [sessionCount].
+     * Install the tray icon. [onOpenApp] runs on left-click (and the menu's "Open BossTerm");
+     * [onQuit] runs from the right-click menu. The session count shown is read fresh on each menu open.
      */
     fun install(version: String, sessionCount: () -> Int, onOpenApp: (() -> Unit)?, onQuit: () -> Unit): Boolean {
         if (GraphicsEnvironment.isHeadless() || !SystemTray.isSupported()) {
@@ -36,29 +43,24 @@ object DaemonTray {
             return false
         }
         return try {
-            val popup = PopupMenu()
-            val title = MenuItem("BossTerm daemon v$version").apply { isEnabled = false }
-            val sessions = MenuItem("Sessions: ${sessionCount()}").apply { isEnabled = false }
-            sessionsItem = sessions
-            popup.add(title)
-            popup.add(sessions)
-            popup.addSeparator()
-            if (onOpenApp != null) {
-                popup.add(MenuItem("Open BossTerm").apply { addActionListener { runCatching { onOpenApp() } } })
-            }
-            popup.add(MenuItem("Quit BossTerm Daemon").apply { addActionListener { runCatching { onQuit() } } })
-
-            val icon = TrayIcon(renderWordmark(), "BossTerm daemon", popup).apply {
-                // Keep the natural (wide) aspect of the wordmark — autoSize would squish it square.
+            val icon = TrayIcon(renderWordmark(), "BossTerm daemon").apply {
                 isImageAutoSize = false
-                // Double-click opens BossTerm (single-click shows the menu, which also has "Open
-                // BossTerm"). The session-count label is kept fresh by the periodic refresh below.
-                addActionListener { runCatching { onOpenApp?.invoke() } }
+                addMouseListener(object : MouseAdapter() {
+                    // Popup trigger fires on press on macOS, on release elsewhere — handle both.
+                    override fun mousePressed(e: MouseEvent) = onMouse(e)
+                    override fun mouseReleased(e: MouseEvent) = onMouse(e)
+                    override fun mouseClicked(e: MouseEvent) {
+                        if (!e.isPopupTrigger && SwingUtilities.isLeftMouseButton(e)) {
+                            runCatching { onOpenApp?.invoke() }
+                        }
+                    }
+                    private fun onMouse(e: MouseEvent) {
+                        if (e.isPopupTrigger || SwingUtilities.isRightMouseButton(e)) {
+                            showMenu(e.x, e.y, version, sessionCount, onOpenApp, onQuit)
+                        }
+                    }
+                })
             }
-            // Also refresh the label just before the popup shows (action listener doesn't always fire
-            // on the menu open across platforms); a lightweight periodic refresh covers it.
-            startRefresh(sessionCount)
-
             SystemTray.getSystemTray().add(icon)
             trayIcon = icon
             log.info("Daemon menu-bar icon installed")
@@ -74,24 +76,45 @@ object DaemonTray {
         trayIcon = null
     }
 
-    private fun startRefresh(sessionCount: () -> Int) {
-        // Daemon, low-frequency; java.util.Timer is fine and AWT-thread-safe enough for label set.
-        java.util.Timer("bossterm-tray-refresh", true).scheduleAtFixedRate(
-            object : java.util.TimerTask() {
-                override fun run() { runCatching { sessionsItem?.label = "Sessions: ${sessionCount()}" } }
-            }, 2000L, 3000L,
-        )
+    @Volatile private var menuShowing = false
+
+    /** Show a fresh right-click menu at screen [x],[y] via the standard invisible-invoker-window trick. */
+    private fun showMenu(
+        x: Int, y: Int, version: String, sessionCount: () -> Int,
+        onOpenApp: (() -> Unit)?, onQuit: () -> Unit,
+    ) {
+        if (menuShowing) return
+        menuShowing = true
+        val popup = JPopupMenu()
+        popup.add(JMenuItem("BossTerm daemon v$version").apply { isEnabled = false })
+        popup.add(JMenuItem("Sessions: ${sessionCount()}").apply { isEnabled = false })
+        popup.addSeparator()
+        if (onOpenApp != null) {
+            popup.add(JMenuItem("Open BossTerm").apply { addActionListener { runCatching { onOpenApp() } } })
+        }
+        popup.add(JMenuItem("Quit BossTerm Daemon").apply { addActionListener { runCatching { onQuit() } } })
+
+        // A JPopupMenu needs a visible invoker; the tray icon isn't a Component, so park a 1px
+        // borderless window at the click point and anchor the menu to it, disposing it on close.
+        val invoker = JWindow().apply { setLocation(x, y); setSize(1, 1); isVisible = true; toFront() }
+        popup.addPopupMenuListener(object : PopupMenuListener {
+            override fun popupMenuWillBecomeVisible(e: PopupMenuEvent) {}
+            override fun popupMenuWillBecomeInvisible(e: PopupMenuEvent) {
+                menuShowing = false
+                SwingUtilities.invokeLater { invoker.dispose() }
+            }
+            override fun popupMenuCanceled(e: PopupMenuEvent) { menuShowing = false }
+        })
+        popup.show(invoker, 0, 0)
     }
 
     /**
      * A flat monochrome "BOSS" wordmark sized for the menu bar — reads cleanly next to the system's
-     * template icons (the full color logo looked cramped scaled to ~22px). White so it shows on the
-     * typical dark menu bar.
+     * template icons. White so it shows on the typical dark menu bar.
      */
     private fun renderWordmark(text: String = "BOSS"): BufferedImage {
         val h = 18
         val font = Font(Font.SANS_SERIF, Font.BOLD, 13)
-        // Measure the string to size the (wide) image, so letters aren't clipped or squished.
         val probe = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB)
         val pg = probe.createGraphics().apply { this.font = font }
         val fm = pg.fontMetrics

@@ -48,8 +48,9 @@ object DaemonTray {
             }
             popup.add(MenuItem("Quit BossTerm Daemon").apply { addActionListener { runCatching { onQuit() } } })
 
-            val icon = TrayIcon(loadIcon(), "BossTerm daemon", popup).apply {
-                isImageAutoSize = true
+            val icon = TrayIcon(renderWordmark(), "BossTerm daemon", popup).apply {
+                // Keep the natural (wide) aspect of the wordmark — autoSize would squish it square.
+                isImageAutoSize = false
                 // Keep the session count fresh whenever the user opens the menu.
                 addActionListener { sessionsItem?.label = "Sessions: ${sessionCount()}" }
             }
@@ -81,44 +82,32 @@ object DaemonTray {
         )
     }
 
-    /** The BossTerm logo scaled to menu-bar size; falls back to a drawn ">_" glyph if unavailable. */
-    private fun loadIcon(): BufferedImage {
-        val n = 22
-        val stream = DaemonTray::class.java.getResourceAsStream("/icons/bossterm-tray.png")
-        if (stream != null) {
-            val scaled = runCatching {
-                stream.use { javax.imageio.ImageIO.read(it) }?.let { src ->
-                    BufferedImage(n, n, BufferedImage.TYPE_INT_ARGB).also { out ->
-                        val g = out.createGraphics()
-                        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
-                        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
-                        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                        g.drawImage(src, 0, 0, n, n, null)
-                        g.dispose()
-                    }
-                }
-            }.getOrNull()
-            if (scaled != null) return scaled
-            log.warn("Could not decode bundled BossTerm tray icon; using drawn glyph")
-        }
-        return drawGlyphFallback()
-    }
+    /**
+     * A flat monochrome "BOSS" wordmark sized for the menu bar — reads cleanly next to the system's
+     * template icons (the full color logo looked cramped scaled to ~22px). White so it shows on the
+     * typical dark menu bar.
+     */
+    private fun renderWordmark(text: String = "BOSS"): BufferedImage {
+        val h = 18
+        val font = Font(Font.SANS_SERIF, Font.BOLD, 13)
+        // Measure the string to size the (wide) image, so letters aren't clipped or squished.
+        val probe = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB)
+        val pg = probe.createGraphics().apply { this.font = font }
+        val fm = pg.fontMetrics
+        val w = (fm.stringWidth(text) + 4).coerceAtLeast(8)
+        pg.dispose()
 
-    /** A small white ">_" terminal glyph — readable on the typical dark menu bar. */
-    private fun drawGlyphFallback(): BufferedImage {
-        val n = 22
-        val img = BufferedImage(n, n, BufferedImage.TYPE_INT_ARGB)
+        val img = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
         val g = img.createGraphics()
         try {
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
+            g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
             g.color = Color.WHITE
-            g.font = Font(Font.MONOSPACED, Font.BOLD, 13)
-            // ">" chevron
-            g.stroke = java.awt.BasicStroke(2f, java.awt.BasicStroke.CAP_ROUND, java.awt.BasicStroke.JOIN_ROUND)
-            g.drawPolyline(intArrayOf(5, 10, 5), intArrayOf(7, 11, 15), 3)
-            // "_" cursor
-            g.fillRect(11, 14, 6, 2)
+            g.font = font
+            val gm = g.fontMetrics
+            val x = (w - gm.stringWidth(text)) / 2
+            val y = (h - gm.height) / 2 + gm.ascent
+            g.drawString(text, x, y)
         } finally {
             g.dispose()
         }

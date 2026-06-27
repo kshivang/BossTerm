@@ -3,35 +3,37 @@ package ai.rever.bossterm.compose.daemon
 import org.slf4j.LoggerFactory
 import java.awt.Color
 import java.awt.Font
+import java.awt.Frame
 import java.awt.GraphicsEnvironment
 import java.awt.MenuItem
 import java.awt.PopupMenu
 import java.awt.RenderingHints
 import java.awt.SystemTray
 import java.awt.TrayIcon
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
+import javax.swing.SwingUtilities
 
 /**
  * Menu-bar (macOS) / system-tray (Windows/Linux) presence for the running daemon, so a long-lived
  * background process isn't invisible. Standard background-agent pattern (Docker, Dropbox, …).
  *
- * Uses the standard AWT [PopupMenu] on the [TrayIcon] (clicking shows it). The menu offers
- * "Open BossTerm" + "Quit BossTerm" and a live session count; double-clicking the icon also opens
- * BossTerm.
+ * Click behavior is handled explicitly by mouse button so it's deterministic across platforms:
+ * **left-click opens BossTerm**, **right-click shows the menu** (session count + Open + Quit). We
+ * use the standard AWT [PopupMenu] (not Swing), shown manually via a tiny anchor [Frame] because a
+ * tray icon isn't a Component and `setPopupMenu` would bind the menu to the platform's own trigger
+ * (left-click on macOS) — the opposite of what we want.
  *
- * Requires a non-headless JVM with tray support; on a headless/no-display host it no-ops and the
- * daemon runs without an icon.
+ * Requires a non-headless JVM with tray support; on a headless/no-display host it no-ops.
  */
 object DaemonTray {
     private val log = LoggerFactory.getLogger(DaemonTray::class.java)
 
     @Volatile private var trayIcon: TrayIcon? = null
     @Volatile private var sessionsItem: MenuItem? = null
+    @Volatile private var anchor: Frame? = null
 
-    /**
-     * Install the tray icon + popup menu. [onOpenApp] runs from "Open BossTerm" (and on double-click);
-     * [onQuit] from "Quit BossTerm". The session count refreshes periodically.
-     */
     fun install(version: String, sessionCount: () -> Int, onOpenApp: (() -> Unit)?, onQuit: () -> Unit): Boolean {
         if (GraphicsEnvironment.isHeadless() || !SystemTray.isSupported()) {
             log.info("System tray unavailable (headless/unsupported); daemon runs without a menu-bar icon")
@@ -49,14 +51,32 @@ object DaemonTray {
             }
             popup.add(MenuItem("Quit BossTerm").apply { addActionListener { runCatching { onQuit() } } })
 
-            val icon = TrayIcon(renderWordmark(), "BossTerm", popup).apply {
+            // A PopupMenu must hang off a Component; the tray icon isn't one. Park a 1px undecorated
+            // frame to anchor it at the click location. Kept tiny + reused so it's imperceptible.
+            val frame = Frame().apply { isUndecorated = true; isResizable = false; setSize(1, 1) }
+            frame.add(popup)
+            anchor = frame
+
+            val icon = TrayIcon(renderWordmark(), "BossTerm").apply {
                 isImageAutoSize = false
-                // Double-click opens BossTerm (single click shows the menu, which also has it).
-                addActionListener { runCatching { onOpenApp?.invoke() } }
+                addMouseListener(object : MouseAdapter() {
+                    override fun mousePressed(e: MouseEvent) {
+                        // Right-click → show the menu at the cursor (TrayIcon events are screen coords).
+                        if (SwingUtilities.isRightMouseButton(e)) {
+                            sessions.label = "Sessions: ${sessionCount()}"
+                            frame.setLocation(e.x, e.y)
+                            if (!frame.isVisible) frame.isVisible = true
+                            popup.show(frame, 0, 0)
+                        }
+                    }
+                    override fun mouseClicked(e: MouseEvent) {
+                        // Left-click → open BossTerm.
+                        if (SwingUtilities.isLeftMouseButton(e)) runCatching { onOpenApp?.invoke() }
+                    }
+                })
             }
             SystemTray.getSystemTray().add(icon)
             trayIcon = icon
-            startRefresh(sessionCount)
             log.info("Daemon menu-bar icon installed")
             true
         } catch (e: Throwable) {
@@ -68,14 +88,8 @@ object DaemonTray {
     fun remove() {
         trayIcon?.let { runCatching { SystemTray.getSystemTray().remove(it) } }
         trayIcon = null
-    }
-
-    private fun startRefresh(sessionCount: () -> Int) {
-        java.util.Timer("bossterm-tray-refresh", true).scheduleAtFixedRate(
-            object : java.util.TimerTask() {
-                override fun run() { runCatching { sessionsItem?.label = "Sessions: ${sessionCount()}" } }
-            }, 2000L, 3000L,
-        )
+        anchor?.let { runCatching { it.dispose() } }
+        anchor = null
     }
 
     /**

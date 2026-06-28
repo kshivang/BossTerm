@@ -390,7 +390,9 @@ object TerminalCanvasRenderer {
         val detectedHyperlinks = renderText(ctx, analysisCache)
         hyperlinksCache.putAll(detectedHyperlinks)
 
-        // Pass 3: Draw overlays (hyperlinks, search, cursor - but NOT selection)
+        // Pass 3: Draw overlays (hyperlinks, search - but NOT selection or cursor).
+        // The cursor is drawn in its own overlay Canvas (see renderCursorOverlay) so its
+        // blink doesn't re-run this whole pass.
         renderOverlays(ctx)
 
         return hyperlinksCache
@@ -963,10 +965,9 @@ object TerminalCanvasRenderer {
 
         // Selection highlight is now rendered in Pass 1.5 (before text) so text is visible on top
 
-        // Cursor
-        if (ctx.cursorVisible) {
-            renderCursor(ctx)
-        }
+        // Cursor is intentionally NOT drawn here. It lives in its own overlay Canvas
+        // (see ProperTerminal) so its blink only repaints a single small layer instead of
+        // re-running this whole text pass twice a second. See [renderCursorOverlay].
     }
 
     /**
@@ -1134,38 +1135,65 @@ object TerminalCanvasRenderer {
      * Cursor is rendered at its buffer position - when scrolled into history,
      * cursor will be below the visible area and won't be rendered.
      */
-    private fun DrawScope.renderCursor(ctx: RenderingContext) {
+    /**
+     * Draw just the cursor, into its own overlay [Canvas] stacked on top of the text canvas.
+     *
+     * Split out from the main render pass on purpose: the cursor is the only thing that
+     * changes on the ~0.5s blink, and Compose's Canvas has no partial invalidation — reading
+     * the blink flag inside the text pass forced a full re-render of every visible cell twice
+     * a second. Drawing the cursor in a dedicated layer means a blink repaints only this tiny
+     * Canvas. The cursor is a translucent overlay (it never inverts the glyph underneath), so
+     * stacking it in a separate layer is visually identical to drawing it last in one canvas.
+     *
+     * Parameters are passed explicitly (rather than via [RenderingContext]) so the cursor layer
+     * needs no buffer snapshot — only cheap, composition-scoped cursor state. [visibleRows] is
+     * derived from the DrawScope size, matching the text canvas's own bounds computation.
+     */
+    fun DrawScope.renderCursorOverlay(
+        cursorVisible: Boolean,
+        cursorBlinkVisible: Boolean,
+        cursorShape: CursorShape?,
+        cursorX: Int,
+        cursorY: Int,
+        scrollOffset: Int,
+        cellWidth: Float,
+        cellHeight: Float,
+        isFocused: Boolean,
+        cursorColor: Color?,
+    ) {
+        if (!cursorVisible) return
         // cursorY is 1-indexed in the screen buffer, adjust to 0-indexed
-        val bufferCursorY = (ctx.cursorY - 1).coerceAtLeast(0)
+        val bufferCursorY = (cursorY - 1).coerceAtLeast(0)
         // Convert buffer position to screen position by adding scrollOffset
         // scrollOffset=0 means viewing current screen, scrollOffset>0 means scrolled into history
         // When scrolled up, cursor (at bottom of buffer) will be below visible area
-        val cursorScreenRow = bufferCursorY + ctx.scrollOffset
+        val cursorScreenRow = bufferCursorY + scrollOffset
 
-        // Don't render cursor if outside visible area
-        if (cursorScreenRow < 0 || cursorScreenRow >= ctx.visibleRows) {
+        // Don't render cursor if outside the visible area (rows that fit this canvas).
+        val visibleRows = kotlin.math.ceil(size.height / cellHeight).toInt()
+        if (cursorScreenRow < 0 || cursorScreenRow >= visibleRows) {
             return
         }
 
-        val shouldShowCursor = when (ctx.cursorShape) {
-            CursorShape.BLINK_BLOCK, CursorShape.BLINK_UNDERLINE, CursorShape.BLINK_VERTICAL_BAR -> ctx.cursorBlinkVisible
+        val shouldShowCursor = when (cursorShape) {
+            CursorShape.BLINK_BLOCK, CursorShape.BLINK_UNDERLINE, CursorShape.BLINK_VERTICAL_BAR -> cursorBlinkVisible
             else -> true
         }
 
         if (!shouldShowCursor) return
 
-        val x = ctx.cursorX * ctx.cellWidth
-        val y = cursorScreenRow * ctx.cellHeight
+        val x = cursorX * cellWidth
+        val y = cursorScreenRow * cellHeight
         // Calculate size as difference to next cell to avoid floating-point gaps
-        val w = (ctx.cursorX + 1) * ctx.cellWidth - x
-        val h = (cursorScreenRow + 1) * ctx.cellHeight - y
-        val cursorAlpha = if (ctx.isFocused) 0.7f else 0.3f
-        val cursorColor = (ctx.cursorColor ?: Color.White).copy(alpha = cursorAlpha)
+        val w = (cursorX + 1) * cellWidth - x
+        val h = (cursorScreenRow + 1) * cellHeight - y
+        val cursorAlpha = if (isFocused) 0.7f else 0.3f
+        val drawColor = (cursorColor ?: Color.White).copy(alpha = cursorAlpha)
 
-        when (ctx.cursorShape) {
+        when (cursorShape) {
             CursorShape.BLINK_BLOCK, CursorShape.STEADY_BLOCK, null -> {
                 drawRect(
-                    color = cursorColor,
+                    color = drawColor,
                     topLeft = Offset(x, y),
                     size = Size(w, h)
                 )
@@ -1173,7 +1201,7 @@ object TerminalCanvasRenderer {
             CursorShape.BLINK_UNDERLINE, CursorShape.STEADY_UNDERLINE -> {
                 val underlineHeight = h * 0.2f
                 drawRect(
-                    color = cursorColor,
+                    color = drawColor,
                     topLeft = Offset(x, y + h - underlineHeight),
                     size = Size(w, underlineHeight)
                 )
@@ -1181,7 +1209,7 @@ object TerminalCanvasRenderer {
             CursorShape.BLINK_VERTICAL_BAR, CursorShape.STEADY_VERTICAL_BAR -> {
                 val barWidth = w * 0.15f
                 drawRect(
-                    color = cursorColor,
+                    color = drawColor,
                     topLeft = Offset(x, y),
                     size = Size(barWidth, h)
                 )

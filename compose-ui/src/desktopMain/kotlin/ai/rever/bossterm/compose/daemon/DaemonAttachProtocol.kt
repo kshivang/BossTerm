@@ -13,6 +13,12 @@ import kotlinx.serialization.json.Json
  *
  * Server→client: [SessionList] (full set on connect/change), [Snapshot] (initial styled paint),
  * [Output] (live bytes), [Resized], [Closed]. Client→server: [Input], [Open], [Close], [Resize].
+ *
+ * Phase 2 (session sharing in the daemon) adds a share-management lane on this same socket: the GUI
+ * starts/stops/approves daemon-hosted public shares ([Client.StartShare]/[Client.StopShare]/
+ * [Client.ApproveViewer]/[Client.DenyViewer]/[Client.SetShareRemoteMode]) and observes them via
+ * [Server.ShareState]. The daemon owns the actual share server (E2E xterm.js viewer over Ktor), so a
+ * share survives the GUI closing; this lane is only the thin GUI control/observation channel.
  */
 object DaemonAttachProtocol {
     val json = Json { classDiscriminator = "t"; ignoreUnknownKeys = true; encodeDefaults = true }
@@ -24,6 +30,44 @@ object DaemonAttachProtocol {
 
     @Serializable
     data class SessionMeta(val id: String, val title: String, val cwd: String? = null, val cols: Int = 80, val rows: Int = 24)
+
+    /** Scope of a daemon share: every session as tabs, or a single session. */
+    object ShareScopeKind {
+        const val ALL = "all"
+        const val SESSION = "session"
+    }
+
+    /**
+     * A daemon-hosted share as the GUI sees it (one entry per active share). [scope] is
+     * [ShareScopeKind]; [sessionId] is set only for a SESSION-scoped share. [remoteStatus] is one of
+     * off|starting|installing|verifying|retrying|active|fellback (mirrors SessionShareManager's
+     * RemoteStatus, as a string so the protocol stays decoupled from that enum).
+     */
+    @Serializable
+    data class ShareView(
+        val token: String,
+        val scope: String = ShareScopeKind.ALL,
+        val sessionId: String? = null,
+        val url: String,
+        val controlUrl: String,
+        val secure: Boolean = true,
+        val e2eCode: String? = null,
+        val viewers: Int = 0,
+        val sessionName: String? = null,
+        val remoteMode: String = "off",
+        val remoteStatus: String = "off",
+        val remoteAttempt: Int = 0,
+        val remoteMaxAttempts: Int = 0,
+    )
+
+    /** A viewer awaiting the host's approval (surfaced to attached GUIs; honors sessionSharingApprovalScope). */
+    @Serializable
+    data class PendingApproval(
+        val token: String,
+        val clientId: String,
+        val name: String? = null,
+        val control: Boolean = false,
+    )
 
     @Serializable
     sealed class Server {
@@ -50,6 +94,17 @@ object DaemonAttachProtocol {
         /** Bring the attached GUI's window(s) to the front (menu-bar "Open BossTerm" with a window already open). */
         @Serializable @SerialName("focus")
         data object Focus : Server()
+
+        /**
+         * Current daemon-hosted shares + viewers awaiting approval. Sent on connect and whenever a
+         * share starts/stops, a viewer connects/leaves, a remote tunnel changes state, or an approval
+         * is requested/resolved. The GUI's daemon share UI binds to this.
+         */
+        @Serializable @SerialName("shareState")
+        data class ShareState(
+            val shares: List<ShareView> = emptyList(),
+            val pending: List<PendingApproval> = emptyList(),
+        ) : Server()
     }
 
     @Serializable
@@ -69,5 +124,37 @@ object DaemonAttachProtocol {
         /** Resize a session's grid (the GUI's auto-fit drives this). */
         @Serializable @SerialName("resize")
         data class Resize(val id: String, val cols: Int, val rows: Int) : Client()
+
+        /**
+         * Start (or update) a daemon-hosted public share. [scope] is [ShareScopeKind]; [sessionId] is
+         * required for SESSION scope. [remoteMode] optionally sets the tunnel mode (off|serve|funnel|
+         * cloudflare) at creation. The daemon replies asynchronously via [Server.ShareState].
+         */
+        @Serializable @SerialName("startShare")
+        data class StartShare(
+            val scope: String = ShareScopeKind.ALL,
+            val sessionId: String? = null,
+            val remoteMode: String? = null,
+        ) : Client()
+
+        /** Stop a daemon-hosted share (kills its tunnel; frees the port if it was the last share). */
+        @Serializable @SerialName("stopShare")
+        data class StopShare(val token: String) : Client()
+
+        /** Change a share's remote-access mode (off|serve|funnel|cloudflare) — mints a fresh link. */
+        @Serializable @SerialName("setShareRemoteMode")
+        data class SetShareRemoteMode(val token: String, val mode: String) : Client()
+
+        /** Set the viewer-facing name of a share (defaults to the host's username). */
+        @Serializable @SerialName("setShareName")
+        data class SetShareName(val token: String, val name: String) : Client()
+
+        /** Approve a pending viewer (grants a 24h rolling access key); [control] also grants typing. */
+        @Serializable @SerialName("approveViewer")
+        data class ApproveViewer(val token: String, val clientId: String, val control: Boolean = false) : Client()
+
+        /** Deny a pending viewer. */
+        @Serializable @SerialName("denyViewer")
+        data class DenyViewer(val token: String, val clientId: String) : Client()
     }
 }

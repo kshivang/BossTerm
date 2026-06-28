@@ -90,6 +90,10 @@ class DaemonSessionBridge(
         val url = "ws://127.0.0.1:$attachPort/attach?token=$secret&pid=${ProcessHandle.current().pid()}"
         val out = Channel<String>(capacity = 1024)
         outbox = out
+        // Route the daemon-share UI's start/stop/approve calls onto THIS connection's outbox, so a
+        // window's Share controls reach whichever attach socket is currently live.
+        val shareSender = DaemonShareClient.Sender { m -> send(m) }
+        DaemonShareClient.registerSender(shareSender)
         client.webSocket(url) {
             // Pump this connection's outbox → socket.
             val writer = launch {
@@ -105,6 +109,7 @@ class DaemonSessionBridge(
                 writer.cancel()
                 out.close()
                 if (outbox === out) outbox = null
+                DaemonShareClient.clearSender(shareSender)
             }
         }
     }
@@ -117,6 +122,8 @@ class DaemonSessionBridge(
             is DaemonAttachProtocol.Server.Resized -> resizeMirror(msg.id, msg.cols, msg.rows)
             is DaemonAttachProtocol.Server.Closed -> closeMirror(msg.id)
             is DaemonAttachProtocol.Server.Focus -> focusWindows()
+            // Phase 2 daemon-share state — feed the process-wide hub the daemon-share window binds to.
+            is DaemonAttachProtocol.Server.ShareState -> DaemonShareClient.update(msg)
         }
     }
 

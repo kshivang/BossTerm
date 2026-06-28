@@ -5,6 +5,7 @@ import ai.rever.bossterm.compose.daemon.DaemonAttachServer
 import ai.rever.bossterm.compose.daemon.DaemonControlChannel
 import ai.rever.bossterm.compose.daemon.DaemonControlHandler
 import ai.rever.bossterm.compose.daemon.DaemonMcpServer
+import ai.rever.bossterm.compose.daemon.DaemonShareServer
 import ai.rever.bossterm.compose.daemon.DaemonTray
 import ai.rever.bossterm.compose.daemon.SessionHost
 import ai.rever.bossterm.compose.settings.SettingsManager
@@ -57,6 +58,16 @@ fun main(args: Array<String>) {
     val mcpPort = mcpServer?.start(settings.mcpPort)
     if (mcpServer != null && mcpPort == null) log.warn("Daemon MCP server failed to bind; continuing without it")
 
+    // Host session sharing in the daemon, so a share link survives the GUI closing. Always
+    // constructed but LAZY — no port is bound until the first share — so the GUI can start a share
+    // without a daemon restart even if sharing was off at boot (matches the non-daemon "first share
+    // enables it" UX). It reads settings live and the GUI gates the Share affordance on the setting.
+    val shareServer = DaemonShareServer(
+        host = sessionHost,
+        settings = { SettingsManager.instance.settings.value },
+        mcpPort = { mcpServer?.boundPort },
+    )
+
     val stopLatch = CountDownLatch(1)
     // Published via AtomicReference: read from the control-request, tray, and shutdown-hook threads.
     val attachServerRef = AtomicReference<DaemonAttachServer?>(null)
@@ -92,8 +103,9 @@ fun main(args: Array<String>) {
     }
     log.info("Daemon listening on 127.0.0.1:{}", port)
 
-    // GUI-attach WebSocket (shares the control secret for auth). Always started.
-    attachServerRef.set(DaemonAttachServer(sessionHost, control.secretValue).also {
+    // GUI-attach WebSocket (shares the control secret for auth). Always started; also carries the
+    // Phase 2 share-management lane (delegates to shareServer; no-op when sharing is disabled).
+    attachServerRef.set(DaemonAttachServer(sessionHost, control.secretValue, shareServer).also {
         if (it.start() < 0) log.warn("Daemon attach server failed to bind; GUI cannot render daemon sessions")
     })
 
@@ -105,6 +117,7 @@ fun main(args: Array<String>) {
         runCatching { DaemonTray.remove() }
         runCatching { control.stop() }
         runCatching { mcpServer?.stop() }
+        runCatching { shareServer?.stop() } // stop share server + tunnels before sessions die
         runCatching { attachServerRef.get()?.stop() }
         runCatching { sessionHost.shutdownAll() } // joins PTY-kill threads so shells aren't orphaned
     }

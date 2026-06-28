@@ -36,6 +36,9 @@ import java.security.MessageDigest
 class DaemonAttachServer(
     private val host: SessionHost,
     private val secret: String,
+    /** When sharing is enabled, the daemon's public-share server — the GUI starts/stops/approves
+     *  shares over this attach socket and observes them via [DaemonAttachProtocol.Server.ShareState]. */
+    private val shareServer: DaemonShareServer? = null,
 ) {
     private val log = LoggerFactory.getLogger(DaemonAttachServer::class.java)
 
@@ -184,6 +187,17 @@ class DaemonAttachServer(
             try { for (text in outbox) ws.send(Frame.Text(text)) } catch (_: Exception) {}
         }
 
+        // Forward daemon-share state to this GUI (Phase 2): the StateFlow emits the current value
+        // immediately (initial paint) and every change (share start/stop, viewer join/leave, remote
+        // status, pending approvals). No-op when sharing is disabled (shareServer == null).
+        val shareJob = shareServer?.let { ss ->
+            ws.launch {
+                ss.state.collect { snap ->
+                    send(DaemonAttachProtocol.Server.ShareState(snap.shares, snap.pending))
+                }
+            }
+        }
+
         try {
             resync() // initial paint
             for (frame in ws.incoming) {
@@ -194,12 +208,21 @@ class DaemonAttachServer(
                     is DaemonAttachProtocol.Client.Resize -> host.get(msg.id)?.resize(msg.cols, msg.rows)
                     is DaemonAttachProtocol.Client.Open -> host.openSession(cwd = msg.cwd, cols = msg.cols, rows = msg.rows)
                     is DaemonAttachProtocol.Client.Close -> host.closeSession(msg.id)
+                    // Phase 2 share management — delegate to the daemon's public-share server (no-op
+                    // if sharing is disabled). startShare is non-blocking; results arrive via ShareState.
+                    is DaemonAttachProtocol.Client.StartShare -> shareServer?.startShare(msg.scope, msg.sessionId, msg.remoteMode)
+                    is DaemonAttachProtocol.Client.StopShare -> shareServer?.stopShare(msg.token)
+                    is DaemonAttachProtocol.Client.SetShareRemoteMode -> shareServer?.setRemoteMode(msg.token, msg.mode)
+                    is DaemonAttachProtocol.Client.SetShareName -> shareServer?.setName(msg.token, msg.name)
+                    is DaemonAttachProtocol.Client.ApproveViewer -> shareServer?.approveViewer(msg.token, msg.clientId, msg.control)
+                    is DaemonAttachProtocol.Client.DenyViewer -> shareServer?.denyViewer(msg.token, msg.clientId)
                 }
             }
         } catch (e: Exception) {
             log.debug("attach connection ended: {}", e.message)
         } finally {
             clients.remove(client)
+            shareJob?.cancel()
             host.removeChangeListener(onChange)
             synchronized(lock) {
                 attachments.keys.toList().forEach { endLocked(it) }

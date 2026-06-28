@@ -847,6 +847,10 @@ fun TabbedTerminal(
     var mcpAttaching by remember { mutableStateOf(false) }
     // Session sharing (issue #276): dialog state + live set of shared tab ids.
     var shareDialog by remember { mutableStateOf<ai.rever.bossterm.compose.share.SessionShareManager.ShareInfo?>(null) }
+    // Phase 2: when the daemon hosts sessions, sharing is hosted by the daemon (survives the GUI
+    // closing) and uses a separate window driven by DaemonShareClient over the attach socket.
+    var daemonShareOpen by remember { mutableStateOf(false) }
+    var daemonShareSessionId by remember { mutableStateOf<String?>(null) }
     // "Add remote": connect to another BossTerm's shared session (native client).
     var showAddRemote by remember { mutableStateOf(false) }
     // Pending "request control?" confirmation: a view-only group's split/new-tab click stores
@@ -923,6 +927,25 @@ fun TabbedTerminal(
     // Start (or reopen) a share for a tab. TAB = this tab + its splits; WINDOW = all tabs.
     // First use auto-enables the feature; the server binds on demand.
     fun startShare(tabId: String, scope: ai.rever.bossterm.compose.share.ShareScope) {
+        if (daemonMode) {
+            // The daemon hosts the share so it outlives the GUI. TAB → share just this session;
+            // WINDOW/ALL → share the whole daemon (every session as a viewer tab). DaemonShareWindow
+            // observes DaemonShareClient.state; startShare here is idempotent (returns any existing).
+            val sessionId = if (scope == ai.rever.bossterm.compose.share.ShareScope.TAB)
+                tabController.tabs.firstOrNull { it.id == tabId }?.remotePaneId else null
+            val kind = if (sessionId != null) ai.rever.bossterm.compose.daemon.DaemonAttachProtocol.ShareScopeKind.SESSION
+                       else ai.rever.bossterm.compose.daemon.DaemonAttachProtocol.ShareScopeKind.ALL
+            // Parity with the non-daemon path: first share turns the feature on (the daemon reads
+            // this setting live and the menu reflects it).
+            if (!settings.sessionSharingEnabled) {
+                SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
+            }
+            ai.rever.bossterm.compose.daemon.DaemonShareClient.startShare(kind, sessionId, null)
+            daemonShareSessionId = sessionId
+            daemonShareOpen = true
+            shareFocusTick++
+            return
+        }
         if (sharedTabIds.contains(tabId)) {
             openShareWindow(ai.rever.bossterm.compose.share.SessionShareManager.infoFor(tabId))
             return
@@ -1985,6 +2008,16 @@ fun TabbedTerminal(
             onRefreshLink = { ai.rever.bossterm.compose.share.SessionShareManager.refreshRemoteLink() },
             sessionName = ai.rever.bossterm.compose.share.SessionShareManager.sessionNameFor(info.tabId) ?: "",
             onSessionNameChange = { ai.rever.bossterm.compose.share.SessionShareManager.setSessionName(info.tabId, it) },
+        )
+    }
+
+    // Daemon-hosted sharing window (Phase 2): observes/steers the daemon's share server over the
+    // attach socket via DaemonShareClient. Used in daemon mode instead of the in-process ShareWindow.
+    if (daemonShareOpen) {
+        ai.rever.bossterm.compose.daemon.DaemonShareWindow(
+            focusedSessionId = daemonShareSessionId,
+            onDismiss = { daemonShareOpen = false },
+            focusTick = shareFocusTick,
         )
     }
 

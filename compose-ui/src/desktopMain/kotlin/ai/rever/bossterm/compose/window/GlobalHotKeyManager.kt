@@ -461,11 +461,29 @@ object GlobalHotKeyManager {
             macRunLoopMode = cfApi.CFStringCreateWithCString(null, "kCFRunLoopDefaultMode", 0x08000100)
 
             // Process events using CFRunLoopRunInMode instead of RunApplicationEventLoop
-            // This allows us to periodically check if we should stop
+            // so we can periodically check whether we should stop.
+            //
+            // BATTERY-CRITICAL: CFRunLoopRunInMode only *blocks* for the timeout if the
+            // mode has at least one input source or timer to wait on. The Carbon hotkey
+            // events registered above are dispatched on the application's main run loop,
+            // not on this background thread, so THIS thread's mode is empty — and
+            // CFRunLoopRunInMode then returns kCFRunLoopRunFinished *immediately* instead
+            // of waiting. With the old unconditional 0.1s call that turned this `while`
+            // into a tight spin that pegged a full CPU core for the entire lifetime of the
+            // app, regardless of window focus (measured: ~1 core / ~1000 ms·s⁻¹ at idle).
+            //
+            // Fix: only treat the call as a real wait when it actually blocked
+            // (TimedOut) or did work (HandledSource). Any immediate return (Finished /
+            // Stopped / empty mode) means there was nothing to wait on, so sleep before
+            // re-checking isRunning. A longer timeout also lets a non-empty mode block
+            // efficiently and wake instantly on a delivered event.
             while (isRunning && !Thread.currentThread().isInterrupted) {
-                // Run the run loop for a short time (100ms)
-                // This will process any pending events including hotkey events
-                cfApi.CFRunLoopRunInMode(macRunLoopMode, 0.1, false)
+                val result = cfApi.CFRunLoopRunInMode(macRunLoopMode, 1.0, false)
+                if (result != CoreFoundationApi.kCFRunLoopRunTimedOut &&
+                    result != CoreFoundationApi.kCFRunLoopRunHandledSource) {
+                    // Returned without waiting — park briefly so we idle instead of spin.
+                    Thread.sleep(250)
+                }
             }
 
         } catch (e: Exception) {

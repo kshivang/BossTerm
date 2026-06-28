@@ -84,7 +84,7 @@ fun parseAuthDeepLink(raw: String): AuthDeepLink? {
         .mapNotNull { p ->
             val i = p.indexOf('=')
             if (i <= 0) null
-            else p.take(i) to URLDecoder.decode(p.substring(i + 1), StandardCharsets.UTF_8)
+            else p.take(i) to decodeQueryComponent(p.substring(i + 1))
         }
         .toMap()
     val tokenHash = params["token_hash"]?.takeIf { it.isNotBlank() }
@@ -111,16 +111,16 @@ fun parseAuthInput(raw: String): AuthDeepLink? {
     if (trimmed.isEmpty()) return null
     // Clean bossterm:// deep link first.
     parseAuthDeepLink(trimmed)?.let { return it }
-    // Else scan the raw text, then a once-URL-decoded copy (covers a %26type%3D… email URL).
-    for (s in listOf(trimmed, runCatching { URLDecoder.decode(trimmed, StandardCharsets.UTF_8) }.getOrNull())) {
-        if (s == null) continue
+    // Else scan the raw text, then a once-decoded copy (covers a %26type%3D… email URL). The decode
+    // keeps '+' literal so a base64 token isn't corrupted (see [decodeQueryComponent]).
+    for (s in listOf(trimmed, decodeQueryComponent(trimmed))) {
         val token = paramValue(s, "token_hash") ?: paramValue(s, "token")
         if (token != null) return AuthDeepLink(tokenHash = token, type = paramValue(s, "type") ?: "magiclink")
     }
     return null
 }
 
-/** Value of `<name>=…` up to the next `&`, whitespace, `#`, or end — URL-decoded; null if absent/blank. */
+/** Value of `<name>=…` up to the next `&`, whitespace, `#`, or end — decoded; null if absent/blank. */
 private fun paramValue(s: String, name: String): String? {
     val key = "$name="
     val at = s.indexOf(key)
@@ -130,8 +130,19 @@ private fun paramValue(s: String, name: String): String? {
     while (end < s.length && s[end] != '&' && s[end] != '#' && !s[end].isWhitespace()) end++
     val v = s.substring(start, end)
     if (v.isBlank()) return null
-    return runCatching { URLDecoder.decode(v, StandardCharsets.UTF_8) }.getOrDefault(v)
+    return decodeQueryComponent(v)
 }
+
+/**
+ * Decode percent-escapes (%XX) in a URI query-component value while keeping `+` LITERAL.
+ * [URLDecoder.decode] applies `application/x-www-form-urlencoded` rules and turns `+` into a space —
+ * wrong for a generic URI query (RFC 3986) and, crucially, for auth tokens: a standard-base64
+ * `token_hash` can contain `+`, which a space would silently corrupt. We pre-escape literal `+` to
+ * `%2B` so the decoder leaves it intact (a real `%2B` is unaffected), and fall back to the raw
+ * string on a malformed escape. Tokens never legitimately contain a space, so nothing is lost.
+ */
+private fun decodeQueryComponent(s: String): String =
+    runCatching { URLDecoder.decode(s.replace("+", "%2B"), StandardCharsets.UTF_8) }.getOrDefault(s)
 
 // ---- Error mapping (pure; unit-tested) ----
 

@@ -45,8 +45,19 @@ internal object DeepLinkSocket {
         }
     }
 
-    /** Become the primary: listen for forwarded URIs and pass each to [onUri]. Best-effort. */
+    /**
+     * Become the primary deep-link listener — but only if no live instance already is. Multiple
+     * BossTerm instances are allowed; exactly ONE should own routing. Without this guard every
+     * launch overwrote `deeplink.port` with its own port+secret (so the LAST launch won routing)
+     * AND registered `deleteOnExit`, so that launch's exit also tore routing down for instances
+     * still running. Probing first makes the FIRST live instance own routing for as long as it runs;
+     * later launches detect it and leave it be. Best-effort.
+     */
     fun startPrimaryListener(onUri: (String) -> Unit) {
+        if (liveListenerPresent()) {
+            log.info("Deep-link routing already owned by a running instance; not usurping it")
+            return
+        }
         runCatching {
             val server = ServerSocket(0, 4, InetAddress.getLoopbackAddress())
             val secret = ByteArray(16).also { SecureRandom().nextBytes(it) }
@@ -76,6 +87,26 @@ internal object DeepLinkSocket {
                 }
             }.apply { isDaemon = true; name = "bossterm-deeplink"; start() }
         }.onFailure { log.warn("Deep-link listener unavailable: {}", it.message) }
+    }
+
+    /**
+     * True if `deeplink.port` points at a still-listening socket. A successful TCP connect proves a
+     * listener is bound (we send nothing — its accept loop sees an empty line and ignores it). A
+     * refused connect means the file is stale (the owning instance died): delete it so we can claim
+     * ownership. Sequential launches (A then B) therefore don't usurp A; only a genuine cold start
+     * (no live owner) becomes primary.
+     */
+    private fun liveListenerPresent(): Boolean {
+        val lines = runCatching { portFile.readLines() }.getOrNull() ?: return false
+        val port = lines.getOrNull(0)?.trim()?.toIntOrNull() ?: return false
+        if (lines.getOrNull(1)?.trim().isNullOrEmpty()) return false
+        return runCatching {
+            Socket(InetAddress.getLoopbackAddress(), port).close()
+            true
+        }.getOrElse {
+            runCatching { portFile.delete() } // stale file from a dead instance — clear it
+            false
+        }
     }
 
     /** Read one line (up to [max] bytes), stopping at newline or cap — never reads unbounded. */

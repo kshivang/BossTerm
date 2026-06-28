@@ -48,6 +48,14 @@ class AuthModelsTest {
     }
 
     @Test
+    fun `keeps a literal plus in the token literal (not a form-encoded space)`() {
+        // A URI query component is RFC-3986, not form-encoded — '+' is literal. A standard-base64
+        // token_hash can contain '+'; turning it into a space would silently corrupt the token.
+        val l = parseAuthDeepLink("bossterm://auth/verify?token_hash=aB+cd/ef=&type=magiclink")
+        assertEquals("aB+cd/ef=", l?.tokenHash)
+    }
+
+    @Test
     fun `rejects non-auth links and malformed input`() {
         // URI("bossterm://auth/verify") parses host="auth", path="/verify" — wrong host/path/scheme must all fail.
         assertNull(parseAuthDeepLink("bossterm://workspace/open?id=1"))
@@ -81,6 +89,14 @@ class AuthModelsTest {
         val l = parseAuthInput("https://api.risaboss.com/functions/v1/redirect?url=https%3A%2F%2Fp.co%2Fverify%3Ftoken%3DTOK9%26type%3Dsignup")
         assertEquals("TOK9", l?.tokenHash)
         assertEquals("signup", l?.type)
+    }
+
+    @Test
+    fun `parseAuthInput preserves a literal plus in a pasted token`() {
+        // The footgun: URLDecoder's form semantics turn '+' into a space. A pasted confirmation URL
+        // whose token contains a literal '+' (standard base64) must come through intact.
+        val l = parseAuthInput("https://api.risaboss.com/auth/v1/verify?token=aB+cd/ef=&type=magiclink")
+        assertEquals("aB+cd/ef=", l?.tokenHash)
     }
 
     @Test

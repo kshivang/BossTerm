@@ -1398,9 +1398,12 @@ fun TabbedTerminal(
             val activeTab = tabController.tabs[tabController.activeTabIndex]
             val splitState = getOrCreateSplitState(activeTab)
 
-            // Update window title when active tab's title changes
-            LaunchedEffect(activeTab) {
-                activeTab.display.windowTitleFlow.collect { newTitle ->
+            // Update the OS window title from the FOCUSED pane's window title.
+            // Re-subscribe when focus moves between split panes so the window title
+            // follows the active pane instead of always the root/first pane.
+            LaunchedEffect(activeTab, splitState.focusedPaneId) {
+                val focused = splitState.getFocusedSession() ?: activeTab
+                focused.display.windowTitleFlow.collect { newTitle ->
                     if (newTitle.isNotEmpty()) {
                         onWindowTitleChange(newTitle)
                     }
@@ -1509,9 +1512,13 @@ fun TabbedTerminal(
                 isActiveTab = isActive,
                 onTabTitleChange = { newTitle ->
                     // A user rename (customTitle) always wins; otherwise track the
-                    // app's OSC title. Matches the background-tab collector in
-                    // TabController.wireCwdTitle so active and background tabs behave alike.
-                    if (activeTab.customTitle.value == null) {
+                    // app's OSC title. Only for a SINGLE-pane tab: when the tab is
+                    // split, `activeTab` is the ROOT pane's session, so writing the
+                    // focused pane's title here would land it on the root pane's chip.
+                    // Each split pane already tracks its own title via
+                    // TabController.wireCwdTitle, so the active tab only drives its
+                    // own title when it is not split.
+                    if (activeTab.customTitle.value == null && splitState.isSinglePane) {
                         activeTab.title.value = newTitle
                     }
                 },

@@ -1,8 +1,8 @@
 package ai.rever.bossterm.compose.daemon
 
 import org.slf4j.LoggerFactory
+import java.awt.BasicStroke
 import java.awt.Color
-import java.awt.Font
 import java.awt.Frame
 import java.awt.GraphicsEnvironment
 import java.awt.MenuItem
@@ -12,6 +12,8 @@ import java.awt.SystemTray
 import java.awt.TrayIcon
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.geom.Line2D
+import java.awt.geom.RoundRectangle2D
 import java.awt.image.BufferedImage
 import javax.swing.SwingUtilities
 
@@ -63,7 +65,7 @@ object DaemonTray {
             frame.add(popup)
             anchor = frame
 
-            val icon = TrayIcon(renderWordmark(), "BossTerm").apply {
+            val icon = TrayIcon(renderTerminalIcon(), "BossTerm").apply {
                 isImageAutoSize = false
                 addMouseListener(object : MouseAdapter() {
                     override fun mousePressed(e: MouseEvent) {
@@ -99,32 +101,30 @@ object DaemonTray {
     }
 
     /**
-     * A flat monochrome "BOSS" wordmark sized for the menu bar — reads cleanly next to the system's
-     * template icons. White so it shows on the typical dark menu bar.
+     * A flat monochrome terminal glyph sized for the menu bar — a small terminal "window" with a `>`
+     * prompt + cursor, so the daemon reads as a terminal rather than a "BOSS" wordmark. White, to sit
+     * on the typical dark macOS menu bar (same constraint the old wordmark had).
      */
-    private fun renderWordmark(text: String = "BOSS"): BufferedImage {
-        val h = 18
-        val font = Font(Font.SANS_SERIF, Font.BOLD, 13)
-        val probe = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB)
-        val pg = probe.createGraphics().apply { this.font = font }
-        val fm = pg.fontMetrics
-        val w = (fm.stringWidth(text) + 4).coerceAtLeast(8)
-        pg.dispose()
-
-        val img = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
+    private fun renderTerminalIcon(): BufferedImage {
+        val size = 18
+        val img = BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB)
         val g = img.createGraphics()
         try {
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
             g.color = Color.WHITE
-            g.font = font
-            val gm = g.fontMetrics
-            val x = (w - gm.stringWidth(text)) / 2
-            val y = (h - gm.height) / 2 + gm.ascent
-            g.drawString(text, x, y)
+            g.stroke = BasicStroke(1.6f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+            // Terminal window outline.
+            g.draw(RoundRectangle2D.Float(2f, 3f, 14f, 12f, 3.5f, 3.5f))
+            // `>` prompt chevron.
+            g.draw(Line2D.Float(5.5f, 7f, 8f, 9.5f))
+            g.draw(Line2D.Float(8f, 9.5f, 5.5f, 12f))
+            // Cursor underline after the prompt.
+            g.draw(Line2D.Float(9.5f, 12f, 12.5f, 12f))
         } finally {
             g.dispose()
         }
         return img
     }
+
 }

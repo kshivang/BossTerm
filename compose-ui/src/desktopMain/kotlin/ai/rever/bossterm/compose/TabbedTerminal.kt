@@ -937,6 +937,9 @@ fun TabbedTerminal(
     // window is already open raises that window instead of leaving it behind.
     var shareFocusTick by remember { mutableStateOf(0) }
     val sharedTabIds by ai.rever.bossterm.compose.share.SessionShareManager.sharedTabIds.collectAsState()
+    // Daemon-hosted shares (Phase 2): the sharing indicator must reflect these too — in daemon mode
+    // the in-process SessionShareManager.sharedTabIds is always empty, so the pill never lit up.
+    val daemonShareState by ai.rever.bossterm.compose.daemon.DaemonShareClient.state.collectAsState()
     // Devices awaiting host approval to connect (issue #276) — drives the approval toast
     // and the share dialog's pending list.
     val pendingShareRequests by ai.rever.bossterm.compose.share.SessionShareManager.pendingRequests.collectAsState()
@@ -1965,12 +1968,18 @@ fun TabbedTerminal(
                         ))
                     },
                     showSharing = showSharingStatus,
-                    sharingCount = sharedTabIds.size,
+                    // Count in-process shares AND daemon-hosted shares (one is always empty depending
+                    // on mode), so the pill lights whenever anything is actually being shared.
+                    sharingCount = sharedTabIds.size + daemonShareState.shares.size,
                     onSharingClick = {
                         // Reopen the dialog if something is shared; else offer Tab vs Window.
                         val sharedId = sharedTabIds.firstOrNull { tabController.tabs.any { t -> t.id == it } }
                             ?: sharedTabIds.firstOrNull()
-                        if (sharedId != null) {
+                        if (daemonMode && daemonShareState.shares.isNotEmpty()) {
+                            // Daemon-hosted share active → reopen the daemon share dialog.
+                            daemonShareOpen = true
+                            shareFocusTick++
+                        } else if (!daemonMode && sharedId != null) {
                             openShareWindow(ai.rever.bossterm.compose.share.SessionShareManager.infoFor(sharedId))
                         } else {
                             tabController.activeTab?.let { active ->

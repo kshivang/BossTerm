@@ -1,6 +1,5 @@
 package ai.rever.bossterm.compose.mcp
 
-import ai.rever.bossterm.compose.TabbedTerminalState
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import org.slf4j.LoggerFactory
 import java.io.File
@@ -8,8 +7,8 @@ import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 
 /**
- * Resolves which registered [TabbedTerminalState] (window) owns the MCP
- * client process connected on a given loopback TCP source port.
+ * Resolves which registered tab (and thus window) owns the MCP client
+ * process connected on a given loopback TCP source port.
  *
  * Tools that default to "the primary window" (e.g. `run_command`,
  * `run_in_panel`, `get_active_tab` called with no `tab_id`) want to target
@@ -54,22 +53,23 @@ internal object ProcessAncestry {
      * @param remotePort the client-side ephemeral port — i.e. what Ktor
      *   reports as `call.request.local.remotePort`.
      * @param registry source of truth for tracked panes' shell PIDs.
-     * @return the [TabbedTerminalState] containing the pane that owns the
-     *   client process, or null if no ancestor matches.
+     * @return the id of the tab whose shell owns (is an ancestor of) the client
+     *   process, or null if no ancestor matches. The owning window is
+     *   [McpTerminalRegistry.findState] of this id.
      */
-    fun resolveClientWindow(
+    fun resolveClientTabId(
         remotePort: Int,
         registry: McpTerminalRegistry
-    ): TabbedTerminalState? {
+    ): String? {
         if (remotePort <= 0) return null
-        val statesByShellPid = collectStateByShellPid(registry)
-        if (statesByShellPid.isEmpty()) return null
+        val tabIdByShellPid = collectTabIdByShellPid(registry)
+        if (tabIdByShellPid.isEmpty()) return null
 
         val clientPid = findClientPid(remotePort) ?: return null
         var pid = clientPid
         var hops = 0
         while (hops < MAX_PARENT_WALK) {
-            statesByShellPid[pid]?.let { return it }
+            tabIdByShellPid[pid]?.let { return it }
             val parent = parentPid(pid)
             if (parent == null || parent <= 1L || parent == pid) return null
             pid = parent
@@ -79,18 +79,18 @@ internal object ProcessAncestry {
     }
 
     /**
-     * Flatten every tracked tab's shell PID across every registered state
-     * into a single lookup map. Cheap and rebuilt per resolution so pane
+     * Flatten every tracked tab's shell PID across every registered state into
+     * a single PID → tab-id lookup. Cheap and rebuilt per resolution so pane
      * creation / closure is reflected immediately without a refresh hook.
      */
-    private fun collectStateByShellPid(
+    private fun collectTabIdByShellPid(
         registry: McpTerminalRegistry
-    ): Map<Long, TabbedTerminalState> {
-        val out = HashMap<Long, TabbedTerminalState>()
+    ): Map<Long, String> {
+        val out = HashMap<Long, String>()
         for (state in registry.allStates()) {
             for (tab in state.tabs) {
                 val pid = tab.processHandle.value?.getPid() ?: continue
-                out[pid] = state
+                out[pid] = tab.id
             }
         }
         return out

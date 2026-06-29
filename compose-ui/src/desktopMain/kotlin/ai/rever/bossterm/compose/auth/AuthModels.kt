@@ -40,13 +40,14 @@ internal data class SessionResponse(
     val user: AuthUser? = null,
 )
 
-/** GoTrue error bodies vary by version — read every spelling, all optional. */
+/** GoTrue error bodies vary by version — read every spelling of the human-readable text, all
+ *  optional. (The machine `error_code` is intentionally not modelled: it's not user-facing and
+ *  unknown keys are ignored during decode.) */
 @Serializable
 internal data class GoTrueError(
     val msg: String? = null,
     val message: String? = null,
     @SerialName("error_description") val errorDescription: String? = null,
-    @SerialName("error_code") val errorCode: String? = null,
 ) {
     fun text(): String? = errorDescription ?: msg ?: message
 }

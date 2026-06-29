@@ -134,7 +134,9 @@ internal object DeepLinkSocket {
         }
     }
 
-    /** Read one line (up to [max] bytes), stopping at newline or cap — never reads unbounded. */
+    /** Read one line (up to [max] bytes), stopping at newline or cap — never reads unbounded.
+     *  Decodes byte-per-char (ASCII): the protocol is a hex secret + an ASCII `bossterm://` URI
+     *  (percent-encoded), so no multibyte input is expected; a multibyte URI would be mangled. */
     private fun readBoundedLine(input: java.io.InputStream, max: Int): String? {
         val buf = StringBuilder()
         var count = 0

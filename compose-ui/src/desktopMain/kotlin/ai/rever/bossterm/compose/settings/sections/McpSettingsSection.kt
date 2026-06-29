@@ -313,6 +313,7 @@ private fun toolDescription(name: String): String = when (name) {
         "Run a shell command in a visible pane and return its output + exit code. " +
             "Available for explicit use by default; see 'Use run_command as default " +
             "shell' above to make AI clients prefer it over their built-in shell."
+    "show_image" -> "Display an image (file or base64) inline in a terminal pane."
     else -> name
 }
 

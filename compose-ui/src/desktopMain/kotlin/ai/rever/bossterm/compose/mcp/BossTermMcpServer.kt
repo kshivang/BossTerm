@@ -7,6 +7,11 @@ import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import ai.rever.bossterm.terminal.model.CommandStateListener
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
+import ai.rever.bossterm.terminal.model.image.ImageFormat
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.util.Base64
+import javax.imageio.ImageIO
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
@@ -121,7 +126,8 @@ class BossTermMcpServer(
         "send_input" to ::registerSendInput,
         "send_signal" to ::registerSendSignal,
         "run_in_panel" to ::registerRunInPanel,
-        "run_command" to ::registerRunCommand
+        "run_command" to ::registerRunCommand,
+        "show_image" to ::registerShowImage
     )
 
     /** Reserved tools that callers cannot disable. */
@@ -958,6 +964,267 @@ class BossTermMcpServer(
                     "Unknown panel: '$panel'. Expected one of: new_tab, horizontal_split, vertical_split."
                 )
             }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Tool: show_image
+    // -----------------------------------------------------------------
+
+    private fun registerShowImage(server: Server) {
+        server.addTool(
+            name = toolName("show_image"),
+            description = describe(
+                "show_image",
+                "Display an image inline in a terminal pane (iTerm2 OSC 1337). " +
+                        "Provide exactly one of `path` (a local image file) or `data_base64` " +
+                        "(raw base64, or a data: URL). Renders in the active pane by default, " +
+                        "or in a freshly created pane via `panel`: new_tab / horizontal_split / " +
+                        "vertical_split. Aspect ratio is preserved; `width`/`height` accept " +
+                        "cells ('80'), pixels ('200px'), or percent ('50%'). Returns " +
+                        "{ ok, tabId, paneId } — the image bytes are NEVER echoed back."
+            ),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("path") {
+                        put("type", "string")
+                        put("description", "Absolute path to a local image file " +
+                                "(PNG/JPEG/GIF/BMP/WebP). Provide either this or data_base64.")
+                    }
+                    putJsonObject("data_base64") {
+                        put("type", "string")
+                        put("description", "Image bytes as base64, or a data:*;base64,... URL. " +
+                                "Provide either this or path.")
+                    }
+                    putJsonObject("panel") {
+                        put("type", "string")
+                        put("description", "Where to render: reuse (default — the active pane), " +
+                                "new_tab, horizontal_split, vertical_split.")
+                    }
+                    putJsonObject("width") {
+                        put("type", "string")
+                        put("description", "Optional width: cells ('80'), pixels ('200px'), or " +
+                                "percent ('50%'). Default fits the pane, preserving aspect ratio.")
+                    }
+                    putJsonObject("height") {
+                        put("type", "string")
+                        put("description", "Optional height: cells ('24'), pixels ('200px'), or " +
+                                "percent ('50%').")
+                    }
+                    putJsonObject("tab_id") {
+                        put("type", "string")
+                        put("description", "Optional target tab id. Defaults to the active tab " +
+                                "of the calling window.")
+                    }
+                    putJsonObject("pane_id") {
+                        put("type", "string")
+                        put("description", "Optional target pane id within tab_id (reuse mode).")
+                    }
+                    putJsonObject("caption") {
+                        put("type", "string")
+                        put("description", "Optional text printed on the line above the image.")
+                    }
+                    putJsonObject("split_ratio") {
+                        put("type", "number")
+                        put("description", "For split modes: fraction (0.05..0.95) of the parent " +
+                                "the NEW pane gets. Defaults to `mcpDefaultSplitRatio`.")
+                    }
+                },
+                required = emptyList()
+            )
+        ) { request ->
+            val args = request.arguments
+            val path = args.requireString("path")
+            val dataBase64 = args.requireString("data_base64")
+            val caption = args.requireString("caption")
+            val widthSpec = args.requireString("width")
+            val heightSpec = args.requireString("height")
+            val panel = (args.requireString("panel") ?: "reuse").lowercase()
+            val explicitPaneId = args.requireString("pane_id")
+            val requestedTabId = args.requireString("tab_id")
+
+            // --- 1. Resolve image bytes: exactly one of path / data_base64. ---
+            if ((path == null) == (dataBase64 == null)) {
+                return@addTool errorResult("Provide exactly one of `path` or `data_base64`.")
+            }
+            val imageBytes: ByteArray = if (path != null) {
+                val file = File(path)
+                when {
+                    !file.exists() -> return@addTool errorResult("File not found: $path")
+                    !file.isFile -> return@addTool errorResult("Not a file: $path")
+                    file.length() > MAX_IMAGE_BYTES -> return@addTool errorResult(
+                        "Image too large: ${file.length()} bytes (max $MAX_IMAGE_BYTES)."
+                    )
+                    else -> try {
+                        file.readBytes()
+                    } catch (e: Exception) {
+                        return@addTool errorResult("Failed to read $path: ${e.message}")
+                    }
+                }
+            } else {
+                // Accept a bare base64 string or a `data:<mime>;base64,<...>` URL.
+                val raw = dataBase64!!.substringAfter("base64,").replace(Regex("\\s"), "")
+                val decoded = try {
+                    Base64.getDecoder().decode(raw)
+                } catch (e: Exception) {
+                    return@addTool errorResult("Invalid base64 in data_base64: ${e.message}")
+                }
+                if (decoded.size > MAX_IMAGE_BYTES) {
+                    return@addTool errorResult(
+                        "Image too large: ${decoded.size} bytes (max $MAX_IMAGE_BYTES)."
+                    )
+                }
+                decoded
+            }
+
+            // --- 2. Validate it decodes to a raster image (clear error vs. silent no-op). ---
+            if (ImageFormat.detect(imageBytes) == ImageFormat.UNKNOWN) {
+                return@addTool errorResult(
+                    "Unrecognized image format (supported: PNG, JPEG, GIF, BMP, WebP)."
+                )
+            }
+            val bufferedImage = try {
+                ImageIO.read(ByteArrayInputStream(imageBytes))
+            } catch (e: Exception) {
+                null
+            }
+            if (bufferedImage == null || bufferedImage.width <= 0 || bufferedImage.height <= 0) {
+                return@addTool errorResult("Failed to decode image dimensions.")
+            }
+
+            // --- 3. Resolve the owning window + tab. ---
+            val state: TabbedTerminalState = if (requestedTabId != null) {
+                registry.findState(requestedTabId)
+                    ?: return@addTool errorResult("Unknown tab_id: $requestedTabId")
+            } else {
+                registry.lastResolvedClientWindow()
+                    ?: registry.primaryState()
+                    ?: return@addTool errorResult("No registered terminal window")
+            }
+            val tabId = requestedTabId
+                ?: registry.lastResolvedClientTabId()
+                ?: state.activeTabId
+                ?: return@addTool errorResult("No active tab")
+
+            // --- 4. Resolve or create the target pane. Unlike run_command, `reuse`
+            //        targets the active pane directly (no scratch-pane decay) so the
+            //        image lands where the user is looking. ---
+            var resolvedTabId = tabId
+            val session: TerminalSession
+            val resolvedPaneId: String
+            var freshlyCreated = false
+
+            if (explicitPaneId != null) {
+                session = state.findSession(tabId, explicitPaneId)
+                    ?: return@addTool errorResult("Unknown pane_id '$explicitPaneId' in tab '$tabId'")
+                resolvedPaneId = explicitPaneId
+            } else when (panel) {
+                "reuse" -> {
+                    val s = state.findSession(tabId)
+                        ?: return@addTool errorResult("No active pane in tab '$tabId'")
+                    session = s
+                    resolvedPaneId = s.id
+                }
+                "new_tab" -> {
+                    val newId = state.createTab(workingDir = null, initialCommand = null)
+                        ?: return@addTool errorResult("Failed to create tab")
+                    resolvedTabId = newId
+                    // A freshly created tab is single-pane: pane id == tab id.
+                    resolvedPaneId = newId
+                    session = state.findSession(newId, newId)
+                        ?: state.findSession(newId)
+                        ?: return@addTool errorResult("Created tab $newId but cannot resolve session")
+                    freshlyCreated = true
+                }
+                "horizontal_split", "vertical_split" -> {
+                    val effectiveRatio = (args.optionalFloat("split_ratio")
+                        ?: settingsManager.settings.value.mcpDefaultSplitRatio)
+                        .coerceIn(0.05f, 0.95f)
+                    val newPaneId = if (panel == "horizontal_split") {
+                        state.splitHorizontal(
+                            tabId = tabId, ratio = effectiveRatio,
+                            initialCommand = null, preserveFocus = true
+                        )
+                    } else {
+                        state.splitVertical(
+                            tabId = tabId, ratio = effectiveRatio,
+                            initialCommand = null, preserveFocus = true
+                        )
+                    } ?: return@addTool errorResult("Split failed (terminal too small?)")
+                    resolvedPaneId = newPaneId
+                    session = state.findSession(tabId, newPaneId)
+                        ?: return@addTool errorResult(
+                            "Created pane $newPaneId but cannot resolve session"
+                        )
+                    freshlyCreated = true
+                }
+                else -> return@addTool errorResult(
+                    "Unknown panel: '$panel'. Expected one of: reuse, new_tab, " +
+                            "horizontal_split, vertical_split."
+                )
+            }
+
+            // dataStream is the designed, thread-safe entry point into the emulator
+            // (PTY → BlockingTerminalDataStream → BossEmulator). Feeding a synthesized
+            // OSC 1337 here reuses the full decode/place/render pipeline and serializes
+            // with all other PTY output on the emulator thread — calling
+            // processInlineImage() directly from this thread would race the cursor.
+            val tab = session as? TerminalTab
+                ?: return@addTool errorResult("Target pane does not support image output")
+
+            // Per-pane mutex serializes with concurrent run_command / run_in_panel /
+            // show_image calls on the same pane.
+            registry.paneMutex(resolvedPaneId).withLock {
+                // Freshly created panes haven't drawn their first prompt (or been laid
+                // out, which sets real cell metrics). Wait for OSC 133;A so placement
+                // sizes against the real grid and lands below a clean prompt.
+                if (freshlyCreated) {
+                    val shellReadyTimeoutMs = settingsManager.settings.value
+                        .mcpRunCommandShellReadyTimeoutMs
+                        .coerceIn(0, MAX_SHELL_READY_TIMEOUT_MS).toLong()
+                    if (shellReadyTimeoutMs > 0) awaitPromptReady(tab, shellReadyTimeoutMs)
+                }
+
+                val osc = buildOsc1337Image(
+                    bytes = imageBytes,
+                    name = path?.let { File(it).name },
+                    widthSpec = widthSpec,
+                    heightSpec = heightSpec
+                )
+                val payload = buildString {
+                    if (!caption.isNullOrEmpty()) append(caption.replace("\n", " ")).append("\r\n")
+                    append(osc).append("\r\n")
+                }
+                tab.dataStream.append(payload)
+            }
+
+            successJson(
+                json.encodeToString(
+                    ShowImageResult.serializer(),
+                    ShowImageResult(ok = true, tabId = resolvedTabId, paneId = resolvedPaneId)
+                )
+            )
+        }
+    }
+
+    /**
+     * Suspend until [session]'s shell signals OSC 133;A (prompt ready) or
+     * [timeoutMs] elapses. Used to defer image injection on freshly created
+     * panes until the pane is laid out and the prompt is drawn.
+     */
+    private suspend fun awaitPromptReady(session: TerminalSession, timeoutMs: Long) {
+        val terminal = session.terminal
+        val signal = CompletableDeferred<Unit>()
+        val listener = object : CommandStateListener {
+            override fun onPromptStarted() {
+                if (!signal.isCompleted) signal.complete(Unit)
+            }
+        }
+        terminal.addCommandStateListener(listener)
+        try {
+            withTimeoutOrNull(timeoutMs) { signal.await() }
+        } finally {
+            terminal.removeCommandStateListener(listener)
         }
     }
 
@@ -1987,6 +2254,15 @@ class BossTermMcpServer(
     )
 
     @Serializable
+    data class ShowImageResult(
+        val ok: Boolean,
+        val tabId: String,
+        /** The pane the image was rendered into (== tabId for an unsplit tab). */
+        val paneId: String,
+        val error: String? = null
+    )
+
+    @Serializable
     data class RunCommandResult(
         val ok: Boolean,
         val tabId: String,
@@ -2090,8 +2366,17 @@ class BossTermMcpServer(
             "send_input",
             "send_signal",
             "run_in_panel",
-            "run_command"
+            "run_command",
+            "show_image"
         )
+
+        /**
+         * Hard cap on a single `show_image` source. Bounds the transient base64
+         * string fed through the data stream and stays well under
+         * `TerminalImageStorage`'s 50 MB total budget. Diagrams/screenshots are
+         * far smaller; anything larger is almost certainly a mistake.
+         */
+        private const val MAX_IMAGE_BYTES: Long = 16L * 1024 * 1024
 
         /**
          * Tools that may never be disabled. `manage_tools` is the only escape hatch
@@ -2122,5 +2407,37 @@ class BossTermMcpServer(
                 "(long-running dev servers, REPLs). If `run_command` returns " +
                 "`error: \"TUI detected\"`, switch to `send_input` + `read_scrollback` to " +
                 "drive the program — do not retry the same command."
+    }
+}
+
+
+/**
+ * Build an iTerm2 OSC 1337;File inline-image escape. [widthSpec]/[heightSpec]
+ * are passed verbatim (the emulator's [ai.rever.bossterm.terminal.model.image.DimensionSpec]
+ * understands "80" (cells), "200px", and "50%"). base64 is pure ASCII so it passes
+ * through the data stream's grapheme handling untouched; BEL terminates and never
+ * appears in the base64 alphabet. Top-level + internal so unit tests can exercise
+ * the exact framing the emulator's OSC 1337 parser expects.
+ */
+internal fun buildOsc1337Image(
+    bytes: ByteArray,
+    name: String?,
+    widthSpec: String?,
+    heightSpec: String?
+): String {
+    val b64 = java.util.Base64.getEncoder().encodeToString(bytes)
+    return buildString {
+        append("\u001B]1337;File=inline=1")
+        append(";size=").append(bytes.size)
+        if (!name.isNullOrEmpty()) {
+            append(";name=").append(
+                java.util.Base64.getEncoder().encodeToString(name.toByteArray(Charsets.UTF_8))
+            )
+        }
+        if (!widthSpec.isNullOrBlank()) append(";width=").append(widthSpec)
+        if (!heightSpec.isNullOrBlank()) append(";height=").append(heightSpec)
+        append(";preserveAspectRatio=1")
+        append(":").append(b64)
+        append("\u0007")
     }
 }

@@ -333,6 +333,14 @@ fun ProperTerminal(
   var slowBlinkVisible by remember { mutableStateOf(true) }
   var rapidBlinkVisible by remember { mutableStateOf(true) }
 
+  // Whether blink-attributed text is actually present in the visible region. The
+  // renderer writes this back each frame via `blinkProbe` (no extra scan), and the
+  // blink toggle loops below gate on it: with no blinking text on screen, a focused
+  // idle terminal produces zero periodic repaints instead of ~3 full-canvas redraws/sec.
+  var hasSlowBlinkText by remember { mutableStateOf(false) }
+  var hasRapidBlinkText by remember { mutableStateOf(false) }
+  val blinkProbe = remember { BooleanArray(2) }
+
   // Drag state for text selection
   var isDragging by remember { mutableStateOf(false) }
   var dragStartPos by remember { mutableStateOf<Offset?>(null) }  // Track initial mouse position for drag detection
@@ -670,8 +678,12 @@ fun ProperTerminal(
   // SLOW_BLINK animation timer (configurable via settings.slowTextBlinkMs).
   // enableTextBlinking is the master accessibility toggle. A non-positive interval means
   // "no blink" (also guards against a delay(0) busy-loop pegging a core).
-  LaunchedEffect(blinkActive, settings.enableTextBlinking, settings.slowTextBlinkMs) {
-    if (!blinkActive || !settings.enableTextBlinking || settings.slowTextBlinkMs <= 0) {
+  // Also gate on hasSlowBlinkText: if nothing on screen carries the SLOW_BLINK
+  // attribute, there is nothing to animate, so park the loop (and freeze the flag
+  // to "visible") instead of repainting the whole text canvas once a second for
+  // no visible change.
+  LaunchedEffect(blinkActive, hasSlowBlinkText, settings.enableTextBlinking, settings.slowTextBlinkMs) {
+    if (!blinkActive || !hasSlowBlinkText || !settings.enableTextBlinking || settings.slowTextBlinkMs <= 0) {
       slowBlinkVisible = true
       return@LaunchedEffect
     }
@@ -682,8 +694,8 @@ fun ProperTerminal(
   }
 
   // RAPID_BLINK animation timer (configurable via settings.rapidTextBlinkMs).
-  LaunchedEffect(blinkActive, settings.enableTextBlinking, settings.rapidTextBlinkMs) {
-    if (!blinkActive || !settings.enableTextBlinking || settings.rapidTextBlinkMs <= 0) {
+  LaunchedEffect(blinkActive, hasRapidBlinkText, settings.enableTextBlinking, settings.rapidTextBlinkMs) {
+    if (!blinkActive || !hasRapidBlinkText || !settings.enableTextBlinking || settings.rapidTextBlinkMs <= 0) {
       rapidBlinkVisible = true
       return@LaunchedEffect
     }
@@ -1829,9 +1841,15 @@ fun ProperTerminal(
             emptyList()
           }
 
+          // Reset the per-frame blink probe; renderText() sets an entry true if it
+          // draws a SLOW_BLINK / RAPID_BLINK cell in the visible region this frame.
+          blinkProbe[0] = false
+          blinkProbe[1] = false
+
           // Build rendering context with all state
           val renderingContext = RenderingContext(
             bufferSnapshot = bufferSnapshot,
+            blinkProbe = blinkProbe,
             cellWidth = cellWidth,
             cellHeight = cellHeight,
             baseCellHeight = baseCellHeight,
@@ -1883,6 +1901,13 @@ fun ProperTerminal(
             cachedHyperlinks = detectedHyperlinks
             lastHyperlinkVersionHash = currentVersionHash
           }
+
+          // Reflect the renderer's blink-presence findings into composition state. Only
+          // an actual change notifies (mutableStateOf uses structural equality), so this
+          // re-arms/parks the blink loops on transitions and is a no-op otherwise — no
+          // per-frame recomposition. Reads here are in the draw phase, not composition.
+          if (hasSlowBlinkText != blinkProbe[0]) hasSlowBlinkText = blinkProbe[0]
+          if (hasRapidBlinkText != blinkProbe[1]) hasRapidBlinkText = blinkProbe[1]
         }
 
         // Cursor overlay — drawn in its own Canvas, stacked on top of the text canvas above

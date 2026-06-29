@@ -85,6 +85,13 @@ data class RenderingContext(
     val slowBlinkVisible: Boolean,
     val rapidBlinkVisible: Boolean,
 
+    // Optional write-back probe so the caller can learn whether the visible
+    // region actually contains blink-attributed text this frame, without a
+    // second scan. Index 0 = a SLOW_BLINK cell was drawn, index 1 = a
+    // RAPID_BLINK cell was drawn. The caller resets it before each render and
+    // reads it after; left null by callers that don't care (e.g. tests).
+    val blinkProbe: BooleanArray? = null,
+
     // Cell-based image rendering (images flow with text)
     val imageDataCache: ImageDataCache? = null,
     val terminalWidthCells: Int = 80,
@@ -250,10 +257,29 @@ fun analyzeCharacter(
 }
 
 /**
- * Cache for CharacterAnalysis results to avoid redundant analysis between render passes.
- * Key: (row, col) pair, Value: CharacterAnalysis result
+ * Per-frame cache of [CharacterAnalysis] so the text pass can reuse the analysis the
+ * background pass already computed, indexed by (row, col).
+ *
+ * Backed by a flat array rather than a `Map<Pair<Int,Int>, …>`: the old map allocated a
+ * boxed `Pair` (plus two boxed Ints) and a HashMap node for every visible cell on every
+ * frame — thousands of short-lived allocations per redraw during bulk output. A new
+ * instance is allocated per render call (so it stays thread-safe on the shared renderer
+ * object, and starts all-null with no reset needed), but that is a single array
+ * allocation instead of per-cell churn. `row`/`col` are always within
+ * `[0, visibleRows) × [0, visibleCols)` on the hot path; out-of-range access is treated
+ * as a miss so callers fall back to recomputing, exactly like the old map.
  */
-private typealias AnalysisCache = MutableMap<Pair<Int, Int>, CharacterAnalysis>
+private class AnalysisCache(private val rows: Int, private val cols: Int) {
+    private val data: Array<CharacterAnalysis?> =
+        arrayOfNulls(if (rows > 0 && cols > 0) rows * cols else 0)
+
+    operator fun set(row: Int, col: Int, analysis: CharacterAnalysis) {
+        if (row in 0 until rows && col in 0 until cols) data[row * cols + col] = analysis
+    }
+
+    operator fun get(row: Int, col: Int): CharacterAnalysis? =
+        if (row in 0 until rows && col in 0 until cols) data[row * cols + col] else null
+}
 
 /**
  * Cache key for text measurements (issue #147 - special character rendering optimization).
@@ -371,7 +397,7 @@ object TerminalCanvasRenderer {
     fun DrawScope.renderTerminal(ctx: RenderingContext): Map<Int, List<Hyperlink>> {
         val hyperlinksCache = mutableMapOf<Int, List<Hyperlink>>()
         // Cache character analysis to avoid redundant computation between passes
-        val analysisCache: AnalysisCache = mutableMapOf()
+        val analysisCache = AnalysisCache(ctx.visibleRows, ctx.visibleCols)
 
         // Pass 1: Draw backgrounds and populate analysis cache
         renderBackgrounds(ctx, analysisCache)
@@ -540,7 +566,7 @@ object TerminalCanvasRenderer {
 
                 // Use shared character analysis helper and cache the result
                 val analysis = analyzeCharacter(char, line, col, ctx.visibleCols, ctx.ambiguousCharsAreDoubleWidth)
-                analysisCache[lineIndex to col] = analysis
+                analysisCache[row, col] = analysis
 
                 // Get attributes
                 val isInverse = style?.hasOption(BossTextStyle.Option.INVERSE) ?: false
@@ -668,6 +694,14 @@ object TerminalCanvasRenderer {
         val hyperlinksCache: Map<Int, List<Hyperlink>> = ctx.precomputedHyperlinks
             ?: detectAllHyperlinks(ctx)
 
+        // Memoize TextStyle for the duration of this frame, keyed by foreground color
+        // (raw ULong, lossless) with the 4 bold/italic combinations in a small array.
+        // fontFamily/fontSize are constant for the whole render, so they need not be in
+        // the key. Without this, flushBatch() built a fresh TextStyle (and its internal
+        // SpanStyle/ParagraphStyle) for every style run on every row on every frame.
+        // Frame-local so it stays thread-safe on the shared renderer object.
+        val textStyleCache = HashMap<Long, Array<TextStyle?>>()
+
         for (row in 0 until ctx.visibleRows) {
             val lineIndex = row - ctx.scrollOffset
             val line = snapshot.getLine(lineIndex)
@@ -686,14 +720,19 @@ object TerminalCanvasRenderer {
                     val x = batchStartCol * ctx.cellWidth
                     val y = row * ctx.cellHeight
 
-                    val textStyle = TextStyle(
-                        color = batchFgColor ?: ctx.settings.defaultForegroundColor,
+                    val resolvedColor = batchFgColor ?: ctx.settings.defaultForegroundColor
+                    val variants = textStyleCache.getOrPut(resolvedColor.value.toLong()) {
+                        arrayOfNulls(4)
+                    }
+                    val variantIndex = (if (batchIsBold) 2 else 0) or (if (batchIsItalic) 1 else 0)
+                    val textStyle = variants[variantIndex] ?: TextStyle(
+                        color = resolvedColor,
                         fontFamily = ctx.measurementFontFamily,
                         fontSize = ctx.fontSize.sp,
                         fontWeight = if (batchIsBold) FontWeight.Bold else FontWeight.Normal,
                         fontStyle = if (batchIsItalic) androidx.compose.ui.text.font.FontStyle.Italic
                             else androidx.compose.ui.text.font.FontStyle.Normal
-                    )
+                    ).also { variants[variantIndex] = it }
 
                     drawText(
                         textMeasurer = ctx.textMeasurer,
@@ -818,10 +857,9 @@ object TerminalCanvasRenderer {
 
                 val x = visualCol * ctx.cellWidth
                 val y = row * ctx.cellHeight
-                val lineIndex = row - ctx.scrollOffset
 
                 // Use cached analysis from renderBackgrounds, or compute if not found
-                val analysis = analysisCache[lineIndex to col]
+                val analysis = analysisCache[row, col]
                     ?: analyzeCharacter(char, line, col, snapshot.width, ctx.ambiguousCharsAreDoubleWidth)
 
                 // Get nextChar for rendering emoji with variation selectors
@@ -843,6 +881,21 @@ object TerminalCanvasRenderer {
                 val isHidden = style?.hasOption(BossTextStyle.Option.HIDDEN) ?: false
                 val isSlowBlink = style?.hasOption(BossTextStyle.Option.SLOW_BLINK) ?: false
                 val isRapidBlink = style?.hasOption(BossTextStyle.Option.RAPID_BLINK) ?: false
+
+                // Report blink-attributed text in the visible region so the caller can
+                // park the blink toggle loops when none is present (no blinking text =>
+                // no periodic full-canvas repaints on a focused, idle terminal). Only a
+                // cell that actually draws a glyph counts: a blink-attributed space,
+                // NUL, or HIDDEN cell toggles nothing visible, so arming the loop for it
+                // would be exactly the idle repaint this avoids. (isBlinkVisible is
+                // deliberately not part of this check — it's the current blink phase, so
+                // gating on it would be circular.)
+                if ((isSlowBlink || isRapidBlink) && !isHidden && char != ' ' && char != '\u0000') {
+                    ctx.blinkProbe?.let {
+                        if (isSlowBlink) it[0] = true
+                        if (isRapidBlink) it[1] = true
+                    }
+                }
 
                 // Calculate colors
                 val baseFg = style?.foreground?.let { ColorUtils.convertTerminalColor(it) }

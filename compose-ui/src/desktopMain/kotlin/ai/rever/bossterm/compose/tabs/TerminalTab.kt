@@ -485,6 +485,15 @@ data class TerminalTab(
         // Cancel all coroutines in this scope (including writeConsumerJob)
         coroutineScope.cancel()
 
+        // Tear down the display: cancels its redraw scope, closes the redraw
+        // channel, and stops the parked redraw coroutine. Without this every
+        // closed tab/pane leaks a Main-dispatcher coroutine and pins the display.
+        try {
+            display.dispose()
+        } catch (e: Exception) {
+            System.err.println("WARN: Failed to dispose display: ${e.message}")
+        }
+
         // Terminal cleanup (if needed)
         // terminal.close() may not be available in all BossTerm versions
     }

@@ -19,11 +19,22 @@ import java.security.SecureRandom
  * newly launched instance with a deep-link argument forwards the URI there and exits
  * before any AWT/Compose init. A stale port file (dead listener) falls back to
  * handling the link locally.
+ *
+ * Trust model: the channel is loopback-only and `deeplink.port` is chmod-600, so the
+ * secret is readable only by THIS OS user. The assumption the design rests on is that any
+ * same-user local process is already inside the user's trust boundary — such a process can
+ * read the port file and inject an arbitrary `bossterm://` URI, but that buys it nothing: a
+ * forged `auth/verify` only redeems a single-use token the caller must already possess, so
+ * there is no privilege escalation. The secret + constant-time compare + bounded read exist
+ * to keep OTHER users (and unprivileged remote connects, which loopback binding already
+ * blocks) out, not to defend against the user's own processes.
  */
 internal object DeepLinkSocket {
 
     private val log = LoggerFactory.getLogger(DeepLinkSocket::class.java)
-    private val portFile = File(System.getProperty("user.home"), ".bossterm/deeplink.port")
+    // Injectable so tests can point it at a temp file; production uses ~/.bossterm/deeplink.port.
+    internal var portFile = File(System.getProperty("user.home"), ".bossterm/deeplink.port")
+    @Volatile private var listenerSocket: ServerSocket? = null
 
     /** Try to hand [uri] to an already-running instance. True = forwarded, caller exits. */
     fun tryForward(uri: String): Boolean {
@@ -60,6 +71,7 @@ internal object DeepLinkSocket {
         }
         runCatching {
             val server = ServerSocket(0, 4, InetAddress.getLoopbackAddress())
+            listenerSocket = server
             val secret = ByteArray(16).also { SecureRandom().nextBytes(it) }
                 .joinToString("") { "%02x".format(it) }
             val secretBytes = secret.toByteArray(Charsets.UTF_8)
@@ -87,6 +99,19 @@ internal object DeepLinkSocket {
                 }
             }.apply { isDaemon = true; name = "bossterm-deeplink"; start() }
         }.onFailure { log.warn("Deep-link listener unavailable: {}", it.message) }
+    }
+
+    /**
+     * Stop listening and drop the advertised port file. In production the listener is an
+     * app-lifetime singleton (a daemon thread that dies with the JVM, so no teardown is
+     * required); this exists so tests can release the loopback socket and so a future caller
+     * has an explicit shutdown path. Closing the [ServerSocket] unblocks the accept loop, which
+     * then sees `isClosed` and exits.
+     */
+    internal fun stop() {
+        runCatching { listenerSocket?.close() }
+        listenerSocket = null
+        runCatching { portFile.delete() }
     }
 
     /**

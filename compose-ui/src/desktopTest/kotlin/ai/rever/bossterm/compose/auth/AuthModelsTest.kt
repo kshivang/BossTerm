@@ -128,6 +128,12 @@ class AuthModelsTest {
         assertEquals("HH", parseAuthInput("x?refresh_token=RR&token=HH")?.tokenHash)
     }
 
+    @Test
+    fun `parseAuthInput stops the value at a nested question mark`() {
+        // The value scan must treat '?' as a delimiter, else 'token=abc?foo=bar' captures the trailing junk.
+        assertEquals("abc", parseAuthInput("https://app/cb?token=abc?foo=bar")?.tokenHash)
+    }
+
     // ---- error mapping ----
 
     @Test
@@ -197,6 +203,30 @@ class AuthModelsTest {
             )
         } finally {
             file.delete(); dir.delete()
+        }
+    }
+
+    @Test
+    fun `staging temp file is owner-only before any token bytes are written`() {
+        // The window the final-file test can't see: File.createTempFile honors umask (commonly
+        // 0644), so the temp must be chmod 600 while still EMPTY — else the token is briefly
+        // group/world-readable between write and restrict.
+        val posix = java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")
+        if (!posix) return // Windows ACLs protect the user profile; perms aren't applicable.
+        val dir = java.nio.file.Files.createTempDirectory("auth-tmp-perms").toFile()
+        val tmp = AuthStorage.newOwnerOnlyTempFile(dir)
+        try {
+            assertEquals(0L, tmp.length(), "staging temp must be empty when restricted")
+            assertEquals(
+                setOf(
+                    java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE
+                ),
+                java.nio.file.Files.getPosixFilePermissions(tmp.toPath()),
+                "staging temp must be chmod 600 before the token is written"
+            )
+        } finally {
+            tmp.delete(); dir.delete()
         }
     }
 }

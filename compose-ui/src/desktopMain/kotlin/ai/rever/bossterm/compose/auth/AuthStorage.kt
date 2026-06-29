@@ -31,16 +31,29 @@ internal object AuthStorage {
 
     fun save(auth: StoredAuth, file: File = defaultFile()) {
         runCatching {
-            file.parentFile?.mkdirs()
-            val tmp = File.createTempFile("auth", ".json.tmp", file.parentFile)
+            // Stage the temp in the target's OWN directory so the ATOMIC_MOVE stays on one
+            // filesystem. Going through absoluteFile guarantees a non-null parent even for a
+            // bare-filename File — otherwise createTempFile would fall back to the system temp
+            // dir and the move would become cross-device and fail.
+            val dir = file.absoluteFile.parentFile
+            dir?.mkdirs()
+            val tmp = newOwnerOnlyTempFile(dir)
             tmp.writeText(json.encodeToString(StoredAuth.serializer(), auth))
-            restrictToOwner(tmp)
             Files.move(
                 tmp.toPath(), file.toPath(),
                 StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING
             )
         }.onFailure { log.warn("Could not persist auth state: {}", it.message) }
     }
+
+    /**
+     * Staging temp file for [save], chmod-600 (on POSIX) while still EMPTY. `File.createTempFile`
+     * honors the umask (commonly 0644), so restricting *before* the token is written closes the
+     * window where the token bytes would otherwise be group/world-readable on disk. On non-POSIX
+     * filesystems the user-profile ACL is the protection.
+     */
+    internal fun newOwnerOnlyTempFile(dir: File?): File =
+        File.createTempFile("auth", ".json.tmp", dir).also { restrictToOwner(it) }
 
     fun clear(file: File = defaultFile()) {
         runCatching { Files.deleteIfExists(file.toPath()) }

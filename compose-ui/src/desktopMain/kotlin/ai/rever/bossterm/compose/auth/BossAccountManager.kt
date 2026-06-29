@@ -144,8 +144,8 @@ object BossAccountManager {
             val resp = gotrue("verify", json.encodeToString(VerifyRequest.serializer(), VerifyRequest(type, tokenHash)))
             if (resp.status.value in 200..299) {
                 val session = json.decodeFromString<SessionResponse>(resp.bodyAsText())
-                adoptSession(session)
-                (state.value as? AccountState.SignedIn)?.let { _signInEvents.tryEmit(it.email) }
+                val email = adoptSession(session)
+                if (email.isNotBlank()) _signInEvents.tryEmit(email)
             } else {
                 _state.value = AccountState.Error(errorFrom(resp, AuthPhase.VERIFY))
             }
@@ -155,13 +155,14 @@ object BossAccountManager {
         }
     }
 
-    /** Sign out: best-effort server revoke, then always clear local state. */
+    /** Sign out: flip state immediately (called from a Compose onClick), then do the disk IO and
+     *  best-effort server revoke off the UI thread. */
     fun signOut() {
-        val stored = AuthStorage.load()
-        AuthStorage.clear()
         _state.value = AccountState.SignedOut
-        if (stored != null) scope.launch {
-            runCatching {
+        scope.launch {
+            val stored = AuthStorage.load()
+            AuthStorage.clear()
+            if (stored != null) runCatching {
                 http.post("${SupabaseAuthConfig.url}/auth/v1/logout") {
                     header("apikey", SupabaseAuthConfig.anonKey)
                     header("Authorization", "Bearer ${stored.accessToken}")
@@ -209,7 +210,9 @@ object BossAccountManager {
         }
     }
 
-    private fun adoptSession(session: SessionResponse, fallbackEmail: String = "", fallbackUserId: String = "") {
+    /** @return the adopted account email, so callers can emit it without re-reading the shared
+     *  [state] (which a concurrent transition on this multi-threaded scope could change). */
+    private fun adoptSession(session: SessionResponse, fallbackEmail: String = "", fallbackUserId: String = ""): String {
         val email = session.user?.email?.takeIf { it.isNotBlank() } ?: fallbackEmail
         val userId = session.user?.id?.takeIf { it.isNotBlank() } ?: fallbackUserId
         AuthStorage.save(
@@ -222,6 +225,7 @@ object BossAccountManager {
             )
         )
         _state.value = AccountState.SignedIn(email, userId)
+        return email
     }
 
     private suspend fun gotrue(pathAndQuery: String, body: String): HttpResponse =

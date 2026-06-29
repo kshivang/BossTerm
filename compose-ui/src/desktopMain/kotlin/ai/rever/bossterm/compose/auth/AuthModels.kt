@@ -137,7 +137,9 @@ private fun paramValue(s: String, name: String): String? {
         if (prev == null || prev == '?' || prev == '&' || prev == '#' || prev.isWhitespace()) {
             val start = at + key.length
             var end = start
-            while (end < s.length && s[end] != '&' && s[end] != '#' && !s[end].isWhitespace()) end++
+            // Stop at any query/fragment delimiter. '?' too: a nested '?' never appears inside a
+            // real token (hex/base64url), so treating it as a boundary can only trim junk.
+            while (end < s.length && s[end] != '&' && s[end] != '?' && s[end] != '#' && !s[end].isWhitespace()) end++
             val v = s.substring(start, end)
             return if (v.isBlank()) null else decodeQueryComponent(v)
         }

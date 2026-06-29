@@ -10,4 +10,4 @@ Categories=System;TerminalEmulator;Utility;
 Keywords=terminal;shell;console;command;prompt;
 StartupWMClass=bossterm
 StartupNotify=true
-MimeType=application/x-terminal-emulator;
+MimeType=application/x-terminal-emulator;x-scheme-handler/bossterm;

@@ -14,8 +14,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.util.concurrent.atomic.AtomicLong
-import kotlin.concurrent.timer
 
 /**
  * Compose implementation of TerminalDisplay interface with adaptive debouncing.
@@ -67,21 +65,9 @@ class ComposeTerminalDisplay : TerminalDisplay {
     private var lastModeSwitch = System.currentTimeMillis()
     private var returnToInteractiveJob: Job? = null
 
-    // ===== PERFORMANCE METRICS =====
-    private val redrawCount = AtomicLong(0)
-    private val skippedRedraws = AtomicLong(0) // Count of coalesced redraws
-    private val startTime = System.currentTimeMillis()
-    private var lastMetricsReport = System.currentTimeMillis()
-    private val metricsReportInterval = 5000L // Report every 5 seconds
-
     init {
         // Start redraw processor coroutine
         startRedrawProcessor()
-
-        // Start metrics reporting timer
-        timer("RedrawMetrics", daemon = true, period = metricsReportInterval) {
-            reportMetrics()
-        }
     }
     // Non-reactive cursor state - only redrawTrigger controls recomposition
     // This prevents flickering caused by Compose State updates racing with debounced redraws
@@ -435,11 +421,9 @@ class ComposeTerminalDisplay : TerminalDisplay {
             }
         }
 
-        val sent = redrawChannel.trySend(RedrawRequest(priority = RedrawPriority.NORMAL))
-        if (!sent.isSuccess) {
-            // Channel is full (CONFLATED), request was coalesced
-            skippedRedraws.incrementAndGet()
-        }
+        // Conflated channel: a full channel simply coalesces this request into the
+        // pending one, which is the intended debouncing behaviour.
+        redrawChannel.trySend(RedrawRequest(priority = RedrawPriority.NORMAL))
     }
 
     /**
@@ -529,28 +513,23 @@ class ComposeTerminalDisplay : TerminalDisplay {
      * Perform the actual redraw by updating Compose state.
      */
     private fun actualRedraw() {
-        redrawCount.incrementAndGet()
         _redrawTrigger.value += 1
     }
 
-    // ===== METRICS REPORTING =====
-    private fun reportMetrics() {
-        val now = System.currentTimeMillis()
-        val totalTime = (now - startTime) / 1000.0
-        val intervalTime = (now - lastMetricsReport) / 1000.0
-        val totalRedraws = redrawCount.get()
-        val totalSkipped = skippedRedraws.get()
-        val totalRequests = totalRedraws + totalSkipped
-        val efficiencyPercent = if (totalRequests > 0) {
-            (totalSkipped.toDouble() / totalRequests * 100)
-        } else 0.0
-
-        // Performance metrics reporting removed
-
-        lastMetricsReport = now
-    }
-
-    fun printFinalMetrics() {
-        // Final metrics reporting removed
+    /**
+     * Release everything started in [init]. Must be called when the owning
+     * tab / split pane is closed.
+     *
+     * Without this the redraw coroutine stays parked on [redrawChannel] forever
+     * and [redrawScope] is never cancelled, so the display (and the render state
+     * it captures) can never be collected — one leaked Main-dispatcher coroutine
+     * per tab/pane ever opened. Idempotent: cancelling an already-cancelled scope
+     * and closing an already-closed channel are both no-ops.
+     */
+    fun dispose() {
+        returnToInteractiveJob?.cancel()
+        redrawJob?.cancel()
+        redrawScope.cancel()
+        redrawChannel.close()
     }
 }

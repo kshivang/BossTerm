@@ -61,12 +61,18 @@ import androidx.compose.ui.graphics.toComposeImageBitmap
  *
  * This is the main entry point for the BossTerm application.
  */
-fun main() {
+fun main(args: Array<String>) {
     // Configure GPU rendering (must be before any Skiko/Compose initialization)
     configureGpuRendering()
 
     // Set WM_CLASS for Linux desktop integration (must be before any AWT init)
     setLinuxWMClass()
+
+    // bossterm:// deep links (sign-in callback). Must run before application{} so a
+    // cold-start URL is caught; returns true when this launch existed only to carry a
+    // deep link that was forwarded to an already-running instance — exit before any
+    // window opens. Also registers the scheme in HKCU on packaged Windows launches.
+    if (ai.rever.bossterm.compose.auth.DeepLinkHandler.install(args)) return
 
     // App-singleton MCP server. Constructed once before composition starts so
     // its lifetime spans every Window. Windows register their TabbedTerminalState
@@ -1087,19 +1093,33 @@ private fun startGlobalHotKeyManager() {
 
     // Start the manager with window-specific callback
     GlobalHotKeyManager.start(config) { windowNumber ->
-        // Find the window with this number
-        val window = WindowManager.getWindowByNumber(windowNumber)
-        if (window != null) {
-            // Window exists - toggle its visibility
-            val awtWindow = window.awtWindow
-            if (awtWindow != null) {
-                WindowVisibilityController.toggleWindow(listOf(awtWindow))
-            }
-        } else {
-            // No window with this number - create one if it's window 1
-            if (windowNumber == 1) {
+        if (windowNumber == 0) {
+            // Single global show/hide toggle (modifiers + configured key). Toggle the
+            // active window — toggleWindow() prefers focused > visible > first — or create
+            // one if none exist yet, so the hotkey can also summon the app from cold.
+            val awtWindows = WindowManager.windows.mapNotNull { it.awtWindow }
+            if (awtWindows.isNotEmpty()) {
+                WindowVisibilityController.toggleWindow(awtWindows)
+            } else {
                 javax.swing.SwingUtilities.invokeLater {
                     WindowManager.createWindow()
+                }
+            }
+        } else {
+            // Find the window with this number
+            val window = WindowManager.getWindowByNumber(windowNumber)
+            if (window != null) {
+                // Window exists - toggle its visibility
+                val awtWindow = window.awtWindow
+                if (awtWindow != null) {
+                    WindowVisibilityController.toggleWindow(listOf(awtWindow))
+                }
+            } else {
+                // No window with this number - create one if it's window 1
+                if (windowNumber == 1) {
+                    javax.swing.SwingUtilities.invokeLater {
+                        WindowManager.createWindow()
+                    }
                 }
             }
         }

@@ -135,6 +135,17 @@ compose.desktop {
                         <string>BossTerm needs permission to send notifications when commands complete.</string>
                         <key>NSUserNotificationAlertStyle</key>
                         <string>alert</string>
+                        <key>CFBundleURLTypes</key>
+                        <array>
+                            <dict>
+                                <key>CFBundleURLName</key>
+                                <string>ai.rever.bossterm</string>
+                                <key>CFBundleURLSchemes</key>
+                                <array>
+                                    <string>bossterm</string>
+                                </array>
+                            </dict>
+                        </array>
                     """.trimIndent()
                 }
             }
@@ -614,16 +625,40 @@ fun fixDesktopFileInDebPackage(packageDir: File, injected: InjectedExecOps) {
             commandLine("dpkg-deb", "-R", debFile.absolutePath, workDir.absolutePath)
         }
 
-        // Find and modify .desktop file
+        // Find and modify .desktop file. jpackage's generated entry has neither
+        // StartupWMClass (taskbar grouping) nor the bossterm:// scheme handler, so we patch
+        // both: add StartupWMClass, register MimeType=x-scheme-handler/bossterm, and ensure the
+        // Exec line passes the URL through with %U — without all three, the sign-in magic link
+        // (bossterm://auth/verify) has no handler on .deb installs. (RPM is not repacked below —
+        // see note; .rpm scheme registration remains unhandled.)
         var modified = false
         workDir.walkTopDown()
             .filter { it.isFile && it.name.endsWith(".desktop") }
             .forEach { desktopFile ->
                 var content = desktopFile.readText()
+                var changed = false
                 if (!content.contains("StartupWMClass")) {
                     content = content.trimEnd() + "\nStartupWMClass=bossterm\n"
+                    changed = true
+                }
+                if (!content.contains("x-scheme-handler/bossterm")) {
+                    content = if (Regex("(?m)^MimeType=").containsMatchIn(content)) {
+                        content.replace(Regex("(?m)^MimeType=(.*)$")) { m ->
+                            val v = m.groupValues[1].trimEnd(';')
+                            "MimeType=$v;x-scheme-handler/bossterm;"
+                        }
+                    } else {
+                        content.trimEnd() + "\nMimeType=x-scheme-handler/bossterm;\n"
+                    }
+                    changed = true
+                }
+                // The launcher must receive the URL: ensure the Exec line ends with %U.
+                content = content.replace(Regex("(?m)^(Exec=.*?)( %[UufF])?\\s*$")) { m ->
+                    if (m.groupValues[2].isBlank()) { changed = true; "${m.groupValues[1]} %U" } else m.value
+                }
+                if (changed) {
                     desktopFile.writeText(content)
-                    println("Added StartupWMClass to ${desktopFile.name}")
+                    println("Patched ${desktopFile.name} (StartupWMClass + bossterm:// scheme handler)")
                     modified = true
                 }
             }

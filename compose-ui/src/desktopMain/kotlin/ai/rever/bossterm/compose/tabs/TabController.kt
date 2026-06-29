@@ -106,6 +106,19 @@ class TabController(
         session.terminal.addCommandStateListener(titleResetListener)
         session.commandStateListeners.add(titleResetListener)
 
+        // Mirror an app's OSC 0/1 icon title (e.g. "claude") onto the tab name so the
+        // LEFT TAB BAR reflects title changes even for BACKGROUND (unfocused) tabs.
+        // ProperTerminal also collects this, but only for the active tab's mounted
+        // Composable; this runs for the session's whole life regardless of focus.
+        // customTitle (Rename…) always wins and is re-asserted by the snapshotFlow above.
+        session.coroutineScope.launch {
+            session.display.iconTitleFlow.collect { newTitle ->
+                if (newTitle.isNotEmpty() && session.customTitle.value == null) {
+                    session.title.value = newTitle
+                }
+            }
+        }
+
         // Track the git branch of the working directory for the left tab-bar's
         // third chip line (Warp-style title / cwd / branch). Debounced + collectLatest
         // so a rapid `cd` cancels the stale lookup; null outside a repository.

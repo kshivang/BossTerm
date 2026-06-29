@@ -750,6 +750,10 @@ fun TabbedTerminal(
 
             // Register as CommandStateListener to track shell prompt state (OSC 133)
             tab.terminal.addCommandStateListener(interceptor)
+            // Track it so TerminalTab.dispose() detaches it from the terminal; otherwise
+            // the interceptor stays registered for the terminal's life and pins the AI
+            // detector/launcher state after the tab is gone.
+            tab.commandStateListeners.add(interceptor)
 
             // Store reference in tab for ProperTerminal to access
             tab.aiCommandInterceptor = interceptor
@@ -855,6 +859,29 @@ fun TabbedTerminal(
     // closing) and uses a separate window driven by DaemonShareClient over the attach socket.
     var daemonShareOpen by remember { mutableStateOf(false) }
     var daemonShareSessionId by remember { mutableStateOf<String?>(null) }
+    // Account sign-in (BossConsole Supabase backend) — window opened from the Share menus.
+    var showSignInWindow by remember { mutableStateOf(false) }
+    var signInFocusTick by remember { mutableStateOf(0) }
+    // "Signed in as …" toast for deep-link sign-ins that complete after the window was
+    // closed (the manager emits only on interactive verifies, not the startup restore).
+    // The collector must NOT block on the dismiss delay — otherwise a second sign-in during
+    // the window is dropped (signInEvents is a buffer-of-1 SharedFlow). Auto-dismiss runs in
+    // its own effect, keyed on the toast value, so each new toast restarts the timer.
+    var signInToast by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        // Drain a cold-start sign-in (a deep link that launched the app and verified before any
+        // window was listening) so its toast isn't lost; then stream live interactive sign-ins.
+        ai.rever.bossterm.compose.auth.BossAccountManager.consumePendingSignInToast()?.let { signInToast = it }
+        ai.rever.bossterm.compose.auth.BossAccountManager.signInEvents.collect { email ->
+            signInToast = email
+        }
+    }
+    LaunchedEffect(signInToast) {
+        if (signInToast != null) {
+            kotlinx.coroutines.delay(5000)
+            signInToast = null
+        }
+    }
     // "Add remote": connect to another BossTerm's shared session (native client).
     var showAddRemote by remember { mutableStateOf(false) }
     // Pending "request control?" confirmation: a view-only group's split/new-tab click stores
@@ -1011,6 +1038,17 @@ fun TabbedTerminal(
         }
     }
     val mcpServerName = LocalBossTermMcpConfig.current?.serverName ?: "bossterm"
+    // Sign In appears only in standalone BossTerm: inside an embedder (e.g. BossConsole's
+    // terminal-tab plugin, which has its own account + owns the boss:// scheme) it's hidden.
+    val signInVisible = mcpServerName == "bossterm"
+    // Once signed in, the menu item becomes an account row showing the email instead of
+    // "Sign In…" (clicking still opens the window, which then offers "Sign out"). The account
+    // glyph is drawn as a Swing Icon in ContextMenuController — NOT an emoji in the label,
+    // which corrupts AWT menu text metrics.
+    val accountState by ai.rever.bossterm.compose.auth.BossAccountManager.state.collectAsState()
+    val signInLabel = (accountState as? ai.rever.bossterm.compose.auth.BossAccountManager.AccountState.SignedIn)
+        ?.email ?: "Sign In…"
+    val openSignIn: () -> Unit = { showSignInWindow = true; signInFocusTick++ }
     val fireMcpAttach: (McpAttachTarget) -> Unit = { target ->
         // De-dupe: ignore clicks while an attach is in flight from any
         // right-click entry point. The Settings panel maintains its own
@@ -1388,6 +1426,8 @@ fun TabbedTerminal(
                 onShareAll = { index ->
                     tabController.tabs.getOrNull(index)?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.ALL) }
                 },
+                onSignIn = if (signInVisible) openSignIn else null,
+                signInLabel = signInLabel,
                 onStopShare = { index ->
                     tabController.tabs.getOrNull(index)?.let {
                         ai.rever.bossterm.compose.share.SessionShareManager.unshare(it.id)
@@ -1521,7 +1561,12 @@ fun TabbedTerminal(
                 sharedFont = sharedFont,
                 isActiveTab = isActive,
                 onTabTitleChange = { newTitle ->
-                    activeTab.title.value = newTitle
+                    // A user rename (customTitle) always wins; otherwise track the
+                    // app's OSC title. Matches the background-tab collector in
+                    // TabController.wireCwdTitle so active and background tabs behave alike.
+                    if (activeTab.customTitle.value == null) {
+                        activeTab.title.value = newTitle
+                    }
                 },
                 onNewTab = { requestNewTab() },
                 onSwitchShell = { shell ->
@@ -1737,7 +1782,13 @@ fun TabbedTerminal(
                                         label = "All Windows…",
                                         action = { startShare(activeTab.id, ai.rever.bossterm.compose.share.ShareScope.ALL) }
                                     )
-                                )
+                                ) + (if (signInVisible) listOf(
+                                    ContextMenuItem(
+                                        id = "sign_in",
+                                        label = signInLabel,
+                                        action = openSignIn
+                                    )
+                                ) else emptyList())
                             )
                         }
                     }
@@ -1938,13 +1989,34 @@ fun TabbedTerminal(
                                         id = "share_all", label = "Share All Windows", enabled = true,
                                         action = { startShare(active.id, ai.rever.bossterm.compose.share.ShareScope.ALL) }
                                     ),
-                                ))
+                                ) + (if (signInVisible) listOf(
+                                    ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
+                                        id = "sign_in", label = signInLabel, enabled = true,
+                                        action = openSignIn
+                                    )
+                                ) else emptyList()))
                             }
                         }
                     },
                 )
                 attachStatus?.let { status ->
                     AttachToast(status = status)
+                }
+                // Account sign-in confirmation (auto-dismisses after a few seconds).
+                signInToast?.let { email ->
+                    Box(
+                        modifier = Modifier
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            .background(Color(0xE6252526))
+                            .border(1.dp, Color(0xFF404040), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                    ) {
+                        androidx.compose.material3.Text(
+                            "Signed in as $email",
+                            color = Color(0xFF81C784),
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
                 }
                 // Approval prompts (issue #276): one banner per waiting device.
                 pendingShareRequests.forEach { req ->
@@ -1995,6 +2067,14 @@ fun TabbedTerminal(
                 }
             }
         }
+    }
+
+    // Account sign-in window — a real top-level OS window like the share window.
+    if (showSignInWindow) {
+        ai.rever.bossterm.compose.auth.SignInWindow(
+            onDismiss = { showSignInWindow = false },
+            focusTick = signInFocusTick,
+        )
     }
 
     // Session sharing window (issue #276): a real top-level OS window (like Settings)

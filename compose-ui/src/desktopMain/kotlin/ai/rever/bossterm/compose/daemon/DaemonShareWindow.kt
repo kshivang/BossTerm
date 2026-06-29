@@ -350,6 +350,19 @@ private fun RemoteAccessSection(share: DaemonAttachProtocol.ShareView) {
             },
             fontSize = 11.sp
         )
+        // Mint a fresh public link in place — same share server, viewers, and E2E secret. The daemon
+        // tears down + re-establishes the current provider (setRemoteMode with the same mode). Useful
+        // when a Cloudflare quick tunnel goes stale (its URL changes); for Tailscale serve/funnel the
+        // URL is stable, so this just re-establishes the mapping. Only shown while a provider is on.
+        if (share.remoteMode != "off") {
+            val refreshing = share.remoteStatus == "starting" || share.remoteStatus == "installing" ||
+                share.remoteStatus == "verifying" || share.remoteStatus == "retrying"
+            TextButton(
+                onClick = { if (!refreshing) DaemonShareClient.setRemoteMode(share.token, share.remoteMode) },
+                enabled = !refreshing,
+                colors = ButtonDefaults.textButtonColors(contentColor = AccentColor),
+            ) { Text(if (refreshing) "Refreshing…" else "↻ Refresh link", fontSize = 12.sp) }
+        }
     }
 }
 

@@ -13,9 +13,12 @@ import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import ai.rever.bossterm.compose.settings.SettingsManager
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
@@ -52,6 +55,16 @@ class DaemonSessionBridge(
         if (running) return
         running = true
         io.launch { runWithReconnect() }
+        // Route MCP enable/disable to the daemon whenever the user changes the setting — from the
+        // status pill, the Settings toggle, anywhere. This is the daemon-mode analog of how the
+        // in-process BossTermMcpManager observes [TerminalSettings.mcpEnabled]; the daemon starts/stops
+        // its MCP server and replies with McpState, which drives the status indicator.
+        io.launch {
+            SettingsManager.instance.settings
+                .map { it.mcpEnabled }
+                .distinctUntilChanged()
+                .collect { setMcpEnabled(it) }
+        }
     }
 
     fun stop() {

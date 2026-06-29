@@ -96,11 +96,5 @@ object DaemonBridgeCoordinator {
         bridge?.openSession(cwd)
     }
 
-    /** Route the GUI's MCP enable/disable to the daemon. No-op when no daemon is attached (the
-     *  in-process MCP manager handles the toggle in non-daemon mode). */
-    fun setMcpEnabled(enabled: Boolean) {
-        bridge?.setMcpEnabled(enabled)
-    }
-
     val isAttached: Boolean get() = bridge != null
 }

@@ -53,10 +53,35 @@ fun main(args: Array<String>) {
     val sessionHost = SessionHost(settings)
 
     // Host MCP in the daemon when enabled, so agent access keeps working while the GUI is closed.
-    // Same loopback endpoint + ~/.bossterm/mcp.port as the in-process server.
-    val mcpServer = if (settings.mcpEnabled) DaemonMcpServer(sessionHost) else null
-    val mcpPort = mcpServer?.start(settings.mcpPort)
-    if (mcpServer != null && mcpPort == null) log.warn("Daemon MCP server failed to bind; continuing without it")
+    // Same loopback endpoint + mcp.port as the in-process server. Runtime-controllable (held in a
+    // ref + guarded by [mcpLock]) so the GUI's MCP settings toggle works LIVE in daemon mode: the GUI
+    // sends SetMcpEnabled over the attach socket, which calls [setDaemonMcpEnabled] below.
+    val mcpServerRef = AtomicReference<DaemonMcpServer?>(null)
+    val mcpLock = Any()
+    fun currentMcpPort(): Int? = mcpServerRef.get()?.boundPort
+    fun setDaemonMcpEnabled(on: Boolean): Int? = synchronized(mcpLock) {
+        val running = mcpServerRef.get()
+        if (on) {
+            running?.boundPort ?: run {
+                val srv = DaemonMcpServer(sessionHost)
+                val p = srv.start(SettingsManager.instance.settings.value.mcpPort)
+                if (p == null) {
+                    log.warn("Daemon MCP server failed to bind; continuing without it")
+                    null
+                } else {
+                    mcpServerRef.set(srv)
+                    SettingsManager.instance.updateSetting { copy(mcpEnabled = true) }
+                    log.info("Daemon MCP server enabled on 127.0.0.1:{}", p)
+                    p
+                }
+            }
+        } else {
+            running?.let { runCatching { it.stop() }; mcpServerRef.set(null); log.info("Daemon MCP server disabled") }
+            SettingsManager.instance.updateSetting { copy(mcpEnabled = false) }
+            null
+        }
+    }
+    if (settings.mcpEnabled) setDaemonMcpEnabled(true)
 
     // Host session sharing in the daemon, so a share link survives the GUI closing. Always
     // constructed but LAZY — no port is bound until the first share — so the GUI can start a share
@@ -65,7 +90,7 @@ fun main(args: Array<String>) {
     val shareServer = DaemonShareServer(
         host = sessionHost,
         settings = { SettingsManager.instance.settings.value },
-        mcpPort = { mcpServer?.boundPort },
+        mcpPort = { currentMcpPort() },
     )
 
     val stopLatch = CountDownLatch(1)
@@ -77,7 +102,7 @@ fun main(args: Array<String>) {
         version = version,
         protocolVersion = DaemonControlChannel.PROTOCOL_VERSION,
         uptimeMs = ::uptimeMs,
-        mcpPort = { mcpServer?.boundPort },
+        mcpPort = { currentMcpPort() },
         attachPort = { attachServerRef.get()?.boundPort?.takeIf { it > 0 } },
         onShutdown = { killSessions ->
             log.info("Daemon SHUTDOWN requested (killSessions={})", killSessions)
@@ -105,7 +130,10 @@ fun main(args: Array<String>) {
 
     // GUI-attach WebSocket (shares the control secret for auth). Always started; also carries the
     // Phase 2 share-management lane (delegates to shareServer; no-op when sharing is disabled).
-    attachServerRef.set(DaemonAttachServer(sessionHost, control.secretValue, shareServer).also {
+    attachServerRef.set(DaemonAttachServer(
+        sessionHost, control.secretValue, shareServer,
+        setMcpEnabled = { on -> setDaemonMcpEnabled(on) },
+    ).also {
         if (it.start() < 0) log.warn("Daemon attach server failed to bind; GUI cannot render daemon sessions")
     })
 
@@ -116,7 +144,7 @@ fun main(args: Array<String>) {
         log.info("BossTerm daemon stopping")
         runCatching { DaemonTray.remove() }
         runCatching { control.stop() }
-        runCatching { mcpServer?.stop() }
+        runCatching { mcpServerRef.get()?.stop() }
         runCatching { shareServer?.stop() } // stop share server + tunnels before sessions die
         runCatching { attachServerRef.get()?.stop() }
         runCatching { sessionHost.shutdownAll() } // joins PTY-kill threads so shells aren't orphaned

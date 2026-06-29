@@ -113,6 +113,14 @@ object DaemonAttachProtocol {
             val shares: List<ShareView> = emptyList(),
             val pending: List<PendingApproval> = emptyList(),
         ) : Server()
+
+        /**
+         * The daemon's MCP server state: [port] is the bound loopback port, or null when MCP is off.
+         * Broadcast to attached GUIs after a live [Client.SetMcpEnabled] so the MCP status indicator
+         * reflects reality (the GUI's in-process manager isn't running in daemon mode).
+         */
+        @Serializable @SerialName("mcpState")
+        data class McpState(val port: Int? = null) : Server()
     }
 
     @Serializable
@@ -164,5 +172,13 @@ object DaemonAttachProtocol {
         /** Deny a pending viewer. */
         @Serializable @SerialName("denyViewer")
         data class DenyViewer(val token: String, val clientId: String) : Client()
+
+        /**
+         * Turn the daemon's MCP server on/off live — the GUI's MCP settings toggle in daemon mode,
+         * where the in-process manager isn't running. The daemon replies by broadcasting
+         * [Server.McpState] with the resulting port (or null when off).
+         */
+        @Serializable @SerialName("setMcpEnabled")
+        data class SetMcpEnabled(val enabled: Boolean) : Client()
     }
 }

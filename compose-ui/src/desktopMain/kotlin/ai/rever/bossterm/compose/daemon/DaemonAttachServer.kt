@@ -37,6 +37,8 @@ class DaemonAttachServer(
     /** When sharing is enabled, the daemon's public-share server — the GUI starts/stops/approves
      *  shares over this attach socket and observes them via [DaemonAttachProtocol.Server.ShareState]. */
     private val shareServer: DaemonShareServer? = null,
+    /** Starts/stops the daemon's MCP server live (GUI MCP toggle); returns the bound port or null. */
+    private val setMcpEnabled: ((Boolean) -> Int?)? = null,
 ) {
     private val log = LoggerFactory.getLogger(DaemonAttachServer::class.java)
 
@@ -60,6 +62,12 @@ class DaemonAttachServer(
             c.pid?.let { DaemonLauncher.activatePid(it) }
         }
         return clients.size
+    }
+
+    /** Push the daemon's MCP state (bound port, or null = off) to every attached GUI. */
+    private fun broadcastMcpState(port: Int?) {
+        val msg = DaemonAttachProtocol.Server.McpState(port)
+        clients.forEach { c -> runCatching { c.send(msg) } }
     }
 
     /** Bind on loopback, trying [desiredPort]..+9. Returns the bound port or -1. */
@@ -255,6 +263,10 @@ class DaemonAttachServer(
                     is DaemonAttachProtocol.Client.SetShareName -> shareServer?.setName(msg.token, msg.name)
                     is DaemonAttachProtocol.Client.ApproveViewer -> shareServer?.approveViewer(msg.token, msg.clientId, msg.control)
                     is DaemonAttachProtocol.Client.DenyViewer -> shareServer?.denyViewer(msg.token, msg.clientId)
+                    // Live MCP enable/disable from the GUI's settings toggle; broadcast the new state
+                    // so every attached GUI's MCP indicator updates (no-op if no controller wired).
+                    is DaemonAttachProtocol.Client.SetMcpEnabled ->
+                        setMcpEnabled?.let { broadcastMcpState(it.invoke(msg.enabled)) }
                 }
             }
         } catch (e: Exception) {

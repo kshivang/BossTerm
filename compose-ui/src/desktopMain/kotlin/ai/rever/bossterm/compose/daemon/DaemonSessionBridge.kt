@@ -66,6 +66,12 @@ class DaemonSessionBridge(
     fun openSession(cwd: String? = null): Boolean =
         send(DaemonAttachProtocol.Client.Open(cwd = cwd))
 
+    /** Turn the daemon's MCP server on/off (the GUI's MCP settings toggle in daemon mode). The daemon
+     *  replies with [DaemonAttachProtocol.Server.McpState], which updates the status indicator. */
+    fun setMcpEnabled(enabled: Boolean) {
+        send(DaemonAttachProtocol.Client.SetMcpEnabled(enabled))
+    }
+
     /** Enqueue a client message; returns false if it couldn't be sent (no connection / outbox full). */
     private fun send(m: DaemonAttachProtocol.Client): Boolean {
         val box = outbox ?: run {
@@ -141,6 +147,10 @@ class DaemonSessionBridge(
             is DaemonAttachProtocol.Server.Focus -> focusWindows()
             // Phase 2 daemon-share state — feed the process-wide hub the daemon-share window binds to.
             is DaemonAttachProtocol.Server.ShareState -> DaemonShareClient.update(msg)
+            // Daemon MCP toggled on/off — reflect the bound port (or off) in the status indicator.
+            is DaemonAttachProtocol.Server.McpState ->
+                if (msg.port != null) ai.rever.bossterm.compose.mcp.McpTerminalRegistry.setRunning(msg.port)
+                else ai.rever.bossterm.compose.mcp.McpTerminalRegistry.setStopped()
         }
     }
 

@@ -77,7 +77,13 @@ fun McpSettingsSection(
             SettingsToggle(
                 label = "Enable BossTerm MCP Server",
                 checked = settings.mcpEnabled,
-                onCheckedChange = { onSettingsChange(settings.copy(mcpEnabled = it)) },
+                onCheckedChange = {
+                    onSettingsChange(settings.copy(mcpEnabled = it))
+                    // In daemon mode the in-process manager isn't running; route the toggle to the
+                    // daemon over the attach socket so its MCP server starts/stops live. No-op when no
+                    // daemon is attached (the in-process manager reacts to the setting instead).
+                    ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.setMcpEnabled(it)
+                },
                 description = "Bind an in-process Model Context Protocol server on " +
                         "127.0.0.1 so external tools (e.g. AI clients) can read scrollback, " +
                         "search output, and drive your tabs. Toggling takes effect immediately."

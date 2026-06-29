@@ -194,6 +194,13 @@ class ContextMenuController {
                             font = Font(".AppleSystemUIFont", Font.PLAIN, 13)
                             border = BorderFactory.createEmptyBorder(4, 12, 4, 12)
                             isOpaque = true
+                            // Signed-in account row (id "sign_in"/"custom_sign_in" with an email
+                            // label) gets a person glyph drawn in Java2D — NOT an emoji in the text,
+                            // which poisons the popup's font metrics and garbles every item.
+                            if (element.id.endsWith("sign_in") && element.label.contains('@')) {
+                                icon = AccountGlyphIcon
+                                iconTextGap = 8
+                            }
                             addActionListener { element.action() }
                         }
                         addToMenu(menu, menuItem)
@@ -259,6 +266,35 @@ class ContextMenuController {
         if (item != null && item.enabled) {
             item.action()
             hideMenu()
+        }
+    }
+}
+
+/**
+ * Small person silhouette (head + shoulders) drawn in Java2D for the signed-in account menu row.
+ * Java2D vector glyph, not a font character — so it can't trigger the emoji-font fallback that
+ * corrupts AWT menu text metrics.
+ */
+private val AccountGlyphIcon = object : javax.swing.Icon {
+    private val size = 14
+    override fun getIconWidth() = size
+    override fun getIconHeight() = size
+    override fun paintIcon(c: java.awt.Component?, g: java.awt.Graphics, x: Int, y: Int) {
+        val g2 = g.create() as java.awt.Graphics2D
+        try {
+            g2.setRenderingHint(
+                java.awt.RenderingHints.KEY_ANTIALIASING,
+                java.awt.RenderingHints.VALUE_ANTIALIAS_ON
+            )
+            g2.color = Color(0xCC, 0xCC, 0xCC)
+            // Head: a circle in the upper-middle.
+            g2.fill(java.awt.geom.Ellipse2D.Float(x + 4f, y + 1.5f, 6f, 6f))
+            // Shoulders: a half-disc clipped to the lower band so it reads as a torso, not a full circle.
+            val shoulders = java.awt.geom.Ellipse2D.Float(x + 1.5f, y + 8.5f, 11f, 11f)
+            g2.clip(java.awt.geom.Rectangle2D.Float(x.toFloat(), y.toFloat(), size.toFloat(), (size - 1).toFloat()))
+            g2.fill(shoulders)
+        } finally {
+            g2.dispose()
         }
     }
 }

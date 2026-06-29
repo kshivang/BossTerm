@@ -61,12 +61,18 @@ import androidx.compose.ui.graphics.toComposeImageBitmap
  *
  * This is the main entry point for the BossTerm application.
  */
-fun main() {
+fun main(args: Array<String>) {
     // Configure GPU rendering (must be before any Skiko/Compose initialization)
     configureGpuRendering()
 
     // Set WM_CLASS for Linux desktop integration (must be before any AWT init)
     setLinuxWMClass()
+
+    // bossterm:// deep links (sign-in callback). Must run before application{} so a
+    // cold-start URL is caught; returns true when this launch existed only to carry a
+    // deep link that was forwarded to an already-running instance — exit before any
+    // window opens. Also registers the scheme in HKCU on packaged Windows launches.
+    if (ai.rever.bossterm.compose.auth.DeepLinkHandler.install(args)) return
 
     // App-singleton MCP server. Constructed once before composition starts so
     // its lifetime spans every Window. Windows register their TabbedTerminalState

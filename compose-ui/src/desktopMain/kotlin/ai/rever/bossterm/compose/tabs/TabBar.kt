@@ -243,6 +243,10 @@ fun TabBar(
     onShareTab: (Int) -> Unit = {},
     onShareWindow: (Int) -> Unit = {},
     onShareAll: (Int) -> Unit = {},
+    /** Account sign-in (4th Share-submenu item). Null hides it (e.g. embedded builds). */
+    onSignIn: (() -> Unit)? = null,
+    /** Label for the sign-in item — the account email once signed in, else "Sign In…". */
+    signInLabel: String = "Sign In…",
     onStopShare: (Int) -> Unit = {},
     isSharing: (Int) -> Boolean = { false },
     onSplitVertical: () -> Unit = {},
@@ -293,7 +297,9 @@ fun TabBar(
                         ContextMenuController.MenuItem(id = "share_tab", label = "Tab…", enabled = true, action = { onShareTab(tabIndex) }),
                         ContextMenuController.MenuItem(id = "share_window", label = "Window…", enabled = true, action = { onShareWindow(tabIndex) }),
                         ContextMenuController.MenuItem(id = "share_all", label = "All Windows…", enabled = true, action = { onShareAll(tabIndex) })
-                    )
+                    ) + (onSignIn?.let { signIn ->
+                        listOf(ContextMenuController.MenuItem(id = "sign_in", label = signInLabel, enabled = true, action = { signIn() }))
+                    } ?: emptyList())
                 )
             )
         }

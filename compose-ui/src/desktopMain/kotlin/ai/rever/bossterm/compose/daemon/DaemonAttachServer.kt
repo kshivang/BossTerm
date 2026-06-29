@@ -12,8 +12,6 @@ import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
@@ -109,15 +107,30 @@ class DaemonAttachServer(
             runCatching { ws.close() }
             return
         }
+        // Attach-protocol skew check: a client sends ?v=<version>. Absent (older client) is tolerated;
+        // a present-but-mismatched version means the GUI and daemon disagree on the wire shape — refuse
+        // rather than silently mis-render (the control channel has its own HELLO version handshake).
+        val attachVer = ws.call.request.queryParameters["v"]
+        if (attachVer != null && attachVer != DaemonAttachProtocol.PROTOCOL_VERSION.toString()) {
+            log.warn("attach: rejected connection with incompatible protocol v{} (want {})", attachVer, DaemonAttachProtocol.PROTOCOL_VERSION)
+            runCatching { ws.close() }
+            return
+        }
 
         // Per-connection outbox: taps + layout pushes enqueue; this coroutine drains to the socket.
-        val outbox = Channel<String>(capacity = 4096, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+        // Two lanes — control frames (snapshot/list/closed/resized/shareState) are guaranteed; only
+        // incremental Output is droppable under back-pressure (the next snapshot/resync heals it).
+        val outbox = FrameOutbox()
         // sessionId → its output tap + size-collector job. Mutated from BOTH the incoming-frame
         // coroutine and the SessionHost change listener (arbitrary threads), so guarded by [lock].
         val attachments = HashMap<String, Attachment>()
         val lock = Any()
 
-        fun send(m: DaemonAttachProtocol.Server) { outbox.trySend(DaemonAttachProtocol.encodeServer(m)) }
+        fun send(m: DaemonAttachProtocol.Server) {
+            val text = DaemonAttachProtocol.encodeServer(m)
+            // Only incremental Output rides the droppable lane; every other frame is guaranteed.
+            if (m is DaemonAttachProtocol.Server.Output) outbox.sendOutput(text) else outbox.sendControl(text)
+        }
         val client = Client(ws.call.request.queryParameters["pid"]?.toLongOrNull(), { send(it) })
         clients.add(client)
 
@@ -131,13 +144,30 @@ class DaemonAttachServer(
         fun beginLocked(core: TerminalSessionCore) {
             if (attachments.containsKey(core.id)) return
             val sz = core.display.termSizeFlow.value
+            // Register the output tap BEFORE encoding the snapshot, so PTY output produced while we
+            // snapshot isn't lost (the old order — snapshot then listener — silently dropped that
+            // window). Output that races the snapshot is held in [prelude] and flushed right after the
+            // Snapshot frame is enqueued, so the client still sees Snapshot before Output — at worst a
+            // small duplicated region instead of a gap.
+            val preludeLock = Any()
+            var prelude: ArrayList<String>? = ArrayList()
+            val tap: (String) -> Unit = { d ->
+                val held = synchronized(preludeLock) {
+                    val p = prelude
+                    if (p != null) { p.add(d); true } else false
+                }
+                if (!held) send(DaemonAttachProtocol.Server.Output(core.id, d))
+            }
+            core.addRawOutputListener(tap)
             send(DaemonAttachProtocol.Server.Snapshot(
                 core.id,
                 TerminalSnapshotEncoder.encode(core.textBuffer.createSnapshot(), core.terminal.cursorX, core.terminal.cursorY),
                 sz.columns, sz.rows,
             ))
-            val tap: (String) -> Unit = { d -> send(DaemonAttachProtocol.Server.Output(core.id, d)) }
-            core.addRawOutputListener(tap)
+            synchronized(preludeLock) {
+                prelude?.forEach { send(DaemonAttachProtocol.Server.Output(core.id, it)) }
+                prelude = null
+            }
             // Push Resized whenever the grid changes (GUI-driven resize OR a TUI resizing it) so the
             // attached mirror's buffer follows — without this it stays stuck at the snapshot size.
             val sizeJob = ws.launch {
@@ -151,13 +181,15 @@ class DaemonAttachServer(
                     .drop(1)
                     .collect { send(sessionList()) }
             }
-            attachments[core.id] = Attachment(tap, listOf(sizeJob, metaJob))
+            attachments[core.id] = Attachment(core, tap, listOf(sizeJob, metaJob))
         }
 
         // Detach a session's tap + collector jobs. Caller holds [lock].
         fun endLocked(id: String) {
             attachments.remove(id)?.let { a ->
-                host.get(id)?.removeRawOutputListener(a.tap)
+                // Remove the tap from the core DIRECTLY — host.get(id) is already null once a session
+                // has exited and been reaped, which would otherwise skip the removal.
+                a.core.removeRawOutputListener(a.tap)
                 a.jobs.forEach { it.cancel() }
             }
         }
@@ -182,9 +214,9 @@ class DaemonAttachServer(
         val onChange: () -> Unit = { resync() }
         host.addChangeListener(onChange)
 
-        // Drain outbox to the socket.
+        // Drain outbox to the socket (control frames first, then output).
         val writer = ws.launch {
-            try { for (text in outbox) ws.send(Frame.Text(text)) } catch (_: Exception) {}
+            try { outbox.drainTo { text -> ws.send(Frame.Text(text)) } } catch (_: Exception) {}
         }
 
         // Forward daemon-share state to this GUI (Phase 2): the StateFlow emits the current value
@@ -232,8 +264,8 @@ class DaemonAttachServer(
         }
     }
 
-    /** Per-connection, per-session attachment: the output tap + its collector jobs (size, meta). */
-    private class Attachment(val tap: (String) -> Unit, val jobs: List<kotlinx.coroutines.Job>)
+    /** Per-connection, per-session attachment: the core, its output tap + collector jobs (size, meta). */
+    private class Attachment(val core: TerminalSessionCore, val tap: (String) -> Unit, val jobs: List<kotlinx.coroutines.Job>)
 
     private fun portAvailable(port: Int): Boolean =
         runCatching { ServerSocket().use { it.reuseAddress = false; it.bind(InetSocketAddress(HOST, port)); true } }.getOrDefault(false)

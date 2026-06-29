@@ -87,7 +87,8 @@ class DaemonSessionBridge(
 
     private suspend fun connectOnce() {
         // Report our pid so the daemon can activate this GUI window on "Open BossTerm".
-        val url = "ws://127.0.0.1:$attachPort/attach?token=$secret&pid=${ProcessHandle.current().pid()}"
+        val url = "ws://127.0.0.1:$attachPort/attach?token=$secret&pid=${ProcessHandle.current().pid()}" +
+            "&v=${DaemonAttachProtocol.PROTOCOL_VERSION}"
         val out = Channel<String>(capacity = 1024)
         outbox = out
         // Route the daemon-share UI's start/stop/approve calls onto THIS connection's outbox, so a

@@ -69,7 +69,30 @@ object BossTermPaths {
      */
     fun profileTag(): String {
         val path = dir().absolutePath
-        // Small, filename-safe, deterministic. Not security-sensitive.
-        return Integer.toHexString(path.hashCode())
+        // First 6 bytes of SHA-256 → 12 hex chars: filename-safe, deterministic, and collision-
+        // resistant across profiles. (32-bit String.hashCode() could collide two settings dirs and
+        // clobber each other's login-service artifacts.) Not security-sensitive.
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(path.toByteArray(Charsets.UTF_8))
+        return digest.take(6).joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * chmod 600 a file (best-effort; no-op where POSIX perms are unsupported, e.g. Windows). Keeps
+     * owner-only artifacts — daemon.port (the auth secret) and daemon.log (captured stdout/stderr,
+     * which can carry cwd/title metadata) — out of other local users' reach.
+     */
+    fun restrictToOwner(file: File) {
+        runCatching {
+            val view = java.nio.file.Files.getFileAttributeView(
+                file.toPath(),
+                java.nio.file.attribute.PosixFileAttributeView::class.java,
+            )
+            view?.setPermissions(
+                setOf(
+                    java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+                )
+            )
+        }
     }
 }

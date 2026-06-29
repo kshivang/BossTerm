@@ -21,6 +21,7 @@ import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticResources
+import io.ktor.server.plugins.origin
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
@@ -114,6 +115,10 @@ class DaemonShareServer(
         // A Cloudflare quick tunnel serves an error page until cloudflared registers an edge
         // connection; spin a fresh one a couple of times before falling back to the LAN link.
         const val MAX_REFRESHES = 2
+        // Cap unapproved viewers parked on the 2-minute approval window so a public share can't be
+        // flooded with sockets (each holds a slot + bloats every publishState()).
+        const val MAX_PENDING_VIEWERS = 32
+        const val MAX_PENDING_PER_IP = 4
     }
 
     /** A granted device key: which share, its role, and when it lapses (slid forward on each use). */
@@ -170,7 +175,8 @@ class DaemonShareServer(
 
         fun broadcast(msg: ServerMessage) {
             val text = ShareProtocol.encodeServer(msg)
-            for (v in viewers) v.outbox.trySend(text)
+            // Broadcasts (Layout / Presence / Theme / ...) are all control-lane (guaranteed) frames.
+            for (v in viewers) v.outbox.sendControl(text)
         }
 
         /** Build this share's [DaemonAttachProtocol.ShareView] for [state]. */
@@ -244,7 +250,8 @@ class DaemonShareServer(
             def.viewers.forEach { runCatching { it.outbox.close() } }
             def.viewers.clear()
             val op = def.claimRemoteOp() // supersede any in-flight establish so it self-cleans
-            scope.launch(Dispatchers.IO) { teardownRemote(def, op) }
+            val port = boundPort // capture BEFORE stopEngineLocked() may null it (else serve/funnel teardown is skipped)
+            scope.launch(Dispatchers.IO) { teardownRemote(def, port, op) }
             if (shares.isEmpty()) stopEngineLocked()
             publishState()
             log.info("daemon share stopped")
@@ -257,8 +264,9 @@ class DaemonShareServer(
         // Tear down the current exposure and establish the new one in place (same server + viewers, a
         // fresh link). Bump the op so any in-flight establish bails + self-cleans before we re-establish.
         val op = def.claimRemoteOp()
+        val port = boundPort
         scope.launch(Dispatchers.IO) {
-            teardownRemote(def, op)
+            teardownRemote(def, port, op)
             if (mode != "off") establishRemote(def, mode)
             publishState()
         }
@@ -299,8 +307,9 @@ class DaemonShareServer(
                 def.viewers.forEach { runCatching { it.outbox.close() } }
                 def.viewers.clear()
                 val op = def.claimRemoteOp()
-                // Synchronous teardown — the coroutine scope won't drain at process exit.
-                runCatching { runBlocking { teardownRemote(def, op) } }
+                // Synchronous teardown — the coroutine scope won't drain at process exit. Engine is
+                // still up here (stopEngineLocked runs after this loop), so boundPort is valid.
+                runCatching { runBlocking { teardownRemote(def, boundPort, op) } }
             }
             shares.clear()
             sharesByToken.clear()
@@ -539,11 +548,22 @@ class DaemonShareServer(
                 send(ServerMessage.Grant(existing.key, existing.expiresAtMs, canControl))
             } else {
                 hello?.key?.let { grants.remove(it) } // drop a stale/expired key
+                // Cap parked viewers so a public share can't be flooded with sockets that each hold a
+                // pending slot for up to 2 minutes (and bloat every publishState()).
+                val remoteHost = runCatching { ws.call.request.origin.remoteHost }.getOrNull() ?: "?"
+                if (pending.size >= MAX_PENDING_VIEWERS ||
+                    pending.count { it.remoteHost == remoteHost } >= MAX_PENDING_PER_IP) {
+                    log.warn("share: too many pending viewers (total={}, from {}); rejecting", pending.size, remoteHost)
+                    runCatching { send(ServerMessage.Denied("Too many pending requests; try again later")) }
+                    ws.close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "Too many pending viewers"))
+                    return
+                }
                 val req = DaemonPendingViewer(
                     token = shareToken,
                     clientId = clientId,
                     name = hello?.name?.takeIf { it.isNotBlank() } ?: "Browser (${clientId.take(6)})",
                     control = ref.canControl,
+                    remoteHost = remoteHost,
                 )
                 pending.add(req)
                 publishState()
@@ -580,25 +600,42 @@ class DaemonShareServer(
         fun beginLocked(core: TerminalSessionCore) {
             if (attachments.containsKey(core.id)) return
             val sz = core.display.termSizeFlow.value
+            // Register the tap BEFORE encoding the snapshot so output produced during encode isn't lost
+            // (old order — snapshot then listener — dropped that window). Output racing the snapshot is
+            // buffered in [prelude] and flushed right after, so the viewer sees PaneSnapshot before
+            // PaneOutput (at worst a small duplicated region, never a gap).
+            val preludeLock = Any()
+            var prelude: ArrayList<String>? = ArrayList()
+            val tap: (String) -> Unit = { d ->
+                val held = synchronized(preludeLock) {
+                    val p = prelude
+                    if (p != null) { p.add(d); true } else false
+                }
+                if (!held) vc.outbox.sendOutput(ShareProtocol.encodeServer(ServerMessage.PaneOutput(core.id, d)))
+            }
+            core.addRawOutputListener(tap)
             // One-time styled initial paint (identical encoder to the attach server / MirrorShare).
-            vc.outbox.trySend(ShareProtocol.encodeServer(ServerMessage.PaneSnapshot(
+            vc.outbox.sendControl(ShareProtocol.encodeServer(ServerMessage.PaneSnapshot(
                 core.id,
                 TerminalSnapshotEncoder.encode(core.textBuffer.createSnapshot(), core.terminal.cursorX, core.terminal.cursorY),
                 sz.columns, sz.rows,
             )))
-            val tap: (String) -> Unit = { d -> vc.outbox.trySend(ShareProtocol.encodeServer(ServerMessage.PaneOutput(core.id, d))) }
-            core.addRawOutputListener(tap)
+            synchronized(preludeLock) {
+                prelude?.forEach { vc.outbox.sendOutput(ShareProtocol.encodeServer(ServerMessage.PaneOutput(core.id, it))) }
+                prelude = null
+            }
             // Push PaneResize whenever the grid changes (a TUI resizing it), so the viewer's xterm.js follows.
             val sizeJob = ws.launch {
                 core.display.termSizeFlow.collect {
-                    vc.outbox.trySend(ShareProtocol.encodeServer(ServerMessage.PaneResize(core.id, it.columns, it.rows)))
+                    vc.outbox.sendControl(ShareProtocol.encodeServer(ServerMessage.PaneResize(core.id, it.columns, it.rows)))
                 }
             }
-            attachments[core.id] = Attachment(tap, sizeJob)
+            attachments[core.id] = Attachment(core, tap, sizeJob)
         }
         fun endLocked(id: String) {
             attachments.remove(id)?.let { a ->
-                host.get(id)?.removeRawOutputListener(a.tap)
+                // Remove the tap from the core directly — host.get(id) is null once a session exited.
+                a.core.removeRawOutputListener(a.tap)
                 a.sizeJob.cancel()
             }
         }
@@ -610,7 +647,7 @@ class DaemonShareServer(
                 (attachments.keys - live.keys).toList().forEach { endLocked(it) }
                 live.values.forEach { beginLocked(it) }
             }
-            vc.outbox.trySend(ShareProtocol.encodeServer(layoutFor(def)))
+            vc.outbox.sendControl(ShareProtocol.encodeServer(layoutFor(def)))
         }
 
         val onChange: () -> Unit = { resync() }
@@ -625,7 +662,7 @@ class DaemonShareServer(
         val sc = serverCipher
         val writer = ws.launch {
             try {
-                for (text in vc.outbox) {
+                vc.outbox.drainTo { text ->
                     sc?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
                 }
             } catch (_: Throwable) { /* socket gone */ }
@@ -651,8 +688,8 @@ class DaemonShareServer(
         }
     }
 
-    /** Per-connection, per-session attachment: the raw-output tap + its size-collector job. */
-    private class Attachment(val tap: (String) -> Unit, val sizeJob: Job)
+    /** Per-connection, per-session attachment: the core, its raw-output tap + size-collector job. */
+    private class Attachment(val core: TerminalSessionCore, val tap: (String) -> Unit, val sizeJob: Job)
 
     /**
      * Route a viewer message to the daemon (controller role only for mutating actions). A daemon
@@ -894,9 +931,12 @@ class DaemonShareServer(
         }
     }
 
-    /** Tear down whatever remote provider is live for [def] and reset its published URL. Idempotent. */
-    private fun teardownRemote(def: ShareDef, @Suppress("UNUSED_PARAMETER") op: Int) {
-        val port = boundPort
+    /**
+     * Tear down whatever remote provider is live for [def] and reset its published URL. Idempotent.
+     * [port] is passed in (not read from [boundPort]) because the caller may have already stopped the
+     * engine — reading boundPort here could see null and skip the serve/funnel teardown.
+     */
+    private fun teardownRemote(def: ShareDef, port: Int?, @Suppress("UNUSED_PARAMETER") op: Int) {
         when (def.activeRemoteMode) {
             "serve", "funnel" -> if (port != null) runCatching { TailscaleExposer.disable(def.activeRemoteMode, port) }
             "cloudflare" -> runCatching { def.remoteProcess?.destroyForcibly() }

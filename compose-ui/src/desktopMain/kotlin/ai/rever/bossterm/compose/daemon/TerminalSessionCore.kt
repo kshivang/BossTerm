@@ -62,9 +62,13 @@ class TerminalSessionCore(
     private val log = LoggerFactory.getLogger(TerminalSessionCore::class.java)
 
     // ---- terminal stack (all Compose-free core types) ----
+    // Clamp the requested grid: a caller (MCP open_session / attach Open) can pass 0 or an absurd
+    // value, which would otherwise build a degenerate or huge buffer/display. [resize] guards the same.
+    private val initCols = initialCols.coerceIn(1, MAX_GRID_DIM)
+    private val initRows = initialRows.coerceIn(1, MAX_GRID_DIM)
     private val styleState = StyleState()
-    val textBuffer: TerminalTextBuffer = TerminalTextBuffer(initialCols, initialRows, styleState, settings.bufferMaxLines)
-    val display: HeadlessTerminalDisplay = HeadlessTerminalDisplay(initialCols, initialRows)
+    val textBuffer: TerminalTextBuffer = TerminalTextBuffer(initCols, initRows, styleState, settings.bufferMaxLines)
+    val display: HeadlessTerminalDisplay = HeadlessTerminalDisplay(initCols, initRows)
     val terminal: BossTerminal = BossTerminal(display, textBuffer, styleState)
     val dataStream: BlockingTerminalDataStream =
         BlockingTerminalDataStream(performanceMode = PerformanceMode.fromString(settings.performanceMode))
@@ -103,6 +107,11 @@ class TerminalSessionCore(
         object Connected : State()
         data class Error(val message: String) : State()
         object Exited : State()
+    }
+
+    private companion object {
+        /** Upper clamp for a requested grid dimension — generous; just guards against absurd values. */
+        const val MAX_GRID_DIM = 2000
     }
 
     init {
@@ -158,7 +167,7 @@ class TerminalSessionCore(
                 handle = h
                 _connectionState.value = State.Connected
                 connected.complete(true)
-                terminal.setTerminalOutput(PtyTerminalOutput(h))
+                terminal.setTerminalOutput(PtyTerminalOutput())
 
                 // Emulator processing loop — drains the data stream into the terminal model.
                 launch(Dispatchers.Default) {
@@ -229,9 +238,10 @@ class TerminalSessionCore(
 
     /** Resize both the buffer and the PTY (SIGWINCH). The daemon's authoritative grid size. */
     fun resize(cols: Int, rows: Int) {
-        if (cols < 1 || rows < 1) return
-        runCatching { terminal.resize(TermSize(cols, rows), RequestOrigin.User) }
-        scope.launch { runCatching { handle?.resize(cols, rows) } }
+        val c = cols.coerceIn(1, MAX_GRID_DIM)
+        val r = rows.coerceIn(1, MAX_GRID_DIM)
+        runCatching { terminal.resize(TermSize(c, r), RequestOrigin.User) }
+        scope.launch { runCatching { handle?.resize(c, r) } }
     }
 
     fun isAlive(): Boolean = handle?.isAlive() == true
@@ -282,15 +292,19 @@ class TerminalSessionCore(
         }
     }
 
-    /** Routes emulator-generated replies (DA, cursor reports, …) back to the PTY, ordered with input. */
-    private inner class PtyTerminalOutput(
-        private val h: PlatformServices.ProcessService.ProcessHandle,
-    ) : TerminalOutputStream {
+    /**
+     * Routes emulator-generated replies (DA, cursor reports, …) back to the PTY. Enqueued onto the
+     * SAME [writeChannel] as user input, so a reply can't interleave its bytes mid-sequence with a
+     * keystroke — a single [writeConsumer] owns the PTY's outputStream. trySend (non-suspending) keeps
+     * the emulator thread unblocked; a reply is dropped only if 256 writes are already queued (never in
+     * practice). Ordered with input, as the queue guarantees.
+     */
+    private inner class PtyTerminalOutput : TerminalOutputStream {
         override fun sendBytes(response: ByteArray, userInput: Boolean) {
-            runBlocking { runCatching { h.write(String(response, Charsets.UTF_8)) } }
+            writeChannel.trySend(WriteOp.Raw(response))
         }
         override fun sendString(string: String, userInput: Boolean) {
-            runBlocking { runCatching { h.write(string) } }
+            writeChannel.trySend(WriteOp.Text(string))
         }
     }
 

@@ -81,6 +81,24 @@ fun main() {
         serverName = "bossterm",
         serverVersion = "1.0"
     )
+    // MCP server. Normally in-process; when the daemon is enabled the daemon owns it instead. But if
+    // the daemon is enabled yet fails to come up, we fall back to hosting MCP in-process so the feature
+    // isn't silently lost (a regression vs. non-daemon mode). Guarded so the daemon-connect thread and
+    // the main thread can't double-start it.
+    val mcpScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val mcpLock = Any()
+    var mcpManager: BossTermMcpManager? = null
+    fun ensureInProcessMcp() = synchronized(mcpLock) {
+        if (mcpManager == null) {
+            mcpManager = BossTermMcpManager(
+                registry = McpTerminalRegistry,
+                settingsManager = SettingsManager.instance,
+                parentScope = mcpScope,
+                config = mcpConfig,
+            ).also { it.start() }
+        }
+    }
+
     // Session daemon (tmux-style): when enabled, a long-lived background process owns the MCP
     // server (and, in later phases, sessions + sharing) so they survive the GUI closing. The GUI
     // then does NOT host the in-process MCP — the daemon owns the loopback endpoint + mcp.port.
@@ -97,7 +115,8 @@ fun main() {
                     // Discover the attach endpoint so windows can render daemon sessions.
                     ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.onConnected(client)
                 } else {
-                    System.err.println("BossTerm daemon unavailable; MCP/sharing not hosted this session")
+                    System.err.println("BossTerm daemon unavailable; hosting MCP in-process as a fallback")
+                    ensureInProcessMcp()
                 }
             }
             // Refresh the at-login service so its baked java/classpath stay current after an app
@@ -110,14 +129,8 @@ fun main() {
         }
     } else null
 
-    val mcpScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val mcpManager = if (!daemonEnabled) BossTermMcpManager(
-        registry = McpTerminalRegistry,
-        settingsManager = SettingsManager.instance,
-        parentScope = mcpScope,
-        config = mcpConfig
-    ) else null
-    mcpManager?.start()
+    // In-process MCP for non-daemon mode (daemon mode hosts it in the daemon, with the fallback above).
+    if (!daemonEnabled) ensureInProcessMcp()
 
     // Session sharing (issue #276): app-singleton lifecycle for the self-hosted
     // web-viewer server. Inert until the user enables it in settings AND shares a
@@ -125,11 +138,12 @@ fun main() {
     ai.rever.bossterm.compose.share.SessionShareManager.start()
 
     Runtime.getRuntime().addShutdownHook(Thread {
-        // When daemonEnabled, MCP is owned by the daemon (mcpManager is null) and intentionally
-        // NOT torn down here — the daemon outlives the GUI. Sharing is still GUI-owned until it
-        // moves into the daemon (Phase 2), so it's always shut down to avoid leaving a tunnel
-        // published after exit (issue #276).
-        mcpManager?.stop()
+        // When daemonEnabled, MCP is normally owned by the daemon (mcpManager stays null) and
+        // intentionally NOT torn down here — the daemon outlives the GUI. The exception is the
+        // in-process fallback above (daemon unreachable), which we created and so must stop. Sharing
+        // is still GUI-owned until it moves into the daemon (Phase 2), so it's always shut down to
+        // avoid leaving a tunnel published after exit (issue #276).
+        synchronized(mcpLock) { mcpManager }?.stop()
         ai.rever.bossterm.compose.share.SessionShareManager.shutdown()
         mcpScope.cancel()
         daemonScope.cancel()

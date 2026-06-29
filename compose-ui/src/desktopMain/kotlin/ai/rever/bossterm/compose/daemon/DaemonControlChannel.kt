@@ -167,8 +167,11 @@ class DaemonControlChannel(
 
     companion object {
         /**
-         * Control-protocol version. Bumped on incompatible changes to the verb set / framing so the
-         * GUI and daemon can detect skew during the HELLO handshake (see DaemonClient). Phase 0: 1.
+         * Control-protocol version — the ONLY cross-update compatibility signal between GUI and daemon
+         * (the app version is informational; see [DaemonClient.isCompatibleLiveDaemon]). MUST be bumped
+         * on any incompatible change to the verb set / framing OR to daemon behavior the GUI depends on,
+         * so the HELLO handshake refuses a stale daemon left running across an app update instead of
+         * attaching to old code. Phase 0: 1.
          */
         const val PROTOCOL_VERSION = 1
 
@@ -186,20 +189,7 @@ class DaemonControlChannel(
         private fun currentPid(): Long = ProcessHandle.current().pid()
 
         /** chmod 600 on POSIX; no-op (best effort) where unsupported — token never group/world readable. */
-        private fun restrictToOwner(file: java.io.File) {
-            runCatching {
-                val view = java.nio.file.Files.getFileAttributeView(
-                    file.toPath(),
-                    java.nio.file.attribute.PosixFileAttributeView::class.java,
-                )
-                view?.setPermissions(
-                    setOf(
-                        java.nio.file.attribute.PosixFilePermission.OWNER_READ,
-                        java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
-                    )
-                )
-            }
-        }
+        private fun restrictToOwner(file: java.io.File) = BossTermPaths.restrictToOwner(file)
 
         /**
          * Parsed contents of [BossTermPaths.daemonPortFile]. Null when absent or malformed.

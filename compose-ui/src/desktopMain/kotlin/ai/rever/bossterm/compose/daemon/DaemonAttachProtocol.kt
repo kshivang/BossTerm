@@ -21,6 +21,14 @@ import kotlinx.serialization.json.Json
  * share survives the GUI closing; this lane is only the thin GUI control/observation channel.
  */
 object DaemonAttachProtocol {
+    /**
+     * Attach-protocol wire version. Bumped on an incompatible change to the frame set / field
+     * semantics. The client sends it as `?v=`; the daemon's attach server checks it in `serve` and
+     * refuses a mismatch — so GUI/daemon skew is detected instead of silently mis-rendering (the
+     * relaxed [Json.ignoreUnknownKeys] alone can't catch a renamed/re-semantic'd field).
+     */
+    const val PROTOCOL_VERSION = 1
+
     val json = Json { classDiscriminator = "t"; ignoreUnknownKeys = true; encodeDefaults = true }
 
     fun encodeServer(m: Server): String = json.encodeToString(Server.serializer(), m)

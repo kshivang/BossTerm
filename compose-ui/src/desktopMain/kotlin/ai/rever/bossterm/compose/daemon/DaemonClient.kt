@@ -63,6 +63,15 @@ class DaemonClient {
         }
     }
 
+    /**
+     * Compatibility is gated on the **protocol** version, not the app version: the daemon shares the
+     * GUI's classpath at spawn (so a freshly-spawned daemon always matches), and across a *routine* app
+     * update the wire protocol is usually unchanged — refusing every patch-bumped-but-wire-compatible
+     * daemon would needlessly kill the user's sessions. [DaemonControlChannel.PROTOCOL_VERSION] is the
+     * incompatibility signal and MUST be bumped whenever a daemon code change alters the verb
+     * set / framing / behavior the GUI depends on; that retires older daemons here. The HELLO version
+     * string is surfaced ([Endpoint.version]) for diagnostics/logging only.
+     */
     private fun isCompatibleLiveDaemon(ep: DaemonControlChannel.Companion.Endpoint): Boolean {
         val hello = rawRequest(ep, "${ep.secret} ${DaemonProtocol.HELLO}") ?: return false
         // "OK <version> <proto> <pid>"

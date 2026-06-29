@@ -6,8 +6,15 @@ import java.io.File
 
 /**
  * Spawns the headless BossTerm daemon as a detached child process, reusing the SAME bundled
- * JRE and classpath as the running GUI — so there is no second bundle to ship and the daemon
- * is inherently version-locked to the GUI.
+ * JRE and classpath as the running GUI — so there is no second bundle to ship and a freshly
+ * spawned daemon is, at spawn time, code-identical to the GUI that launched it.
+ *
+ * NOTE on "version locking": that identity only holds for a daemon THIS GUI spawns. A daemon left
+ * running across an app update keeps its old code, and the GUI deliberately does NOT compare app
+ * versions to retire it (a routine patch release bumps the version without changing the wire protocol,
+ * and refusing every such daemon would needlessly kill the user's sessions). Cross-update
+ * compatibility is gated on [DaemonControlChannel.PROTOCOL_VERSION] instead — bump it on any
+ * incompatible daemon change so [DaemonClient] refuses a stale daemon rather than attaching to it.
  *
  * Recipe (works identically under `gradlew run` and a packaged `.app`/`.deb`/`.exe`):
  *   - JRE: `<java.home>/bin/java` (mac/Linux), `<java.home>/bin/javaw.exe` (Windows, no console).
@@ -79,7 +86,7 @@ object DaemonLauncher {
         extraArgs: List<String> = emptyList(),
     ): Process? {
         val command = buildCommand(mainClass, extraArgs) ?: return null
-        val logFile = BossTermPaths.daemonLogFile()
+        val logFile = prepareLogFile()
         return try {
             ProcessBuilder(command)
                 .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
@@ -109,13 +116,22 @@ object DaemonLauncher {
             return
         }
         val cmd = buildGuiCommand() ?: run { log.warn("openGui: cannot build GUI launch command"); return }
+        val logFile = prepareLogFile()
         runCatching {
             ProcessBuilder(cmd)
-                .redirectOutput(ProcessBuilder.Redirect.appendTo(BossTermPaths.daemonLogFile()))
-                .redirectError(ProcessBuilder.Redirect.appendTo(BossTermPaths.daemonLogFile()))
+                .redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
+                .redirectError(ProcessBuilder.Redirect.appendTo(logFile))
                 .start()
         }.onSuccess { log.info("openGui: spawned GUI pid={}", it.pid()) }
             .onFailure { log.warn("openGui: spawn failed: {}", it.message) }
+    }
+
+    /** The daemon log, created owner-only — it captures daemon + GUI stdout/stderr (cwd/title metadata). */
+    private fun prepareLogFile(): File {
+        val logFile = BossTermPaths.daemonLogFile()
+        runCatching { if (!logFile.exists()) logFile.createNewFile() }
+        BossTermPaths.restrictToOwner(logFile)
+        return logFile
     }
 
     /**
@@ -125,6 +141,13 @@ object DaemonLauncher {
      */
     fun activatePid(pid: Long) {
         if (!ShellCustomizationUtils.isMacOS()) return
+        // The pid is supplied by the (authenticated, loopback) attach client. Confirm it really is a
+        // BossTerm process before activating it, so a misbehaving client can't make us foreground an
+        // arbitrary process the user happens to own.
+        if (!isBossTermProcess(pid)) {
+            log.debug("activatePid({}) skipped: not a BossTerm process", pid)
+            return
+        }
         runCatching {
             ProcessBuilder(
                 "osascript", "-e",
@@ -132,6 +155,16 @@ object DaemonLauncher {
             ).start()
         }.onFailure { log.debug("activatePid({}) failed: {}", pid, it.message) }
     }
+
+    /** True if [pid]'s command line looks like a BossTerm GUI (the .app bundle or the GUI main class). */
+    private fun isBossTermProcess(pid: Long): Boolean = runCatching {
+        // -ww: don't truncate the command (the GUI's classpath/main-class can be long).
+        val proc = ProcessBuilder("ps", "-ww", "-p", pid.toString(), "-o", "command=")
+            .redirectErrorStream(true).start()
+        val out = proc.inputStream.bufferedReader().use { it.readText() }
+        proc.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
+        out.contains("bossterm", ignoreCase = true)
+    }.getOrDefault(false)
 
     /** The packaged .app bundle path, derived from java.home, or null in dev / non-bundle runs. */
     private fun macAppBundlePath(): String? {

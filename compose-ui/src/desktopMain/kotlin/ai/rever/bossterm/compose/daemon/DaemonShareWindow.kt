@@ -110,7 +110,7 @@ fun DaemonShareWindow(
 
     Window(
         onCloseRequest = onDismiss,
-        title = "BossTerm — Share (daemon)",
+        title = "BossTerm — Share",
         resizable = false,
         state = rememberWindowState(size = DpSize(600.dp, 680.dp))
     ) {
@@ -124,10 +124,10 @@ fun DaemonShareWindow(
             Column(
                 modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp)
             ) {
-                Text("Share daemon session", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                Text("Share session", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "The daemon hosts this share, so it keeps running after you close BossTerm. " +
+                    "This share keeps running in the background after you close BossTerm. " +
                         "Open a link on another device to watch live; the control link also lets it type.",
                     color = TextSecondary, fontSize = 12.sp
                 )
@@ -187,8 +187,8 @@ private fun ScopeSection(scope: String, focusedSessionId: String?, onScopeChange
             }
             Text(
                 if (scope == DaemonAttachProtocol.ShareScopeKind.SESSION)
-                    "Sharing just the focused daemon session."
-                else "Sharing every daemon session — viewers switch between them as tabs.",
+                    "Sharing just the focused session."
+                else "Sharing every session — viewers switch between them as tabs.",
                 color = TextMuted, fontSize = 11.sp,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
@@ -202,7 +202,7 @@ private fun ScopeSection(scope: String, focusedSessionId: String?, onScopeChange
 private fun StartSection(scope: String, focusedSessionId: String?) {
     SettingsSection("Not sharing yet") {
         Text(
-            "No active share for this scope. Start one — the daemon hosts it and serves the viewer.",
+            "No active share for this scope. Start one — it keeps serving the viewer even after you close BossTerm.",
             color = TextSecondary, fontSize = 12.sp
         )
         Button(

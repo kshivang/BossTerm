@@ -858,7 +858,6 @@ fun TabbedTerminal(
     // Phase 2: when the daemon hosts sessions, sharing is hosted by the daemon (survives the GUI
     // closing) and uses a separate window driven by DaemonShareClient over the attach socket.
     var daemonShareOpen by remember { mutableStateOf(false) }
-    var daemonShareSessionId by remember { mutableStateOf<String?>(null) }
     // Account sign-in (BossConsole Supabase backend) — window opened from the Share menus.
     var showSignInWindow by remember { mutableStateOf(false) }
     var signInFocusTick by remember { mutableStateOf(0) }
@@ -980,7 +979,6 @@ fun TabbedTerminal(
                 SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
             }
             ai.rever.bossterm.compose.daemon.DaemonShareClient.startShare(kind, sessionId, null)
-            daemonShareSessionId = sessionId
             daemonShareOpen = true
             shareFocusTick++
             return
@@ -2107,7 +2105,10 @@ fun TabbedTerminal(
     // attach socket via DaemonShareClient. Used in daemon mode instead of the in-process ShareWindow.
     if (daemonShareOpen) {
         ai.rever.bossterm.compose.daemon.DaemonShareWindow(
-            focusedSessionId = daemonShareSessionId,
+            // The currently-focused daemon session, so the dialog's "This session" scope is always
+            // selectable (not just when the active share happens to be session-scoped). Reactive to
+            // the active tab. Null for a non-daemon/local tab → only "All sessions" is offered.
+            focusedSessionId = tabController.activeTab?.remotePaneId,
             onDismiss = { daemonShareOpen = false },
             focusTick = shareFocusTick,
         )

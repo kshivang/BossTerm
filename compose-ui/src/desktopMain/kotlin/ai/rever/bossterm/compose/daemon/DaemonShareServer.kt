@@ -556,8 +556,13 @@ class DaemonShareServer(
                 // Cap parked viewers so a public share can't be flooded with sockets that each hold a
                 // pending slot for up to 2 minutes (and bloat every publishState()).
                 val remoteHost = runCatching { ws.call.request.origin.remoteHost }.getOrNull() ?: "?"
-                if (pending.size >= MAX_PENDING_VIEWERS ||
-                    pending.count { it.remoteHost == remoteHost } >= MAX_PENDING_PER_IP) {
+                // The per-IP cap only makes sense for genuinely distinct sources. Behind a cloudflare/
+                // tailscale tunnel every viewer connects from 127.0.0.1 (the local tunnel agent), so a
+                // per-IP cap there would collapse all remote viewers into one bucket and reject the 5th
+                // legitimate one — rely on the total cap instead. Direct LAN viewers keep distinct IPs.
+                val isLoopback = remoteHost == "127.0.0.1" || remoteHost == "::1" || remoteHost == "localhost"
+                val perIpExceeded = !isLoopback && pending.count { it.remoteHost == remoteHost } >= MAX_PENDING_PER_IP
+                if (pending.size >= MAX_PENDING_VIEWERS || perIpExceeded) {
                     log.warn("share: too many pending viewers (total={}, from {}); rejecting", pending.size, remoteHost)
                     runCatching { send(ServerMessage.Denied("Too many pending requests; try again later")) }
                     ws.close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "Too many pending viewers"))

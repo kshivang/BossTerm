@@ -132,17 +132,20 @@ fun main() {
     // In-process MCP for non-daemon mode (daemon mode hosts it in the daemon, with the fallback above).
     if (!daemonEnabled) ensureInProcessMcp()
 
-    // Session sharing (issue #276): app-singleton lifecycle for the self-hosted
-    // web-viewer server. Inert until the user enables it in settings AND shares a
-    // tab — the server only binds while ≥1 share is active.
+    // Session sharing (issue #276): app-singleton lifecycle for the self-hosted web-viewer server.
+    // Inert until the user enables it in settings AND shares a tab — it only binds while ≥1 share is
+    // active. In daemon mode, shares route to the daemon-hosted server (DaemonShareServer) so they
+    // survive the GUI; this in-process manager stays started but idle, serving the non-daemon path and
+    // the unreachable-daemon fallback. (Both share subsystems thus coexist when daemonEnabled, but only
+    // one is ever fed a share.)
     ai.rever.bossterm.compose.share.SessionShareManager.start()
 
     Runtime.getRuntime().addShutdownHook(Thread {
         // When daemonEnabled, MCP is normally owned by the daemon (mcpManager stays null) and
         // intentionally NOT torn down here — the daemon outlives the GUI. The exception is the
-        // in-process fallback above (daemon unreachable), which we created and so must stop. Sharing
-        // is still GUI-owned until it moves into the daemon (Phase 2), so it's always shut down to
-        // avoid leaving a tunnel published after exit (issue #276).
+        // in-process fallback above (daemon unreachable), which we created and so must stop. The
+        // in-process SessionShareManager is always shut down (it's GUI-owned; the daemon-hosted share
+        // server has its own lifecycle) to avoid leaving a tunnel published after exit (issue #276).
         synchronized(mcpLock) { mcpManager }?.stop()
         ai.rever.bossterm.compose.share.SessionShareManager.shutdown()
         mcpScope.cancel()

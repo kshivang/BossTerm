@@ -163,7 +163,10 @@ object DaemonLauncher {
             .redirectErrorStream(true).start()
         val out = proc.inputStream.bufferedReader().use { it.readText() }
         proc.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
-        out.contains("bossterm", ignoreCase = true)
+        // Match the GUI specifically — dev: the main class on the java command line; packaged: the
+        // .app bundle path — rather than a loose "bossterm" substring that an editor open on these
+        // source files would also match.
+        out.contains(GUI_MAIN_CLASS) || out.contains("BossTerm.app")
     }.getOrDefault(false)
 
     /** The packaged .app bundle path, derived from java.home, or null in dev / non-bundle runs. */

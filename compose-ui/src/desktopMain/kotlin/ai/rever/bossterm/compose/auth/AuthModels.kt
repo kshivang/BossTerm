@@ -120,17 +120,30 @@ fun parseAuthInput(raw: String): AuthDeepLink? {
     return null
 }
 
-/** Value of `<name>=…` up to the next `&`, whitespace, `#`, or end — decoded; null if absent/blank. */
+/**
+ * Value of `<name>=…` up to the next `&`, whitespace, `#`, or end — decoded; null if absent/blank.
+ * The `<name>=` must sit at a real parameter boundary (start-of-string, or after `?`/`&`/`#`/whitespace)
+ * so `paramValue(s, "token")` can't latch onto the `token=` *inside* `access_token=`/`refresh_token=`
+ * — e.g. an implicit-flow callback fragment `#access_token=…&refresh_token=…&token=…` would otherwise
+ * yield the access token. Scans every occurrence and takes the first boundary-anchored one.
+ */
 private fun paramValue(s: String, name: String): String? {
     val key = "$name="
-    val at = s.indexOf(key)
-    if (at < 0) return null
-    val start = at + key.length
-    var end = start
-    while (end < s.length && s[end] != '&' && s[end] != '#' && !s[end].isWhitespace()) end++
-    val v = s.substring(start, end)
-    if (v.isBlank()) return null
-    return decodeQueryComponent(v)
+    var from = 0
+    while (from <= s.length) {
+        val at = s.indexOf(key, from)
+        if (at < 0) return null
+        val prev = if (at == 0) null else s[at - 1]
+        if (prev == null || prev == '?' || prev == '&' || prev == '#' || prev.isWhitespace()) {
+            val start = at + key.length
+            var end = start
+            while (end < s.length && s[end] != '&' && s[end] != '#' && !s[end].isWhitespace()) end++
+            val v = s.substring(start, end)
+            return if (v.isBlank()) null else decodeQueryComponent(v)
+        }
+        from = at + 1
+    }
+    return null
 }
 
 /**

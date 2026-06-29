@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.auth
 
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -53,7 +54,19 @@ object BossAccountManager {
     private val log = LoggerFactory.getLogger(BossAccountManager::class.java)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-    private val http by lazy { HttpClient(CIO) { expectSuccess = false } }
+    // A stuck request must not strand the UI on "Signing you in…" / "Check your email"
+    // forever — bound it so a hung server resolves to the mapAuthError(0, …) path. Mirrors
+    // DesktopUpdateService's API client timeouts.
+    private val http by lazy {
+        HttpClient(CIO) {
+            expectSuccess = false
+            install(HttpTimeout) {
+                requestTimeoutMillis = 30_000
+                connectTimeoutMillis = 15_000
+                socketTimeoutMillis = 15_000
+            }
+        }
+    }
 
     private val _state = MutableStateFlow<AccountState>(AccountState.SignedOut)
     val state: StateFlow<AccountState> = _state.asStateFlow()

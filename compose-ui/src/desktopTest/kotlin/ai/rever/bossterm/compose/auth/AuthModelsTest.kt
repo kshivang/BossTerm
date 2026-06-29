@@ -112,6 +112,22 @@ class AuthModelsTest {
         assertNull(parseAuthInput("token="))
     }
 
+    @Test
+    fun `parseAuthInput does not mistake access_token or refresh_token for the hash`() {
+        // An implicit-flow callback fragment carries access_token=/refresh_token= before token=.
+        // A bare indexOf("token=") would latch onto the FIRST '*token=' (access_token) and POST the
+        // wrong value to /verify; the match must be anchored to a real param boundary.
+        val l = parseAuthInput("https://app/cb#access_token=AAA&refresh_token=RRR&token=TTT&type=signup")
+        assertEquals("TTT", l?.tokenHash)
+        assertEquals("signup", l?.type)
+    }
+
+    @Test
+    fun `parseAuthInput finds token even when only refresh_token precedes it`() {
+        // No clean 'token=' decoy other than the substring inside refresh_token=.
+        assertEquals("HH", parseAuthInput("x?refresh_token=RR&token=HH")?.tokenHash)
+    }
+
     // ---- error mapping ----
 
     @Test

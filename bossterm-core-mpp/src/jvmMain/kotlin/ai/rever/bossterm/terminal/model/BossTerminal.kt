@@ -66,6 +66,9 @@ class BossTerminal(
 
   private val myWindowTitlesStack = Stack<String>()
     private val myIconTitlesStack = Stack<String>()
+    // Bound the XTPUSHTITLE (CSI 22 t) stacks: a program that only ever pushes and never
+    // pops (CSI 23 t) would otherwise grow these without limit. xterm caps the same way.
+    private val maxTitleStackDepth = 10
 
     private val myTabulator: Tabulator
 
@@ -324,6 +327,9 @@ class BossTerminal(
 
     override fun saveWindowTitleOnStack() {
         val title = myDisplay.windowTitle
+        if (myWindowTitlesStack.size >= maxTitleStackDepth) {
+            myWindowTitlesStack.removeAt(0) // drop oldest to keep the stack bounded
+        }
         myWindowTitlesStack.push(title)
     }
 
@@ -340,6 +346,9 @@ class BossTerminal(
 
     override fun saveIconTitleOnStack() {
         val title = myDisplay.iconTitle
+        if (myIconTitlesStack.size >= maxTitleStackDepth) {
+            myIconTitlesStack.removeAt(0) // drop oldest to keep the stack bounded
+        }
         myIconTitlesStack.push(title)
     }
 
@@ -1350,6 +1359,10 @@ class BossTerminal(
 
         cursorPosition(1, 1)
         cursorShapeNullable(null)
+
+        // Drop any saved (XTPUSHTITLE) titles so they don't survive a full reset.
+        myWindowTitlesStack.clear()
+        myIconTitlesStack.clear()
     }
 
     private fun initMouseModes() {

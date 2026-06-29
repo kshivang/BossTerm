@@ -724,6 +724,10 @@ fun TabbedTerminal(
 
             // Register as CommandStateListener to track shell prompt state (OSC 133)
             tab.terminal.addCommandStateListener(interceptor)
+            // Track it so TerminalTab.dispose() detaches it from the terminal; otherwise
+            // the interceptor stays registered for the terminal's life and pins the AI
+            // detector/launcher state after the tab is gone.
+            tab.commandStateListeners.add(interceptor)
 
             // Store reference in tab for ProperTerminal to access
             tab.aiCommandInterceptor = interceptor

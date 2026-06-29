@@ -340,6 +340,10 @@ fun EmbeddableTerminal(
 
         // Register as CommandStateListener to track shell prompt state (OSC 133)
         session.terminal.addCommandStateListener(interceptor)
+        // Track it so TerminalTab.dispose() detaches it from the terminal; otherwise
+        // the interceptor stays registered for the terminal's life and pins the AI
+        // detector/launcher state after the session is gone.
+        session.commandStateListeners.add(interceptor)
 
         // Store reference in session for ProperTerminal to access
         session.aiCommandInterceptor = interceptor

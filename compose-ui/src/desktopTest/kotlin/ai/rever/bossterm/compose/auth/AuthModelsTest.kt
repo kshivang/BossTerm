@@ -206,6 +206,25 @@ class AuthModelsTest {
         }
     }
 
+    // ---- cold-start sign-in toast ----
+
+    @Test
+    fun `cold-start sign-in is stashed and drained exactly once`() {
+        // A deep link that verifies before any window subscribes must still toast on the first
+        // window — but exactly once, so later windows don't re-toast a stale email.
+        BossAccountManager.consumePendingSignInToast() // clear any residue from earlier tests
+        BossAccountManager.emitSignIn("cold@start.co") // no collectors → stashed as pending
+        assertEquals("cold@start.co", BossAccountManager.consumePendingSignInToast())
+        assertNull(BossAccountManager.consumePendingSignInToast())
+    }
+
+    @Test
+    fun `blank cold-start sign-in is not stashed`() {
+        BossAccountManager.consumePendingSignInToast()
+        BossAccountManager.emitSignIn("")
+        assertNull(BossAccountManager.consumePendingSignInToast())
+    }
+
     @Test
     fun `staging temp file is owner-only before any token bytes are written`() {
         // The window the final-file test can't see: File.createTempFile honors umask (commonly

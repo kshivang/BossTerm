@@ -835,6 +835,9 @@ fun TabbedTerminal(
     // its own effect, keyed on the toast value, so each new toast restarts the timer.
     var signInToast by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
+        // Drain a cold-start sign-in (a deep link that launched the app and verified before any
+        // window was listening) so its toast isn't lost; then stream live interactive sign-ins.
+        ai.rever.bossterm.compose.auth.BossAccountManager.consumePendingSignInToast()?.let { signInToast = it }
         ai.rever.bossterm.compose.auth.BossAccountManager.signInEvents.collect { email ->
             signInToast = email
         }

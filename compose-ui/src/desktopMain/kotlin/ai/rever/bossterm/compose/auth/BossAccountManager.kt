@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * BossTerm's account session against BossConsole's Supabase backend (one shared user
@@ -76,8 +77,25 @@ object BossAccountManager {
     private val _signInEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val signInEvents: SharedFlow<String> = _signInEvents.asSharedFlow()
 
+    // A deep link that LAUNCHES the app verifies in main() before any window subscribes to
+    // signInEvents (replay = 0), so that emit would be dropped and the cold-start sign-in would
+    // never toast. Stash it here for the first UI collector to drain exactly once — using replay
+    // instead would re-toast the stale email on every newly opened window.
+    private val pendingToast = AtomicReference<String?>(null)
+
     init {
         scope.launch { restoreSession() }
+    }
+
+    /** Email of a sign-in that completed before the UI was listening, drained ONCE by the first
+     *  collector at startup; null for later windows. Live sign-ins flow through [signInEvents]. */
+    fun consumePendingSignInToast(): String? = pendingToast.getAndSet(null)
+
+    /** Route a completed-sign-in email to a live collector, or stash it for the first one to come. */
+    internal fun emitSignIn(email: String) {
+        if (email.isBlank()) return
+        if (_signInEvents.subscriptionCount.value > 0) _signInEvents.tryEmit(email)
+        else pendingToast.set(email)
     }
 
     /**
@@ -144,8 +162,7 @@ object BossAccountManager {
             val resp = gotrue("verify", json.encodeToString(VerifyRequest.serializer(), VerifyRequest(type, tokenHash)))
             if (resp.status.value in 200..299) {
                 val session = json.decodeFromString<SessionResponse>(resp.bodyAsText())
-                val email = adoptSession(session)
-                if (email.isNotBlank()) _signInEvents.tryEmit(email)
+                emitSignIn(adoptSession(session))
             } else {
                 _state.value = AccountState.Error(errorFrom(resp, AuthPhase.VERIFY))
             }

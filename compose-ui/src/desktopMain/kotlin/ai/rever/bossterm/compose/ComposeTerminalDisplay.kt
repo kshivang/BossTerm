@@ -14,7 +14,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Compose implementation of TerminalDisplay interface with adaptive debouncing.
@@ -65,10 +64,6 @@ class ComposeTerminalDisplay : TerminalDisplay {
     // Mode transition tracking
     private var lastModeSwitch = System.currentTimeMillis()
     private var returnToInteractiveJob: Job? = null
-
-    // ===== PERFORMANCE METRICS =====
-    private val redrawCount = AtomicLong(0)
-    private val skippedRedraws = AtomicLong(0) // Count of coalesced redraws
 
     init {
         // Start redraw processor coroutine
@@ -426,11 +421,9 @@ class ComposeTerminalDisplay : TerminalDisplay {
             }
         }
 
-        val sent = redrawChannel.trySend(RedrawRequest(priority = RedrawPriority.NORMAL))
-        if (!sent.isSuccess) {
-            // Channel is full (CONFLATED), request was coalesced
-            skippedRedraws.incrementAndGet()
-        }
+        // Conflated channel: a full channel simply coalesces this request into the
+        // pending one, which is the intended debouncing behaviour.
+        redrawChannel.trySend(RedrawRequest(priority = RedrawPriority.NORMAL))
     }
 
     /**
@@ -520,7 +513,6 @@ class ComposeTerminalDisplay : TerminalDisplay {
      * Perform the actual redraw by updating Compose state.
      */
     private fun actualRedraw() {
-        redrawCount.incrementAndGet()
         _redrawTrigger.value += 1
     }
 

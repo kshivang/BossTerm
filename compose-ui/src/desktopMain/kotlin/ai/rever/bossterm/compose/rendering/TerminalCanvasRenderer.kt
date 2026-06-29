@@ -884,8 +884,13 @@ object TerminalCanvasRenderer {
 
                 // Report blink-attributed text in the visible region so the caller can
                 // park the blink toggle loops when none is present (no blinking text =>
-                // no periodic full-canvas repaints on a focused, idle terminal).
-                if (isSlowBlink || isRapidBlink) {
+                // no periodic full-canvas repaints on a focused, idle terminal). Only a
+                // cell that actually draws a glyph counts: a blink-attributed space,
+                // NUL, or HIDDEN cell toggles nothing visible, so arming the loop for it
+                // would be exactly the idle repaint this avoids. (isBlinkVisible is
+                // deliberately not part of this check — it's the current blink phase, so
+                // gating on it would be circular.)
+                if ((isSlowBlink || isRapidBlink) && !isHidden && char != ' ' && char != '\u0000') {
                     ctx.blinkProbe?.let {
                         if (isSlowBlink) it[0] = true
                         if (isRapidBlink) it[1] = true

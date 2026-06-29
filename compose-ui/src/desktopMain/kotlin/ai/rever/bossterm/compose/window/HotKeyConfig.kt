@@ -13,8 +13,15 @@ data class HotKeyConfig(
     val alt: Boolean,
     val shift: Boolean,
     val win: Boolean,
-    val key: String
+    val key: String,
+    /** Whether to also register the single show/hide toggle (modifiers + [key]). */
+    val toggleEnabled: Boolean = false
 ) {
+    /** Number of modifier keys selected. Single-modifier global hotkeys tend to
+     *  shadow ordinary app shortcuts, so the UI nudges toward two or more. */
+    val modifierCount: Int
+        get() = listOf(ctrl, alt, shift, win).count { it }
+
     /**
      * Convert modifier settings to Win32 modifier flags.
      */
@@ -191,7 +198,8 @@ data class HotKeyConfig(
                 alt = settings.globalHotkeyAlt,
                 shift = settings.globalHotkeyShift,
                 win = settings.globalHotkeyWin,
-                key = settings.globalHotkeyKey
+                key = settings.globalHotkeyKey,
+                toggleEnabled = settings.globalHotkeyToggleEnabled
             )
         }
 

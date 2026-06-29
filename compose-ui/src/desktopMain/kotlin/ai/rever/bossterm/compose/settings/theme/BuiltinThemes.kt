@@ -348,9 +348,48 @@ object BuiltinThemes {
     )
 
     /**
+     * BOSS Operator — the unified "Operator's Console" identity.
+     *
+     * Shares the BossConsole host floor (ink #0E1217) so the terminal and the
+     * chrome around it read as one continuous surface. The cursor is the amber
+     * signal — the single "live / now" color of the whole design system.
+     */
+    val BOSS_OPERATOR = Theme(
+        id = "boss-operator",
+        name = "BOSS Operator",
+        foreground = "0xFFD7DEE6",
+        background = "0xFF0E1217",   // shared `ink` floor
+        cursor = "0xFFF2A93B",       // amber signal — the signature
+        cursorText = "0xFF0E1217",
+        selection = "0xFF21405A",
+        selectionText = "0xFFE9EEF3",
+        searchMatch = "0xFFF0B429",
+        hyperlink = "0xFF56C7E0",    // cyan `data`
+        // ANSI 16 — tuned to sit calmly on the ink floor
+        black = "0xFF15202B",
+        red = "0xFFF2685F",
+        green = "0xFF6FD08C",
+        yellow = "0xFFF2A93B",
+        blue = "0xFF5C9FE0",
+        magenta = "0xFFC792EA",
+        cyan = "0xFF56C7E0",
+        white = "0xFFC7D1DB",
+        brightBlack = "0xFF3A4B5C",
+        brightRed = "0xFFFF8A80",
+        brightGreen = "0xFF8FE0A6",
+        brightYellow = "0xFFFFC560",
+        brightBlue = "0xFF82B7F0",
+        brightMagenta = "0xFFDDB0F5",
+        brightCyan = "0xFF7FD9EE",
+        brightWhite = "0xFFE9EEF3",
+        isBuiltin = true
+    )
+
+    /**
      * All built-in themes.
      */
     val ALL = listOf(
+        BOSS_OPERATOR,
         DEFAULT,
         DRACULA,
         NORD,
@@ -369,7 +408,7 @@ object BuiltinThemes {
     fun getById(id: String): Theme? = ALL.find { it.id == id }
 
     /**
-     * Default theme ID.
+     * Default theme ID — the unified BOSS identity.
      */
-    const val DEFAULT_THEME_ID = "monokai"
+    const val DEFAULT_THEME_ID = "boss-operator"
 }

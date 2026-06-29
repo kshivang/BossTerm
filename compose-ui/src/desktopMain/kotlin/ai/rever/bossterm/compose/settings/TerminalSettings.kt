@@ -86,12 +86,12 @@ data class TerminalSettings(
     /**
      * Default foreground color (serialized as ARGB hex)
      */
-    val defaultForeground: String = "0xFFF8F8F2",
+    val defaultForeground: String = "0xFFD7DEE6",
 
     /**
      * Default background color (serialized as ARGB hex)
      */
-    val defaultBackground: String = "0xFF272822",
+    val defaultBackground: String = "0xFF0E1217",
 
     /**
      * Selection highlight color (serialized as ARGB hex).
@@ -121,7 +121,7 @@ data class TerminalSettings(
      * References a theme from BuiltinThemes or a custom theme.
      * When a theme is applied, the color settings above are updated to match.
      */
-    val activeThemeId: String = "monokai",
+    val activeThemeId: String = "boss-operator",
 
     /**
      * Active color palette ID.

@@ -45,6 +45,11 @@ class SettingsManager(private val customSettingsPath: String? = null) {
         encodeDefaults = true  // Ensure all fields are written, not just non-default ones
     }
 
+    // Guards saveToFile so concurrent writers can't interleave. Declared BEFORE the init{} block:
+    // init calls loadFromFile() → saveToFile(), so a later declaration would still be null then (the
+    // property initializer hasn't run yet) and synchronized(saveLock) would NPE.
+    private val saveLock = Any()
+
     private val settingsDir: File by lazy {
         if (customSettingsPath != null) {
             File(customSettingsPath).parentFile?.apply {
@@ -136,8 +141,6 @@ class SettingsManager(private val customSettingsPath: String? = null) {
             }
         }
     }
-
-    private val saveLock = Any()
 
     /**
      * Load settings from file.

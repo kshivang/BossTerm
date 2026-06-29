@@ -259,18 +259,23 @@ class DaemonShareServer(
     }
 
     fun setRemoteMode(token: String, mode: String) {
-        val def = sharesByToken[token]?.share ?: return
-        def.remoteMode = mode
-        // Tear down the current exposure and establish the new one in place (same server + viewers, a
-        // fresh link). Bump the op so any in-flight establish bails + self-cleans before we re-establish.
-        val op = def.claimRemoteOp()
-        val port = boundPort
-        scope.launch(Dispatchers.IO) {
-            teardownRemote(def, port, op)
-            if (mode != "off") establishRemote(def, mode)
+        // Under [mutex] like startShare/stopShare: it reads boundPort and mutates share state, which a
+        // concurrent stopShare/stop (nulling boundPort via stopEngineLocked) would otherwise race.
+        synchronized(mutex) {
+            val def = sharesByToken[token]?.share ?: return
+            def.remoteMode = mode
+            // Tear down the current exposure and establish the new one in place (same server + viewers,
+            // a fresh link). Bump the op so any in-flight establish bails + self-cleans before we
+            // re-establish.
+            val op = def.claimRemoteOp()
+            val port = boundPort
+            scope.launch(Dispatchers.IO) {
+                teardownRemote(def, port, op)
+                if (mode != "off") establishRemote(def, mode)
+                publishState()
+            }
             publishState()
         }
-        publishState()
     }
 
     fun setName(token: String, name: String) {
@@ -804,8 +809,10 @@ class DaemonShareServer(
         return when (s.sessionSharingApprovalScope) {
             "all" -> true
             "off" -> false
-            else -> def.activeRemoteMode == "funnel" || def.activeRemoteMode == "cloudflare" ||
-                s.sessionSharingPublicUrl.isNotBlank()
+            // "serve" is reachable by every node on the tailnet (not just this machine), so treat it
+            // like funnel/cloudflare: require approval rather than auto-admitting tailnet viewers.
+            else -> def.activeRemoteMode == "serve" || def.activeRemoteMode == "funnel" ||
+                def.activeRemoteMode == "cloudflare" || s.sessionSharingPublicUrl.isNotBlank()
         }
     }
 

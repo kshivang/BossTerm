@@ -186,7 +186,7 @@ object LoginServiceManager {
         [Desktop Entry]
         Type=Application
         Name=BossTerm Daemon
-        Exec=${command.joinToString(" ") { shQuote(it) }}
+        Exec=${command.joinToString(" ") { shQuote(it) }.replace("%", "%%")}
         X-GNOME-Autostart-enabled=true
         NoDisplay=true
     """.trimIndent() + "\n"

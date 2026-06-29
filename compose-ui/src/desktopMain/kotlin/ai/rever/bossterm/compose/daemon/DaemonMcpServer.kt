@@ -176,8 +176,9 @@ class DaemonMcpServer(
     fun stop() {
         runCatching { engine?.stop(300, 800) }
         engine = null
+        val myPort = boundPort
         boundPort = null
-        deletePortMarker()
+        deletePortMarker(myPort)
     }
 
     private fun portAvailable(port: Int): Boolean =
@@ -198,8 +199,15 @@ class DaemonMcpServer(
         }.onFailure { log.warn("Failed to write mcp.port: {}", it.message) }
     }
 
-    private fun deletePortMarker() {
-        runCatching { BossTermPaths.mcpPortFile().let { if (it.exists()) it.delete() } }
+    private fun deletePortMarker(myPort: Int?) {
+        runCatching {
+            val f = BossTermPaths.mcpPortFile()
+            if (!f.exists()) return
+            // Only delete if the marker still points at OUR port — under a restart race another MCP
+            // server may have overwritten it; deleting that would hide a live server from clients.
+            val current = f.readText().trim().toIntOrNull()
+            if (myPort == null || current == null || current == myPort) f.delete()
+        }
     }
 
     private companion object {

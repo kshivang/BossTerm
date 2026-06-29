@@ -615,12 +615,16 @@ fun TabbedTerminal(
                 // tabs (auto-opening one if the daemon is empty). Skip the local startup tab so we
                 // don't end up with a stray local tab alongside the daemon-hosted ones. Safety: if the
                 // bridge never attaches (daemon unreachable), fall back to a local tab after a grace
-                // period so the window isn't stuck empty.
+                // period so the window isn't stuck empty. The grace window must exceed the bridge's own
+                // attach window (DaemonBridgeCoordinator.register polls ~15s) and short-circuits the
+                // moment the bridge attaches — otherwise an 8–15s attach leaves a stray local tab.
                 var waited = 0
-                while (waited < 8000 && tabController.tabs.isEmpty()) {
+                while (waited < 16000 && tabController.tabs.isEmpty() &&
+                    !ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached) {
                     kotlinx.coroutines.delay(200); waited += 200
                 }
-                if (tabController.tabs.isEmpty()) {
+                if (tabController.tabs.isEmpty() &&
+                    !ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached) {
                     tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
                 }
             } else {
@@ -931,8 +935,16 @@ fun TabbedTerminal(
             // The daemon hosts the share so it outlives the GUI. TAB → share just this session;
             // WINDOW/ALL → share the whole daemon (every session as a viewer tab). DaemonShareWindow
             // observes DaemonShareClient.state; startShare here is idempotent (returns any existing).
-            val sessionId = if (scope == ai.rever.bossterm.compose.share.ShareScope.TAB)
+            val isTabScope = scope == ai.rever.bossterm.compose.share.ShareScope.TAB
+            val sessionId = if (isTabScope)
                 tabController.tabs.firstOrNull { it.id == tabId }?.remotePaneId else null
+            // Privacy guard: a TAB share whose tab has no backing daemon session (a local fallback tab
+            // created when the daemon was unreachable, a split sub-pane, etc.) must NOT silently widen
+            // to ALL — that would publish EVERY daemon session when the user asked to share one tab.
+            if (isTabScope && sessionId == null) {
+                println("startShare: refusing TAB share of $tabId — no backing daemon session (would widen to ALL)")
+                return
+            }
             val kind = if (sessionId != null) ai.rever.bossterm.compose.daemon.DaemonAttachProtocol.ShareScopeKind.SESSION
                        else ai.rever.bossterm.compose.daemon.DaemonAttachProtocol.ShareScopeKind.ALL
             // Parity with the non-daemon path: first share turns the feature on (the daemon reads

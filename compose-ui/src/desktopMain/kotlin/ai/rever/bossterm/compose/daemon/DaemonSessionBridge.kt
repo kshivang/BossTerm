@@ -61,13 +61,26 @@ class DaemonSessionBridge(
         runCatching { client.close() }
     }
 
-    /** Ask the daemon to open a new session (the GUI's "new tab" when in daemon mode). */
-    fun openSession(cwd: String? = null) {
+    /** Ask the daemon to open a new session (the GUI's "new tab" when in daemon mode). Returns whether
+     *  the request was actually enqueued (false → no live connection / outbox full). */
+    fun openSession(cwd: String? = null): Boolean =
         send(DaemonAttachProtocol.Client.Open(cwd = cwd))
-    }
 
-    private fun send(m: DaemonAttachProtocol.Client) {
-        outbox?.trySend(DaemonAttachProtocol.encodeClient(m))
+    /** Enqueue a client message; returns false if it couldn't be sent (no connection / outbox full). */
+    private fun send(m: DaemonAttachProtocol.Client): Boolean {
+        val box = outbox ?: run {
+            // No live connection (reconnecting). Dropping queued input here is intentional — see the
+            // per-connection outbox note — but make it visible rather than silent.
+            log.debug("attach: dropped client msg {} — no live connection", m::class.simpleName)
+            return false
+        }
+        if (box.trySend(DaemonAttachProtocol.encodeClient(m)).isFailure) {
+            // Output drops are by design; a dropped *input*/control message is a correctness issue, so
+            // surface it (the socket is wedged and will drop+reconnect).
+            log.warn("attach: outbox full — dropped client msg {}", m::class.simpleName)
+            return false
+        }
+        return true
     }
 
     private suspend fun runWithReconnect() {
@@ -87,7 +100,10 @@ class DaemonSessionBridge(
 
     private suspend fun connectOnce() {
         // Report our pid so the daemon can activate this GUI window on "Open BossTerm".
-        val url = "ws://127.0.0.1:$attachPort/attach?token=$secret&pid=${ProcessHandle.current().pid()}" +
+        // URL-encode the token defensively — it's hex today, but a secret with URL-special chars would
+        // otherwise break the query string (the server URL-decodes queryParameters["token"]).
+        val encodedToken = java.net.URLEncoder.encode(secret, "UTF-8")
+        val url = "ws://127.0.0.1:$attachPort/attach?token=$encodedToken&pid=${ProcessHandle.current().pid()}" +
             "&v=${DaemonAttachProtocol.PROTOCOL_VERSION}"
         val out = Channel<String>(capacity = 1024)
         outbox = out
@@ -161,7 +177,11 @@ class DaemonSessionBridge(
         // First attach to an empty daemon → open one session so the user sees a daemon terminal.
         // The guard is process-wide (coordinator), so bridge churn can't accumulate sessions.
         if (sessions.isEmpty()) {
-            if (DaemonBridgeCoordinator.claimAutoOpen()) openSession()
+            // Release the process-wide claim if the Open couldn't be enqueued, so a later reconcile
+            // retries instead of the empty daemon being stuck tab-less with the claim consumed.
+            if (DaemonBridgeCoordinator.claimAutoOpen() && !openSession()) {
+                DaemonBridgeCoordinator.releaseAutoOpen()
+            }
             return
         }
         val live = sessions.associateBy { it.id }

@@ -93,6 +93,7 @@ class TerminalSessionCore(
 
     /** Invoked once when the shell process exits (so the host registry can reap the session). */
     var onExit: (() -> Unit)? = null
+    private val exitNotified = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var started = false
@@ -165,6 +166,13 @@ class TerminalSessionCore(
                     return@launch
                 }
                 handle = h
+                if (closed) {
+                    // close() raced ahead of the spawn and saw a null handle, so it couldn't kill this
+                    // PTY — do it ourselves so the just-spawned shell isn't orphaned.
+                    runCatching { runBlocking { h.kill() } }
+                    connected.complete(false)
+                    return@launch
+                }
                 _connectionState.value = State.Connected
                 connected.complete(true)
                 terminal.setTerminalOutput(PtyTerminalOutput())
@@ -195,7 +203,10 @@ class TerminalSessionCore(
                     try {
                         while (h.isAlive()) {
                             try {
-                                val output = h.read() ?: continue
+                                // read() returns null on EOF / shutdown (a healthy zero-byte read is
+                                // ""); `continue` here would busy-spin at 100% CPU in the window before
+                                // isAlive() flips false. Break out instead.
+                                val output = h.read() ?: break
                                 val processed = if (output.length > maxChunkSize) {
                                     val safe = GraphemeBoundaryUtils.findLastCompleteGraphemeBoundary(output, maxChunkSize)
                                     output.substring(0, safe)
@@ -217,7 +228,8 @@ class TerminalSessionCore(
                 Thread({
                     runCatching { runBlocking { h.waitFor() } }
                     _connectionState.value = State.Exited
-                    runCatching { onExit?.invoke() }
+                    // Fire onExit at most once even if reaping races a concurrent closeSession.
+                    if (exitNotified.compareAndSet(false, true)) runCatching { onExit?.invoke() }
                     close()
                 }, "bossterm-session-exit-$id").apply { isDaemon = true }.start()
             } catch (e: Exception) {

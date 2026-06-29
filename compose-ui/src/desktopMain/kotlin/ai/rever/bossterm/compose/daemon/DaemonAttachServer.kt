@@ -64,6 +64,13 @@ class DaemonAttachServer(
 
     /** Bind on loopback, trying [desiredPort]..+9. Returns the bound port or -1. */
     fun start(desiredPort: Int = 7682): Int {
+        // Refuse to start without a real secret — constantTimeEquals("", "") is true, so an empty
+        // secret would accept every (token-less) client. Not reachable today (secret is 32-byte
+        // SecureRandom), but fail loud rather than serve unauthenticated.
+        if (secret.isEmpty()) {
+            log.error("attach: refusing to start with an empty secret")
+            return -1
+        }
         for (offset in 0 until 10) {
             val port = desiredPort + offset
             if (port > 65535) break

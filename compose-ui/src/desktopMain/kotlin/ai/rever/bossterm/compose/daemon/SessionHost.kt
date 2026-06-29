@@ -95,6 +95,10 @@ class SessionHost(
         // before the shells are actually destroyed (which would orphan them).
         val killThreads = sessions.values.mapNotNull { runCatching { it.close() }.getOrNull() }
         sessions.clear()
+        // Tell attached GUIs the sessions are gone — otherwise a mass close the daemon survives leaves
+        // them showing stale tabs. (The notifier is a daemon-thread executor, so it needn't be shut
+        // down explicitly; it dies with the JVM on actual daemon exit.)
+        notifyChanged()
         val deadline = System.currentTimeMillis() + 3000
         killThreads.forEach { t ->
             val remaining = deadline - System.currentTimeMillis()

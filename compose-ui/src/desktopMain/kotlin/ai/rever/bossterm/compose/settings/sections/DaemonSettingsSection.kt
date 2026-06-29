@@ -55,9 +55,18 @@ fun DaemonSettingsSection(
                 checked = settings.daemonEnabled,
                 description = "Terminal sessions, MCP, and sharing live in a long-lived process that " +
                     "outlives this window. Takes effect after restarting BossTerm.",
-                onCheckedChange = {
-                    onSettingsChange(settings.copy(daemonEnabled = it))
-                    onSettingsSave?.invoke()
+                onCheckedChange = { on ->
+                    if (on) {
+                        onSettingsChange(settings.copy(daemonEnabled = true))
+                        onSettingsSave?.invoke()
+                    } else {
+                        // Disabling the daemon must also tear down the at-login service + clear its
+                        // flag, otherwise a daemon keeps spawning at login that the GUI no longer
+                        // connects to.
+                        onSettingsChange(settings.copy(daemonEnabled = false, startDaemonAtLogin = false))
+                        onSettingsSave?.invoke()
+                        scope.launch(Dispatchers.IO) { runCatching { LoginServiceManager.uninstall() } }
+                    }
                 },
             )
             Spacer(Modifier.height(8.dp))

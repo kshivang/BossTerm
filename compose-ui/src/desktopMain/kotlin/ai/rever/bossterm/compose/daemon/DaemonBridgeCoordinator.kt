@@ -34,6 +34,9 @@ object DaemonBridgeCoordinator {
     /** Returns true to exactly one caller — the first bridge that finds the daemon empty. */
     fun claimAutoOpen(): Boolean = autoOpenClaimed.compareAndSet(false, true)
 
+    /** Release a claim whose auto-open couldn't be issued, so a later reconcile can retry. */
+    fun releaseAutoOpen() { autoOpenClaimed.set(false) }
+
     /** Record the daemon's attach endpoint after [DaemonClient.ensureConnected] succeeds (blocking STATUS). */
     fun onConnected(client: DaemonClient) {
         val ep = client.current ?: return

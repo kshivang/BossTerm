@@ -62,12 +62,19 @@ class DaemonControlChannel(
         return socket.localPort
     }
 
-    /** Stop accepting and remove the port file. Safe to call more than once. */
+    /** Stop accepting and remove the port file (only if it's still ours). Safe to call more than once. */
     fun stop() {
         running = false
         runCatching { serverSocket?.close() }
         serverSocket = null
-        runCatching { BossTermPaths.daemonPortFile().delete() }
+        // Only delete daemon.port if it still belongs to THIS instance. Under a shutdown/start race,
+        // another daemon may already have overwritten it with its own port+secret — deleting that would
+        // strand a live daemon with no discovery file (and the GUI would spawn yet another).
+        val mySecret = secret
+        runCatching {
+            val ep = readEndpoint()
+            if (ep == null || ep.secret == mySecret) BossTermPaths.daemonPortFile().delete()
+        }
     }
 
     private fun acceptLoop(socket: ServerSocket) {

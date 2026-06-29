@@ -22,15 +22,27 @@ import kotlinx.coroutines.selects.select
  * Replaces the previous single `Channel(4096, DROP_OLDEST)` that funneled *every* frame — including
  * snapshots — through the droppable path (issue: a burst could evict a snapshot, blanking the mirror).
  */
-internal class FrameOutbox(outputCapacity: Int = 4096) {
-    private val control = Channel<String>(Channel.UNLIMITED)
+internal class FrameOutbox(outputCapacity: Int = 4096, controlCapacity: Int = 1024) {
+    // Control frames must not be DROPPED, but the lane is still BOUNDED: a wedged client (socket
+    // reader stalled) plus repeated resync() — each pushing a full-scrollback Snapshot — would
+    // otherwise grow the heap without limit. A client that can't even keep up with control frames is
+    // unrecoverable, so on overflow we close the outbox: the writer ends, the connection drops, and
+    // the GUI reconnects to a fresh snapshot. (Was Channel.UNLIMITED, which defeated the backpressure
+    // guarantee the outbox exists to provide.)
+    private val control = Channel<String>(capacity = controlCapacity)
     private val output = Channel<String>(capacity = outputCapacity, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    @Volatile private var closed = false
 
     /** Enqueue a frame that must not be dropped (snapshot / list / lifecycle / resize). */
-    fun sendControl(text: String) { control.trySend(text) }
+    fun sendControl(text: String) {
+        if (closed) return
+        if (control.trySend(text).isFailure) close() // saturated → unrecoverable client; drop it
+    }
 
     /** Enqueue incremental output that may be dropped under back-pressure. */
-    fun sendOutput(text: String) { output.trySend(text) }
+    fun sendOutput(text: String) {
+        if (!closed) output.trySend(text)
+    }
 
     /**
      * Drain both lanes until either is closed, handing each frame to [emit] (which writes it to the
@@ -67,6 +79,7 @@ internal class FrameOutbox(outputCapacity: Int = 4096) {
     }
 
     fun close() {
+        closed = true
         runCatching { control.close() }
         runCatching { output.close() }
     }

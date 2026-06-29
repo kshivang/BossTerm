@@ -39,6 +39,12 @@ object DaemonTray {
             log.info("System tray unavailable (headless/unsupported); daemon runs without a menu-bar icon")
             return false
         }
+        // AWT components + SystemTray.add() must be built/registered on the EDT.
+        if (!SwingUtilities.isEventDispatchThread()) {
+            var result = false
+            runCatching { SwingUtilities.invokeAndWait { result = install(version, sessionCount, onOpenApp, onQuit) } }
+            return result
+        }
         return try {
             val popup = PopupMenu()
             popup.add(MenuItem("BossTerm v$version").apply { isEnabled = false })

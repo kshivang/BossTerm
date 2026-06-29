@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.settings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
@@ -90,7 +91,10 @@ class SettingsManager(private val customSettingsPath: String? = null) {
      * Update a single setting field
      */
     fun updateSetting(updater: TerminalSettings.() -> TerminalSettings) {
-        updateSettings(updater(_settings.value))
+        // Atomic read-modify-write: concurrent callers (UI thread, the async daemon toggle on
+        // Dispatchers.IO, the MCP writer) would otherwise clobber each other's field updates.
+        _settings.update { it.updater() }
+        saveToFile()
     }
 
     /**
@@ -104,15 +108,36 @@ class SettingsManager(private val customSettingsPath: String? = null) {
      * Save current settings to file
      */
     fun saveToFile() {
-        try {
-            val jsonString = json.encodeToString(_settings.value)
-            settingsFile.writeText(jsonString)
-            println("Settings saved to: ${settingsFile.absolutePath}")
-        } catch (e: Exception) {
-            System.err.println("Failed to save settings: ${e.message}")
-            e.printStackTrace()
+        // Serialize concurrent writers and write atomically (temp + rename) so a reader never sees a
+        // half-written file and two racing saves can't interleave bytes. Newly stressed by the async
+        // daemon settings toggle sharing this file with the UI thread + MCP writer.
+        synchronized(saveLock) {
+            try {
+                val jsonString = json.encodeToString(_settings.value)
+                val tmp = File(settingsFile.parentFile, ".${settingsFile.name}.tmp")
+                tmp.writeText(jsonString)
+                runCatching {
+                    java.nio.file.Files.move(
+                        tmp.toPath(), settingsFile.toPath(),
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    )
+                }.onFailure {
+                    // Filesystems without atomic rename: fall back to in-place replace.
+                    java.nio.file.Files.move(
+                        tmp.toPath(), settingsFile.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    )
+                }
+                println("Settings saved to: ${settingsFile.absolutePath}")
+            } catch (e: Exception) {
+                System.err.println("Failed to save settings: ${e.message}")
+                e.printStackTrace()
+            }
         }
     }
+
+    private val saveLock = Any()
 
     /**
      * Load settings from file.

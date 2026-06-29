@@ -12,11 +12,11 @@ import kotlin.test.assertTrue
  * Unit tests for the `show_image` MCP tool's pure pieces.
  *
  * Covers the OSC 1337 framing emitted by [buildOsc1337Image] (the bytes the tool
- * feeds into the pane's data stream) plus the two cross-module contracts the tool
- * relies on: that [DimensionSpec.parse] understands the width/height strings we
- * pass through verbatim, and that [ImageFormat.detect] recognizes the raster
- * headers we pre-validate with. A running server / PTY isn't needed — these are
- * all pure functions.
+ * feeds into the pane's data stream) plus two cross-module contracts the inline-
+ * image pipeline relies on: that [DimensionSpec.parse] understands the width/height
+ * strings we pass through verbatim, and that [ImageFormat.detect] recognizes the
+ * raster headers the emulator's OSC 1337 parser keys on. A running server / PTY
+ * isn't needed — these are all pure functions.
  *
  * ESC (0x1B) and BEL (0x07) are asserted via char codes so this source file
  * contains no control characters of its own.
@@ -79,7 +79,7 @@ class ShowImageOscBuilderTest {
     }
 
     @Test
-    fun imageFormatDetectsRasterHeadersWePreValidate() {
+    fun imageFormatDetectsCommonRasterHeaders() {
         val png = byteArrayOf(
             0x89.toByte(), 0x50.toByte(), 0x4E.toByte(), 0x47.toByte(),
             0x0D.toByte(), 0x0A.toByte(), 0x1A.toByte(), 0x0A.toByte()

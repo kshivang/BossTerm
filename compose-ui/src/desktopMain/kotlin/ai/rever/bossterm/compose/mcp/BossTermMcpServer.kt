@@ -7,7 +7,6 @@ import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import ai.rever.bossterm.terminal.model.CommandStateListener
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
-import ai.rever.bossterm.terminal.model.image.ImageFormat
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.Base64
@@ -1050,6 +1049,7 @@ class BossTermMcpServer(
             val imageBytes: ByteArray = if (path != null) {
                 val file = File(path)
                 when {
+                    !file.isAbsolute -> return@addTool errorResult("`path` must be absolute: $path")
                     !file.exists() -> return@addTool errorResult("File not found: $path")
                     !file.isFile -> return@addTool errorResult("Not a file: $path")
                     file.length() > MAX_IMAGE_BYTES -> return@addTool errorResult(
@@ -1064,6 +1064,11 @@ class BossTermMcpServer(
             } else {
                 // Accept a bare base64 string or a `data:<mime>;base64,<...>` URL.
                 val raw = dataBase64!!.substringAfter("base64,").replace(Regex("\\s"), "")
+                // Bound the decoded size BEFORE allocating it (base64 expands ~4:3),
+                // so an oversized payload can't force a large allocation first.
+                if (raw.length.toLong() / 4 * 3 > MAX_IMAGE_BYTES) {
+                    return@addTool errorResult("Image too large (max $MAX_IMAGE_BYTES bytes).")
+                }
                 val decoded = try {
                     Base64.getDecoder().decode(raw)
                 } catch (e: Exception) {
@@ -1077,19 +1082,38 @@ class BossTermMcpServer(
                 decoded
             }
 
-            // --- 2. Validate it decodes to a raster image (clear error vs. silent no-op). ---
-            if (ImageFormat.detect(imageBytes) == ImageFormat.UNKNOWN) {
-                return@addTool errorResult(
-                    "Unrecognized image format (supported: PNG, JPEG, GIF, BMP, WebP)."
-                )
-            }
-            val bufferedImage = try {
-                ImageIO.read(ByteArrayInputStream(imageBytes))
+            // --- 2. Ensure the bytes can be PLACED. The emulator's OSC 1337 handler
+            //        reads intrinsic dimensions via ImageIO, which has no WebP reader in
+            //        a stock JDK. Gate on ImageIO; if it can't read the bytes, fall back
+            //        to Skia (the renderer's own decoder, which does handle WebP) and
+            //        transcode to PNG so placement and rendering stay on one decoder —
+            //        this is why a valid .webp still works even though ImageIO can't read it.
+            var bytesToSend = imageBytes
+            val imageIoReadable = try {
+                ImageIO.read(ByteArrayInputStream(imageBytes))?.let { it.width > 0 && it.height > 0 } ?: false
             } catch (e: Exception) {
-                null
+                false
             }
-            if (bufferedImage == null || bufferedImage.width <= 0 || bufferedImage.height <= 0) {
-                return@addTool errorResult("Failed to decode image dimensions.")
+            if (!imageIoReadable) {
+                val transcoded = try {
+                    org.jetbrains.skia.Image.makeFromEncoded(imageBytes).use { img ->
+                        img.encodeToData(org.jetbrains.skia.EncodedImageFormat.PNG)?.use { it.bytes }
+                    }
+                } catch (e: Throwable) {
+                    null
+                }
+                if (transcoded == null || transcoded.isEmpty()) {
+                    return@addTool errorResult(
+                        "Could not decode image — unsupported format or corrupt data " +
+                            "(supported: PNG, JPEG, GIF, BMP, WebP)."
+                    )
+                }
+                if (transcoded.size > MAX_IMAGE_BYTES) {
+                    return@addTool errorResult(
+                        "Image too large after transcode: ${transcoded.size} bytes (max $MAX_IMAGE_BYTES)."
+                    )
+                }
+                bytesToSend = transcoded
             }
 
             // --- 3. Resolve the owning window + tab. ---
@@ -1137,6 +1161,10 @@ class BossTermMcpServer(
                     freshlyCreated = true
                 }
                 "horizontal_split", "vertical_split" -> {
+                    // Each split creates a fresh pane for the image. Unlike run_command,
+                    // show_image deliberately does NOT chain via the scratch-pane cache —
+                    // an image is a one-shot display, not a reused command pane, so
+                    // consecutive split calls intentionally make independent panes.
                     val effectiveRatio = (args.optionalFloat("split_ratio")
                         ?: settingsManager.settings.value.mcpDefaultSplitRatio)
                         .coerceIn(0.05f, 0.95f)
@@ -1186,13 +1214,18 @@ class BossTermMcpServer(
                 }
 
                 val osc = buildOsc1337Image(
-                    bytes = imageBytes,
+                    bytes = bytesToSend,
                     name = path?.let { File(it).name },
                     widthSpec = widthSpec,
                     heightSpec = heightSpec
                 )
+                // Strip control characters so a caption can't smuggle its own escape /
+                // OSC sequences into the emulator; keep printable + non-C1 Unicode.
+                val safeCaption = caption
+                    ?.filter { it.code >= 0x20 && it.code != 0x7F && it.code !in 0x80..0x9F }
+                    ?.takeIf { it.isNotEmpty() }
                 val payload = buildString {
-                    if (!caption.isNullOrEmpty()) append(caption.replace("\n", " ")).append("\r\n")
+                    if (safeCaption != null) append(safeCaption).append("\r\n")
                     append(osc).append("\r\n")
                 }
                 tab.dataStream.append(payload)
@@ -2258,8 +2291,7 @@ class BossTermMcpServer(
         val ok: Boolean,
         val tabId: String,
         /** The pane the image was rendered into (== tabId for an unsplit tab). */
-        val paneId: String,
-        val error: String? = null
+        val paneId: String
     )
 
     @Serializable

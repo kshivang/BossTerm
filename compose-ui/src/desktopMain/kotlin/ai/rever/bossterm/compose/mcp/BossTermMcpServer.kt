@@ -913,6 +913,7 @@ class BossTermMcpServer(
                 }
                 "horizontal_split", "vertical_split" -> {
                     val targetTabId = requestedTabId
+                        ?: registry.lastResolvedClientTabId()
                         ?: state.activeTabId
                         ?: return@addTool errorResult("No active tab to split")
                     // Resolve effective ratio: per-call override > user setting > 0.3 fallback.
@@ -1045,6 +1046,7 @@ class BossTermMcpServer(
                     ?: return@addTool errorResult("No registered terminal window")
             }
             val tabId = requestedTabId
+                ?: registry.lastResolvedClientTabId()
                 ?: state.activeTabId
                 ?: return@addTool errorResult("No active tab")
 

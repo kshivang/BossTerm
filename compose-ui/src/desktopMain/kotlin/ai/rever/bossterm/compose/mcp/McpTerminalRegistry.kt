@@ -244,7 +244,7 @@ object McpTerminalRegistry {
     /**
      * Sweep threshold for the opportunistic [gcStalePaneMutexes]. Set well
      * above the realistic concurrent-pane count (matching the
-     * `clientWindowByPort` cap heuristic) so a heavy multi-window session
+     * `clientTabByPort` cap heuristic) so a heavy multi-window session
      * doesn't trigger a full-state sweep on every pane creation, while still
      * bounding map growth for very long-lived processes.
      */
@@ -301,31 +301,43 @@ object McpTerminalRegistry {
     // call for a single request, never permanently.
     // -----------------------------------------------------------------
 
-    private val lastResolvedClient = AtomicReference<TabbedTerminalState?>(null)
+    private val lastResolvedClientTab = AtomicReference<String?>(null)
 
     /**
-     * Most recently resolved "calling-client window", or null if no
-     * request has been resolved yet OR the resolved state has been
-     * unregistered (window closed). Lazy invalidation: stale entries
-     * are detected on read and cleared.
+     * Tab id of the most recently resolved "calling-client pane" — the
+     * top-level tab whose shell PID is an ancestor of the MCP client process
+     * (ProcessAncestry walk) — or null if no request resolved yet OR the tab
+     * has since closed. Lazy invalidation: stale entries are detected on read
+     * and cleared.
+     *
+     * Tools default their `tab_id` to this so pane creation (splits, new
+     * scratch panes) lands on the tab the agent actually runs in, NOT the tab
+     * the human happens to have selected in the UI.
      */
-    internal fun lastResolvedClientWindow(): TabbedTerminalState? {
-        val cached = lastResolvedClient.get() ?: return null
-        if (cached !in states) {
-            lastResolvedClient.compareAndSet(cached, null)
+    internal fun lastResolvedClientTabId(): String? {
+        val tabId = lastResolvedClientTab.get() ?: return null
+        if (findState(tabId) == null) {
+            lastResolvedClientTab.compareAndSet(tabId, null)
             return null
         }
-        return cached
+        return tabId
     }
 
     /**
-     * Manager-only. Pass a resolved state to record it as the most-recent
-     * caller window. Null is a no-op — a non-resolving request (client
-     * running outside any BossTerm pane) shouldn't blow away the prior
-     * resolution from a request that DID resolve.
+     * Window (state) owning the most recently resolved calling-client tab, or
+     * null if unresolved / closed. Derived from [lastResolvedClientTabId] so the
+     * two can never disagree.
      */
-    internal fun setLastResolvedClientWindow(state: TabbedTerminalState?) {
-        if (state != null) lastResolvedClient.set(state)
+    internal fun lastResolvedClientWindow(): TabbedTerminalState? =
+        lastResolvedClientTabId()?.let { findState(it) }
+
+    /**
+     * Manager-only. Record the resolved calling-client tab id. Null is a no-op —
+     * a non-resolving request (client running outside any BossTerm pane)
+     * shouldn't blow away the prior resolution from a request that DID resolve.
+     */
+    internal fun setLastResolvedClientTab(tabId: String?) {
+        if (tabId != null) lastResolvedClientTab.set(tabId)
     }
 
     private fun persist(targets: Set<McpAttachTarget>) {

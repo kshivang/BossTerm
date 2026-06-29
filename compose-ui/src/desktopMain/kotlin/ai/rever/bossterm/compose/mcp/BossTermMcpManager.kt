@@ -1,6 +1,5 @@
 package ai.rever.bossterm.compose.mcp
 
-import ai.rever.bossterm.compose.TabbedTerminalState
 import ai.rever.bossterm.compose.settings.SettingsManager
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -47,8 +46,8 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * The manager is meant to be constructed **once per JVM** in `fun main()` and
  * exposes tabs from every window via [McpTerminalRegistry]. Window-scoped
- * lifecycles only need to register/unregister their [TabbedTerminalState]
- * with the registry; they should not instantiate this class themselves.
+ * lifecycles only need to register/unregister their window state with the
+ * registry; they should not instantiate this class themselves.
  *
  * Behavior:
  *  - On [start] the manager begins observing [SettingsManager.settings] and
@@ -96,16 +95,16 @@ class BossTermMcpManager(
     private var disabledToolsWatcherJob: Job? = null
     private var preferredShellWatcherJob: Job? = null
 
-    // Caches caller-window resolution by the client's ephemeral TCP port. That
+    // Caches caller-tab resolution by the client's ephemeral TCP port. That
     // port is stable for a connection's lifetime and its owning PID can't
     // change without reconnecting, so one (possibly expensive) ProcessAncestry
     // resolution per socket suffices instead of one per request. Optional wraps
-    // the nullable result (a client outside any pane resolves to "no window")
+    // the nullable result (a client outside any pane resolves to "no tab")
     // since ConcurrentHashMap forbids null values. Cleared wholesale past
     // CLIENT_WINDOW_CACHE_MAX so recycled ephemeral ports can't accrete entries
-    // — a recycled port could briefly return a stale window, an acceptable
+    // — a recycled port could briefly return a stale tab, an acceptable
     // last-writer-wins miss already inherent to the multi-client design.
-    private val clientWindowByPort = ConcurrentHashMap<Int, Optional<TabbedTerminalState>>()
+    private val clientTabByPort = ConcurrentHashMap<Int, Optional<String>>()
 
     /** Begin observing settings. Idempotent. Safe to call multiple times. */
     fun start() {
@@ -411,7 +410,7 @@ class BossTermMcpManager(
                     // once per client connection.
                     if (call.request.httpMethod == HttpMethod.Post) {
                         val remotePort = call.request.local.remotePort
-                        val cached = clientWindowByPort[remotePort]
+                        val cached = clientTabByPort[remotePort]
                         val resolved = if (cached != null) {
                             cached.orElse(null)
                         } else {
@@ -420,18 +419,18 @@ class BossTermMcpManager(
                             // it never stalls a CIO selector thread. The small
                             // race where two first-POSTs on one port both
                             // resolve is harmless (same result, idempotent).
-                            if (clientWindowByPort.size > CLIENT_WINDOW_CACHE_MAX) {
-                                clientWindowByPort.clear()
+                            if (clientTabByPort.size > CLIENT_WINDOW_CACHE_MAX) {
+                                clientTabByPort.clear()
                             }
                             val r = withContext(Dispatchers.IO) {
                                 runCatching {
-                                    ProcessAncestry.resolveClientWindow(remotePort, registry)
+                                    ProcessAncestry.resolveClientTabId(remotePort, registry)
                                 }.getOrNull()
                             }
-                            clientWindowByPort[remotePort] = Optional.ofNullable(r)
+                            clientTabByPort[remotePort] = Optional.ofNullable(r)
                             r
                         }
-                        registry.setLastResolvedClientWindow(resolved)
+                        registry.setLastResolvedClientTab(resolved)
                     }
                 }
                 // SDK 0.8.3 quirk: both `Route.mcp { ... }` and
@@ -647,7 +646,7 @@ class BossTermMcpManager(
         private const val MAX_TCP_PORT = 65535
 
         /**
-         * Size at which [clientWindowByPort] is cleared wholesale. Caller-window
+         * Size at which [clientTabByPort] is cleared wholesale. Caller-tab
          * resolutions are keyed by ephemeral client port; this bounds the map so
          * recycled ports over a long-lived server can't accrete entries. Well
          * above the realistic concurrent-client count.

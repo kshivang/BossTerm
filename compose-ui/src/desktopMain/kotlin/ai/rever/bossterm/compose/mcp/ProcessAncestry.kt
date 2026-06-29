@@ -79,9 +79,11 @@ internal object ProcessAncestry {
     }
 
     /**
-     * Flatten every tracked tab's shell PID across every registered state into
-     * a single PID → tab-id lookup. Cheap and rebuilt per resolution so pane
-     * creation / closure is reflected immediately without a refresh hook.
+     * Flatten every tracked pane's shell PID across every registered state into
+     * a single PID → tab-id lookup. Includes split panes, not just each tab's
+     * primary session, so a client running in a NON-primary pane still resolves
+     * to its owning tab. Cheap and rebuilt per resolution so pane creation /
+     * closure is reflected immediately without a refresh hook.
      */
     private fun collectTabIdByShellPid(
         registry: McpTerminalRegistry
@@ -89,8 +91,14 @@ internal object ProcessAncestry {
         val out = HashMap<Long, String>()
         for (state in registry.allStates()) {
             for (tab in state.tabs) {
-                val pid = tab.processHandle.value?.getPid() ?: continue
-                out[pid] = tab.id
+                // Primary session PID (also covers a single-pane tab).
+                tab.processHandle.value?.getPid()?.let { out[it] = tab.id }
+                // Split-pane session PIDs — all map back to the owning tab id.
+                for (snapshot in state.getPaneSnapshots(tab.id)) {
+                    val pid = state.findSession(tab.id, snapshot.id)
+                        ?.processHandle?.value?.getPid() ?: continue
+                    out[pid] = tab.id
+                }
             }
         }
         return out

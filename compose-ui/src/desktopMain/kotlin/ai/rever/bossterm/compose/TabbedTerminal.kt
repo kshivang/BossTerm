@@ -1468,7 +1468,12 @@ fun TabbedTerminal(
                 sharedFont = sharedFont,
                 isActiveTab = isActive,
                 onTabTitleChange = { newTitle ->
-                    activeTab.title.value = newTitle
+                    // A user rename (customTitle) always wins; otherwise track the
+                    // app's OSC title. Matches the background-tab collector in
+                    // TabController.wireCwdTitle so active and background tabs behave alike.
+                    if (activeTab.customTitle.value == null) {
+                        activeTab.title.value = newTitle
+                    }
                 },
                 onNewTab = {
                     // New tabs always start in home directory (no working dir inheritance)

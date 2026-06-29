@@ -313,8 +313,10 @@ class BossTermMcpServer(
             name = toolName("get_active_tab"),
             description = describe(
                 "get_active_tab",
-                "Return the active tab of the primary window (the first window opened " +
-                        "that is still alive), or null if no tab is active."
+                "Return the calling client's own tab (the tab whose process tree the MCP " +
+                        "client runs in) when it can be resolved, otherwise the active tab of " +
+                        "the primary window; null if no tab is available. The `isActive` field " +
+                        "reports whether that tab is the window's currently-focused one."
             ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
@@ -335,7 +337,13 @@ class BossTermMcpServer(
             // ancestor matches a tracked pane.
             val primary = registry.lastResolvedClientWindow() ?: registry.primaryState()
             val activeId = primary?.activeTabId
-            val info = primary?.activeTab?.toTabInfo(activeId)
+            // Within that window, prefer the caller's OWN tab over the window's
+            // focused tab; isActive (id == activeId) still tells the client
+            // whether its tab is the currently-focused one.
+            val callerTabId = registry.lastResolvedClientTabId()
+                ?.takeIf { primary?.getTabById(it) != null }
+            val targetTab = callerTabId?.let { primary?.getTabById(it) } ?: primary?.activeTab
+            val info = targetTab?.toTabInfo(activeId)
             // The literal JSON `null` is valid output — clients calling
             // JSON.parse get a real null. Cheaper than wrapping in `{tab: null}`.
             val text = when {

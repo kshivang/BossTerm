@@ -797,8 +797,12 @@ data class TerminalSettings(
 
     /**
      * Shift modifier for global hotkey.
+     * Defaults to true so the out-of-the-box global hotkey is a two-modifier chord
+     * (Ctrl+Shift), which is far less likely to shadow ordinary app shortcuts than a
+     * single modifier. Shift (not Alt) is the second default modifier on purpose:
+     * Ctrl+Alt is AltGr on many European layouts and would interfere with typing.
      */
-    val globalHotkeyShift: Boolean = false,
+    val globalHotkeyShift: Boolean = true,
 
     /**
      * Windows key modifier for global hotkey.
@@ -810,6 +814,14 @@ data class TerminalSettings(
      * Valid values: "GRAVE" (`), "SPACE", "ESCAPE", A-Z, 0-9, F1-F12
      */
     val globalHotkeyKey: String = "GRAVE",
+
+    /**
+     * Register a single global show/hide toggle hotkey: the configured modifiers +
+     * [globalHotkeyKey] (e.g. Ctrl+Shift+`). Summons or hides the active BossTerm window
+     * from anywhere — a lightweight "drop-down terminal" trigger that is independent of
+     * the per-window 1–9 hotkeys. Only takes effect while [globalHotkeyEnabled] is on.
+     */
+    val globalHotkeyToggleEnabled: Boolean = true,
 
     /**
      * Automatically inject shell integration (OSC 133) into new terminal sessions.

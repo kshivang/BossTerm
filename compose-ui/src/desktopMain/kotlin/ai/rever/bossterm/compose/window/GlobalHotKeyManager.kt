@@ -39,6 +39,15 @@ enum class HotKeyRegistrationStatus {
 object GlobalHotKeyManager {
     private const val HOTKEY_SIGNATURE = 0x424F5353  // 'BOSS'
 
+    // Sentinel id for the single global show/hide toggle (modifiers + configured key).
+    // Per-window hotkeys use ids 1-9, so 0 is free; it routes through invokeCallback(0),
+    // which the app maps to "toggle the active window" rather than a specific window.
+    private const val TOGGLE_HOTKEY_ID = 0
+
+    // The toggle is skipped when the configured key is itself a window digit (1-9), since
+    // that key is already claimed by a per-window hotkey and would fail to register twice.
+    private fun toggleKeyConflictsWithWindows(key: String): Boolean = key.trim().toIntOrNull() in 1..9
+
     // Linux registration success threshold: if less than this fraction succeed,
     // treat as overall failure. 50% threshold chosen because:
     // - Allows 4-5 windows to work even if some hotkeys conflict
@@ -71,8 +80,11 @@ object GlobalHotKeyManager {
      * Start the global hotkey manager with the given base configuration.
      * Will register hotkeys for all existing windows and listen for new ones.
      *
-     * @param config Base hotkey configuration (modifiers only, key is ignored - numbers 1-9 are used)
-     * @param onWindowHotKeyPressed Callback with window number (1-9) when hotkey is pressed
+     * @param config Base hotkey configuration. Modifiers + numbers 1-9 drive per-window
+     *   summon; if [HotKeyConfig.toggleEnabled] is set, modifiers + [HotKeyConfig.key]
+     *   also register a single show/hide toggle reported as window number 0.
+     * @param onWindowHotKeyPressed Callback with window number 1-9 (summon that window) or
+     *   0 (the show/hide toggle) when the corresponding hotkey is pressed
      */
     @Synchronized
     fun start(config: HotKeyConfig, onWindowHotKeyPressed: (Int) -> Unit) {
@@ -268,6 +280,17 @@ object GlobalHotKeyManager {
             return
         }
 
+        // Optional single show/hide toggle: modifiers + configured key (e.g. Ctrl+Shift+`).
+        if (config.toggleEnabled && !toggleKeyConflictsWithWindows(config.key)) {
+            try {
+                if (api.RegisterHotKey(null, TOGGLE_HOTKEY_ID, modifiers, config.toVirtualKeyCode())) {
+                    println("GlobalHotKeyManager: Registered Windows show/hide toggle (${config.key})")
+                }
+            } catch (e: Exception) {
+                println("GlobalHotKeyManager: show/hide toggle registration failed: ${e.message}")
+            }
+        }
+
         println("GlobalHotKeyManager: Registered Windows hotkeys for windows 1-9")
         _registrationStatus.value = HotKeyRegistrationStatus.REGISTERED
 
@@ -282,7 +305,8 @@ object GlobalHotKeyManager {
 
                 if (msg.message == Win32HotKeyApi.WM_HOTKEY) {
                     val windowNum = msg.wParam.toInt()
-                    if (windowNum in 1..9) {
+                    // 1-9 = per-window summon; TOGGLE_HOTKEY_ID (0) = show/hide toggle.
+                    if (windowNum in 1..9 || windowNum == TOGGLE_HOTKEY_ID) {
                         invokeCallback(windowNum)
                     }
                 }
@@ -298,6 +322,11 @@ object GlobalHotKeyManager {
                 } catch (e: Exception) {
                     // Ignore
                 }
+            }
+            try {
+                api.UnregisterHotKey(null, TOGGLE_HOTKEY_ID)
+            } catch (e: Exception) {
+                // Ignore
             }
             // Note: winThreadId is cleared in stopWindows() after posting WM_QUIT
             registeredWindows.clear()
@@ -379,7 +408,8 @@ object GlobalHotKeyManager {
                         if (result == MacOSHotKeyApi.noErr) {
                             hotKeyID.read()
                             val windowNum = hotKeyID.id
-                            if (windowNum in 1..9) {
+                            // 1-9 = per-window summon; TOGGLE_HOTKEY_ID (0) = show/hide toggle.
+                            if (windowNum in 1..9 || windowNum == TOGGLE_HOTKEY_ID) {
                                 invokeCallback(windowNum)
                             }
                         }
@@ -448,6 +478,26 @@ object GlobalHotKeyManager {
                 _registrationStatus.value = HotKeyRegistrationStatus.FAILED
                 initializationLatch?.countDown()
                 return
+            }
+
+            // Optional single show/hide toggle: modifiers + configured key (e.g. ⌃⇧`).
+            // Registered under the sentinel id so it flows through the same event handler.
+            if (config.toggleEnabled && !toggleKeyConflictsWithWindows(config.key)) {
+                val toggleKeyCode = MacOSHotKeyApi.keyToVirtualKeyCode(config.key)
+                val toggleId = EventHotKeyID.ByReference()
+                toggleId.signature = HOTKEY_SIGNATURE
+                toggleId.id = TOGGLE_HOTKEY_ID
+                toggleId.write()
+                val toggleRef = PointerByReference()
+                val toggleResult = carbonApi.RegisterEventHotKey(
+                    toggleKeyCode, modifiers, toggleId, target, 0, toggleRef
+                )
+                if (toggleResult == MacOSHotKeyApi.noErr) {
+                    macHotKeyRefs[TOGGLE_HOTKEY_ID] = toggleRef.value
+                    println("GlobalHotKeyManager: Registered macOS show/hide toggle (${config.key})")
+                } else {
+                    println("GlobalHotKeyManager: show/hide toggle registration failed: $toggleResult")
+                }
             }
 
             println("GlobalHotKeyManager: Registered macOS hotkeys for windows 1-9")
@@ -643,6 +693,30 @@ object GlobalHotKeyManager {
                 _registrationStatus.value = HotKeyRegistrationStatus.FAILED
                 initializationLatch?.countDown()
                 return
+            }
+
+            // Optional single show/hide toggle: modifiers + configured key (e.g. Ctrl+Shift+`).
+            // Stored under the sentinel id; the event loop and ungrab loop below already iterate
+            // linuxKeycodes, so id 0 routes through invokeCallback(0) and is cleaned up with the rest.
+            if (config.toggleEnabled && !toggleKeyConflictsWithWindows(config.key)) {
+                val toggleKeysym = LinuxHotKeyApi.keyToKeysym(config.key)
+                val toggleKeycode = api.XKeysymToKeycode(display, NativeLong(toggleKeysym.toLong()))
+                if (toggleKeycode != 0) {
+                    linuxKeycodes[TOGGLE_HOTKEY_ID] = toggleKeycode
+                    try {
+                        for (mods in modifierVariants) {
+                            api.XGrabKey(
+                                display, toggleKeycode, mods, rootWindow, 1,
+                                LinuxHotKeyApi.GrabModeAsync, LinuxHotKeyApi.GrabModeAsync
+                            )
+                        }
+                        api.XSync(display, 0)
+                        println("GlobalHotKeyManager: Registered Linux show/hide toggle (${config.key})")
+                    } catch (e: Exception) {
+                        println("GlobalHotKeyManager: show/hide toggle registration failed: ${e.message}")
+                        linuxKeycodes.remove(TOGGLE_HOTKEY_ID)
+                    }
+                }
             }
 
             api.XSelectInput(display, rootWindow, NativeLong(LinuxHotKeyApi.KeyPressMask))

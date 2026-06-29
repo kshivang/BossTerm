@@ -1028,19 +1028,33 @@ private fun startGlobalHotKeyManager() {
 
     // Start the manager with window-specific callback
     GlobalHotKeyManager.start(config) { windowNumber ->
-        // Find the window with this number
-        val window = WindowManager.getWindowByNumber(windowNumber)
-        if (window != null) {
-            // Window exists - toggle its visibility
-            val awtWindow = window.awtWindow
-            if (awtWindow != null) {
-                WindowVisibilityController.toggleWindow(listOf(awtWindow))
-            }
-        } else {
-            // No window with this number - create one if it's window 1
-            if (windowNumber == 1) {
+        if (windowNumber == 0) {
+            // Single global show/hide toggle (modifiers + configured key). Toggle the
+            // active window — toggleWindow() prefers focused > visible > first — or create
+            // one if none exist yet, so the hotkey can also summon the app from cold.
+            val awtWindows = WindowManager.windows.mapNotNull { it.awtWindow }
+            if (awtWindows.isNotEmpty()) {
+                WindowVisibilityController.toggleWindow(awtWindows)
+            } else {
                 javax.swing.SwingUtilities.invokeLater {
                     WindowManager.createWindow()
+                }
+            }
+        } else {
+            // Find the window with this number
+            val window = WindowManager.getWindowByNumber(windowNumber)
+            if (window != null) {
+                // Window exists - toggle its visibility
+                val awtWindow = window.awtWindow
+                if (awtWindow != null) {
+                    WindowVisibilityController.toggleWindow(listOf(awtWindow))
+                }
+            } else {
+                // No window with this number - create one if it's window 1
+                if (windowNumber == 1) {
+                    javax.swing.SwingUtilities.invokeLater {
+                        WindowManager.createWindow()
+                    }
                 }
             }
         }

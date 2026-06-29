@@ -68,6 +68,31 @@ fun GlobalHotkeySection(
                     status = registrationStatus,
                     isMacOS = isMacOS
                 )
+
+                // Nudge toward a two-modifier chord. A single modifier (e.g. ⌃1–9) collides
+                // with common app shortcuts, and because the global hotkey is registered
+                // system-wide it intercepts the keystroke before the focused app sees it.
+                if (currentConfig.modifierCount == 1) {
+                    Text(
+                        text = "⚠︎ One modifier can clash with app shortcuts (the global hotkey " +
+                            "wins system-wide). Add a second modifier for a conflict-free chord.",
+                        color = Color(0xFFE2B44A),
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                }
+
+                // Single show/hide toggle (modifiers + configured key, e.g. ⌃⇧`).
+                SettingsToggle(
+                    label = "Show/Hide Toggle Hotkey",
+                    checked = settings.globalHotkeyToggleEnabled,
+                    onCheckedChange = { onSettingsChange(settings.copy(globalHotkeyToggleEnabled = it)) },
+                    description = "Also register one hotkey (" +
+                        currentConfig.toDisplayString(useMacSymbols = isMacOS) +
+                        ") that shows/hides the active window from anywhere — a drop-down-terminal trigger.",
+                    enabled = settings.globalHotkeyEnabled
+                )
             }
 
             SettingsToggle(

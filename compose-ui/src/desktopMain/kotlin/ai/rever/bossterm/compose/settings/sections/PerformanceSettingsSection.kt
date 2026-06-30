@@ -234,6 +234,28 @@ fun PerformanceSettingsSection(
                 valueDisplay = { if (it.toInt() == 0) "Off" else "${it.toInt()} ms" },
                 description = "Cursor blink interval (0 = no blink)"
             )
+
+            SettingsSlider(
+                label = "Cursor Opacity (Focused)",
+                value = settings.cursorFocusedAlpha,
+                onValueChange = { onSettingsChange(settings.copy(cursorFocusedAlpha = it)) },
+                onValueChangeFinished = onSettingsSave,
+                valueRange = 0f..1f,
+                steps = 9,
+                valueDisplay = { "${(it * 100).toInt()}%" },
+                description = "Cursor opacity while the terminal is focused. Raise to 100% to disable transparency."
+            )
+
+            SettingsSlider(
+                label = "Cursor Opacity (Unfocused)",
+                value = settings.cursorUnfocusedAlpha,
+                onValueChange = { onSettingsChange(settings.copy(cursorUnfocusedAlpha = it)) },
+                onValueChangeFinished = onSettingsSave,
+                valueRange = 0f..1f,
+                steps = 9,
+                valueDisplay = { "${(it * 100).toInt()}%" },
+                description = "Cursor opacity while the terminal is unfocused"
+            )
         }
 
         Spacer(modifier = Modifier.height(24.dp))

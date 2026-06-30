@@ -1948,6 +1948,8 @@ fun ProperTerminal(
               cellHeight = cellHeight,
               isFocused = isFocused,
               cursorColor = baseCursorColor,
+              focusedAlpha = settings.cursorFocusedAlpha,
+              unfocusedAlpha = settings.cursorUnfocusedAlpha,
             )
           }
         }

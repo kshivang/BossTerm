@@ -5,6 +5,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
 import java.io.File
@@ -89,6 +91,24 @@ class SettingsManager(private val customSettingsPath: String? = null) {
      */
     fun updateSettings(newSettings: TerminalSettings) {
         _settings.value = newSettings
+        saveToFile()
+    }
+
+    /**
+     * Apply only the fields the user actually changed ([edited] vs [baseline]) onto the CURRENT
+     * settings, atomically — used by the Settings window's debounced save so its possibly-stale full
+     * snapshot can't revert a concurrent programmatic [updateSetting] to a *different* field (e.g. the
+     * daemon flipping sessionSharingEnabled/startDaemonAtLogin while the window is open). Same-field
+     * conflicts are last-writer-wins.
+     */
+    fun mergeChangedFields(baseline: TerminalSettings, edited: TerminalSettings) {
+        _settings.update { current ->
+            val base = json.encodeToJsonElement(TerminalSettings.serializer(), baseline).jsonObject
+            val ed = json.encodeToJsonElement(TerminalSettings.serializer(), edited).jsonObject
+            val merged = json.encodeToJsonElement(TerminalSettings.serializer(), current).jsonObject.toMutableMap()
+            for ((k, v) in ed) if (base[k] != v) merged[k] = v // field the user changed → apply over current
+            json.decodeFromJsonElement(TerminalSettings.serializer(), JsonObject(merged))
+        }
         saveToFile()
     }
 

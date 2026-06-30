@@ -303,8 +303,12 @@ fun TabbedTerminal(
     // behavior. Falls back to a local tab if the daemon bridge isn't attached (daemon unreachable).
     val daemonMode = settings.daemonEnabled
     val requestNewTab: () -> Unit = {
-        if (daemonMode && ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached) {
-            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession()
+        // In daemon mode, route to the daemon; but if it can't be enqueued right now (socket
+        // mid-reconnect — isAttached stays true while the bridge reconnects), fall back to a local tab
+        // so Ctrl+T isn't a silent no-op.
+        if (daemonMode && ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached &&
+            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession()) {
+            // enqueued — the daemon creates the session and the bridge renders it as a mirror tab.
         } else {
             tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
         }

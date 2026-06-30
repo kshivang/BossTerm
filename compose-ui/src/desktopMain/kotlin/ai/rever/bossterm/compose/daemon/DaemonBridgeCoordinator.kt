@@ -128,10 +128,13 @@ object DaemonBridgeCoordinator {
         }
     }
 
-    /** Open a new daemon-hosted session (the GUI's "new tab" when in daemon mode). No-op if unattached. */
-    fun openSession(cwd: String? = null) {
-        bridge?.openSession(cwd)
-    }
+    /**
+     * Open a new daemon-hosted session (the GUI's "new tab" when in daemon mode). Returns whether the
+     * request was actually enqueued onto a live bridge — false if unattached OR the socket is
+     * mid-reconnect (outbox cleared), so the caller can fall back to a local tab instead of dropping
+     * the request silently.
+     */
+    fun openSession(cwd: String? = null): Boolean = bridge?.openSession(cwd) ?: false
 
     val isAttached: Boolean get() = bridge != null
 }

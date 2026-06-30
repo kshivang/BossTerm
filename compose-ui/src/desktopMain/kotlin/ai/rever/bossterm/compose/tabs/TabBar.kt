@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.tabs
 
 import ai.rever.bossterm.compose.features.ContextMenuController
+import ai.rever.bossterm.compose.settings.theme.Theme
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -409,7 +410,7 @@ fun TabBar(
     val barBg = tabBarTheme.backgroundColorValue
     val barFg = tabBarTheme.foregroundColor
     val barMuted = barFg.copy(alpha = 0.62f)
-    val barDivider = barFg.copy(alpha = 0.10f)
+    val barDivider = barFg.copy(alpha = 0.14f)
 
     val newTabButton: @Composable () -> Unit = {
         IconButton(onClick = onNewTab, modifier = Modifier.size(36.dp)) {
@@ -448,6 +449,7 @@ fun TabBar(
             subtitle = pane.subtitle,
             branch = pane.branch,
             multiLine = vertical,
+            tabTheme = tabBarTheme,
             isActive = group.tabIndex == activeTabIndex && pane.paneId == focusedPaneId,
             colorHex = pane.colorHex,
             isEditing = pane.paneId == editingPaneId,
@@ -790,6 +792,7 @@ fun TabBar(
 private fun TabItem(
     title: String,
     isActive: Boolean,
+    tabTheme: Theme,
     colorHex: String?,
     isEditing: Boolean,
     onSelected: () -> Unit,
@@ -804,14 +807,15 @@ private fun TabItem(
     modifier: Modifier = Modifier
 ) {
     val accent = parseTabColor(colorHex)
-    // Chip colors follow the active terminal theme (re-style live on theme switch).
-    val itemTheme by ThemeManager.instance.currentTheme.collectAsState()
-    val itemBg = itemTheme.backgroundColorValue
-    val itemFg = itemTheme.foregroundColor
-    val itemRaised = lerp(itemBg, itemFg, 0.12f)   // active chip surface
-    val itemAccent = itemTheme.cursorColor          // active chip border
-    val itemMuted = itemFg.copy(alpha = 0.62f)      // inactive text
-    val itemSubtle = itemFg.copy(alpha = 0.20f)     // inactive border
+    // Chip colors derive from the active theme, collected once in TabBar and
+    // passed in (one subscriber for the whole bar, not one per tab).
+    val itemBg = tabTheme.backgroundColorValue
+    val itemFg = tabTheme.foregroundColor
+    val itemRaised = lerp(itemBg, itemFg, 0.12f)    // active chip surface
+    val itemAccent = tabTheme.cursorColor           // active chip border
+    val itemMuted = itemFg.copy(alpha = 0.62f)      // inactive text / active close-icon
+    val itemSubtle = itemFg.copy(alpha = 0.22f)     // inactive border (hairline)
+    val itemIcon = itemFg.copy(alpha = 0.42f)       // inactive close-icon — readable on the dark floor
     Surface(
         modifier = modifier
             .then(if (multiLine) Modifier.heightIn(min = 36.dp) else Modifier.height(36.dp))
@@ -869,7 +873,7 @@ private fun TabItem(
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Close Tab",
-                        tint = if (isActive) itemMuted else itemSubtle,
+                        tint = if (isActive) itemMuted else itemIcon,
                         modifier = Modifier.size(14.dp)
                     )
                 }

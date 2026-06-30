@@ -215,7 +215,11 @@ class ThemeManager private constructor(
      */
     private fun loadActiveTheme() {
         val activeThemeId = settingsManager.settings.value.activeThemeId
-        val theme = getThemeById(activeThemeId) ?: BuiltinThemes.DEFAULT
+        // Unknown id falls back to the product default (boss-operator), not the
+        // stark black/white BuiltinThemes.DEFAULT.
+        val theme = getThemeById(activeThemeId)
+            ?: getThemeById(BuiltinThemes.DEFAULT_THEME_ID)
+            ?: BuiltinThemes.DEFAULT
         _currentTheme.value = theme
     }
 

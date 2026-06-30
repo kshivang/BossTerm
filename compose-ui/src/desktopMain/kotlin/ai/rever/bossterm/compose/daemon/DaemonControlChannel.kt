@@ -171,8 +171,11 @@ class DaemonControlChannel(
                 java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
             )
         }.onFailure {
-            // Filesystems without atomic rename (rare): fall back to in-place, still owner-first.
-            restrictToOwner(file)
+            // Filesystems without atomic rename (rare): write in place, but create the file owner-only
+            // FIRST so the secret never lands in a world-readable file (a restrictToOwner AFTER writeText
+            // would leave a window; restrictToOwner on a not-yet-existing file is a no-op).
+            runCatching { file.delete() }
+            BossTermPaths.createOwnerOnly(file)
             file.writeText("$port\n$secret\n$version $protocolVersion\n", StandardCharsets.UTF_8)
             restrictToOwner(file)
             runCatching { tmp.delete() }

@@ -94,8 +94,11 @@ class DaemonClient {
         var lock: FileLock? = null
         try {
             raf = RandomAccessFile(lockFile, "rw")
-            // Owner-only like the other daemon artifacts — otherwise a local user could hold the lock
-            // to wedge the single-spawn guard (a local DoS of the daemon feature).
+            // Owner-only for consistency with the other daemon artifacts (defense-in-depth). This is
+            // best-effort, NOT a hard DoS guard: RandomAccessFile already created the file under the
+            // umask before this chmod (a create-then-chmod window), and an attacker who could open and
+            // tryLock() it would have to already be inside the user's ~/.bossterm (typically 0700). The
+            // real single-spawn guarantee is the advisory FileLock keyed on the OS file handle below.
             BossTermPaths.restrictToOwner(lockFile)
             channel = raf.channel
             lock = runCatching { channel.tryLock() }.getOrNull()

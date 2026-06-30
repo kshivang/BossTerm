@@ -95,4 +95,24 @@ object BossTermPaths {
             )
         }
     }
+
+    /**
+     * Create [file] owner-only (0600) atomically, so a secret/log never lands in a world-readable file
+     * during a create-then-chmod window. No-op if it already exists (then just [restrictToOwner]s it).
+     * Best-effort on non-POSIX filesystems (falls back to create + chmod).
+     */
+    fun createOwnerOnly(file: File) {
+        if (file.exists()) { restrictToOwner(file); return }
+        runCatching {
+            java.nio.file.Files.createFile(
+                file.toPath(),
+                java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                    java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")
+                ),
+            )
+        }.onFailure {
+            runCatching { file.createNewFile() }
+            restrictToOwner(file)
+        }
+    }
 }

@@ -126,11 +126,11 @@ object DaemonLauncher {
             .onFailure { log.warn("openGui: spawn failed: {}", it.message) }
     }
 
-    /** The daemon log, created owner-only — it captures daemon + GUI stdout/stderr (cwd/title metadata). */
+    /** The daemon log, created owner-only up front (no world-readable window) — it captures daemon +
+     *  GUI stdout/stderr (cwd/title metadata). */
     private fun prepareLogFile(): File {
         val logFile = BossTermPaths.daemonLogFile()
-        runCatching { if (!logFile.exists()) logFile.createNewFile() }
-        BossTermPaths.restrictToOwner(logFile)
+        BossTermPaths.createOwnerOnly(logFile)
         return logFile
     }
 
@@ -141,11 +141,12 @@ object DaemonLauncher {
      */
     fun activatePid(pid: Long) {
         if (!ShellCustomizationUtils.isMacOS()) return
-        // The pid is supplied by the (authenticated, loopback) attach client. Confirm it really is a
-        // BossTerm process before activating it, so a misbehaving client can't make us foreground an
-        // arbitrary process the user happens to own.
+        // The pid is supplied by the (authenticated, loopback) attach client. Best-effort sanity check
+        // that it looks like a BossTerm process before foregrounding it — a heuristic, not a hard
+        // boundary (see isBossTermProcess). Low risk regardless: post-auth, loopback, and the pid is a
+        // Long so the osascript can't be injected.
         if (!isBossTermProcess(pid)) {
-            log.debug("activatePid({}) skipped: not a BossTerm process", pid)
+            log.debug("activatePid({}) skipped: doesn't look like a BossTerm process", pid)
             return
         }
         runCatching {
@@ -156,16 +157,18 @@ object DaemonLauncher {
         }.onFailure { log.debug("activatePid({}) failed: {}", pid, it.message) }
     }
 
-    /** True if [pid]'s command line looks like a BossTerm GUI (the .app bundle or the GUI main class). */
+    /**
+     * Heuristic: does [pid]'s command line look like a BossTerm GUI? Substring match on the GUI main
+     * class (dev) or the `.app` bundle (packaged) — tighter than a bare "bossterm" match, but NOT a
+     * real identity check: a user-owned process whose argv merely contains one of those strings would
+     * also pass. Sufficient as a best-effort guard for [activatePid] (post-auth, loopback, no injection).
+     */
     private fun isBossTermProcess(pid: Long): Boolean = runCatching {
         // -ww: don't truncate the command (the GUI's classpath/main-class can be long).
         val proc = ProcessBuilder("ps", "-ww", "-p", pid.toString(), "-o", "command=")
             .redirectErrorStream(true).start()
         val out = proc.inputStream.bufferedReader().use { it.readText() }
         proc.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)
-        // Match the GUI specifically — dev: the main class on the java command line; packaged: the
-        // .app bundle path — rather than a loose "bossterm" substring that an editor open on these
-        // source files would also match.
         out.contains(GUI_MAIN_CLASS) || out.contains("BossTerm.app")
     }.getOrDefault(false)
 

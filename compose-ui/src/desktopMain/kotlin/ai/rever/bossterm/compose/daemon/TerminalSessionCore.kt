@@ -177,6 +177,10 @@ class TerminalSessionCore(
                 _connectionState.value = State.Connected
                 connected.complete(true)
                 terminal.setTerminalOutput(PtyTerminalOutput())
+                // Sync the PTY winsize to the current grid: a resize that arrived before the handle
+                // existed was a no-op on the PTY (only the model grew), so a full-screen app would
+                // otherwise see the wrong winsize until the next resize. Default to the initial grid.
+                (lastResize ?: (initCols to initRows)).let { (c, r) -> runCatching { h.resize(c, r) } }
 
                 // Emulator processing loop — drains the data stream into the terminal model.
                 launch(Dispatchers.Default) {
@@ -249,16 +253,33 @@ class TerminalSessionCore(
         scope.launch { runCatching { writeChannel.send(WriteOp.Raw(bytes)) } }
     }
 
+    // Last requested grid size, so a resize that arrives before the PTY is spawned (handle still null)
+    // is replayed onto the PTY in start() instead of being silently dropped.
+    @Volatile private var lastResize: Pair<Int, Int>? = null
+
     /** Resize both the buffer and the PTY (SIGWINCH). The daemon's authoritative grid size. */
     fun resize(cols: Int, rows: Int) {
         if (closed) return // don't launch a SIGWINCH on a closing session (model/PTY would diverge)
         val c = cols.coerceIn(1, MAX_GRID_DIM)
         val r = rows.coerceIn(1, MAX_GRID_DIM)
+        lastResize = c to r
         runCatching { terminal.resize(TermSize(c, r), RequestOrigin.User) }
         scope.launch { runCatching { handle?.resize(c, r) } }
     }
 
-    fun isAlive(): Boolean = handle?.isAlive() == true
+    /**
+     * Whether this session is live. Reports true while the PTY is still spawning (started, handle not
+     * yet set) so `list_sessions` right after `open_session` doesn't show a healthy session as dead;
+     * false once it has exited, errored, or been closed (and before [start] is ever called).
+     */
+    fun isAlive(): Boolean {
+        if (closed) return false
+        return when (state.value) {
+            State.Connected -> handle?.isAlive() ?: true // handle is set before state flips to Connected
+            State.Initializing -> started.get()          // started but PTY not up yet — coming alive
+            else -> false                                // Error / Exited
+        }
+    }
 
     /**
      * Kill the PTY and cancel all loops. Idempotent. Returns the kill thread (or null) so a caller

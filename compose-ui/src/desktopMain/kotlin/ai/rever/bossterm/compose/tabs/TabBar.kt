@@ -2,7 +2,6 @@ package ai.rever.bossterm.compose.tabs
 
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -34,6 +33,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType

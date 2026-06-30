@@ -29,6 +29,10 @@ object DaemonAttachProtocol {
      */
     const val PROTOCOL_VERSION = 1
 
+    /** Header carrying the daemon control secret on the attach WS handshake (not a ?query= param, so
+     *  it doesn't leak into request-line logs / proxies). Shared by the GUI client and the daemon. */
+    const val TOKEN_HEADER = "X-BossTerm-Token"
+
     val json = Json { classDiscriminator = "t"; ignoreUnknownKeys = true; encodeDefaults = true }
 
     fun encodeServer(m: Server): String = json.encodeToString(Server.serializer(), m)

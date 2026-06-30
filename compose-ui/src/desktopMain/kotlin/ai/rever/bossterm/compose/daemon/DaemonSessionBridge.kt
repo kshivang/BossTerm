@@ -8,6 +8,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
+import io.ktor.client.request.header
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
@@ -118,11 +119,9 @@ class DaemonSessionBridge(
     }
 
     private suspend fun connectOnce() {
-        // Report our pid so the daemon can activate this GUI window on "Open BossTerm".
-        // URL-encode the token defensively — it's hex today, but a secret with URL-special chars would
-        // otherwise break the query string (the server URL-decodes queryParameters["token"]).
-        val encodedToken = java.net.URLEncoder.encode(secret, "UTF-8")
-        val url = "ws://127.0.0.1:$attachPort/attach?token=$encodedToken&pid=${ProcessHandle.current().pid()}" +
+        // The secret travels in a header (not the query string) so it doesn't leak into request-line
+        // logs/proxies; pid (for window activation) and v (protocol skew) stay in the query.
+        val url = "ws://127.0.0.1:$attachPort/attach?pid=${ProcessHandle.current().pid()}" +
             "&v=${DaemonAttachProtocol.PROTOCOL_VERSION}"
         val out = Channel<String>(capacity = 1024)
         outbox = out
@@ -130,7 +129,7 @@ class DaemonSessionBridge(
         // window's Share controls reach whichever attach socket is currently live.
         val shareSender = DaemonShareClient.Sender { m -> send(m) }
         DaemonShareClient.registerSender(shareSender)
-        client.webSocket(url) {
+        client.webSocket(url, request = { header(DaemonAttachProtocol.TOKEN_HEADER, secret) }) {
             // Pump this connection's outbox → socket.
             val writer = launch {
                 try { for (text in out) send(Frame.Text(text)) } catch (_: Exception) {}

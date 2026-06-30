@@ -6,6 +6,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
+import io.ktor.client.request.header
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
@@ -41,7 +42,7 @@ class DaemonAttachServerTest {
                     var ok = false
                     runCatching {
                         withTimeout(10_000) {
-                            client.webSocket("ws://127.0.0.1:$port/attach?token=s3cr3t-attach") {
+                            client.webSocket("ws://127.0.0.1:$port/attach", request = { header(DaemonAttachProtocol.TOKEN_HEADER, "s3cr3t-attach") }) {
                                 // wait until the session is alive, then send input to cat
                                 var sentInput = false
                                 for (frame in incoming) {
@@ -93,7 +94,7 @@ class DaemonAttachServerTest {
                     var ok = false
                     runCatching {
                         withTimeout(10_000) {
-                            client.webSocket("ws://127.0.0.1:$port/attach?token=rz") {
+                            client.webSocket("ws://127.0.0.1:$port/attach", request = { header(DaemonAttachProtocol.TOKEN_HEADER, "rz") }) {
                                 var sent = false
                                 for (frame in incoming) {
                                     if (frame !is Frame.Text) continue
@@ -136,7 +137,7 @@ class DaemonAttachServerTest {
                     var received = false
                     runCatching {
                         withTimeout(2500) {
-                            client.webSocket("ws://127.0.0.1:$port/attach?token=wrong") {
+                            client.webSocket("ws://127.0.0.1:$port/attach", request = { header(DaemonAttachProtocol.TOKEN_HEADER, "wrong") }) {
                                 for (frame in incoming) { received = true; break }
                             }
                         }

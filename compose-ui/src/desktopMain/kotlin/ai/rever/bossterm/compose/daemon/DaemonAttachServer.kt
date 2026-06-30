@@ -109,14 +109,17 @@ class DaemonAttachServer(
 
     private suspend fun serve(ws: io.ktor.server.websocket.DefaultWebSocketServerSession) {
         // DNS-rebinding defense (parity with the MCP server): only accept Host headers naming a
-        // loopback target, so a browser pointed at a name resolving to 127.0.0.1 can't connect.
+        // loopback target, so a browser pointed at a name resolving to 127.0.0.1 can't connect. A
+        // legitimate WS client always sends a loopback Host, so treat an absent/empty Host as untrusted.
         val hostHeader = (ws.call.request.headers["Host"] ?: "").substringBefore(':').lowercase()
-        if (hostHeader.isNotEmpty() && hostHeader != "127.0.0.1" && hostHeader != "localhost") {
+        if (hostHeader != "127.0.0.1" && hostHeader != "localhost") {
             log.warn("attach: rejected connection with non-loopback Host '{}'", hostHeader)
             runCatching { ws.close() }
             return
         }
-        val presented = ws.call.request.queryParameters["token"] ?: ""
+        // Secret presented via a header (not a ?query= param) so it doesn't leak into request-line
+        // logging / proxies / the daemon's redirected stdout. Loopback-only either way.
+        val presented = ws.call.request.headers[DaemonAttachProtocol.TOKEN_HEADER] ?: ""
         if (!constantTimeEquals(presented, secret)) {
             log.warn("attach: rejected connection with bad token")
             runCatching { ws.close() }

@@ -84,6 +84,12 @@ class DaemonControlChannel(
             val ep = readEndpoint()
             if (ep == null || ep.secret == mySecret) BossTermPaths.daemonPortFile().delete()
         }
+        // daemon.pid is diagnostics-only; delete it only if it still records OUR pid, so the same
+        // shutdown/start race can't blow away a newer daemon's pid marker.
+        runCatching {
+            val pidFile = BossTermPaths.daemonPidFile()
+            if (pidFile.readText(StandardCharsets.UTF_8).trim().toLongOrNull() == currentPid()) pidFile.delete()
+        }
     }
 
     private fun acceptLoop(socket: ServerSocket) {
@@ -181,12 +187,12 @@ class DaemonControlChannel(
             runCatching { tmp.delete() }
         }
         restrictToOwner(file)
-        file.deleteOnExit()
+        // Deliberately NO deleteOnExit() here: the JVM exit hook deletes unconditionally, which under a
+        // shutdown/start race would let THIS daemon's exit delete a newer daemon's freshly-written
+        // discovery file (leaving it live but undiscoverable). Cleanup is the ownership-guarded [stop]
+        // instead (and a stale file from a hard crash is harmless — the GUI PINGs before trusting it).
         runCatching {
-            BossTermPaths.daemonPidFile().apply {
-                writeText(currentPid().toString(), StandardCharsets.UTF_8)
-                deleteOnExit()
-            }
+            BossTermPaths.daemonPidFile().writeText(currentPid().toString(), StandardCharsets.UTF_8)
         }
     }
 

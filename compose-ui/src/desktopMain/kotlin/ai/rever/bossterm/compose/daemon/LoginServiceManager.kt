@@ -106,7 +106,16 @@ object LoginServiceManager {
             file.parentFile?.mkdirs()
             file.writeText(systemdUnit(command))
             run("systemctl", "--user", "daemon-reload")
-            run("systemctl", "--user", "enable", "--now", systemdUnitName())
+            // `enable --now` is what actually makes the daemon start at login; the unit file alone does
+            // NOT autostart. If it fails (no user D-Bus session, linger not enabled, …), remove the
+            // orphan unit file and surface the failure — otherwise install() reports success and
+            // isInstalled() reads true while start-at-login silently never happens.
+            val (code, out) = runCapture("systemctl", "--user", "enable", "--now", systemdUnitName())
+            if (code != 0) {
+                runCatching { file.delete() }
+                run("systemctl", "--user", "daemon-reload")
+                error("systemctl --user enable --now failed (exit $code): ${out.trim().take(300)}")
+            }
         } else {
             val file = xdgAutostartFile()
             file.parentFile?.mkdirs()
@@ -270,7 +279,11 @@ object LoginServiceManager {
 
     private fun run(vararg cmd: String) {
         runCatching {
-            ProcessBuilder(*cmd).redirectErrorStream(true).start().waitFor()
+            val p = ProcessBuilder(*cmd).redirectErrorStream(true).start()
+            // Drain the merged stream before waitFor() so a command that emits more than the OS pipe
+            // buffer can't deadlock (the same hazard runCapture avoids); we don't need the output here.
+            p.inputStream.bufferedReader().readText()
+            p.waitFor()
         }.onFailure { log.debug("{} failed: {}", cmd.firstOrNull(), it.message) }
     }
 

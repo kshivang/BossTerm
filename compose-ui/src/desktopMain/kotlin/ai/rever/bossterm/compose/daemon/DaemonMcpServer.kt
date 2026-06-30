@@ -168,7 +168,11 @@ class DaemonMcpServer(
                 val srv = embeddedServer(CIO, host = HOST, port = port) {
                     install(SSE)
                     intercept(ApplicationCallPipeline.Plugins) {
-                        val hostHeader = call.request.headers["Host"]?.lowercase() ?: call.request.host().lowercase()
+                        // Treat an ABSENT/empty Host as untrusted (don't fall back to the server's own
+                        // host) — parity with DaemonAttachServer/DaemonShareServer. This endpoint is
+                        // unauthenticated and exposes open_session/send_input, so the rebinding guard is
+                        // its only boundary; a legitimate loopback client always sends a Host.
+                        val hostHeader = call.request.headers["Host"]?.lowercase() ?: ""
                         if (hostHeader !in allowed) {
                             call.respondText("Forbidden: '$hostHeader' is not a loopback target.", status = HttpStatusCode.Forbidden)
                             finish()

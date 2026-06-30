@@ -94,6 +94,10 @@ fun main(args: Array<String>) {
                 val p = srv.start(SettingsManager.instance.settings.value.mcpPort)
                 if (p == null) {
                     log.warn("Daemon MCP server failed to bind; continuing without it")
+                    // Reflect the failure in the persisted setting so it doesn't read 'enabled' while no
+                    // server is actually running. The caller broadcasts McpState(null), so the GUI
+                    // indicator already shows stopped; keep the setting consistent with that.
+                    SettingsManager.instance.updateSetting { copy(mcpEnabled = false) }
                     null
                 } else {
                     mcpServerRef.set(srv)

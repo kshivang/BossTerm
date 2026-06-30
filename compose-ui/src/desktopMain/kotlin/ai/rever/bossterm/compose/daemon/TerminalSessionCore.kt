@@ -20,6 +20,7 @@ import ai.rever.bossterm.terminal.util.GraphemeBoundaryUtils
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
@@ -149,6 +150,7 @@ class TerminalSessionCore(
     /** Spawn the PTY and start the read/emulate/exit-monitor loops. Idempotent. */
     fun start() {
         if (!started.compareAndSet(false, true)) return // atomic idempotency — never spawn two PTYs
+        launchWriteConsumer()
         scope.launch {
             try {
                 val env = buildEnvironment()
@@ -288,18 +290,27 @@ class TerminalSessionCore(
     }
 
     private val writeChannel = Channel<WriteOp>(capacity = 256)
-    private val writeConsumer = scope.launch(Dispatchers.IO) {
-        // Don't drain until the PTY is up, so input sent right after open isn't written to a null
-        // handle and dropped. If we never connect (spawn failed / closed early), just exit.
-        if (!connected.await()) return@launch
-        for (op in writeChannel) {
-            try {
-                when (op) {
-                    is WriteOp.Text -> handle?.write(op.data)
-                    is WriteOp.Raw -> handle?.writeBytes(op.data)
+    @Volatile private var writeConsumer: Job? = null
+
+    /**
+     * Launch the single coroutine that drains [writeChannel] → PTY. Started from [start] (NOT eagerly at
+     * construction) so a core that is built but never started doesn't park a coroutine forever on
+     * `connected.await()`, leaking it until `scope` is cancelled.
+     */
+    private fun launchWriteConsumer() {
+        writeConsumer = scope.launch(Dispatchers.IO) {
+            // Don't drain until the PTY is up, so input sent right after open isn't written to a null
+            // handle and dropped. If we never connect (spawn failed / closed early), just exit.
+            if (!connected.await()) return@launch
+            for (op in writeChannel) {
+                try {
+                    when (op) {
+                        is WriteOp.Text -> handle?.write(op.data)
+                        is WriteOp.Raw -> handle?.writeBytes(op.data)
+                    }
+                } catch (e: java.io.IOException) {
+                    log.debug("PTY write failed (likely closed): {}", e.message)
                 }
-            } catch (e: java.io.IOException) {
-                log.debug("PTY write failed (likely closed): {}", e.message)
             }
         }
     }

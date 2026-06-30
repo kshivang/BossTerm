@@ -138,7 +138,10 @@ class DaemonShareServer(
         val shareToken: String,
         @Volatile var canControl: Boolean,
         @Volatile var expiresAtMs: Long,
-        /** The Hello.clientId this key was issued to — a leaked key from another client is rejected. */
+        /** The Hello.clientId this key was issued to. Best-effort binding only: clientId is an
+         *  unauthenticated, client-supplied device label, so a determined attacker holding a leaked key
+         *  can replay the matching id — this raises the bar but the E2E secret + approval are the real
+         *  boundary. Combined with [issuedAtMs]'s hard cap it bounds a leaked key's blast radius. */
         val clientId: String,
         /** When the key was first issued — enforces [GRANT_MAX_LIFETIME_MS] regardless of sliding. */
         val issuedAtMs: Long,
@@ -571,8 +574,8 @@ class DaemonShareServer(
         if (requiresApproval(def)) {
             val now = System.currentTimeMillis()
             val existing = hello?.key?.let { grants[it] }
-            // Resume only if the key is for THIS share, issued to THIS client, not expired, AND within
-            // the hard lifetime cap — so a leaked key can't grant access from another client or forever.
+            // Resume only if the key is for THIS share, matches the (best-effort, client-supplied)
+            // clientId, isn't expired, AND is within the hard lifetime cap — bounding a leaked key's reach.
             if (existing != null && existing.shareToken == shareToken && existing.clientId == clientId &&
                 existing.expiresAtMs > now && now < existing.issuedAtMs + GRANT_MAX_LIFETIME_MS) {
                 existing.expiresAtMs = now + GRANT_TTL_MS
@@ -587,16 +590,9 @@ class DaemonShareServer(
                 val remoteHost = runCatching { ws.call.request.origin.remoteHost }.getOrNull() ?: "?"
                 // The per-IP cap only makes sense for genuinely distinct sources. Behind a cloudflare/
                 // tailscale tunnel every viewer connects from 127.0.0.1 (the local tunnel agent), so a
-                // per-IP cap there would collapse all remote viewers into one bucket and reject the 5th
-                // legitimate one — rely on the total cap instead. Direct LAN viewers keep distinct IPs.
+                // per-IP cap there would collapse all remote viewers into one bucket — rely on the
+                // (tighter, public) total cap instead. Direct LAN viewers keep distinct IPs.
                 val isLoopback = remoteHost == "127.0.0.1" || remoteHost == "::1" || remoteHost == "localhost"
-                val perIpExceeded = !isLoopback && pending.count { it.remoteHost == remoteHost } >= MAX_PENDING_PER_IP
-                if (pending.size >= pendingCap || perIpExceeded) {
-                    log.warn("share: too many pending viewers (total={}, cap={}, from {}); rejecting", pending.size, pendingCap, remoteHost)
-                    runCatching { send(ServerMessage.Denied("Too many pending requests; try again later")) }
-                    ws.close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "Too many pending viewers"))
-                    return
-                }
                 val req = DaemonPendingViewer(
                     token = shareToken,
                     clientId = clientId,
@@ -604,7 +600,18 @@ class DaemonShareServer(
                     control = ref.canControl,
                     remoteHost = remoteHost,
                 )
-                pending.add(req)
+                // Cap-check + add atomically under [mutex]: pending is a CopyOnWriteArrayList, so a bare
+                // check-then-add would let N simultaneous viewers all observe size<cap and overshoot it.
+                val overCap = synchronized(mutex) {
+                    val perIpExceeded = !isLoopback && pending.count { it.remoteHost == remoteHost } >= MAX_PENDING_PER_IP
+                    if (pending.size >= pendingCap || perIpExceeded) true else { pending.add(req); false }
+                }
+                if (overCap) {
+                    log.warn("share: too many pending viewers (cap={}, from {}); rejecting", pendingCap, remoteHost)
+                    runCatching { send(ServerMessage.Denied("Too many pending requests; try again later")) }
+                    ws.close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "Too many pending viewers"))
+                    return
+                }
                 publishState()
                 runCatching { send(ServerMessage.Pending) }
                 val approved = withTimeoutOrNull(if (public) PENDING_PARK_PUBLIC_MS else PENDING_PARK_MS) {

@@ -51,6 +51,12 @@ class DaemonSessionBridge(
     /** daemon sessionId → its GUI mirror tab. */
     private val tabs = ConcurrentHashMap<String, TerminalTab>()
     @Volatile private var running = false
+    // Auto-open bookkeeping for the "empty daemon → open one session" path. issuedAutoOpen: this bridge
+    // enqueued the auto-open. sawAnySession: the daemon ever reported a non-empty list. If we issued the
+    // open but never saw a session before the socket dropped, the Open was likely lost — release the
+    // process-wide claim on disconnect so the reconnect retries instead of leaving the window tab-less.
+    @Volatile private var issuedAutoOpen = false
+    @Volatile private var sawAnySession = false
 
     private companion object {
         /** Home + clear screen + clear scrollback — prepended to a snapshot so a reattach repaint
@@ -158,6 +164,14 @@ class DaemonSessionBridge(
             DaemonShareClient.clearSender(shareSender)
             out.close()
             if (outbox === out) outbox = null
+            // If we auto-opened a session for an empty daemon but the connection dropped before the
+            // daemon ever reported it back, the Open was likely lost — release the one-shot claim so the
+            // reconnect's reconcile can retry (it won't double-open: if the session actually exists, the
+            // reconnect's reconcile sees a non-empty list and skips auto-open).
+            if (running && issuedAutoOpen && !sawAnySession) {
+                DaemonBridgeCoordinator.releaseAutoOpen()
+                issuedAutoOpen = false
+            }
         }
     }
 
@@ -217,11 +231,12 @@ class DaemonSessionBridge(
         if (sessions.isEmpty()) {
             // Release the process-wide claim if the Open couldn't be enqueued, so a later reconcile
             // retries instead of the empty daemon being stuck tab-less with the claim consumed.
-            if (DaemonBridgeCoordinator.claimAutoOpen() && !openSession()) {
-                DaemonBridgeCoordinator.releaseAutoOpen()
+            if (DaemonBridgeCoordinator.claimAutoOpen()) {
+                if (openSession()) issuedAutoOpen = true else DaemonBridgeCoordinator.releaseAutoOpen()
             }
             return
         }
+        sawAnySession = true
         val live = sessions.associateBy { it.id }
         // Remove vanished sessions.
         (tabs.keys - live.keys).toList().forEach { closeMirror(it) }

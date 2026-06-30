@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.theme
 
+import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.theme.BuiltinColorPalettes
 import ai.rever.bossterm.compose.settings.theme.BuiltinThemes
 import kotlin.test.Test
@@ -43,5 +44,18 @@ class ThemeDefaultsTest {
         assertEquals(t.brightMagenta, p.brightMagenta)
         assertEquals(t.brightCyan, p.brightCyan)
         assertEquals(t.brightWhite, p.brightWhite)
+    }
+
+    @Test
+    fun `terminal settings color defaults match the boss-operator theme`() {
+        // A fresh install renders these TerminalSettings defaults until a theme is
+        // applied via updateSetting, so they must equal the default theme's colors.
+        val t = BuiltinThemes.BOSS_OPERATOR
+        val s = TerminalSettings()
+        assertEquals(t.foreground, s.defaultForeground)
+        assertEquals(t.background, s.defaultBackground)
+        assertEquals(t.selection, s.selectionColor)
+        assertEquals(t.searchMatch, s.foundPatternColor)
+        assertEquals(t.hyperlink, s.hyperlinkColor)
     }
 }

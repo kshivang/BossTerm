@@ -49,7 +49,24 @@ object SessionStore {
     private fun file(): File = ai.rever.bossterm.compose.daemon.BossTermPaths.sessionFile()
 
     fun save(snap: SessionSnap) {
-        runCatching { file().writeText(json.encodeToString(snap)) }
+        // Atomic write (unique temp + rename) like SettingsManager: this lives in the same shared dir
+        // and a bare writeText could let a reader (or a second window) see a half-written file.
+        runCatching {
+            val target = file()
+            target.parentFile?.mkdirs()
+            val tmp = File.createTempFile(".session", ".tmp", target.parentFile)
+            try {
+                tmp.writeText(json.encodeToString(snap))
+                runCatching {
+                    java.nio.file.Files.move(tmp.toPath(), target.toPath(),
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                }.onFailure {
+                    java.nio.file.Files.move(tmp.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                }
+            } finally {
+                runCatching { if (tmp.exists()) tmp.delete() }
+            }
+        }
     }
 
     fun load(): SessionSnap? {

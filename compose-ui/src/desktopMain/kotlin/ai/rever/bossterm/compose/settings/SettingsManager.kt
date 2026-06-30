@@ -213,9 +213,12 @@ class SettingsManager(private val customSettingsPath: String? = null) {
                 _settings.value = loadedSettings
                 println("Settings loaded from: ${settingsFile.absolutePath}")
 
-                // Re-save to migrate settings file with any new fields added in updates
-                // This ensures new settings (like globalHotkey*) are written with defaults
-                saveToFile()
+                // Migrate (write new-default fields back) ONLY if re-encoding actually differs from disk.
+                // With the daemon enabled, TWO JVMs construct a SettingsManager at startup; an
+                // unconditional re-save means both rewrite the whole file at the worst moment for the
+                // cross-process last-write-wins race (one could revert a field the other just persisted,
+                // e.g. daemonEnabled). When the file already round-trips, there's nothing to migrate.
+                if (json.encodeToString(loadedSettings) != jsonString) saveToFile()
             } else {
                 wasFreshInstall = true
                 println("No settings file found, using defaults")

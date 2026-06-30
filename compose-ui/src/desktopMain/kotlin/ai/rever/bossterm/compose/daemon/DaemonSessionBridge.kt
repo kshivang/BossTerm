@@ -52,6 +52,12 @@ class DaemonSessionBridge(
     private val tabs = ConcurrentHashMap<String, TerminalTab>()
     @Volatile private var running = false
 
+    private companion object {
+        /** Home + clear screen + clear scrollback — prepended to a snapshot so a reattach repaint
+         *  replaces (not appends below) the mirror tab's existing content. */
+        const val SNAPSHOT_RESET = "\u001b[H\u001b[2J\u001b[3J"
+    }
+
     fun start() {
         if (running) return
         running = true
@@ -152,7 +158,11 @@ class DaemonSessionBridge(
     private suspend fun dispatch(msg: DaemonAttachProtocol.Server) {
         when (msg) {
             is DaemonAttachProtocol.Server.SessionList -> reconcile(msg.sessions)
-            is DaemonAttachProtocol.Server.Snapshot -> tabs[msg.id]?.dataStream?.append(msg.data)
+            // Reset the mirror buffer before painting a snapshot. The snapshot has no clear sequence of
+            // its own, so on a reconnect (the tab persists, only the socket blipped) it would paint a
+            // SECOND full scrollback+screen below the existing content. Clear scrollback+screen+home
+            // first — a no-op on a fresh tab, deduplicates on reattach.
+            is DaemonAttachProtocol.Server.Snapshot -> tabs[msg.id]?.dataStream?.append(SNAPSHOT_RESET + msg.data)
             is DaemonAttachProtocol.Server.Output -> tabs[msg.id]?.dataStream?.append(msg.data)
             is DaemonAttachProtocol.Server.Resized -> resizeMirror(msg.id, msg.cols, msg.rows)
             is DaemonAttachProtocol.Server.Closed -> closeMirror(msg.id)

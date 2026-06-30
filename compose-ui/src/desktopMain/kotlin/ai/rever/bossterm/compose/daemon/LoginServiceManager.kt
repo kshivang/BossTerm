@@ -129,16 +129,34 @@ object LoginServiceManager {
     private fun winValueName() = "BossTermDaemon" + (if (isDefaultProfile) "" else "_${BossTermPaths.profileTag()}")
 
     private fun installWindows(command: List<String>) {
-        run("reg", "add", WIN_RUN_KEY, "/v", winValueName(), "/t", "REG_SZ", "/d", windowsRunValue(command), "/f")
+        // Store via a `.reg import` of a verbatim file (like the plist/systemd generators) rather than
+        // `reg add /v … /d <value>`. Passing the command line as a /d arg goes through ProcessBuilder,
+        // which on Windows re-quotes any arg containing spaces — so the already-inner-quoted value
+        // would be stored DOUBLE-escaped and fail to launch at login. A .reg file isn't re-quoted.
+        val regFile = File(BossTermPaths.dir(), ".bossterm-login.reg")
+        runCatching {
+            writeRegFileUtf16(regFile, windowsRegFile(command))
+            run("reg", "import", regFile.absolutePath)
+        }.onFailure { log.warn("Windows login-service install failed: {}", it.message) }
+        runCatching { regFile.delete() }
     }
 
     private fun uninstallWindows() {
+        // `reg delete` only carries the value NAME (no spaces), so ProcessBuilder quoting is harmless here.
         run("reg", "delete", WIN_RUN_KEY, "/v", winValueName(), "/f")
     }
 
+    /**
+     * The stored Run-key command line, or null if absent. Extracts the actual REG_SZ data (not just
+     * the value-name presence) so a corrupt round-trip — e.g. a double-quoted value that won't launch —
+     * is observable rather than reading as "installed".
+     */
     private fun queryWindowsRunValue(): String? {
         val (code, out) = runCapture("reg", "query", WIN_RUN_KEY, "/v", winValueName())
-        return if (code == 0 && out.contains(winValueName())) out else null
+        if (code != 0) return null
+        // `reg query` prints: "    <name>    REG_SZ    <data>". Pull the data after the type token.
+        val line = out.lineSequence().firstOrNull { it.contains(winValueName()) && it.contains("REG_SZ") } ?: return null
+        return line.substringAfter("REG_SZ").trim().ifEmpty { null }
     }
 
     // ---- pure content generators (unit-tested) ----
@@ -167,10 +185,29 @@ object LoginServiceManager {
 
     internal fun windowsRunValue(command: List<String>): String = command.joinToString(" ") { winQuote(it) }
 
+    /** Full registry key path for .reg files (`reg add` accepts HKCU; .reg requires the long form). */
+    private val WIN_RUN_KEY_FULL = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+
+    /**
+     * A Windows .reg file (Version 5.00) setting the Run value to [windowsRunValue]. The value text is
+     * .reg-escaped (backslashes doubled, quotes as `\"`) and stored verbatim by `reg import`, so the
+     * inner quoting around space-containing paths survives — unlike a `/d` arg mangled by ProcessBuilder.
+     */
+    internal fun windowsRegFile(command: List<String>): String {
+        val escaped = windowsRunValue(command).replace("\\", "\\\\").replace("\"", "\\\"")
+        return "Windows Registry Editor Version 5.00\r\n\r\n" +
+            "[$WIN_RUN_KEY_FULL]\r\n" +
+            "\"${winValueName()}\"=\"$escaped\"\r\n"
+    }
+
+    /** Write [content] as UTF-16 LE with a BOM — the encoding `reg import` expects for a Version 5.00 .reg. */
+    private fun writeRegFileUtf16(file: File, content: String) {
+        file.writeBytes(byteArrayOf(0xFF.toByte(), 0xFE.toByte()) + content.toByteArray(Charsets.UTF_16LE))
+    }
+
     internal fun systemdUnit(command: List<String>): String = """
         [Unit]
         Description=BossTerm session daemon
-        After=default.target
 
         [Service]
         Type=simple

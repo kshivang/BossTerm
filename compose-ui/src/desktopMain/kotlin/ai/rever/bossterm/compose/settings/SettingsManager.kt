@@ -3,7 +3,6 @@ package ai.rever.bossterm.compose.settings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -90,8 +89,10 @@ class SettingsManager(private val customSettingsPath: String? = null) {
      * Update settings and save to file
      */
     fun updateSettings(newSettings: TerminalSettings) {
-        _settings.value = newSettings
-        saveToFile()
+        synchronized(saveLock) {
+            _settings.value = newSettings
+            writeToFileLocked(newSettings)
+        }
     }
 
     /**
@@ -100,26 +101,37 @@ class SettingsManager(private val customSettingsPath: String? = null) {
      * snapshot can't revert a concurrent programmatic [updateSetting] to a *different* field (e.g. the
      * daemon flipping sessionSharingEnabled/startDaemonAtLogin while the window is open). Same-field
      * conflicts are last-writer-wins.
+     *
+     * The merge target is the CURRENT ON-DISK settings (see [currentOnDiskOrMemory]), not just this
+     * process's in-memory snapshot, so the user's changes also don't revert a field another *process*
+     * (the daemon vs the GUI) persisted since we loaded — there is no file-watch/reload between them.
      */
     fun mergeChangedFields(baseline: TerminalSettings, edited: TerminalSettings) {
-        _settings.update { current ->
+        synchronized(saveLock) {
+            val current = currentOnDiskOrMemory()
             val base = json.encodeToJsonElement(TerminalSettings.serializer(), baseline).jsonObject
             val ed = json.encodeToJsonElement(TerminalSettings.serializer(), edited).jsonObject
             val merged = json.encodeToJsonElement(TerminalSettings.serializer(), current).jsonObject.toMutableMap()
             for ((k, v) in ed) if (base[k] != v) merged[k] = v // field the user changed → apply over current
-            json.decodeFromJsonElement(TerminalSettings.serializer(), JsonObject(merged))
+            val result = json.decodeFromJsonElement(TerminalSettings.serializer(), JsonObject(merged))
+            _settings.value = result
+            writeToFileLocked(result)
         }
-        saveToFile()
     }
 
     /**
-     * Update a single setting field
+     * Update a single setting field. Read-modify-write under [saveLock] against the CURRENT ON-DISK
+     * settings, so a single-field change from one process (the daemon flipping `mcpEnabled`, the GUI a
+     * theme) doesn't revert a *different* field another process persisted since we last loaded — the GUI
+     * and daemon hold independent in-memory copies with no reload-on-change. Same-field cross-process
+     * writes remain last-writer-wins.
      */
     fun updateSetting(updater: TerminalSettings.() -> TerminalSettings) {
-        // Atomic read-modify-write: concurrent callers (UI thread, the async daemon toggle on
-        // Dispatchers.IO, the MCP writer) would otherwise clobber each other's field updates.
-        _settings.update { it.updater() }
-        saveToFile()
+        synchronized(saveLock) {
+            val result = currentOnDiskOrMemory().updater()
+            _settings.value = result
+            writeToFileLocked(result)
+        }
     }
 
     /**
@@ -133,13 +145,29 @@ class SettingsManager(private val customSettingsPath: String? = null) {
      * Save current settings to file
      */
     fun saveToFile() {
-        // Serialize concurrent writers and write atomically (temp + rename) so a reader never sees a
-        // half-written file and two racing saves can't interleave bytes. Newly stressed by the async
-        // daemon settings toggle sharing this file with the UI thread + MCP writer.
-        synchronized(saveLock) {
+        synchronized(saveLock) { writeToFileLocked(_settings.value) }
+    }
+
+    /**
+     * Latest persisted settings, or the in-memory snapshot if the file is missing/unreadable. Used as
+     * the merge base for [updateSetting]/[mergeChangedFields] so a write reflects what another process
+     * last persisted. Caller holds [saveLock] so the read→modify→write is atomic against other writers
+     * in THIS process; cross-process atomicity comes from the unique-temp + rename in [writeToFileLocked].
+     */
+    private fun currentOnDiskOrMemory(): TerminalSettings =
+        runCatching { json.decodeFromString<TerminalSettings>(settingsFile.readText()) }.getOrNull() ?: _settings.value
+
+    /** Write [value] atomically (temp + rename). Caller holds [saveLock]. */
+    private fun writeToFileLocked(value: TerminalSettings) {
+        try {
+            val jsonString = json.encodeToString(value)
+            // UNIQUE temp name (not a fixed ".settings.json.tmp"): with the daemon enabled there are TWO
+            // JVMs writing this same file in the same dir, and a shared temp name lets one process's
+            // writeText interleave with the other's before the rename — publishing a torn/garbage file.
+            // A unique temp per write keeps each writer's temp private; the atomic rename then publishes
+            // a whole file. (Mirrors DaemonControlChannel.writePortFile's createTempFile rationale.)
+            val tmp = File.createTempFile(".settings", ".tmp", settingsFile.parentFile)
             try {
-                val jsonString = json.encodeToString(_settings.value)
-                val tmp = File(settingsFile.parentFile, ".${settingsFile.name}.tmp")
                 tmp.writeText(jsonString)
                 runCatching {
                     java.nio.file.Files.move(
@@ -154,11 +182,13 @@ class SettingsManager(private val customSettingsPath: String? = null) {
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING,
                     )
                 }
-                println("Settings saved to: ${settingsFile.absolutePath}")
-            } catch (e: Exception) {
-                System.err.println("Failed to save settings: ${e.message}")
-                e.printStackTrace()
+            } finally {
+                runCatching { if (tmp.exists()) tmp.delete() }
             }
+            println("Settings saved to: ${settingsFile.absolutePath}")
+        } catch (e: Exception) {
+            System.err.println("Failed to save settings: ${e.message}")
+            e.printStackTrace()
         }
     }
 

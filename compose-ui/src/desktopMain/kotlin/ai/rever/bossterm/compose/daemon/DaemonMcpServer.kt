@@ -211,13 +211,20 @@ class DaemonMcpServer(
         runCatching {
             val target = BossTermPaths.mcpPortFile()
             target.parentFile?.mkdirs() // parity with BossTermMcpManager; the dir normally exists by now
-            val tmp = File(target.parentFile, ".mcp.port.tmp")
-            tmp.writeText(port.toString())
-            runCatching {
-                java.nio.file.Files.move(tmp.toPath(), target.toPath(),
-                    java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-            }.onFailure {
-                java.nio.file.Files.move(tmp.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            // UNIQUE temp name (not a fixed ".mcp.port.tmp"): the daemon and a fallback in-process MCP
+            // server could both target this file, and a shared temp name lets their writes interleave
+            // before the rename. createTempFile keeps each writer's temp private.
+            val tmp = File.createTempFile(".mcp.port", ".tmp", target.parentFile)
+            try {
+                tmp.writeText(port.toString())
+                runCatching {
+                    java.nio.file.Files.move(tmp.toPath(), target.toPath(),
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                }.onFailure {
+                    java.nio.file.Files.move(tmp.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                }
+            } finally {
+                runCatching { if (tmp.exists()) tmp.delete() }
             }
         }.onFailure { log.warn("Failed to write mcp.port: {}", it.message) }
     }

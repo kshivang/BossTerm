@@ -135,23 +135,29 @@ class DaemonSessionBridge(
         // window's Share controls reach whichever attach socket is currently live.
         val shareSender = DaemonShareClient.Sender { m -> send(m) }
         DaemonShareClient.registerSender(shareSender)
-        client.webSocket(url, request = { header(DaemonAttachProtocol.TOKEN_HEADER, secret) }) {
-            // Pump this connection's outbox → socket.
-            val writer = launch {
-                try { for (text in out) send(Frame.Text(text)) } catch (_: Exception) {}
-            }
-            try {
-                for (frame in incoming) {
-                    if (frame !is Frame.Text) continue
-                    val msg = runCatching { DaemonAttachProtocol.decodeServer(frame.readText()) }.getOrNull() ?: continue
-                    dispatch(msg)
+        try {
+            client.webSocket(url, request = { header(DaemonAttachProtocol.TOKEN_HEADER, secret) }) {
+                // Pump this connection's outbox → socket.
+                val writer = launch {
+                    try { for (text in out) send(Frame.Text(text)) } catch (_: Exception) {}
                 }
-            } finally {
-                writer.cancel()
-                out.close()
-                if (outbox === out) outbox = null
-                DaemonShareClient.clearSender(shareSender)
+                try {
+                    for (frame in incoming) {
+                        if (frame !is Frame.Text) continue
+                        val msg = runCatching { DaemonAttachProtocol.decodeServer(frame.readText()) }.getOrNull() ?: continue
+                        dispatch(msg)
+                    }
+                } finally {
+                    writer.cancel()
+                }
             }
+        } finally {
+            // Spans the whole connect: if webSocket() throws BEFORE entering its block (daemon down
+            // during backoff, token/version rejected), the sender + outbox must still be cleared —
+            // otherwise every failed reconnect leaks a stale sender pointing at a dead channel.
+            DaemonShareClient.clearSender(shareSender)
+            out.close()
+            if (outbox === out) outbox = null
         }
     }
 

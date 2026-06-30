@@ -210,6 +210,7 @@ class DaemonMcpServer(
     private fun writePortMarker(port: Int) {
         runCatching {
             val target = BossTermPaths.mcpPortFile()
+            target.parentFile?.mkdirs() // parity with BossTermMcpManager; the dir normally exists by now
             val tmp = File(target.parentFile, ".mcp.port.tmp")
             tmp.writeText(port.toString())
             runCatching {

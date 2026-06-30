@@ -29,6 +29,13 @@ internal class FrameOutbox(outputCapacity: Int = 4096, controlCapacity: Int = 10
     // unrecoverable, so on overflow we close the outbox: the writer ends, the connection drops, and
     // the GUI reconnects to a fresh snapshot. (Was Channel.UNLIMITED, which defeated the backpressure
     // guarantee the outbox exists to provide.)
+    //
+    // This is NOT an unbounded "reconnect storm": the reconnect is paced by DaemonSessionBridge's
+    // exponential backoff (250ms→4s), and a fresh attach replays only ONE current snapshot per session
+    // (resync's beginLocked snapshots a session once, on first attach) — never the dropped backlog. So
+    // a persistently-wedged client settles into slow backoff retries, not a tight loop. Hard-closing a
+    // truly-stuck connection is preferred over coalescing here: coalescing redundant control frames
+    // would require the outbox to parse frame semantics it deliberately treats as opaque bytes.
     private val control = Channel<String>(capacity = controlCapacity)
     private val output = Channel<String>(capacity = outputCapacity, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     @Volatile private var closed = false

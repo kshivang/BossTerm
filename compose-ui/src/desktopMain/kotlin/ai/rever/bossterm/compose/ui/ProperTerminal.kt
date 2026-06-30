@@ -904,8 +904,15 @@ fun ProperTerminal(
                 val w = coordinates.size.width - 4
                 val h = coordinates.size.height - 4
                 if (w >= 10 && h >= 10) {
-                  t.remoteFitCols = (w / cellWidth).toInt().coerceAtLeast(2)
-                  t.remoteFitRows = (h / cellHeight).toInt().coerceAtLeast(2)
+                  val fitCols = (w / cellWidth).toInt().coerceAtLeast(2)
+                  val fitRows = (h / cellHeight).toInt().coerceAtLeast(2)
+                  val changed = t.remoteFitCols != fitCols || t.remoteFitRows != fitRows
+                  t.remoteFitCols = fitCols
+                  t.remoteFitRows = fitRows
+                  // Daemon-attached tab: the GUI is the real display, so drive the daemon session's
+                  // size from our canvas (ordinary mirrors leave onRemoteFit null → host stays
+                  // authoritative).
+                  if (changed) t.onRemoteFit?.invoke(fitCols, fitRows)
                 }
               }
             }

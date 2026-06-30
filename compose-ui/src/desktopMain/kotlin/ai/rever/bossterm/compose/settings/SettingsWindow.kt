@@ -54,8 +54,11 @@ fun SettingsWindow(
     LaunchedEffect(pendingSettings) {
         delay(SETTINGS_DEBOUNCE_MS)
         if (pendingSettings != savedSettings && pendingSettings != lastSavedPending) {
+            val baseline = lastSavedPending
             lastSavedPending = pendingSettings
-            settingsManager.updateSettings(pendingSettings)
+            // Merge only the fields the user changed (vs baseline) — a full replace here would clobber a
+            // concurrent programmatic write (e.g. the daemon flipping sessionSharingEnabled).
+            settingsManager.mergeChangedFields(baseline, pendingSettings)
         }
     }
 
@@ -80,8 +83,10 @@ fun SettingsWindow(
                 pendingSettings = newSettings
             },
             onSettingsSave = {
-                // Sliders call this on release - save immediately
-                settingsManager.updateSettings(pendingSettings)
+                // Sliders call this on release - save immediately (merge, not full replace).
+                val baseline = lastSavedPending
+                lastSavedPending = pendingSettings
+                settingsManager.mergeChangedFields(baseline, pendingSettings)
             },
             onResetToDefaults = {
                 settingsManager.resetToDefaults()

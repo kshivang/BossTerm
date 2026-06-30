@@ -297,14 +297,27 @@ fun TabbedTerminal(
         )
     }
 
+    // Daemon mode (tmux-style): when on, tabs are daemon-hosted — the GUI skips its own local
+    // startup tab and routes new-tab requests to the daemon (which renders them as mirror tabs).
+    // Gated entirely on the startup-read daemonEnabled flag, so OFF is byte-for-byte the pre-daemon
+    // behavior. Falls back to a local tab if the daemon bridge isn't attached (daemon unreachable).
+    val daemonMode = settings.daemonEnabled
+    val requestNewTab: () -> Unit = {
+        // In daemon mode, route to the daemon; but if it can't be enqueued right now (socket
+        // mid-reconnect — isAttached stays true while the bridge reconnects), fall back to a local tab
+        // so Ctrl+T isn't a silent no-op.
+        if (daemonMode && ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached &&
+            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession()) {
+            // enqueued — the daemon creates the session and the bridge renders it as a mirror tab.
+        } else {
+            tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
+        }
+    }
+
     // Wire up menu actions for tab management
     LaunchedEffect(menuActions, tabController) {
         menuActions?.apply {
-            onNewTab = {
-                // New tabs always start in home directory (no working dir inheritance)
-                // Use initial command from settings if configured
-                tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
-            }
+            onNewTab = { requestNewTab() }
             onCloseTab = {
                 tabController.closeTab(tabController.activeTabIndex)
             }
@@ -601,6 +614,26 @@ fun TabbedTerminal(
                 if (pendingSplitState != null) {
                     splitStates[pendingTab.id] = pendingSplitState
                 }
+            } else if (daemonMode) {
+                // Daemon mode: the daemon owns this window's sessions and the attach bridge populates
+                // tabs (auto-opening one if the daemon is empty). Skip the local startup tab so we
+                // don't end up with a stray local tab alongside the daemon-hosted ones. Safety: if the
+                // bridge never attaches (daemon unreachable), fall back to a local tab after a grace
+                // period so the window isn't stuck empty. The grace window must exceed the bridge's own
+                // attach window (DaemonBridgeCoordinator.register polls ~15s) and short-circuits the
+                // moment the bridge attaches — otherwise an 8–15s attach leaves a stray local tab.
+                var waited = 0
+                while (waited < 16000 && tabController.tabs.isEmpty() &&
+                    !ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached &&
+                    // Stop early if the daemon definitively won't serve an attach endpoint this launch
+                    // (unreachable / attach server didn't bind) — no point waiting the full grace period.
+                    !ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttachUnavailable) {
+                    kotlinx.coroutines.delay(200); waited += 200
+                }
+                if (tabController.tabs.isEmpty() &&
+                    !ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached) {
+                    tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
+                }
             } else {
                 // Phase 6: restore the saved session (tabs + split layout + cwds) if enabled.
                 val restored = if (settings.restoreSessionOnLaunch) {
@@ -829,6 +862,9 @@ fun TabbedTerminal(
     var mcpAttaching by remember { mutableStateOf(false) }
     // Session sharing (issue #276): dialog state + live set of shared tab ids.
     var shareDialog by remember { mutableStateOf<ai.rever.bossterm.compose.share.SessionShareManager.ShareInfo?>(null) }
+    // Phase 2: when the daemon hosts sessions, sharing is hosted by the daemon (survives the GUI
+    // closing) and uses a separate window driven by DaemonShareClient over the attach socket.
+    var daemonShareOpen by remember { mutableStateOf(false) }
     // Account sign-in (BossConsole Supabase backend) — window opened from the Share menus.
     var showSignInWindow by remember { mutableStateOf(false) }
     var signInFocusTick by remember { mutableStateOf(0) }
@@ -908,6 +944,9 @@ fun TabbedTerminal(
     // window is already open raises that window instead of leaving it behind.
     var shareFocusTick by remember { mutableStateOf(0) }
     val sharedTabIds by ai.rever.bossterm.compose.share.SessionShareManager.sharedTabIds.collectAsState()
+    // Daemon-hosted shares (Phase 2): the sharing indicator must reflect these too — in daemon mode
+    // the in-process SessionShareManager.sharedTabIds is always empty, so the pill never lit up.
+    val daemonShareState by ai.rever.bossterm.compose.daemon.DaemonShareClient.state.collectAsState()
     // Devices awaiting host approval to connect (issue #276) — drives the approval toast
     // and the share dialog's pending list.
     val pendingShareRequests by ai.rever.bossterm.compose.share.SessionShareManager.pendingRequests.collectAsState()
@@ -928,6 +967,32 @@ fun TabbedTerminal(
     // Start (or reopen) a share for a tab. TAB = this tab + its splits; WINDOW = all tabs.
     // First use auto-enables the feature; the server binds on demand.
     fun startShare(tabId: String, scope: ai.rever.bossterm.compose.share.ShareScope) {
+        if (daemonMode) {
+            // The daemon hosts the share so it outlives the GUI. TAB → share just this session;
+            // WINDOW/ALL → share the whole daemon (every session as a viewer tab). DaemonShareWindow
+            // observes DaemonShareClient.state; startShare here is idempotent (returns any existing).
+            val isTabScope = scope == ai.rever.bossterm.compose.share.ShareScope.TAB
+            val sessionId = if (isTabScope)
+                tabController.tabs.firstOrNull { it.id == tabId }?.remotePaneId else null
+            // Privacy guard: a TAB share whose tab has no backing daemon session (a local fallback tab
+            // created when the daemon was unreachable, a split sub-pane, etc.) must NOT silently widen
+            // to ALL — that would publish EVERY daemon session when the user asked to share one tab.
+            if (isTabScope && sessionId == null) {
+                println("startShare: refusing TAB share of $tabId — no backing daemon session (would widen to ALL)")
+                return
+            }
+            val kind = if (sessionId != null) ai.rever.bossterm.compose.daemon.DaemonAttachProtocol.ShareScopeKind.SESSION
+                       else ai.rever.bossterm.compose.daemon.DaemonAttachProtocol.ShareScopeKind.ALL
+            // Parity with the non-daemon path: first share turns the feature on (the daemon reads
+            // this setting live and the menu reflects it).
+            if (!settings.sessionSharingEnabled) {
+                SettingsManager.instance.updateSetting { copy(sessionSharingEnabled = true) }
+            }
+            ai.rever.bossterm.compose.daemon.DaemonShareClient.startShare(kind, sessionId, null)
+            daemonShareOpen = true
+            shareFocusTick++
+            return
+        }
         if (sharedTabIds.contains(tabId)) {
             openShareWindow(ai.rever.bossterm.compose.share.SessionShareManager.infoFor(tabId))
             return
@@ -1308,11 +1373,7 @@ fun TabbedTerminal(
                         }
                     }
                 },
-                onNewTab = {
-                    // New tabs always start in home directory (no working dir inheritance)
-                    // Use initial command from settings if configured
-                    tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
-                },
+                onNewTab = { requestNewTab() },
                 onTabMoveToNewWindow = { index ->
                     val tab = tabController.tabs.getOrNull(index) ?: return@TabBar
                     val splitState = splitStates.remove(tab.id)
@@ -1522,11 +1583,7 @@ fun TabbedTerminal(
                         activeTab.title.value = newTitle
                     }
                 },
-                onNewTab = {
-                    // New tabs always start in home directory (no working dir inheritance)
-                    // Use initial command from settings if configured
-                    tabController.createTab(initialCommand = settings.initialCommand.ifEmpty { null })
-                },
+                onNewTab = { requestNewTab() },
                 onSwitchShell = { shell ->
                     // Windows: switch to different shell (close current, open new with selected shell)
                     val currentIndex = tabController.activeTabIndex
@@ -1925,12 +1982,18 @@ fun TabbedTerminal(
                         ))
                     },
                     showSharing = showSharingStatus,
-                    sharingCount = sharedTabIds.size,
+                    // Count in-process shares AND daemon-hosted shares (one is always empty depending
+                    // on mode), so the pill lights whenever anything is actually being shared.
+                    sharingCount = sharedTabIds.size + daemonShareState.shares.size,
                     onSharingClick = {
                         // Reopen the dialog if something is shared; else offer Tab vs Window.
                         val sharedId = sharedTabIds.firstOrNull { tabController.tabs.any { t -> t.id == it } }
                             ?: sharedTabIds.firstOrNull()
-                        if (sharedId != null) {
+                        if (daemonMode && daemonShareState.shares.isNotEmpty()) {
+                            // Daemon-hosted share active → reopen the daemon share dialog.
+                            daemonShareOpen = true
+                            shareFocusTick++
+                        } else if (!daemonMode && sharedId != null) {
                             openShareWindow(ai.rever.bossterm.compose.share.SessionShareManager.infoFor(sharedId))
                         } else {
                             tabController.activeTab?.let { active ->
@@ -2058,6 +2121,19 @@ fun TabbedTerminal(
             onRefreshLink = { ai.rever.bossterm.compose.share.SessionShareManager.refreshRemoteLink() },
             sessionName = ai.rever.bossterm.compose.share.SessionShareManager.sessionNameFor(info.tabId) ?: "",
             onSessionNameChange = { ai.rever.bossterm.compose.share.SessionShareManager.setSessionName(info.tabId, it) },
+        )
+    }
+
+    // Daemon-hosted sharing window (Phase 2): observes/steers the daemon's share server over the
+    // attach socket via DaemonShareClient. Used in daemon mode instead of the in-process ShareWindow.
+    if (daemonShareOpen) {
+        ai.rever.bossterm.compose.daemon.DaemonShareWindow(
+            // The currently-focused daemon session, so the dialog's "This session" scope is always
+            // selectable (not just when the active share happens to be session-scoped). Reactive to
+            // the active tab. Null for a non-daemon/local tab → only "All sessions" is offered.
+            focusedSessionId = tabController.activeTab?.remotePaneId,
+            onDismiss = { daemonShareOpen = false },
+            focusTick = shareFocusTick,
         )
     }
 

@@ -87,26 +87,78 @@ fun main(args: Array<String>) {
         serverName = "bossterm",
         serverVersion = "1.0"
     )
+    // MCP server. Normally in-process; when the daemon is enabled the daemon owns it instead. But if
+    // the daemon is enabled yet fails to come up, we fall back to hosting MCP in-process so the feature
+    // isn't silently lost (a regression vs. non-daemon mode). Guarded so the daemon-connect thread and
+    // the main thread can't double-start it.
     val mcpScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val mcpManager = BossTermMcpManager(
-        registry = McpTerminalRegistry,
-        settingsManager = SettingsManager.instance,
-        parentScope = mcpScope,
-        config = mcpConfig
-    )
-    mcpManager.start()
+    val mcpLock = Any()
+    var mcpManager: BossTermMcpManager? = null
+    fun ensureInProcessMcp() = synchronized(mcpLock) {
+        if (mcpManager == null) {
+            mcpManager = BossTermMcpManager(
+                registry = McpTerminalRegistry,
+                settingsManager = SettingsManager.instance,
+                parentScope = mcpScope,
+                config = mcpConfig,
+            ).also { it.start() }
+        }
+    }
 
-    // Session sharing (issue #276): app-singleton lifecycle for the self-hosted
-    // web-viewer server. Inert until the user enables it in settings AND shares a
-    // tab — the server only binds while ≥1 share is active.
+    // Session daemon (tmux-style): when enabled, a long-lived background process owns the MCP
+    // server (and, in later phases, sessions + sharing) so they survive the GUI closing. The GUI
+    // then does NOT host the in-process MCP — the daemon owns the loopback endpoint + mcp.port.
+    // Default off: BossTerm behaves exactly as before until the user opts in.
+    val daemonEnabled = SettingsManager.instance.settings.value.daemonEnabled
+    val daemonScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val daemonClient = if (daemonEnabled) {
+        ai.rever.bossterm.compose.daemon.DaemonClient().also { client ->
+            // Spawn/connect off the main thread; the daemon outlives this GUI process.
+            daemonScope.launch {
+                val ep = client.ensureConnected()
+                if (ep != null) {
+                    println("BossTerm daemon connected on control port ${ep.port}")
+                    // Discover the attach endpoint so windows can render daemon sessions.
+                    ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.onConnected(client)
+                } else {
+                    System.err.println("BossTerm daemon unavailable; hosting MCP in-process as a fallback")
+                    // Tell windows to stop waiting for a daemon bridge that will never attach, so they
+                    // fall back to local tabs immediately instead of sitting empty for the grace period.
+                    ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.markAttachUnavailable()
+                    ensureInProcessMcp()
+                }
+            }
+            // Refresh the at-login service so its baked java/classpath stay current after an app
+            // update (stale paths would silently fail to start the daemon at next login).
+            if (SettingsManager.instance.settings.value.startDaemonAtLogin) {
+                daemonScope.launch {
+                    runCatching { ai.rever.bossterm.compose.daemon.LoginServiceManager.install() }
+                }
+            }
+        }
+    } else null
+
+    // In-process MCP for non-daemon mode (daemon mode hosts it in the daemon, with the fallback above).
+    if (!daemonEnabled) ensureInProcessMcp()
+
+    // Session sharing (issue #276): app-singleton lifecycle for the self-hosted web-viewer server.
+    // Inert until the user enables it in settings AND shares a tab — it only binds while ≥1 share is
+    // active. In daemon mode, shares route to the daemon-hosted server (DaemonShareServer) so they
+    // survive the GUI; this in-process manager stays started but idle, serving the non-daemon path and
+    // the unreachable-daemon fallback. (Both share subsystems thus coexist when daemonEnabled, but only
+    // one is ever fed a share.)
     ai.rever.bossterm.compose.share.SessionShareManager.start()
 
     Runtime.getRuntime().addShutdownHook(Thread {
-        mcpManager.stop()
-        // Tear down session sharing synchronously so a Tailscale serve/funnel mapping
-        // isn't left published after the app exits (issue #276).
+        // When daemonEnabled, MCP is normally owned by the daemon (mcpManager stays null) and
+        // intentionally NOT torn down here — the daemon outlives the GUI. The exception is the
+        // in-process fallback above (daemon unreachable), which we created and so must stop. The
+        // in-process SessionShareManager is always shut down (it's GUI-owned; the daemon-hosted share
+        // server has its own lifecycle) to avoid leaving a tunnel published after exit (issue #276).
+        synchronized(mcpLock) { mcpManager }?.stop()
         ai.rever.bossterm.compose.share.SessionShareManager.shutdown()
         mcpScope.cancel()
+        daemonScope.cancel()
     })
 
     application {
@@ -233,7 +285,17 @@ fun main(args: Array<String>) {
                     // only join/leave the registry.
                     DisposableEffect(tabbedState) {
                         McpTerminalRegistry.register(tabbedState)
-                        onDispose { McpTerminalRegistry.unregister(tabbedState) }
+                        // Daemon thin-client: attach this window to the daemon (v1: first window
+                        // only) so daemon-hosted sessions render as tabs. Inert unless daemonEnabled.
+                        if (daemonEnabled) {
+                            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.register(tabbedState, scope)
+                        }
+                        onDispose {
+                            McpTerminalRegistry.unregister(tabbedState)
+                            if (daemonEnabled) {
+                                ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.unregister(tabbedState)
+                            }
+                        }
                     }
 
                     // Track window focus for command completion notifications

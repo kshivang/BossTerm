@@ -31,6 +31,11 @@ env:
   JAVA_VERSION: '17'
   JAVA_DISTRIBUTION: 'temurin'
   GRADLE_OPTS: '-Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true'
+  # Baked into the packaged app launcher (see bossterm-app/build.gradle.kts) so the
+  # self-updater uses the Supabase update source at runtime. Absent in local/dev builds
+  # -> the updater falls back to GitHub. The anon key is the public, RLS-gated key.
+  SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
 
 jobs:
   prepare-version:

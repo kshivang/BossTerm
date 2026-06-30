@@ -1371,7 +1371,8 @@ class TabController(
                     put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
                     // Identify the local Boss/BossTerm MCP server so in-shell
                     // programs (e.g. Claude Code) pick the matching `mcp__<name>__*`
-                    // toolset. See the createTab() path for details.
+                    // toolset. (This pre-connect path takes no caller-supplied
+                    // environment, so there is nothing to override here.)
                     put("BOSS_MCP_SERVER", McpTerminalRegistry.mcpServerName)
                     // Set PWD to match actual working directory (required for Starship and other prompts)
                     put("PWD", workingDir ?: System.getProperty("user.home"))

@@ -106,14 +106,22 @@ class BossTermMcpManager(
     // last-writer-wins miss already inherent to the multi-client design.
     private val clientTabByPort = ConcurrentHashMap<Int, Optional<String>>()
 
+    init {
+        // Publish the embedder's server name/label to the registry at CONSTRUCTION
+        // (not in start()): TabController / EmbeddableTerminal read
+        // McpTerminalRegistry.mcpServerName when spawning a PTY to set the shell's
+        // BOSS_MCP_SERVER env var, so in-shell agents (e.g. Claude Code) pick the
+        // matching mcp__<name>__* toolset instead of a sibling app's. Setting it
+        // here means merely constructing the manager before creating terminals is
+        // enough — start() and port-bind timing are irrelevant. Also consumed by
+        // non-Compose readers like MirrorShare (relaying a remote client's MCP
+        // attach/toggle) instead of the Compose-only LocalBossTermMcpConfig.
+        registry.setServerInfo(config.serverName, config.displayName ?: "BossTerm")
+    }
+
     /** Begin observing settings. Idempotent. Safe to call multiple times. */
     fun start() {
         if (watcherJob?.isActive == true) return
-
-        // Publish the embedder's server name/label to the registry so non-Compose readers
-        // (MirrorShare relaying a remote client's MCP attach/toggle) use the right values
-        // instead of the standalone defaults — matching the Compose LocalBossTermMcpConfig path.
-        registry.setServerInfo(config.serverName, config.displayName ?: "BossTerm")
 
         // Hydrate the runtime attached-targets set from persisted settings so
         // the indicator/menu reflect prior-session state immediately, and

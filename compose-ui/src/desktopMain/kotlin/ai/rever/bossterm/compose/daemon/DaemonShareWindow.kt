@@ -8,6 +8,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.components.SettingsSection
+import ai.rever.bossterm.compose.settings.components.SettingsTextField
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -92,8 +93,10 @@ fun DaemonShareWindow(
         )
     }
 
-    // The share matching the chosen scope/session; fall back to the first active share so an
-    // existing share is always visible even if the scope toggle hasn't been touched.
+    // The share matching the chosen scope/session. No cross-scope fallback: showing the ALL share
+    // under a "This session" scope would mislabel its links/viewer-count and make Stop Sharing tear
+    // down the whole-daemon share the user didn't mean to touch. When the selected scope has no share,
+    // `share` is null and StartSection is shown so the user can start exactly the share they meant.
     val share = remember(shareState, scope, focusedSessionId) {
         shareState.shares.firstOrNull { s ->
             when (scope) {
@@ -101,7 +104,7 @@ fun DaemonShareWindow(
                     s.scope == DaemonAttachProtocol.ShareScopeKind.SESSION && s.sessionId == focusedSessionId
                 else -> s.scope == DaemonAttachProtocol.ShareScopeKind.ALL
             }
-        } ?: shareState.shares.firstOrNull()
+        }
     }
     // Approvals waiting on the currently-shown share (the daemon may host several at once).
     val pending = remember(shareState, share) {
@@ -222,6 +225,19 @@ private fun ShareDetails(
     pending: List<DaemonAttachProtocol.PendingApproval>,
     clipboard: ClipboardManager,
 ) {
+    // Viewer-facing label for this share (the remote group header). Defaults to username_machine on the
+    // daemon side; editing it round-trips via SetShareName. (Parity with the non-daemon ShareWindow.)
+    var nameField by remember(share.token) { mutableStateOf(share.sessionName ?: "") }
+    SettingsSection("Name") {
+        SettingsTextField(
+            label = "Share name",
+            value = nameField,
+            onValueChange = { nameField = it; DaemonShareClient.setName(share.token, it) },
+            placeholder = "username_machine",
+        )
+    }
+    Spacer(Modifier.height(20.dp))
+
     // Devices waiting for approval surface first so the host acts on them.
     if (pending.isNotEmpty()) {
         SettingsSection("Pending requests") {

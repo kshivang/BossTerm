@@ -12,7 +12,9 @@ import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -110,6 +112,7 @@ class DaemonAttachServer(
         boundPort = -1
     }
 
+    @OptIn(FlowPreview::class) // Flow.debounce (stable behavior; still annotated preview in this version)
     private suspend fun serve(ws: io.ktor.server.websocket.DefaultWebSocketServerSession) {
         // DNS-rebinding defense (parity with the MCP server): only accept Host headers naming a
         // loopback target, so a browser pointed at a name resolving to 127.0.0.1 can't connect. A
@@ -213,6 +216,11 @@ class DaemonAttachServer(
             val metaJob = ws.launch {
                 combine(core.workingDirectory, core.windowTitle) { cwd, title -> cwd to title }
                     .drop(1)
+                    // Debounce: a TUI that sets its title to the running command (shells, vim, htop,
+                    // progress spinners) churns this rapidly, and each emit rebuilds the WHOLE session
+                    // list + per-session sizes and pushes it on the control lane. Coalesce bursts so we
+                    // send at most one refresh per quiet window instead of flooding control (see #4).
+                    .debounce(META_DEBOUNCE_MS)
                     .collect { send(sessionList()) }
             }
             attachments[core.id] = Attachment(core, tap, listOf(sizeJob, metaJob))
@@ -320,5 +328,7 @@ class DaemonAttachServer(
         const val HOST = "127.0.0.1"
         /** Cap on the per-session prelude buffer (output racing a snapshot encode) — bounds heap. */
         const val MAX_PRELUDE_CHARS = 1_000_000
+        /** Quiet window for coalescing title/cwd-driven session-list refreshes (ms). */
+        const val META_DEBOUNCE_MS = 200L
     }
 }

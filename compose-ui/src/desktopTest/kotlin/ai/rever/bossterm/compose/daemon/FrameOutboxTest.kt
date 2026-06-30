@@ -67,6 +67,25 @@ class FrameOutboxTest {
     }
 
     @Test
+    fun `a control backlog does not starve output (fairness cap)`() = runBlocking {
+        val outbox = FrameOutbox(outputCapacity = 1024, controlCapacity = 4096)
+        val controlCount = FrameOutbox.CONTROL_BURST * 3
+        // Enqueue everything BEFORE the drainer starts, so it faces a full control lane + pending output.
+        repeat(controlCount) { outbox.sendControl("c$it") }
+        repeat(5) { outbox.sendOutput("o$it") }
+        val got = ConcurrentLinkedQueue<String>()
+        val drainer = launch(Dispatchers.IO) { outbox.drainTo { got.add(it) } }
+        withTimeout(5_000) { while (got.size < controlCount + 5) delay(2) }
+        outbox.close()
+        drainer.join()
+        val firstOutputIdx = got.toList().indexOfFirst { it.startsWith("o") }
+        assertTrue(
+            firstOutputIdx in 0..FrameOutbox.CONTROL_BURST,
+            "an output frame must appear within the first CONTROL_BURST (${FrameOutbox.CONTROL_BURST}) frames, was at $firstOutputIdx",
+        )
+    }
+
+    @Test
     fun `close unblocks a drainer suspended on idle lanes`() = runBlocking {
         val outbox = FrameOutbox()
         val done = CompletableDeferred<Boolean>()

@@ -40,6 +40,11 @@ internal class FrameOutbox(outputCapacity: Int = 4096, controlCapacity: Int = 10
     private val output = Channel<String>(capacity = outputCapacity, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     @Volatile private var closed = false
 
+    internal companion object {
+        /** Max control frames drained before yielding to one output frame (fairness; see [drainTo]). */
+        const val CONTROL_BURST = 64
+    }
+
     /** Enqueue a frame that must not be dropped (snapshot / list / lifecycle / resize). */
     fun sendControl(text: String) {
         if (closed) return
@@ -58,12 +63,16 @@ internal class FrameOutbox(outputCapacity: Int = 4096, controlCapacity: Int = 10
      */
     suspend fun drainTo(emit: suspend (String) -> Unit) {
         while (true) {
-            // 1) Flush every pending control frame first (priority).
+            // 1) Flush pending control frames first (priority) — but at most CONTROL_BURST per pass, so a
+            // lane that's continuously fed control frames (e.g. rapid title/cwd churn rebuilding the
+            // session list) can't starve terminal output forever. Control is never DROPPED here, only
+            // interleaved: the remaining control frames are drained on the next pass.
             var drainedControl = false
-            while (true) {
+            var burst = 0
+            while (burst < CONTROL_BURST) {
                 val r = control.tryReceive()
                 when {
-                    r.isSuccess -> { emit(r.getOrThrow()); drainedControl = true }
+                    r.isSuccess -> { emit(r.getOrThrow()); drainedControl = true; burst++ }
                     r.isClosed -> return
                     else -> break // control lane empty
                 }

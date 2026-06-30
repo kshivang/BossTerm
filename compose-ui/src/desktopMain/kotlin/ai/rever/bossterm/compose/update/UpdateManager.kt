@@ -71,6 +71,24 @@ class UpdateManager {
     }
 
     /**
+     * Start Supabase Realtime push so a newly published release triggers an update
+     * check the moment it lands — no polling. Idempotent; a no-op unless a Supabase
+     * anon key is configured (otherwise update checks rely on the GitHub backup).
+     * Call once at app startup.
+     */
+    fun startRealtimePush() {
+        AppUpdateRealtimeService.instance.onReleaseChanged = { checkForUpdates() }
+        AppUpdateRealtimeService.instance.start()
+    }
+
+    /**
+     * Stop the Realtime push subscription.
+     */
+    fun stopRealtimePush() {
+        AppUpdateRealtimeService.instance.dispose()
+    }
+
+    /**
      * Manually check for updates.
      */
     suspend fun checkForUpdates(): UpdateResult {

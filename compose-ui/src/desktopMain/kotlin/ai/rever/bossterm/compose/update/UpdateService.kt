@@ -21,7 +21,11 @@ data class GitHubAsset(
     val name: String,
     val browser_download_url: String? = null,
     val size: Long = 0,
-    val content_type: String = ""
+    val content_type: String = "",
+    // Optional integrity hash. GitHub releases don't provide this (stays null);
+    // the Supabase source populates it from the `app_releases` row so the download
+    // can be verified.
+    val sha256: String? = null
 )
 
 /**
@@ -34,7 +38,10 @@ data class UpdateInfo(
     val releaseNotes: String,
     val downloadUrl: String? = null,
     val assetSize: Long = 0,
-    val assetName: String = ""
+    val assetName: String = "",
+    // Optional integrity hash (populated by the Supabase source). When present the
+    // download is verified against it before install.
+    val sha256: String? = null
 ) {
     val isNewerVersionAvailable: Boolean
         get() = available && latestVersion.isNewerThan(currentVersion)

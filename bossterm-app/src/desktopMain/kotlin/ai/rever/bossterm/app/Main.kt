@@ -367,7 +367,10 @@ fun main(args: Array<String>) {
                         }
                     }
 
-                    // Check for updates on first window launch
+                    // Check for updates on first window launch, then subscribe to
+                    // Supabase Realtime so later releases push an update check
+                    // instantly (no polling). The startup check is the catch-up for
+                    // releases published while the app was closed.
                     var hasCheckedForUpdates by remember { mutableStateOf(false) }
                     LaunchedEffect(Unit) {
                         if (!hasCheckedForUpdates) {
@@ -375,6 +378,7 @@ fun main(args: Array<String>) {
                             if (updateManager.shouldCheckForUpdates()) {
                                 updateManager.checkForUpdates()
                             }
+                            updateManager.startRealtimePush()
                         }
                     }
 

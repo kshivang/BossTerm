@@ -502,6 +502,28 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Publish release to Supabase Storage
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          BOSSTERM_UPDATE_BUCKET: ${{ vars.BOSSTERM_UPDATE_BUCKET }}
+          VERSION: ${{ needs.prepare-version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Non-breaking: until the Supabase service-role secret is configured this
+          # step is a silent no-op, so adding it can't break existing releases.
+          if [[ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]]; then
+            echo "ℹ️  SUPABASE_SERVICE_ROLE_KEY not set; skipping Supabase publish."
+            exit 0
+          fi
+          export SUPABASE_URL="${SUPABASE_URL:-https://api.risaboss.com}"
+          BUCKET="${BOSSTERM_UPDATE_BUCKET:-app-releases}"
+
+          echo "📤 Publishing BossTerm $VERSION to Supabase bucket '$BUCKET'"
+          # release.yml publishes stable releases (prerelease: false).
+          bash scripts/publish-supabase-release.sh bossterm "$VERSION" stable release-assets "$BUCKET"
+
   update-homebrew:
     needs: [prepare-version, create-release]
     # Run if: not publish_only AND create-release succeeded

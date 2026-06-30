@@ -384,9 +384,21 @@ object BuiltinColorPalettes {
     )
 
     /**
+     * BOSS Operator — the ANSI 16 of the unified "Operator's Console" identity.
+     * Mix over any theme to carry the BOSS palette into terminal apps.
+     */
+    // ANSI derived from the BOSS Operator theme so the two never drift; id/name
+    // are preserved so this stays a selectable builtin palette.
+    val BOSS_OPERATOR = ColorPalette.fromTheme(BuiltinThemes.BOSS_OPERATOR).copy(
+        id = "boss-operator",
+        name = "BOSS Operator",
+    )
+
+    /**
      * All built-in color palettes.
      */
     val ALL = listOf(
+        BOSS_OPERATOR,
         XTERM,
         TANGO,
         UBUNTU,

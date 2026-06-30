@@ -926,6 +926,10 @@ private suspend fun initializeProcess(
             put("TERM", "xterm-256color")
             put("COLORTERM", "truecolor")
             put("TERM_PROGRAM", "BossTerm")
+            // Identify the local Boss/BossTerm MCP server so in-shell programs
+            // (e.g. Claude Code) pick the matching `mcp__<name>__*` toolset. An
+            // explicit override in `environment` still wins (applied last).
+            put("BOSS_MCP_SERVER", ai.rever.bossterm.compose.mcp.McpTerminalRegistry.mcpServerName)
             // Set PWD to match actual working directory (required for Starship and other prompts)
             put("PWD", effectiveWorkingDir)
             environment?.let { putAll(it) }

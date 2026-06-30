@@ -55,7 +55,13 @@ class DaemonClient {
             // Dead or incompatible daemon left a port file behind.
             if (!ping(ep)) {
                 log.info("Stale daemon.port (no live daemon); will respawn")
-                runCatching { BossTermPaths.daemonPortFile().delete() }
+                // Only delete if the file STILL describes the daemon we just probed — under a
+                // shutdown/start race a newer daemon may have rewritten it, and deleting that would
+                // strand it (discovery-less) and trigger a spurious extra spawn. Same guard as stop().
+                runCatching {
+                    val cur = DaemonControlChannel.readEndpoint()
+                    if (cur == null || cur.secret == ep.secret) BossTermPaths.daemonPortFile().delete()
+                }
             } else {
                 log.warn("Daemon proto {} != client proto {}; not attaching", ep.protocolVersion, DaemonControlChannel.PROTOCOL_VERSION)
             }

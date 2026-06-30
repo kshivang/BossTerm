@@ -230,7 +230,7 @@ object LoginServiceManager {
 
         [Service]
         Type=simple
-        ExecStart=${command.joinToString(" ") { shQuote(it) }.replace("%", "%%")}
+        ExecStart=${command.joinToString(" ") { unitQuote(it) }.replace("%", "%%")}
         Restart=on-failure
         RestartSec=2
 
@@ -242,7 +242,7 @@ object LoginServiceManager {
         [Desktop Entry]
         Type=Application
         Name=BossTerm Daemon
-        Exec=${command.joinToString(" ") { shQuote(it) }.replace("%", "%%")}
+        Exec=${command.joinToString(" ") { unitQuote(it) }.replace("%", "%%")}
         X-GNOME-Autostart-enabled=true
         NoDisplay=true
     """.trimIndent() + "\n"
@@ -280,10 +280,16 @@ object LoginServiceManager {
     private fun xmlEscape(s: String): String =
         s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 
-    /** Minimal POSIX single-arg quote for unit/desktop ExecStart (wrap in single quotes if needed). */
-    private fun shQuote(arg: String): String =
+    /**
+     * Quote one arg for a systemd `ExecStart` / `.desktop` `Exec=` value. These are NOT shell-parsed, so
+     * shell-style single-quoting (`'\''`) is taken literally and mangles a path containing a single
+     * quote (e.g. `/home/o'brien/…`). Wrap in double quotes and escape backslash + double-quote instead
+     * — valid C-style escaping in both formats, and a single quote inside double quotes is literal.
+     * (`%` is doubled separately by the callers, since both formats expand %-specifiers.)
+     */
+    private fun unitQuote(arg: String): String =
         if (arg.isNotEmpty() && arg.all { it.isLetterOrDigit() || it in "-_./:=" }) arg
-        else "'" + arg.replace("'", "'\\''") + "'"
+        else "\"" + arg.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
     // ---- process helpers ----
 

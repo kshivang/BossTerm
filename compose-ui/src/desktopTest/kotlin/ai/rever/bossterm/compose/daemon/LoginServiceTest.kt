@@ -43,8 +43,19 @@ class LoginServiceTest {
         assertTrue(unit.contains(mainClass))
         assertTrue(unit.contains("Restart=on-failure"))
         assertTrue(unit.contains("WantedBy=default.target"))
-        // An arg with a space must be POSIX-quoted in ExecStart.
-        assertTrue(unit.contains("'/Applications/BossTerm.app/Contents/app/compose-ui.jar:/Applications/BossTerm.app/Contents/app/has space.jar'"))
+        // An arg with a space is DOUBLE-quoted in ExecStart — systemd isn't shell-parsed, so shell-style
+        // single-quoting would mangle a path containing a single quote.
+        assertTrue(unit.contains("\"/Applications/BossTerm.app/Contents/app/compose-ui.jar:/Applications/BossTerm.app/Contents/app/has space.jar\""))
+    }
+
+    @Test
+    fun `systemd ExecStart double-quotes a path with a single quote (not shell-style)`() {
+        val cmd = listOf("/usr/bin/java", "-cp", "/home/o'brien/app.jar", mainClass)
+        val unit = LoginServiceManager.systemdUnit(cmd)
+        // Double-quoted, single quote left literal — NOT the shell-style '\'' escaping that systemd
+        // (which doesn't shell-parse ExecStart) would take verbatim and fail to launch.
+        assertTrue(unit.contains("\"/home/o'brien/app.jar\""), "expected double-quoted literal single quote, got:\n$unit")
+        assertTrue(!unit.contains("'\\''"), "must not emit shell-style single-quote escaping")
     }
 
     @Test

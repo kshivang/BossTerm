@@ -173,7 +173,9 @@ class SettingsManager(private val customSettingsPath: String? = null) {
             // writeText interleave with the other's before the rename — publishing a torn/garbage file.
             // A unique temp per write keeps each writer's temp private; the atomic rename then publishes
             // a whole file. (Mirrors DaemonControlChannel.writePortFile's createTempFile rationale.)
-            val tmp = File.createTempFile(".settings", ".tmp", settingsFile.parentFile)
+            // Use absoluteFile.parentFile: a bare-filename customSettingsPath has a null parent, which
+            // would land the temp in java.io.tmpdir — a different filesystem, defeating ATOMIC_MOVE.
+            val tmp = File.createTempFile(".settings", ".tmp", settingsFile.absoluteFile.parentFile)
             try {
                 tmp.writeText(jsonString)
                 runCatching {

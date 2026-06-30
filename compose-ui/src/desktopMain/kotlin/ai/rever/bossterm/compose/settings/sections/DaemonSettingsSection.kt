@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.daemon.DaemonClient
 import ai.rever.bossterm.compose.daemon.DaemonProtocol
 import ai.rever.bossterm.compose.daemon.LoginServiceManager
+import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
@@ -60,16 +61,21 @@ fun DaemonSettingsSection(
                     if (on) {
                         // Enabling the daemon also schedules it at login by default (it's meant to be
                         // always-available) and installs the login service now. The separate toggle
-                        // below can turn that back off without disabling the daemon. Persistence is the
-                        // SettingsWindow debounce's job — a synchronous onSettingsSave here would save
-                        // the pre-change pendingSettings (merge(old, old)).
+                        // below can turn that back off without disabling the daemon.
                         onSettingsChange(settings.copy(daemonEnabled = true, startDaemonAtLogin = true))
+                        // Persist IMMEDIATELY, not via the ~100ms SettingsWindow debounce: install()
+                        // below writes a login service, and if the user closes Settings within the
+                        // debounce window the flags would never reach disk — next launch reads
+                        // daemonEnabled=true and reinstalls, silently undoing a later disable.
+                        SettingsManager.instance.updateSetting { copy(daemonEnabled = true, startDaemonAtLogin = true) }
                         scope.launch(Dispatchers.IO) { runCatching { LoginServiceManager.install() } }
                     } else {
                         // Disabling the daemon must also tear down the at-login service + clear its
                         // flag, otherwise a daemon keeps spawning at login that the GUI no longer
-                        // connects to.
+                        // connects to. Persist synchronously (see above) so a quick Settings-close can't
+                        // drop the disable and leave the just-uninstalled service to be reinstalled.
                         onSettingsChange(settings.copy(daemonEnabled = false, startDaemonAtLogin = false))
+                        SettingsManager.instance.updateSetting { copy(daemonEnabled = false, startDaemonAtLogin = false) }
                         scope.launch(Dispatchers.IO) { runCatching { LoginServiceManager.uninstall() } }
                     }
                 },
@@ -83,6 +89,9 @@ fun DaemonSettingsSection(
                     "even before BossTerm is first opened, or after a reboot.",
                 onCheckedChange = { enabled ->
                     onSettingsChange(settings.copy(startDaemonAtLogin = enabled))
+                    // Persist immediately (not via the debounce) so the install/uninstall below can't
+                    // diverge from the persisted flag if the user closes Settings right after toggling.
+                    SettingsManager.instance.updateSetting { copy(startDaemonAtLogin = enabled) }
                     // Install/uninstall shells out — keep it off the UI thread.
                     scope.launch(Dispatchers.IO) {
                         val r = if (enabled) LoginServiceManager.install() else LoginServiceManager.uninstall()

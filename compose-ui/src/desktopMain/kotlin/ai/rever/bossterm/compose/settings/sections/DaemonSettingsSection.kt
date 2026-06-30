@@ -59,16 +59,16 @@ fun DaemonSettingsSection(
                     if (on) {
                         // Enabling the daemon also schedules it at login by default (it's meant to be
                         // always-available) and installs the login service now. The separate toggle
-                        // below can turn that back off without disabling the daemon.
+                        // below can turn that back off without disabling the daemon. Persistence is the
+                        // SettingsWindow debounce's job — a synchronous onSettingsSave here would save
+                        // the pre-change pendingSettings (merge(old, old)).
                         onSettingsChange(settings.copy(daemonEnabled = true, startDaemonAtLogin = true))
-                        onSettingsSave?.invoke()
                         scope.launch(Dispatchers.IO) { runCatching { LoginServiceManager.install() } }
                     } else {
                         // Disabling the daemon must also tear down the at-login service + clear its
                         // flag, otherwise a daemon keeps spawning at login that the GUI no longer
                         // connects to.
                         onSettingsChange(settings.copy(daemonEnabled = false, startDaemonAtLogin = false))
-                        onSettingsSave?.invoke()
                         scope.launch(Dispatchers.IO) { runCatching { LoginServiceManager.uninstall() } }
                     }
                 },
@@ -82,7 +82,6 @@ fun DaemonSettingsSection(
                     "even before BossTerm is first opened, or after a reboot.",
                 onCheckedChange = { enabled ->
                     onSettingsChange(settings.copy(startDaemonAtLogin = enabled))
-                    onSettingsSave?.invoke()
                     // Install/uninstall shells out — keep it off the UI thread.
                     scope.launch(Dispatchers.IO) {
                         val r = if (enabled) LoginServiceManager.install() else LoginServiceManager.uninstall()

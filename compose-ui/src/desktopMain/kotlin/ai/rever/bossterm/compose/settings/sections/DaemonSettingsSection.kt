@@ -54,7 +54,8 @@ fun DaemonSettingsSection(
                 label = "Run sessions in a background daemon",
                 checked = settings.daemonEnabled,
                 description = "Terminal sessions, MCP, and sharing live in a long-lived process that " +
-                    "outlives this window. Takes effect after restarting BossTerm.",
+                    "outlives this window. Enabling this also installs a start-at-login service (the " +
+                    "toggle below turns that off). Takes effect after restarting BossTerm.",
                 onCheckedChange = { on ->
                     if (on) {
                         // Enabling the daemon also schedules it at login by default (it's meant to be
@@ -132,8 +133,7 @@ fun DaemonSettingsSection(
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                "The daemon never stops when you close the GUI — only via Quit daemon, an idle " +
-                    "auto-stop, or OS logout.",
+                "The daemon never stops when you close the GUI — only via Quit daemon or OS logout.",
                 color = TextMuted, fontSize = 11.sp,
             )
         }

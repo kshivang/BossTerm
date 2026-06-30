@@ -103,8 +103,13 @@ class SettingsManager(private val customSettingsPath: String? = null) {
      * conflicts are last-writer-wins.
      *
      * The merge target is the CURRENT ON-DISK settings (see [currentOnDiskOrMemory]), not just this
-     * process's in-memory snapshot, so the user's changes also don't revert a field another *process*
-     * (the daemon vs the GUI) persisted since we loaded — there is no file-watch/reload between them.
+     * process's in-memory snapshot, which greatly narrows the window in which the user's changes revert
+     * a field another *process* (the daemon vs the GUI) persisted since we loaded — there is no
+     * file-watch/reload between them. NOTE this is best-effort, not airtight: [saveLock] only serializes
+     * writers within ONE process, so two processes that read-modify-write *different* fields in the same
+     * instant can still lose one update (the second ATOMIC_MOVE wins the whole file). Settings writes are
+     * rare and the daemon only persists `mcpEnabled` (reconciled out-of-band via the attach McpState
+     * channel), so this is acceptable; a file lock around the RMW would be needed for a hard guarantee.
      */
     fun mergeChangedFields(baseline: TerminalSettings, edited: TerminalSettings) {
         synchronized(saveLock) {
@@ -122,9 +127,11 @@ class SettingsManager(private val customSettingsPath: String? = null) {
     /**
      * Update a single setting field. Read-modify-write under [saveLock] against the CURRENT ON-DISK
      * settings, so a single-field change from one process (the daemon flipping `mcpEnabled`, the GUI a
-     * theme) doesn't revert a *different* field another process persisted since we last loaded — the GUI
-     * and daemon hold independent in-memory copies with no reload-on-change. Same-field cross-process
-     * writes remain last-writer-wins.
+     * theme) is far less likely to revert a *different* field another process persisted since we last
+     * loaded — the GUI and daemon hold independent in-memory copies with no reload-on-change. This is
+     * best-effort (see [mergeChangedFields]): [saveLock] is in-process only, so two processes RMW-ing
+     * different fields at the same instant can still lose one update. Same-field writes are
+     * last-writer-wins.
      */
     fun updateSetting(updater: TerminalSettings.() -> TerminalSettings) {
         synchronized(saveLock) {

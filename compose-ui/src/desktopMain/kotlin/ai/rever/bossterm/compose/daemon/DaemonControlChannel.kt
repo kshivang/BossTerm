@@ -192,7 +192,9 @@ class DaemonControlChannel(
         // discovery file (leaving it live but undiscoverable). Cleanup is the ownership-guarded [stop]
         // instead (and a stale file from a hard crash is harmless — the GUI PINGs before trusting it).
         runCatching {
-            BossTermPaths.daemonPidFile().writeText(currentPid().toString(), StandardCharsets.UTF_8)
+            val pidFile = BossTermPaths.daemonPidFile()
+            BossTermPaths.createOwnerOnly(pidFile) // owner-only like daemon.port/daemon.log (consistency)
+            pidFile.writeText(currentPid().toString(), StandardCharsets.UTF_8)
         }
     }
 

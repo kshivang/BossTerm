@@ -32,7 +32,31 @@ object BossTermPaths {
     fun dir(): File {
         val override = System.getProperty(SETTINGS_DIR_PROPERTY)?.takeIf { it.isNotBlank() }
         val dir = if (override != null) File(override) else File(System.getProperty("user.home"), ".bossterm")
-        return dir.apply { if (!exists()) mkdirs() }
+        if (!dir.exists()) {
+            dir.mkdirs()
+            // Create the base dir owner-only (0700): it holds the daemon's auth secret + log + lock.
+            // mkdirs() applies the umask (often 0755), which would let another local user open()+lock
+            // the daemon.lock and wedge the single-spawn guard. Best-effort; no-op on non-POSIX.
+            restrictDirToOwner(dir)
+        }
+        return dir
+    }
+
+    /** chmod 700 a directory (best-effort; no-op where POSIX perms are unsupported, e.g. Windows). */
+    fun restrictDirToOwner(dir: File) {
+        runCatching {
+            val view = java.nio.file.Files.getFileAttributeView(
+                dir.toPath(),
+                java.nio.file.attribute.PosixFileAttributeView::class.java,
+            )
+            view?.setPermissions(
+                setOf(
+                    java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE,
+                )
+            )
+        }
     }
 
     /** A file inside the base directory (directory ensured to exist by [dir]). */

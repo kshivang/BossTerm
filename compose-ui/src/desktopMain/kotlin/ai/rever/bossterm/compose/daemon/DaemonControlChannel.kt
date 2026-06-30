@@ -115,10 +115,14 @@ class DaemonControlChannel(
         client.use { sock ->
             sock.soTimeout = 2000
             val line = try {
-                BufferedReader(InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8))
-                    .readLine()
-                    ?.take(MAX_REQUEST_CHARS)
-                    ?: return
+                // Bounded read: do NOT use readLine().take(MAX) — readLine() materializes the ENTIRE line
+                // before take() trims it, so a local pre-auth peer (can open the loopback port but can't
+                // read the 0600 secret) could stream gigabytes with no newline and OOM the daemon. Read
+                // char-by-char and bail past the cap so memory is actually bounded.
+                readLineBounded(
+                    BufferedReader(InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8)),
+                    MAX_REQUEST_CHARS,
+                ) ?: return
             } catch (e: Exception) {
                 return
             }
@@ -145,6 +149,27 @@ class DaemonControlChannel(
                     write("\n")
                     flush()
                 }
+            }
+        }
+    }
+
+    /**
+     * Read a single line of at most [max] chars WITHOUT first materializing an unbounded line (the OOM
+     * hazard of readLine().take(max), since the secret check happens after the read). Returns the line
+     * (newline stripped, CR tolerated), null on EOF before any char, or null if [max] is reached with no
+     * newline — in which case the caller drops the connection. The socket's soTimeout bounds idle reads.
+     */
+    private fun readLineBounded(reader: java.io.Reader, max: Int): String? {
+        val sb = StringBuilder()
+        while (true) {
+            val c = reader.read()
+            if (c == -1) return if (sb.isEmpty()) null else sb.toString()
+            val ch = c.toChar()
+            when {
+                ch == '\n' -> return sb.toString()
+                ch == '\r' -> {} // tolerate CRLF
+                sb.length >= max -> return null // over cap with no newline → shed the connection
+                else -> sb.append(ch)
             }
         }
     }

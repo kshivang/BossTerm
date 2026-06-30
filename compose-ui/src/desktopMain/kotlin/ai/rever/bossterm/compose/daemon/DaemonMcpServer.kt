@@ -34,6 +34,14 @@ import java.net.ServerSocket
  * closes. Tool LOGIC lives in [DaemonMcpTools] (unit-tested); this class only wires those onto an
  * MCP SDK [Server] and binds the transport, mirroring [ai.rever.bossterm.compose.mcp.BossTermMcpManager]'s
  * loopback + DNS-rebinding-guard + mcp.port-marker behavior in a minimal, settings-free form.
+ *
+ * Trust model — DELIBERATELY identical to the in-process server: loopback bind + Host-header rebinding
+ * guard, NO per-request token. This isn't a new boundary the daemon introduces: MCP clients discover
+ * the endpoint via the [BossTermPaths.mcpPortFile] marker (port only — there is no secret channel to
+ * them), so token-gating here would simply break every existing client (CLI / Claude Code hook) while
+ * the in-process server stayed open. The marker is itself now gated on `mcpRunCommandPreferredShell`
+ * (see [shouldWriteMarker]), so the always-on daemon doesn't widen exposure for users who never opted
+ * in. On a shared multi-user host, treat "loopback" accordingly — same caveat as the in-process server.
  */
 class DaemonMcpServer(
     private val host: SessionHost,

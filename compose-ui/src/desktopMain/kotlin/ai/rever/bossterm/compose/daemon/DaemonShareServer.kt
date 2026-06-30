@@ -490,7 +490,9 @@ class DaemonShareServer(
         val bHost = boundHost
         if (bHost == "127.0.0.1") {
             val hostHeader = (ws.call.request.headers["Host"] ?: "").substringBefore(':').lowercase()
-            if (hostHeader.isNotEmpty() && hostHeader != "127.0.0.1" && hostHeader != "localhost") {
+            // Reject a non-loopback OR ABSENT Host (a legitimate loopback client always sends one) —
+            // parity with DaemonAttachServer, which treats an empty Host as untrusted.
+            if (hostHeader != "127.0.0.1" && hostHeader != "localhost") {
                 log.warn("share: rejected connection with non-loopback Host '{}'", hostHeader)
                 runCatching { ws.close() }
                 return

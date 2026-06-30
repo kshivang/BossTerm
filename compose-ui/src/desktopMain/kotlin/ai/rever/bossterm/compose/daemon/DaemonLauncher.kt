@@ -127,12 +127,23 @@ object DaemonLauncher {
     }
 
     /** The daemon log, created owner-only up front (no world-readable window) — it captures daemon +
-     *  GUI stdout/stderr (cwd/title metadata). */
+     *  GUI stdout/stderr (cwd/title metadata). Rotated once at spawn if oversized, so an always-on
+     *  daemon's append-only log can't grow without bound across restarts (a single `.old` is kept). */
     private fun prepareLogFile(): File {
         val logFile = BossTermPaths.daemonLogFile()
+        runCatching {
+            if (logFile.exists() && logFile.length() > MAX_LOG_BYTES) {
+                val old = File(logFile.parentFile, logFile.name + ".old")
+                runCatching { old.delete() }
+                logFile.renameTo(old)
+            }
+        }
         BossTermPaths.createOwnerOnly(logFile)
         return logFile
     }
+
+    /** Rotate the daemon log at spawn once it exceeds this size (bounds disk use across restarts). */
+    private const val MAX_LOG_BYTES = 10L * 1024 * 1024
 
     /**
      * Bring a process to the foreground by OS pid (macOS only). A background app can't self-activate

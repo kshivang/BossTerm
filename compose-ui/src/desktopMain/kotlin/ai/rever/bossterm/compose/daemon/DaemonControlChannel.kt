@@ -40,6 +40,14 @@ class DaemonControlChannel(
     @Volatile private var secret: String = ""
     @Volatile private var running = false
 
+    // Bounded worker pool for per-connection request handling — caps concurrent threads so a local
+    // actor can't spawn unbounded short-lived threads ahead of the bad-secret rejection. SynchronousQueue
+    // + the default AbortPolicy: past the max, execute() throws and we close the socket (shed the flood).
+    private val requestPool = java.util.concurrent.ThreadPoolExecutor(
+        2, 16, 30L, java.util.concurrent.TimeUnit.SECONDS,
+        java.util.concurrent.SynchronousQueue(),
+    ) { r -> Thread(r, "bossterm-daemon-control-req").apply { isDaemon = true } }
+
     /** Bound port, or -1 before [start]. */
     val port: Int get() = serverSocket?.localPort ?: -1
 
@@ -65,6 +73,7 @@ class DaemonControlChannel(
     /** Stop accepting and remove the port file (only if it's still ours). Safe to call more than once. */
     fun stop() {
         running = false
+        runCatching { requestPool.shutdownNow() }
         runCatching { serverSocket?.close() }
         serverSocket = null
         // Only delete daemon.port if it still belongs to THIS instance. Under a shutdown/start race,
@@ -85,9 +94,14 @@ class DaemonControlChannel(
                 if (running) log.debug("control accept ended: {}", e.message)
                 break
             }
-            // One short-lived request per connection; handle on a worker so a slow/hung
-            // client never blocks the accept loop.
-            thread(name = "bossterm-daemon-control-req", isDaemon = true) { handle(client) }
+            // One short-lived request per connection; handle on a bounded worker pool so a slow/hung
+            // client never blocks the accept loop and a flood can't spawn unbounded threads.
+            try {
+                requestPool.execute { handle(client) }
+            } catch (e: java.util.concurrent.RejectedExecutionException) {
+                if (running) log.warn("control: request pool saturated; rejecting connection")
+                runCatching { client.close() }
+            }
         }
     }
 

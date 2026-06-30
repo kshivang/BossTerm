@@ -96,7 +96,7 @@ class TerminalSessionCore(
     private val exitNotified = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    @Volatile private var started = false
+    private val started = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile private var closed = false
 
     // Completes true once the PTY is spawned (Connected), false on failure/close. The write
@@ -148,8 +148,7 @@ class TerminalSessionCore(
 
     /** Spawn the PTY and start the read/emulate/exit-monitor loops. Idempotent. */
     fun start() {
-        if (started) return
-        started = true
+        if (!started.compareAndSet(false, true)) return // atomic idempotency — never spawn two PTYs
         scope.launch {
             try {
                 val env = buildEnvironment()

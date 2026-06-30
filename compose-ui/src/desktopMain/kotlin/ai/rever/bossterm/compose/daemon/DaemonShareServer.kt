@@ -119,6 +119,8 @@ class DaemonShareServer(
         // flooded with sockets (each holds a slot + bloats every publishState()).
         const val MAX_PENDING_VIEWERS = 32
         const val MAX_PENDING_PER_IP = 4
+        /** Cap on the per-viewer prelude buffer (output racing a snapshot encode) — bounds heap. */
+        const val MAX_PRELUDE_CHARS = 1_000_000
     }
 
     /** A granted device key: which share, its role, and when it lapses (slid forward on each use). */
@@ -279,28 +281,36 @@ class DaemonShareServer(
     }
 
     fun setName(token: String, name: String) {
-        val def = sharesByToken[token]?.share ?: return
-        def.name = name.trim().ifBlank { defaultSessionName() }
-        // Re-broadcast the Layout so connected viewers pick up the new group label.
-        def.broadcast(layoutFor(def))
-        publishState()
+        // Under [mutex] like the other mutators, so a concurrent stopShare (sharesByToken/shares
+        // removal) can't have us broadcast against a half-removed share.
+        synchronized(mutex) {
+            val def = sharesByToken[token]?.share ?: return
+            def.name = name.trim().ifBlank { defaultSessionName() }
+            // Re-broadcast the Layout so connected viewers pick up the new group label.
+            def.broadcast(layoutFor(def))
+            publishState()
+        }
     }
 
     fun approveViewer(token: String, clientId: String, @Suppress("UNUSED_PARAMETER") control: Boolean) {
         // The admitted role is fixed by which link (view vs control token) the viewer connected with —
         // [DaemonPendingViewer.control] already captured that, and serveViewer reads ref.canControl on
         // approve. The [control] arg is advisory: the view link can't be upgraded to typing here.
-        val req = pending.firstOrNull { it.token == token && it.clientId == clientId } ?: return
-        req.decision.complete(true)
-        pending.remove(req)
-        publishState()
+        synchronized(mutex) {
+            val req = pending.firstOrNull { it.token == token && it.clientId == clientId } ?: return
+            req.decision.complete(true)
+            pending.remove(req)
+            publishState()
+        }
     }
 
     fun denyViewer(token: String, clientId: String) {
-        val req = pending.firstOrNull { it.token == token && it.clientId == clientId } ?: return
-        req.decision.complete(false)
-        pending.remove(req)
-        publishState()
+        synchronized(mutex) {
+            val req = pending.firstOrNull { it.token == token && it.clientId == clientId } ?: return
+            req.decision.complete(false)
+            pending.remove(req)
+            publishState()
+        }
     }
 
     /** Stop the Ktor server, all shares, and tunnels (daemon shutdown). Safe to call repeatedly. */
@@ -616,10 +626,18 @@ class DaemonShareServer(
             // PaneOutput (at worst a small duplicated region, never a gap).
             val preludeLock = Any()
             var prelude: ArrayList<String>? = ArrayList()
+            var preludeChars = 0
             val tap: (String) -> Unit = { d ->
                 val held = synchronized(preludeLock) {
                     val p = prelude
-                    if (p != null) { p.add(d); true } else false
+                    when {
+                        p == null -> false // snapshot already enqueued → send live
+                        // Cap the buffer (bounds heap if a session floods output during a slow
+                        // large-scrollback encode — the one path that bypasses outbox backpressure).
+                        // Past the cap, drop; a small gap heals on the next resync.
+                        preludeChars + d.length > MAX_PRELUDE_CHARS -> true
+                        else -> { p.add(d); preludeChars += d.length; true }
+                    }
                 }
                 if (!held) vc.outbox.sendOutput(ShareProtocol.encodeServer(ServerMessage.PaneOutput(core.id, d)))
             }

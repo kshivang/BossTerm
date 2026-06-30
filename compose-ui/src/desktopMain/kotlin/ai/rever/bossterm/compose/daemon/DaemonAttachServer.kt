@@ -166,10 +166,18 @@ class DaemonAttachServer(
             // small duplicated region instead of a gap.
             val preludeLock = Any()
             var prelude: ArrayList<String>? = ArrayList()
+            var preludeChars = 0
             val tap: (String) -> Unit = { d ->
                 val held = synchronized(preludeLock) {
                     val p = prelude
-                    if (p != null) { p.add(d); true } else false
+                    when {
+                        p == null -> false // snapshot already enqueued → send live
+                        // Cap the buffer: a session flooding output (e.g. `cat largefile`) during a
+                        // slow large-scrollback encode is the one path that bypasses FrameOutbox
+                        // backpressure. Past the cap, drop (a small gap heals on the next resync).
+                        preludeChars + d.length > MAX_PRELUDE_CHARS -> true
+                        else -> { p.add(d); preludeChars += d.length; true }
+                    }
                 }
                 if (!held) send(DaemonAttachProtocol.Server.Output(core.id, d))
             }
@@ -292,5 +300,9 @@ class DaemonAttachServer(
     private fun constantTimeEquals(a: String, b: String): Boolean =
         MessageDigest.isEqual(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))
 
-    private companion object { const val HOST = "127.0.0.1" }
+    private companion object {
+        const val HOST = "127.0.0.1"
+        /** Cap on the per-session prelude buffer (output racing a snapshot encode) — bounds heap. */
+        const val MAX_PRELUDE_CHARS = 1_000_000
+    }
 }

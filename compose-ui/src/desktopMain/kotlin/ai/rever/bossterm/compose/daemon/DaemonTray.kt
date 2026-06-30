@@ -94,6 +94,13 @@ object DaemonTray {
     }
 
     fun remove() {
+        // Marshal AWT mutation onto the EDT (install() does the same). remove() is called from the
+        // daemon's stop-latch / shutdown-hook thread, and SystemTray.remove / Frame.dispose off the
+        // EDT can intermittently hang or throw on shutdown, orphaning the tray icon.
+        if (!SwingUtilities.isEventDispatchThread()) {
+            runCatching { SwingUtilities.invokeAndWait { remove() } }
+            return
+        }
         trayIcon?.let { runCatching { SystemTray.getSystemTray().remove(it) } }
         trayIcon = null
         anchor?.let { runCatching { it.dispose() } }

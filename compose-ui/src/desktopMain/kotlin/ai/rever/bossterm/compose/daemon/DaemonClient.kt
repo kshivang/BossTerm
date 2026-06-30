@@ -74,7 +74,9 @@ class DaemonClient {
      */
     private fun isCompatibleLiveDaemon(ep: DaemonControlChannel.Companion.Endpoint): Boolean {
         val hello = rawRequest(ep, "${ep.secret} ${DaemonProtocol.HELLO}") ?: return false
-        // "OK <version> <proto> <pid>"
+        // "OK <version> <proto> <pid>". Guard the prefix so an "ERR …" reply isn't parsed as a
+        // (coincidental) proto via the no-op removePrefix.
+        if (!hello.startsWith("OK ")) return false
         val parts = hello.removePrefix("OK ").trim().split(' ')
         val proto = parts.getOrNull(1)?.toIntOrNull() ?: return false
         return proto == DaemonControlChannel.PROTOCOL_VERSION
@@ -99,11 +101,19 @@ class DaemonClient {
                 // We own the spawn. A daemon may have appeared between our probe and the lock.
                 probeExisting()?.let { return it }
                 log.info("Spawning daemon…")
-                DaemonLauncher.spawn() ?: run {
+                val proc = DaemonLauncher.spawn() ?: run {
                     log.error("Daemon spawn failed")
                     return null
                 }
-                return awaitLiveDaemon()
+                val ep = awaitLiveDaemon()
+                if (ep == null) {
+                    // Spawned but never became reachable in time — terminate it rather than leave an
+                    // orphan that could bind a moment later while we've already fallen back to
+                    // in-process MCP (two daemons / a stale port file).
+                    log.warn("Spawned daemon (pid={}) did not become reachable; terminating it", proc.pid())
+                    runCatching { proc.destroy() }
+                }
+                return ep
             } else {
                 // Another GUI is spawning; just wait for it to come up.
                 log.info("Another process is spawning the daemon; waiting")

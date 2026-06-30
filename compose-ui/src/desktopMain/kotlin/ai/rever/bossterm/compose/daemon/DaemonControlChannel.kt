@@ -161,14 +161,21 @@ class DaemonControlChannel(
      */
     private fun readLineBounded(reader: java.io.Reader, max: Int): String? {
         val sb = StringBuilder()
+        var consumed = 0
         while (true) {
             val c = reader.read()
             if (c == -1) return if (sb.isEmpty()) null else sb.toString()
+            // Bound TOTAL chars consumed — including the ignored '\r' — not just appended content.
+            // Otherwise a peer streaming endless '\r' (which we tolerate but never append) never trips
+            // the cap and pins the worker thread forever (soTimeout only bounds IDLE reads, not a steady
+            // byte stream); 16 such connections wedge the bounded pool. +1 headroom lets a full-length
+            // line's terminating '\n' still complete it.
+            if (++consumed > max + 1) return null // over cap → shed the connection
             val ch = c.toChar()
             when {
                 ch == '\n' -> return sb.toString()
-                ch == '\r' -> {} // tolerate CRLF
-                sb.length >= max -> return null // over cap with no newline → shed the connection
+                ch == '\r' -> {} // tolerate CRLF (counted above)
+                sb.length >= max -> return null // content over cap with no newline → shed
                 else -> sb.append(ch)
             }
         }

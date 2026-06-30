@@ -1,6 +1,8 @@
 package ai.rever.bossterm.compose.tabs
 
 import ai.rever.bossterm.compose.features.ContextMenuController
+import ai.rever.bossterm.compose.settings.theme.ThemeManager
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -401,16 +403,24 @@ fun TabBar(
         }
     }
 
+    // Tab-bar chrome follows the active terminal theme, so the left panel
+    // re-styles live when the theme/palette is switched (collectAsState recomposes).
+    val tabBarTheme by ThemeManager.instance.currentTheme.collectAsState()
+    val barBg = tabBarTheme.backgroundColorValue
+    val barFg = tabBarTheme.foregroundColor
+    val barMuted = barFg.copy(alpha = 0.62f)
+    val barDivider = barFg.copy(alpha = 0.10f)
+
     val newTabButton: @Composable () -> Unit = {
         IconButton(onClick = onNewTab, modifier = Modifier.size(36.dp)) {
-            Icon(imageVector = Icons.Default.Add, contentDescription = "New Tab", tint = Color.White)
+            Icon(imageVector = Icons.Default.Add, contentDescription = "New Tab", tint = barFg)
         }
     }
 
     // A single compact action button for the left bar's top toolbar.
     val barButton: @Composable (ImageVector, String, () -> Unit) -> Unit = { icon, desc, onClick ->
         IconButton(onClick = onClick, modifier = Modifier.size(30.dp)) {
-            Icon(imageVector = icon, contentDescription = desc, tint = Color(0xFFB0B0B0), modifier = Modifier.size(16.dp))
+            Icon(imageVector = icon, contentDescription = desc, tint = barMuted, modifier = Modifier.size(16.dp))
         }
     }
 
@@ -463,7 +473,7 @@ fun TabBar(
             if (vertical) Modifier.fillMaxHeight().width(verticalWidth)
             else Modifier.fillMaxWidth().height(TabBarHeight)
         ),
-        color = Color(0xFF1E1E1E),
+        color = barBg,
         shadowElevation = 2.dp
     ) {
         if (vertical) {
@@ -471,7 +481,7 @@ fun TabBar(
                 // Action toolbar pinned at the top, then a divider…
                 actionBar()
                 Spacer(Modifier.height(6.dp))
-                Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF333333)))
+                Box(Modifier.fillMaxWidth().height(1.dp).background(barDivider))
                 Spacer(Modifier.height(8.dp))
                 // …with scrollable tab/pane chips filling the rest.
                 Column(
@@ -727,7 +737,7 @@ fun TabBar(
                 }
                 // Bottom bar — connect to another BossTerm's shared session.
                 Spacer(Modifier.height(8.dp))
-                Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF333333)))
+                Box(Modifier.fillMaxWidth().height(1.dp).background(barDivider))
                 Spacer(Modifier.height(6.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
@@ -794,6 +804,14 @@ private fun TabItem(
     modifier: Modifier = Modifier
 ) {
     val accent = parseTabColor(colorHex)
+    // Chip colors follow the active terminal theme (re-style live on theme switch).
+    val itemTheme by ThemeManager.instance.currentTheme.collectAsState()
+    val itemBg = itemTheme.backgroundColorValue
+    val itemFg = itemTheme.foregroundColor
+    val itemRaised = lerp(itemBg, itemFg, 0.12f)   // active chip surface
+    val itemAccent = itemTheme.cursorColor          // active chip border
+    val itemMuted = itemFg.copy(alpha = 0.62f)      // inactive text
+    val itemSubtle = itemFg.copy(alpha = 0.20f)     // inactive border
     Surface(
         modifier = modifier
             .then(if (multiLine) Modifier.heightIn(min = 36.dp) else Modifier.height(36.dp))
@@ -810,13 +828,13 @@ private fun TabItem(
                     }
             ),
         shape = RoundedCornerShape(6.dp),
-        color = if (isActive) Color(0xFF2B2B2B) else Color(0xFF1E1E1E),
+        color = if (isActive) itemRaised else itemBg,
         border = androidx.compose.foundation.BorderStroke(
             1.dp,
             when {
                 isActive && accent != null -> accent
-                isActive -> Color(0xFF4A90E2)
-                else -> Color(0xFF404040)
+                isActive -> itemAccent
+                else -> itemSubtle
             }
         )
     ) {
@@ -835,7 +853,7 @@ private fun TabItem(
                 // Tab title - use Monospace font (Menlo on macOS) for monochrome symbols
                 Text(
                     text = title,
-                    color = if (isActive) Color.White else Color(0xFFB0B0B0),
+                    color = if (isActive) itemFg else itemMuted,
                     fontSize = 13.sp,
                     fontFamily = FontFamily.Monospace,  // Menlo has monochrome Dingbats (✳, ❯, etc.)
                     maxLines = 1,
@@ -851,7 +869,7 @@ private fun TabItem(
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Close Tab",
-                        tint = if (isActive) Color(0xFFB0B0B0) else Color(0xFF707070),
+                        tint = if (isActive) itemMuted else itemSubtle,
                         modifier = Modifier.size(14.dp)
                     )
                 }

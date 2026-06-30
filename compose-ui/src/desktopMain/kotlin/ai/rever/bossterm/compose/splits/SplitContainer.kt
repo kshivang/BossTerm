@@ -299,9 +299,9 @@ private fun RenderPane(
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 ) {
-    // Focus border for active pane (only show when there are multiple panes and enabled)
-    val borderModifier = if (!splitState.isSinglePane && splitFocusBorderEnabled) {
-        if (isFocusedPane) {
+    // Focus border for active pane; single-pane tabs always get the plain unfocused border
+    val borderModifier = if (splitFocusBorderEnabled) {
+        if (isFocusedPane && !splitState.isSinglePane) {
             Modifier.border(2.dp, splitFocusBorderColor)
         } else {
             Modifier.border(1.dp, Color(0xFF404040))

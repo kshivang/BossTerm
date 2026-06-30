@@ -98,7 +98,7 @@ object DaemonBridgeCoordinator {
                 val a = attach
                 if (ctrl != null && a != null) {
                     if (bridge == null) {
-                        bridge = DaemonSessionBridge(ctrl, a.port, a.secret, uiScope).also { it.start() }
+                        bridge = DaemonSessionBridge(ctrl, state.splitStates, a.port, a.secret, uiScope).also { it.start() }
                         log.info("Daemon session bridge attached (attachPort={})", a.port)
                     }
                     return@launch
@@ -135,6 +135,15 @@ object DaemonBridgeCoordinator {
      * the request silently.
      */
     fun openSession(cwd: String? = null): Boolean = bridge?.openSession(cwd) ?: false
+
+    /** Ask the daemon to split [sessionId] (a daemon-hosted pane) — the GUI's "split pane" when in
+     *  daemon mode. Fire-and-forget like [openSession]; the new pane arrives via the next
+     *  GroupList, no optimistic local splice. */
+    fun splitPane(sessionId: String, orientation: String, cwd: String? = null): Boolean =
+        bridge?.splitPane(sessionId, orientation, cwd) ?: false
+
+    /** Ask the daemon to close one pane (session) — does not affect siblings. Fire-and-forget. */
+    fun closePane(sessionId: String): Boolean = bridge?.closePane(sessionId) ?: false
 
     val isAttached: Boolean get() = bridge != null
 }

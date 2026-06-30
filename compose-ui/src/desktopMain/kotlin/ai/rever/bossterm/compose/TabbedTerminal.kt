@@ -1010,6 +1010,21 @@ fun TabbedTerminal(
     fun splitActiveTab(orientation: SplitOrientation) {
         val activeTab = tabController.activeTab ?: return
         val splitState = getOrCreateSplitState(activeTab)
+        // Daemon-mirrored pane: route the split through the daemon instead of spawning a local
+        // PTY. Fire-and-forget — no optimistic local splice, the real pane arrives via the next
+        // GroupList (mirrors today's async requestNewTab contract). A plain local pane is
+        // completely unaffected and keeps today's behavior below.
+        val focusedSession = splitState.getFocusedSession()
+        if (daemonMode && ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached && focusedSession?.isRemote == true) {
+            val parentId = (focusedSession as? TerminalTab)?.remotePaneId ?: return
+            val cwd = if (settings.splitInheritWorkingDirectory) focusedSession.workingDirectory.value else null
+            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.splitPane(
+                parentId,
+                if (orientation == SplitOrientation.HORIZONTAL) "h" else "v",
+                cwd,
+            )
+            return
+        }
         val workingDir = if (settings.splitInheritWorkingDirectory) {
             val s = splitState.getFocusedSession()
             s?.workingDirectory?.value ?: s?.processHandle?.value?.getWorkingDirectory()
@@ -1471,8 +1486,25 @@ fun TabbedTerminal(
                 }
             }
 
+            // Daemon-mirrored pane: route split/close through the daemon instead of touching the
+            // local PTY/tree directly — same rule as splitActiveTab() above. Returns the daemon
+            // session id of the focused pane, or null if this pane isn't (or can't be) daemon-routed.
+            fun focusedDaemonPaneId(): String? {
+                if (!daemonMode || !ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached) return null
+                val session = splitState.getFocusedSession()
+                if (session?.isRemote != true) return null
+                return (session as? TerminalTab)?.remotePaneId
+            }
+
             // Split operation handlers
             val onSplitHorizontal: () -> Unit = {
+                val daemonParentId = focusedDaemonPaneId()
+                if (daemonParentId != null) {
+                    // Fire-and-forget — no optimistic local splice, the real pane arrives via the
+                    // next GroupList (mirrors today's async requestNewTab contract).
+                    val cwd = if (settings.splitInheritWorkingDirectory) splitState.getFocusedSession()?.workingDirectory?.value else null
+                    ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.splitPane(daemonParentId, "h", cwd)
+                } else {
                 // Only inherit working directory if setting is enabled
                 val workingDir = if (settings.splitInheritWorkingDirectory) {
                     val session = splitState.getFocusedSession()
@@ -1503,9 +1535,15 @@ fun TabbedTerminal(
                 )
                 newSessionRef = newSession
                 splitState.splitFocusedPane(SplitOrientation.HORIZONTAL, newSession, settings.splitDefaultRatio)
+                }
             }
 
             val onSplitVertical: () -> Unit = {
+                val daemonParentId = focusedDaemonPaneId()
+                if (daemonParentId != null) {
+                    val cwd = if (settings.splitInheritWorkingDirectory) splitState.getFocusedSession()?.workingDirectory?.value else null
+                    ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.splitPane(daemonParentId, "v", cwd)
+                } else {
                 // Only inherit working directory if setting is enabled
                 val workingDir = if (settings.splitInheritWorkingDirectory) {
                     val session = splitState.getFocusedSession()
@@ -1536,11 +1574,20 @@ fun TabbedTerminal(
                 )
                 newSessionRef = newSession
                 splitState.splitFocusedPane(SplitOrientation.VERTICAL, newSession, settings.splitDefaultRatio)
+                }
             }
 
             val onClosePane: () -> Unit = {
-                if (splitState.isSinglePane) {
-                    // Last pane - close the tab
+                val daemonPaneId = focusedDaemonPaneId()
+                if (daemonPaneId != null && !splitState.isSinglePane) {
+                    // Optimistic local removal — matches today's instant local pane-close UX; the
+                    // next GroupList self-heals any divergence (e.g. resurrects the pane if the
+                    // daemon-side close silently failed).
+                    ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.closePane(daemonPaneId)
+                    splitState.closeFocusedPane()
+                } else if (splitState.isSinglePane) {
+                    // Last pane - close the tab (a daemon-backed single pane's session teardown
+                    // follows asynchronously, same as closing any other daemon tab today).
                     tabController.closeTab(tabController.activeTabIndex)
                 } else {
                     // Close just this pane
@@ -1591,6 +1638,14 @@ fun TabbedTerminal(
                     tabController.closeTab(currentIndex)
                 },
                 onCloseTab = {
+                    // Closing a daemon-backed tab's chip: tell the daemon to close every leaf
+                    // (1-pane or a whole split group) so its session(s) don't linger server-side.
+                    // Local removal proceeds immediately either way — same "local now, daemon
+                    // catches up async" pattern an ordinary daemon tab close already uses.
+                    splitState.getAllSessions().filterIsInstance<TerminalTab>()
+                        .filter { it.isRemote }
+                        .mapNotNull { it.remotePaneId }
+                        .forEach { ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.closePane(it) }
                     tabController.closeTab(tabController.activeTabIndex)
                 },
                 onNextTab = {

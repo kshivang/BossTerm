@@ -12,9 +12,11 @@ import org.slf4j.LoggerFactory
  * after [DaemonClient] connects) and attaches a single window's [TabbedTerminalState] to it through
  * a [DaemonSessionBridge], so daemon-hosted sessions render as tabs in that window.
  *
- * Process-wide singleton (one daemon per settings dir). v1 attaches the FIRST window only; its
+ * Process-wide singleton (one daemon per settings dir). v1 attaches ONE window at a time; its
  * controller readiness and the daemon connection can arrive in either order, so [register] polls
- * briefly for both before starting the bridge. Entirely inert unless `daemonEnabled`.
+ * briefly for both before starting the bridge. When the attached window closes, the bridge fails
+ * over to another still-open window (if any) so daemon sessions keep rendering. Entirely inert
+ * unless `daemonEnabled`.
  */
 object DaemonBridgeCoordinator {
     private val log = LoggerFactory.getLogger(DaemonBridgeCoordinator::class.java)
@@ -24,6 +26,11 @@ object DaemonBridgeCoordinator {
     @Volatile private var attach: Attach? = null
     @Volatile private var activeState: TabbedTerminalState? = null
     @Volatile private var bridge: DaemonSessionBridge? = null
+
+    // Every open window that has registered, in registration order — so when the attached window
+    // closes we can fail the bridge over to a survivor instead of stranding it tab-less. Guarded by
+    // its own monitor (register/unregister run on the UI thread, but be explicit).
+    private val registered = LinkedHashMap<TabbedTerminalState, CoroutineScope>()
 
     // Process-wide one-shot guard for "auto-open a session when attaching to an empty daemon".
     // Must live here, NOT on the bridge: a bridge can be recreated (window re-attach), and a
@@ -57,10 +64,18 @@ object DaemonBridgeCoordinator {
 
     /**
      * Attach [state]'s window to the daemon once both the daemon endpoint and the window's
-     * controller are ready. v1: only the first window is attached. Safe to call from composition.
+     * controller are ready. v1 attaches one window at a time; additional windows are recorded so a
+     * survivor can take over if the attached one closes. Safe to call from composition.
      */
     fun register(state: TabbedTerminalState, uiScope: CoroutineScope) {
-        if (activeState != null) return
+        synchronized(registered) {
+            registered[state] = uiScope
+            if (activeState == null) promote(state, uiScope)
+        }
+    }
+
+    /** Make [state] the attached window and start its bridge once endpoint + controller are ready. */
+    private fun promote(state: TabbedTerminalState, uiScope: CoroutineScope) {
         activeState = state
         uiScope.launch {
             // Either ordering: the controller initializes during composition, the daemon connects
@@ -79,16 +94,26 @@ object DaemonBridgeCoordinator {
                 delay(250)
                 tries++
             }
-            if (bridge == null) log.warn("Daemon bridge not started (controller/endpoint not ready in time)")
+            if (bridge == null && activeState === state) {
+                log.warn("Daemon bridge not started (controller/endpoint not ready in time)")
+            }
         }
     }
 
-    /** Detach when the attached window closes. */
+    /** Detach when a window closes; if it was the attached one, fail over to another open window. */
     fun unregister(state: TabbedTerminalState) {
-        if (activeState !== state) return
-        bridge?.stop()
-        bridge = null
-        activeState = null
+        synchronized(registered) {
+            registered.remove(state)
+            if (activeState !== state) return
+            bridge?.stop()
+            bridge = null
+            activeState = null
+            // Hand the bridge to any still-open window so daemon sessions keep rendering.
+            registered.entries.firstOrNull()?.let { (next, scope) ->
+                log.info("Attached window closed; failing daemon bridge over to another open window")
+                promote(next, scope)
+            }
+        }
     }
 
     /** Open a new daemon-hosted session (the GUI's "new tab" when in daemon mode). No-op if unattached. */

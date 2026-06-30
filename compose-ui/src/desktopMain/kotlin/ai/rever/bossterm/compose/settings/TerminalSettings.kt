@@ -906,13 +906,13 @@ data class TerminalSettings(
 
     /**
      * Master switch for the BossTerm session daemon — a long-lived background process that owns
-     * terminal sessions, the MCP server, and (later) session sharing, so they survive the GUI
-     * closing. Defaults to false for opt-in safety: when off, BossTerm behaves exactly as before
-     * (in-process MCP/sharing, sessions die with the window). When on, the GUI spawns/connects the
-     * daemon and hosts MCP there instead. The daemon is started on-demand by the GUI; see also
-     * [startDaemonAtLogin] for an always-on service.
+     * terminal sessions, the MCP server, and session sharing, so they survive the GUI closing.
+     * Defaults to true: the GUI spawns/connects the daemon and hosts MCP there, and sessions outlive
+     * the window. Set to false to fall back to the pre-daemon behavior (in-process MCP/sharing,
+     * sessions die with the window) — that path is preserved byte-for-byte. The daemon is started
+     * on-demand by the GUI; see also [startDaemonAtLogin] for an always-on at-login service.
      */
-    val daemonEnabled: Boolean = false,
+    val daemonEnabled: Boolean = true,
 
     /**
      * Install a per-OS login service (macOS LaunchAgent / Linux systemd user unit / Windows Run

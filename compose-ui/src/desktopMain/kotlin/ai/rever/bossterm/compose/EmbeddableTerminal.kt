@@ -51,6 +51,7 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
 import ai.rever.bossterm.compose.util.loadTerminalFont
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.ime.IMEState
+import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.settings.SettingsLoader
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
@@ -926,6 +927,10 @@ private suspend fun initializeProcess(
             put("TERM", "xterm-256color")
             put("COLORTERM", "truecolor")
             put("TERM_PROGRAM", "BossTerm")
+            // Identify the local Boss/BossTerm MCP server so in-shell programs
+            // (e.g. Claude Code) pick the matching `mcp__<name>__*` toolset. An
+            // explicit override in `environment` still wins (applied last).
+            put("BOSS_MCP_SERVER", McpTerminalRegistry.mcpServerName)
             // Set PWD to match actual working directory (required for Starship and other prompts)
             put("PWD", effectiveWorkingDir)
             environment?.let { putAll(it) }

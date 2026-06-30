@@ -21,6 +21,7 @@ import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.getPlatformServices
+import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.ime.IMEState
 import ai.rever.bossterm.compose.osc.WorkingDirectoryOSCListener
@@ -1191,6 +1192,13 @@ class TabController(
                 put("COLORTERM", "truecolor")
                 put("TERM_PROGRAM", "BossTerm")
                 put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
+                // Tells programs in the shell (e.g. Claude Code) which Boss/BossTerm
+                // MCP server is local to THIS host, so they pick the matching
+                // `mcp__<name>__*` toolset instead of a sibling app's. "boss" in
+                // BossConsole, "bossterm" standalone — derived from the embedder's
+                // BossTermMcpConfig.serverName. An explicit override in
+                // config.environment still wins (it is applied last).
+                put("BOSS_MCP_SERVER", McpTerminalRegistry.mcpServerName)
                 // Set PWD to match actual working directory (required for Starship and other prompts)
                 put("PWD", config.workingDir ?: System.getProperty("user.home"))
                 putAll(config.environment)
@@ -1361,6 +1369,11 @@ class TabController(
                     put("COLORTERM", "truecolor")
                     put("TERM_PROGRAM", "BossTerm")
                     put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
+                    // Identify the local Boss/BossTerm MCP server so in-shell
+                    // programs (e.g. Claude Code) pick the matching `mcp__<name>__*`
+                    // toolset. (This pre-connect path takes no caller-supplied
+                    // environment, so there is nothing to override here.)
+                    put("BOSS_MCP_SERVER", McpTerminalRegistry.mcpServerName)
                     // Set PWD to match actual working directory (required for Starship and other prompts)
                     put("PWD", workingDir ?: System.getProperty("user.home"))
                 }.toMutableMap()

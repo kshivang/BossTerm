@@ -54,7 +54,17 @@ typealias ServerToolRegistrar = (Server) -> Unit
  * ```
  */
 data class BossTermMcpConfig(
-    /** Reported as `Implementation.name`. MCP clients see this string. */
+    /**
+     * Reported as `Implementation.name`. MCP clients see this string.
+     *
+     * Also published to [McpTerminalRegistry.mcpServerName] when a
+     * [BossTermMcpManager] is constructed, and read by the terminal layer
+     * (`TabController` / `EmbeddableTerminal`) at PTY-spawn to set the shell's
+     * `BOSS_MCP_SERVER` env var — the signal in-shell agents use to pick this
+     * host's `mcp__<name>__*` toolset. Construct your manager before creating
+     * terminals so embedders get their own name instead of the `"bossterm"`
+     * default.
+     */
     val serverName: String = "bossterm",
     /**
      * Friendly label for the in-app MCP status pill / menus (e.g. "Boss",

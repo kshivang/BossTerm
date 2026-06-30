@@ -109,7 +109,16 @@ class DaemonShareServer(
     private val shares = CopyOnWriteArrayList<ShareDef>()
     private val mutex = Any() // guards engine start/stop + the shares list (start/stop are infrequent)
 
-    private companion object {
+    internal companion object {
+        /**
+         * Whether a mutating viewer verb targeting session [targetId] is in scope for a share of
+         * [scope]/[defSessionId]. SESSION shares write-isolate to their own session (an approved
+         * controller must not type into / resize / close another session by id); ALL covers everything.
+         * Extracted + internal so [handleClient]'s scope gate is unit-testable.
+         */
+        fun mutationInScope(scope: String, defSessionId: String?, targetId: String): Boolean =
+            scope == DaemonAttachProtocol.ShareScopeKind.ALL || targetId == defSessionId
+
         const val MAX_PORT_FALLBACK = 10
         const val GRANT_TTL_MS = 24L * 60 * 60 * 1000
         // A Cloudflare quick tunnel serves an error page until cloudflared registers an edge
@@ -780,12 +789,20 @@ class DaemonShareServer(
      */
     private fun handleClient(def: ShareDef, vc: DaemonShareConnection, msg: ClientMessage) {
         if (!vc.canControl) return // every mutating action requires the control role
+        // A SESSION-scoped share must WRITE-isolate to its one session, not just render-isolate it. The
+        // read/layout path (inScopeCores/layoutFor) is already scoped, but without this an approved
+        // controller on a "This session" link could send Input/Resize/Close for ANOTHER session's id
+        // (ids leak via MCP LIST_SESSIONS / attach layouts) or NewTab a brand-new shell — escaping the
+        // share. Gate every mutating verb on scope; ALL covers every session, SESSION only its own.
+        val isAll = def.scope == DaemonAttachProtocol.ShareScopeKind.ALL
+        fun inScope(id: String): Boolean = mutationInScope(def.scope, def.sessionId, id)
         when (msg) {
-            is ClientMessage.Input -> host.get(msg.paneId)?.writeInput(msg.data)
-            is ClientMessage.ResizeHost -> host.get(msg.tabId)?.resize(msg.cols, msg.rows)
-            is ClientMessage.NewTab -> host.openSession()
-            is ClientMessage.CloseTab -> host.closeSession(msg.tabId)
-            is ClientMessage.ClosePane -> host.closeSession(msg.paneId)
+            is ClientMessage.Input -> if (inScope(msg.paneId)) host.get(msg.paneId)?.writeInput(msg.data)
+            is ClientMessage.ResizeHost -> if (inScope(msg.tabId)) host.get(msg.tabId)?.resize(msg.cols, msg.rows)
+            // NewTab carries no id, so it can't be scoped — opening a fresh shell escapes a SESSION share.
+            is ClientMessage.NewTab -> if (isAll) host.openSession()
+            is ClientMessage.CloseTab -> if (inScope(msg.tabId)) host.closeSession(msg.tabId)
+            is ClientMessage.ClosePane -> if (inScope(msg.paneId)) host.closeSession(msg.paneId)
             // SplitVertical/SplitHorizontal/LaunchAI/RenameTab/SetTabColor/DuplicateTab/CloseOtherTabs/
             // CloseTabsBelow/ResizeSplit/CloseWindow/DisconnectUpstream/OfferShare/SetMcpEnabled/
             // AttachMcp/Focus/RequestControl/Hello → no-op (daemon sessions are single-pane PTYs).

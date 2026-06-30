@@ -169,6 +169,9 @@ class DaemonAttachServer(
                 DaemonAttachProtocol.SessionMeta(info.id, info.title, info.cwd, sz?.columns ?: 80, sz?.rows ?: 24)
             })
 
+        fun groupList(): DaemonAttachProtocol.Server.GroupList =
+            DaemonAttachProtocol.Server.GroupList(host.listGroups().map { GroupView(it.groupId, it.tree) })
+
         // Attach output tap + size collector + send the initial snapshot. Caller holds [lock].
         fun beginLocked(core: TerminalSessionCore) {
             if (attachments.containsKey(core.id)) return
@@ -253,6 +256,7 @@ class DaemonAttachServer(
             synchronized(lock) {
                 if (closed) return // connection torn down — don't re-attach taps/jobs after endLocked
                 send(sessionList())
+                send(groupList())
                 val liveIds = host.list().map { it.id }.toSet()
                 (attachments.keys - liveIds).toList().forEach { id ->
                     endLocked(id)
@@ -294,8 +298,21 @@ class DaemonAttachServer(
                 when (msg) {
                     is DaemonAttachProtocol.Client.Input -> host.get(msg.id)?.writeInput(msg.data)
                     is DaemonAttachProtocol.Client.Resize -> host.get(msg.id)?.resize(msg.cols, msg.rows)
-                    is DaemonAttachProtocol.Client.Open -> host.openSession(cwd = msg.cwd, cols = msg.cols, rows = msg.rows)
+                    // openWindow() additionally registers a fresh single-pane group — every
+                    // GUI-attach session is grouped, even alone, so reconcile logic never needs a
+                    // grouped-vs-flat distinction. Return value (sessionId, groupId) was already
+                    // discarded for openSession() too; the GUI learns the result via SessionList/
+                    // GroupList, not a reply.
+                    is DaemonAttachProtocol.Client.Open -> host.openWindow(cwd = msg.cwd, cols = msg.cols, rows = msg.rows)
                     is DaemonAttachProtocol.Client.Close -> host.closeSession(msg.id)
+                    is DaemonAttachProtocol.Client.SplitPane -> host.splitPane(
+                        sessionId = msg.sessionId,
+                        orientation = if (msg.orientation == "h") SplitOrientation.HORIZONTAL else SplitOrientation.VERTICAL,
+                        cwd = msg.cwd,
+                        ratio = msg.ratio,
+                    )
+                    is DaemonAttachProtocol.Client.ClosePane -> host.closeGroupedSession(msg.sessionId)
+                    is DaemonAttachProtocol.Client.UpdateSplitRatio -> host.updateSplitRatio(msg.groupId, msg.splitId, msg.ratio)
                     // Phase 2 share management — delegate to the daemon's public-share server (no-op
                     // if sharing is disabled). startShare is non-blocking; results arrive via ShareState.
                     is DaemonAttachProtocol.Client.StartShare -> shareServer?.startShare(msg.scope, msg.sessionId, msg.remoteMode)

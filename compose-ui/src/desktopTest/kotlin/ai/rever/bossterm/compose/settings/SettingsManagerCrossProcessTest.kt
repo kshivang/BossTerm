@@ -17,11 +17,13 @@ import kotlin.test.assertTrue
  */
 class SettingsManagerCrossProcessTest {
 
+    private val parseJson = Json { ignoreUnknownKeys = true }
+
     private fun tempSettingsPath(): String =
         File(Files.createTempDirectory("bossterm-settings").toFile(), "settings.json").absolutePath
 
     private fun readFromDisk(path: String): TerminalSettings =
-        Json { ignoreUnknownKeys = true }.decodeFromString(File(path).readText())
+        parseJson.decodeFromString(File(path).readText())
 
     @Test
     fun `single-field update merges onto disk and does not revert another instance's field`() {
@@ -63,12 +65,17 @@ class SettingsManagerCrossProcessTest {
         val readerError = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
         val stop = java.util.concurrent.atomic.AtomicBoolean(false)
 
-        // A reader continuously parses the published file; with the unique-temp + atomic rename it must
-        // ALWAYS see a whole, parseable file (never a half-written / interleaved one).
+        // A reader continuously validates the published file. The property under test is "never a TORN
+        // (half-written/interleaved) file", which the unique-temp + atomic rename guarantees. Distinguish
+        // that from a transient ACCESS failure: on Windows the target is briefly unopenable while another
+        // writer renames over it (sharing violation) — that's expected and readers just retry. So only
+        // content that is read WHOLE but fails to PARSE proves a torn write.
         val reader = thread {
             while (!stop.get() && readerError.get() == null) {
-                runCatching { if (File(path).exists()) readFromDisk(path) }
-                    .onFailure { readerError.set(it) }
+                val text = runCatching { File(path).takeIf { it.exists() }?.readText() }.getOrNull()
+                if (text.isNullOrEmpty()) continue // absent / transiently locked / empty — retry, not torn
+                runCatching { parseJson.decodeFromString<TerminalSettings>(text) }
+                    .onFailure { readerError.set(AssertionError("torn settings file: '${text.take(80)}'", it)) }
             }
         }
         val writers = (0 until 6).map { w ->

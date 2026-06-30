@@ -508,6 +508,8 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           BOSSTERM_UPDATE_BUCKET: ${{ vars.BOSSTERM_UPDATE_BUCKET }}
           VERSION: ${{ needs.prepare-version.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
@@ -519,6 +521,11 @@ jobs:
           fi
           export SUPABASE_URL="${SUPABASE_URL:-https://api.risaboss.com}"
           BUCKET="${BOSSTERM_UPDATE_BUCKET:-app-releases}"
+
+          # Capture the just-created GitHub release body so app_releases.release_notes
+          # isn't blank (release.yml builds the body inline, not into a file).
+          gh release view "v$VERSION" --repo "$REPO" --json body --jq .body \
+            > release-assets/release-body.txt 2>/dev/null || true
 
           echo "📤 Publishing BossTerm $VERSION to Supabase bucket '$BUCKET'"
           # release.yml publishes stable releases (prerelease: false).

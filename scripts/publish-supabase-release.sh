@@ -101,7 +101,7 @@ if [[ "$uploaded" -eq 0 ]]; then
   exit 1
 fi
 
-# Optional release notes from a file if present (sync-release.yml writes release-body.txt).
+# Optional release notes from a file if present (the release workflow writes release-body.txt).
 notes=""
 if [[ -f "$ASSET_DIR/release-body.txt" ]]; then
   notes="$(cat "$ASSET_DIR/release-body.txt")"

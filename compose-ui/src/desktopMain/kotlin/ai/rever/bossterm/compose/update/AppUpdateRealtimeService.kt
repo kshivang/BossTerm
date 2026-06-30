@@ -15,6 +15,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Pushes BossTerm release notifications via Supabase Realtime so the app learns
@@ -32,8 +33,9 @@ class AppUpdateRealtimeService(
 ) {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
-    private var client: SupabaseClient? = null
-    private var channel: RealtimeChannel? = null
+    // Touched from start()/stop() and the subscribe + triggerCheck coroutines.
+    @Volatile private var client: SupabaseClient? = null
+    @Volatile private var channel: RealtimeChannel? = null
 
     /**
      * Invoked when a release row for [appId] changes, and once on every successful
@@ -60,8 +62,8 @@ class AppUpdateRealtimeService(
             println("[update] starting realtime push: $fullUrl")
             client = createSupabaseClient(supabaseUrl = fullUrl, supabaseKey = anonKey) {
                 install(Realtime) {
-                    heartbeatInterval = kotlin.time.Duration.parse("30s")
-                    reconnectDelay = kotlin.time.Duration.parse("7s")
+                    heartbeatInterval = 30.seconds
+                    reconnectDelay = 7.seconds
                 }
             }
             subscribe()
@@ -79,12 +81,13 @@ class AppUpdateRealtimeService(
                 try {
                     val c = client ?: return@launch
 
-                    channel = c.channel("app-releases-changes")
-                    val changeFlow = channel!!.postgresChangeFlow<PostgresAction>(schema = "public") {
+                    val ch = c.channel("app-releases-changes")
+                    channel = ch
+                    val changeFlow = ch.postgresChangeFlow<PostgresAction>(schema = "public") {
                         table = "app_releases"
                     }
 
-                    channel!!.subscribe()
+                    ch.subscribe()
                     backoffMs = 5_000L
                     println("[update] subscribed to app_releases changes")
 
@@ -98,15 +101,19 @@ class AppUpdateRealtimeService(
                             else -> {}
                         }
                     }
+                    println("[update] app_releases subscription closed; will resubscribe")
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    println("[update] app_releases subscription lost, reconnecting in ${backoffMs}ms: ${e.message}")
-                    try { channel?.unsubscribe() } catch (_: Exception) {}
-                    channel = null
-                    delay(backoffMs)
-                    backoffMs = (backoffMs * 2).coerceAtMost(maxBackoffMs)
+                    println("[update] app_releases subscription lost: ${e.message}")
                 }
+                // Normal close OR error: unsubscribe the old channel (don't leak it) and
+                // back off before reconnecting so a repeatedly-completing flow can't busy-spin.
+                try { channel?.unsubscribe() } catch (_: Exception) {}
+                channel = null
+                if (!isActive) break
+                delay(backoffMs)
+                backoffMs = (backoffMs * 2).coerceAtMost(maxBackoffMs)
             }
         }
     }

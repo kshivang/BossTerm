@@ -36,6 +36,9 @@ class DesktopUpdateService {
     /** Supabase primary, GitHub backup (overridable via BOSSTERM_UPDATE_PRIMARY_SOURCE). */
     private val source: UpdateSource = buildSource()
 
+    /** Dedicated GitHub source used only to recover a download if the primary URL fails. */
+    private val gitHubSource = GitHubUpdateSource()
+
     private fun buildSource(): UpdateSource {
         val src = when {
             UpdateSourceConfig.primarySource == "github" || !UpdateSourceConfig.supabaseEnabled -> GitHubUpdateSource()
@@ -160,30 +163,53 @@ class DesktopUpdateService {
     }
 
     /**
-     * Download an update.
+     * Download an update. Tries the source-provided URL (Supabase Storage when Supabase
+     * is primary); if that fails, recovers via the GitHub asset for the same version.
      */
     suspend fun downloadUpdate(
         updateInfo: UpdateInfo,
         onProgress: (progress: Float) -> Unit
     ): String? {
-        return try {
-            val downloadUrl = updateInfo.downloadUrl ?: return null
+        val primaryUrl = updateInfo.downloadUrl ?: return null
 
-            println("Starting download from: $downloadUrl")
+        downloadFrom(primaryUrl, updateInfo.assetName, updateInfo.assetSize, updateInfo.sha256, onProgress)
+            ?.let { return it }
+
+        // The fallback chain is metadata-only: once Supabase serves the catalog, the
+        // download URL is a Storage URL with no recovery. If that fails (e.g. the bucket
+        // isn't public/reachable) recover via the GitHub asset for the same version.
+        val gitHubUrl = gitHubAssetUrlFor(updateInfo.latestVersion)
+        if (gitHubUrl != null && gitHubUrl != primaryUrl) {
+            println("[update] primary download failed; falling back to GitHub asset")
+            return downloadFrom(gitHubUrl, updateInfo.assetName, updateInfo.assetSize, sha256 = null, onProgress)
+        }
+        return null
+    }
+
+    /** Download [url] to a temp file, verifying [sha256] when provided. Returns the path or null. */
+    private suspend fun downloadFrom(
+        url: String,
+        assetName: String,
+        assetSize: Long,
+        sha256: String?,
+        onProgress: (progress: Float) -> Unit
+    ): String? {
+        return try {
+            println("Starting download from: $url")
 
             val tempDir = File(System.getProperty("java.io.tmpdir"), "bossterm-updates")
             tempDir.mkdirs()
 
-            val downloadFile = File(tempDir, updateInfo.assetName)
+            val downloadFile = File(tempDir, assetName)
             if (downloadFile.exists()) {
                 downloadFile.delete()
             }
 
-            streamToFile(downloadUrl, updateInfo.assetSize, downloadFile, onProgress)
+            streamToFile(url, assetSize, downloadFile, onProgress)
 
             if (downloadFile.exists() && downloadFile.length() > 0) {
-                if (!verifyChecksum(downloadFile, updateInfo.sha256)) {
-                    println("❌ Checksum mismatch; discarding download: ${updateInfo.assetName}")
+                if (!verifyChecksum(downloadFile, sha256)) {
+                    println("❌ Checksum mismatch; discarding download: $assetName")
                     downloadFile.delete()
                     return null
                 }
@@ -198,7 +224,25 @@ class DesktopUpdateService {
         }
     }
 
-    /** Verify [file] against [expectedSha] (lowercase hex). No-op when null/blank. */
+    /** Resolve the GitHub Releases asset URL for [version] — the download-time backup. */
+    private suspend fun gitHubAssetUrlFor(version: Version): String? = try {
+        val expected = getExpectedAssetName(version)
+        gitHubSource.listReleases()
+            .firstOrNull { Version.parse(it.tag_name) == version }
+            ?.assets?.firstOrNull { it.name.equals(expected, ignoreCase = true) }
+            ?.browser_download_url
+    } catch (e: Exception) {
+        println("[update] could not resolve GitHub fallback asset: ${e.message}")
+        null
+    }
+
+    /**
+     * Verify [file] against [expectedSha] (lowercase hex). No-op when null/blank.
+     *
+     * Integrity check, not authenticity: the hash and the download URL come from the
+     * same app_releases row, so this catches Storage/CDN corruption, not a compromised
+     * catalog. Update authenticity still rests on OS code-signing.
+     */
     private fun verifyChecksum(file: File, expectedSha: String?): Boolean {
         if (expectedSha.isNullOrBlank()) return true
         val actual = sha256Of(file)

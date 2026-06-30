@@ -51,7 +51,9 @@ class SupabaseUpdateSource(
         if (anonKey.isBlank()) {
             throw UpdateSourceException("Supabase anon key not configured")
         }
-        val url = "$restBaseUrl/app_releases?app=eq.$appId&order=published_at.desc&limit=$MAX_RELEASES&select=*"
+        // URL-encode the app id so an odd value can't corrupt the PostgREST query.
+        val url = "$restBaseUrl/app_releases?app=eq.${appId.encodeURLParameter()}" +
+            "&order=published_at.desc&limit=$MAX_RELEASES&select=*"
         val response = apiClient.get(url) {
             headers {
                 append("apikey", anonKey)

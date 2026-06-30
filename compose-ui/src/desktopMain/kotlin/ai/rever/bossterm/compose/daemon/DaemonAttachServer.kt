@@ -50,6 +50,9 @@ class DaemonAttachServer(
     private class Client(val pid: Long?, val send: (DaemonAttachProtocol.Server) -> Unit)
     private val clients = java.util.concurrent.CopyOnWriteArrayList<Client>()
 
+    /** Number of currently-attached GUI clients (diagnostics + tests assert this drops on disconnect). */
+    val clientCount: Int get() = clients.size
+
     /**
      * Bring attached GUIs forward. Sends a Focus message (the GUI tries alwaysOnTop — no permission)
      * AND, on macOS, activates the GUI process by pid via [DaemonLauncher.activatePid] (a background
@@ -143,6 +146,11 @@ class DaemonAttachServer(
         // coroutine and the SessionHost change listener (arbitrary threads), so guarded by [lock].
         val attachments = HashMap<String, Attachment>()
         val lock = Any()
+        // Set under [lock] in the finally. removeChangeListener (CopyOnWriteArrayList.remove) does NOT
+        // wait for an in-flight resync already dispatched on the notify thread; without this flag that
+        // late resync could beginLocked() again AFTER teardown, re-registering an output tap (which
+        // fires forever capturing the dead connection's send) with no pairing endLocked.
+        var closed = false
 
         fun send(m: DaemonAttachProtocol.Server) {
             val text = DaemonAttachProtocol.encodeServer(m)
@@ -227,6 +235,7 @@ class DaemonAttachServer(
             // SessionHost.notifyChanged from an exit/control thread) can't interleave their
             // SessionList/Snapshot/Closed frames.
             synchronized(lock) {
+                if (closed) return // connection torn down — don't re-attach taps/jobs after endLocked
                 send(sessionList())
                 val liveIds = host.list().map { it.id }.toSet()
                 (attachments.keys - liveIds).toList().forEach { id ->
@@ -286,7 +295,11 @@ class DaemonAttachServer(
             clients.remove(client)
             shareJob?.cancel()
             host.removeChangeListener(onChange)
+            // Flip `closed` and tear down under the same lock resync() takes, so a resync already
+            // dispatched on the notify thread either ran fully before this (its taps get ended here)
+            // or sees `closed` and no-ops — it can never re-attach after teardown.
             synchronized(lock) {
+                closed = true
                 attachments.keys.toList().forEach { endLocked(it) }
             }
             outbox.close()

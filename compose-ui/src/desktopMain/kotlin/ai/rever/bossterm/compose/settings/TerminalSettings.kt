@@ -917,10 +917,11 @@ data class TerminalSettings(
     /**
      * Install a per-OS login service (macOS LaunchAgent / Linux systemd user unit / Windows Run
      * key) so the daemon starts at login — always available, even before the GUI is first opened.
-     * Opt-in; only meaningful when [daemonEnabled] is true. Toggling it install/uninstalls the
-     * service via LoginServiceManager.
+     * Defaults on and is coupled to [daemonEnabled]: enabling the daemon also schedules it at login
+     * (the daemon is meant to be always-available); only meaningful while [daemonEnabled] is true.
+     * The toggle install/uninstalls the service via LoginServiceManager.
      */
-    val startDaemonAtLogin: Boolean = false,
+    val startDaemonAtLogin: Boolean = true,
 
     // ===== Session sharing / remote control (issue #276) =====
 

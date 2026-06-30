@@ -57,8 +57,12 @@ fun DaemonSettingsSection(
                     "outlives this window. Takes effect after restarting BossTerm.",
                 onCheckedChange = { on ->
                     if (on) {
-                        onSettingsChange(settings.copy(daemonEnabled = true))
+                        // Enabling the daemon also schedules it at login by default (it's meant to be
+                        // always-available) and installs the login service now. The separate toggle
+                        // below can turn that back off without disabling the daemon.
+                        onSettingsChange(settings.copy(daemonEnabled = true, startDaemonAtLogin = true))
                         onSettingsSave?.invoke()
+                        scope.launch(Dispatchers.IO) { runCatching { LoginServiceManager.install() } }
                     } else {
                         // Disabling the daemon must also tear down the at-login service + clear its
                         // flag, otherwise a daemon keeps spawning at login that the GUI no longer

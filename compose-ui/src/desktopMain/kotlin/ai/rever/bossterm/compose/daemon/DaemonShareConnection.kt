@@ -37,4 +37,8 @@ internal class DaemonPendingViewer(
 ) {
     /** true = approved (with [control]'s role); false = denied / timed out. */
     val decision = CompletableDeferred<Boolean>()
+
+    /** The control role actually granted at approval — `control && hostChoice` (a downgrade only:
+     *  a view-link viewer is never upgraded). Read by serveViewer once [decision] completes true. */
+    @Volatile var grantedControl: Boolean = false
 }

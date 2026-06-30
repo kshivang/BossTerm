@@ -119,16 +119,29 @@ class DaemonShareServer(
         // flooded with sockets (each holds a slot + bloats every publishState()).
         const val MAX_PENDING_VIEWERS = 32
         const val MAX_PENDING_PER_IP = 4
+        // Public (funnel/cloudflare/public-URL) shares face the open internet: tighter pending cap and
+        // a shorter approval-park window so an attacker can't tie up slots for long.
+        const val MAX_PENDING_VIEWERS_PUBLIC = 8
+        const val PENDING_PARK_MS = 2 * 60_000L
+        const val PENDING_PARK_PUBLIC_MS = 45_000L
+        /** Cap on concurrent approved/connected viewers per share. */
+        const val MAX_CONNECTED_VIEWERS = 16
+        /** Hard ceiling on a grant key's life, independent of the sliding 24h window. */
+        const val GRANT_MAX_LIFETIME_MS = 7L * 24 * 60 * 60 * 1000
         /** Cap on the per-viewer prelude buffer (output racing a snapshot encode) — bounds heap. */
         const val MAX_PRELUDE_CHARS = 1_000_000
     }
 
-    /** A granted device key: which share, its role, and when it lapses (slid forward on each use). */
+    /** A granted device key: which share, its role, the client it was issued to, and its windows. */
     private class Grant(
         val key: String,
         val shareToken: String,
         @Volatile var canControl: Boolean,
         @Volatile var expiresAtMs: Long,
+        /** The Hello.clientId this key was issued to — a leaked key from another client is rejected. */
+        val clientId: String,
+        /** When the key was first issued — enforces [GRANT_MAX_LIFETIME_MS] regardless of sliding. */
+        val issuedAtMs: Long,
     )
 
     /** A token resolves to a share and whether THAT token grants control (control vs view link). */
@@ -292,12 +305,13 @@ class DaemonShareServer(
         }
     }
 
-    fun approveViewer(token: String, clientId: String, @Suppress("UNUSED_PARAMETER") control: Boolean) {
-        // The admitted role is fixed by which link (view vs control token) the viewer connected with —
-        // [DaemonPendingViewer.control] already captured that, and serveViewer reads ref.canControl on
-        // approve. The [control] arg is advisory: the view link can't be upgraded to typing here.
+    fun approveViewer(token: String, clientId: String, control: Boolean) {
+        // Honor the host's choice as a DOWNGRADE: a control-link viewer (req.control) can be approved
+        // view-only by pressing "View"; a view-link viewer can never be upgraded to typing. serveViewer
+        // reads req.grantedControl for the admitted role.
         synchronized(mutex) {
             val req = pending.firstOrNull { it.token == token && it.clientId == clientId } ?: return
+            req.grantedControl = req.control && control
             req.decision.complete(true)
             pending.remove(req)
             publishState()
@@ -557,14 +571,19 @@ class DaemonShareServer(
         if (requiresApproval(def)) {
             val now = System.currentTimeMillis()
             val existing = hello?.key?.let { grants[it] }
-            if (existing != null && existing.shareToken == shareToken && existing.expiresAtMs > now) {
+            // Resume only if the key is for THIS share, issued to THIS client, not expired, AND within
+            // the hard lifetime cap — so a leaked key can't grant access from another client or forever.
+            if (existing != null && existing.shareToken == shareToken && existing.clientId == clientId &&
+                existing.expiresAtMs > now && now < existing.issuedAtMs + GRANT_MAX_LIFETIME_MS) {
                 existing.expiresAtMs = now + GRANT_TTL_MS
                 canControl = existing.canControl
                 send(ServerMessage.Grant(existing.key, existing.expiresAtMs, canControl))
             } else {
-                hello?.key?.let { grants.remove(it) } // drop a stale/expired key
+                hello?.key?.let { grants.remove(it) } // drop a stale/expired/foreign key
+                val public = isPublicInternet(def)
+                val pendingCap = if (public) MAX_PENDING_VIEWERS_PUBLIC else MAX_PENDING_VIEWERS
                 // Cap parked viewers so a public share can't be flooded with sockets that each hold a
-                // pending slot for up to 2 minutes (and bloat every publishState()).
+                // pending slot (and bloat every publishState()).
                 val remoteHost = runCatching { ws.call.request.origin.remoteHost }.getOrNull() ?: "?"
                 // The per-IP cap only makes sense for genuinely distinct sources. Behind a cloudflare/
                 // tailscale tunnel every viewer connects from 127.0.0.1 (the local tunnel agent), so a
@@ -572,8 +591,8 @@ class DaemonShareServer(
                 // legitimate one — rely on the total cap instead. Direct LAN viewers keep distinct IPs.
                 val isLoopback = remoteHost == "127.0.0.1" || remoteHost == "::1" || remoteHost == "localhost"
                 val perIpExceeded = !isLoopback && pending.count { it.remoteHost == remoteHost } >= MAX_PENDING_PER_IP
-                if (pending.size >= MAX_PENDING_VIEWERS || perIpExceeded) {
-                    log.warn("share: too many pending viewers (total={}, from {}); rejecting", pending.size, remoteHost)
+                if (pending.size >= pendingCap || perIpExceeded) {
+                    log.warn("share: too many pending viewers (total={}, cap={}, from {}); rejecting", pending.size, pendingCap, remoteHost)
                     runCatching { send(ServerMessage.Denied("Too many pending requests; try again later")) }
                     ws.close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "Too many pending viewers"))
                     return
@@ -588,18 +607,22 @@ class DaemonShareServer(
                 pending.add(req)
                 publishState()
                 runCatching { send(ServerMessage.Pending) }
-                val approved = withTimeoutOrNull(2 * 60_000L) { req.decision.await() } ?: false
+                val approved = withTimeoutOrNull(if (public) PENDING_PARK_PUBLIC_MS else PENDING_PARK_MS) {
+                    req.decision.await()
+                } ?: false
                 if (pending.remove(req)) publishState() // timed out without a decision
                 if (!approved) {
                     runCatching { send(ServerMessage.Denied("Not approved")) }
                     ws.close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Not approved"))
                     return
                 }
+                // Honor the host's approve choice as a downgrade (set in approveViewer): a control-link
+                // viewer can be approved view-only; a view-link viewer is never upgraded.
+                canControl = req.grantedControl
                 val key = newKey()
-                val exp = System.currentTimeMillis() + GRANT_TTL_MS
-                grants[key] = Grant(key, shareToken, ref.canControl, exp)
-                canControl = ref.canControl
-                send(ServerMessage.Grant(key, exp, canControl))
+                val issuedAt = System.currentTimeMillis()
+                grants[key] = Grant(key, shareToken, canControl, issuedAt + GRANT_TTL_MS, clientId, issuedAt)
+                send(ServerMessage.Grant(key, issuedAt + GRANT_TTL_MS, canControl))
             }
         }
 
@@ -681,7 +704,29 @@ class DaemonShareServer(
         val onChange: () -> Unit = { resync() }
         host.addChangeListener(onChange)
 
-        def.viewers.add(vc)
+        // Register the viewer UNDER [mutex] and verify the share is still live + under the viewer cap.
+        // stopShare clears def.viewers under the lock, so adding outside it could orphan a viewer that
+        // keeps streaming a "stopped" share; and an uncapped connected count is a DoS on a public share.
+        val rejection = synchronized(mutex) {
+            when {
+                def !in shares -> "stopped"
+                def.viewers.size >= MAX_CONNECTED_VIEWERS -> "full"
+                else -> { def.viewers.add(vc); null }
+            }
+        }
+        if (rejection != null) {
+            host.removeChangeListener(onChange)
+            runCatching { vc.outbox.close() }
+            runCatching {
+                if (rejection == "full") {
+                    send(ServerMessage.Denied("This share is at its viewer limit; try again later."))
+                    ws.close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "Viewer limit reached"))
+                } else {
+                    ws.close(CloseReason(CloseReason.Codes.GOING_AWAY, "Share stopped"))
+                }
+            }
+            return
+        }
         def.broadcast(ServerMessage.Presence(def.viewerCount))
         publishState() // viewer count changed
 
@@ -840,12 +885,21 @@ class DaemonShareServer(
         }
     }
 
+    /** True when this share is reachable from the open internet (vs LAN/loopback/tailnet only) — used
+     *  to tighten the pending-viewer caps. (serve is tailnet-authenticated, so not counted here.) */
+    private fun isPublicInternet(def: ShareDef): Boolean =
+        def.activeRemoteMode == "funnel" || def.activeRemoteMode == "cloudflare" ||
+            settings().sessionSharingPublicUrl.isNotBlank()
+
     /**
-     * Whether the host should REQUIRE E2E (reject a plaintext handshake): true only when this share is
-     * reachable over a public tunnel/Funnel (or a configured public https URL) — there the relay is the
-     * threat and every link carries `#k`. Plain-LAN/loopback http has no relay, so plaintext stays allowed.
+     * Whether the host should REQUIRE E2E (reject a plaintext handshake): true whenever a remote
+     * provider is active (the relay is the threat and every link carries `#k`). Keyed off the active
+     * MODE, not remoteUrl — remoteUrl stays null until verification completes, but a tunnel can be
+     * reachable at the edge before then, so basing it on the URL leaves a plaintext-downgrade window.
+     * Plain-LAN/loopback http has no relay, so plaintext stays allowed there.
      */
     private fun requireE2E(def: ShareDef): Boolean {
+        if (def.activeRemoteMode == "serve" || def.activeRemoteMode == "funnel" || def.activeRemoteMode == "cloudflare") return true
         val url = def.remoteUrl
             ?: settings().sessionSharingPublicUrl.takeIf { it.isNotBlank() }
             ?: return false

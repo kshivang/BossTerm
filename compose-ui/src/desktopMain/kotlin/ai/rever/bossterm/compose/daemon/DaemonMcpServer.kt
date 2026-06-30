@@ -155,6 +155,7 @@ class DaemonMcpServer(
                         if (hostHeader !in allowed) {
                             call.respondText("Forbidden: '$hostHeader' is not a loopback target.", status = HttpStatusCode.Forbidden)
                             finish()
+                            return@intercept // stop the pipeline here — don't fall through to routing
                         }
                     }
                     routing { mcp { createServer() } }

@@ -160,8 +160,9 @@ class DaemonControlChannel(
         // Write to a temp file made owner-only BEFORE the secret touches it, then atomically rename
         // in: closes both the "secret briefly world-readable on a fresh file" window and the
         // "reader sees a half-written file" race (readEndpoint is polled every 50–400ms by the GUI).
-        val tmp = java.io.File(file.parentFile, ".daemon.port.tmp")
-        runCatching { tmp.createNewFile() }
+        // Unique temp name (not a fixed ".daemon.port.tmp") so two daemons racing on shutdown/start —
+        // which this code explicitly anticipates — can't collide on it before the atomic rename.
+        val tmp = java.io.File.createTempFile(".daemon.port", ".tmp", file.parentFile)
         restrictToOwner(tmp)
         tmp.writeText("$port\n$secret\n$version $protocolVersion\n", StandardCharsets.UTF_8)
         runCatching {

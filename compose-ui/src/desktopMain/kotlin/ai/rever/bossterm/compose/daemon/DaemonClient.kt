@@ -94,6 +94,9 @@ class DaemonClient {
         var lock: FileLock? = null
         try {
             raf = RandomAccessFile(lockFile, "rw")
+            // Owner-only like the other daemon artifacts — otherwise a local user could hold the lock
+            // to wedge the single-spawn guard (a local DoS of the daemon feature).
+            BossTermPaths.restrictToOwner(lockFile)
             channel = raf.channel
             lock = runCatching { channel.tryLock() }.getOrNull()
 

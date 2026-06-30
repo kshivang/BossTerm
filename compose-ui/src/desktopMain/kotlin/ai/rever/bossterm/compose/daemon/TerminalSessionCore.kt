@@ -249,6 +249,7 @@ class TerminalSessionCore(
 
     /** Resize both the buffer and the PTY (SIGWINCH). The daemon's authoritative grid size. */
     fun resize(cols: Int, rows: Int) {
+        if (closed) return // don't launch a SIGWINCH on a closing session (model/PTY would diverge)
         val c = cols.coerceIn(1, MAX_GRID_DIM)
         val r = rows.coerceIn(1, MAX_GRID_DIM)
         runCatching { terminal.resize(TermSize(c, r), RequestOrigin.User) }

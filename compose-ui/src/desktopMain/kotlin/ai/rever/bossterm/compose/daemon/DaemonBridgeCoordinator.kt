@@ -27,6 +27,16 @@ object DaemonBridgeCoordinator {
     @Volatile private var activeState: TabbedTerminalState? = null
     @Volatile private var bridge: DaemonSessionBridge? = null
 
+    // Set once we know the daemon won't provide an attach endpoint this launch — unreachable, or
+    // reachable but its attach server failed to bind. Lets a starting window stop waiting for a bridge
+    // that will never come and fall back to a local tab immediately, instead of sitting empty for the
+    // full ~16s grace period.
+    @Volatile private var attachUnavailable = false
+    val isAttachUnavailable: Boolean get() = attachUnavailable
+
+    /** Mark the daemon as not serving an attach endpoint this launch (GUI falls back to local tabs). */
+    fun markAttachUnavailable() { attachUnavailable = true }
+
     // Every open window that has registered, in registration order — so when the attached window
     // closes we can fail the bridge over to a survivor instead of stranding it tab-less. Guarded by
     // its own monitor (register/unregister run on the UI thread, but be explicit).
@@ -47,17 +57,19 @@ object DaemonBridgeCoordinator {
     /** Record the daemon's attach endpoint after [DaemonClient.ensureConnected] succeeds (blocking STATUS). */
     fun onConnected(client: DaemonClient) {
         val ep = client.current ?: return
-        val resp = client.request(DaemonProtocol.STATUS) ?: run { log.warn("daemon STATUS failed"); return }
+        val resp = client.request(DaemonProtocol.STATUS)
+            ?: run { log.warn("daemon STATUS failed"); markAttachUnavailable(); return }
         val payload = resp.removePrefix("OK ").trim()
         val status = runCatching {
             DaemonProtocol.json.decodeFromString(DaemonProtocol.Status.serializer(), payload)
-        }.getOrNull() ?: run { log.warn("daemon STATUS unparseable: {}", resp); return }
+        }.getOrNull() ?: run { log.warn("daemon STATUS unparseable: {}", resp); markAttachUnavailable(); return }
         // MCP is hosted by the daemon in daemon mode (the in-process BossTermMcpManager isn't
         // started), so the GUI's MCP status indicator — which reads McpTerminalRegistry.runningPort —
         // would otherwise show "not running" even though the daemon serves it. Reflect the daemon's
         // bound MCP port so the indicator is accurate.
         status.mcpPort?.let { ai.rever.bossterm.compose.mcp.McpTerminalRegistry.setRunning(it) }
-        val ap = status.attachPort ?: run { log.warn("daemon reported no attach port"); return }
+        val ap = status.attachPort
+            ?: run { log.warn("daemon reported no attach port"); markAttachUnavailable(); return }
         attach = Attach(ap, ep.secret)
         log.info("Daemon attach endpoint: ws://127.0.0.1:{}/attach", ap)
     }

@@ -620,7 +620,10 @@ fun TabbedTerminal(
                 // moment the bridge attaches — otherwise an 8–15s attach leaves a stray local tab.
                 var waited = 0
                 while (waited < 16000 && tabController.tabs.isEmpty() &&
-                    !ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached) {
+                    !ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached &&
+                    // Stop early if the daemon definitively won't serve an attach endpoint this launch
+                    // (unreachable / attach server didn't bind) — no point waiting the full grace period.
+                    !ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttachUnavailable) {
                     kotlinx.coroutines.delay(200); waited += 200
                 }
                 if (tabController.tabs.isEmpty() &&

@@ -122,6 +122,9 @@ fun main(args: Array<String>) {
                     ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.onConnected(client)
                 } else {
                     System.err.println("BossTerm daemon unavailable; hosting MCP in-process as a fallback")
+                    // Tell windows to stop waiting for a daemon bridge that will never attach, so they
+                    // fall back to local tabs immediately instead of sitting empty for the grace period.
+                    ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.markAttachUnavailable()
                     ensureInProcessMcp()
                 }
             }

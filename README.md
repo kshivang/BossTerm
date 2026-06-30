@@ -219,6 +219,7 @@ cd BossTerm
 - **Session Sharing** - Watch or control a tab / window / all windows from any device — self-hosted, with a QR code and a mobile-friendly web viewer (LAN, Tailscale, or a zero-config Cloudflare tunnel)
 - **Remote Control** - End-to-end encrypted; viewers get typing access on approval, or connect from another BossTerm as a native remote client
 - **AI / MCP Server** - Built-in [Model Context Protocol](https://modelcontextprotocol.io) server exposes your terminals to Claude Code, Codex, Gemini CLI, and OpenCode
+- **Session Daemon** - tmux-style background process (on by default) keeps your sessions, MCP server, and shares alive after the GUI closes — reopen to reattach; starts at login
 - **Embeddable** - Drop the terminal into your own Kotlin/Compose Desktop app as a library (`com.risaboss:bossterm-compose`)
 
 ## Keyboard Shortcuts
@@ -599,6 +600,35 @@ modules demonstrate both hooks.
 See [docs/mcp-server.md](docs/mcp-server.md) for the full reference —
 every built-in tool's JSON schema, the `manage_tools` meta-tool, the
 `BossTermMcpConfig` field-by-field table, and troubleshooting.
+
+## Session Daemon
+
+A tmux-style background process that **owns your terminal sessions, MCP server, and shares** so they
+keep running after you close the GUI — reopen BossTerm and it reattaches to the live sessions. **On by
+default**; turn it off under Settings → Session Daemon to fall back to the pre-daemon behavior
+(in-process MCP/sharing, sessions die with the window), a path that's preserved byte-for-byte.
+
+- **Survives the GUI**: sessions live in the daemon, not the window. Close the app (or all its
+  windows) and your shells keep running — long builds, SSH sessions, and `run_command` agents don't
+  die. The next launch mirrors them straight back as tabs.
+- **Thin-client GUI**: when enabled, each window attaches to the daemon over a loopback WebSocket and
+  renders its sessions; keystrokes and resizes flow back to the daemon, which owns the PTYs. If the
+  daemon is unreachable, the GUI falls back to local tabs so you're never stuck.
+- **MCP + sharing stay live headless**: the daemon hosts the [MCP server](#bossterm-mcp) and
+  [session sharing](#session-sharing), so agents and share links keep working with no window open. A
+  menu-bar / tray icon shows it's running and lets you open the GUI or quit the daemon.
+- **Starts at login** (on by default): installs a per-OS login service (launchd LaunchAgent / systemd
+  user unit / Windows Run key) so the daemon is available even before BossTerm is first opened or after
+  a reboot. A separate **Start daemon at login** toggle turns this off without disabling the daemon. On
+  a shared/multi-user host, note the loopback MCP endpoint is then reachable by any process running as
+  you whenever you're logged in.
+- **Secure by construction**: loopback-only, gated by a 256-bit per-launch secret (constant-time
+  compare, sent in a header — never the query string), DNS-rebinding `Host` guards on every server,
+  owner-only (`0600`) discovery/secret files in a `0700` base dir, and a `FileChannel.tryLock`
+  single-spawn guard. SESSION-scoped shares are write-isolated to their one session.
+
+Manage it under **Settings → Session Daemon** (toggles take effect after restarting BossTerm). The
+daemon never stops when you close the GUI — only via **Quit daemon**, or OS logout.
 
 ## Technology Stack
 

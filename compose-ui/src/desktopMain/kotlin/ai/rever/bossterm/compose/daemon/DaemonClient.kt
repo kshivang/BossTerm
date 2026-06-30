@@ -116,7 +116,14 @@ class DaemonClient {
                     // orphan that could bind a moment later while we've already fallen back to
                     // in-process MCP (two daemons / a stale port file).
                     log.warn("Spawned daemon (pid={}) did not become reachable; terminating it", proc.pid())
-                    runCatching { proc.destroy() }
+                    runCatching { proc.destroy() } // SIGTERM (best-effort)
+                    // A child wedged during startup can ignore SIGTERM and bind a moment later — exactly
+                    // the orphan we're trying to avoid. Escalate to a forcible kill if it doesn't exit.
+                    val exited = runCatching { proc.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) }.getOrDefault(false)
+                    if (!exited) {
+                        log.warn("daemon pid={} ignored SIGTERM; killing forcibly", proc.pid())
+                        runCatching { proc.destroyForcibly().waitFor(2, java.util.concurrent.TimeUnit.SECONDS) }
+                    }
                 }
                 return ep
             } else {

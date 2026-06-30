@@ -48,6 +48,18 @@ fun main(args: Array<String>) {
     log.info("BossTerm daemon starting (v{} proto{}) settingsDir={}",
         version, DaemonControlChannel.PROTOCOL_VERSION, BossTermPaths.dir().absolutePath)
 
+    // The daemon is spawned as a child of the GUI and shares its process group / controlling terminal.
+    // If the GUI was launched from a shell and that terminal then closes, SIGHUP is delivered to the
+    // whole group and would kill the daemon — defeating its entire "outlives the GUI" purpose. Ignore
+    // SIGHUP so it survives a terminal close. Best-effort: there is no SIGHUP on Windows (the Signal
+    // ctor throws → swallowed), and launchd/systemd-launched daemons already get a fresh session; this
+    // covers the on-demand-spawn-from-a-terminal case.
+    runCatching {
+        sun.misc.Signal.handle(sun.misc.Signal("HUP"), sun.misc.SignalHandler {
+            log.info("SIGHUP ignored — daemon detaches from the controlling terminal")
+        })
+    }.onFailure { log.debug("Could not install SIGHUP handler: {}", it.message) }
+
     // Single-instance self-guard: if a compatible daemon is already live (it answers PING on the
     // recorded port), don't start a second one that would overwrite daemon.port and orphan the
     // first. Backstops the GUI's FileChannel.tryLock spawn guard under a cold-start race.

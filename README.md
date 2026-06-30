@@ -221,6 +221,12 @@ cd BossTerm
 - **AI / MCP Server** - Built-in [Model Context Protocol](https://modelcontextprotocol.io) server exposes your terminals to Claude Code, Codex, Gemini CLI, and OpenCode
 - **Embeddable** - Drop the terminal into your own Kotlin/Compose Desktop app as a library (`com.risaboss:bossterm-compose`)
 
+## Design
+
+BossTerm's default look is the **Operator** theme — part of the shared BOSS **"Operator's Console"** visual language: an amber **signal** (`#F2A93B`) for the live/now moment on a calm **ink** floor (`#0E1217`), with cyan **data** accents and a MesloLGS mono voice. The tab bar and terminal surface both follow the active theme, and you can switch themes/palettes in Settings.
+
+🎨 **[Live visual styleguide](https://claude.ai/code/artifact/7ad6dc9a-be9c-4dec-9d36-fe5fcb0381f6)** — the interactive color / type / component reference for the whole design system.
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
@@ -651,6 +657,7 @@ Run `man bossterm` after installation for the complete reference.
 - [Onboarding Wizard](docs/onboarding.md) - First-time setup wizard for users
 - [Troubleshooting Guide](docs/troubleshooting.md) - Common issues and solutions
 - [Release Notes](docs/release-notes/) - Detailed changelog for each version
+- [Design System](https://claude.ai/code/artifact/7ad6dc9a-be9c-4dec-9d36-fe5fcb0381f6) - "Operator's Console" visual styleguide (shared with BossConsole)
 
 ## Contributing
 

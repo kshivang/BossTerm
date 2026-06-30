@@ -87,6 +87,7 @@ import ai.rever.bossterm.compose.rendering.TerminalCanvasRenderer
 import ai.rever.bossterm.compose.blocks.BlockState
 import ai.rever.bossterm.compose.selection.SelectionEngine
 import ai.rever.bossterm.compose.settings.SettingsManager
+import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.TerminalSession
 import ai.rever.bossterm.compose.util.ColorUtils
@@ -175,6 +176,9 @@ fun ProperTerminal(
   // Settings integration
   val settingsManager = remember { SettingsManager.instance }
   val settings by settingsManager.settings.collectAsState()
+
+  // Active theme, used as a fallback cursor color when no app has set one via OSC 12
+  val activeTheme by ThemeManager.instance.currentTheme.collectAsState()
 
   // Use tab's terminal components
   val terminal = tab.terminal
@@ -1796,11 +1800,13 @@ fun ProperTerminal(
           val visibleCols = (size.width / cellWidth).toInt().coerceAtMost(bufferSnapshot.width)
           val visibleRows = kotlin.math.ceil(size.height / cellHeight).toInt().coerceAtMost(bufferSnapshot.height)
 
-          // Get cursor color from terminal (OSC 12)
+          // Get cursor color from terminal (OSC 12), falling back to the active theme's
+          // cursor color so the cursor stays visible against light and dark backgrounds
+          // alike when no app has overridden it.
           val customCursorColor = terminal.cursorColor
           val baseCursorColor = if (customCursorColor != null) {
             Color(customCursorColor.red, customCursorColor.green, customCursorColor.blue)
-          } else null
+          } else activeTheme.cursorColor
 
           // Version-based hyperlink caching: compute hash including scroll position
           // since visible content changes with scroll even if buffer content is same
@@ -1929,7 +1935,7 @@ fun ProperTerminal(
           val customCursorColor = terminal.cursorColor
           val baseCursorColor = if (customCursorColor != null) {
             Color(customCursorColor.red, customCursorColor.green, customCursorColor.blue)
-          } else null
+          } else activeTheme.cursorColor
           with(TerminalCanvasRenderer) {
             renderCursorOverlay(
               cursorVisible = cursorVisible,
@@ -1942,6 +1948,8 @@ fun ProperTerminal(
               cellHeight = cellHeight,
               isFocused = isFocused,
               cursorColor = baseCursorColor,
+              focusedAlpha = settings.cursorFocusedAlpha,
+              unfocusedAlpha = settings.cursorUnfocusedAlpha,
             )
           }
         }

@@ -585,6 +585,18 @@ data class TerminalSettings(
     val caretBlinkMs: Int = 500,
 
     /**
+     * Cursor opacity while the terminal is focused (0.0 = invisible, 1.0 = fully opaque).
+     * Default 0.7 keeps a translucent block/bar; raise to 1.0 to disable transparency
+     * entirely, e.g. if the cursor is hard to see against a light theme.
+     */
+    val cursorFocusedAlpha: Float = 0.7f,
+
+    /**
+     * Cursor opacity while the terminal is unfocused (0.0 = invisible, 1.0 = fully opaque).
+     */
+    val cursorUnfocusedAlpha: Float = 0.3f,
+
+    /**
      * Master toggle to enable/disable all text blinking (accessibility feature)
      */
     val enableTextBlinking: Boolean = true,

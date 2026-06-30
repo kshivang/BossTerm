@@ -1213,6 +1213,8 @@ object TerminalCanvasRenderer {
         cellHeight: Float,
         isFocused: Boolean,
         cursorColor: Color?,
+        focusedAlpha: Float = 0.7f,
+        unfocusedAlpha: Float = 0.3f,
     ) {
         if (!cursorVisible) return
         // cursorY is 1-indexed in the screen buffer, adjust to 0-indexed
@@ -1240,7 +1242,7 @@ object TerminalCanvasRenderer {
         // Calculate size as difference to next cell to avoid floating-point gaps
         val w = (cursorX + 1) * cellWidth - x
         val h = (cursorScreenRow + 1) * cellHeight - y
-        val cursorAlpha = if (isFocused) 0.7f else 0.3f
+        val cursorAlpha = if (isFocused) focusedAlpha else unfocusedAlpha
         val drawColor = (cursorColor ?: Color.White).copy(alpha = cursorAlpha)
 
         when (cursorShape) {

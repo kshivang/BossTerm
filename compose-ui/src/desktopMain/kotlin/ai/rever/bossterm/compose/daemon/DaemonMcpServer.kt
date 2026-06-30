@@ -39,6 +39,15 @@ class DaemonMcpServer(
     private val host: SessionHost,
     private val serverName: String = "bossterm",
     private val serverVersion: String = "1.0",
+    /**
+     * Whether the `mcp.port` marker — which the user-global PreToolUse hook keys off to force Bash
+     * through `run_command` — should currently be written. The daemon gates this on
+     * [ai.rever.bossterm.compose.settings.TerminalSettings.mcpRunCommandPreferredShell] EXACTLY like
+     * the in-process [ai.rever.bossterm.compose.mcp.BossTermMcpManager]; otherwise daemon-hosting MCP
+     * would silently enable per-Bash-call routing for users who never opted in. Re-evaluated live via
+     * [syncPortMarker]. Defaults to always-on for tests that exercise the marker mechanics directly.
+     */
+    private val shouldWriteMarker: () -> Boolean = { true },
 ) {
     private val log = LoggerFactory.getLogger(DaemonMcpServer::class.java)
     private val tools = DaemonMcpTools(host)
@@ -163,7 +172,9 @@ class DaemonMcpServer(
                 srv.start(wait = false)
                 engine = srv
                 boundPort = port
-                writePortMarker(port)
+                // Gate the marker on the preferred-shell opt-in (see [shouldWriteMarker]); a live
+                // toggle is reflected by [syncPortMarker]. The server itself binds regardless.
+                if (shouldWriteMarker()) writePortMarker(port)
                 log.info("Daemon MCP server on http://{}:{}/ (SSE)", HOST, port)
                 return port
             } catch (e: Throwable) {
@@ -180,6 +191,16 @@ class DaemonMcpServer(
         val myPort = boundPort
         boundPort = null
         deletePortMarker(myPort)
+    }
+
+    /**
+     * Re-evaluate [shouldWriteMarker] against the live bound port and write/remove the `mcp.port`
+     * marker accordingly — the daemon-mode analog of [ai.rever.bossterm.compose.mcp.BossTermMcpManager]'s
+     * preferred-shell watcher, so toggling the setting takes effect without a daemon restart.
+     */
+    fun syncPortMarker() {
+        val p = boundPort ?: run { deletePortMarker(null); return }
+        if (shouldWriteMarker()) writePortMarker(p) else deletePortMarker(p)
     }
 
     private fun portAvailable(port: Int): Boolean =

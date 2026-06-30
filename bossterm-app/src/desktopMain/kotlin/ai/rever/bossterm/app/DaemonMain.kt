@@ -10,6 +10,13 @@ import ai.rever.bossterm.compose.daemon.DaemonTray
 import ai.rever.bossterm.compose.daemon.SessionHost
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.update.Version
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -51,6 +58,8 @@ fun main(args: Array<String>) {
 
     val settings = SettingsManager.instance.settings.value
     val sessionHost = SessionHost(settings)
+    // Long-lived scope for the daemon's settings watchers (cancelled in shutdown()).
+    val daemonScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // Host MCP in the daemon when enabled, so agent access keeps working while the GUI is closed.
     // Same loopback endpoint + mcp.port as the in-process server. Runtime-controllable (held in a
@@ -63,7 +72,13 @@ fun main(args: Array<String>) {
         val running = mcpServerRef.get()
         if (on) {
             running?.boundPort ?: run {
-                val srv = DaemonMcpServer(sessionHost)
+                // Gate the mcp.port marker on mcpRunCommandPreferredShell exactly like the in-process
+                // BossTermMcpManager — hosting MCP in the daemon must NOT silently enable the
+                // run_command PreToolUse hook for users who never opted into preferred-shell.
+                val srv = DaemonMcpServer(
+                    sessionHost,
+                    shouldWriteMarker = { SettingsManager.instance.settings.value.mcpRunCommandPreferredShell },
+                )
                 val p = srv.start(SettingsManager.instance.settings.value.mcpPort)
                 if (p == null) {
                     log.warn("Daemon MCP server failed to bind; continuing without it")
@@ -82,6 +97,16 @@ fun main(args: Array<String>) {
         }
     }
     if (settings.mcpEnabled) setDaemonMcpEnabled(true)
+
+    // The mcp.port marker (the PreToolUse hook's trigger) must track mcpRunCommandPreferredShell, NOT
+    // merely whether MCP is hosted — same contract as the in-process BossTermMcpManager's watcher.
+    // Re-sync the marker against the live setting + bound port whenever the setting toggles.
+    daemonScope.launch {
+        SettingsManager.instance.settings
+            .map { it.mcpRunCommandPreferredShell }
+            .distinctUntilChanged()
+            .collect { synchronized(mcpLock) { mcpServerRef.get()?.syncPortMarker() } }
+    }
 
     // Host session sharing in the daemon, so a share link survives the GUI closing. Always
     // constructed but LAZY — no port is bound until the first share — so the GUI can start a share
@@ -142,9 +167,12 @@ fun main(args: Array<String>) {
     fun shutdown() {
         if (!stopped.compareAndSet(false, true)) return
         log.info("BossTerm daemon stopping")
+        runCatching { daemonScope.cancel() }
         runCatching { DaemonTray.remove() }
         runCatching { control.stop() }
-        runCatching { mcpServerRef.get()?.stop() }
+        // Under mcpLock so a concurrent setDaemonMcpEnabled(true) from the attach socket can't slip a
+        // freshly-bound server in after we read the ref — which would leak a bound ServerSocket.
+        runCatching { synchronized(mcpLock) { mcpServerRef.getAndSet(null)?.stop() } }
         runCatching { shareServer?.stop() } // stop share server + tunnels before sessions die
         runCatching { attachServerRef.get()?.stop() }
         runCatching { sessionHost.shutdownAll() } // joins PTY-kill threads so shells aren't orphaned

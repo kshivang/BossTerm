@@ -48,6 +48,34 @@ class DaemonMcpServerTest {
         assertFalse(marker.exists(), "stop() must remove the mcp.port marker")
     }
 
+    @Test
+    fun `mcp_port marker is gated on shouldWriteMarker (preferred-shell opt-in)`() = withSettingsDir {
+        val host = SessionHost(TerminalSettings.DEFAULT)
+        var preferred = false
+        val server = DaemonMcpServer(host, shouldWriteMarker = { preferred })
+        val marker = BossTermPaths.mcpPortFile()
+        try {
+            val port = server.start(desiredPort = 17_797)
+            assertNotNull(port, "MCP server must bind regardless of the marker gate")
+            awaitAccepting(port)
+            // Opt-in is OFF → the server is up but the PreToolUse-hook marker must NOT be written.
+            assertFalse(marker.exists(), "marker must not be written when preferred-shell is off")
+
+            // Toggle the opt-in ON and re-sync → marker appears, carrying the bound port.
+            preferred = true
+            server.syncPortMarker()
+            assertTrue(marker.exists(), "syncPortMarker must write the marker once opted in")
+            assertEquals(port.toString(), marker.readText().trim())
+
+            // Toggle back OFF and re-sync → marker is removed.
+            preferred = false
+            server.syncPortMarker()
+            assertFalse(marker.exists(), "syncPortMarker must remove the marker when opted out")
+        } finally {
+            server.stop()
+        }
+    }
+
     // ---- helpers ----
 
     /** Wait until the server is actually accepting connections (start(wait=false) binds async). */

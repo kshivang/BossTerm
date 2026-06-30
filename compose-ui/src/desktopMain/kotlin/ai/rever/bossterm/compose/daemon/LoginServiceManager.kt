@@ -102,6 +102,9 @@ object LoginServiceManager {
 
     private fun installLinux(command: List<String>) {
         if (hasSystemd()) {
+            // Drop any stale XDG autostart entry first — isInstalled() treats EITHER mechanism as
+            // installed, so leaving both would schedule the daemon twice at login.
+            runCatching { xdgAutostartFile().delete() }
             val file = systemdUnitFile()
             file.parentFile?.mkdirs()
             file.writeText(systemdUnit(command))
@@ -117,6 +120,13 @@ object LoginServiceManager {
                 error("systemctl --user enable --now failed (exit $code): ${out.trim().take(300)}")
             }
         } else {
+            // No systemd now, but a unit may linger from a prior systemd-enabled state — disable +
+            // remove it so we don't schedule the daemon twice (XDG here + the stale systemd unit).
+            if (systemdUnitFile().exists()) {
+                run("systemctl", "--user", "disable", "--now", systemdUnitName())
+                runCatching { systemdUnitFile().delete() }
+                run("systemctl", "--user", "daemon-reload")
+            }
             val file = xdgAutostartFile()
             file.parentFile?.mkdirs()
             file.writeText(xdgDesktop(command))
@@ -220,7 +230,7 @@ object LoginServiceManager {
 
         [Service]
         Type=simple
-        ExecStart=${command.joinToString(" ") { shQuote(it) }}
+        ExecStart=${command.joinToString(" ") { shQuote(it) }.replace("%", "%%")}
         Restart=on-failure
         RestartSec=2
 

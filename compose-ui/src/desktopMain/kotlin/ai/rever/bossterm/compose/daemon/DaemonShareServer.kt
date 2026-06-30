@@ -775,7 +775,8 @@ class DaemonShareServer(
         return ServerMessage.Layout(
             tabs = tabs,
             activeTabId = activeId,
-            tabBarOnLeft = false,
+            // Mirror the host's tab-bar placement (like MirrorShare does) instead of hardcoding top.
+            tabBarOnLeft = settings().tabBarPosition == "left",
             summaryMode = true, // one chip per tab
             sessionName = def.name,
         )

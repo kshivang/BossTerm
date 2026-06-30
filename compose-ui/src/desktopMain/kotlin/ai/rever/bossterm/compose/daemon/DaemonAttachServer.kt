@@ -196,34 +196,42 @@ class DaemonAttachServer(
                 if (!held) send(DaemonAttachProtocol.Server.Output(core.id, d))
             }
             core.addRawOutputListener(tap)
-            send(DaemonAttachProtocol.Server.Snapshot(
-                core.id,
-                TerminalSnapshotEncoder.encode(core.textBuffer.createSnapshot(), core.terminal.cursorX, core.terminal.cursorY),
-                sz.columns, sz.rows,
-            ))
-            synchronized(preludeLock) {
-                prelude?.forEach { send(DaemonAttachProtocol.Server.Output(core.id, it)) }
-                prelude = null
+            // From here the tap is live but NOT yet recorded in [attachments]; if the snapshot encode
+            // throws, endLocked would never see it and the tap would fire forever on a dead connection.
+            // Remove it on any failure before the attachment is recorded.
+            try {
+                send(DaemonAttachProtocol.Server.Snapshot(
+                    core.id,
+                    TerminalSnapshotEncoder.encode(core.textBuffer.createSnapshot(), core.terminal.cursorX, core.terminal.cursorY),
+                    sz.columns, sz.rows,
+                ))
+                synchronized(preludeLock) {
+                    prelude?.forEach { send(DaemonAttachProtocol.Server.Output(core.id, it)) }
+                    prelude = null
+                }
+                // Push Resized whenever the grid changes (GUI-driven resize OR a TUI resizing it) so the
+                // attached mirror's buffer follows — without this it stays stuck at the snapshot size.
+                val sizeJob = ws.launch {
+                    core.display.termSizeFlow.collect { send(DaemonAttachProtocol.Server.Resized(core.id, it.columns, it.rows)) }
+                }
+                // Push an updated SessionList when this session's cwd or title changes (OSC 7 / OSC 0,2),
+                // so the attached client's tab name + secondary cwd update live. drop(1) skips the
+                // initial combined emit already conveyed by the SessionList/Snapshot above.
+                val metaJob = ws.launch {
+                    combine(core.workingDirectory, core.windowTitle) { cwd, title -> cwd to title }
+                        .drop(1)
+                        // Debounce: a TUI that sets its title to the running command (shells, vim, htop,
+                        // progress spinners) churns this rapidly, and each emit rebuilds the WHOLE session
+                        // list + per-session sizes and pushes it on the control lane. Coalesce bursts so we
+                        // send at most one refresh per quiet window instead of flooding control (see #4).
+                        .debounce(META_DEBOUNCE_MS)
+                        .collect { send(sessionList()) }
+                }
+                attachments[core.id] = Attachment(core, tap, listOf(sizeJob, metaJob))
+            } catch (e: Throwable) {
+                core.removeRawOutputListener(tap)
+                log.warn("beginLocked({}) failed before recording the attachment; removed orphan tap: {}", core.id, e.message)
             }
-            // Push Resized whenever the grid changes (GUI-driven resize OR a TUI resizing it) so the
-            // attached mirror's buffer follows — without this it stays stuck at the snapshot size.
-            val sizeJob = ws.launch {
-                core.display.termSizeFlow.collect { send(DaemonAttachProtocol.Server.Resized(core.id, it.columns, it.rows)) }
-            }
-            // Push an updated SessionList when this session's cwd or title changes (OSC 7 / OSC 0,2),
-            // so the attached client's tab name + secondary cwd update live. drop(1) skips the
-            // initial combined emit already conveyed by the SessionList/Snapshot above.
-            val metaJob = ws.launch {
-                combine(core.workingDirectory, core.windowTitle) { cwd, title -> cwd to title }
-                    .drop(1)
-                    // Debounce: a TUI that sets its title to the running command (shells, vim, htop,
-                    // progress spinners) churns this rapidly, and each emit rebuilds the WHOLE session
-                    // list + per-session sizes and pushes it on the control lane. Coalesce bursts so we
-                    // send at most one refresh per quiet window instead of flooding control (see #4).
-                    .debounce(META_DEBOUNCE_MS)
-                    .collect { send(sessionList()) }
-            }
-            attachments[core.id] = Attachment(core, tap, listOf(sizeJob, metaJob))
         }
 
         // Detach a session's tap + collector jobs. Caller holds [lock].
@@ -260,6 +268,11 @@ class DaemonAttachServer(
         // Drain outbox to the socket (control frames first, then output).
         val writer = ws.launch {
             try { outbox.drainTo { text -> ws.send(Frame.Text(text)) } } catch (_: Exception) {}
+            // drainTo returns when the outbox closes — including the control-lane-saturation hard close
+            // for a read-wedged client. Closing the socket here unblocks the `for (frame in incoming)`
+            // loop below so serve()'s finally runs the cleanup promptly, instead of the client + taps +
+            // change-listener lingering until the socket-level timeout.
+            runCatching { ws.close() }
         }
 
         // Forward daemon-share state to this GUI (Phase 2): the StateFlow emits the current value

@@ -183,6 +183,18 @@ compose.desktop {
                 "-Dawt.useSystemAAFontSettings=on",
                 "-Dsun.java2d.xrender=true"
             )
+
+            // Bake the Supabase config into the packaged app launcher so the self-updater
+            // can use the Supabase update source at runtime (UpdateSourceConfig reads these
+            // as system properties). CI provides them from repo secrets via env; local/dev
+            // builds leave them unset, so the updater falls back to GitHub. The anon key is
+            // the public, RLS-gated key, so embedding it in the distributed binary is expected.
+            System.getenv("SUPABASE_ANON_KEY")?.takeIf { it.isNotBlank() }?.let {
+                jvmArgs += "-DSUPABASE_ANON_KEY=$it"
+            }
+            System.getenv("SUPABASE_URL")?.takeIf { it.isNotBlank() }?.let {
+                jvmArgs += "-DSUPABASE_URL=$it"
+            }
         }
 
         // ProGuard configuration for release builds

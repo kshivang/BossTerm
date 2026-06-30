@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.update
 
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -71,13 +72,44 @@ class UpdateManager {
     }
 
     /**
+     * Start Supabase Realtime push so a newly published release triggers an update
+     * check the moment it lands — no polling. Idempotent; a no-op unless a Supabase
+     * anon key is configured (otherwise update checks rely on the GitHub backup).
+     * Call once at app startup.
+     */
+    fun startRealtimePush() {
+        AppUpdateRealtimeService.instance.onReleaseChanged = { checkForUpdates() }
+        AppUpdateRealtimeService.instance.start()
+    }
+
+    /**
      * Manually check for updates.
      */
     suspend fun checkForUpdates(): UpdateResult {
         return checkForUpdatesInternal()
     }
 
+    // Coalesces concurrent checks: the startup check and the Realtime on-connect
+    // catch-up fire near-simultaneously, and each Realtime event launches its own.
+    private val checkMutex = Mutex()
+
     private suspend fun checkForUpdatesInternal(): UpdateResult {
+        if (!checkMutex.tryLock()) {
+            val info = _updateInfo.value
+            return if (info != null && info.isNewerVersionAvailable) {
+                UpdateResult.UpdateAvailable(info)
+            } else {
+                UpdateResult.NoUpdateAvailable
+            }
+        }
+        return try {
+            runCheck()
+        } finally {
+            checkMutex.unlock()
+        }
+    }
+
+    private suspend fun runCheck(): UpdateResult {
         return try {
             _updateState.value = UpdateState.CheckingForUpdates
             _lastCheckTime.value = System.currentTimeMillis()

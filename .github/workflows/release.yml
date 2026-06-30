@@ -31,6 +31,11 @@ env:
   JAVA_VERSION: '17'
   JAVA_DISTRIBUTION: 'temurin'
   GRADLE_OPTS: '-Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true'
+  # Baked into the packaged app launcher (see bossterm-app/build.gradle.kts) so the
+  # self-updater uses the Supabase update source at runtime. Absent in local/dev builds
+  # -> the updater falls back to GitHub. The anon key is the public, RLS-gated key.
+  SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+  SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
 
 jobs:
   prepare-version:
@@ -501,6 +506,35 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish release to Supabase Storage
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          BOSSTERM_UPDATE_BUCKET: ${{ vars.BOSSTERM_UPDATE_BUCKET }}
+          VERSION: ${{ needs.prepare-version.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Non-breaking: until the Supabase service-role secret is configured this
+          # step is a silent no-op, so adding it can't break existing releases.
+          if [[ -z "${SUPABASE_SERVICE_ROLE_KEY:-}" ]]; then
+            echo "ℹ️  SUPABASE_SERVICE_ROLE_KEY not set; skipping Supabase publish."
+            exit 0
+          fi
+          export SUPABASE_URL="${SUPABASE_URL:-https://api.risaboss.com}"
+          BUCKET="${BOSSTERM_UPDATE_BUCKET:-app-releases}"
+
+          # Capture the just-created GitHub release body so app_releases.release_notes
+          # isn't blank (release.yml builds the body inline, not into a file).
+          gh release view "v$VERSION" --repo "$REPO" --json body --jq .body \
+            > release-assets/release-body.txt 2>/dev/null || true
+
+          echo "📤 Publishing BossTerm $VERSION to Supabase bucket '$BUCKET'"
+          # release.yml publishes stable releases (prerelease: false).
+          bash scripts/publish-supabase-release.sh bossterm "$VERSION" stable release-assets "$BUCKET"
 
   update-homebrew:
     needs: [prepare-version, create-release]

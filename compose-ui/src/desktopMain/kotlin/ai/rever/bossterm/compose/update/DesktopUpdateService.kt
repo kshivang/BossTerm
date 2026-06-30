@@ -1,40 +1,29 @@
 package ai.rever.bossterm.compose.update
 
+import ai.rever.bossterm.compose.update.source.FallbackUpdateSource
+import ai.rever.bossterm.compose.update.source.GitHubUpdateSource
+import ai.rever.bossterm.compose.update.source.SupabaseUpdateSource
+import ai.rever.bossterm.compose.update.source.UpdateSource
 import io.ktor.client.*
-import io.ktor.client.call.*
 import io.ktor.client.engine.cio.*
 import io.ktor.client.plugins.*
-import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
-import io.ktor.serialization.kotlinx.json.*
 import io.ktor.utils.io.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
 import java.io.File
+import java.security.MessageDigest
 
 /**
- * Desktop implementation of update service using GitHub Releases API.
+ * Desktop update service. Release metadata comes from the configured [UpdateSource]
+ * — Supabase primary (Realtime-fed `app_releases` catalog), GitHub Releases backup —
+ * while binaries are streamed from whichever URL the chosen source provides.
  */
 class DesktopUpdateService {
-
-    private val apiClient = HttpClient(CIO) {
-        install(ContentNegotiation) {
-            json(Json {
-                ignoreUnknownKeys = true
-                isLenient = true
-            })
-        }
-        install(HttpTimeout) {
-            requestTimeoutMillis = 30_000
-            connectTimeoutMillis = 15_000
-            socketTimeoutMillis = 15_000
-        }
-    }
 
     private val downloadClient = HttpClient(CIO) {
         install(HttpTimeout) {
@@ -44,50 +33,46 @@ class DesktopUpdateService {
         }
     }
 
-    companion object {
-        private const val GITHUB_API_BASE = "https://api.github.com"
-        private const val RELEASES_REPO = "kshivang/BossTerm"
-        private const val RELEASES_ENDPOINT = "$GITHUB_API_BASE/repos/$RELEASES_REPO/releases"
+    /** Supabase primary, GitHub backup (overridable via BOSSTERM_UPDATE_PRIMARY_SOURCE). */
+    private val source: UpdateSource = buildSource()
+
+    /** Dedicated GitHub source used only to recover a download if the primary URL fails. */
+    private val gitHubSource = GitHubUpdateSource()
+
+    private fun buildSource(): UpdateSource {
+        val src = when {
+            UpdateSourceConfig.primarySource == "github" || !UpdateSourceConfig.supabaseEnabled -> GitHubUpdateSource()
+            UpdateSourceConfig.primarySource == "supabase-only" -> SupabaseUpdateSource()
+            else -> FallbackUpdateSource(primary = SupabaseUpdateSource(), backup = GitHubUpdateSource())
+        }
+        println("[update] source configured: ${src.name}")
+        return src
     }
 
+    private fun upToDate(): UpdateInfo = UpdateInfo(
+        available = false,
+        currentVersion = Version.CURRENT,
+        latestVersion = Version.CURRENT,
+        releaseNotes = ""
+    )
+
     /**
-     * Fetch all available releases from GitHub.
-     * Used for version selection in About section.
+     * Fetch all available releases (for version selection in About). Filtering and
+     * sorting happen here so the underlying source stays format-only.
      */
     suspend fun getAllReleases(includePreReleases: Boolean = false): Result<List<GitHubRelease>> {
         return try {
-            val response = apiClient.get(RELEASES_ENDPOINT) {
-                headers {
-                    append("Accept", "application/vnd.github.v3+json")
-                    append("User-Agent", "BossTerm-Desktop-${Version.CURRENT}")
-                    GitHubConfig.token?.let { append("Authorization", "Bearer $it") }
-                }
-            }
-
-            if (response.status.value !in 200..299) {
-                val errorBody = response.bodyAsText()
-                val errorMessage = when {
-                    errorBody.contains("rate limit", ignoreCase = true) ->
-                        "GitHub API rate limit exceeded. Please try again later."
-                    else -> "Unable to fetch releases (HTTP ${response.status.value})"
-                }
-                return Result.failure(Exception(errorMessage))
-            }
-
-            val releases = response.body<List<GitHubRelease>>()
-            val filteredReleases = releases
+            val filtered = source.listReleases()
                 .filter { !it.draft && (includePreReleases || !it.prerelease) }
                 .sortedByDescending { Version.parse(it.tag_name) }
-
-            Result.success(filteredReleases)
+            Result.success(filtered)
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
     /**
-     * Download a specific release version.
-     * Returns the path to the downloaded file.
+     * Download a specific release version. Returns the path to the downloaded file.
      */
     suspend fun downloadRelease(
         release: GitHubRelease,
@@ -115,6 +100,10 @@ class DesktopUpdateService {
             streamToFile(downloadUrl, asset.size, downloadFile, onProgress)
 
             if (downloadFile.exists() && downloadFile.length() > 0) {
+                if (!verifyChecksum(downloadFile, asset.sha256)) {
+                    downloadFile.delete()
+                    return Result.failure(Exception("Checksum verification failed for ${asset.name}"))
+                }
                 Result.success(downloadFile.absolutePath)
             } else {
                 Result.failure(Exception("Download failed: file is empty"))
@@ -129,37 +118,7 @@ class DesktopUpdateService {
      */
     suspend fun checkForUpdates(): UpdateInfo {
         return try {
-            if (GitHubConfig.hasToken) {
-                println("✅ Using authenticated GitHub API (5,000 requests/hour)")
-            } else {
-                println("⚠️ Using unauthenticated GitHub API (60 requests/hour)")
-            }
-
-            val response = apiClient.get(RELEASES_ENDPOINT) {
-                headers {
-                    append("Accept", "application/vnd.github.v3+json")
-                    append("User-Agent", "BossTerm-Desktop-${Version.CURRENT}")
-                    GitHubConfig.token?.let { append("Authorization", "Bearer $it") }
-                }
-            }
-
-            if (response.status.value !in 200..299) {
-                val errorBody = response.bodyAsText()
-                val errorMessage = when {
-                    errorBody.contains("rate limit", ignoreCase = true) ->
-                        "GitHub API rate limit exceeded. Please try again later."
-                    else -> "Unable to check for updates (HTTP ${response.status.value})"
-                }
-                println("Update check failed: $errorMessage")
-                return UpdateInfo(
-                    available = false,
-                    currentVersion = Version.CURRENT,
-                    latestVersion = Version.CURRENT,
-                    releaseNotes = ""
-                )
-            }
-
-            val releases = response.body<List<GitHubRelease>>()
+            val releases = source.listReleases()
 
             val latestRelease = releases
                 .filter { !it.draft && !it.prerelease }
@@ -168,24 +127,9 @@ class DesktopUpdateService {
                 }
                 .maxByOrNull { it.second }
                 ?.first
+                ?: return upToDate()
 
-            if (latestRelease == null) {
-                return UpdateInfo(
-                    available = false,
-                    currentVersion = Version.CURRENT,
-                    latestVersion = Version.CURRENT,
-                    releaseNotes = ""
-                )
-            }
-
-            val latestVersion = Version.parse(latestRelease.tag_name)
-                ?: return UpdateInfo(
-                    available = false,
-                    currentVersion = Version.CURRENT,
-                    latestVersion = Version.CURRENT,
-                    releaseNotes = ""
-                )
-
+            val latestVersion = Version.parse(latestRelease.tag_name) ?: return upToDate()
             val isUpdateAvailable = latestVersion.isNewerThan(Version.CURRENT)
 
             val expectedAssetName = getExpectedAssetName(latestVersion)
@@ -209,42 +153,66 @@ class DesktopUpdateService {
                 releaseNotes = latestRelease.body,
                 downloadUrl = asset?.browser_download_url,
                 assetSize = asset?.size ?: 0,
-                assetName = asset?.name ?: ""
+                assetName = asset?.name ?: "",
+                sha256 = asset?.sha256
             )
         } catch (e: Exception) {
             println("Error checking for updates: ${e.message}")
-            UpdateInfo(
-                available = false,
-                currentVersion = Version.CURRENT,
-                latestVersion = Version.CURRENT,
-                releaseNotes = ""
-            )
+            upToDate()
         }
     }
 
     /**
-     * Download an update.
+     * Download an update. Tries the source-provided URL (Supabase Storage when Supabase
+     * is primary); if that fails, recovers via the GitHub asset for the same version.
      */
     suspend fun downloadUpdate(
         updateInfo: UpdateInfo,
         onProgress: (progress: Float) -> Unit
     ): String? {
-        return try {
-            val downloadUrl = updateInfo.downloadUrl ?: return null
+        val primaryUrl = updateInfo.downloadUrl ?: return null
 
-            println("Starting download from: $downloadUrl")
+        downloadFrom(primaryUrl, updateInfo.assetName, updateInfo.assetSize, updateInfo.sha256, onProgress)
+            ?.let { return it }
+
+        // The fallback chain is metadata-only: once Supabase serves the catalog, the
+        // download URL is a Storage URL with no recovery. If that fails (e.g. the bucket
+        // isn't public/reachable) recover via the GitHub asset for the same version.
+        val gitHubUrl = gitHubAssetUrlFor(updateInfo.latestVersion)
+        if (gitHubUrl != null && gitHubUrl != primaryUrl) {
+            println("[update] primary download failed; falling back to GitHub asset")
+            return downloadFrom(gitHubUrl, updateInfo.assetName, updateInfo.assetSize, sha256 = null, onProgress)
+        }
+        return null
+    }
+
+    /** Download [url] to a temp file, verifying [sha256] when provided. Returns the path or null. */
+    private suspend fun downloadFrom(
+        url: String,
+        assetName: String,
+        assetSize: Long,
+        sha256: String?,
+        onProgress: (progress: Float) -> Unit
+    ): String? {
+        return try {
+            println("Starting download from: $url")
 
             val tempDir = File(System.getProperty("java.io.tmpdir"), "bossterm-updates")
             tempDir.mkdirs()
 
-            val downloadFile = File(tempDir, updateInfo.assetName)
+            val downloadFile = File(tempDir, assetName)
             if (downloadFile.exists()) {
                 downloadFile.delete()
             }
 
-            streamToFile(downloadUrl, updateInfo.assetSize, downloadFile, onProgress)
+            streamToFile(url, assetSize, downloadFile, onProgress)
 
             if (downloadFile.exists() && downloadFile.length() > 0) {
+                if (!verifyChecksum(downloadFile, sha256)) {
+                    println("❌ Checksum mismatch; discarding download: $assetName")
+                    downloadFile.delete()
+                    return null
+                }
                 println("Update downloaded successfully: ${downloadFile.absolutePath}")
                 downloadFile.absolutePath
             } else {
@@ -254,6 +222,50 @@ class DesktopUpdateService {
             println("Error downloading update: ${e.message}")
             null
         }
+    }
+
+    /** Resolve the GitHub Releases asset URL for [version] — the download-time backup. */
+    private suspend fun gitHubAssetUrlFor(version: Version): String? = try {
+        val expected = getExpectedAssetName(version)
+        gitHubSource.listReleases()
+            .firstOrNull { Version.parse(it.tag_name) == version }
+            ?.assets?.firstOrNull { it.name.equals(expected, ignoreCase = true) }
+            ?.browser_download_url
+    } catch (e: Exception) {
+        println("[update] could not resolve GitHub fallback asset: ${e.message}")
+        null
+    }
+
+    /**
+     * Verify [file] against [expectedSha] (lowercase hex). No-op when null/blank.
+     *
+     * Integrity check, not authenticity: the hash and the download URL come from the
+     * same app_releases row, so this catches Storage/CDN corruption, not a compromised
+     * catalog. Update authenticity still rests on OS code-signing.
+     */
+    private fun verifyChecksum(file: File, expectedSha: String?): Boolean {
+        if (expectedSha.isNullOrBlank()) return true
+        val actual = sha256Of(file)
+        val ok = actual.equals(expectedSha, ignoreCase = true)
+        if (ok) {
+            println("✅ Checksum verified for ${file.name}")
+        } else {
+            println("❌ Checksum mismatch for ${file.name}: expected $expectedSha, got $actual")
+        }
+        return ok
+    }
+
+    private fun sha256Of(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(8192)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     /**

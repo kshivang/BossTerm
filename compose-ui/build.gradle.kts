@@ -24,7 +24,7 @@ plugins {
     kotlin("multiplatform")
     id("org.jetbrains.compose")
     id("org.jetbrains.kotlin.plugin.compose")
-    kotlin("plugin.serialization") version "2.1.21"
+    kotlin("plugin.serialization") version "2.2.20"
     id("com.vanniktech.maven.publish")
 }
 
@@ -117,6 +117,12 @@ kotlin {
                 implementation("io.ktor:ktor-serialization-kotlinx-json:$ktorVersion")
                 // WebSocket client — native viewer that connects to a remote BossTerm share.
                 implementation("io.ktor:ktor-client-websockets:$ktorVersion")
+
+                // Supabase Realtime — push notifications for new app releases so the
+                // self-updater learns about them instantly instead of polling GitHub.
+                // Realtime only; the release catalog is fetched via plain Ktor REST.
+                // 3.6.0 matches BossConsole; requires the Kotlin 2.2.x bump above.
+                implementation("io.github.jan-tennert.supabase:realtime-kt:3.6.0")
 
                 // MCP (Model Context Protocol) server + Ktor CIO server backend.
                 // `api` for the SDK because BossTermMcpConfig's additionalTools

@@ -14,12 +14,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.components.*
@@ -157,7 +159,7 @@ fun VisualSettingsSection(
             if (settings.useNativeTitleBar) {
                 Text(
                     text = "Transparency requires custom title bar. Disable 'Use Native Title Bar' above to enable transparency.",
-                    color = Color.Gray,
+                    color = TextMuted,
                     fontSize = 12.sp
                 )
             } else {
@@ -249,10 +251,10 @@ fun VisualSettingsSection(
                         onRestartApp?.invoke()
                     },
                     colors = ButtonDefaults.buttonColors(
-                        backgroundColor = Color(0xFF4A90E2)
+                        backgroundColor = AccentColor
                     )
                 ) {
-                    Text("Restart", color = TextPrimary)
+                    Text("Restart", color = TextOnAccent)
                 }
             },
             dismissButton = {

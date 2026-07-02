@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose.workflows
 
+import ai.rever.bossterm.compose.settings.SettingsTheme
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -90,7 +92,7 @@ fun WorkflowRunDialog(
                         false
                     }
                 },
-            color = Color(0xFF2A2A2A),
+            color = SettingsTheme.SurfaceColor,
             shape = RoundedCornerShape(8.dp),
             shadowElevation = 8.dp,
         ) {
@@ -99,27 +101,27 @@ fun WorkflowRunDialog(
                     .padding(16.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                Text(workflow.name, color = Color.White, fontSize = 15.sp)
+                Text(workflow.name, color = SettingsTheme.TextPrimary, fontSize = 15.sp)
                 workflow.description?.takeIf { it.isNotBlank() }?.let {
-                    Text(it, color = Color(0xFFAAAAAA), fontSize = 12.sp)
+                    Text(it, color = SettingsTheme.TextSecondary, fontSize = 12.sp)
                 }
                 Spacer(Modifier.height(12.dp))
 
                 workflow.arguments.forEachIndexed { index, arg ->
-                    Text(arg.name, color = Color(0xFFCCCCCC), fontSize = 12.sp)
+                    Text(arg.name, color = SettingsTheme.TextSecondary, fontSize = 12.sp)
                     arg.description?.takeIf { it.isNotBlank() }?.let {
-                        Text(it, color = Color(0xFF808080), fontSize = 11.sp)
+                        Text(it, color = SettingsTheme.TextMuted, fontSize = 11.sp)
                     }
                     BasicTextField(
                         value = values[arg.name].orEmpty(),
                         onValueChange = { values[arg.name] = it },
                         singleLine = true,
-                        textStyle = TextStyle(color = Color.White, fontSize = 13.sp),
-                        cursorBrush = SolidColor(Color.White),
+                        textStyle = TextStyle(color = SettingsTheme.TextPrimary, fontSize = 13.sp),
+                        cursorBrush = SolidColor(SettingsTheme.TextPrimary),
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 4.dp)
-                            .background(Color(0xFF1E1E1E))
+                            .background(SettingsTheme.BackgroundColor)
                             .padding(8.dp)
                             .then(if (index == 0) Modifier.focusRequester(firstFieldFocus) else Modifier)
                             .onPreviewKeyEvent { e ->
@@ -130,8 +132,8 @@ fun WorkflowRunDialog(
                 }
 
                 // Live preview of the command that will run.
-                Text("Preview", color = Color(0xFF808080), fontSize = 11.sp)
-                Text(workflow.render(values), color = Color(0xFF66D9EF), fontSize = 12.sp)
+                Text("Preview", color = SettingsTheme.TextMuted, fontSize = 11.sp)
+                Text(workflow.render(values), color = SettingsTheme.Info, fontSize = 12.sp)
                 Spacer(Modifier.height(12.dp))
 
                 Row(
@@ -156,12 +158,12 @@ private fun DialogButton(label: String, primary: Boolean = false, onClick: () ->
     Box(
         modifier = Modifier
             .background(
-                if (primary) Color(0xFF094771) else Color(0xFF3A3A3A),
+                if (primary) BossUiTheme.current.signalWash else SettingsTheme.BorderColor,
                 RoundedCornerShape(4.dp),
             )
             .clickable { onClick() }
             .padding(horizontal = 14.dp, vertical = 6.dp),
     ) {
-        Text(label, color = Color.White, fontSize = 13.sp)
+        Text(label, color = SettingsTheme.TextPrimary, fontSize = 13.sp)
     }
 }

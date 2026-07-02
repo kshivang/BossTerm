@@ -19,10 +19,13 @@ import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
+import ai.rever.bossterm.compose.settings.SettingsTheme.Warning
 import kotlinx.coroutines.launch
 import java.awt.Desktop
 import java.io.File
@@ -181,8 +184,8 @@ fun VersionManagementSection(
                 enabled = state.selectedRelease != null && !isSameVersion && !state.isLoading,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(
-                    backgroundColor = if (isDowngrading) Color(0xFFB71C1C) else AccentColor,
-                    contentColor = Color.White,
+                    backgroundColor = if (isDowngrading) Danger else AccentColor,
+                    contentColor = TextOnAccent,
                     disabledBackgroundColor = SurfaceColor,
                     disabledContentColor = TextMuted
                 )
@@ -290,7 +293,7 @@ private fun VersionDropdown(
                     ) {
                         Text(
                             text = error,
-                            color = Color(0xFFE57373),
+                            color = Danger,
                             fontSize = 11.sp
                         )
                         Text(
@@ -373,7 +376,7 @@ private fun VersionDropdown(
                                         fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
                                     )
                                     if (release.prerelease) {
-                                        VersionBadge("pre-release", Color(0xFFFFA726))
+                                        VersionBadge("pre-release", Warning)
                                     }
                                     if (isCurrent) {
                                         VersionBadge("current", AccentColor)
@@ -456,8 +459,8 @@ fun DowngradeWarningDialog(
             Button(
                 onClick = onConfirm,
                 colors = ButtonDefaults.buttonColors(
-                    backgroundColor = Color(0xFFB71C1C),
-                    contentColor = Color.White
+                    backgroundColor = Danger,
+                    contentColor = TextOnAccent
                 )
             ) {
                 Text("Downgrade Anyway")
@@ -468,7 +471,7 @@ fun DowngradeWarningDialog(
                 Text("Cancel", color = TextPrimary)
             }
         },
-        backgroundColor = Color(0xFF2D2D2D)
+        backgroundColor = SurfaceColor
     )
 }
 
@@ -535,7 +538,7 @@ fun InstallInstructionsDialog(
                 },
                 colors = ButtonDefaults.buttonColors(
                     backgroundColor = AccentColor,
-                    contentColor = Color.White
+                    contentColor = TextOnAccent
                 )
             ) {
                 Text("Open Folder")
@@ -546,7 +549,7 @@ fun InstallInstructionsDialog(
                 Text("Close", color = TextPrimary)
             }
         },
-        backgroundColor = Color(0xFF2D2D2D)
+        backgroundColor = SurfaceColor
     )
 }
 
@@ -568,7 +571,7 @@ private fun SelectableCommand(command: String) {
         fontSize = 12.sp,
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF1E1E1E), RoundedCornerShape(4.dp))
+            .background(BackgroundColor, RoundedCornerShape(4.dp))
             .padding(8.dp)
     )
 }

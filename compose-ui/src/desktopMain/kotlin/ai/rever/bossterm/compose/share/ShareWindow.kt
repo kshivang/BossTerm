@@ -3,12 +3,16 @@ package ai.rever.bossterm.compose.share
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
+import ai.rever.bossterm.compose.settings.SettingsTheme.Success
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.components.SettingsSection
 import ai.rever.bossterm.compose.settings.components.SettingsTextField
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -72,8 +76,7 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import java.awt.image.BufferedImage
 
-private val Track = Color(0xFF252526)
-private val Danger = Color(0xFFE57373)
+private val Track get() = BossUiTheme.current.ink
 
 /**
  * Session-sharing window (issue #276) — a top-level OS window styled like
@@ -294,7 +297,7 @@ fun ShareWindow(
                 TextButton(onClick = onStop, colors = ButtonDefaults.textButtonColors(contentColor = Danger)) {
                     Text("Stop sharing")
                 }
-                Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)) {
+                Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)) {
                     Text("Close")
                 }
             }
@@ -357,7 +360,7 @@ private fun Seg(label: String, selected: Boolean, onClick: () -> Unit) {
             .clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 5.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(label, color = if (selected) Color.White else TextMuted, fontSize = 12.sp)
+        Text(label, color = if (selected) TextOnAccent else TextMuted, fontSize = 12.sp)
     }
 }
 
@@ -448,7 +451,7 @@ private fun RemoteAccessSetupSection(
             confirmButton = {
                 Button(
                     onClick = { onModeChange(target); SessionShareManager.applyRemoteMode(target); pendingMode = null },
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)
                 ) { Text(if (target == "off") "Turn off" else "Switch") }
             },
             dismissButton = {
@@ -484,7 +487,7 @@ private fun RemoteAccessSetupSection(
                     SessionShareManager.RemoteStatus.FellBack -> "${remote.mode} · unreachable — using LAN link"
                 },
                 color = when (remote.status) {
-                    SessionShareManager.RemoteStatus.Active -> Color(0xFF4CAF50)
+                    SessionShareManager.RemoteStatus.Active -> Success
                     SessionShareManager.RemoteStatus.FellBack -> Danger
                     else -> TextMuted
                 },
@@ -613,7 +616,7 @@ private fun ProviderInstallRow(
                                 else "Not found — install manually."
                     },
                     color = when {
-                        installed == true -> Color(0xFF4CAF50)
+                        installed == true -> Success
                         installFailed -> Danger
                         else -> TextSecondary
                     },
@@ -633,7 +636,7 @@ private fun ProviderInstallRow(
                 Button(
                     onClick = onInstall,
                     enabled = !installing,
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)
                 ) { Text(if (installing) "Installing…" else if (installFailed) "Retry" else "Install") }
             }
         }

@@ -22,7 +22,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -33,8 +32,12 @@ import ai.rever.bossterm.compose.mcp.McpAttachResult
 import ai.rever.bossterm.compose.mcp.McpAttachTarget
 import ai.rever.bossterm.compose.mcp.McpCliAttacher
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.Success
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
+import ai.rever.bossterm.compose.settings.SettingsTheme.Warning
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.SettingsDropdown
 import ai.rever.bossterm.compose.settings.components.SettingsNumberInput
@@ -381,9 +384,9 @@ private fun AttachToCliSection(
                     enabled = enabled && inFlight == null,
                     colors = ButtonDefaults.buttonColors(
                         backgroundColor = AccentColor,
-                        contentColor = Color.White,
-                        disabledBackgroundColor = Color(0xFF3A3A3A),
-                        disabledContentColor = Color(0xFF888888)
+                        contentColor = TextOnAccent,
+                        disabledBackgroundColor = BorderColor,
+                        disabledContentColor = TextMuted
                     )
                 ) {
                     val label = when {
@@ -408,7 +411,7 @@ private fun AttachToCliSection(
             if (isAttached) {
                 Text(
                     text = "✓ ${target.displayName} is currently attached",
-                    color = Color(0xFF4CAF50),
+                    color = Success,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 8.dp)
                 )
@@ -418,9 +421,9 @@ private fun AttachToCliSection(
                     is McpAttachResult.Success ->
                         "Last attempt: ✓ ${result.target.displayName} attached" +
                             (if (result.detail.isNotEmpty()) " — ${result.detail}" else "") to
-                            Color(0xFF4CAF50)
+                            Success
                     is McpAttachResult.CopiedToClipboard ->
-                        "Last attempt: ${result.target.displayName}: ${result.reason}" to Color(0xFFFFC107)
+                        "Last attempt: ${result.target.displayName}: ${result.reason}" to Warning
                 }
                 Text(
                     text = label,
@@ -453,7 +456,7 @@ private fun ConfigurationBanner() {
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(6.dp))
-            .background(Color(0x33_FF_C1_07)) // soft amber tint
+            .background(Warning.copy(alpha = 0.2f)) // soft amber tint
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {

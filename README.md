@@ -224,7 +224,7 @@ cd BossTerm
 
 ## Design
 
-BossTerm's default look is the **Operator** theme — part of the shared BOSS **"Operator's Console"** visual language: an amber **signal** (`#F2A93B`) for the live/now moment on a calm **ink** floor (`#0E1217`), with cyan **data** accents and a MesloLGS mono voice. The tab bar and terminal surface both follow the active theme, and you can switch themes/palettes in Settings.
+BossTerm's default look is the **Operator** theme — part of the shared BOSS **"Operator's Console"** visual language: an amber **signal** (`#F2A93B`) for the live/now moment on a calm **ink** floor (`#0E1217`), with cyan **data** accents and a MesloLGS mono voice. The whole chrome follows the active theme — tab bar, terminal surface, settings, dialogs, and context menus — and you can switch themes/palettes in Settings.
 
 🎨 **[Visual styleguide](docs/design-system.html)** — a self-contained HTML reference for the whole design system's colors / type / components (open it in a browser).
 

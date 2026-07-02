@@ -10,7 +10,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -18,6 +17,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 
@@ -58,7 +58,7 @@ fun WizardStepIndicator(
             ) {
                 Text(
                     text = if (isComplete) "✓" else "${index + 1}",
-                    color = if (isActive || isComplete) Color.White else TextMuted,
+                    color = if (isActive || isComplete) TextOnAccent else TextMuted,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -138,7 +138,7 @@ fun SelectionCard(
                                 .background(AccentColor, RoundedCornerShape(4.dp))
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
-                            Text("Recommended", fontSize = 10.sp, color = Color.White)
+                            Text("Recommended", fontSize = 10.sp, color = TextOnAccent)
                         }
                     }
                     if (badge != null) {
@@ -200,7 +200,7 @@ fun CheckboxCard(
                 colors = CheckboxDefaults.colors(
                     checkedColor = AccentColor,
                     uncheckedColor = TextMuted,
-                    checkmarkColor = Color.White
+                    checkmarkColor = TextOnAccent
                 )
             )
             Spacer(modifier = Modifier.width(12.dp))

@@ -16,7 +16,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.daemon.DaemonClient
@@ -24,7 +23,9 @@ import ai.rever.bossterm.compose.daemon.DaemonProtocol
 import ai.rever.bossterm.compose.daemon.LoginServiceManager
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.SettingsSection
@@ -117,7 +118,7 @@ fun DaemonSettingsSection(
                         }
                     },
                     enabled = !busy,
-                    colors = ButtonDefaults.buttonColors(backgroundColor = AccentColor, contentColor = Color.White),
+                    colors = ButtonDefaults.buttonColors(backgroundColor = AccentColor, contentColor = TextOnAccent),
                 ) { Text("Refresh status", fontSize = 13.sp) }
 
                 Button(
@@ -133,7 +134,7 @@ fun DaemonSettingsSection(
                         }
                     },
                     enabled = !busy,
-                    colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF6B2B2B), contentColor = Color.White),
+                    colors = ButtonDefaults.buttonColors(backgroundColor = Danger.copy(alpha = 0.25f), contentColor = TextPrimary),
                 ) { Text("Quit daemon", fontSize = 13.sp) }
             }
             if (status.isNotBlank()) {

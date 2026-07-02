@@ -2,7 +2,9 @@ package ai.rever.bossterm.compose.auth
 
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.components.SettingsSection
@@ -31,7 +33,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -39,8 +40,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.rememberWindowState
 import kotlinx.coroutines.delay
-
-private val Danger = Color(0xFFE57373)
 
 /**
  * Account sign-in window — opened from the Share menus' 4th item. Magic-link flow
@@ -125,7 +124,7 @@ fun SignInWindow(
                                     Button(
                                         onClick = { send(s.email) },
                                         enabled = cooldownLeft <= 0,
-                                        colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                                        colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)
                                     ) {
                                         Text(if (cooldownLeft > 0) "Resend (${cooldownLeft}s)" else "Resend link", fontSize = 13.sp)
                                     }
@@ -166,7 +165,7 @@ fun SignInWindow(
                             Button(
                                 onClick = { send(email) },
                                 enabled = email.isNotBlank() && cooldownLeft <= 0,
-                                colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                                colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)
                             ) {
                                 Text(if (cooldownLeft > 0) "Send sign-in link (${cooldownLeft}s)" else "Send sign-in link", fontSize = 13.sp)
                             }
@@ -187,7 +186,7 @@ fun SignInWindow(
                 ) {
                     Button(
                         onClick = onDismiss,
-                        colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)
                     ) { Text("Close", fontSize = 13.sp) }
                 }
             }
@@ -227,7 +226,7 @@ private fun PasteLinkSection(
         Button(
             onClick = onVerify,
             enabled = value.isNotBlank(),
-            colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White),
+            colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent),
         ) { Text("Verify link", fontSize = 13.sp) }
     }
 }

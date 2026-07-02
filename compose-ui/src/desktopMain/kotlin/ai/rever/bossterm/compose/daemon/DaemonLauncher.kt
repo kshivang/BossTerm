@@ -314,8 +314,13 @@ object DaemonLauncher {
     }
 
     /** `<Bundle>.app` containing [path] (e.g. a bundled java.home), or null when not inside a bundle. */
-    private fun macBundleFile(path: String): File? =
-        if (path.contains(".app/Contents/")) File(path.substringBefore(".app/Contents/") + ".app") else null
+    private fun macBundleFile(path: String): File? {
+        // Normalize separators so the derivation stays a pure function of its input: real macOS
+        // paths always use '/', but the cross-OS unit tests feed platform-native paths (Windows
+        // CI passes '\'). File() converts back to the native separator on construction.
+        val p = path.replace('\\', '/')
+        return if (p.contains(".app/Contents/")) File(p.substringBefore(".app/Contents/") + ".app") else null
+    }
 
     /** Launch the GUI in a normal (non-headless, non-agent) JVM via the same JRE + classpath. */
     private fun buildGuiCommand(): List<String>? {

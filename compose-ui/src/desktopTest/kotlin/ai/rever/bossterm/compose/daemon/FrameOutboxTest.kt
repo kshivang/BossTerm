@@ -146,6 +146,47 @@ class FrameOutboxTest {
     }
 
     @Test
+    fun `heal purge - a snapshot enqueued after dropQueuedOutput is never followed by pre-snapshot output`() {
+        val outbox = FrameOutbox()
+        // Backlog for two sessions queued behind a slow drainer.
+        outbox.sendOutput("healing", "stale-1")
+        outbox.sendOutput("other", "keep-me")
+        outbox.sendOutput("healing", "stale-2")
+        // The heal (tap already detached): purge the session's queued output, THEN enqueue the
+        // fresh snapshot on the control lane and the post-snapshot prelude on the output lane.
+        outbox.dropQueuedOutput("healing")
+        outbox.sendControl(ctrl("SNAPSHOT:healing"))
+        outbox.sendOutput("healing", "post-snapshot")
+        outbox.close()
+        val got = drainAll(outbox)
+        assertEquals(
+            listOf(
+                ctrl("SNAPSHOT:healing"), // control priority — but no stale chunk left to outrank
+                FrameOutbox.Frame.Output("other", "keep-me"),
+                FrameOutbox.Frame.Output("healing", "post-snapshot"),
+            ),
+            got,
+            "pre-snapshot output for the healed session must not replay below the repaint; other sessions untouched",
+        )
+    }
+
+    @Test
+    fun `a flood of tiny chunks is bounded by the frame-count cap`() {
+        // Alternating sessions defeat coalescing; 1-char payloads stay far under the char budget,
+        // so only MAX_OUTPUT_FRAMES bounds the queue's object count.
+        val outbox = FrameOutbox()
+        val dropped = ConcurrentLinkedQueue<String>()
+        outbox.onOutputDropped = { dropped.add(it) }
+        val extra = 10
+        repeat(FrameOutbox.MAX_OUTPUT_FRAMES + extra) { outbox.sendOutput("s${it % 2}", "x") }
+        outbox.close()
+        val emitted = drainAll(outbox).filterIsInstance<FrameOutbox.Frame.Output>()
+            .sumOf { it.data.length } // coalescing merges alternating pairs, so count chars not frames
+        assertEquals(FrameOutbox.MAX_OUTPUT_FRAMES, emitted, "queue must be capped at MAX_OUTPUT_FRAMES chunks")
+        assertEquals(extra, dropped.size, "each over-cap chunk must evict (and report) the oldest")
+    }
+
+    @Test
     fun `control-lane overflow closes the outbox`() {
         val cap = 4
         val outbox = FrameOutbox(controlCapacity = cap)

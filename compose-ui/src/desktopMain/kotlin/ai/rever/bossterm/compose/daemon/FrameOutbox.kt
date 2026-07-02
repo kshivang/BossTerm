@@ -76,6 +76,12 @@ internal class FrameOutbox(
          *  client, and dropped output is healed by [onOutputDropped]'s re-snapshot. */
         const val DEFAULT_OUTPUT_CAPACITY_CHARS = 4 * 1024 * 1024
 
+        /** Secondary bound on queued output FRAMES: the char budget bounds payload heap, but each
+         *  queued chunk also costs an object + deque slot, so a pathological stream of tiny chunks
+         *  could hold millions of objects while staying under the char budget. Evicts oldest-first
+         *  past either bound. */
+        const val MAX_OUTPUT_FRAMES = 8192
+
         /** Cap on one coalesced output emission, so a huge backlog still yields to control frames. */
         const val MAX_COALESCED_CHARS = 256 * 1024
     }
@@ -93,9 +99,10 @@ internal class FrameOutbox(
         synchronized(outputLock) {
             outputQueue.addLast(Frame.Output(sessionId, data))
             outputChars += data.length
-            // Evict oldest-first past the budget, but always keep the newest chunk — a single
-            // over-budget chunk must still go out (it's bounded upstream by the PTY reader anyway).
-            while (outputChars > outputCapacity && outputQueue.size > 1) {
+            // Evict oldest-first past either bound (chars for payload heap, frames for object
+            // count), but always keep the newest chunk — a single over-budget chunk must still go
+            // out (it's bounded upstream by the PTY reader anyway).
+            while ((outputChars > outputCapacity || outputQueue.size > MAX_OUTPUT_FRAMES) && outputQueue.size > 1) {
                 val evicted = outputQueue.removeFirst()
                 outputChars -= evicted.data.length
                 (dropped ?: mutableSetOf<String>().also { dropped = it }).add(evicted.sessionId)
@@ -103,6 +110,23 @@ internal class FrameOutbox(
         }
         wake.trySend(Unit)
         dropped?.forEach { sid -> onOutputDropped?.invoke(sid) }
+    }
+
+    /**
+     * Purge every queued output chunk for [sessionId]. The drop-heal calls this right before it
+     * enqueues the fresh snapshot: control frames outrank output in [drainTo], so without the purge
+     * a snapshot would be emitted AHEAD of that session's older queued output — output whose effect
+     * the snapshot already contains — and the stale chunks would then replay below the repaint as
+     * duplicated content. Not reported via [onOutputDropped] (this IS the heal). The caller must
+     * have detached the session's tap first, so nothing re-enqueues pre-snapshot chunks after the
+     * purge; the fresh tap's prelude flush lands after the snapshot, unaffected.
+     */
+    fun dropQueuedOutput(sessionId: String) {
+        synchronized(outputLock) {
+            var removed = 0
+            outputQueue.removeAll { c -> (c.sessionId == sessionId).also { if (it) removed += c.data.length } }
+            outputChars -= removed
+        }
     }
 
     /**

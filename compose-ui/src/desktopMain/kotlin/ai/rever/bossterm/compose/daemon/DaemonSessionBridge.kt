@@ -136,7 +136,8 @@ class DaemonSessionBridge(
     fun stop() {
         running = false
         outbox?.close()
-        io.cancel()
+        io.cancel() // reaps the resize-sampler collectors too
+        resizeSamplers.clear()
         runCatching { client.close() }
     }
 

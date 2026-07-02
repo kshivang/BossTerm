@@ -283,6 +283,7 @@ class DaemonAttachServer(
         // (resync() no-ops for already-attached sessions). Re-snapshot the affected session (end +
         // begin) after a short quiet delay; one pending heal per session bounds a sustained flood
         // to a re-snapshot per delay window, and the last drop always schedules a final heal.
+        // Set BEFORE the initial resync() below, so even a drop during the first paint is reported.
         val resnapshotPending = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         outbox.onOutputDropped = { sid ->
             if (resnapshotPending.add(sid)) {
@@ -292,6 +293,10 @@ class DaemonAttachServer(
                     synchronized(lock) {
                         if (!closed) {
                             endLocked(sid)
+                            // Tap is detached — purge the session's still-queued output so the fresh
+                            // snapshot (priority control lane) isn't followed by older chunks it
+                            // already contains, replaying as duplicates below the repaint.
+                            outbox.dropQueuedOutput(sid)
                             host.get(sid)?.let { beginLocked(it) }
                         }
                     }

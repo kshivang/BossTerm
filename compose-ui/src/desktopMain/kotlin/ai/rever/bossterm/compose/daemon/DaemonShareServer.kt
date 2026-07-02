@@ -744,6 +744,9 @@ class DaemonShareServer(
                     synchronized(attachLock) {
                         if (!viewerClosed) {
                             endLocked(pid)
+                            // Tap is detached — purge the pane's still-queued output so the fresh
+                            // snapshot isn't followed by older chunks it already contains.
+                            vc.outbox.dropQueuedOutput(pid)
                             inScopeCores(def).firstOrNull { it.id == pid }?.let { beginLocked(it) }
                         }
                     }
@@ -787,7 +790,12 @@ class DaemonShareServer(
                         is FrameOutbox.Frame.Text -> f.text
                         // Coalesced pane bytes → one PaneOutput, encoded here at drain time.
                         is FrameOutbox.Frame.Output -> ShareProtocol.encodeServer(ServerMessage.PaneOutput(f.sessionId, f.data))
-                        is FrameOutbox.Frame.Binary -> return@drainTo // not used on the share path
+                        is FrameOutbox.Frame.Binary -> {
+                            // Never enqueued on the share path — loud skip so a future mis-wiring
+                            // surfaces instead of silently dropping a frame.
+                            log.warn("share viewer {}: dropping unexpected binary control frame", vc.id)
+                            return@drainTo
+                        }
                     }
                     sc?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
                 }

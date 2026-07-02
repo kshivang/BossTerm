@@ -6,6 +6,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -80,6 +81,44 @@ class TerminalSessionCoreTest {
             assertTrue(seen.await(10, TimeUnit.SECONDS), "cat should echo the written input back over the PTY")
         } finally {
             core.close()
+        }
+    }
+
+    @Test
+    fun `a rapid writeInput burst preserves order end-to-end`() {
+        if (ShellCustomizationUtils.isWindows()) return
+
+        // Regression for input reordering under backpressure: a bounded write channel with a
+        // suspending fallback could enqueue a later write ahead of an earlier one once a slot
+        // freed. 400 writes also crosses the old 256-slot boundary while the write consumer is
+        // still parked on connected.await() (writes sent immediately after start()).
+        //
+        // Oracle: `cat > file` — the file receives exactly the bytes cat read from the PTY, in
+        // order. (Asserting on the raw PTY output stream instead is flaky: tty echo and cat's
+        // copies interleave at byte granularity, and an echo copy split mid-marker makes a
+        // first-occurrence scan misreport order even when the input was perfectly ordered.)
+        val n = 400
+        val markers = (0 until n).map { "ORD_%04d".format(it) }
+        val sink = java.io.File.createTempFile("bossterm-order", ".txt")
+
+        val core = TerminalSessionCore(
+            settings = TerminalSettings.DEFAULT,
+            workingDir = System.getProperty("java.io.tmpdir"),
+            command = "/bin/sh",
+            arguments = listOf("-c", "exec cat > '${sink.absolutePath}'"),
+        )
+        core.start()
+        try {
+            markers.forEach { core.writeInput("$it\n") } // burst, no pacing
+            val expected = markers.joinToString("\n", postfix = "\n")
+            assertTrue(
+                awaitTrue(15_000) { sink.length() >= expected.length.toLong() },
+                "cat should drain the whole burst to the file (got ${sink.length()}/${expected.length} bytes)",
+            )
+            assertEquals(expected, sink.readText(), "input must reach the shell intact and in write order")
+        } finally {
+            core.close()
+            sink.delete()
         }
     }
 

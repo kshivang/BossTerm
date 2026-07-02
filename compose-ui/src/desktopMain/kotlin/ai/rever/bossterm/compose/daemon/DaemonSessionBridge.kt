@@ -93,11 +93,14 @@ class DaemonSessionBridge(
     private val resizeSamplers = ConcurrentHashMap<String, ResizeSampler>()
 
     /**
-     * Send a Resize for [id], sampled: the first request goes out immediately; while requests keep
-     * arriving faster than [RESIZE_MIN_INTERVAL_MS] the StateFlow conflates them and the collector
-     * forwards only the latest per interval — ending, once the burst stops, with the final grid
-     * (a StateFlow always retains the last value). Equal grids dedup for free (StateFlow skips
-     * value-equal updates).
+     * Send a Resize for [id], sampled: the first request is forwarded as soon as the sampler's
+     * collector starts (one dispatch hop onto [io] — the StateFlow retains the value, so nothing
+     * is lost, just not strictly synchronous); while requests keep arriving faster than
+     * [RESIZE_MIN_INTERVAL_MS] the StateFlow conflates them and the collector forwards only the
+     * latest per interval — ending, once the burst stops, with the final grid (a StateFlow always
+     * retains the last value). Equal grids dedup for free (StateFlow skips value-equal updates).
+     * Sampler creation (layout callbacks) and removal ([closeMirror]/[closeMirrorContainer]) are
+     * both Main-confined, so they can't interleave.
      */
     private fun sendResizeSampled(id: String, cols: Int, rows: Int) {
         val sampler = resizeSamplers.computeIfAbsent(id) {

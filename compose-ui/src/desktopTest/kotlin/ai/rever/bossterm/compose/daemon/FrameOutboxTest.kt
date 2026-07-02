@@ -171,6 +171,24 @@ class FrameOutboxTest {
     }
 
     @Test
+    fun `one coalesced emission is capped at MAX_COALESCED_CHARS`() {
+        // 5 × 100k-char chunks for one session: the merger stops appending once the merged length
+        // reaches the cap (it may overshoot by at most one chunk), so control frames still get a
+        // turn between emissions even against a huge same-session backlog.
+        val outbox = FrameOutbox()
+        val chunk = "x".repeat(100_000)
+        repeat(5) { outbox.sendOutput("big", chunk) }
+        outbox.close()
+        val sizes = drainAll(outbox).filterIsInstance<FrameOutbox.Frame.Output>().map { it.data.length }
+        assertEquals(500_000, sizes.sum(), "no bytes lost to the cap")
+        assertTrue(sizes.size > 1, "a 500k backlog must not merge into a single emission")
+        assertTrue(
+            sizes.all { it <= FrameOutbox.MAX_COALESCED_CHARS + chunk.length },
+            "each emission stays within the cap plus at most one chunk of overshoot, was $sizes",
+        )
+    }
+
+    @Test
     fun `a flood of tiny chunks is bounded by the frame-count cap`() {
         // Alternating sessions defeat coalescing; 1-char payloads stay far under the char budget,
         // so only MAX_OUTPUT_FRAMES bounds the queue's object count.

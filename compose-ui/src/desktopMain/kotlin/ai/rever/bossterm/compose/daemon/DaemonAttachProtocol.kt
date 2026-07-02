@@ -122,6 +122,10 @@ object DaemonAttachProtocol {
             }
         }
 
+        // The 1-byte id length is deliberate: session ids are 36-char UUIDs (TerminalSessionCore
+        // defaults them), so 255 bytes is ~7x headroom. The invariant is enforced here on the
+        // encode side only — decode masks the length byte and bounds-checks, so a hostile frame
+        // can't overread; only a producer minting a >255-byte id would ever trip this.
         private fun idBytes(sessionId: String): ByteArray =
             sessionId.toByteArray(Charsets.UTF_8).also {
                 require(it.size <= 255) { "session id too long for binary framing: ${it.size} bytes" }

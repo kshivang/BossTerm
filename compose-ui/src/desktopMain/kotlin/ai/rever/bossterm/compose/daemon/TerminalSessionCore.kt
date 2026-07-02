@@ -245,20 +245,16 @@ class TerminalSessionCore(
         }
     }
 
-    // trySend first: it succeeds unless 256 writes are already queued, keeping the keystroke path
-    // free of a per-call coroutine launch + dispatch hop (and strictly FIFO for a single producer).
-    // Only the rare full-queue case falls back to a suspending enqueue.
+    // One non-suspending trySend per write: on the unbounded channel it cannot fail while the
+    // session is open, so the keystroke path has no coroutine launch and ordering is structural
+    // (see [writeChannel]). After close() the channel is closed and the write is dropped — the
+    // PTY is gone anyway.
     fun writeInput(text: String) {
-        enqueueWrite(WriteOp.Text(text))
+        writeChannel.trySend(WriteOp.Text(text))
     }
 
     fun writeBytes(bytes: ByteArray) {
-        enqueueWrite(WriteOp.Raw(bytes))
-    }
-
-    private fun enqueueWrite(op: WriteOp) {
-        if (writeChannel.trySend(op).isSuccess) return
-        scope.launch { runCatching { writeChannel.send(op) } }
+        writeChannel.trySend(WriteOp.Raw(bytes))
     }
 
     // Last requested grid size, so a resize that arrives before the PTY is spawned (handle still null)
@@ -318,7 +314,14 @@ class TerminalSessionCore(
         class Raw(val data: ByteArray) : WriteOp()
     }
 
-    private val writeChannel = Channel<WriteOp>(capacity = 256)
+    // A single UNBOUNDED FIFO pipe for everything written to the PTY — user input, pastes, and
+    // emulator replies. Unbounded so every producer is one non-suspending trySend: a bounded
+    // channel needs a suspending fallback under backpressure, and any two-path enqueue can reorder
+    // a write past one that arrived earlier once a slot frees (silent corruption of a byte
+    // stream). Not a new memory risk: the bounded version parked each overflowing write in its own
+    // suspended coroutine, holding the same bytes with more overhead — a wedged PTY grew the heap
+    // either way, and input volume is human/MCP-scale.
+    private val writeChannel = Channel<WriteOp>(capacity = Channel.UNLIMITED)
     @Volatile private var writeConsumer: Job? = null
 
     /**
@@ -347,9 +350,9 @@ class TerminalSessionCore(
     /**
      * Routes emulator-generated replies (DA, cursor reports, …) back to the PTY. Enqueued onto the
      * SAME [writeChannel] as user input, so a reply can't interleave its bytes mid-sequence with a
-     * keystroke — a single [writeConsumer] owns the PTY's outputStream. trySend (non-suspending) keeps
-     * the emulator thread unblocked; a reply is dropped only if 256 writes are already queued (never in
-     * practice). Ordered with input, as the queue guarantees.
+     * keystroke — a single [writeConsumer] owns the PTY's outputStream. trySend (non-suspending)
+     * keeps the emulator thread unblocked and, on the unbounded channel, never drops while the
+     * session is open. Ordered with input, as the queue guarantees.
      */
     private inner class PtyTerminalOutput : TerminalOutputStream {
         override fun sendBytes(response: ByteArray, userInput: Boolean) {

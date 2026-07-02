@@ -4,6 +4,7 @@ import ai.rever.bossterm.compose.TabbedTerminalState
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -109,7 +110,7 @@ object DaemonBridgeCoordinator {
                     ?: return@withTimeoutOrNull null
                 if (activeState !== state) return@withTimeoutOrNull null
                 // The controller is Compose state set during composition — observe it, don't poll it.
-                ep to snapshotFlow { state.tabController }.first { it != null }
+                ep to snapshotFlow { state.tabController }.filterNotNull().first()
             }
             if (ready == null) {
                 if (bridge == null && activeState === state) {
@@ -118,7 +119,7 @@ object DaemonBridgeCoordinator {
                 return@launch
             }
             val (endpoint, ctrl) = ready
-            if (activeState === state && bridge == null && ctrl != null) {
+            if (activeState === state && bridge == null) {
                 bridge = DaemonSessionBridge(ctrl, state.splitStates, endpoint.port, endpoint.secret, uiScope).also { it.start() }
                 log.info("Daemon session bridge attached (attachPort={})", endpoint.port)
             }

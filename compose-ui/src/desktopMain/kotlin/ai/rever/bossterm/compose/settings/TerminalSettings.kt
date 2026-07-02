@@ -926,21 +926,23 @@ data class TerminalSettings(
     /**
      * Master switch for the BossTerm session daemon — a long-lived background process that owns
      * terminal sessions, the MCP server, and session sharing, so they survive the GUI closing.
-     * Defaults to true: the GUI spawns/connects the daemon and hosts MCP there, and sessions outlive
-     * the window. Set to false to fall back to the pre-daemon behavior (in-process MCP/sharing,
-     * sessions die with the window) — that path is preserved byte-for-byte. The daemon is started
-     * on-demand by the GUI; see also [startDaemonAtLogin] for an always-on at-login service.
+     * Defaults to false (opt-in): out of the box BossTerm uses the pre-daemon behavior (in-process
+     * MCP/sharing, sessions die with the window) — that path is preserved byte-for-byte. Set to
+     * true to have the GUI spawn/connect the daemon, host MCP there, and let sessions outlive the
+     * window. The daemon is started on-demand by the GUI; see also [startDaemonAtLogin] for an
+     * always-on at-login service.
      */
-    val daemonEnabled: Boolean = true,
+    val daemonEnabled: Boolean = false,
 
     /**
      * Install a per-OS login service (macOS LaunchAgent / Linux systemd user unit / Windows Run
      * key) so the daemon starts at login — always available, even before the GUI is first opened.
-     * Defaults on and is coupled to [daemonEnabled]: enabling the daemon also schedules it at login
-     * (the daemon is meant to be always-available); only meaningful while [daemonEnabled] is true.
-     * The toggle install/uninstalls the service via LoginServiceManager.
+     * Defaults off, matching [daemonEnabled], and stays coupled to it: enabling the daemon also
+     * schedules it at login (an enabled daemon is meant to be always-available); only meaningful
+     * while [daemonEnabled] is true. The toggle install/uninstalls the service via
+     * LoginServiceManager.
      */
-    val startDaemonAtLogin: Boolean = true,
+    val startDaemonAtLogin: Boolean = false,
 
     // ===== Session sharing / remote control (issue #276) =====
 

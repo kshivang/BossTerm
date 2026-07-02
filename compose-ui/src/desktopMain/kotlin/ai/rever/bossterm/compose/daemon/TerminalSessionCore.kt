@@ -245,12 +245,20 @@ class TerminalSessionCore(
         }
     }
 
+    // trySend first: it succeeds unless 256 writes are already queued, keeping the keystroke path
+    // free of a per-call coroutine launch + dispatch hop (and strictly FIFO for a single producer).
+    // Only the rare full-queue case falls back to a suspending enqueue.
     fun writeInput(text: String) {
-        scope.launch { runCatching { writeChannel.send(WriteOp.Text(text)) } }
+        enqueueWrite(WriteOp.Text(text))
     }
 
     fun writeBytes(bytes: ByteArray) {
-        scope.launch { runCatching { writeChannel.send(WriteOp.Raw(bytes)) } }
+        enqueueWrite(WriteOp.Raw(bytes))
+    }
+
+    private fun enqueueWrite(op: WriteOp) {
+        if (writeChannel.trySend(op).isSuccess) return
+        scope.launch { runCatching { writeChannel.send(op) } }
     }
 
     // Last requested grid size, so a resize that arrives before the PTY is spawned (handle still null)

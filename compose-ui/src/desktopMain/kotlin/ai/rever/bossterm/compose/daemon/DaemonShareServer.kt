@@ -139,6 +139,9 @@ class DaemonShareServer(
         const val GRANT_MAX_LIFETIME_MS = 7L * 24 * 60 * 60 * 1000
         /** Cap on the per-viewer prelude buffer (output racing a snapshot encode) — bounds heap. */
         const val MAX_PRELUDE_CHARS = 1_000_000
+        /** Delay before re-snapshotting a pane whose output was dropped under back-pressure —
+         *  long enough to coalesce a burst of drops into one heal, short enough to feel instant. */
+        const val RESNAPSHOT_DELAY_MS = 500L
     }
 
     /** A granted device key: which share, its role, the client it was issued to, and its windows. */
@@ -201,7 +204,7 @@ class DaemonShareServer(
         val viewerCount: Int get() = viewers.size
 
         fun broadcast(msg: ServerMessage) {
-            val text = ShareProtocol.encodeServer(msg)
+            val text = FrameOutbox.Frame.Text(ShareProtocol.encodeServer(msg))
             // Broadcasts (Layout / Presence / Theme / ...) are all control-lane (guaranteed) frames.
             for (v in viewers) v.outbox.sendControl(text)
         }
@@ -680,23 +683,26 @@ class DaemonShareServer(
                         else -> { p.add(d); preludeChars += d.length; true }
                     }
                 }
-                if (!held) vc.outbox.sendOutput(ShareProtocol.encodeServer(ServerMessage.PaneOutput(core.id, d)))
+                // Raw chunk, not a pre-encoded PaneOutput: the writer encodes at drain time, so the
+                // outbox can coalesce queued same-pane chunks into ONE PaneOutput (concatenated pane
+                // bytes are protocol-equivalent, and a backlog collapses into few frames).
+                if (!held) vc.outbox.sendOutput(core.id, d)
             }
             core.addRawOutputListener(tap)
             // One-time styled initial paint (identical encoder to the attach server / MirrorShare).
-            vc.outbox.sendControl(ShareProtocol.encodeServer(ServerMessage.PaneSnapshot(
+            vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(ServerMessage.PaneSnapshot(
                 core.id,
                 TerminalSnapshotEncoder.encode(core.textBuffer.createSnapshot(), core.terminal.cursorX, core.terminal.cursorY),
                 sz.columns, sz.rows,
-            )))
+            ))))
             synchronized(preludeLock) {
-                prelude?.forEach { vc.outbox.sendOutput(ShareProtocol.encodeServer(ServerMessage.PaneOutput(core.id, it))) }
+                prelude?.forEach { vc.outbox.sendOutput(core.id, it) }
                 prelude = null
             }
             // Push PaneResize whenever the grid changes (a TUI resizing it), so the viewer's xterm.js follows.
             val sizeJob = ws.launch {
                 core.display.termSizeFlow.collect {
-                    vc.outbox.sendControl(ShareProtocol.encodeServer(ServerMessage.PaneResize(core.id, it.columns, it.rows)))
+                    vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(ServerMessage.PaneResize(core.id, it.columns, it.rows))))
                 }
             }
             attachments[core.id] = Attachment(core, tap, sizeJob)
@@ -709,18 +715,41 @@ class DaemonShareServer(
             }
         }
 
+        // Set under [attachLock] in the finally — a resync/heal already dispatched on another thread
+        // must not re-register taps after teardown (they'd fire forever on a dead connection).
+        var viewerClosed = false
+
         // Re-sync taps + resend Layout when the host's session set (or this scope's session) changes.
         fun resync() {
             synchronized(attachLock) {
+                if (viewerClosed) return
                 val live = inScopeCores(def).associateBy { it.id }
                 (attachments.keys - live.keys).toList().forEach { endLocked(it) }
                 live.values.forEach { beginLocked(it) }
             }
-            vc.outbox.sendControl(ShareProtocol.encodeServer(layoutFor(def)))
+            vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(layoutFor(def))))
         }
 
         val onChange: () -> Unit = { resync() }
         host.addChangeListener(onChange)
+
+        // Heal a viewer whose incremental output was evicted under back-pressure (slow remote link):
+        // re-snapshot the affected pane after a quiet delay — same pattern as the attach server.
+        val resnapshotPending = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        vc.outbox.onOutputDropped = { pid ->
+            if (resnapshotPending.add(pid)) {
+                ws.launch {
+                    delay(RESNAPSHOT_DELAY_MS)
+                    resnapshotPending.remove(pid) // before healing: drops during the heal re-arm it
+                    synchronized(attachLock) {
+                        if (!viewerClosed) {
+                            endLocked(pid)
+                            inScopeCores(def).firstOrNull { it.id == pid }?.let { beginLocked(it) }
+                        }
+                    }
+                }
+            }
+        }
 
         // Register the viewer UNDER [mutex] and verify the share is still live + under the viewer cap.
         // stopShare clears def.viewers under the lock, so adding outside it could orphan a viewer that
@@ -753,7 +782,13 @@ class DaemonShareServer(
         val sc = serverCipher
         val writer = ws.launch {
             try {
-                vc.outbox.drainTo { text ->
+                vc.outbox.drainTo { f ->
+                    val text = when (f) {
+                        is FrameOutbox.Frame.Text -> f.text
+                        // Coalesced pane bytes → one PaneOutput, encoded here at drain time.
+                        is FrameOutbox.Frame.Output -> ShareProtocol.encodeServer(ServerMessage.PaneOutput(f.sessionId, f.data))
+                        is FrameOutbox.Frame.Binary -> return@drainTo // not used on the share path
+                    }
                     sc?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
                 }
             } catch (_: Throwable) { /* socket gone */ }
@@ -769,7 +804,10 @@ class DaemonShareServer(
             // client gone
         } finally {
             host.removeChangeListener(onChange)
-            synchronized(attachLock) { attachments.keys.toList().forEach { endLocked(it) } }
+            synchronized(attachLock) {
+                viewerClosed = true
+                attachments.keys.toList().forEach { endLocked(it) }
+            }
             writer.cancel()
             if (def.viewers.remove(vc)) {
                 runCatching { vc.outbox.close() }

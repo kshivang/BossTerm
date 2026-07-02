@@ -620,8 +620,9 @@ fun TabbedTerminal(
                 // don't end up with a stray local tab alongside the daemon-hosted ones. Safety: if the
                 // bridge never attaches (daemon unreachable), fall back to a local tab after a grace
                 // period so the window isn't stuck empty. The grace window must exceed the bridge's own
-                // attach window (DaemonBridgeCoordinator.register polls ~15s) and short-circuits the
-                // moment the bridge attaches — otherwise an 8–15s attach leaves a stray local tab.
+                // attach window (DaemonBridgeCoordinator waits up to ~15s, event-driven) and
+                // short-circuits the moment the bridge attaches — otherwise an 8–15s attach leaves a
+                // stray local tab.
                 var waited = 0
                 while (waited < 16000 && tabController.tabs.isEmpty() &&
                     !ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached &&

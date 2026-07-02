@@ -1,102 +1,169 @@
 package ai.rever.bossterm.compose.daemon
 
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.selects.select
 
 /**
  * A per-connection send queue with TWO lanes, drained by ONE writer coroutine:
  *
- *  - [sendControl] — **guaranteed delivery** (unbounded). Full-paint snapshots, session/layout lists,
- *    lifecycle (closed), and resizes go here: dropping one corrupts the mirror until the next resync,
- *    so they must never be evicted.
- *  - [sendOutput] — **best-effort** (bounded, DROP_OLDEST). Incremental PTY output goes here: a stalled
- *    client must never back-pressure the PTY, so the oldest output is dropped under load and the next
- *    snapshot/resync heals it.
+ *  - [sendControl] — **guaranteed delivery** (bounded channel). Full-paint snapshots, session/layout
+ *    lists, lifecycle (closed), and resizes go here: dropping one corrupts the mirror until the next
+ *    resync, so they must never be evicted.
+ *  - [sendOutput] — **best-effort** (char-bounded deque, drop-oldest). Incremental PTY output goes
+ *    here: a stalled client must never back-pressure the PTY, so the oldest output is dropped under
+ *    load. Each drop reports the affected session via [onOutputDropped], so the connection can
+ *    re-snapshot it (the drop would otherwise silently corrupt the mirror until reconnect).
  *
- * [drainTo] fully flushes the control lane before each output frame, so a snapshot always reaches the
- * client before the output it anchors — without relying on a single channel's FIFO (where a burst of
- * output could otherwise evict the snapshot). Both lanes are non-blocking ([Channel.trySend]) so
- * producers on PTY / emulator threads never suspend.
+ * [drainTo] fully flushes the control lane before each output emission, so a snapshot always reaches
+ * the client before the output it anchors. On drain, consecutive queued chunks for the SAME session
+ * are **coalesced** into one [Frame.Output] (bounded by [MAX_COALESCED_CHARS]) — only what is already
+ * queued is merged, never awaited, so coalescing adds zero latency while collapsing a backlog of
+ * small PTY chunks into few large frames (fewer websocket frames + syscalls under bulk output).
+ * Both lanes are non-blocking on the producer side, so PTY / emulator threads never suspend.
  *
- * Replaces the previous single `Channel(4096, DROP_OLDEST)` that funneled *every* frame — including
- * snapshots — through the droppable path (issue: a burst could evict a snapshot, blanking the mirror).
+ * The output lane is bounded in CHARS (not frames): frame counts made the real memory bound depend
+ * on chunk size (4096 frames × 64KB-max chunks), while a char budget is what the heap actually holds.
  */
-internal class FrameOutbox(outputCapacity: Int = 4096, controlCapacity: Int = 1024) {
+internal class FrameOutbox(
+    outputCapacityChars: Int = DEFAULT_OUTPUT_CAPACITY_CHARS,
+    controlCapacity: Int = 1024,
+) {
+    /** What [drainTo] hands the socket writer. */
+    sealed interface Frame {
+        /** A JSON control frame (session/group lists, lifecycle, share state, …). */
+        data class Text(val text: String) : Frame
+
+        /** A pre-encoded binary control frame (snapshot). */
+        class Binary(val bytes: ByteArray) : Frame
+
+        /** Coalesced incremental output for one session; encoded to a binary frame at send time. */
+        data class Output(val sessionId: String, val data: String) : Frame
+    }
+
     // Control frames must not be DROPPED, but the lane is still BOUNDED: a wedged client (socket
     // reader stalled) plus repeated resync() — each pushing a full-scrollback Snapshot — would
     // otherwise grow the heap without limit. A client that can't even keep up with control frames is
     // unrecoverable, so on overflow we close the outbox: the writer ends, the connection drops, and
-    // the GUI reconnects to a fresh snapshot. (Was Channel.UNLIMITED, which defeated the backpressure
-    // guarantee the outbox exists to provide.)
-    //
-    // This is NOT an unbounded "reconnect storm": the reconnect is paced by DaemonSessionBridge's
-    // exponential backoff (250ms→4s), and a fresh attach replays only ONE current snapshot per session
-    // (resync's beginLocked snapshots a session once, on first attach) — never the dropped backlog. So
-    // a persistently-wedged client settles into slow backoff retries, not a tight loop. Hard-closing a
-    // truly-stuck connection is preferred over coalescing here: coalescing redundant control frames
-    // would require the outbox to parse frame semantics it deliberately treats as opaque bytes.
-    private val control = Channel<String>(capacity = controlCapacity)
-    private val output = Channel<String>(capacity = outputCapacity, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    // the GUI reconnects to a fresh snapshot. (Reconnects are paced by DaemonSessionBridge's
+    // exponential backoff, so a persistently-wedged client settles into slow retries.)
+    private val control = Channel<Frame>(capacity = controlCapacity)
+
+    // Output lane: a plain deque under a lock (not a Channel) so eviction can report WHICH session
+    // lost data ([onOutputDropped]) and so [takeCoalesced] can peek/merge same-session runs.
+    private val outputLock = Any()
+    private val outputQueue = ArrayDeque<Frame.Output>()
+    private var outputChars = 0
+    private val outputCapacity = outputCapacityChars.coerceAtLeast(1)
+
+    // Wakes an idle drainer when output arrives (CONFLATED: one pending signal is enough — the
+    // drainer sweeps the whole deque per pass).
+    private val wake = Channel<Unit>(capacity = Channel.CONFLATED)
+
     @Volatile private var closed = false
 
+    /**
+     * Invoked (outside the queue lock, on the producing thread) with the session id of each evicted
+     * output chunk. The attach connection uses it to schedule a healing re-snapshot — without it a
+     * drop silently corrupts the mirror until the socket reconnects.
+     */
+    @Volatile var onOutputDropped: ((sessionId: String) -> Unit)? = null
+
     internal companion object {
-        /** Max control frames drained before yielding to one output frame (fairness; see [drainTo]). */
+        /** Max control frames drained before yielding to one output emission (fairness; see [drainTo]). */
         const val CONTROL_BURST = 64
+
+        /** Output-lane budget. ~8MB of UTF-16 heap; a backlog beyond this means a badly stalled
+         *  client, and dropped output is healed by [onOutputDropped]'s re-snapshot. */
+        const val DEFAULT_OUTPUT_CAPACITY_CHARS = 4 * 1024 * 1024
+
+        /** Cap on one coalesced output emission, so a huge backlog still yields to control frames. */
+        const val MAX_COALESCED_CHARS = 256 * 1024
     }
 
     /** Enqueue a frame that must not be dropped (snapshot / list / lifecycle / resize). */
-    fun sendControl(text: String) {
+    fun sendControl(frame: Frame) {
         if (closed) return
-        if (control.trySend(text).isFailure) close() // saturated → unrecoverable client; drop it
+        if (control.trySend(frame).isFailure) close() // saturated → unrecoverable client; drop it
     }
 
     /** Enqueue incremental output that may be dropped under back-pressure. */
-    fun sendOutput(text: String) {
-        if (!closed) output.trySend(text)
+    fun sendOutput(sessionId: String, data: String) {
+        if (closed || data.isEmpty()) return
+        var dropped: MutableSet<String>? = null
+        synchronized(outputLock) {
+            outputQueue.addLast(Frame.Output(sessionId, data))
+            outputChars += data.length
+            // Evict oldest-first past the budget, but always keep the newest chunk — a single
+            // over-budget chunk must still go out (it's bounded upstream by the PTY reader anyway).
+            while (outputChars > outputCapacity && outputQueue.size > 1) {
+                val evicted = outputQueue.removeFirst()
+                outputChars -= evicted.data.length
+                (dropped ?: mutableSetOf<String>().also { dropped = it }).add(evicted.sessionId)
+            }
+        }
+        wake.trySend(Unit)
+        dropped?.forEach { sid -> onOutputDropped?.invoke(sid) }
     }
 
     /**
-     * Drain both lanes until either is closed, handing each frame to [emit] (which writes it to the
-     * socket). Drains all pending control frames before each single output frame; suspends on both
-     * when idle. Returns when a lane is closed.
+     * Take the head output chunk plus every immediately-queued successor for the SAME session,
+     * merged into one [Frame.Output]. Never waits for more data. Null if the lane is empty.
      */
-    suspend fun drainTo(emit: suspend (String) -> Unit) {
+    private fun takeCoalesced(): Frame.Output? = synchronized(outputLock) {
+        val first = outputQueue.removeFirstOrNull() ?: return null
+        outputChars -= first.data.length
+        if (outputQueue.firstOrNull()?.sessionId != first.sessionId) return first
+        val sb = StringBuilder(first.data)
+        while (sb.length < MAX_COALESCED_CHARS) {
+            val next = outputQueue.firstOrNull() ?: break
+            if (next.sessionId != first.sessionId) break
+            outputQueue.removeFirst()
+            outputChars -= next.data.length
+            sb.append(next.data)
+        }
+        Frame.Output(first.sessionId, sb.toString())
+    }
+
+    /**
+     * Drain both lanes, handing each frame to [emit] (which writes it to the socket). Drains all
+     * pending control frames (up to [CONTROL_BURST] per pass, so control churn can't starve output)
+     * before each single coalesced output emission; suspends when idle. Returns once the outbox is
+     * closed and everything buffered has been flushed.
+     */
+    suspend fun drainTo(emit: suspend (Frame) -> Unit) {
         while (true) {
-            // 1) Flush pending control frames first (priority) — but at most CONTROL_BURST per pass, so a
-            // lane that's continuously fed control frames (e.g. rapid title/cwd churn rebuilding the
-            // session list) can't starve terminal output forever. Control is never DROPPED here, only
-            // interleaved: the remaining control frames are drained on the next pass.
+            // 1) Flush pending control frames first (priority), capped per pass for fairness.
             var drainedControl = false
+            var controlClosed = false
             var burst = 0
             while (burst < CONTROL_BURST) {
                 val r = control.tryReceive()
                 when {
                     r.isSuccess -> { emit(r.getOrThrow()); drainedControl = true; burst++ }
-                    r.isClosed -> return
+                    r.isClosed -> { controlClosed = true; break }
                     else -> break // control lane empty
                 }
             }
-            // 2) Then a single output frame (re-checking control on the next loop).
-            val o = output.tryReceive()
-            when {
-                o.isSuccess -> { emit(o.getOrThrow()); continue }
-                o.isClosed -> return
-            }
+            // 2) Then a single coalesced output emission (re-checking control on the next loop).
+            val merged = takeCoalesced()
+            if (merged != null) { emit(merged); continue }
             // 3) If control had frames this pass, loop to re-check before suspending.
             if (drainedControl) continue
-            // 4) Both lanes idle — suspend until either delivers (or closes).
-            val closed = select<Boolean> {
+            // 4) Both lanes idle. If the outbox is closed, everything is flushed — done.
+            if (controlClosed || closed) return
+            // 5) Suspend until a control frame or an output wake (or close).
+            val ended = select<Boolean> {
                 control.onReceiveCatching { r -> if (r.isClosed) true else { emit(r.getOrThrow()); false } }
-                output.onReceiveCatching { r -> if (r.isClosed) true else { emit(r.getOrThrow()); false } }
+                // A wake signal (or wake-close) just re-runs the loop, which sweeps both lanes.
+                wake.onReceiveCatching { false }
             }
-            if (closed) return
+            if (ended) return
         }
     }
 
     fun close() {
         closed = true
         runCatching { control.close() }
-        runCatching { output.close() }
+        runCatching { wake.close() }
     }
 }

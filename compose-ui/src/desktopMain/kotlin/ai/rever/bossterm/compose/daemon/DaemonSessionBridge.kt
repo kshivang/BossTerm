@@ -16,12 +16,15 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import ai.rever.bossterm.compose.settings.SettingsManager
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -74,9 +77,44 @@ class DaemonSessionBridge(
     @Volatile private var sawAnySession = false
 
     private companion object {
+        /** Min spacing between daemon-bound Resize sends per session. Auto-fit fires per layout
+         *  tick during a live window drag, and every Resize reflows the daemon's full scrollback
+         *  (then the Resized echo reflows the mirror's) — throttle to one grid per interval,
+         *  first send immediate, final value always delivered. */
+        const val RESIZE_MIN_INTERVAL_MS = 50L
+
         /** Home + clear screen + clear scrollback — prepended to a snapshot so a reattach repaint
          *  replaces (not appends below) the mirror tab's existing content. */
         const val SNAPSHOT_RESET = "\u001b[H\u001b[2J\u001b[3J"
+    }
+
+    /** sessionId → its pending grid + sampler job (see [sendResizeSampled]). */
+    private class ResizeSampler(val grid: MutableStateFlow<Pair<Int, Int>?>, val job: Job)
+    private val resizeSamplers = ConcurrentHashMap<String, ResizeSampler>()
+
+    /**
+     * Send a Resize for [id], sampled: the first request goes out immediately; while requests keep
+     * arriving faster than [RESIZE_MIN_INTERVAL_MS] the StateFlow conflates them and the collector
+     * forwards only the latest per interval — ending, once the burst stops, with the final grid
+     * (a StateFlow always retains the last value). Equal grids dedup for free (StateFlow skips
+     * value-equal updates).
+     */
+    private fun sendResizeSampled(id: String, cols: Int, rows: Int) {
+        val sampler = resizeSamplers.computeIfAbsent(id) {
+            val grid = MutableStateFlow<Pair<Int, Int>?>(null)
+            val job = io.launch {
+                grid.filterNotNull().collect { (c, r) ->
+                    send(DaemonAttachProtocol.Client.Resize(id, c, r))
+                    delay(RESIZE_MIN_INTERVAL_MS) // conflation window: intermediate grids are skipped
+                }
+            }
+            ResizeSampler(grid, job)
+        }
+        sampler.grid.value = cols to rows
+    }
+
+    private fun dropResizeSampler(id: String) {
+        resizeSamplers.remove(id)?.job?.cancel()
     }
 
     fun start() {
@@ -175,8 +213,13 @@ class DaemonSessionBridge(
                 }
                 try {
                     for (frame in incoming) {
-                        if (frame !is Frame.Text) continue
-                        val msg = runCatching { DaemonAttachProtocol.decodeServer(frame.readText()) }.getOrNull() ?: continue
+                        // v3: Output/Snapshot arrive as binary frames (raw UTF-8 payload, no JSON
+                        // escaping on the hot path); everything else stays JSON text.
+                        val msg = when (frame) {
+                            is Frame.Text -> runCatching { DaemonAttachProtocol.decodeServer(frame.readText()) }.getOrNull()
+                            is Frame.Binary -> DaemonAttachProtocol.BinaryFrame.decode(frame.data)
+                            else -> null
+                        } ?: continue
                         dispatch(msg)
                     }
                 } finally {
@@ -295,7 +338,7 @@ class DaemonSessionBridge(
                     remotePaneId = meta.id,
                     onUserInput = { data -> send(DaemonAttachProtocol.Client.Input(meta.id, data)) },
                 )
-                tab.onRemoteFit = { cols, rows -> send(DaemonAttachProtocol.Client.Resize(meta.id, cols, rows)) }
+                tab.onRemoteFit = { cols, rows -> sendResizeSampled(meta.id, cols, rows) }
                 tab.workingDirectory.value = meta.cwd
                 tabs[meta.id] = tab
                 controller.createTabFromExistingSession(tab)
@@ -365,7 +408,7 @@ class DaemonSessionBridge(
             title = "",
             remotePaneId = sessionId,
             onUserInput = { data -> send(DaemonAttachProtocol.Client.Input(sessionId, data)) },
-        ).also { it.onRemoteFit = { cols, rows -> send(DaemonAttachProtocol.Client.Resize(sessionId, cols, rows)) } }
+        ).also { it.onRemoteFit = { cols, rows -> sendResizeSampled(sessionId, cols, rows) } }
 
     /** [GroupTreeDto] -> [SplitNode], reusing/creating leaf mirrors by session id via the same
      *  `tabs` cache the flat path uses. */
@@ -387,6 +430,7 @@ class DaemonSessionBridge(
      *  the container tab. Mirrors `RemoteSessionManager.removeMirrorTab`. Must run on Main. */
     private fun closeMirrorContainer(container: TerminalTab) {
         splitStates[container.id]?.getAllSessions()?.filterIsInstance<TerminalTab>()?.forEach { mirror ->
+            tabs.entries.filter { it.value === mirror }.forEach { dropResizeSampler(it.key) }
             tabs.entries.removeIf { it.value === mirror }
             runCatching { mirror.dispose() }
         }
@@ -402,6 +446,7 @@ class DaemonSessionBridge(
     }
 
     private suspend fun closeMirror(id: String) {
+        dropResizeSampler(id)
         val tab = tabs.remove(id) ?: return
         withContext(Dispatchers.Main) {
             // A leaf inside a multi-pane group's SplitViewState isn't in controller.tabs at all —

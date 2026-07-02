@@ -13,8 +13,8 @@ on:
           - patch
           - minor
           - major
-      skip_snap:
-        description: 'Skip Snap build'
+      build_snap:
+        description: 'Build Snap package (off by default: Snap Store rejects our classic confinement pending Canonical approval, so the store publish always fails)'
         required: false
         default: false
         type: boolean
@@ -344,7 +344,10 @@ jobs:
 
   build-snap:
     needs: prepare-version
-    if: ${{ github.event.inputs.publish_only != 'true' && github.event.inputs.skip_snap != 'true' }}
+    # Opt-in (dispatch-only): the snap is unpublishable until Canonical approves the
+    # classic-confinement request, and create-release would otherwise wait ~10 min on
+    # this job for nothing. Tag pushes have no inputs, so they skip it too.
+    if: ${{ github.event.inputs.publish_only != 'true' && github.event.inputs.build_snap == 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -443,8 +446,14 @@ jobs:
           VERSION="${{ needs.prepare-version.outputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v$VERSION" -m "Release v$VERSION"
-          git push origin "v$VERSION"
+          # Idempotent so a rerun of a partially-failed release (tag pushed, later
+          # step failed) can proceed instead of dying on "tag already exists".
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
+            echo "Tag v$VERSION already exists on origin; keeping it (release rerun)."
+          else
+            git tag -a "v$VERSION" -m "Release v$VERSION"
+            git push origin "v$VERSION"
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -463,7 +472,6 @@ jobs:
             | **Ubuntu/Debian** | ARM64 | `bossterm_${{ needs.prepare-version.outputs.version }}_arm64.deb` |
             | **Fedora/RHEL** | AMD64 | `bossterm-${{ needs.prepare-version.outputs.version }}.x86_64.rpm` |
             | **Fedora/RHEL** | ARM64 | `bossterm-${{ needs.prepare-version.outputs.version }}.aarch64.rpm` |
-            | **Snap** | AMD64 | `bossterm_${{ needs.prepare-version.outputs.version }}_amd64.snap` |
             | **Any (JAR)** | Any | `bossterm-${{ needs.prepare-version.outputs.version }}.jar` |
 
             ### Installation
@@ -483,13 +491,6 @@ jobs:
             **Fedora/RHEL:**
             ```bash
             sudo dnf install bossterm-${{ needs.prepare-version.outputs.version }}.x86_64.rpm
-            ```
-
-            **Snap:**
-            ```bash
-            sudo snap install bossterm --classic
-            # Or from downloaded file:
-            sudo snap install bossterm_*.snap --classic --dangerous
             ```
 
             **JAR (requires Java 17+):**

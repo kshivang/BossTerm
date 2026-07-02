@@ -799,7 +799,11 @@ class DaemonShareServer(
                     }
                     sc?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
                 }
-            } catch (_: Throwable) { /* socket gone */ }
+            } catch (e: Throwable) {
+                // Usually just the socket going away — but log it so an encode/encrypt failure
+                // doesn't read as a bare viewer drop.
+                if (e !is kotlinx.coroutines.CancellationException) log.debug("share writer {} ended: {}", vc.id, e.toString())
+            }
         }
 
         try {

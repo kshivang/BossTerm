@@ -16,15 +16,12 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import ai.rever.bossterm.compose.settings.SettingsManager
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -88,37 +85,19 @@ class DaemonSessionBridge(
         const val SNAPSHOT_RESET = "\u001b[H\u001b[2J\u001b[3J"
     }
 
-    /** sessionId → its pending grid + sampler job (see [sendResizeSampled]). */
-    private class ResizeSampler(val grid: MutableStateFlow<Pair<Int, Int>?>, val job: Job)
-    private val resizeSamplers = ConcurrentHashMap<String, ResizeSampler>()
-
     /**
-     * Send a Resize for [id], sampled: the first request is forwarded as soon as the sampler's
-     * collector starts (one dispatch hop onto [io] — the StateFlow retains the value, so nothing
-     * is lost, just not strictly synchronous); while requests keep arriving faster than
-     * [RESIZE_MIN_INTERVAL_MS] the StateFlow conflates them and the collector forwards only the
-     * latest per interval — ending, once the burst stops, with the final grid (a StateFlow always
-     * retains the last value). Equal grids dedup for free (StateFlow skips value-equal updates).
-     * Sampler creation (layout callbacks) and removal ([closeMirror]/[closeMirrorContainer]) are
-     * both Main-confined, so they can't interleave.
+     * Per-session conflated Resize forwarding (see [ResizeSampler] for the invariants: first send
+     * near-immediate, at most one per interval during a burst, final grid always delivered).
+     * Creation (layout callbacks) and removal ([closeMirror]/[closeMirrorContainer]) are both
+     * Main-confined, so they can't interleave.
      */
-    private fun sendResizeSampled(id: String, cols: Int, rows: Int) {
-        val sampler = resizeSamplers.computeIfAbsent(id) {
-            val grid = MutableStateFlow<Pair<Int, Int>?>(null)
-            val job = io.launch {
-                grid.filterNotNull().collect { (c, r) ->
-                    send(DaemonAttachProtocol.Client.Resize(id, c, r))
-                    delay(RESIZE_MIN_INTERVAL_MS) // conflation window: intermediate grids are skipped
-                }
-            }
-            ResizeSampler(grid, job)
-        }
-        sampler.grid.value = cols to rows
+    private val resizeSamplers = ResizeSampler(io, RESIZE_MIN_INTERVAL_MS) { id, c, r ->
+        send(DaemonAttachProtocol.Client.Resize(id, c, r))
     }
 
-    private fun dropResizeSampler(id: String) {
-        resizeSamplers.remove(id)?.job?.cancel()
-    }
+    private fun sendResizeSampled(id: String, cols: Int, rows: Int) = resizeSamplers.request(id, cols, rows)
+
+    private fun dropResizeSampler(id: String) = resizeSamplers.drop(id)
 
     fun start() {
         if (running) return

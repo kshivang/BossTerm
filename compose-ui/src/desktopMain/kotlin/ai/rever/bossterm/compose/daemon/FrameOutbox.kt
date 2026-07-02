@@ -181,7 +181,10 @@ internal class FrameOutbox(
                 // A wake signal (or wake-close) just re-runs the loop, which sweeps both lanes.
                 wake.onReceiveCatching { false }
             }
-            if (ended) return
+            // Close observed while suspended: CONTINUE (not return) so the next pass does one
+            // final sweep of both lanes — an output chunk that raced close() past its wake signal
+            // is still flushed, and step 4 then terminates. Returning here would strand it.
+            if (ended) continue
         }
     }
 

@@ -133,6 +133,25 @@ class FrameOutboxTest {
     }
 
     @Test
+    fun `output enqueued while the drainer is idle survives an immediate close`() = runBlocking {
+        // Regression for the close-race window: with the drainer suspended in select, a sendOutput
+        // whose wake signal races close() used to be stranded when select picked the closed-control
+        // branch and returned. The close path now does a final sweep of both lanes.
+        val outbox = FrameOutbox()
+        val got = ConcurrentLinkedQueue<FrameOutbox.Frame>()
+        val drainer = launch(Dispatchers.IO) { outbox.drainTo { got.add(it) } }
+        delay(150) // let the drainer suspend on both empty lanes
+        outbox.sendOutput("sess", "last-words")
+        outbox.close() // immediately — no window for the wake signal to be consumed first
+        drainer.join()
+        assertEquals(
+            listOf<FrameOutbox.Frame>(FrameOutbox.Frame.Output("sess", "last-words")),
+            got.toList(),
+            "a chunk enqueued before close() must be flushed by the final sweep",
+        )
+    }
+
+    @Test
     fun `output arriving while the drainer is idle wakes it`() = runBlocking {
         val outbox = FrameOutbox()
         val got = ConcurrentLinkedQueue<FrameOutbox.Frame>()

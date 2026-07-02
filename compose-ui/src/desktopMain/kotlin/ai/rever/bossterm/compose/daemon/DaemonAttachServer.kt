@@ -157,15 +157,24 @@ class DaemonAttachServer(
         // fires forever capturing the dead connection's send) with no pairing endLocked.
         var closed = false
 
+        // First-line guard for binary framing's 1-byte id length: a session id that can't fit
+        // (impossible for today's 36-char UUIDs) is rejected HERE, loudly, instead of encode's
+        // require() throwing later inside the writer coroutine, where it reads as a bare
+        // connection drop. Cheap char-length check only — the exact UTF-8 count is encode's job.
+        fun idFitsBinaryFrame(id: String): Boolean =
+            (id.length <= 255).also { if (!it) log.error("session id too long for binary framing ({} chars); frame dropped", id.length) }
+
         fun send(m: DaemonAttachProtocol.Server) {
             when (m) {
                 // Only incremental Output rides the droppable lane; every other frame is guaranteed.
                 // Output + Snapshot travel as binary frames (v3): raw UTF-8 payload, no JSON
                 // string-escaping of an escape-dense stream on the hot path.
-                is DaemonAttachProtocol.Server.Output -> outbox.sendOutput(m.id, m.data)
-                is DaemonAttachProtocol.Server.Snapshot -> outbox.sendControl(FrameOutbox.Frame.Binary(
-                    DaemonAttachProtocol.BinaryFrame.encodeSnapshot(m.id, m.cols, m.rows, m.data),
-                ))
+                is DaemonAttachProtocol.Server.Output ->
+                    if (idFitsBinaryFrame(m.id)) outbox.sendOutput(m.id, m.data)
+                is DaemonAttachProtocol.Server.Snapshot ->
+                    if (idFitsBinaryFrame(m.id)) outbox.sendControl(FrameOutbox.Frame.Binary(
+                        DaemonAttachProtocol.BinaryFrame.encodeSnapshot(m.id, m.cols, m.rows, m.data),
+                    ))
                 else -> outbox.sendControl(FrameOutbox.Frame.Text(DaemonAttachProtocol.encodeServer(m)))
             }
         }
@@ -317,7 +326,11 @@ class DaemonAttachServer(
                         ))
                     }
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                // Socket teardown lands here routinely (debug), but so would an encode failure —
+                // don't let a real bug read as a bare connection drop.
+                if (e !is kotlinx.coroutines.CancellationException) log.debug("attach writer ended: {}", e.toString())
+            }
             // drainTo returns when the outbox closes — including the control-lane-saturation hard close
             // for a read-wedged client. Closing the socket here unblocks the `for (frame in incoming)`
             // loop below so serve()'s finally runs the cleanup promptly, instead of the client + taps +

@@ -270,12 +270,17 @@ class TerminalSessionCore(
     private val pendingWriteUnits = java.util.concurrent.atomic.AtomicLong(0)
 
     private fun enqueueWrite(op: WriteOp, units: Int) {
-        if (pendingWriteUnits.get() >= MAX_PENDING_WRITE_UNITS) {
+        // Add first, then check-and-rollback: a check-then-add gate is racy with several producers
+        // (WS reader, MCP, emulator replies) — each could pass the gate before any increments and
+        // overshoot the ceiling together. Reserving up front bounds steady-state at the ceiling;
+        // the transient overshoot is at most one in-flight op per concurrent producer.
+        val pending = pendingWriteUnits.addAndGet(units.toLong())
+        if (pending > MAX_PENDING_WRITE_UNITS) {
+            pendingWriteUnits.addAndGet(-units.toLong())
             log.warn("session {}: write queue saturated ({} units pending, PTY not draining); dropping {} units",
-                id, pendingWriteUnits.get(), units)
+                id, pending - units, units)
             return
         }
-        pendingWriteUnits.addAndGet(units.toLong())
         if (writeChannel.trySend(op).isFailure) pendingWriteUnits.addAndGet(-units.toLong()) // closed
     }
 

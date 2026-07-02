@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.ai
 
 import ai.rever.bossterm.compose.EmbeddableTerminal
+import ai.rever.bossterm.compose.settings.SettingsTheme
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -14,7 +15,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -86,7 +86,7 @@ fun AIAssistantInstallDialog(
                 .width(700.dp)
                 .height(450.dp)
                 .clip(RoundedCornerShape(12.dp)),
-            color = Color(0xFF1E1E1E),
+            color = SettingsTheme.BackgroundColor,
             elevation = 8.dp
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
@@ -94,14 +94,14 @@ fun AIAssistantInstallDialog(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Color(0xFF2D2D2D))
+                        .background(SettingsTheme.SurfaceColor)
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = "Installing ${assistant.displayName}",
-                        color = Color.White,
+                        color = SettingsTheme.TextPrimary,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium
                     )
@@ -117,7 +117,7 @@ fun AIAssistantInstallDialog(
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "Close",
-                            tint = Color.White.copy(alpha = 0.7f),
+                            tint = SettingsTheme.TextPrimary.copy(alpha = 0.7f),
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -140,13 +140,13 @@ fun AIAssistantInstallDialog(
                         ) {
                             Text(
                                 text = "✓",
-                                color = Color(0xFF4CAF50),
+                                color = SettingsTheme.Success,
                                 fontSize = 48.sp
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
                                 text = "Installation complete!",
-                                color = Color(0xFF4CAF50),
+                                color = SettingsTheme.Success,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Medium
                             )
@@ -154,10 +154,10 @@ fun AIAssistantInstallDialog(
                             Button(
                                 onClick = onDismiss,
                                 colors = ButtonDefaults.buttonColors(
-                                    backgroundColor = Color(0xFF4CAF50)
+                                    backgroundColor = SettingsTheme.Success
                                 )
                             ) {
-                                Text("Close", color = Color.White)
+                                Text("Close", color = SettingsTheme.TextOnAccent)
                             }
                         }
                     } else {
@@ -191,7 +191,7 @@ fun AIAssistantInstallDialog(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(Color(0xFF5C2020))
+                            .background(SettingsTheme.Danger.copy(alpha = 0.15f))
                             .padding(horizontal = 16.dp, vertical = 10.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
@@ -203,7 +203,7 @@ fun AIAssistantInstallDialog(
                             Icon(
                                 imageVector = Icons.Default.Error,
                                 contentDescription = null,
-                                tint = Color(0xFFE57373),
+                                tint = SettingsTheme.Danger,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
@@ -212,7 +212,7 @@ fun AIAssistantInstallDialog(
                                     "Script installation failed (exit code: ${errorState.exitCode})"
                                 else
                                     "npm installation failed (exit code: ${errorState.exitCode})",
-                                color = Color(0xFFE57373),
+                                color = SettingsTheme.Danger,
                                 fontSize = 13.sp
                             )
                         }
@@ -227,23 +227,23 @@ fun AIAssistantInstallDialog(
                                         terminalKey++ // Force new terminal
                                     },
                                     colors = ButtonDefaults.buttonColors(
-                                        backgroundColor = Color(0xFF1976D2)
+                                        backgroundColor = SettingsTheme.AccentColor
                                     ),
                                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
                                     modifier = Modifier.height(32.dp)
                                 ) {
-                                    Text("Try npm", color = Color.White, fontSize = 13.sp)
+                                    Text("Try npm", color = SettingsTheme.TextOnAccent, fontSize = 13.sp)
                                 }
                             }
                             Button(
                                 onClick = onDismiss,
                                 colors = ButtonDefaults.buttonColors(
-                                    backgroundColor = Color(0xFF3C3C3C)
+                                    backgroundColor = SettingsTheme.BorderColor
                                 ),
                                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
                                 modifier = Modifier.height(32.dp)
                             ) {
-                                Text("Dismiss", color = Color.White, fontSize = 13.sp)
+                                Text("Dismiss", color = SettingsTheme.TextPrimary, fontSize = 13.sp)
                             }
                         }
                     }

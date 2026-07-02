@@ -10,11 +10,16 @@ import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
+import ai.rever.bossterm.compose.settings.SettingsTheme.Success
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
+import ai.rever.bossterm.compose.settings.SettingsTheme.Warning
 import ai.rever.bossterm.compose.settings.components.*
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -264,8 +269,8 @@ private fun AIAssistantConfigCard(
     var expanded by remember { mutableStateOf(false) }
     var copied by remember { mutableStateOf(false) }
 
-    val borderColor = if (config.enabled && isInstalled) Color(0xFF4CAF50).copy(alpha = 0.5f) else Color(0xFF3C3C3C)
-    val backgroundColor = if (config.enabled && isInstalled) Color(0xFF4CAF50).copy(alpha = 0.05f) else Color.Transparent
+    val borderColor = if (config.enabled && isInstalled) Success.copy(alpha = 0.5f) else BorderColor
+    val backgroundColor = if (config.enabled && isInstalled) Success.copy(alpha = 0.05f) else Color.Transparent
 
     Column(
         modifier = Modifier
@@ -314,7 +319,7 @@ private fun AIAssistantConfigCard(
                 }
                 if (onDelete != null) {
                     IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Default.Delete, "Delete", tint = Color(0xFFE57373), modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Delete, "Delete", tint = Danger, modifier = Modifier.size(16.dp))
                     }
                 }
                 Switch(
@@ -330,7 +335,7 @@ private fun AIAssistantConfigCard(
 
         if (config.enabled) {
             Spacer(modifier = Modifier.height(12.dp))
-            Divider(color = Color(0xFF3C3C3C))
+            Divider(color = BorderColor)
             Spacer(modifier = Modifier.height(12.dp))
 
             // Auto Mode toggle
@@ -416,7 +421,7 @@ private fun AIAssistantConfigCard(
         // Install command for uninstalled built-in assistants
         if (!isInstalled && assistant.isBuiltIn && installCommand.isNotBlank()) {
             Spacer(modifier = Modifier.height(12.dp))
-            Divider(color = Color(0xFF3C3C3C))
+            Divider(color = BorderColor)
             Spacer(modifier = Modifier.height(12.dp))
 
             Text("Install Command", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Medium)
@@ -426,13 +431,13 @@ private fun AIAssistantConfigCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0xFF1A1A1A))
+                    .background(BossUiTheme.current.ink)
                     .padding(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = installCommand.take(60) + if (installCommand.length > 60) "..." else "",
-                    color = Color(0xFFCE9178),
+                    color = Warning,
                     fontSize = 11.sp,
                     modifier = Modifier.weight(1f)
                 )
@@ -447,7 +452,7 @@ private fun AIAssistantConfigCard(
                     Icon(
                         imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
                         contentDescription = "Copy",
-                        tint = if (copied) Color(0xFF4CAF50) else AccentColor,
+                        tint = if (copied) Success else AccentColor,
                         modifier = Modifier.size(14.dp)
                     )
                 }
@@ -591,7 +596,7 @@ private fun CustomAssistantDialog(
                     disabledBackgroundColor = AccentColor.copy(alpha = 0.3f)
                 )
             ) {
-                Text("Save", color = Color.White, fontSize = 13.sp)
+                Text("Save", color = TextOnAccent, fontSize = 13.sp)
             }
         },
         dismissButton = {
@@ -610,8 +615,8 @@ private fun StatusBadge(isInstalled: Boolean) {
         modifier = Modifier
             .clip(RoundedCornerShape(4.dp))
             .background(
-                if (isInstalled) Color(0xFF2E7D32).copy(alpha = 0.2f)
-                else Color(0xFFD32F2F).copy(alpha = 0.2f)
+                if (isInstalled) Success.copy(alpha = 0.2f)
+                else Danger.copy(alpha = 0.2f)
             )
             .padding(horizontal = 6.dp, vertical = 2.dp)
     ) {
@@ -619,7 +624,7 @@ private fun StatusBadge(isInstalled: Boolean) {
             Icon(
                 imageVector = if (isInstalled) Icons.Default.Check else Icons.Default.Close,
                 contentDescription = null,
-                tint = if (isInstalled) Color(0xFF4CAF50) else Color(0xFFE57373),
+                tint = if (isInstalled) Success else Danger,
                 modifier = Modifier.size(10.dp)
             )
             Spacer(modifier = Modifier.width(4.dp))
@@ -627,7 +632,7 @@ private fun StatusBadge(isInstalled: Boolean) {
                 text = if (isInstalled) "Installed" else "Not Found",
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Medium,
-                color = if (isInstalled) Color(0xFF4CAF50) else Color(0xFFE57373)
+                color = if (isInstalled) Success else Danger
             )
         }
     }

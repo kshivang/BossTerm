@@ -46,6 +46,12 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
+import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
+import ai.rever.bossterm.compose.settings.SettingsTheme.Success
+import ai.rever.bossterm.compose.settings.SettingsTheme.Warning
+import ai.rever.bossterm.compose.settings.SettingsTheme.Info
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 
 /**
  * Step indicator showing progress through the wizard.
@@ -80,7 +86,7 @@ fun StepIndicator(
             ) {
                 Text(
                     text = if (isComplete) "✓" else "${index + 1}",
-                    color = if (isActive || isComplete) Color.White else TextMuted,
+                    color = if (isActive || isComplete) TextOnAccent else TextMuted,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -431,9 +437,9 @@ chmod +x /tmp/bossterm_brew_install.sh && /tmp/bossterm_brew_install.sh
         Card(
             modifier = Modifier.fillMaxWidth(),
             backgroundColor = if (hasPackageManager) {
-                Color(0xFF1E3A1E)  // Dark green
+                Success.copy(alpha = 0.15f)
             } else {
-                Color(0xFF3A3A1E)  // Dark yellow/warning
+                Warning.copy(alpha = 0.15f)
             }
         ) {
             Row(
@@ -444,9 +450,9 @@ chmod +x /tmp/bossterm_brew_install.sh && /tmp/bossterm_brew_install.sh
                     text = if (hasPackageManager) "✓" else "⚠",
                     fontSize = 20.sp,
                     color = if (hasPackageManager) {
-                        Color(0xFF4CAF50)
+                        Success
                     } else {
-                        Color(0xFFFFC107)
+                        Warning
                     }
                 )
                 Spacer(modifier = Modifier.width(12.dp))
@@ -576,7 +582,7 @@ chmod +x /tmp/bossterm_brew_install.sh && /tmp/bossterm_brew_install.sh
                 Text(
                     text = "Installation failed. Please try again or skip this step.",
                     fontSize = 14.sp,
-                    color = Color(0xFFFF6B6B)
+                    color = Danger
                 )
             }
         }
@@ -621,10 +627,10 @@ private fun PackageManagerCard(
                         Spacer(modifier = Modifier.width(8.dp))
                         Box(
                             modifier = Modifier
-                                .background(Color(0xFF4CAF50), RoundedCornerShape(4.dp))
+                                .background(Success, RoundedCornerShape(4.dp))
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
-                            Text("Installed", fontSize = 10.sp, color = Color.White)
+                            Text("Installed", fontSize = 10.sp, color = BossUiTheme.current.ink)
                         }
                     }
                     if (isRecommended && !isInstalled) {
@@ -634,7 +640,7 @@ private fun PackageManagerCard(
                                 .background(AccentColor, RoundedCornerShape(4.dp))
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
-                            Text("Recommended", fontSize = 10.sp, color = Color.White)
+                            Text("Recommended", fontSize = 10.sp, color = TextOnAccent)
                         }
                     }
                 }
@@ -652,7 +658,7 @@ private fun PackageManagerCard(
                     onClick = onInstallClick,
                     colors = ButtonDefaults.buttonColors(
                         backgroundColor = AccentColor,
-                        contentColor = Color.White
+                        contentColor = TextOnAccent
                     ),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
                 ) {
@@ -1114,7 +1120,7 @@ private fun ReviewItem(
                         .background(AccentColor, RoundedCornerShape(4.dp))
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
-                    Text("Install", fontSize = 10.sp, color = Color.White)
+                    Text("Install", fontSize = 10.sp, color = TextOnAccent)
                 }
             }
         }
@@ -1185,7 +1191,7 @@ fun InstallingStep(
             Text(
                 text = "Installation failed. Please check the output above for errors.",
                 fontSize = 14.sp,
-                color = Color(0xFFFF6B6B)
+                color = Danger
             )
         }
     }
@@ -1250,15 +1256,15 @@ fun GhAuthStep(
         ) {
             // Step 1: Code Appears
             Card(
-                backgroundColor = Color(0xFF2D4F2D),
-                border = BorderStroke(1.dp, Color(0xFF4CAF50)),
+                backgroundColor = Success.copy(alpha = 0.15f),
+                border = BorderStroke(1.dp, Success),
                 modifier = Modifier.weight(1f)
             ) {
                 Column(
                     modifier = Modifier.padding(8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("1. CODE APPEARS", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color(0xFF4CAF50))
+                    Text("1. CODE APPEARS", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Success)
                     Text("XXXX-XXXX", fontSize = 10.sp, color = TextMuted)
                 }
             }
@@ -1268,15 +1274,15 @@ fun GhAuthStep(
 
             // Step 2: Copy Code (highlighted)
             Card(
-                backgroundColor = Color(0xFF4F4F2D),
-                border = BorderStroke(2.dp, Color(0xFFFFD700)),
+                backgroundColor = Warning.copy(alpha = 0.15f),
+                border = BorderStroke(2.dp, Warning),
                 modifier = Modifier.weight(1f)
             ) {
                 Column(
                     modifier = Modifier.padding(8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("2. COPY CODE", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color(0xFFFFD700))
+                    Text("2. COPY CODE", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Warning)
                     Text("Select & Copy", fontSize = 10.sp, color = TextMuted)
                 }
             }
@@ -1286,15 +1292,15 @@ fun GhAuthStep(
 
             // Step 3: Paste in Browser
             Card(
-                backgroundColor = Color(0xFF2D3D4F),
-                border = BorderStroke(1.dp, Color(0xFF2196F3)),
+                backgroundColor = Info.copy(alpha = 0.15f),
+                border = BorderStroke(1.dp, Info),
                 modifier = Modifier.weight(1f)
             ) {
                 Column(
                     modifier = Modifier.padding(8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("3. PASTE", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color(0xFF2196F3))
+                    Text("3. PASTE", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Info)
                     Text("In Browser", fontSize = 10.sp, color = TextMuted)
                 }
             }
@@ -1312,7 +1318,7 @@ fun GhAuthStep(
                 text = "IMPORTANT: Copy the one-time code when it appears below!",
                 fontWeight = FontWeight.Bold,
                 fontSize = 13.sp,
-                color = Color(0xFFFFD700),
+                color = Warning,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -1325,8 +1331,8 @@ fun GhAuthStep(
             exit = fadeOut()
         ) {
             Card(
-                backgroundColor = Color(0xFF2D4F2D),
-                border = BorderStroke(2.dp, Color(0xFF4CAF50)),
+                backgroundColor = Success.copy(alpha = 0.15f),
+                border = BorderStroke(2.dp, Success),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -1338,7 +1344,7 @@ fun GhAuthStep(
                         text = "Code: ${detectedOtp ?: ""}",
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp,
-                        color = Color(0xFF4CAF50)
+                        color = Success
                     )
                     Spacer(Modifier.width(16.dp))
                     Button(
@@ -1348,8 +1354,8 @@ fun GhAuthStep(
                             }
                         },
                         colors = ButtonDefaults.buttonColors(
-                            backgroundColor = Color(0xFF4CAF50),
-                            contentColor = Color.White
+                            backgroundColor = Success,
+                            contentColor = BossUiTheme.current.ink
                         )
                     ) {
                         Text("Copy Code")
@@ -1410,7 +1416,7 @@ fun GhAuthStep(
                     onClick = onComplete,
                     colors = ButtonDefaults.buttonColors(
                         backgroundColor = AccentColor,
-                        contentColor = Color.White
+                        contentColor = TextOnAccent
                     )
                 ) {
                     Text("Continue")
@@ -1464,7 +1470,7 @@ fun CompleteStep(
                 onClick = onRelaunch,
                 colors = ButtonDefaults.buttonColors(
                     backgroundColor = AccentColor,
-                    contentColor = Color.White
+                    contentColor = TextOnAccent
                 )
             ) {
                 Text("Relaunch Terminal")
@@ -1529,7 +1535,7 @@ fun SelectionCard(
                                 .background(AccentColor, RoundedCornerShape(4.dp))
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
-                            Text("Recommended", fontSize = 10.sp, color = Color.White)
+                            Text("Recommended", fontSize = 10.sp, color = TextOnAccent)
                         }
                     }
                     if (badge != null) {
@@ -1591,7 +1597,7 @@ fun CheckboxCard(
                 colors = CheckboxDefaults.colors(
                     checkedColor = AccentColor,
                     uncheckedColor = TextMuted,
-                    checkmarkColor = Color.White
+                    checkmarkColor = TextOnAccent
                 )
             )
             Spacer(modifier = Modifier.width(12.dp))

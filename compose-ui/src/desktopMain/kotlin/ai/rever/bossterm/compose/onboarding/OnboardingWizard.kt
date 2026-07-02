@@ -21,6 +21,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.ai.AIAssistantIds
@@ -444,7 +445,7 @@ fun OnboardingWizard(
                                     },
                                     colors = ButtonDefaults.buttonColors(
                                         backgroundColor = AccentColor,
-                                        contentColor = Color.White
+                                        contentColor = TextOnAccent
                                     ),
                                     modifier = Modifier
                                         .focusRequester(primaryButtonFocusRequester)
@@ -489,7 +490,7 @@ fun OnboardingWizard(
                                     onClick = { doInstallOrFinish() },
                                     colors = ButtonDefaults.buttonColors(
                                         backgroundColor = AccentColor,
-                                        contentColor = Color.White
+                                        contentColor = TextOnAccent
                                     ),
                                     modifier = Modifier
                                         .focusRequester(primaryButtonFocusRequester)
@@ -529,9 +530,9 @@ fun OnboardingWizard(
                                     enabled = canProceedFromPrereqs,
                                     colors = ButtonDefaults.buttonColors(
                                         backgroundColor = AccentColor,
-                                        contentColor = Color.White,
+                                        contentColor = TextOnAccent,
                                         disabledBackgroundColor = AccentColor.copy(alpha = 0.5f),
-                                        disabledContentColor = Color.White.copy(alpha = 0.5f)
+                                        disabledContentColor = TextOnAccent.copy(alpha = 0.5f)
                                     ),
                                     modifier = Modifier
                                         .focusRequester(primaryButtonFocusRequester)
@@ -565,9 +566,9 @@ fun OnboardingWizard(
                                     enabled = canProceed,
                                     colors = ButtonDefaults.buttonColors(
                                         backgroundColor = AccentColor,
-                                        contentColor = Color.White,
+                                        contentColor = TextOnAccent,
                                         disabledBackgroundColor = AccentColor.copy(alpha = 0.5f),
-                                        disabledContentColor = Color.White.copy(alpha = 0.5f)
+                                        disabledContentColor = TextOnAccent.copy(alpha = 0.5f)
                                     ),
                                     modifier = Modifier
                                         .focusRequester(primaryButtonFocusRequester)

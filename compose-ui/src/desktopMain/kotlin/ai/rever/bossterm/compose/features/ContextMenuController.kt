@@ -3,7 +3,6 @@ package ai.rever.bossterm.compose.features
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.ComposeWindow
-import java.awt.Color
 import java.awt.Font
 import java.awt.KeyboardFocusManager
 import java.awt.MouseInfo
@@ -17,6 +16,8 @@ import javax.swing.JPopupMenu
 import javax.swing.JSeparator
 import javax.swing.UIManager
 import javax.swing.plaf.ColorUIResource
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
+import ai.rever.bossterm.compose.settings.theme.toAwtColor
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 
 /**
@@ -26,6 +27,13 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 class ContextMenuController {
     // Track current popup to ensure proper dismissal before showing new one
     private var currentPopup: JPopupMenu? = null
+
+    // Theme-derived AWT colors. Getters (not vals) so each menu build reads the
+    // tokens for the currently active theme — the menu is rebuilt per right-click.
+    private val menuBg get() = BossUiTheme.current.raised.toAwtColor()
+    private val menuBorder get() = BossUiTheme.current.line.toAwtColor()
+    private val menuText get() = BossUiTheme.current.chalk.toAwtColor()
+    private val menuMuted get() = BossUiTheme.current.muted.toAwtColor()
 
     /**
      * Sealed class for menu elements (items, separators, submenus)
@@ -110,9 +118,9 @@ class ContextMenuController {
         }
 
         val popup = JPopupMenu().apply {
-            // Dark theme colors
-            background = Color(0x2B, 0x2B, 0x2B)
-            border = BorderFactory.createLineBorder(Color(0x3C, 0x3F, 0x41), 1)
+            // Theme colors
+            background = menuBg
+            border = BorderFactory.createLineBorder(menuBorder, 1)
         }
 
         // Add elements to popup
@@ -182,15 +190,15 @@ class ContextMenuController {
                 is MenuItem -> {
                     if (element.id.startsWith("separator")) {
                         val separator = JSeparator().apply {
-                            background = Color(0x2B, 0x2B, 0x2B)
-                            foreground = Color(0x3C, 0x3F, 0x41)
+                            background = menuBg
+                            foreground = menuBorder
                         }
                         addToMenu(menu, separator)
                     } else {
                         val menuItem = JMenuItem(element.label).apply {
                             isEnabled = element.enabled
-                            background = Color(0x2B, 0x2B, 0x2B)
-                            foreground = if (element.enabled) Color.WHITE else Color.GRAY
+                            background = menuBg
+                            foreground = if (element.enabled) menuText else menuMuted
                             font = Font(".AppleSystemUIFont", Font.PLAIN, 13)
                             border = BorderFactory.createEmptyBorder(4, 12, 4, 12)
                             isOpaque = true
@@ -210,12 +218,12 @@ class ContextMenuController {
                     if (element.label != null) {
                         // Section with label
                         val separator = JSeparator().apply {
-                            background = Color(0x2B, 0x2B, 0x2B)
-                            foreground = Color(0x3C, 0x3F, 0x41)
+                            background = menuBg
+                            foreground = menuBorder
                         }
                         addToMenu(menu, separator)
                         val label = JLabel(element.label).apply {
-                            foreground = Color.GRAY
+                            foreground = menuMuted
                             font = Font(".AppleSystemUIFont", Font.PLAIN, 11)
                             border = BorderFactory.createEmptyBorder(2, 12, 2, 12)
                         }
@@ -223,21 +231,21 @@ class ContextMenuController {
                     } else {
                         // Plain separator
                         val separator = JSeparator().apply {
-                            background = Color(0x2B, 0x2B, 0x2B)
-                            foreground = Color(0x3C, 0x3F, 0x41)
+                            background = menuBg
+                            foreground = menuBorder
                         }
                         addToMenu(menu, separator)
                     }
                 }
                 is MenuSubmenu -> {
                     val submenu = JMenu(element.label).apply {
-                        background = Color(0x2B, 0x2B, 0x2B)
-                        foreground = Color.WHITE
+                        background = menuBg
+                        foreground = menuText
                         font = Font(".AppleSystemUIFont", Font.PLAIN, 13)
                         border = BorderFactory.createEmptyBorder(4, 12, 4, 12)
                         isOpaque = true
-                        popupMenu.background = Color(0x2B, 0x2B, 0x2B)
-                        popupMenu.border = BorderFactory.createLineBorder(Color(0x3C, 0x3F, 0x41), 1)
+                        popupMenu.background = menuBg
+                        popupMenu.border = BorderFactory.createLineBorder(menuBorder, 1)
                     }
                     addElementsToMenu(submenu, element.items)
                     addToMenu(menu, submenu)
@@ -286,7 +294,7 @@ private val AccountGlyphIcon = object : javax.swing.Icon {
                 java.awt.RenderingHints.KEY_ANTIALIASING,
                 java.awt.RenderingHints.VALUE_ANTIALIAS_ON
             )
-            g2.color = Color(0xCC, 0xCC, 0xCC)
+            g2.color = BossUiTheme.current.mist.toAwtColor()
             // Head: a circle in the upper-middle.
             g2.fill(java.awt.geom.Ellipse2D.Float(x + 4f, y + 1.5f, 6f, 6f))
             // Shoulders: a half-disc clipped to the lower band so it reads as a torso, not a full circle.

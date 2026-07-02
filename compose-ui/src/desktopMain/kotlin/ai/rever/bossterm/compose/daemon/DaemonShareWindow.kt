@@ -3,12 +3,16 @@ package ai.rever.bossterm.compose.daemon
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
+import ai.rever.bossterm.compose.settings.SettingsTheme.Success
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.components.SettingsSection
 import ai.rever.bossterm.compose.settings.components.SettingsTextField
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -61,9 +65,7 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import java.awt.image.BufferedImage
 
-private val Track = Color(0xFF252526)
-private val Danger = Color(0xFFE57373)
-private val Success = Color(0xFF4CAF50)
+private val Track get() = BossUiTheme.current.ink
 
 /**
  * Daemon-hosted session-sharing window (Phase 2). The thin-client analogue of
@@ -160,7 +162,7 @@ fun DaemonShareWindow(
                 }
                 Button(
                     onClick = onDismiss,
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)
                 ) { Text("Close") }
             }
           }
@@ -213,7 +215,7 @@ private fun StartSection(scope: String, focusedSessionId: String?) {
                 val sessionId = if (scope == DaemonAttachProtocol.ShareScopeKind.SESSION) focusedSessionId else null
                 DaemonShareClient.startShare(scope, sessionId, null)
             },
-            colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+            colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)
         ) { Text("Start sharing") }
     }
 }
@@ -422,7 +424,7 @@ private fun Seg(label: String, selected: Boolean, onClick: () -> Unit) {
             .clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 5.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(label, color = if (selected) Color.White else TextMuted, fontSize = 12.sp)
+        Text(label, color = if (selected) TextOnAccent else TextMuted, fontSize = 12.sp)
     }
 }
 

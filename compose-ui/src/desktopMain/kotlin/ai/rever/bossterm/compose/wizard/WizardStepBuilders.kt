@@ -35,10 +35,14 @@ import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
+import ai.rever.bossterm.compose.settings.SettingsTheme.Success
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
+import ai.rever.bossterm.compose.settings.SettingsTheme.Warning
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import kotlinx.coroutines.delay
 
@@ -249,7 +253,7 @@ object WizardStepBuilders {
                     Text(
                         text = "Installation failed. Please check the output above.",
                         fontSize = 14.sp,
-                        color = Color(0xFFFF6B6B),
+                        color = Danger,
                         modifier = Modifier.weight(1f)
                     )
                     if (showNpmFallback && onTryNpm != null) {
@@ -304,8 +308,8 @@ object WizardStepBuilders {
                 exit = fadeOut()
             ) {
                 Card(
-                    backgroundColor = Color(0xFF2D4F2D),
-                    border = BorderStroke(2.dp, Color(0xFF4CAF50)),
+                    backgroundColor = Success.copy(alpha = 0.15f),
+                    border = BorderStroke(2.dp, Success),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -317,7 +321,7 @@ object WizardStepBuilders {
                             text = "Code: ${detectedOtp ?: ""}",
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp,
-                            color = Color(0xFF4CAF50)
+                            color = Success
                         )
                         Spacer(Modifier.width(16.dp))
                         Button(
@@ -327,8 +331,8 @@ object WizardStepBuilders {
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(
-                                backgroundColor = Color(0xFF4CAF50),
-                                contentColor = Color.White
+                                backgroundColor = Success,
+                                contentColor = BossUiTheme.current.ink
                             )
                         ) {
                             Text("Copy Code")
@@ -347,7 +351,7 @@ object WizardStepBuilders {
                     text = "Copy the one-time code when it appears below!",
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
-                    color = Color(0xFFFFD700),
+                    color = Warning,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -455,7 +459,7 @@ object WizardStepBuilders {
                 Text(
                     text = "✓",
                     fontSize = 48.sp,
-                    color = Color(0xFF4CAF50)
+                    color = Success
                 )
                 Spacer(modifier = Modifier.height(16.dp))
             }

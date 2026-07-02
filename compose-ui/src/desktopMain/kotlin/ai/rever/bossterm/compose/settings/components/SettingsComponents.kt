@@ -24,6 +24,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 
@@ -756,7 +757,7 @@ fun SettingsFilePicker(
                 enabled = enabled,
                 colors = ButtonDefaults.buttonColors(
                     backgroundColor = AccentColor,
-                    contentColor = Color.White
+                    contentColor = TextOnAccent
                 ),
                 modifier = Modifier.height(36.dp)
             ) {

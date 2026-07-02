@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
@@ -107,7 +108,7 @@ fun ThemeSettingsSection(
                     Button(
                         onClick = { showDeleteConfirmation = currentTheme },
                         colors = ButtonDefaults.buttonColors(
-                            backgroundColor = Color(0xFFE04040)
+                            backgroundColor = Danger
                         ),
                         modifier = Modifier.height(36.dp)
                     ) {
@@ -215,7 +216,7 @@ fun ThemeSettingsSection(
                     Button(
                         onClick = { showDeletePaletteConfirmation = effectivePalette },
                         colors = ButtonDefaults.buttonColors(
-                            backgroundColor = Color(0xFFE04040)
+                            backgroundColor = Danger
                         ),
                         modifier = Modifier.height(36.dp)
                     ) {
@@ -674,7 +675,7 @@ private fun DeleteThemeDialog(
             Button(
                 onClick = onConfirm,
                 colors = ButtonDefaults.buttonColors(
-                    backgroundColor = Color(0xFFE04040)
+                    backgroundColor = Danger
                 )
             ) {
                 Text("Delete", color = TextPrimary)
@@ -1000,7 +1001,7 @@ private fun DeletePaletteDialog(
             Button(
                 onClick = onConfirm,
                 colors = ButtonDefaults.buttonColors(
-                    backgroundColor = Color(0xFFE04040)
+                    backgroundColor = Danger
                 )
             ) {
                 Text("Delete", color = TextPrimary)

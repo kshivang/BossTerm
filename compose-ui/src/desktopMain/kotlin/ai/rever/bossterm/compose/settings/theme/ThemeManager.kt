@@ -81,7 +81,7 @@ class ThemeManager private constructor(
      * Apply a theme (sets it as active).
      */
     fun applyTheme(theme: Theme) {
-        _currentTheme.value = theme
+        setCurrentTheme(theme)
 
         // Update settings with the new theme's colors
         settingsManager.updateSetting {
@@ -220,7 +220,12 @@ class ThemeManager private constructor(
         val theme = getThemeById(activeThemeId)
             ?: getThemeById(BuiltinThemes.DEFAULT_THEME_ID)
             ?: BuiltinThemes.DEFAULT
+        setCurrentTheme(theme)
+    }
+
+    private fun setCurrentTheme(theme: Theme) {
         _currentTheme.value = theme
+        BossUiTheme.update(theme)
     }
 
     companion object {

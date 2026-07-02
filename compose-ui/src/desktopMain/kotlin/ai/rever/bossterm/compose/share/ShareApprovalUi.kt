@@ -1,9 +1,12 @@
 package ai.rever.bossterm.compose.share
 
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
+import ai.rever.bossterm.compose.settings.SettingsTheme.Success
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -22,13 +25,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private val ApproveColor = Color(0xFF4CAF50)
-private val DenyColor = Color(0xFFE57373)
+private val ApproveColor get() = Success
+private val DenyColor get() = Danger
 
 private fun verb(wantsControl: Boolean) = if (wantsControl) "control" else "view"
 
@@ -44,7 +46,7 @@ fun ShareRequestToast(
     onDeny: () -> Unit,
 ) {
     Surface(
-        color = Color(0xFF2B2B2B),
+        color = SurfaceColor,
         shape = RoundedCornerShape(8.dp),
         border = BorderStroke(1.dp, BorderColor),
         shadowElevation = 6.dp,
@@ -54,7 +56,7 @@ fun ShareRequestToast(
             Spacer(Modifier.height(2.dp))
             Text(
                 "${request.deviceName} wants to ${verb(request.wantsControl)} this session",
-                color = Color.White, fontSize = 13.sp
+                color = TextPrimary, fontSize = 13.sp
             )
             Spacer(Modifier.height(8.dp))
             Row(
@@ -67,7 +69,7 @@ fun ShareRequestToast(
                 }
                 Button(
                     onClick = onApprove,
-                    colors = ButtonDefaults.buttonColors(containerColor = ApproveColor, contentColor = Color.White)
+                    colors = ButtonDefaults.buttonColors(containerColor = ApproveColor, contentColor = BossUiTheme.current.ink)
                 ) { Text("Approve") }
             }
         }
@@ -100,7 +102,7 @@ fun PendingRequestsList(
                 }
                 Button(
                     onClick = { onApprove(req.id) },
-                    colors = ButtonDefaults.buttonColors(containerColor = ApproveColor, contentColor = Color.White)
+                    colors = ButtonDefaults.buttonColors(containerColor = ApproveColor, contentColor = BossUiTheme.current.ink)
                 ) { Text("Approve") }
             }
         }

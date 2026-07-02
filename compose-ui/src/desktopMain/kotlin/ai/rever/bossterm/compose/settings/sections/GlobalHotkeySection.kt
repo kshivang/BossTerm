@@ -1,9 +1,13 @@
 package ai.rever.bossterm.compose.settings.sections
 
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
+import ai.rever.bossterm.compose.settings.SettingsTheme.Success
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
+import ai.rever.bossterm.compose.settings.SettingsTheme.Warning
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.SettingsSection
 import ai.rever.bossterm.compose.settings.components.SettingsToggle
@@ -31,7 +35,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -76,7 +79,7 @@ fun GlobalHotkeySection(
                     Text(
                         text = "⚠︎ One modifier can clash with app shortcuts (the global hotkey " +
                             "wins system-wide). Add a second modifier for a conflict-free chord.",
-                        color = Color(0xFFE2B44A),
+                        color = Warning,
                         fontSize = 12.sp,
                         lineHeight = 16.sp,
                         modifier = Modifier.padding(top = 6.dp)
@@ -190,7 +193,7 @@ private fun CurrentHotkeyDisplay(
                 } else {
                     "Select at least one modifier"
                 },
-                color = if (hasModifiers) AccentColor else Color(0xFFE04040),
+                color = if (hasModifiers) AccentColor else Danger,
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.padding(top = 2.dp)
@@ -244,10 +247,10 @@ private fun HowItWorksSection(config: HotKeyConfig, isMacOS: Boolean) {
 @Composable
 private fun StatusIndicator(status: HotKeyRegistrationStatus) {
     val (color, text) = when (status) {
-        HotKeyRegistrationStatus.INACTIVE -> Color.Gray to "Inactive"
-        HotKeyRegistrationStatus.REGISTERED -> Color(0xFF28C941) to "Active"
-        HotKeyRegistrationStatus.FAILED -> Color(0xFFE04040) to "Conflict"
-        HotKeyRegistrationStatus.UNAVAILABLE -> Color.Gray to "N/A"
+        HotKeyRegistrationStatus.INACTIVE -> TextMuted to "Inactive"
+        HotKeyRegistrationStatus.REGISTERED -> Success to "Active"
+        HotKeyRegistrationStatus.FAILED -> Danger to "Conflict"
+        HotKeyRegistrationStatus.UNAVAILABLE -> TextMuted to "N/A"
     }
 
     Row(
@@ -277,7 +280,7 @@ private fun RestartNotice() {
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xFF3A3A3A))
+            .background(BorderColor)
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

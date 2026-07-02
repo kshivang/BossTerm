@@ -16,6 +16,8 @@ import androidx.compose.ui.window.rememberDialogState
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 
@@ -94,7 +96,7 @@ fun <S> WizardDialog(
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = error,
-                        color = Color(0xFFFF6B6B),
+                        color = Danger,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -194,9 +196,9 @@ private fun <S> WizardNavigationBar(
                     enabled = state.canGoNext,
                     colors = ButtonDefaults.buttonColors(
                         backgroundColor = AccentColor,
-                        contentColor = Color.White,
+                        contentColor = TextOnAccent,
                         disabledBackgroundColor = AccentColor.copy(alpha = 0.5f),
-                        disabledContentColor = Color.White.copy(alpha = 0.5f)
+                        disabledContentColor = TextOnAccent.copy(alpha = 0.5f)
                     ),
                     modifier = Modifier.focusRequester(primaryButtonFocusRequester)
                 ) {
@@ -283,7 +285,7 @@ fun <S> WizardDialogCompact(
                         enabled = state.canGoNext,
                         colors = ButtonDefaults.buttonColors(
                             backgroundColor = AccentColor,
-                            contentColor = Color.White
+                            contentColor = TextOnAccent
                         )
                     ) {
                         Text(currentStep?.let { primaryButtonText(it) } ?: "Next")

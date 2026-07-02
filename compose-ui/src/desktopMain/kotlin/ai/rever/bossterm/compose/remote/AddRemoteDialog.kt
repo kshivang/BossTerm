@@ -1,10 +1,12 @@
 package ai.rever.bossterm.compose.remote
 
+import ai.rever.bossterm.compose.settings.SettingsTheme
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.components.SettingsSection
@@ -46,9 +48,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.rememberWindowState
 
-private val Green = Color(0xFF4CAF50)
-private val Amber = Color(0xFFE0A030)
-private val Danger = Color(0xFFE57373)
+private val Green get() = SettingsTheme.Success
+private val Amber get() = SettingsTheme.Warning
+private val Danger get() = SettingsTheme.Danger
 
 /**
  * "Remote sessions" window — a top-level OS window styled like
@@ -135,7 +137,7 @@ fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
                         Button(
                             onClick = { connect() },
                             enabled = link.isNotBlank(),
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                            colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)
                         ) { Text("Connect") }
                     }
                 }
@@ -157,7 +159,7 @@ fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
                 horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)) {
+                Button(onClick = onDismiss, colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)) {
                     Text("Close")
                 }
             }
@@ -175,7 +177,7 @@ fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
 fun RequestControlPrompt(onConfirm: () -> Unit, onDismiss: () -> Unit) {
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = BackgroundColor,
+        containerColor = SurfaceColor,
         title = { Text("View-only session", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
         text = {
             Text(
@@ -188,7 +190,7 @@ fun RequestControlPrompt(onConfirm: () -> Unit, onDismiss: () -> Unit) {
         confirmButton = {
             Button(
                 onClick = onConfirm,
-                colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)
             ) { Text("Request Control") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = TextSecondary) } },
@@ -211,7 +213,7 @@ fun RemoteFitPrompt(
 ) {
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = BackgroundColor,
+        containerColor = SurfaceColor,
         title = { Text("Match window sizes?", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
         text = {
             // Both directions as stacked full-width buttons (a side-by-side row overflows
@@ -226,12 +228,12 @@ fun RemoteFitPrompt(
                 Button(
                     onClick = onFitMyWindow,
                     modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)
                 ) { Text("Fit my window to host") }
                 Button(
                     onClick = onFitHost,
                     modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A3A), contentColor = TextPrimary)
+                    colors = ButtonDefaults.buttonColors(containerColor = BorderColor, contentColor = TextPrimary)
                 ) { Text("Fit host to my window") }
             }
         },
@@ -255,7 +257,7 @@ fun RemoteDisconnectedDialog(
 ) {
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = BackgroundColor,
+        containerColor = SurfaceColor,
         title = { Text("Remote disconnected", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
         text = {
             Text(
@@ -268,7 +270,7 @@ fun RemoteDisconnectedDialog(
         confirmButton = {
             Button(
                 onClick = onReconnect,
-                colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = Color.White)
+                colors = ButtonDefaults.buttonColors(containerColor = AccentColor, contentColor = TextOnAccent)
             ) { Text("Reconnect") }
         },
         dismissButton = {
@@ -315,7 +317,7 @@ private fun statusColor(s: RemoteStatus): Color = when (s) {
     is RemoteStatus.Connected -> Green
     RemoteStatus.Pending, RemoteStatus.Connecting -> Amber
     is RemoteStatus.Denied, is RemoteStatus.Failed -> Danger
-    RemoteStatus.Closed -> Color(0xFF888888)
+    RemoteStatus.Closed -> TextMuted
 }
 
 private fun hostOf(link: String): String = runCatching {

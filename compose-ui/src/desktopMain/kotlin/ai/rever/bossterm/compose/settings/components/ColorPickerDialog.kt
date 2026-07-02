@@ -37,6 +37,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 
@@ -391,7 +392,7 @@ private fun AlphaSlider(
                 for (col in 0 until (size.width / checkerSize).toInt() + 1) {
                     val isLight = (row + col) % 2 == 0
                     drawRect(
-                        color = if (isLight) Color(0xFFCCCCCC) else Color(0xFF999999),
+                        color = if (isLight) TextSecondary else TextMuted,
                         topLeft = Offset(col * checkerSize, row * checkerSize),
                         size = Size(checkerSize, checkerSize)
                     )

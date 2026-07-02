@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
@@ -167,7 +168,7 @@ fun SettingsPanel(
                         showResetConfirmation = false
                     },
                     colors = ButtonDefaults.buttonColors(
-                        backgroundColor = Color(0xFFE04040)
+                        backgroundColor = Danger
                     )
                 ) {
                     Text("Reset", color = TextPrimary)

@@ -384,9 +384,14 @@ jobs:
 
       # Optional: Publish to Snap Store (requires SNAPCRAFT_STORE_CREDENTIALS secret)
       # To get credentials: snapcraft export-login --snaps=bossterm --acls package_access,package_push,package_update,package_release credentials.txt
+      #
+      # No continue-on-error here: it previously masked months of guaranteed failures
+      # (classic confinement pending Canonical approval) as green runs. The whole job is
+      # opt-in now, so anyone setting build_snap=true wants a real publish — a store
+      # rejection should fail loudly. create-release tolerates this job failing, so a
+      # red build-snap never blocks the release itself.
       - name: Publish to Snap Store
         if: env.SNAPCRAFT_STORE_CREDENTIALS != ''
-        continue-on-error: true  # Don't fail build if snap publish fails (e.g., review queue)
         uses: snapcore/action-publish@v1
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
@@ -431,7 +436,12 @@ jobs:
           find ./artifacts -name "*.deb" -path "*arm64*" -exec cp {} ./release-assets/bossterm_${VERSION}_arm64.deb \; 2>/dev/null || true
           find ./artifacts -name "*.rpm" -path "*arm64*" -exec cp {} ./release-assets/bossterm-${VERSION}.aarch64.rpm \; 2>/dev/null || true
 
-          # Snap (if available)
+          # Snap (only present when dispatched with build_snap=true). Intentional
+          # asymmetry: the release-notes body below does NOT mention the snap — it is
+          # unpublishable to the Snap Store until Canonical approves classic confinement,
+          # so the notes stay snap-free rather than documenting an asset most releases
+          # won't have. If snap publishing resumes, make the notes conditional instead
+          # of re-adding an unconditional Snap row.
           find ./artifacts -name "*.snap" -exec cp {} ./release-assets/bossterm_${VERSION}_amd64.snap \; 2>/dev/null || true
 
           # Uber JAR

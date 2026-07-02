@@ -16,13 +16,22 @@ import java.io.File
  * compatibility is gated on [DaemonControlChannel.PROTOCOL_VERSION] instead — bump it on any
  * incompatible daemon change so [DaemonClient] refuses a stale daemon rather than attaching to it.
  *
- * Recipe (works identically under `gradlew run` and a packaged `.app`/`.deb`/`.exe`):
+ * Two launch recipes, tried in order:
+ *
+ * 1. `java -cp …` (dev / `gradlew run`, or any runtime that ships a launcher binary):
  *   - JRE: `<java.home>/bin/java` (mac/Linux), `<java.home>/bin/javaw.exe` (Windows, no console).
- *   - Classpath: `System.getProperty("java.class.path")` verbatim — jpackage sets it to the full
- *     app jar list, which already includes the daemon's main class and all of compose-ui.
- *   - Props propagated: headless + version + settings-dir + bundled-resources dir, so the daemon
+ *   - Classpath: `System.getProperty("java.class.path")` verbatim.
+ *   - Props propagated: UIElement + version + settings-dir + bundled-resources dir, so the daemon
  *     resolves the same files ([BossTermPaths]) and finds bundled binaries (cloudflared, CLI).
  *   - The daemon does NOT need the GUI's AWT `--add-opens` flags (it runs headless).
+ *
+ * 2. The app's own native launcher with [DAEMON_ARG] (packaged `.app`/`.exe`/`.deb`): jpackage
+ *    runtimes ship NO `bin/java` at all (the app boots through its native launcher + libjli), so
+ *    recipe 1 is impossible there. Instead we relaunch the native launcher itself; the GUI facade
+ *    (`MainKt`) sees `--daemon` as its first arg and dispatches straight to the daemon entry point
+ *    before any AWT/Compose init. Runtime-set props travel as [PROP_ARG_PREFIX] args (a native
+ *    launcher can't take `-D` flags), and the launcher's own cfg re-applies the packaged
+ *    java-options for free. `apple.awt.UIElement` is set programmatically by the dispatch.
  *
  * The child is detached (its stdout/stderr append to [BossTermPaths.daemonLogFile]); the JVM does
  * not kill child processes on exit, so the daemon outlives the GUI — exactly what we want.
@@ -39,6 +48,36 @@ object DaemonLauncher {
      */
     const val DEFAULT_DAEMON_MAIN_CLASS = "ai.rever.bossterm.app.DaemonMainKt"
 
+    /** First program arg that makes the GUI facade (`MainKt`) run the daemon instead of the app. */
+    const val DAEMON_ARG = "--daemon"
+
+    /** Prefix for `--prop:key=value` program args carrying system props into a native-launcher daemon. */
+    const val PROP_ARG_PREFIX = "--prop:"
+
+    /** Props the daemon must agree with the GUI on; forwarded by both launch recipes when set. */
+    private val PASSTHROUGH_PROPS = listOf(
+        BossTermPaths.SETTINGS_DIR_PROPERTY, "bossterm.version", "compose.application.resources.dir",
+    )
+
+    /**
+     * Apply every [PROP_ARG_PREFIX] arg as a system property and return the remaining args.
+     * Called by the GUI facade's `--daemon` dispatch BEFORE the daemon entry point runs, so path
+     * and version resolution ([BossTermPaths] et al.) see the forwarded values. Explicit forwards
+     * intentionally override same-named props the packaged launcher cfg already set at JVM boot
+     * (the runtime-set value — e.g. a custom settings-dir profile — is the authoritative one).
+     */
+    fun applyPropArgs(args: Array<String>): Array<String> {
+        val rest = ArrayList<String>(args.size)
+        for (arg in args) {
+            if (!arg.startsWith(PROP_ARG_PREFIX)) { rest.add(arg); continue }
+            val kv = arg.removePrefix(PROP_ARG_PREFIX)
+            val eq = kv.indexOf('=')
+            if (eq > 0) System.setProperty(kv.take(eq), kv.substring(eq + 1))
+            else log.warn("Ignoring malformed prop arg: {}", arg)
+        }
+        return rest.toTypedArray()
+    }
+
     /**
      * Launch the daemon. Returns the spawned [Process] (already running, detached), or null if
      * the JRE couldn't be located. Callers then poll [BossTermPaths.daemonPortFile] /
@@ -53,8 +92,18 @@ object DaemonLauncher {
         mainClass: String = DEFAULT_DAEMON_MAIN_CLASS,
         extraArgs: List<String> = emptyList(),
     ): List<String>? {
-        val javaBin = resolveJavaBinary() ?: run {
-            log.error("DaemonLauncher: could not locate a java binary under java.home={}", System.getProperty("java.home"))
+        val javaBin = resolveJavaBinary()
+        if (javaBin == null) {
+            // Packaged bundles ship no java binary — relaunch the app's native launcher as the
+            // daemon instead. Only valid for the real daemon entry (the facade dispatch is
+            // hardwired to it), so a custom mainClass (tests) still requires a java binary.
+            if (mainClass == DEFAULT_DAEMON_MAIN_CLASS) {
+                nativeLauncherCommand(extraArgs)?.let { return it }
+            }
+            log.error(
+                "DaemonLauncher: no java binary under java.home={} and no packaged launcher found",
+                System.getProperty("java.home"),
+            )
             return null
         }
         val classpath = System.getProperty("java.class.path")
@@ -71,13 +120,64 @@ object DaemonLauncher {
             if (ShellCustomizationUtils.isMacOS()) add("-Dapple.awt.UIElement=true")
             // Propagate the props that affect path/resource/version resolution so the daemon
             // and GUI agree on settings dir, bundled-resource location, and reported version.
-            passthroughProp(BossTermPaths.SETTINGS_DIR_PROPERTY)?.let { add(it) }
-            passthroughProp("bossterm.version")?.let { add(it) }
-            passthroughProp("compose.application.resources.dir")?.let { add(it) }
+            PASSTHROUGH_PROPS.forEach { key -> passthroughProp(key)?.let { add(it) } }
             add("-cp")
             add(classpath)
             add(mainClass)
             addAll(extraArgs)
+        }
+    }
+
+    /**
+     * `<native launcher> --daemon [--prop:key=value …]`, or null when not running from a packaged
+     * install. The GUI facade dispatches on [DAEMON_ARG] before any AWT init, and the launcher's
+     * cfg re-applies the packaged java-options; only runtime-resolved props need forwarding.
+     */
+    private fun nativeLauncherCommand(extraArgs: List<String>): List<String>? {
+        val launcher = packagedLauncherBinary() ?: return null
+        log.info("DaemonLauncher: no bundled java binary; using native launcher {}", launcher.absolutePath)
+        return buildList {
+            add(launcher.absolutePath)
+            add(DAEMON_ARG)
+            PASSTHROUGH_PROPS.forEach { key ->
+                System.getProperty(key)?.takeIf { it.isNotBlank() }?.let { add("$PROP_ARG_PREFIX$key=$it") }
+            }
+            addAll(extraArgs)
+        }
+    }
+
+    /**
+     * The packaged app's native launcher binary, derived from `java.home` per jpackage layout, or
+     * null in dev / unrecognized layouts. Visible for tests (which pass a synthetic [javaHome]).
+     *   - macOS:   `<Bundle>.app/Contents/runtime/Contents/Home` → `<Bundle>.app/Contents/MacOS/<Bundle>`
+     *   - Windows: `<install>\runtime` → `<install>\<App>.exe`
+     *   - Linux:   `<install>/lib/runtime` → `<install>/bin/<App>`
+     */
+    internal fun packagedLauncherBinary(
+        javaHome: String? = System.getProperty("java.home"),
+    ): File? {
+        val jh = javaHome?.takeIf { it.isNotBlank() } ?: return null
+        return when {
+            ShellCustomizationUtils.isMacOS() -> {
+                if (!jh.contains(".app/Contents/")) return null
+                val bundle = File(jh.substringBefore(".app/Contents/") + ".app")
+                val macOsDir = File(bundle, "Contents/MacOS")
+                // jpackage names the launcher after the bundle; fall back to the sole executable.
+                File(macOsDir, bundle.name.removeSuffix(".app")).takeIf { it.canExecute() }
+                    ?: macOsDir.listFiles()?.singleOrNull { it.isFile && it.canExecute() }
+            }
+            ShellCustomizationUtils.isWindows() -> {
+                val home = File(jh)
+                if (!home.name.equals("runtime", ignoreCase = true)) return null
+                home.parentFile?.listFiles()?.singleOrNull { it.isFile && it.extension.equals("exe", ignoreCase = true) }
+            }
+            ShellCustomizationUtils.isLinux() -> {
+                val home = File(jh)
+                if (home.name != "runtime" || home.parentFile?.name != "lib") return null
+                val binDir = File(home.parentFile.parentFile ?: return null, "bin")
+                binDir.listFiles()?.singleOrNull { it.isFile && it.canExecute() }
+            }
+            else -> null
         }
     }
 

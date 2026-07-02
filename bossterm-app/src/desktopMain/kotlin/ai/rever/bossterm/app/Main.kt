@@ -62,6 +62,18 @@ import androidx.compose.ui.graphics.toComposeImageBitmap
  * This is the main entry point for the BossTerm application.
  */
 fun main(args: Array<String>) {
+    // Daemon dispatch — packaged bundles ship no `java` binary (jpackage runtimes have no bin/),
+    // so DaemonLauncher relaunches THIS native launcher with --daemon. Must be the very first
+    // thing in main: apple.awt.UIElement is only honored if set before AWT boots (menu-bar-only
+    // agent, no Dock icon), forwarded --prop: args must land before any settings/path resolution,
+    // and none of the GUI's GPU/deep-link/window setup below belongs in the daemon process.
+    if (args.firstOrNull() == ai.rever.bossterm.compose.daemon.DaemonLauncher.DAEMON_ARG) {
+        val rest = ai.rever.bossterm.compose.daemon.DaemonLauncher.applyPropArgs(args.copyOfRange(1, args.size))
+        if (ShellCustomizationUtils.isMacOS()) System.setProperty("apple.awt.UIElement", "true")
+        runDaemon(rest)
+        return
+    }
+
     // Configure GPU rendering (must be before any Skiko/Compose initialization)
     configureGpuRendering()
 

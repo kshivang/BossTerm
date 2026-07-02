@@ -41,9 +41,18 @@ private val log = LoggerFactory.getLogger("ai.rever.bossterm.app.DaemonMain")
 private val startNanos = System.nanoTime()
 private fun uptimeMs(): Long = (System.nanoTime() - startNanos) / 1_000_000
 
-fun main(args: Array<String>) {
+fun main(args: Array<String>) = runDaemon(args)
+
+/**
+ * Daemon entry point proper. Reached two ways: `java -cp … DaemonMainKt` (dev spawn, [main] above)
+ * or the packaged app's native launcher relaunched with `--daemon` (no `bin/java` in jpackage
+ * runtimes), where the GUI facade ([ai.rever.bossterm.app.main] in Main.kt) dispatches here before
+ * any AWT/Compose init.
+ */
+fun runDaemon(args: Array<String>) {
     // NOT headless: the daemon shows a menu-bar/tray icon so a background process isn't invisible.
-    // On macOS DaemonLauncher passes -Dapple.awt.UIElement=true so it's an agent (no Dock icon).
+    // On macOS it runs as a UIElement agent (no Dock icon): -Dapple.awt.UIElement=true from
+    // DaemonLauncher on the java -cp path, or set programmatically by Main.kt's --daemon dispatch.
     val version = Version.CURRENT.toString()
     log.info("BossTerm daemon starting (v{} proto{}) settingsDir={}",
         version, DaemonControlChannel.PROTOCOL_VERSION, BossTermPaths.dir().absolutePath)

@@ -50,6 +50,43 @@ class DaemonInfraTest {
         assertEquals("ai.rever.bossterm.app.DaemonMainKt", DaemonLauncher.DEFAULT_DAEMON_MAIN_CLASS)
     }
 
+    @Test
+    fun `applyPropArgs sets properties, strips prop args, keeps the rest`() {
+        val key = "bossterm.test.applyPropArgs"
+        try {
+            val rest = DaemonLauncher.applyPropArgs(arrayOf(
+                "${DaemonLauncher.PROP_ARG_PREFIX}$key=hello world",
+                "--other",
+                "${DaemonLauncher.PROP_ARG_PREFIX}malformed-no-equals",
+            ))
+            assertEquals("hello world", System.getProperty(key))
+            // Malformed prop args are dropped (logged), not passed through to the daemon.
+            assertEquals(listOf("--other"), rest.toList())
+        } finally {
+            System.clearProperty(key)
+        }
+    }
+
+    @Test
+    fun `packagedLauncherBinary resolves the macOS bundle launcher from java-home`() {
+        if (!ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isMacOS()) return
+        val root = java.nio.file.Files.createTempDirectory("bossterm-bundle").toFile()
+        try {
+            // Synthetic jpackage layout: Foo.app/Contents/runtime/Contents/Home + Contents/MacOS/Foo.
+            val bundle = java.io.File(root, "Foo.app")
+            val javaHome = java.io.File(bundle, "Contents/runtime/Contents/Home").apply { mkdirs() }
+            val launcher = java.io.File(bundle, "Contents/MacOS/Foo").apply {
+                parentFile.mkdirs(); writeText(""); setExecutable(true)
+            }
+            assertEquals(launcher, DaemonLauncher.packagedLauncherBinary(javaHome.absolutePath))
+            // A non-bundle java.home (dev JDK) is not a packaged install.
+            assertNull(DaemonLauncher.packagedLauncherBinary(root.absolutePath))
+            assertNull(DaemonLauncher.packagedLauncherBinary(null))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     // ---- DaemonControlChannel ----
 
     @Test

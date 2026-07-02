@@ -69,7 +69,15 @@ fun DaemonSettingsSection(
                         // debounce window the flags would never reach disk — next launch reads
                         // daemonEnabled=true and reinstalls, silently undoing a later disable.
                         SettingsManager.instance.updateSetting { copy(daemonEnabled = true, startDaemonAtLogin = true) }
-                        scope.launch(Dispatchers.IO) { runCatching { LoginServiceManager.install() } }
+                        // Surface an install failure instead of swallowing it — a silent failure
+                        // here reads as "enabled" while no daemon will ever start (e.g. the
+                        // packaged-app bug where no launch command could be built).
+                        scope.launch(Dispatchers.IO) {
+                            val r = LoginServiceManager.install()
+                            withContext(Dispatchers.Main) {
+                                r.onFailure { status = "Login service install failed: ${it.message}" }
+                            }
+                        }
                     } else {
                         // Disabling the daemon must also tear down the at-login service + clear its
                         // flag, otherwise a daemon keeps spawning at login that the GUI no longer

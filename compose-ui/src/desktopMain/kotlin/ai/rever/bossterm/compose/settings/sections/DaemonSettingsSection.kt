@@ -35,7 +35,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Session-daemon settings: toggle the tmux-style background daemon (on by default), install/remove
+ * Session-daemon settings: toggle the tmux-style background daemon (off by default), install/remove
  * its login service, and see/control its status. The daemon owns terminal sessions + MCP + sharing
  * so they survive the GUI closing. [TerminalSettings.daemonEnabled] is read at app startup, so
  * toggling it needs a restart — surfaced in the note.

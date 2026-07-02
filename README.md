@@ -219,7 +219,7 @@ cd BossTerm
 - **Session Sharing** - Watch or control a tab / window / all windows from any device — self-hosted, with a QR code and a mobile-friendly web viewer (LAN, Tailscale, or a zero-config Cloudflare tunnel)
 - **Remote Control** - End-to-end encrypted; viewers get typing access on approval, or connect from another BossTerm as a native remote client
 - **AI / MCP Server** - Built-in [Model Context Protocol](https://modelcontextprotocol.io) server exposes your terminals to Claude Code, Codex, Gemini CLI, and OpenCode
-- **Session Daemon** - tmux-style background process (on by default) keeps your sessions, MCP server, and shares alive after the GUI closes — reopen to reattach; starts at login
+- **Session Daemon** - opt-in tmux-style background process keeps your sessions, MCP server, and shares alive after the GUI closes — reopen to reattach; can start at login
 - **Embeddable** - Drop the terminal into your own Kotlin/Compose Desktop app as a library (`com.risaboss:bossterm-compose`)
 
 ## Design
@@ -610,8 +610,8 @@ every built-in tool's JSON schema, the `manage_tools` meta-tool, the
 ## Session Daemon
 
 A tmux-style background process that **owns your terminal sessions, MCP server, and shares** so they
-keep running after you close the GUI — reopen BossTerm and it reattaches to the live sessions. **On by
-default**; turn it off under Settings → Session Daemon to fall back to the pre-daemon behavior
+keep running after you close the GUI — reopen BossTerm and it reattaches to the live sessions. **Off by
+default**; turn it on under Settings → Session Daemon. When off, BossTerm uses the pre-daemon behavior
 (in-process MCP/sharing, sessions die with the window), a path that's preserved byte-for-byte.
 
 - **Survives the GUI**: sessions live in the daemon, not the window. Close the app (or all its

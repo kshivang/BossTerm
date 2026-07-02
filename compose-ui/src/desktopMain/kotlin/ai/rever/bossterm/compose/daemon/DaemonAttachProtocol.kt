@@ -34,7 +34,9 @@ object DaemonAttachProtocol {
     // Server sealed-class variant an old client can't deserialize (ignoreUnknownKeys only covers
     // unknown *fields*, not unknown sealed-discriminator values), so the version bump turns that
     // into a clean connect-time reject via the existing ?v= handshake instead of a decode crash.
-    const val PROTOCOL_VERSION = 2
+    // v3 moves Output/Snapshot from JSON text frames to binary websocket frames ([BinaryFrame]) —
+    // a v2 client would ignore binary frames entirely and render nothing, so reject at connect.
+    const val PROTOCOL_VERSION = 3
 
     /** Header carrying the daemon control secret on the attach WS handshake (not a ?query= param, so
      *  it doesn't leak into request-line logs / proxies). Shared by the GUI client and the daemon. */
@@ -46,6 +48,89 @@ object DaemonAttachProtocol {
     fun decodeServer(s: String): Server = json.decodeFromString(Server.serializer(), s)
     fun encodeClient(m: Client): String = json.encodeToString(Client.serializer(), m)
     fun decodeClient(s: String): Client = json.decodeFromString(Client.serializer(), s)
+
+    /**
+     * Binary wire framing for the two high-volume server→client messages, [Server.Output] and
+     * [Server.Snapshot] (v3). As JSON text frames they paid a string escape of every control
+     * character (ESC → the six chars `\u001b`) plus a JSON encode+decode per PTY chunk — pure overhead
+     * on the hottest path in the protocol, and terminal output is escape-dense. Binary frames
+     * carry the payload as raw UTF-8 instead. Layout (lengths/ints big-endian):
+     *
+     *     [0]            frame type: [TYPE_OUTPUT] | [TYPE_SNAPSHOT]
+     *     [1]            session-id byte length n (session ids are 36-char UUIDs today)
+     *     [2 .. 2+n)     session id, UTF-8
+     *     Snapshot only: cols (u16), rows (u16)   — grid dims are clamped ≤2000 upstream
+     *     [rest]         payload, UTF-8 (always whole graphemes: both producers chunk grapheme-safely)
+     *
+     * [decode] returns the same [Server.Output]/[Server.Snapshot] types the JSON path used, so
+     * client dispatch stays transport-agnostic. Every other message remains a JSON text frame
+     * (low-rate, structure-rich — not worth a hand-rolled layout).
+     */
+    object BinaryFrame {
+        const val TYPE_OUTPUT: Byte = 1
+        const val TYPE_SNAPSHOT: Byte = 2
+
+        fun encodeOutput(sessionId: String, data: String): ByteArray {
+            val id = idBytes(sessionId)
+            val payload = data.toByteArray(Charsets.UTF_8)
+            val out = ByteArray(2 + id.size + payload.size)
+            out[0] = TYPE_OUTPUT
+            out[1] = id.size.toByte()
+            id.copyInto(out, 2)
+            payload.copyInto(out, 2 + id.size)
+            return out
+        }
+
+        fun encodeSnapshot(sessionId: String, cols: Int, rows: Int, data: String): ByteArray {
+            val id = idBytes(sessionId)
+            val payload = data.toByteArray(Charsets.UTF_8)
+            val out = ByteArray(2 + id.size + 4 + payload.size)
+            out[0] = TYPE_SNAPSHOT
+            out[1] = id.size.toByte()
+            id.copyInto(out, 2)
+            var p = 2 + id.size
+            out[p++] = (cols ushr 8).toByte(); out[p++] = cols.toByte()
+            out[p++] = (rows ushr 8).toByte(); out[p++] = rows.toByte()
+            payload.copyInto(out, p)
+            return out
+        }
+
+        /** Decode a binary frame to its [Server] message, or null if malformed / unknown type
+         *  (tolerated like an undecodable JSON frame — skipped, not fatal). */
+        fun decode(bytes: ByteArray): Server? {
+            if (bytes.size < 2) return null
+            val idLen = bytes[1].toInt() and 0xFF
+            val idEnd = 2 + idLen
+            return when (bytes[0]) {
+                TYPE_OUTPUT -> {
+                    if (bytes.size < idEnd) return null
+                    Server.Output(
+                        String(bytes, 2, idLen, Charsets.UTF_8),
+                        String(bytes, idEnd, bytes.size - idEnd, Charsets.UTF_8),
+                    )
+                }
+                TYPE_SNAPSHOT -> {
+                    if (bytes.size < idEnd + 4) return null
+                    Server.Snapshot(
+                        String(bytes, 2, idLen, Charsets.UTF_8),
+                        String(bytes, idEnd + 4, bytes.size - idEnd - 4, Charsets.UTF_8),
+                        cols = ((bytes[idEnd].toInt() and 0xFF) shl 8) or (bytes[idEnd + 1].toInt() and 0xFF),
+                        rows = ((bytes[idEnd + 2].toInt() and 0xFF) shl 8) or (bytes[idEnd + 3].toInt() and 0xFF),
+                    )
+                }
+                else -> null
+            }
+        }
+
+        // The 1-byte id length is deliberate: session ids are 36-char UUIDs (TerminalSessionCore
+        // defaults them), so 255 bytes is ~7x headroom. The invariant is enforced here on the
+        // encode side only — decode masks the length byte and bounds-checks, so a hostile frame
+        // can't overread; only a producer minting a >255-byte id would ever trip this.
+        private fun idBytes(sessionId: String): ByteArray =
+            sessionId.toByteArray(Charsets.UTF_8).also {
+                require(it.size <= 255) { "session id too long for binary framing: ${it.size} bytes" }
+            }
+    }
 
     @Serializable
     data class SessionMeta(val id: String, val title: String, val cwd: String? = null, val cols: Int = 80, val rows: Int = 24)

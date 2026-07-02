@@ -1,10 +1,13 @@
 package ai.rever.bossterm.compose.daemon
 
 import ai.rever.bossterm.compose.TabbedTerminalState
+import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
 
 /**
@@ -13,29 +16,36 @@ import org.slf4j.LoggerFactory
  * a [DaemonSessionBridge], so daemon-hosted sessions render as tabs in that window.
  *
  * Process-wide singleton (one daemon per settings dir). v1 attaches ONE window at a time; its
- * controller readiness and the daemon connection can arrive in either order, so [register] polls
- * briefly for both before starting the bridge. When the attached window closes, the bridge fails
- * over to another still-open window (if any) so daemon sessions keep rendering. Entirely inert
- * unless `daemonEnabled`.
+ * controller readiness and the daemon connection can arrive in either order, so [promote] awaits
+ * both (event-driven — the endpoint via [attachState], the controller via [snapshotFlow]) before
+ * starting the bridge. When the attached window closes, the bridge fails over to another still-open
+ * window (if any) so daemon sessions keep rendering. Entirely inert unless `daemonEnabled`.
  */
 object DaemonBridgeCoordinator {
     private val log = LoggerFactory.getLogger(DaemonBridgeCoordinator::class.java)
 
-    private data class Attach(val port: Int, val secret: String)
+    /** The daemon's attach endpoint as this launch discovers it: unknown → ready | never-coming. */
+    private sealed interface AttachEndpoint {
+        /** Still discovering (daemon connect runs async at startup). */
+        object Pending : AttachEndpoint
+        data class Ready(val port: Int, val secret: String) : AttachEndpoint
+        /** The daemon won't serve an attach endpoint this launch — unreachable, or reachable but
+         *  its attach server failed to bind. Terminal state; windows fall back to local tabs. */
+        object Unavailable : AttachEndpoint
+    }
 
-    @Volatile private var attach: Attach? = null
+    // StateFlow (not a @Volatile var) so waiters wake the moment the endpoint resolves instead of
+    // discovering it on a poll tick — the old 250ms poll granularity showed up directly in
+    // time-to-first-tab on every warm start.
+    private val attachState = MutableStateFlow<AttachEndpoint>(AttachEndpoint.Pending)
     @Volatile private var activeState: TabbedTerminalState? = null
     @Volatile private var bridge: DaemonSessionBridge? = null
 
-    // Set once we know the daemon won't provide an attach endpoint this launch — unreachable, or
-    // reachable but its attach server failed to bind. Lets a starting window stop waiting for a bridge
-    // that will never come and fall back to a local tab immediately, instead of sitting empty for the
-    // full ~16s grace period.
-    @Volatile private var attachUnavailable = false
-    val isAttachUnavailable: Boolean get() = attachUnavailable
+    val isAttachUnavailable: Boolean get() = attachState.value is AttachEndpoint.Unavailable
 
-    /** Mark the daemon as not serving an attach endpoint this launch (GUI falls back to local tabs). */
-    fun markAttachUnavailable() { attachUnavailable = true }
+    /** Mark the daemon as not serving an attach endpoint this launch (GUI falls back to local tabs).
+     *  Only Pending → Unavailable: a late failure signal must not clobber a discovered endpoint. */
+    fun markAttachUnavailable() { attachState.compareAndSet(AttachEndpoint.Pending, AttachEndpoint.Unavailable) }
 
     // Every open window that has registered, in registration order — so when the attached window
     // closes we can fail the bridge over to a survivor instead of stranding it tab-less. Guarded by
@@ -70,7 +80,7 @@ object DaemonBridgeCoordinator {
         status.mcpPort?.let { ai.rever.bossterm.compose.mcp.McpTerminalRegistry.setRunning(it) }
         val ap = status.attachPort
             ?: run { log.warn("daemon reported no attach port"); markAttachUnavailable(); return }
-        attach = Attach(ap, ep.secret)
+        attachState.value = AttachEndpoint.Ready(ap, ep.secret)
         log.info("Daemon attach endpoint: ws://127.0.0.1:{}/attach", ap)
     }
 
@@ -91,23 +101,27 @@ object DaemonBridgeCoordinator {
         activeState = state
         uiScope.launch {
             // Either ordering: the controller initializes during composition, the daemon connects
-            // async. Poll briefly for both, then start the bridge.
-            var tries = 0
-            while (isActive && activeState === state && tries < 60) {
-                val ctrl = state.tabController
-                val a = attach
-                if (ctrl != null && a != null) {
-                    if (bridge == null) {
-                        bridge = DaemonSessionBridge(ctrl, state.splitStates, a.port, a.secret, uiScope).also { it.start() }
-                        log.info("Daemon session bridge attached (attachPort={})", a.port)
-                    }
-                    return@launch
-                }
-                delay(250)
-                tries++
+            // async. Await both event-driven (no poll granularity) under ONE deadline — it must
+            // stay below the window's ~16s local-tab fallback grace (TabbedTerminal), which the
+            // old 60×250ms poll also respected. The endpoint wait ends early on Unavailable — no
+            // point sitting out the timeout for a daemon that will never serve one.
+            val ready = withTimeoutOrNull(ATTACH_WAIT_MS) {
+                val ep = attachState.first { it !is AttachEndpoint.Pending } as? AttachEndpoint.Ready
+                    ?: return@withTimeoutOrNull null
+                if (activeState !== state) return@withTimeoutOrNull null
+                // The controller is Compose state set during composition — observe it, don't poll it.
+                ep to snapshotFlow { state.tabController }.filterNotNull().first()
             }
-            if (bridge == null && activeState === state) {
-                log.warn("Daemon bridge not started (controller/endpoint not ready in time)")
+            if (ready == null) {
+                if (bridge == null && activeState === state) {
+                    log.warn("Daemon bridge not started (controller/endpoint not ready in time)")
+                }
+                return@launch
+            }
+            val (endpoint, ctrl) = ready
+            if (activeState === state && bridge == null) {
+                bridge = DaemonSessionBridge(ctrl, state.splitStates, endpoint.port, endpoint.secret, uiScope).also { it.start() }
+                log.info("Daemon session bridge attached (attachPort={})", endpoint.port)
             }
         }
     }
@@ -146,4 +160,9 @@ object DaemonBridgeCoordinator {
     fun closePane(sessionId: String): Boolean = bridge?.closePane(sessionId) ?: false
 
     val isAttached: Boolean get() = bridge != null
+
+    /** Single deadline for endpoint + controller readiness (matches the old 60×250ms poll window;
+     *  cold daemon spawn + handshake fits well inside it, and it stays under the window's ~16s
+     *  local-tab fallback grace). */
+    private const val ATTACH_WAIT_MS = 15_000L
 }

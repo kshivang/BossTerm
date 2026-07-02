@@ -30,8 +30,10 @@ import java.security.MessageDigest
  *
  * Loopback + secret-gated (the daemon's control secret, presented as `?token=`), so no E2E/approval
  * is needed — that's only for untrusted remote viewers ([ai.rever.bossterm.compose.share.MirrorShare]).
- * Output is pushed via each session's raw-output tap; a per-connection bounded DROP_OLDEST outbox
- * means a stalled GUI never blocks the PTY (the next snapshot heals it).
+ * Output is pushed via each session's raw-output tap into a per-connection bounded drop-oldest
+ * outbox, so a stalled GUI never blocks the PTY; a drop schedules a healing re-snapshot of the
+ * affected session. Output/Snapshot travel as binary frames (raw UTF-8, no JSON escaping — see
+ * [DaemonAttachProtocol.BinaryFrame]); everything else is JSON text.
  */
 class DaemonAttachServer(
     private val host: SessionHost,
@@ -143,7 +145,7 @@ class DaemonAttachServer(
 
         // Per-connection outbox: taps + layout pushes enqueue; this coroutine drains to the socket.
         // Two lanes — control frames (snapshot/list/closed/resized/shareState) are guaranteed; only
-        // incremental Output is droppable under back-pressure (the next snapshot/resync heals it).
+        // incremental Output is droppable under back-pressure (healed by a re-snapshot, see below).
         val outbox = FrameOutbox()
         // sessionId → its output tap + size-collector job. Mutated from BOTH the incoming-frame
         // coroutine and the SessionHost change listener (arbitrary threads), so guarded by [lock].
@@ -155,10 +157,26 @@ class DaemonAttachServer(
         // fires forever capturing the dead connection's send) with no pairing endLocked.
         var closed = false
 
+        // First-line guard for binary framing's 1-byte id length: a session id that can't fit
+        // (impossible for today's 36-char UUIDs) is rejected HERE, loudly, instead of encode's
+        // require() throwing later inside the writer coroutine, where it reads as a bare
+        // connection drop. Cheap char-length check only — the exact UTF-8 count is encode's job.
+        fun idFitsBinaryFrame(id: String): Boolean =
+            (id.length <= 255).also { if (!it) log.error("session id too long for binary framing ({} chars); frame dropped", id.length) }
+
         fun send(m: DaemonAttachProtocol.Server) {
-            val text = DaemonAttachProtocol.encodeServer(m)
-            // Only incremental Output rides the droppable lane; every other frame is guaranteed.
-            if (m is DaemonAttachProtocol.Server.Output) outbox.sendOutput(text) else outbox.sendControl(text)
+            when (m) {
+                // Only incremental Output rides the droppable lane; every other frame is guaranteed.
+                // Output + Snapshot travel as binary frames (v3): raw UTF-8 payload, no JSON
+                // string-escaping of an escape-dense stream on the hot path.
+                is DaemonAttachProtocol.Server.Output ->
+                    if (idFitsBinaryFrame(m.id)) outbox.sendOutput(m.id, m.data)
+                is DaemonAttachProtocol.Server.Snapshot ->
+                    if (idFitsBinaryFrame(m.id)) outbox.sendControl(FrameOutbox.Frame.Binary(
+                        DaemonAttachProtocol.BinaryFrame.encodeSnapshot(m.id, m.cols, m.rows, m.data),
+                    ))
+                else -> outbox.sendControl(FrameOutbox.Frame.Text(DaemonAttachProtocol.encodeServer(m)))
+            }
         }
         val client = Client(ws.call.request.queryParameters["pid"]?.toLongOrNull(), { send(it) })
         clients.add(client)
@@ -266,12 +284,53 @@ class DaemonAttachServer(
             }
         }
 
+        // Heal a mirror whose incremental output was evicted under back-pressure: without this, a
+        // drop silently corrupts the client's render of that session until the socket reconnects
+        // (resync() no-ops for already-attached sessions). Re-snapshot the affected session (end +
+        // begin) after a short quiet delay; one pending heal per session bounds a sustained flood
+        // to a re-snapshot per delay window, and the last drop always schedules a final heal.
+        // Wired BEFORE the change listener below and the initial resync(), so no tap can produce a
+        // drop that goes unreported.
+        val resnapshotPending = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        outbox.onOutputDropped = { sid ->
+            if (resnapshotPending.add(sid)) {
+                ws.launch {
+                    kotlinx.coroutines.delay(RESNAPSHOT_DELAY_MS)
+                    resnapshotPending.remove(sid) // before healing: drops during the heal re-arm it
+                    synchronized(lock) {
+                        if (!closed) {
+                            endLocked(sid)
+                            // Tap is detached — purge the session's still-queued output so the fresh
+                            // snapshot (priority control lane) isn't followed by older chunks it
+                            // already contains, replaying as duplicates below the repaint.
+                            outbox.dropQueuedOutput(sid)
+                            host.get(sid)?.let { beginLocked(it) }
+                        }
+                    }
+                }
+            }
+        }
+
         val onChange: () -> Unit = { resync() }
         host.addChangeListener(onChange)
 
-        // Drain outbox to the socket (control frames first, then output).
+        // Drain outbox to the socket (control frames first, then coalesced output).
         val writer = ws.launch {
-            try { outbox.drainTo { text -> ws.send(Frame.Text(text)) } } catch (_: Exception) {}
+            try {
+                outbox.drainTo { f ->
+                    when (f) {
+                        is FrameOutbox.Frame.Text -> ws.send(Frame.Text(f.text))
+                        is FrameOutbox.Frame.Binary -> ws.send(Frame.Binary(true, f.bytes))
+                        is FrameOutbox.Frame.Output -> ws.send(Frame.Binary(
+                            true, DaemonAttachProtocol.BinaryFrame.encodeOutput(f.sessionId, f.data),
+                        ))
+                    }
+                }
+            } catch (e: Exception) {
+                // Socket teardown lands here routinely (debug), but so would an encode failure —
+                // don't let a real bug read as a bare connection drop.
+                if (e !is kotlinx.coroutines.CancellationException) log.debug("attach writer ended: {}", e.toString())
+            }
             // drainTo returns when the outbox closes — including the control-lane-saturation hard close
             // for a read-wedged client. Closing the socket here unblocks the `for (frame in incoming)`
             // loop below so serve()'s finally runs the cleanup promptly, instead of the client + taps +
@@ -360,5 +419,8 @@ class DaemonAttachServer(
         const val MAX_PRELUDE_CHARS = 1_000_000
         /** Quiet window for coalescing title/cwd-driven session-list refreshes (ms). */
         const val META_DEBOUNCE_MS = 200L
+        /** Delay before re-snapshotting a session whose output was dropped under back-pressure —
+         *  long enough to coalesce a burst of drops into one heal, short enough to feel instant. */
+        const val RESNAPSHOT_DELAY_MS = 500L
     }
 }

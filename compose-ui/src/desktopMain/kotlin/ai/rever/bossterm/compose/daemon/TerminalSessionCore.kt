@@ -114,6 +114,10 @@ class TerminalSessionCore(
     private companion object {
         /** Upper clamp for a requested grid dimension — generous; just guards against absurd values. */
         const val MAX_GRID_DIM = 2000
+
+        /** Safety ceiling on un-drained write units (see [pendingWriteUnits]) — far above any real
+         *  paste, only reachable when the PTY has stopped draining. */
+        const val MAX_PENDING_WRITE_UNITS = 32L * 1024 * 1024
     }
 
     init {
@@ -245,12 +249,39 @@ class TerminalSessionCore(
         }
     }
 
+    // One non-suspending trySend per write: on the unbounded channel it cannot fail while the
+    // session is open, so the keystroke path has no coroutine launch and ordering is structural
+    // (see [writeChannel]). After close() the channel is closed and the write is dropped — the
+    // PTY is gone anyway.
     fun writeInput(text: String) {
-        scope.launch { runCatching { writeChannel.send(WriteOp.Text(text)) } }
+        enqueueWrite(WriteOp.Text(text), text.length)
     }
 
     fun writeBytes(bytes: ByteArray) {
-        scope.launch { runCatching { writeChannel.send(WriteOp.Raw(bytes)) } }
+        enqueueWrite(WriteOp.Raw(bytes), bytes.size)
+    }
+
+    // Depth gauge for the write pipe: units (chars for Text, bytes for Raw — close enough for a
+    // ceiling) enqueued but not yet written to the PTY. The channel itself is unbounded so
+    // ordering stays structural; this counter is the safety ceiling a wedged PTY needs — its
+    // write() blocks forever, and a runaway programmatic producer (MCP send_input loop, giant
+    // paste) would otherwise grow a weeks-lived daemon's heap without bound. At the ceiling we
+    // log-and-drop: those bytes were never going to reach a wedged PTY anyway.
+    private val pendingWriteUnits = java.util.concurrent.atomic.AtomicLong(0)
+
+    private fun enqueueWrite(op: WriteOp, units: Int) {
+        // Add first, then check-and-rollback: a check-then-add gate is racy with several producers
+        // (WS reader, MCP, emulator replies) — each could pass the gate before any increments and
+        // overshoot the ceiling together. Reserving up front bounds steady-state at the ceiling;
+        // the transient overshoot is at most one in-flight op per concurrent producer.
+        val pending = pendingWriteUnits.addAndGet(units.toLong())
+        if (pending > MAX_PENDING_WRITE_UNITS) {
+            pendingWriteUnits.addAndGet(-units.toLong())
+            log.warn("session {}: write queue saturated ({} units pending, PTY not draining); dropping {} units",
+                id, pending - units, units)
+            return
+        }
+        if (writeChannel.trySend(op).isFailure) pendingWriteUnits.addAndGet(-units.toLong()) // closed
     }
 
     // Last requested grid size, so a resize that arrives before the PTY is spawned (handle still null)
@@ -310,7 +341,19 @@ class TerminalSessionCore(
         class Raw(val data: ByteArray) : WriteOp()
     }
 
-    private val writeChannel = Channel<WriteOp>(capacity = 256)
+    private fun opUnits(op: WriteOp): Long = when (op) {
+        is WriteOp.Text -> op.data.length.toLong()
+        is WriteOp.Raw -> op.data.size.toLong()
+    }
+
+    // A single UNBOUNDED FIFO pipe for everything written to the PTY — user input, pastes, and
+    // emulator replies. Unbounded so every producer is one non-suspending trySend: a bounded
+    // channel needs a suspending fallback under backpressure, and any two-path enqueue can reorder
+    // a write past one that arrived earlier once a slot frees (silent corruption of a byte
+    // stream). Not a new memory risk: the bounded version parked each overflowing write in its own
+    // suspended coroutine, holding the same bytes with more overhead — a wedged PTY grew the heap
+    // either way, and input volume is human/MCP-scale.
+    private val writeChannel = Channel<WriteOp>(capacity = Channel.UNLIMITED)
     @Volatile private var writeConsumer: Job? = null
 
     /**
@@ -332,6 +375,9 @@ class TerminalSessionCore(
                 } catch (e: java.io.IOException) {
                     log.debug("PTY write failed (likely closed): {}", e.message)
                 }
+                // Drain the depth gauge whether the write succeeded or not — a failed write is
+                // gone either way, and a stuck counter would wedge enqueueWrite's ceiling.
+                pendingWriteUnits.addAndGet(-opUnits(op))
             }
         }
     }
@@ -339,16 +385,16 @@ class TerminalSessionCore(
     /**
      * Routes emulator-generated replies (DA, cursor reports, …) back to the PTY. Enqueued onto the
      * SAME [writeChannel] as user input, so a reply can't interleave its bytes mid-sequence with a
-     * keystroke — a single [writeConsumer] owns the PTY's outputStream. trySend (non-suspending) keeps
-     * the emulator thread unblocked; a reply is dropped only if 256 writes are already queued (never in
-     * practice). Ordered with input, as the queue guarantees.
+     * keystroke — a single [writeConsumer] owns the PTY's outputStream. trySend (non-suspending)
+     * keeps the emulator thread unblocked and, on the unbounded channel, never drops while the
+     * session is open. Ordered with input, as the queue guarantees.
      */
     private inner class PtyTerminalOutput : TerminalOutputStream {
         override fun sendBytes(response: ByteArray, userInput: Boolean) {
-            writeChannel.trySend(WriteOp.Raw(response))
+            enqueueWrite(WriteOp.Raw(response), response.size)
         }
         override fun sendString(string: String, userInput: Boolean) {
-            writeChannel.trySend(WriteOp.Text(string))
+            enqueueWrite(WriteOp.Text(string), string.length)
         }
     }
 

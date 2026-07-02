@@ -4,13 +4,15 @@ import kotlinx.coroutines.CompletableDeferred
 
 /**
  * A connected browser viewer of a daemon-hosted share. The headless counterpart to
- * [ai.rever.bossterm.compose.share.ViewerConnection]: the share server pushes pre-encoded JSON
- * frames into [outbox] and the per-connection Ktor coroutine drains them (encrypting each when a
- * cipher was negotiated). The outbox has two lanes (see [FrameOutbox]): control frames (snapshot /
- * layout / presence / ...) are guaranteed, while incremental PaneOutput is bounded + DROP_OLDEST so
- * a slow viewer never back-pressures the PTY taps — it just misses intermediate output, and the next
- * [ai.rever.bossterm.compose.share.ServerMessage.PaneSnapshot] heals it. [canControl] is mutable
- * because an approved mid-session control upgrade flips a live view-only connection without a reconnect.
+ * [ai.rever.bossterm.compose.share.ViewerConnection]: the share server pushes control frames
+ * (pre-encoded JSON) and raw pane-output chunks into [outbox] and the per-connection Ktor coroutine
+ * drains them (encoding output to PaneOutput at drain time, encrypting each frame when a cipher was
+ * negotiated). The outbox has two lanes (see [FrameOutbox]): control frames (snapshot / layout /
+ * presence / ...) are guaranteed, while incremental pane output is char-bounded drop-oldest so a
+ * slow viewer never back-pressures the PTY taps — each drop schedules a healing
+ * [ai.rever.bossterm.compose.share.ServerMessage.PaneSnapshot] for the affected pane. [canControl]
+ * is mutable because an approved mid-session control upgrade flips a live view-only connection
+ * without a reconnect.
  */
 internal class DaemonShareConnection(
     val id: Int,
@@ -18,7 +20,9 @@ internal class DaemonShareConnection(
     /** Device label from the viewer's Hello — shown to attached GUIs in the approval list. */
     val name: String,
 ) {
-    val outbox = FrameOutbox(outputCapacity = 2048)
+    // Tighter budget than the attach outbox: browser viewers ride real (possibly remote) links, and
+    // a healing re-snapshot replaces a big stale backlog more cheaply than delivering it.
+    val outbox = FrameOutbox(outputCapacityChars = 2 * 1024 * 1024)
 }
 
 /**

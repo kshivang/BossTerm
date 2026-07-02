@@ -25,6 +25,13 @@ import kotlin.test.assertTrue
  */
 class DaemonAttachServerTest {
 
+    /** v3 transport: Output/Snapshot arrive as binary frames, everything else as JSON text. */
+    private fun decodeAny(frame: Frame): DaemonAttachProtocol.Server? = when (frame) {
+        is Frame.Text -> runCatching { DaemonAttachProtocol.decodeServer(frame.readText()) }.getOrNull()
+        is Frame.Binary -> DaemonAttachProtocol.BinaryFrame.decode(frame.data)
+        else -> null
+    }
+
     @Test
     fun `attach streams snapshot + output and accepts input`() {
         if (ShellCustomizationUtils.isWindows()) return
@@ -39,6 +46,7 @@ class DaemonAttachServerTest {
 
             val client = HttpClient(CIO) { install(WebSockets) }
             try {
+                var markerCameAsBinary = false
                 val sawSession = runBlocking {
                     var ok = false
                     runCatching {
@@ -47,8 +55,7 @@ class DaemonAttachServerTest {
                                 // wait until the session is alive, then send input to cat
                                 var sentInput = false
                                 for (frame in incoming) {
-                                    if (frame !is Frame.Text) continue
-                                    val msg = DaemonAttachProtocol.decodeServer(frame.readText())
+                                    val msg = decodeAny(frame) ?: continue
                                     if (msg is DaemonAttachProtocol.Server.SessionList && msg.sessions.any { it.id == id }) {
                                         ok = true
                                         if (!sentInput) {
@@ -63,7 +70,10 @@ class DaemonAttachServerTest {
                                         is DaemonAttachProtocol.Server.Output -> msg.data
                                         else -> ""
                                     }
-                                    if (text.contains(marker)) return@webSocket // echoed back → done
+                                    if (text.contains(marker)) { // echoed back → done
+                                        markerCameAsBinary = frame is Frame.Binary
+                                        return@webSocket
+                                    }
                                 }
                             }
                         }
@@ -71,6 +81,7 @@ class DaemonAttachServerTest {
                     ok
                 }
                 assertTrue(sawSession, "client should receive a SessionList naming the session (and the input echo)")
+                assertTrue(markerCameAsBinary, "session bytes (Output/Snapshot) must ride binary frames in v3")
             } finally {
                 client.close()
             }
@@ -176,8 +187,7 @@ class DaemonAttachServerTest {
                             client.webSocket("ws://127.0.0.1:$port/attach", request = { header(DaemonAttachProtocol.TOKEN_HEADER, "mal") }) {
                                 var poked = false
                                 for (frame in incoming) {
-                                    if (frame !is Frame.Text) continue
-                                    val msg = DaemonAttachProtocol.decodeServer(frame.readText())
+                                    val msg = decodeAny(frame) ?: continue
                                     if (!poked && msg is DaemonAttachProtocol.Server.SessionList && msg.sessions.any { it.id == id }) {
                                         poked = true
                                         // Garbage + unknown discriminator must be skipped, not crash the loop…

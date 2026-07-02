@@ -159,7 +159,10 @@ class DaemonClient {
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt(); return null
             }
-            sleep = (sleep * 2).coerceAtMost(400)
+            // Cap the poll interval low: a daemon spawn takes seconds, and each probe is one cheap
+            // loopback HELLO — a 400ms cap added up to ~400ms of pure poll granularity to every
+            // cold start after the daemon was actually ready.
+            sleep = (sleep * 2).coerceAtMost(150)
         }
         log.error("Daemon did not become reachable within {}ms", timeoutMs)
         return null

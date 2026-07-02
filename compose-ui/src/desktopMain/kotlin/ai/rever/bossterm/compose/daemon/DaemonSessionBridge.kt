@@ -74,10 +74,30 @@ class DaemonSessionBridge(
     @Volatile private var sawAnySession = false
 
     private companion object {
+        /** Min spacing between daemon-bound Resize sends per session. Auto-fit fires per layout
+         *  tick during a live window drag, and every Resize reflows the daemon's full scrollback
+         *  (then the Resized echo reflows the mirror's) — throttle to one grid per interval,
+         *  first send immediate, final value always delivered. */
+        const val RESIZE_MIN_INTERVAL_MS = 50L
+
         /** Home + clear screen + clear scrollback — prepended to a snapshot so a reattach repaint
          *  replaces (not appends below) the mirror tab's existing content. */
         const val SNAPSHOT_RESET = "\u001b[H\u001b[2J\u001b[3J"
     }
+
+    /**
+     * Per-session conflated Resize forwarding (see [ResizeSampler] for the invariants: first send
+     * near-immediate, at most one per interval during a burst, final grid always delivered).
+     * Creation (layout callbacks) and removal ([closeMirror]/[closeMirrorContainer]) are both
+     * Main-confined, so they can't interleave.
+     */
+    private val resizeSamplers = ResizeSampler(io, RESIZE_MIN_INTERVAL_MS) { id, c, r ->
+        send(DaemonAttachProtocol.Client.Resize(id, c, r))
+    }
+
+    private fun sendResizeSampled(id: String, cols: Int, rows: Int) = resizeSamplers.request(id, cols, rows)
+
+    private fun dropResizeSampler(id: String) = resizeSamplers.drop(id)
 
     fun start() {
         if (running) return
@@ -98,7 +118,8 @@ class DaemonSessionBridge(
     fun stop() {
         running = false
         outbox?.close()
-        io.cancel()
+        io.cancel() // reaps the resize-sampler collectors too
+        resizeSamplers.clear()
         runCatching { client.close() }
     }
 
@@ -175,8 +196,13 @@ class DaemonSessionBridge(
                 }
                 try {
                     for (frame in incoming) {
-                        if (frame !is Frame.Text) continue
-                        val msg = runCatching { DaemonAttachProtocol.decodeServer(frame.readText()) }.getOrNull() ?: continue
+                        // v3: Output/Snapshot arrive as binary frames (raw UTF-8 payload, no JSON
+                        // escaping on the hot path); everything else stays JSON text.
+                        val msg = when (frame) {
+                            is Frame.Text -> runCatching { DaemonAttachProtocol.decodeServer(frame.readText()) }.getOrNull()
+                            is Frame.Binary -> DaemonAttachProtocol.BinaryFrame.decode(frame.data)
+                            else -> null
+                        } ?: continue
                         dispatch(msg)
                     }
                 } finally {
@@ -295,7 +321,7 @@ class DaemonSessionBridge(
                     remotePaneId = meta.id,
                     onUserInput = { data -> send(DaemonAttachProtocol.Client.Input(meta.id, data)) },
                 )
-                tab.onRemoteFit = { cols, rows -> send(DaemonAttachProtocol.Client.Resize(meta.id, cols, rows)) }
+                tab.onRemoteFit = { cols, rows -> sendResizeSampled(meta.id, cols, rows) }
                 tab.workingDirectory.value = meta.cwd
                 tabs[meta.id] = tab
                 controller.createTabFromExistingSession(tab)
@@ -365,7 +391,7 @@ class DaemonSessionBridge(
             title = "",
             remotePaneId = sessionId,
             onUserInput = { data -> send(DaemonAttachProtocol.Client.Input(sessionId, data)) },
-        ).also { it.onRemoteFit = { cols, rows -> send(DaemonAttachProtocol.Client.Resize(sessionId, cols, rows)) } }
+        ).also { it.onRemoteFit = { cols, rows -> sendResizeSampled(sessionId, cols, rows) } }
 
     /** [GroupTreeDto] -> [SplitNode], reusing/creating leaf mirrors by session id via the same
      *  `tabs` cache the flat path uses. */
@@ -387,6 +413,7 @@ class DaemonSessionBridge(
      *  the container tab. Mirrors `RemoteSessionManager.removeMirrorTab`. Must run on Main. */
     private fun closeMirrorContainer(container: TerminalTab) {
         splitStates[container.id]?.getAllSessions()?.filterIsInstance<TerminalTab>()?.forEach { mirror ->
+            tabs.entries.filter { it.value === mirror }.forEach { dropResizeSampler(it.key) }
             tabs.entries.removeIf { it.value === mirror }
             runCatching { mirror.dispose() }
         }
@@ -402,6 +429,7 @@ class DaemonSessionBridge(
     }
 
     private suspend fun closeMirror(id: String) {
+        dropResizeSampler(id)
         val tab = tabs.remove(id) ?: return
         withContext(Dispatchers.Main) {
             // A leaf inside a multi-pane group's SplitViewState isn't in controller.tabs at all —

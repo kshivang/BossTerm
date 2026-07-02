@@ -4,6 +4,7 @@ import ai.rever.bossterm.compose.daemon.BossTermPaths
 import ai.rever.bossterm.compose.daemon.DaemonAttachServer
 import ai.rever.bossterm.compose.daemon.DaemonControlChannel
 import ai.rever.bossterm.compose.daemon.DaemonControlHandler
+import ai.rever.bossterm.compose.daemon.DaemonInstanceLock
 import ai.rever.bossterm.compose.daemon.DaemonMcpServer
 import ai.rever.bossterm.compose.daemon.DaemonShareServer
 import ai.rever.bossterm.compose.daemon.DaemonTray
@@ -69,9 +70,17 @@ fun runDaemon(args: Array<String>) {
         })
     }.onFailure { log.debug("Could not install SIGHUP handler: {}", it.message) }
 
-    // Single-instance self-guard: if a compatible daemon is already live (it answers PING on the
-    // recorded port), don't start a second one that would overwrite daemon.port and orphan the
-    // first. Backstops the GUI's FileChannel.tryLock spawn guard under a cold-start race.
+    // Single-instance guard, two layers. (1) The OS instance lock is the atomic arbiter: a
+    // GUI-spawned daemon racing a service-manager start (launchd RunAtLoad / systemd enable --now,
+    // which bypass the GUI's spawn lock) used to have BOTH daemons pass the probe below before
+    // either had bound its port — two tray icons, and the loser's port file clobbered the winner's.
+    // (2) The PING probe stays as a backstop against a live daemon from a build that predates the
+    // instance lock. Both paths exit 0: launchd's KeepAlive(SuccessfulExit=false) respawns a
+    // non-zero exit straight back into the same contention.
+    if (!DaemonInstanceLock.tryAcquire()) {
+        log.info("Another BossTerm daemon holds the instance lock; exiting (single-instance)")
+        return
+    }
     if (liveCompatibleDaemonPresent()) {
         log.info("A compatible BossTerm daemon is already running; exiting (single-instance)")
         return

@@ -179,6 +179,28 @@ class DaemonInfraTest {
             BufferedReader(InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8)).readLine()
         }
 
+    // ---- DaemonInstanceLock ----
+
+    @Test
+    fun `instance lock is exclusive while held and reacquirable after release`() = withSettingsDir {
+        try {
+            assertTrue(DaemonInstanceLock.tryAcquire())
+            assertTrue(DaemonInstanceLock.tryAcquire()) // idempotent while held
+            // A second locker must lose (same-JVM contender throws OverlappingFileLockException,
+            // a separate process would get null — either way it must not acquire).
+            val other = runCatching {
+                java.io.RandomAccessFile(BossTermPaths.daemonInstanceLockFile(), "rw")
+                    .channel.use { it.tryLock() }
+            }.getOrNull()
+            assertNull(other)
+        } finally {
+            DaemonInstanceLock.release()
+        }
+        // Released (old daemon exited) → the next daemon can take over.
+        assertTrue(DaemonInstanceLock.tryAcquire())
+        DaemonInstanceLock.release()
+    }
+
     private fun newTempDir(): String =
         java.nio.file.Files.createTempDirectory("bossterm-paths").toFile().absolutePath
 

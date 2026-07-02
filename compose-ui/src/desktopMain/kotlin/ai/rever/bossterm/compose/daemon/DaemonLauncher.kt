@@ -148,37 +148,60 @@ object DaemonLauncher {
 
     /**
      * The packaged app's native launcher binary, derived from `java.home` per jpackage layout, or
-     * null in dev / unrecognized layouts. Visible for tests (which pass a synthetic [javaHome]).
-     *   - macOS:   `<Bundle>.app/Contents/runtime/Contents/Home` → `<Bundle>.app/Contents/MacOS/<Bundle>`
-     *   - Windows: `<install>\runtime` → `<install>\<App>.exe`
-     *   - Linux:   `<install>/lib/runtime` → `<install>/bin/<App>`
+     * null in dev / unrecognized layouts. The per-OS derivations are pure functions of [javaHome]
+     * (no current-OS checks inside) so ALL of them are unit-tested regardless of the CI platform.
      */
     internal fun packagedLauncherBinary(
         javaHome: String? = System.getProperty("java.home"),
     ): File? {
         val jh = javaHome?.takeIf { it.isNotBlank() } ?: return null
         return when {
-            ShellCustomizationUtils.isMacOS() -> {
-                if (!jh.contains(".app/Contents/")) return null
-                val bundle = File(jh.substringBefore(".app/Contents/") + ".app")
-                val macOsDir = File(bundle, "Contents/MacOS")
-                // jpackage names the launcher after the bundle; fall back to the sole executable.
-                File(macOsDir, bundle.name.removeSuffix(".app")).takeIf { it.canExecute() }
-                    ?: macOsDir.listFiles()?.singleOrNull { it.isFile && it.canExecute() }
-            }
-            ShellCustomizationUtils.isWindows() -> {
-                val home = File(jh)
-                if (!home.name.equals("runtime", ignoreCase = true)) return null
-                home.parentFile?.listFiles()?.singleOrNull { it.isFile && it.extension.equals("exe", ignoreCase = true) }
-            }
-            ShellCustomizationUtils.isLinux() -> {
-                val home = File(jh)
-                if (home.name != "runtime" || home.parentFile?.name != "lib") return null
-                val binDir = File(home.parentFile.parentFile ?: return null, "bin")
-                binDir.listFiles()?.singleOrNull { it.isFile && it.canExecute() }
-            }
+            ShellCustomizationUtils.isMacOS() -> macLauncher(jh)
+            ShellCustomizationUtils.isWindows() -> windowsLauncher(jh)
+            ShellCustomizationUtils.isLinux() -> linuxLauncher(jh)
             else -> null
         }
+    }
+
+    /** macOS: `<Bundle>.app/Contents/runtime/Contents/Home` → `<Bundle>.app/Contents/MacOS/<Bundle>`. */
+    internal fun macLauncher(javaHome: String): File? {
+        val bundle = macBundleFile(javaHome) ?: return null
+        return pickLauncher(File(bundle, "Contents/MacOS"), bundle.name.removeSuffix(".app")) { it.canExecute() }
+    }
+
+    /** Windows: `<install>\runtime` → `<install>\<App>.exe` (launcher named after the install dir). */
+    internal fun windowsLauncher(javaHome: String): File? {
+        val home = File(javaHome)
+        if (!home.name.equals("runtime", ignoreCase = true)) return null
+        val install = home.parentFile ?: return null
+        return pickLauncher(install, install.name) { it.extension.equals("exe", ignoreCase = true) }
+    }
+
+    /** Linux: `<install>/lib/runtime` → `<install>/bin/<App>` (deb/rpm install dirs are lowercased). */
+    internal fun linuxLauncher(javaHome: String): File? {
+        val home = File(javaHome)
+        if (home.name != "runtime" || home.parentFile?.name != "lib") return null
+        val install = home.parentFile.parentFile ?: return null
+        return pickLauncher(File(install, "bin"), install.name) { it.canExecute() }
+    }
+
+    /**
+     * Pick the launcher from [dir]: the [executable] named [preferredName] (case-insensitive,
+     * extension ignored — jpackage names the main launcher after the app/install dir), else the
+     * directory's SOLE executable. With several candidates and no name match, refuse loudly —
+     * exec'ing a guess (an add-launcher, an uninstaller) is worse than failing.
+     */
+    private fun pickLauncher(dir: File, preferredName: String, executable: (File) -> Boolean): File? {
+        val candidates = dir.listFiles()?.filter { it.isFile && executable(it) }.orEmpty()
+        candidates.firstOrNull { it.nameWithoutExtension.equals(preferredName, ignoreCase = true) }?.let { return it }
+        candidates.singleOrNull()?.let { return it }
+        if (candidates.size > 1) {
+            log.warn(
+                "DaemonLauncher: multiple launcher candidates in {} and none named '{}': {}",
+                dir, preferredName, candidates.joinToString { it.name },
+            )
+        }
+        return null
     }
 
     fun spawn(
@@ -287,19 +310,28 @@ object DaemonLauncher {
     private fun macAppBundlePath(): String? {
         if (!ShellCustomizationUtils.isMacOS()) return null
         val jh = System.getProperty("java.home")?.takeIf { it.isNotBlank() } ?: return null
-        return if (jh.contains(".app/Contents/")) jh.substringBefore(".app/Contents/") + ".app" else null
+        return macBundleFile(jh)?.path
     }
+
+    /** `<Bundle>.app` containing [path] (e.g. a bundled java.home), or null when not inside a bundle. */
+    private fun macBundleFile(path: String): File? =
+        if (path.contains(".app/Contents/")) File(path.substringBefore(".app/Contents/") + ".app") else null
 
     /** Launch the GUI in a normal (non-headless, non-agent) JVM via the same JRE + classpath. */
     private fun buildGuiCommand(): List<String>? {
-        val javaBin = resolveJavaBinary() ?: return null
+        val javaBin = resolveJavaBinary()
+        if (javaBin == null) {
+            // Packaged Windows/Linux: no bin/java (the same gap the daemon spawn has) — relaunch
+            // the native launcher as a plain GUI; its cfg re-applies the packaged java-options and
+            // --add-opens. Like the macOS `open <bundle>` path above, a runtime-set settings-dir
+            // profile is not forwarded (the GUI facade only parses --prop: args after --daemon).
+            return packagedLauncherBinary()?.let { listOf(it.absolutePath) }
+        }
         val classpath = System.getProperty("java.class.path")?.takeIf { it.isNotBlank() } ?: return null
         return buildList {
             add(javaBin.absolutePath)
             // GUI is a normal foreground app: do NOT pass headless or UIElement.
-            passthroughProp(BossTermPaths.SETTINGS_DIR_PROPERTY)?.let { add(it) }
-            passthroughProp("bossterm.version")?.let { add(it) }
-            passthroughProp("compose.application.resources.dir")?.let { add(it) }
+            PASSTHROUGH_PROPS.forEach { key -> passthroughProp(key)?.let { add(it) } }
             // Mirror the GUI launcher's AWT --add-opens (global hotkeys / window integration).
             add("--add-opens"); add("java.desktop/java.awt=ALL-UNNAMED")
             if (ShellCustomizationUtils.isMacOS()) { add("--add-opens"); add("java.desktop/sun.lwawt.macosx=ALL-UNNAMED") }

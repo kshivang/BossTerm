@@ -460,6 +460,13 @@ data class TerminalSettings(
     val tabBarVerticalWidth: Float = 180f,
 
     /**
+     * Vertical (left) tab bar collapsed to a slim icon rail. Toggled by the bar's
+     * chevron. Ignored when position is "top" and while the window is narrow enough
+     * to force the rail (auto-collapse).
+     */
+    val tabBarCollapsed: Boolean = false,
+
+    /**
      * Summary mode (Warp's VerticalTabsSummaryMode): show one chip per tab
      * (the active pane, labeled with the tab's title) instead of one chip per
      * split pane. Off = per-pane chips (default).

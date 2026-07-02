@@ -4,6 +4,7 @@ import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.settings.theme.Theme
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -13,9 +14,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.HorizontalSplit
@@ -56,6 +60,15 @@ val TabBarHeight: Dp = 48.dp
 
 /** Default width of the [TabBar] surface when rendered vertically (left position). */
 val TabBarVerticalWidth: Dp = 180.dp
+
+/** Width of the vertical bar when collapsed to the slim icon rail. */
+val TabBarRailWidth: Dp = 44.dp
+
+/**
+ * Window width below which the vertical bar auto-collapses to the rail and the full
+ * bar becomes an overlay drawer — mirrors the share-viewer's 700px phone breakpoint.
+ */
+val TabBarAutoCollapseWidth: Dp = 700.dp
 
 /** Orientation of the tab bar: across the top (default) or down the left side. */
 enum class TabBarOrientation { TOP, LEFT }
@@ -228,7 +241,7 @@ private val REMOTE_AI_ASSISTANTS = listOf(
  *
  * Styling matches the Material 3 design of the search bar for visual consistency.
  */
-@OptIn(ExperimentalComposeUiApi::class)
+@OptIn(ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun TabBar(
     groups: List<TabBarGroup>,
@@ -259,6 +272,10 @@ fun TabBar(
     remoteGroups: List<RemoteTabGroup> = emptyList(),
     orientation: TabBarOrientation = TabBarOrientation.TOP,
     verticalWidth: Dp = TabBarVerticalWidth,
+    /** Vertical bar only: render as a slim icon rail ([TabBarRailWidth]) instead of the full panel. */
+    collapsed: Boolean = false,
+    /** Vertical bar only: collapse/expand chevron next to "Add remote" (and atop the rail). Null hides it. */
+    onToggleCollapse: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     // Context menu controller for chip right-click menu
@@ -472,13 +489,69 @@ fun TabBar(
 
     Surface(
         modifier = modifier.then(
-            if (vertical) Modifier.fillMaxHeight().width(verticalWidth)
+            if (vertical) Modifier.fillMaxHeight().width(if (collapsed) TabBarRailWidth else verticalWidth)
             else Modifier.fillMaxWidth().height(TabBarHeight)
         ),
         color = barBg,
         shadowElevation = 2.dp
     ) {
-        if (vertical) {
+        if (vertical && collapsed) {
+            // Slim icon rail: expand chevron on top, one accent dot per pane (click to
+            // focus, tooltip for the title), "Add remote" pinned at the bottom.
+            Column(
+                modifier = Modifier.fillMaxSize().padding(vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                onToggleCollapse?.let { toggle ->
+                    barButton(Icons.Default.ChevronRight, "Expand sidebar", toggle)
+                    Spacer(Modifier.height(6.dp))
+                    Box(Modifier.fillMaxWidth(0.7f).height(1.dp).background(barDivider))
+                    Spacer(Modifier.height(8.dp))
+                }
+                Column(
+                    modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(TabGroupGap / 2),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Same flattened ordering as the top bar: local tabs, then remote mirrors.
+                    (groups + remoteGroups.flatMap { it.groups + it.nested.flatMap { n -> n.groups } }).forEach { group ->
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(TabChipGap),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            group.panes.forEach { pane ->
+                                val active = group.tabIndex == activeTabIndex && pane.paneId == focusedPaneId
+                                val accent = parseTabColor(pane.colorHex) ?: barMuted
+                                TooltipArea(tooltip = {
+                                    Surface(color = barBg, shadowElevation = 4.dp, shape = RoundedCornerShape(4.dp)) {
+                                        Text(
+                                            pane.title, color = barFg, fontSize = 11.sp,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }) {
+                                    Box(
+                                        modifier = Modifier.size(24.dp).clip(RoundedCornerShape(6.dp))
+                                            .clickable { onPaneSelected(group.tabIndex, pane.paneId) },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (active) Box(Modifier.size(16.dp).border(1.5.dp, barFg, CircleShape))
+                                        Box(
+                                            Modifier.size(10.dp).clip(CircleShape)
+                                                .background(if (active) accent else accent.copy(alpha = 0.55f))
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Box(Modifier.fillMaxWidth(0.7f).height(1.dp).background(barDivider))
+                Spacer(Modifier.height(4.dp))
+                barButton(Icons.Default.Cloud, "Add remote session", onAddRemote)
+            }
+        } else if (vertical) {
             Column(modifier = Modifier.fillMaxSize().padding(6.dp)) {
                 // Action toolbar pinned at the top, then a divider…
                 actionBar()
@@ -737,23 +810,40 @@ fun TabBar(
                         } // end tether unit (host box + its upstream boxes)
                     }
                 }
-                // Bottom bar — connect to another BossTerm's shared session.
+                // Bottom bar — connect to another BossTerm's shared session, plus the
+                // collapse chevron that shrinks the panel to the icon rail.
                 Spacer(Modifier.height(8.dp))
                 Box(Modifier.fillMaxWidth().height(1.dp).background(barDivider))
                 Spacer(Modifier.height(6.dp))
                 Row(
-                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
-                        .clickable(onClick = onAddRemote).padding(vertical = 6.dp, horizontal = 8.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Cloud,
-                        contentDescription = "Add remote session",
-                        tint = Color(0xFFB0B0B0),
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Text("Add remote", color = Color(0xFFB0B0B0), fontSize = 12.sp)
+                    Row(
+                        modifier = Modifier.weight(1f).clip(RoundedCornerShape(6.dp))
+                            .clickable(onClick = onAddRemote).padding(vertical = 6.dp, horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Cloud,
+                            contentDescription = "Add remote session",
+                            tint = Color(0xFFB0B0B0),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text("Add remote", color = Color(0xFFB0B0B0), fontSize = 12.sp)
+                    }
+                    onToggleCollapse?.let { toggle ->
+                        IconButton(onClick = toggle, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                imageVector = Icons.Default.ChevronLeft,
+                                contentDescription = "Collapse sidebar",
+                                tint = barMuted,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
                 }
             }
         } else {

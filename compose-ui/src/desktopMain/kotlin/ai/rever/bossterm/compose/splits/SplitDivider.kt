@@ -9,9 +9,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
@@ -94,12 +92,17 @@ fun SplitDragHandle(
     /** Called when the drag ends (or is cancelled) — used to commit the final ratio to a host. */
     onDragEnd: () -> Unit = {}
 ) {
-    // Track the starting ratio when drag begins
-    var startRatio by remember { mutableFloatStateOf(currentRatio) }
-    var cumulativeDelta by remember { mutableFloatStateOf(0f) }
-
-    // Calculate max ratio based on min (ensures both panes respect minimum)
-    val maxRatio = 1f - minRatio
+    // The pointerInput block below never restarts (its key never changes for a live split),
+    // so parameters captured directly would stay frozen at their first-composition values:
+    // a stale availableSize scales every drag by oldSize/newSize (sluggish or overshooting
+    // dividers after the container resizes), and a stale currentRatio snaps the divider back
+    // to its original position when the next drag starts. Read live values via
+    // rememberUpdatedState instead.
+    val latestRatio by rememberUpdatedState(currentRatio)
+    val latestAvailableSize by rememberUpdatedState(availableSize)
+    val latestMinRatio by rememberUpdatedState(minRatio)
+    val latestOnRatioChange by rememberUpdatedState(onRatioChange)
+    val latestOnDragEnd by rememberUpdatedState(onDragEnd)
 
     // Apply resize cursor based on orientation using direct AWT manipulation
     val cursorModifier = when (orientation) {
@@ -118,19 +121,20 @@ fun SplitDragHandle(
             .alpha(0f) // Invisible
             .then(cursorModifier)
             .pointerInput(orientation) {
+                // Track the starting ratio when drag begins
+                var startRatio = 0f
+                var cumulativeDelta = 0f
                 detectDragGestures(
                     onDragStart = {
                         // Capture the ratio at drag start
-                        startRatio = currentRatio
+                        startRatio = latestRatio
                         cumulativeDelta = 0f
                     },
                     onDragEnd = {
-                        cumulativeDelta = 0f
-                        onDragEnd()
+                        latestOnDragEnd()
                     },
                     onDragCancel = {
-                        cumulativeDelta = 0f
-                        onDragEnd()
+                        latestOnDragEnd()
                     },
                     onDrag = { change, dragAmount ->
                         change.consume()
@@ -141,9 +145,10 @@ fun SplitDragHandle(
                         cumulativeDelta += delta
 
                         // Calculate new ratio from start ratio + cumulative delta
-                        val deltaRatio = cumulativeDelta / availableSize
-                        val newRatio = (startRatio + deltaRatio).coerceIn(minRatio, maxRatio)
-                        onRatioChange(newRatio)
+                        val deltaRatio = cumulativeDelta / latestAvailableSize
+                        val maxRatio = 1f - latestMinRatio
+                        val newRatio = (startRatio + deltaRatio).coerceIn(latestMinRatio, maxRatio)
+                        latestOnRatioChange(newRatio)
                     }
                 )
             }

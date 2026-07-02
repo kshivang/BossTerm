@@ -50,6 +50,70 @@ class DaemonInfraTest {
         assertEquals("ai.rever.bossterm.app.DaemonMainKt", DaemonLauncher.DEFAULT_DAEMON_MAIN_CLASS)
     }
 
+    @Test
+    fun `applyPropArgs sets properties, strips prop args, keeps the rest`() {
+        val key = "bossterm.test.applyPropArgs"
+        try {
+            val rest = DaemonLauncher.applyPropArgs(arrayOf(
+                "${DaemonLauncher.PROP_ARG_PREFIX}$key=hello world",
+                "--other",
+                "${DaemonLauncher.PROP_ARG_PREFIX}malformed-no-equals",
+            ))
+            assertEquals("hello world", System.getProperty(key))
+            // Malformed prop args are dropped (logged), not passed through to the daemon.
+            assertEquals(listOf("--other"), rest.toList())
+        } finally {
+            System.clearProperty(key)
+        }
+    }
+
+    @Test
+    fun `launcher derivation resolves every jpackage layout (pure, runs on any CI OS)`() {
+        val root = java.nio.file.Files.createTempDirectory("bossterm-launcher").toFile()
+        try {
+            // macOS: Foo.app/Contents/runtime/Contents/Home → Contents/MacOS/Foo.
+            val bundle = java.io.File(root, "Foo.app")
+            val macHome = java.io.File(bundle, "Contents/runtime/Contents/Home").apply { mkdirs() }
+            val macLauncher = java.io.File(bundle, "Contents/MacOS/Foo").apply {
+                parentFile.mkdirs(); writeText(""); setExecutable(true)
+            }
+            assertEquals(macLauncher, DaemonLauncher.macLauncher(macHome.absolutePath))
+            assertNull(DaemonLauncher.macLauncher(root.absolutePath), "dev JDK is not a bundle")
+
+            // Windows: <install>\runtime → <install>\<App>.exe; the install-dir-named exe wins
+            // over a stray sibling executable (add-launcher/uninstaller).
+            val winInstall = java.io.File(root, "Bar").apply { mkdirs() }
+            val winHome = java.io.File(winInstall, "runtime").apply { mkdirs() }
+            val exe = java.io.File(winInstall, "Bar.exe").apply { writeText("") }
+            java.io.File(winInstall, "helper.exe").writeText("")
+            assertEquals(exe, DaemonLauncher.windowsLauncher(winHome.absolutePath))
+            assertNull(DaemonLauncher.windowsLauncher(root.absolutePath), "java.home must be <install>\\runtime")
+
+            // Linux: <install>/lib/runtime → <install>/bin/<App>; deb/rpm lowercases the install
+            // dir but not the launcher, so the name preference is case-insensitive.
+            val linuxInstall = java.io.File(root, "baz").apply { mkdirs() }
+            val linuxHome = java.io.File(linuxInstall, "lib/runtime").apply { mkdirs() }
+            val bin = java.io.File(linuxInstall, "bin/Baz").apply {
+                parentFile.mkdirs(); writeText(""); setExecutable(true)
+            }
+            assertEquals(bin, DaemonLauncher.linuxLauncher(linuxHome.absolutePath))
+            assertNull(DaemonLauncher.linuxLauncher(root.absolutePath), "java.home must be <install>/lib/runtime")
+
+            // Several candidates, none matching the expected name → refuse (don't exec a guess).
+            val ambiguous = java.io.File(root, "Qux").apply { mkdirs() }
+            java.io.File(ambiguous, "runtime").mkdirs()
+            java.io.File(ambiguous, "alpha.exe").writeText("")
+            java.io.File(ambiguous, "beta.exe").writeText("")
+            assertNull(DaemonLauncher.windowsLauncher(java.io.File(ambiguous, "runtime").absolutePath))
+
+            // packagedLauncherBinary itself: null/blank java.home is never a packaged install.
+            assertNull(DaemonLauncher.packagedLauncherBinary(null))
+            assertNull(DaemonLauncher.packagedLauncherBinary(""))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     // ---- DaemonControlChannel ----
 
     @Test

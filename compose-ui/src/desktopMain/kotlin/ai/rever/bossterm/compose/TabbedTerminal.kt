@@ -1,10 +1,15 @@
 package ai.rever.bossterm.compose
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,6 +29,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -1100,9 +1106,12 @@ fun TabbedTerminal(
     // Computed once so the MCP overlay below can offset itself clear of the
     // tab bar (which occupies the same top-right corner as the "+" button).
     val tabBarVisible = tabController.tabs.size > 1 || settings.alwaysShowTabBar
-    Box(modifier = modifier.fillMaxSize()) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val tabBarOnLeft = settings.tabBarPosition == "left"
-        val tabBarComposable: @Composable () -> Unit = {
+        // collapsed renders the left bar as the slim icon rail; onToggleCollapse backs the
+        // chevron. onDrawerDismiss is non-null only for the narrow-window overlay drawer
+        // instance — selecting a pane then also closes the drawer (share-viewer behavior).
+        val tabBarComposable: @Composable (collapsed: Boolean, onToggleCollapse: () -> Unit, onDrawerDismiss: (() -> Unit)?) -> Unit = { collapsed, onToggleCollapse, onDrawerDismiss ->
             // Tab bar (show when multiple tabs or alwaysShowTabBar is set).
             if (tabBarVisible) {
             val summaryMode = settings.tabBarSummaryMode
@@ -1367,6 +1376,7 @@ fun TabbedTerminal(
                 activeTabIndex = tabController.activeTabIndex,
                 focusedPaneId = focusedPaneId,
                 onPaneSelected = { tabIndex, paneId ->
+                    onDrawerDismiss?.invoke()
                     tabController.switchToTab(tabIndex)
                     tabController.tabs.getOrNull(tabIndex)?.let { t -> splitStates[t.id]?.setFocusedPane(paneId) }
                 },
@@ -1463,7 +1473,9 @@ fun TabbedTerminal(
                 onAddRemote = { showAddRemote = true },
                 orientation = if (tabBarOnLeft) ai.rever.bossterm.compose.tabs.TabBarOrientation.LEFT
                               else ai.rever.bossterm.compose.tabs.TabBarOrientation.TOP,
-                verticalWidth = settings.tabBarVerticalWidth.dp
+                verticalWidth = settings.tabBarVerticalWidth.dp,
+                collapsed = collapsed,
+                onToggleCollapse = if (tabBarOnLeft) onToggleCollapse else null
             )
             }
         }
@@ -1940,13 +1952,43 @@ fun TabbedTerminal(
         }
 
         if (tabBarOnLeft) {
+            // Window-size-aware sidebar (mirrors the share-viewer's 700px breakpoint): in a
+            // narrow window the bar is forced down to the icon rail and the expand chevron
+            // opens the full bar as an overlay drawer instead of pushing the terminal; in a
+            // wide window the chevron toggles a persisted in-flow collapse.
+            val narrow = maxWidth < ai.rever.bossterm.compose.tabs.TabBarAutoCollapseWidth
+            var drawerOpen by remember { mutableStateOf(false) }
+            LaunchedEffect(narrow) { if (!narrow) drawerOpen = false }
             Row(modifier = Modifier.fillMaxSize()) {
-                tabBarComposable()
+                tabBarComposable(
+                    narrow || settings.tabBarCollapsed,
+                    {
+                        if (narrow) drawerOpen = true
+                        else settingsManager.updateSetting { copy(tabBarCollapsed = !tabBarCollapsed) }
+                    },
+                    null
+                )
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) { mainContent() }
+            }
+            if (narrow && drawerOpen) {
+                // Click-catcher over the terminal: any press outside the drawer closes it.
+                Box(Modifier.fillMaxSize().pointerInput(Unit) {
+                    detectTapGestures(onPress = { drawerOpen = false })
+                })
+            }
+            if (narrow) {
+                AnimatedVisibility(
+                    visible = drawerOpen,
+                    modifier = Modifier.align(Alignment.CenterStart).fillMaxHeight(),
+                    enter = slideInHorizontally(initialOffsetX = { -it }),
+                    exit = slideOutHorizontally(targetOffsetX = { -it })
+                ) {
+                    tabBarComposable(false, { drawerOpen = false }, { drawerOpen = false })
+                }
             }
         } else {
             Column(modifier = Modifier.fillMaxSize()) {
-                tabBarComposable()
+                tabBarComposable(false, {}, null)
                 mainContent()
             }
         }

@@ -65,13 +65,23 @@ object LoginServiceManager {
     private fun installMac(command: List<String>) {
         val file = macPlistFile()
         file.parentFile?.mkdirs()
-        file.writeText(macPlist(serviceId(), command, BossTermPaths.daemonLogFile().absolutePath))
-        // Prefer the modern `bootstrap`/`bootout` (load/unload are deprecated and unreliable on
-        // recent macOS); fall back to load/unload on older systems or if bootstrap fails. RunAtLoad
-        // makes it start next login regardless. Re-bootstrapping refreshes the baked command.
+        val content = macPlist(serviceId(), command, BossTermPaths.daemonLogFile().absolutePath)
         val uid = uid()
+        // Never bootout a service that's currently registered: bootout KILLS a running daemon (and
+        // every session it owns), and with RunAtLoad the follow-up bootstrap starts a fresh daemon
+        // immediately — the pair used to race the GUI's own spawn into two live daemons. When the
+        // service is registered, writing the plist file is enough: launchd re-reads it at next
+        // login, which is exactly when a refreshed baked command matters.
+        val registered = uid != null &&
+            runCapture("launchctl", "print", "gui/$uid/${serviceId()}").first == 0
+        if (registered && runCatching { file.readText() == content }.getOrDefault(false)) return
+        file.writeText(content)
+        if (registered) return
+        // Not registered — register and start it now. Prefer the modern `bootstrap` (load/unload are
+        // deprecated and unreliable on recent macOS); fall back to load on older systems or if
+        // bootstrap fails. RunAtLoad makes it start next login regardless.
         if (uid != null) {
-            run("launchctl", "bootout", "gui/$uid", file.absolutePath) // clear any prior reg (ok to fail)
+            run("launchctl", "bootout", "gui/$uid", file.absolutePath) // clear any half-dead reg (ok to fail)
             val (code, _) = runCapture("launchctl", "bootstrap", "gui/$uid", file.absolutePath)
             if (code == 0) return
         }

@@ -79,6 +79,9 @@ object BossTermPaths {
     /** Advisory lock guarding single daemon spawn per settings dir (`daemon.lock`). */
     fun daemonLockFile(): File = file("daemon.lock")
 
+    /** OS lock held by THE running daemon for its lifetime (`daemon.instance.lock`, see [DaemonInstanceLock]). */
+    fun daemonInstanceLockFile(): File = file("daemon.instance.lock")
+
     /** Running daemon's PID, for diagnostics (`daemon.pid`). */
     fun daemonPidFile(): File = file("daemon.pid")
 

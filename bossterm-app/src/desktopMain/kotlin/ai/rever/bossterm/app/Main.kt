@@ -139,11 +139,12 @@ fun main(args: Array<String>) {
                     ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.markAttachUnavailable()
                     ensureInProcessMcp()
                 }
-            }
-            // Refresh the at-login service so its baked java/classpath stay current after an app
-            // update (stale paths would silently fail to start the daemon at next login).
-            if (SettingsManager.instance.settings.value.startDaemonAtLogin) {
-                daemonScope.launch {
+                // Refresh the at-login service so its baked java/classpath stay current after an app
+                // update (stale paths would silently fail to start the daemon at next login). Strictly
+                // AFTER ensureConnected() has settled: install() can start a daemon immediately
+                // (launchd RunAtLoad / systemd enable --now), and running it concurrently with the
+                // spawn used to race two daemons into existence (two menu-bar icons).
+                if (SettingsManager.instance.settings.value.startDaemonAtLogin) {
                     runCatching { ai.rever.bossterm.compose.daemon.LoginServiceManager.install() }
                 }
             }

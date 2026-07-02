@@ -275,15 +275,13 @@ class DaemonAttachServer(
             }
         }
 
-        val onChange: () -> Unit = { resync() }
-        host.addChangeListener(onChange)
-
         // Heal a mirror whose incremental output was evicted under back-pressure: without this, a
         // drop silently corrupts the client's render of that session until the socket reconnects
         // (resync() no-ops for already-attached sessions). Re-snapshot the affected session (end +
         // begin) after a short quiet delay; one pending heal per session bounds a sustained flood
         // to a re-snapshot per delay window, and the last drop always schedules a final heal.
-        // Set BEFORE the initial resync() below, so even a drop during the first paint is reported.
+        // Wired BEFORE the change listener below and the initial resync(), so no tap can produce a
+        // drop that goes unreported.
         val resnapshotPending = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         outbox.onOutputDropped = { sid ->
             if (resnapshotPending.add(sid)) {
@@ -303,6 +301,9 @@ class DaemonAttachServer(
                 }
             }
         }
+
+        val onChange: () -> Unit = { resync() }
+        host.addChangeListener(onChange)
 
         // Drain outbox to the socket (control frames first, then coalesced output).
         val writer = ws.launch {

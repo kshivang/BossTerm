@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.mcp
 
 import ai.rever.bossterm.compose.settings.SettingsManager
+import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCallPipeline
@@ -13,7 +14,10 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.host
 import io.ktor.server.request.httpMethod
 import io.ktor.server.response.respondText
+import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import io.ktor.server.sse.SSE
 import io.modelcontextprotocol.kotlin.sdk.server.mcp
 import kotlinx.coroutines.CancellationException
@@ -457,6 +461,21 @@ class BossTermMcpManager(
                 // mount at root directly and advertise the URL as
                 // http://127.0.0.1:<port>/ — clients register that URL.
                 routing {
+                    // Identity for sibling instances: a starting instance's
+                    // polite auto-reattach probes this to learn whether the
+                    // port a CLI registration points at is owned by a LIVE
+                    // server of the same name (keep it) or is stale/foreign
+                    // (claim it). See McpInstanceProbe. Sits behind the
+                    // loopback bind + Host-header check like everything else.
+                    get(McpInstanceProbe.IDENTITY_PATH) {
+                        call.respondText(
+                            buildJsonObject {
+                                put("serverName", config.serverName)
+                                put("pid", ProcessHandle.current().pid())
+                            }.toString(),
+                            ContentType.Application.Json
+                        )
+                    }
                     mcp { mcpServer }
                 }
             }
@@ -567,18 +586,52 @@ class BossTermMcpManager(
      * target here is what used to freeze the CLI's registered endpoint on a
      * stale port forever. A genuinely uninstalled CLI costs one quiet
      * background retry per bind, which is harmless.
+     *
+     * Polite to siblings: before rewriting, each target's currently
+     * registered default port is probed ([McpInstanceProbe]) — when a LIVE
+     * server with the same name owns it (e.g. the packaged app, while this
+     * is a dev instance on a fallback port), the registration is left alone
+     * instead of last-writer-wins clobbered. Our own terminals reach this
+     * instance via the injected port env var regardless. Explicit attach
+     * (the Settings/Toolbox button) stays impolite on purpose: the user
+     * asked THIS instance to own the registration.
      */
     private fun launchAutoReattach(port: Int) {
         val targets = registry.attachedTargets.value
         if (targets.isEmpty()) return
         log.info("Auto-reattaching {} CLI(s) to new endpoint…", targets.size)
         parentScope.launch(Dispatchers.IO) {
+            // One identity probe per distinct registered port (several CLIs
+            // usually point at the same default), before the fan-out.
+            val registeredPorts = targets.associateWith { target ->
+                runCatching {
+                    McpRegistrationScanner.registeredDefaultPort(target, config.serverName)
+                }.getOrNull()
+            }
+            val liveOwnerByPort = registeredPorts.values.filterNotNull().distinct()
+                .filter { it != port }
+                .associateWith { McpInstanceProbe.liveServerName(it) }
+
             // Fan out: each CLI's mcp add/remove operates on its own config
             // file, so they're independent. Running sequentially used to add
             // up to ~5-10s for four targets; parallel keeps total time bound
             // by the slowest one (~1-2s).
             val outcomes = coroutineScope {
-                targets.map { target ->
+                targets.mapNotNull { target ->
+                    val registered = registeredPorts[target]
+                    val rewrite = McpInstanceProbe.shouldRewrite(
+                        registeredDefaultPort = registered,
+                        ourPort = port,
+                        ourServerName = config.serverName,
+                        liveOwnerName = registered?.let { liveOwnerByPort[it] }
+                    )
+                    if (!rewrite) {
+                        log.info(
+                            "Skipping reattach for {} — a live '{}' instance already owns registered port {}",
+                            target.displayName, config.serverName, registered
+                        )
+                        return@mapNotNull null
+                    }
                     async {
                         target to McpCliAttacher.attach(
                             target, config.serverName, port, quiet = true

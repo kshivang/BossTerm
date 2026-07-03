@@ -129,6 +129,33 @@ object McpTerminalRegistry {
         mcpServerLabel = label
     }
 
+    /**
+     * Name of the env var carrying this embedder's actually-bound MCP port,
+     * injected into every PTY this app spawns. Claude Code registrations use
+     * it via `${VAR:-default}` URL expansion, so a session inside one of our
+     * terminals always dials THIS instance's port — even when the server
+     * fallback-walked off its configured one — while sessions elsewhere get
+     * the registered default.
+     *
+     * Derived from [mcpServerName] (`boss` → `BOSS_MCP_PORT`, `bossterm` →
+     * `BOSSTERM_MCP_PORT`) rather than shared: with one common var, a session
+     * inside a BossConsole terminal would also expand a standalone BossTerm
+     * registration to BossConsole's port and dial the wrong app's server.
+     */
+    val mcpPortEnvVar: String get() = portEnvVarName(mcpServerName)
+
+    /**
+     * See [mcpPortEnvVar]. Non-alphanumerics map to `_`, and a leading digit
+     * gets an `_` prefix — POSIX identifiers can't start with a digit.
+     */
+    fun portEnvVarName(serverName: String): String {
+        val sanitized = serverName.uppercase()
+            .map { if (it.isLetterOrDigit()) it else '_' }
+            .joinToString("")
+        val prefix = if (sanitized.firstOrNull()?.isDigit() == true) "_" else ""
+        return "$prefix${sanitized}_MCP_PORT"
+    }
+
     // -----------------------------------------------------------------
     // Attached-CLI tracking — written by McpCliAttacher's callers when an
     // attach succeeds; read by the Settings panel and the right-click menus
@@ -169,7 +196,9 @@ object McpTerminalRegistry {
         }
     }
 
-    /** @suppress Internal — recorded when an attach fails (auto-reattach) or user detaches. */
+    /** @suppress Internal — recorded when the startup reconcile finds the CLI's
+     *  config no longer carries our entry (the user removed it), so
+     *  auto-reattach stops resurrecting a registration the user deleted. */
     internal fun markDetached(target: McpAttachTarget) {
         val next = _attachedTargets.value - target
         if (next != _attachedTargets.value) {

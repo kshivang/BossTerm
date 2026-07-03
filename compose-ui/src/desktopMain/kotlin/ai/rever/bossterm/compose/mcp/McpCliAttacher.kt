@@ -46,8 +46,9 @@ private const val OPENCODE_REMOVE_SCRIPT = "" +
  *
  * The `{NAME}` placeholder in command/clipboard templates is filled with
  * the embedder's `BossTermMcpConfig.serverName` (or `"bossterm"` for the
- * default app), and `{URL}` with the resolved
- * `http://127.0.0.1:<port>` endpoint.
+ * default app), and `{URL}` with the target's [McpAttachTarget.registrationUrl]
+ * — plain `http://127.0.0.1:<port>` for most CLIs, the `${VAR:-port}`
+ * env-expanded form for Claude Code.
  *
  * Tested CLI shapes (last verified May 2026):
  *  - Claude Code: `claude mcp add --transport sse <name> <url>` (verified)
@@ -100,8 +101,21 @@ enum class McpAttachTarget(
             "--transport", "sse",
             "{NAME}", "{URL}"
         ),
-        clipboardFallback = "claude mcp add --scope user --transport sse {NAME} {URL}"
-    ),
+        // {URL} is the ${VAR:-port} form (see registrationUrl) — single-quoted
+        // so a shell the user pastes this into doesn't expand the variable
+        // right there and freeze the URL to a concrete port.
+        clipboardFallback = "claude mcp add --scope user --transport sse {NAME} '{URL}'"
+    ) {
+        // Claude Code expands ${VAR:-default} in registered URLs from the
+        // env of each `claude` process (verified against Claude Code 2.x,
+        // user scope). Our PTYs export the per-embedder port var, so a
+        // session inside one of our terminals dials THIS instance's actual
+        // bound port; sessions outside any of our terminals fall back to
+        // [port], which the manager's auto-reattach keeps current. The
+        // other CLIs have no documented expansion — they stay on plain URLs.
+        override fun registrationUrl(serverName: String, port: Int): String =
+            "http://127.0.0.1:\${${McpTerminalRegistry.portEnvVarName(serverName)}:-$port}"
+    },
     CODEX(
         displayName = "Codex",
         persistenceKey = "CODEX",
@@ -179,6 +193,14 @@ enum class McpAttachTarget(
         """.trimIndent()
     );
 
+    /**
+     * The URL string registered with this CLI for a server named [serverName]
+     * bound to [port]. Plain `http://127.0.0.1:<port>` by default; CLAUDE_CODE
+     * overrides with the `${VAR:-port}` env-expanded form (see its entry).
+     */
+    open fun registrationUrl(serverName: String, port: Int): String =
+        "http://127.0.0.1:$port"
+
     fun resolvedAddCommand(name: String, url: String): List<String>? =
         addCommand?.map { it.replace("{NAME}", name).replace("{URL}", url) }
 
@@ -247,7 +269,9 @@ object McpCliAttacher {
             // SDK 0.8.3 mounts SSE+POST at the application root; the path
             // overload is broken (see BossTermMcpManager kdoc). So the URL
             // we register with each CLI is loopback + port, no path suffix.
-            val url = "http://127.0.0.1:$port"
+            // Per-target form: Claude Code gets the ${VAR:-port} env-expanded
+            // variant so in-terminal sessions track this instance's live port.
+            val url = target.registrationUrl(serverName, port)
             try {
                 // First, best-effort remove. Many CLIs' `mcp add` is not
                 // idempotent — this turns "already exists" errors into a
@@ -338,9 +362,15 @@ object McpCliAttacher {
      * mid-wait (e.g. the user closed the window), the child process is
      * destroyForcibly'd before the InterruptedException is rethrown, so we
      * don't leave a `claude mcp add` zombie running after dispose.
+     *
+     * The command head is resolved to an absolute path via [CliBinaryResolver]
+     * — a packaged app launched from Finder/the Dock inherits the bare launchd
+     * `PATH`, where none of these CLIs are findable and every attach would
+     * otherwise die with "CLI not found".
      */
     private fun runProcess(cmd: List<String>): ProcessOutcome {
-        val process = ProcessBuilder(cmd).redirectErrorStream(true).start()
+        val resolved = listOf(CliBinaryResolver.resolve(cmd.first())) + cmd.drop(1)
+        val process = ProcessBuilder(resolved).redirectErrorStream(true).start()
         try {
             // Signal EOF to any CLI that might be waiting on stdin.
             try {

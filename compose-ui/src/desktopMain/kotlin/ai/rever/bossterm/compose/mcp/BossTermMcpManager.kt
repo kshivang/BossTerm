@@ -16,6 +16,7 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.routing
 import io.ktor.server.sse.SSE
 import io.modelcontextprotocol.kotlin.sdk.server.mcp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -158,6 +159,13 @@ class BossTermMcpManager(
         }
 
         watcherJob = parentScope.launch {
+            // Before the first bind (and thus the first auto-reattach),
+            // reconcile the persisted set against the CLIs' own config files
+            // (adopt entries we're missing, prune ones the user removed) —
+            // the CLI config is the canonical record. Runs inside this job so
+            // it is guaranteed to complete before the first reconcile/bind
+            // kicks off the reattach fan-out.
+            reconcileTargetsWithCliConfigs()
             settingsManager.settings
                 .map { McpRuntimeConfig(enabled = it.mcpEnabled, port = it.mcpPort) }
                 .distinctUntilChanged()
@@ -509,11 +517,56 @@ class BossTermMcpManager(
     }
 
     /**
+     * Reconcile the persisted attached-targets set against the CLIs' own
+     * config files — the canonical record. Two directions:
+     *  - ADOPT targets whose config carries our loopback entry but that are
+     *    missing from the persisted set (heals the historical drop-on-failure
+     *    bug with zero clicks).
+     *  - PRUNE persisted targets whose config cleanly lacks the entry: the
+     *    user removed it (e.g. `claude mcp remove boss`) and auto-reattach
+     *    must not keep resurrecting it. UNKNOWN (unreadable config right now)
+     *    never prunes — see [McpRegistrationScanner.Presence].
+     * Both mark* calls persist, so the outcome survives to future launches.
+     */
+    private suspend fun reconcileTargetsWithCliConfigs() {
+        val presence = try {
+            withContext(Dispatchers.IO) {
+                McpRegistrationScanner.scan(config.serverName)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            log.warn("Registration scan failed: {}", t.message)
+            return
+        }
+        val persisted = registry.attachedTargets.value
+        val adopt = presence.filterValues { it == McpRegistrationScanner.Presence.PRESENT }.keys - persisted
+        val prune = persisted.filter { presence[it] == McpRegistrationScanner.Presence.ABSENT }
+        if (adopt.isNotEmpty()) {
+            log.info(
+                "Adopting existing MCP registration(s) from CLI config: {}",
+                adopt.joinToString { it.displayName }
+            )
+            adopt.forEach { registry.markAttached(it) }
+        }
+        if (prune.isNotEmpty()) {
+            log.info(
+                "Pruning persisted MCP target(s) no longer registered in their CLI config: {}",
+                prune.joinToString { it.displayName }
+            )
+            prune.forEach { registry.markDetached(it) }
+        }
+    }
+
+    /**
      * Re-run `<cli> mcp add` (quiet mode) for every CLI in the persisted
      * attached-targets set. Lets a user's saved attachments survive port
-     * changes between launches — and fixes them silently. If a CLI's
-     * binary is missing now (uninstalled since last run), we drop it from
-     * the persisted set instead of polluting the clipboard.
+     * changes between launches — and fixes them silently. A failure keeps
+     * the target persisted: attach failures are usually transient (missing
+     * binary on a packaged app's bare PATH, a timeout), and dropping the
+     * target here is what used to freeze the CLI's registered endpoint on a
+     * stale port forever. A genuinely uninstalled CLI costs one quiet
+     * background retry per bind, which is harmless.
      */
     private fun launchAutoReattach(port: Int) {
         val targets = registry.attachedTargets.value
@@ -536,10 +589,9 @@ class BossTermMcpManager(
             outcomes.forEach { (target, result) ->
                 if (result is McpAttachResult.CopiedToClipboard) {
                     log.warn(
-                        "Auto-reattach failed for {}: {}; dropping from persisted set",
+                        "Auto-reattach failed for {}: {} — keeping it persisted; will retry on next bind",
                         target.displayName, result.reason
                     )
-                    registry.markDetached(target)
                 }
             }
         }

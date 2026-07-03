@@ -338,9 +338,15 @@ object McpCliAttacher {
      * mid-wait (e.g. the user closed the window), the child process is
      * destroyForcibly'd before the InterruptedException is rethrown, so we
      * don't leave a `claude mcp add` zombie running after dispose.
+     *
+     * The command head is resolved to an absolute path via [CliBinaryResolver]
+     * — a packaged app launched from Finder/the Dock inherits the bare launchd
+     * `PATH`, where none of these CLIs are findable and every attach would
+     * otherwise die with "CLI not found".
      */
     private fun runProcess(cmd: List<String>): ProcessOutcome {
-        val process = ProcessBuilder(cmd).redirectErrorStream(true).start()
+        val resolved = listOf(CliBinaryResolver.resolve(cmd.first())) + cmd.drop(1)
+        val process = ProcessBuilder(resolved).redirectErrorStream(true).start()
         try {
             // Signal EOF to any CLI that might be waiting on stdin.
             try {

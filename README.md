@@ -8,7 +8,7 @@
 
 [![CI](https://github.com/kshivang/BossTerm/actions/workflows/test.yml/badge.svg)](https://github.com/kshivang/BossTerm/actions/workflows/test.yml)
 [![Release](https://github.com/kshivang/BossTerm/actions/workflows/release.yml/badge.svg)](https://github.com/kshivang/BossTerm/releases)
-[![Download DMG](https://img.shields.io/github/v/release/kshivang/BossTerm?label=Download%20DMG&logo=apple)](https://github.com/kshivang/BossTerm/releases/latest)
+[![Download DMG](https://img.shields.io/github/v/release/kshivang/BossTerm?label=Download%20DMG&logo=apple)](https://api.risaboss.com/functions/v1/latest-release?app=bossterm&download=dmg)
 [![Maven Central](https://img.shields.io/maven-central/v/com.risaboss/bossterm-core)](https://central.sonatype.com/namespace/com.risaboss)
 
 </div>
@@ -111,6 +111,28 @@ curl -fsSL https://raw.githubusercontent.com/kshivang/BossTerm/master/install.sh
 ### Alternative Installation Methods
 
 <details>
+<summary><strong>Direct download links (always latest)</strong></summary>
+
+Stable URLs that always redirect to the newest release (the downloaded file keeps its versioned name):
+
+| Package | Link |
+|---|---|
+| macOS DMG | https://api.risaboss.com/functions/v1/latest-release?app=bossterm&download=dmg |
+| Debian/Ubuntu (x86_64) | https://api.risaboss.com/functions/v1/latest-release?app=bossterm&download=deb&arch=amd64 |
+| Debian/Ubuntu (ARM64) | https://api.risaboss.com/functions/v1/latest-release?app=bossterm&download=deb&arch=arm64 |
+| Fedora/RHEL (x86_64) | https://api.risaboss.com/functions/v1/latest-release?app=bossterm&download=rpm&arch=amd64 |
+| Fedora/RHEL (ARM64) | https://api.risaboss.com/functions/v1/latest-release?app=bossterm&download=rpm&arch=arm64 |
+| JAR (cross-platform) | https://api.risaboss.com/functions/v1/latest-release?app=bossterm&download=jar |
+
+Drop the `download` parameter for release metadata as JSON (version, assets, sha256 checksums), e.g.:
+
+```bash
+curl -s "https://api.risaboss.com/functions/v1/latest-release?app=bossterm" | jq .version
+```
+
+</details>
+
+<details>
 <summary><strong>macOS (Homebrew)</strong></summary>
 
 ```bash
@@ -123,7 +145,7 @@ brew install --cask bossterm
 <details>
 <summary><strong>macOS (DMG)</strong></summary>
 
-Download the latest DMG from [GitHub Releases](https://github.com/kshivang/BossTerm/releases) and drag BossTerm to Applications.
+[Download the latest DMG](https://api.risaboss.com/functions/v1/latest-release?app=bossterm&download=dmg) (or grab it from [GitHub Releases](https://github.com/kshivang/BossTerm/releases)) and drag BossTerm to Applications.
 
 </details>
 

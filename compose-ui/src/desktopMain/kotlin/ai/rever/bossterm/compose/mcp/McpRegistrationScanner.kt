@@ -87,8 +87,15 @@ internal object McpRegistrationScanner {
                     line == "[mcp_servers.\"$serverName\"]"
                 continue
             }
-            if (inSection && line.startsWith("url")) {
-                val url = line.substringAfter('=').trim().removeSurrounding("\"")
+            if (inSection && line.substringBefore('=').trim() == "url") {
+                val raw = line.substringAfter('=').trim()
+                // Quoted values end at the closing quote (tolerates trailing
+                // inline comments); unquoted ones are cut at any '#'.
+                val url = if (raw.startsWith("\"")) {
+                    raw.drop(1).substringBefore('"')
+                } else {
+                    raw.substringBefore('#').trim()
+                }
                 return isLoopbackUrl(url)
             }
         }

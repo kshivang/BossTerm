@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.mcp
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.io.path.createTempDirectory
 
@@ -107,6 +108,23 @@ class CliBinaryResolverTest {
             "claude",
             CliBinaryResolver.resolveUncached("claude", "", emptyList(), isWindows = true)
         )
+    }
+
+    @Test
+    fun `negative cache is honored within TTL and expires after it`() {
+        CliBinaryResolver.clearForTest()
+        try {
+            val t0 = 1_000_000_000L
+            CliBinaryResolver.noteMiss("missing-cli", t0)
+            assertTrue(CliBinaryResolver.isFreshMiss("missing-cli", t0 + 1))
+            assertTrue(CliBinaryResolver.isFreshMiss("missing-cli", t0 + 59_000_000_000L))
+            // Past the 60s TTL the miss is stale — a new probe is allowed.
+            assertFalse(CliBinaryResolver.isFreshMiss("missing-cli", t0 + 61_000_000_000L))
+            // Unknown binaries have no recorded miss.
+            assertFalse(CliBinaryResolver.isFreshMiss("never-seen", t0))
+        } finally {
+            CliBinaryResolver.clearForTest()
+        }
     }
 
     @Test

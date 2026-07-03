@@ -144,10 +144,17 @@ object McpTerminalRegistry {
      */
     val mcpPortEnvVar: String get() = portEnvVarName(mcpServerName)
 
-    /** See [mcpPortEnvVar]. Non-alphanumerics map to `_` for env-name validity. */
-    fun portEnvVarName(serverName: String): String =
-        serverName.uppercase().map { if (it.isLetterOrDigit()) it else '_' }
-            .joinToString("") + "_MCP_PORT"
+    /**
+     * See [mcpPortEnvVar]. Non-alphanumerics map to `_`, and a leading digit
+     * gets an `_` prefix — POSIX identifiers can't start with a digit.
+     */
+    fun portEnvVarName(serverName: String): String {
+        val sanitized = serverName.uppercase()
+            .map { if (it.isLetterOrDigit()) it else '_' }
+            .joinToString("")
+        val prefix = if (sanitized.firstOrNull()?.isDigit() == true) "_" else ""
+        return "$prefix${sanitized}_MCP_PORT"
+    }
 
     // -----------------------------------------------------------------
     // Attached-CLI tracking — written by McpCliAttacher's callers when an

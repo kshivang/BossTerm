@@ -85,6 +85,30 @@ class McpRegistrationScannerTest {
     }
 
     @Test
+    fun `codex key must be exactly url and tolerates inline comments`() {
+        val home = tempHome()
+        home.write(
+            ".codex/config.toml",
+            """
+            [mcp_servers.boss]
+            url_extra = "http://127.0.0.1:1111"
+            url = "http://127.0.0.1:7677" # written by attach
+            """.trimIndent()
+        )
+        assertEquals(setOf(McpAttachTarget.CODEX), McpRegistrationScanner.scan("boss", home))
+
+        val home2 = tempHome()
+        home2.write(
+            ".codex/config.toml",
+            """
+            [mcp_servers.boss]
+            url_extra = "http://127.0.0.1:1111"
+            """.trimIndent()
+        )
+        assertTrue(McpRegistrationScanner.scan("boss", home2).isEmpty())
+    }
+
+    @Test
     fun `codex url outside our section is ignored`() {
         val home = tempHome()
         home.write(

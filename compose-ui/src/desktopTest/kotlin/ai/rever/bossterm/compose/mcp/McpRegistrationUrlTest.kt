@@ -33,6 +33,8 @@ class McpRegistrationUrlTest {
             "BOSSTERM_EMBEDDED_EXAMPLE_MCP_PORT",
             McpTerminalRegistry.portEnvVarName("bossterm-embedded-example")
         )
+        // A leading digit would make the name an invalid POSIX identifier.
+        assertEquals("_7BOSS_MCP_PORT", McpTerminalRegistry.portEnvVarName("7boss"))
     }
 
     @Test

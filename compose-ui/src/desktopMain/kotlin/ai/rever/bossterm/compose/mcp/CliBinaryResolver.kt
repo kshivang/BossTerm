@@ -38,12 +38,25 @@ internal object CliBinaryResolver {
 
     private val log = LoggerFactory.getLogger(CliBinaryResolver::class.java)
 
-    /** Positive results only — a CLI installed mid-session is found on the next call. */
+    /** Positive results, kept for the process lifetime. */
     private val cache = ConcurrentHashMap<String, String>()
+
+    /**
+     * Misses, remembered for [NEGATIVE_CACHE_TTL_NANOS]. A full miss costs a
+     * dir scan plus an up-to-5s login-shell probe, and a persisted target
+     * whose CLI is genuinely uninstalled retries on every bind (remove + add
+     * = two resolutions per attach) — without this, that's the probe cost ×2
+     * ×N targets on the IO dispatcher per bind. The TTL is short so a user
+     * who installs the CLI and clicks Attach isn't stuck behind a stale miss.
+     */
+    private val missedAtNanos = ConcurrentHashMap<String, Long>()
 
     /** Resolve [binary] using the real process environment. Cached. */
     fun resolve(binary: String): String {
+        if (binary.contains('/') || binary.contains('\\')) return binary
         cache[binary]?.let { return it }
+        val now = System.nanoTime()
+        if (isFreshMiss(binary, now)) return binary
         val resolved = resolveUncached(
             binary = binary,
             pathValue = System.getenv("PATH").orEmpty(),
@@ -52,10 +65,28 @@ internal object CliBinaryResolver {
             loginShellProbe = ::probeLoginShell
         )
         if (resolved != binary) {
+            missedAtNanos.remove(binary)
             cache[binary] = resolved
             log.info("Resolved CLI '{}' -> {}", binary, resolved)
+        } else {
+            missedAtNanos[binary] = now
         }
         return resolved
+    }
+
+    /** True while a recorded miss for [binary] is younger than the TTL. */
+    internal fun isFreshMiss(binary: String, nowNanos: Long): Boolean {
+        val missed = missedAtNanos[binary] ?: return false
+        return nowNanos - missed < NEGATIVE_CACHE_TTL_NANOS
+    }
+
+    internal fun noteMiss(binary: String, nowNanos: Long) {
+        missedAtNanos[binary] = nowNanos
+    }
+
+    internal fun clearForTest() {
+        cache.clear()
+        missedAtNanos.clear()
     }
 
     /**
@@ -137,4 +168,7 @@ internal object CliBinaryResolver {
     }
 
     private const val LOGIN_SHELL_TIMEOUT_SECONDS = 5L
+
+    /** 60s: long enough to collapse one bind's attach fan-out into a single probe. */
+    private const val NEGATIVE_CACHE_TTL_NANOS = 60_000_000_000L
 }

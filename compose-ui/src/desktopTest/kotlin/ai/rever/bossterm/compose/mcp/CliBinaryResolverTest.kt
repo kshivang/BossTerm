@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose.mcp
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
+import org.junit.Assume.assumeFalse
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -58,6 +60,9 @@ class CliBinaryResolverTest {
 
     @Test
     fun `non-executable file is skipped`() {
+        // Windows has no exec bit — canExecute() is true for any readable
+        // file, so "present but not executable" cannot be expressed there.
+        assumeFalse(ShellCustomizationUtils.isWindows())
         val dir = createTempDirectory("cli-resolver-test").toFile().apply { deleteOnExit() }
         File(dir, "claude").apply {
             writeText("not executable")
@@ -130,8 +135,10 @@ class CliBinaryResolverTest {
     @Test
     fun `well-known dirs include the usual install locations`() {
         val dirs = CliBinaryResolver.wellKnownDirs("/Users/someone").map { it.path }
-        assertTrue("/Users/someone/.local/bin" in dirs)
-        assertTrue("/opt/homebrew/bin" in dirs)
-        assertTrue("/usr/local/bin" in dirs)
+        // Expected values built through File so separator normalization
+        // matches on every host (Windows flips these to backslashes).
+        assertTrue(File("/Users/someone/.local/bin").path in dirs)
+        assertTrue(File("/opt/homebrew/bin").path in dirs)
+        assertTrue(File("/usr/local/bin").path in dirs)
     }
 }

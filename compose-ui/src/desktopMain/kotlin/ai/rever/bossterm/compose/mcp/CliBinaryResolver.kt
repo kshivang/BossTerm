@@ -105,7 +105,11 @@ internal object CliBinaryResolver {
         if (binary.contains('/') || binary.contains('\\')) return binary
         if (isWindows) return binary
 
-        val pathDirs = pathValue.split(':').filter { it.isNotBlank() }.map(::File)
+        // The platform separator, not ':' — a literal ':' split would shred
+        // Windows entries at the drive colon (D:\foo). Production never gets
+        // here on Windows (early return above), but the host-correct split
+        // keeps the function honest for tests and future callers.
+        val pathDirs = pathValue.split(File.pathSeparatorChar).filter { it.isNotBlank() }.map(::File)
         for (dir in pathDirs + extraDirs) {
             val candidate = File(dir, binary)
             if (candidate.isFile && candidate.canExecute()) return candidate.absolutePath

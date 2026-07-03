@@ -5,6 +5,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.slf4j.LoggerFactory
 import java.net.HttpURLConnection
+import java.net.Proxy
 import java.net.URI
 
 /**
@@ -33,17 +34,30 @@ internal object McpInstanceProbe {
     /** Server name of the live MCP instance on [port], or null. */
     fun liveServerName(port: Int, timeoutMs: Int = PROBE_TIMEOUT_MS): String? {
         return try {
+            // NO_PROXY: a configured system/HTTP proxy must never sit between
+            // us and a loopback port — it would answer for (or hang on) an
+            // address only this machine can serve, skewing the probe result.
             val connection = URI("http://127.0.0.1:$port$IDENTITY_PATH").toURL()
-                .openConnection() as HttpURLConnection
+                .openConnection(Proxy.NO_PROXY) as HttpURLConnection
             try {
                 connection.connectTimeout = timeoutMs
                 connection.readTimeout = timeoutMs
                 connection.requestMethod = "GET"
                 if (connection.responseCode != 200) return null
-                // Identity payloads are tiny; cap the read so a misbehaving
-                // service on the port can't feed us an unbounded body.
-                val body = connection.inputStream.bufferedReader()
-                    .use { it.readText().take(MAX_IDENTITY_BYTES) }
+                // Identity payloads are tiny. Read at most MAX_IDENTITY_CHARS
+                // into a fixed buffer and stop — a misbehaving service on the
+                // port can stream gigabytes inside the read timeout, and a
+                // readText()-then-truncate would have materialized all of it.
+                val body = connection.inputStream.bufferedReader().use { reader ->
+                    val buf = CharArray(MAX_IDENTITY_CHARS)
+                    var filled = 0
+                    while (filled < buf.size) {
+                        val n = reader.read(buf, filled, buf.size - filled)
+                        if (n == -1) break
+                        filled += n
+                    }
+                    String(buf, 0, filled)
+                }
                 json.parseToJsonElement(body).jsonObject["serverName"]
                     ?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
             } finally {
@@ -82,5 +96,6 @@ internal object McpInstanceProbe {
 
     private const val PROBE_TIMEOUT_MS = 750
 
-    private const val MAX_IDENTITY_BYTES = 4096
+    /** Hard cap on how much of the response is ever read into memory. */
+    private const val MAX_IDENTITY_CHARS = 4096
 }

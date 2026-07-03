@@ -21,6 +21,8 @@ class McpPoliteReattachTest {
         assertEquals(7677, McpRegistrationScanner.defaultPortOf("http://127.0.0.1:\${BOSS_MCP_PORT:-7677}"))
         assertEquals(7676, McpRegistrationScanner.defaultPortOf("http://127.0.0.1:7676"))
         assertEquals(7677, McpRegistrationScanner.defaultPortOf("http://localhost:7677/sse"))
+        assertEquals(7677, McpRegistrationScanner.defaultPortOf("http://127.0.0.1:7677?session=1"))
+        assertEquals(7677, McpRegistrationScanner.defaultPortOf("http://127.0.0.1:7677#frag"))
         assertNull(McpRegistrationScanner.defaultPortOf("http://127.0.0.1"))
     }
 
@@ -81,6 +83,54 @@ class McpPoliteReattachTest {
 
         // After stop, the same port is dead — probe must return null, fast.
         assertNull(McpInstanceProbe.liveServerName(server.address.port, timeoutMs = 500))
+    }
+
+    @Test
+    fun `a live foreign-named server results in a claim end-to-end`() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        try {
+            server.createContext(McpInstanceProbe.IDENTITY_PATH) { exchange ->
+                val body = """{"serverName":"bossterm","pid":99}""".toByteArray()
+                exchange.sendResponseHeaders(200, body.size.toLong())
+                exchange.responseBody.use { it.write(body) }
+            }
+            server.start()
+            val registeredPort = server.address.port
+
+            val owner = McpInstanceProbe.liveServerName(registeredPort)
+            assertEquals("bossterm", owner)
+            // A 'boss' instance probing a live 'bossterm' owner must still
+            // claim the entry — it is named after US, not the other app.
+            assertTrue(McpInstanceProbe.shouldRewrite(registeredPort, 7679, "boss", owner))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `oversized identity bodies are read bounded and rejected`() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        try {
+            server.createContext(McpInstanceProbe.IDENTITY_PATH) { exchange ->
+                // Chunked (length 0): stream far more than the probe's cap.
+                // The probe must stop reading at its fixed buffer, not
+                // materialize the whole body. Broken pipe when the client
+                // bails early is expected — swallow it.
+                try {
+                    exchange.sendResponseHeaders(200, 0)
+                    val chunk = ByteArray(64 * 1024) { 'x'.code.toByte() }
+                    exchange.responseBody.use { out ->
+                        repeat(160) { out.write(chunk) } // ~10 MB offered
+                    }
+                } catch (_: Throwable) {
+                    // client disconnected after its bounded read — fine
+                }
+            }
+            server.start()
+            assertNull(McpInstanceProbe.liveServerName(server.address.port))
+        } finally {
+            server.stop(0)
+        }
     }
 
     @Test

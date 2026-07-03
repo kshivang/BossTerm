@@ -1,9 +1,12 @@
 package ai.rever.bossterm.compose.mcp
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import org.slf4j.LoggerFactory
 import java.io.File
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Resolves an AI-CLI binary name (`claude`, `codex`, `gemini`, `node`, …) to
@@ -51,27 +54,49 @@ internal object CliBinaryResolver {
      */
     private val missedAtNanos = ConcurrentHashMap<String, Long>()
 
+    /**
+     * In-flight resolutions by binary name: the first caller probes, and
+     * concurrent callers for the same name wait on its future instead of each
+     * spawning their own up-to-5s login-shell probe. A bind's auto-reattach
+     * fan-out hits the same binary from several coroutines at once (remove +
+     * add per target), which the TTL caches alone can't collapse — they're
+     * only written after the first probe finishes.
+     */
+    private val inFlight = ConcurrentHashMap<String, CompletableFuture<String>>()
+
     /** Resolve [binary] using the real process environment. Cached. */
     fun resolve(binary: String): String {
         if (binary.contains('/') || binary.contains('\\')) return binary
         cache[binary]?.let { return it }
         val now = System.nanoTime()
         if (isFreshMiss(binary, now)) return binary
-        val resolved = resolveUncached(
-            binary = binary,
-            pathValue = System.getenv("PATH").orEmpty(),
-            extraDirs = wellKnownDirs(System.getProperty("user.home").orEmpty()),
-            isWindows = System.getProperty("os.name").orEmpty().contains("windows", ignoreCase = true),
-            loginShellProbe = ::probeLoginShell
-        )
-        if (resolved != binary) {
-            missedAtNanos.remove(binary)
-            cache[binary] = resolved
-            log.info("Resolved CLI '{}' -> {}", binary, resolved)
-        } else {
-            missedAtNanos[binary] = now
+        val mine = CompletableFuture<String>()
+        inFlight.putIfAbsent(binary, mine)?.let { winner -> return winner.join() }
+        try {
+            val resolved = resolveUncached(
+                binary = binary,
+                pathValue = System.getenv("PATH").orEmpty(),
+                extraDirs = wellKnownDirs(System.getProperty("user.home").orEmpty()),
+                isWindows = ShellCustomizationUtils.isWindows(),
+                loginShellProbe = ::probeLoginShell
+            )
+            if (resolved != binary) {
+                missedAtNanos.remove(binary)
+                cache[binary] = resolved
+                log.info("Resolved CLI '{}' -> {}", binary, resolved)
+            } else {
+                missedAtNanos[binary] = now
+            }
+            mine.complete(resolved)
+            return resolved
+        } catch (t: Throwable) {
+            // Waiters degrade to the bare name (same as a miss); the thrower
+            // reports the real failure to its own caller.
+            mine.complete(binary)
+            throw t
+        } finally {
+            inFlight.remove(binary)
         }
-        return resolved
     }
 
     /** True while a recorded miss for [binary] is younger than the TTL. */
@@ -153,16 +178,34 @@ internal object CliBinaryResolver {
         val shell = System.getenv("SHELL")?.takeIf { it.isNotBlank() } ?: "/bin/sh"
         return try {
             val process = ProcessBuilder(shell, "-l", "-c", "command -v $binary")
-                .redirectErrorStream(false)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
                 .start()
             process.outputStream.close()
+            // Drain stdout on a daemon thread while we wait: a login profile
+            // that echoes an MOTD/banner larger than the OS pipe buffer would
+            // otherwise block the child on write until the timeout kills it,
+            // turning a resolvable binary into a spurious 5s miss. stderr is
+            // discarded at the OS level above for the same reason.
+            val output = AtomicReference("")
+            val drainer = Thread {
+                try {
+                    output.set(process.inputStream.bufferedReader().readText())
+                } catch (_: Throwable) {
+                    // ignore: output stays empty
+                }
+            }.apply {
+                isDaemon = true
+                name = "cli-resolver-probe-drain"
+                start()
+            }
             if (!process.waitFor(LOGIN_SHELL_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 process.destroyForcibly()
                 log.warn("Login-shell probe for '{}' timed out", binary)
                 return null
             }
+            drainer.join(1_000)
             if (process.exitValue() != 0) return null
-            process.inputStream.bufferedReader().readText().lineSequence()
+            output.get().lineSequence()
                 .map { it.trim() }
                 .firstOrNull { it.startsWith("/") }
         } catch (t: Throwable) {
@@ -173,6 +216,10 @@ internal object CliBinaryResolver {
 
     private const val LOGIN_SHELL_TIMEOUT_SECONDS = 5L
 
-    /** 60s: long enough to collapse one bind's attach fan-out into a single probe. */
+    /**
+     * 60s: keeps sequential re-lookups cheap (a target's remove+add pair,
+     * back-to-back binds). Concurrent lookups within one fan-out are
+     * collapsed by [inFlight], not this TTL.
+     */
     private const val NEGATIVE_CACHE_TTL_NANOS = 60_000_000_000L
 }

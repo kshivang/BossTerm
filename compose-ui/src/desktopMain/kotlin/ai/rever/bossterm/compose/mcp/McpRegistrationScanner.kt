@@ -7,20 +7,22 @@ import org.slf4j.LoggerFactory
 import java.io.File
 
 /**
- * Detects which AI CLIs already carry a registration for this embedder's MCP
- * server by reading their config files directly (read-only).
+ * Reads the AI CLIs' own config files (read-only) to report whether each one
+ * currently carries a registration for this embedder's MCP server.
  *
  * Why: the persisted attached-targets set ([McpTerminalRegistry.attachedTargets])
- * can drift out of sync with reality — historically a single failed quiet
- * reattach dropped the target from settings, after which startup auto-reattach
- * never ran again and the CLI's registered endpoint froze on whatever port it
- * last saw. The CLI config file is the canonical record; scanning it lets the
- * manager re-adopt those registrations on startup so the port they point at is
- * rewritten to the actually-bound one with zero user interaction.
+ * can drift out of sync with reality in both directions — historically a
+ * single failed quiet reattach dropped the target from settings (freezing the
+ * CLI's registered endpoint on a stale port), and conversely a user who ran
+ * `claude mcp remove` by hand kept getting the entry resurrected by the next
+ * bind's auto-reattach. The CLI config file is the canonical record; the
+ * manager reconciles the persisted set against this scan on startup — adopting
+ * entries we're missing, pruning ones the user removed.
  *
- * Matching is deliberately conservative: an entry counts only when it has the
- * exact server name AND a loopback URL — a user's hand-written entry pointing
- * at a remote host is never adopted (we must not rewrite it to 127.0.0.1).
+ * Matching is deliberately conservative: an entry counts as PRESENT only when
+ * it has the exact server name AND a loopback URL. A same-named entry pointing
+ * at a remote host reports ABSENT — we neither adopt it nor keep auto-rewriting
+ * it to 127.0.0.1; it belongs to the user.
  */
 internal object McpRegistrationScanner {
 
@@ -28,15 +30,23 @@ internal object McpRegistrationScanner {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** All targets whose config registers a loopback server named [serverName]. */
+    /**
+     * Per-CLI registration state. UNKNOWN (config unreadable/malformed right
+     * now) is distinct from ABSENT on purpose: the manager prunes persisted
+     * targets only on a clean ABSENT — pruning on a transient read failure
+     * would silently disable auto-reattach, the exact bug this file exists
+     * to prevent.
+     */
+    enum class Presence { PRESENT, ABSENT, UNKNOWN }
+
+    /** Registration state of a loopback server named [serverName], per CLI. */
     fun scan(
         serverName: String,
         home: File = File(System.getProperty("user.home"))
-    ): Set<McpAttachTarget> {
-        val found = mutableSetOf<McpAttachTarget>()
-        for (target in McpAttachTarget.entries) {
-            val registered = try {
-                when (target) {
+    ): Map<McpAttachTarget, Presence> =
+        McpAttachTarget.entries.associateWith { target ->
+            try {
+                val registered = when (target) {
                     McpAttachTarget.CLAUDE_CODE ->
                         jsonHasLoopbackEntry(File(home, ".claude.json"), "mcpServers", serverName)
                     McpAttachTarget.GEMINI ->
@@ -46,15 +56,12 @@ internal object McpRegistrationScanner {
                     McpAttachTarget.CODEX ->
                         codexTomlHasLoopbackEntry(File(home, ".codex/config.toml"), serverName)
                 }
+                if (registered) Presence.PRESENT else Presence.ABSENT
             } catch (t: Throwable) {
-                // A malformed config file must never break startup; just skip it.
                 log.warn("Could not scan {} config: {}", target.displayName, t.message)
-                false
+                Presence.UNKNOWN
             }
-            if (registered) found += target
         }
-        return found
-    }
 
     /**
      * True when [file] parses as JSON and `<containerKey>.<serverName>` exists

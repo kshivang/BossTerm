@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.mcp
 
+import ai.rever.bossterm.compose.mcp.McpRegistrationScanner.Presence
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -19,6 +20,9 @@ class McpRegistrationScannerTest {
         f.deleteOnExit()
     }
 
+    private fun present(scan: Map<McpAttachTarget, Presence>): Set<McpAttachTarget> =
+        scan.filterValues { it == Presence.PRESENT }.keys
+
     @Test
     fun `detects claude code loopback registration`() {
         val home = tempHome()
@@ -26,7 +30,7 @@ class McpRegistrationScannerTest {
             ".claude.json",
             """{"someOtherKey": 1, "mcpServers": {"boss": {"type": "sse", "url": "http://127.0.0.1:7679"}}}"""
         )
-        assertEquals(setOf(McpAttachTarget.CLAUDE_CODE), McpRegistrationScanner.scan("boss", home))
+        assertEquals(setOf(McpAttachTarget.CLAUDE_CODE), present(McpRegistrationScanner.scan("boss", home)))
     }
 
     @Test
@@ -36,7 +40,7 @@ class McpRegistrationScannerTest {
             ".claude.json",
             """{"mcpServers": {"bossterm": {"type": "sse", "url": "http://127.0.0.1:7676"}}}"""
         )
-        assertTrue(McpRegistrationScanner.scan("boss", home).isEmpty())
+        assertTrue(present(McpRegistrationScanner.scan("boss", home)).isEmpty())
     }
 
     @Test
@@ -46,7 +50,12 @@ class McpRegistrationScannerTest {
             ".claude.json",
             """{"mcpServers": {"boss": {"type": "sse", "url": "https://mcp.example.com/sse"}}}"""
         )
-        assertTrue(McpRegistrationScanner.scan("boss", home).isEmpty())
+        // A cleanly parsed remote entry is ABSENT (not ours to manage), so the
+        // manager also prunes any persisted target that pointed at it.
+        assertEquals(
+            Presence.ABSENT,
+            McpRegistrationScanner.scan("boss", home)[McpAttachTarget.CLAUDE_CODE]
+        )
     }
 
     @Test
@@ -62,7 +71,7 @@ class McpRegistrationScannerTest {
         )
         assertEquals(
             setOf(McpAttachTarget.GEMINI, McpAttachTarget.OPENCODE),
-            McpRegistrationScanner.scan("boss", home)
+            present(McpRegistrationScanner.scan("boss", home))
         )
     }
 
@@ -81,7 +90,7 @@ class McpRegistrationScannerTest {
             url = "https://remote.example.com"
             """.trimIndent()
         )
-        assertEquals(setOf(McpAttachTarget.CODEX), McpRegistrationScanner.scan("boss", home))
+        assertEquals(setOf(McpAttachTarget.CODEX), present(McpRegistrationScanner.scan("boss", home)))
     }
 
     @Test
@@ -95,7 +104,7 @@ class McpRegistrationScannerTest {
             url = "http://127.0.0.1:7677" # written by attach
             """.trimIndent()
         )
-        assertEquals(setOf(McpAttachTarget.CODEX), McpRegistrationScanner.scan("boss", home))
+        assertEquals(setOf(McpAttachTarget.CODEX), present(McpRegistrationScanner.scan("boss", home)))
 
         val home2 = tempHome()
         home2.write(
@@ -105,7 +114,7 @@ class McpRegistrationScannerTest {
             url_extra = "http://127.0.0.1:1111"
             """.trimIndent()
         )
-        assertTrue(McpRegistrationScanner.scan("boss", home2).isEmpty())
+        assertTrue(present(McpRegistrationScanner.scan("boss", home2)).isEmpty())
     }
 
     @Test
@@ -118,15 +127,23 @@ class McpRegistrationScannerTest {
             url = "http://127.0.0.1:9999"
             """.trimIndent()
         )
-        assertTrue(McpRegistrationScanner.scan("boss", home).isEmpty())
+        assertTrue(present(McpRegistrationScanner.scan("boss", home)).isEmpty())
     }
 
     @Test
-    fun `missing empty or malformed files are safe`() {
+    fun `tri-state - missing and empty are ABSENT, malformed is UNKNOWN`() {
         val home = tempHome()
         home.write(".claude.json", "")
         home.write(".gemini/settings.json", "{not json!!")
-        assertTrue(McpRegistrationScanner.scan("boss", home).isEmpty())
+        val scan = McpRegistrationScanner.scan("boss", home)
+        // Empty file parses to "no entry" — a clean ABSENT the manager may prune on.
+        assertEquals(Presence.ABSENT, scan[McpAttachTarget.CLAUDE_CODE])
+        // Malformed JSON must be UNKNOWN — pruning on a transient read failure
+        // would silently disable auto-reattach.
+        assertEquals(Presence.UNKNOWN, scan[McpAttachTarget.GEMINI])
+        // Files that don't exist are a clean ABSENT.
+        assertEquals(Presence.ABSENT, scan[McpAttachTarget.CODEX])
+        assertEquals(Presence.ABSENT, scan[McpAttachTarget.OPENCODE])
     }
 
     @Test

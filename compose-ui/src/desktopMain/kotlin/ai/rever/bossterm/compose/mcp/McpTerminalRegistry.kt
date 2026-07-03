@@ -196,7 +196,9 @@ object McpTerminalRegistry {
         }
     }
 
-    /** @suppress Internal — recorded when an attach fails (auto-reattach) or user detaches. */
+    /** @suppress Internal — recorded when the startup reconcile finds the CLI's
+     *  config no longer carries our entry (the user removed it), so
+     *  auto-reattach stops resurrecting a registration the user deleted. */
     internal fun markDetached(target: McpAttachTarget) {
         val next = _attachedTargets.value - target
         if (next != _attachedTargets.value) {

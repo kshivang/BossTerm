@@ -46,17 +46,8 @@ internal object McpRegistrationScanner {
     ): Map<McpAttachTarget, Presence> =
         McpAttachTarget.entries.associateWith { target ->
             try {
-                val registered = when (target) {
-                    McpAttachTarget.CLAUDE_CODE ->
-                        jsonHasLoopbackEntry(File(home, ".claude.json"), "mcpServers", serverName)
-                    McpAttachTarget.GEMINI ->
-                        jsonHasLoopbackEntry(File(home, ".gemini/settings.json"), "mcpServers", serverName)
-                    McpAttachTarget.OPENCODE ->
-                        jsonHasLoopbackEntry(File(home, ".config/opencode/opencode.json"), "mcp", serverName)
-                    McpAttachTarget.CODEX ->
-                        codexTomlHasLoopbackEntry(File(home, ".codex/config.toml"), serverName)
-                }
-                if (registered) Presence.PRESENT else Presence.ABSENT
+                if (registeredLoopbackUrl(target, serverName, home) != null) Presence.PRESENT
+                else Presence.ABSENT
             } catch (t: Throwable) {
                 log.warn("Could not scan {} config: {}", target.displayName, t.message)
                 Presence.UNKNOWN
@@ -64,18 +55,46 @@ internal object McpRegistrationScanner {
         }
 
     /**
-     * True when [file] parses as JSON and `<containerKey>.<serverName>` exists
-     * with a loopback `url`/`httpUrl`. Gemini writes `httpUrl`, the others
-     * `url`; checking both keeps one code path for all three JSON configs.
+     * The default port of [target]'s currently-registered entry for
+     * [serverName], or null when there is no (loopback) entry or the port is
+     * unparseable. For env-expanded URLs (`…:${VAR:-7677}`) this is the
+     * fallback port — i.e. what a session outside any of our terminals would
+     * dial. Used by the manager's polite auto-reattach to decide whether the
+     * registered endpoint is already owned by a live sibling instance.
      */
-    internal fun jsonHasLoopbackEntry(file: File, containerKey: String, serverName: String): Boolean {
-        if (!file.isFile) return false
+    fun registeredDefaultPort(
+        target: McpAttachTarget,
+        serverName: String,
+        home: File = File(System.getProperty("user.home"))
+    ): Int? = registeredLoopbackUrl(target, serverName, home)?.let(::defaultPortOf)
+
+    /** [target]'s registered loopback URL for [serverName], or null. Throws on unreadable config. */
+    internal fun registeredLoopbackUrl(target: McpAttachTarget, serverName: String, home: File): String? =
+        when (target) {
+            McpAttachTarget.CLAUDE_CODE ->
+                jsonLoopbackUrl(File(home, ".claude.json"), "mcpServers", serverName)
+            McpAttachTarget.GEMINI ->
+                jsonLoopbackUrl(File(home, ".gemini/settings.json"), "mcpServers", serverName)
+            McpAttachTarget.OPENCODE ->
+                jsonLoopbackUrl(File(home, ".config/opencode/opencode.json"), "mcp", serverName)
+            McpAttachTarget.CODEX ->
+                codexTomlLoopbackUrl(File(home, ".codex/config.toml"), serverName)
+        }
+
+    /**
+     * The loopback `url`/`httpUrl` of `<containerKey>.<serverName>` in [file],
+     * or null when the file/entry is absent or the URL isn't loopback. Gemini
+     * writes `httpUrl`, the others `url`; checking both keeps one code path
+     * for all three JSON configs.
+     */
+    internal fun jsonLoopbackUrl(file: File, containerKey: String, serverName: String): String? {
+        if (!file.isFile) return null
         val text = file.readText()
-        if (text.isBlank()) return false
+        if (text.isBlank()) return null
         val root = json.parseToJsonElement(text).jsonObject
-        val entry = root[containerKey]?.jsonObject?.get(serverName)?.jsonObject ?: return false
-        val url = (entry["url"] ?: entry["httpUrl"])?.jsonPrimitive?.content ?: return false
-        return isLoopbackUrl(url)
+        val entry = root[containerKey]?.jsonObject?.get(serverName)?.jsonObject ?: return null
+        val url = (entry["url"] ?: entry["httpUrl"])?.jsonPrimitive?.content ?: return null
+        return url.takeIf(::isLoopbackUrl)
     }
 
     /**
@@ -84,8 +103,8 @@ internal object McpRegistrationScanner {
      * machine-written with this exact shape; a full TOML parser isn't worth
      * the dependency.
      */
-    internal fun codexTomlHasLoopbackEntry(file: File, serverName: String): Boolean {
-        if (!file.isFile) return false
+    internal fun codexTomlLoopbackUrl(file: File, serverName: String): String? {
+        if (!file.isFile) return null
         var inSection = false
         for (rawLine in file.readLines()) {
             val line = rawLine.trim()
@@ -103,10 +122,21 @@ internal object McpRegistrationScanner {
                 } else {
                     raw.substringBefore('#').trim()
                 }
-                return isLoopbackUrl(url)
+                return url.takeIf(::isLoopbackUrl)
             }
         }
-        return false
+        return null
+    }
+
+    /**
+     * Default port a registered URL resolves to without any env override:
+     * the `:-<port>` fallback of an env-expanded URL, else the literal
+     * `:<port>`. Null when neither is present.
+     */
+    internal fun defaultPortOf(url: String): Int? {
+        Regex("""\$\{[A-Za-z_][A-Za-z0-9_]*:-(\d+)}""").find(url)
+            ?.let { return it.groupValues[1].toIntOrNull() }
+        return Regex(""":(\d+)(?:[/?#]|$)""").find(url)?.groupValues?.get(1)?.toIntOrNull()
     }
 
     internal fun isLoopbackUrl(url: String): Boolean {

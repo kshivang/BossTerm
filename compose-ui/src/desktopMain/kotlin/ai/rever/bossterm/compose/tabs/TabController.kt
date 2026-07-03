@@ -1199,6 +1199,14 @@ class TabController(
                 // BossTermMcpConfig.serverName. An explicit override in
                 // config.environment still wins (it is applied last).
                 put("BOSS_MCP_SERVER", McpTerminalRegistry.mcpServerName)
+                // This instance's actually-bound MCP port, consumed by Claude
+                // Code's ${VAR:-default} URL expansion (see McpTerminalRegistry.
+                // mcpPortEnvVar) so in-terminal sessions dial the right instance
+                // even after a fallback-port walk. Omitted when the server isn't
+                // up yet — the registered default takes over.
+                McpTerminalRegistry.runningPort.value?.let {
+                    put(McpTerminalRegistry.mcpPortEnvVar, it.toString())
+                }
                 // Set PWD to match actual working directory (required for Starship and other prompts)
                 put("PWD", config.workingDir ?: System.getProperty("user.home"))
                 putAll(config.environment)
@@ -1374,6 +1382,11 @@ class TabController(
                     // toolset. (This pre-connect path takes no caller-supplied
                     // environment, so there is nothing to override here.)
                     put("BOSS_MCP_SERVER", McpTerminalRegistry.mcpServerName)
+                    // Live port for Claude Code's ${VAR:-default} URL expansion —
+                    // see McpTerminalRegistry.mcpPortEnvVar.
+                    McpTerminalRegistry.runningPort.value?.let {
+                        put(McpTerminalRegistry.mcpPortEnvVar, it.toString())
+                    }
                     // Set PWD to match actual working directory (required for Starship and other prompts)
                     put("PWD", workingDir ?: System.getProperty("user.home"))
                 }.toMutableMap()

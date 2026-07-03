@@ -129,6 +129,26 @@ object McpTerminalRegistry {
         mcpServerLabel = label
     }
 
+    /**
+     * Name of the env var carrying this embedder's actually-bound MCP port,
+     * injected into every PTY this app spawns. Claude Code registrations use
+     * it via `${VAR:-default}` URL expansion, so a session inside one of our
+     * terminals always dials THIS instance's port — even when the server
+     * fallback-walked off its configured one — while sessions elsewhere get
+     * the registered default.
+     *
+     * Derived from [mcpServerName] (`boss` → `BOSS_MCP_PORT`, `bossterm` →
+     * `BOSSTERM_MCP_PORT`) rather than shared: with one common var, a session
+     * inside a BossConsole terminal would also expand a standalone BossTerm
+     * registration to BossConsole's port and dial the wrong app's server.
+     */
+    val mcpPortEnvVar: String get() = portEnvVarName(mcpServerName)
+
+    /** See [mcpPortEnvVar]. Non-alphanumerics map to `_` for env-name validity. */
+    fun portEnvVarName(serverName: String): String =
+        serverName.uppercase().map { if (it.isLetterOrDigit()) it else '_' }
+            .joinToString("") + "_MCP_PORT"
+
     // -----------------------------------------------------------------
     // Attached-CLI tracking — written by McpCliAttacher's callers when an
     // attach succeeds; read by the Settings panel and the right-click menus

@@ -931,6 +931,12 @@ private suspend fun initializeProcess(
             // (e.g. Claude Code) pick the matching `mcp__<name>__*` toolset. An
             // explicit override in `environment` still wins (applied last).
             put("BOSS_MCP_SERVER", McpTerminalRegistry.mcpServerName)
+            // Live port for Claude Code's ${VAR:-default} URL expansion — see
+            // McpTerminalRegistry.mcpPortEnvVar. Skipped while the server is
+            // down; the registered default takes over.
+            McpTerminalRegistry.runningPort.value?.let {
+                put(McpTerminalRegistry.mcpPortEnvVar, it.toString())
+            }
             // Set PWD to match actual working directory (required for Starship and other prompts)
             put("PWD", effectiveWorkingDir)
             environment?.let { putAll(it) }

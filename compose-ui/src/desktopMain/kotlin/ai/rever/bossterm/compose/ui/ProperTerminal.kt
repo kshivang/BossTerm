@@ -953,6 +953,14 @@ fun ProperTerminal(
               }
               // Force redraw with new buffer dimensions (critical for initial size)
               display.requestImmediateRedraw()
+              if (!hasPerformedInitialResize) {
+                // First layout pass complete: real grid applied above, and cell metrics
+                // pushed here explicitly — the LaunchedEffect(cellWidth, cellHeight) that
+                // normally pushes them has no ordering guarantee vs. this layout callback.
+                // MCP show_image gates image placement on this latch (issue #324).
+                terminal.setCellDimensions(cellWidth, cellHeight)
+                terminal.markUiLayoutReady()
+              }
               hasPerformedInitialResize = true
             }
           }

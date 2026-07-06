@@ -1212,13 +1212,15 @@ class BossTermMcpServer(
             // show_image calls on the same pane.
             registry.paneMutex(resolvedPaneId).withLock {
                 // Freshly created panes haven't drawn their first prompt (or been laid
-                // out, which sets real cell metrics). Wait for OSC 133;A so placement
-                // sizes against the real grid and lands below a clean prompt.
+                // out, which sets real cell metrics). Wait for OSC 133;A so the image
+                // lands below a clean prompt, AND for the UI layout latch so placement
+                // sizes against the real grid instead of the 80x24 placeholder — the
+                // two signals arrive on independent paths with no ordering guarantee.
                 if (freshlyCreated) {
                     val shellReadyTimeoutMs = settingsManager.settings.value
                         .mcpRunCommandShellReadyTimeoutMs
                         .coerceIn(0, MAX_SHELL_READY_TIMEOUT_MS).toLong()
-                    if (shellReadyTimeoutMs > 0) awaitPromptReady(tab, shellReadyTimeoutMs)
+                    if (shellReadyTimeoutMs > 0) awaitPaneReady(tab, shellReadyTimeoutMs)
                 }
 
                 val osc = buildOsc1337Image(
@@ -1249,11 +1251,14 @@ class BossTermMcpServer(
     }
 
     /**
-     * Suspend until [session]'s shell signals OSC 133;A (prompt ready) or
-     * [timeoutMs] elapses. Used to defer image injection on freshly created
-     * panes until the pane is laid out and the prompt is drawn.
+     * Suspend until [session] is ready to receive geometry-dependent content, or
+     * [timeoutMs] elapses. Readiness is TWO independent conditions (issue #324):
+     * the shell has signalled OSC 133;A (prompt ready), and the Compose UI has
+     * completed its first layout pass ([BossTerminal.isUiLayoutReady] — real cell
+     * metrics + initial grid resize). The prompt often wins that race, so waiting
+     * on it alone would size images against the placeholder 80x24 @ 10x20px grid.
      */
-    private suspend fun awaitPromptReady(session: TerminalSession, timeoutMs: Long) {
+    private suspend fun awaitPaneReady(session: TerminalSession, timeoutMs: Long) {
         val terminal = session.terminal
         val signal = CompletableDeferred<Unit>()
         val listener = object : CommandStateListener {
@@ -1263,7 +1268,10 @@ class BossTermMcpServer(
         }
         terminal.addCommandStateListener(listener)
         try {
-            withTimeoutOrNull(timeoutMs) { signal.await() }
+            withTimeoutOrNull(timeoutMs) {
+                signal.await()
+                while (!terminal.isUiLayoutReady) delay(25)
+            }
         } finally {
             terminal.removeCommandStateListener(listener)
         }

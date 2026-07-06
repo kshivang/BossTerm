@@ -110,6 +110,14 @@ class BossTerminal(
     @Volatile
     private var myCellHeightPx: Float = 20f // Default estimate until UI sets actual value
 
+    // True once the UI has completed its first layout pass for this session: real cell
+    // pixel metrics pushed AND the initial grid resize applied. Until then, sizing math
+    // runs against the 80x24 @ 10x20px placeholders above. Shell-prompt readiness
+    // (OSC 133;A) gives NO ordering guarantee relative to this — callers that place
+    // geometry-dependent content (inline images) must gate on this flag too.
+    @Volatile
+    private var myUiLayoutReady = false
+
     override fun setModeEnabled(mode: TerminalMode?, enabled: Boolean) {
         mode?.let {
             if (enabled) {
@@ -654,6 +662,18 @@ class BossTerminal(
     /** Last cell pixel size the UI measured (physical px) — used for remote "fit-to-client" resizing. */
     val cellWidthPx: Float get() = myCellWidthPx
     val cellHeightPx: Float get() = myCellHeightPx
+
+    /** See [markUiLayoutReady]. */
+    val isUiLayoutReady: Boolean get() = myUiLayoutReady
+
+    /**
+     * Called by the UI once real cell metrics have been pushed via [setCellDimensions]
+     * and the initial grid resize for this session has been applied — i.e. sizing math
+     * no longer runs against placeholder defaults. One-way latch.
+     */
+    fun markUiLayoutReady() {
+        myUiLayoutReady = true
+    }
 
     /**
      * Notify image storage when buffer scrolls.

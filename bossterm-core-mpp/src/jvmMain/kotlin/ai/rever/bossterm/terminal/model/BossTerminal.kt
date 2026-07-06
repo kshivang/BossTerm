@@ -118,6 +118,16 @@ class BossTerminal(
     @Volatile
     private var myUiLayoutReady = false
 
+    // Last plausible grid, tracked on every resize. Transient layout artifacts can
+    // momentarily shrink the grid to a size no real pane has (rows clamped to 2);
+    // if an inline image lands in exactly that window, sizing against the live grid
+    // bakes a squashed footprint into the buffer permanently. These remember the
+    // geometry the pane actually settles at so processInlineImage can fall back.
+    @Volatile
+    private var myLastSaneWidth = 0
+    @Volatile
+    private var myLastSaneHeight = 0
+
     override fun setModeEnabled(mode: TerminalMode?, enabled: Boolean) {
         mode?.let {
             if (enabled) {
@@ -576,11 +586,21 @@ class BossTerminal(
         var bufferRow = myCursorY - 1  // 0-indexed screen row
         val anchorCol = myCursorX  // Save original column for placement
 
-        // Calculate image dimensions
+        // Calculate image dimensions. If the live grid is degenerate (a transient
+        // layout artifact, e.g. rows clamped to 2 mid-settle), size against the
+        // last sane grid instead — the footprint below is a one-time snapshot
+        // baked into the buffer, so sizing against the blip is permanent while
+        // the blip itself lasts one frame.
+        val saneWidthCells =
+            if (myTerminalWidth >= MIN_SANE_GRID_COLS || myLastSaneWidth <= 0) myTerminalWidth
+            else myLastSaneWidth
+        val saneHeightCells =
+            if (myTerminalHeight >= MIN_SANE_GRID_ROWS || myLastSaneHeight <= 0) myTerminalHeight
+            else myLastSaneHeight
         val dimensions = ImageDimensionCalculator.calculate(
             image = image,
-            terminalWidthCells = myTerminalWidth,
-            terminalHeightCells = myTerminalHeight,
+            terminalWidthCells = saneWidthCells,
+            terminalHeightCells = saneHeightCells,
             cellWidthPx = myCellWidthPx,
             cellHeightPx = myCellHeightPx
         )
@@ -1688,6 +1708,10 @@ class BossTerminal(
                 resizeListener.onResize(oldTermSize, newTermSize)
             }
         })
+        if (newTermSize.columns >= MIN_SANE_GRID_COLS && newTermSize.rows >= MIN_SANE_GRID_ROWS) {
+            myLastSaneWidth = newTermSize.columns
+            myLastSaneHeight = newTermSize.rows
+        }
     }
 
     override fun fillScreen(c: Char) {
@@ -1856,6 +1880,15 @@ class BossTerminal(
 
         private const val MIN_COLUMNS = 5
         private const val MIN_ROWS = 2
+
+        /**
+         * Floor below which a grid is treated as a transient layout artifact
+         * rather than a real pane, for purposes of inline-image sizing (see
+         * myLastSaneWidth/Height). Distinct from MIN_COLUMNS/MIN_ROWS, which
+         * only clamp what a resize request may set.
+         */
+        private const val MIN_SANE_GRID_COLS = 10
+        private const val MIN_SANE_GRID_ROWS = 3
 
         fun ensureTermMinimumSize(termSize: TermSize): TermSize {
             return TermSize(max(MIN_COLUMNS, termSize.columns), max(MIN_ROWS, termSize.rows))

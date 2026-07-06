@@ -796,7 +796,14 @@ fun TabbedTerminal(
             else active.id to active.display.termSize.value
         }.collect { sized ->
             val (activeId, size) = sized ?: return@collect
-            if (size.columns < 2 || size.rows < 2) return@collect
+            if (size.columns < 4 || size.rows < 3) return@collect
+            // A freshly created (now active) tab reports its unmeasured initial
+            // 80x24 grid until its first real layout pass; fanning that — or a
+            // transient degenerate measure — out to every background tab thrashes
+            // their grids (and anything sized against them mid-blip, e.g. MCP
+            // show_image, bakes wrong permanently). Wait for a real layout.
+            val activeTerminal = (tabController.activeTab)?.terminal ?: return@collect
+            if (!activeTerminal.isUiLayoutReady) return@collect
             tabController.tabs.forEach { t ->
                 if (t.id == activeId || t.isRemote) return@forEach
                 val ss = splitStates[t.id]

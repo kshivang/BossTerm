@@ -937,8 +937,13 @@ fun ProperTerminal(
             val currentCols = textBuffer.width
             val currentRows = textBuffer.height
 
-            // Resize on first render OR when dimensions change (ensures PTY gets correct size on startup)
-            if ((!hasPerformedInitialResize || (currentCols != newCols || currentRows != newRows)) && newCols >= 2 && newRows >= 2) {
+            // Resize on first render OR when dimensions change (ensures PTY gets correct size on startup).
+            // Floor of 3 rows / 4 cols: a fresh tab's layout can transiently measure a
+            // near-zero canvas (rows would clamp to 2) before settling; applying that
+            // artifact resizes the buffer to a grid no real pane has, and anything
+            // sized against it mid-blip (MCP show_image) bakes wrong permanently.
+            // Skipping keeps the previous grid until a plausible measure arrives.
+            if ((!hasPerformedInitialResize || (currentCols != newCols || currentRows != newRows)) && newCols >= 4 && newRows >= 3) {
               val newTermSize = TermSize(newCols, newRows)
               // Resize terminal buffer and notify PTY process (sends SIGWINCH)
               terminal.resize(newTermSize, RequestOrigin.User)
@@ -956,14 +961,16 @@ fun ProperTerminal(
               hasPerformedInitialResize = true
             }
             // Layout latch for MCP show_image (issue #324): this terminal has now
-            // been measured by a real layout pass — real cell metrics pushed
+            // been measured by a real (sane) layout pass — real cell metrics pushed
             // explicitly (the LaunchedEffect that normally pushes them has no
             // ordering guarantee vs. this callback), grid resize applied above
             // if needed. Keyed on the TERMINAL's own latch, NOT on
             // hasPerformedInitialResize: this composition is reused across tab
             // switches, so the composition-scoped flag is already true when a
-            // freshly created tab's session first lands here.
-            if (!terminal.isUiLayoutReady) {
+            // freshly created tab's session first lands here. The sane-dims
+            // guard keeps a transient degenerate pass from latching readiness
+            // while the buffer still holds its unmeasured initial grid.
+            if (!terminal.isUiLayoutReady && newCols >= 4 && newRows >= 3) {
               terminal.setCellDimensions(cellWidth, cellHeight)
               terminal.markUiLayoutReady()
             }

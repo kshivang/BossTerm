@@ -203,6 +203,22 @@ internal class ChangeWidthOperation(
             return
         }
 
+        // Image-bearing rows are ATOMIC: each ImageCell encodes its position in
+        // the image grid (cellX/cellY vs totalCellsX/Y), so reflowing the cells
+        // like text characters — wrapping a row onto multiple output lines and
+        // reassigning columns — permanently corrupts the rendered image (the
+        // renderer derives the image's anchor from `col - cellX`). Pass the row
+        // through unchanged instead: cells right of the new width simply don't
+        // draw, and TerminalCanvasRenderer's draw-time re-fit compresses the
+        // visible portion to the live pane; if the pane widens again the intact
+        // cells render at full size. Corruption is permanent — clipping is not.
+        if (line.hasImageCells()) {
+            myCurrentLine = null
+            myCurrentLineLength = 0
+            myAllLines.add(line.copy())
+            return
+        }
+
         // Get image cells sorted by column
         val imageCells = if (line.hasImageCells()) {
             line.getAllImageCells().toSortedMap()

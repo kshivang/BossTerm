@@ -73,6 +73,11 @@ object ImageDimensionCalculator {
      * @param terminalHeightCells Terminal height in cells
      * @param cellWidthPx Width of a single cell in pixels
      * @param cellHeightPx Height of a single cell in pixels
+     * @param pixelScale Device pixels per logical pixel (2.0 on retina). Cell
+     *   metrics arrive in DEVICE px, but [DimensionSpec.Pixels] values and the
+     *   image's intrinsic size are logical quantities — without this factor an
+     *   auto-sized image bakes at half its intended size on a 2x display.
+     *   Percent/Cells specs are unit-free and unaffected.
      * @return Pair of (pixelWidth, pixelHeight) and (cellWidth, cellHeight)
      */
     fun calculate(
@@ -80,25 +85,29 @@ object ImageDimensionCalculator {
         terminalWidthCells: Int,
         terminalHeightCells: Int,
         cellWidthPx: Float,
-        cellHeightPx: Float
+        cellHeightPx: Float,
+        pixelScale: Float = 1f
     ): ImageDimensions {
         val terminalWidthPx = terminalWidthCells * cellWidthPx
         val terminalHeightPx = terminalHeightCells * cellHeightPx
+        val scale = if (pixelScale > 0f) pixelScale else 1f
+        val intrinsicWidthPx = image.intrinsicWidth * scale
+        val intrinsicHeightPx = image.intrinsicHeight * scale
 
         // Calculate target width in pixels
         var targetWidthPx = when (val spec = image.widthSpec) {
             is DimensionSpec.Cells -> (spec.count * cellWidthPx).toInt()
-            is DimensionSpec.Pixels -> spec.count
+            is DimensionSpec.Pixels -> (spec.count * scale).toInt()
             is DimensionSpec.Percent -> (terminalWidthPx * spec.value / 100).toInt()
-            is DimensionSpec.Auto -> image.intrinsicWidth
+            is DimensionSpec.Auto -> intrinsicWidthPx.toInt()
         }
 
         // Calculate target height in pixels
         var targetHeightPx = when (val spec = image.heightSpec) {
             is DimensionSpec.Cells -> (spec.count * cellHeightPx).toInt()
-            is DimensionSpec.Pixels -> spec.count
+            is DimensionSpec.Pixels -> (spec.count * scale).toInt()
             is DimensionSpec.Percent -> (terminalHeightPx * spec.value / 100).toInt()
-            is DimensionSpec.Auto -> image.intrinsicHeight
+            is DimensionSpec.Auto -> intrinsicHeightPx.toInt()
         }
 
         // Preserve aspect ratio if requested
@@ -128,11 +137,11 @@ object ImageDimensionCalculator {
                 }
                 // Both specified - fit within bounds while preserving aspect ratio
                 else -> {
-                    val widthRatio = targetWidthPx.toFloat() / image.intrinsicWidth
-                    val heightRatio = targetHeightPx.toFloat() / image.intrinsicHeight
-                    val scale = minOf(widthRatio, heightRatio)
-                    targetWidthPx = (image.intrinsicWidth * scale).toInt()
-                    targetHeightPx = (image.intrinsicHeight * scale).toInt()
+                    val widthRatio = targetWidthPx / intrinsicWidthPx
+                    val heightRatio = targetHeightPx / intrinsicHeightPx
+                    val fitScale = minOf(widthRatio, heightRatio)
+                    targetWidthPx = (intrinsicWidthPx * fitScale).toInt()
+                    targetHeightPx = (intrinsicHeightPx * fitScale).toInt()
                 }
             }
         }

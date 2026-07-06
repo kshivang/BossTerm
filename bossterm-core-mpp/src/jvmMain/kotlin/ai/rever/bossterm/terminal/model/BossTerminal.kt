@@ -110,6 +110,12 @@ class BossTerminal(
     @Volatile
     private var myCellHeightPx: Float = 20f // Default estimate until UI sets actual value
 
+    // Device pixels per logical pixel of the display this terminal renders on
+    // (2.0 on retina). Cell metrics above are DEVICE px; inline-image sizing
+    // needs this to interpret intrinsic/px-spec image dimensions (logical px).
+    @Volatile
+    private var myDisplayScale: Float = 1f
+
     // True once the UI has completed its first layout pass for this session: real cell
     // pixel metrics pushed AND the initial grid resize applied. Until then, sizing math
     // runs against the 80x24 @ 10x20px placeholders above. Shell-prompt readiness
@@ -602,7 +608,15 @@ class BossTerminal(
             terminalWidthCells = saneWidthCells,
             terminalHeightCells = saneHeightCells,
             cellWidthPx = myCellWidthPx,
-            cellHeightPx = myCellHeightPx
+            cellHeightPx = myCellHeightPx,
+            pixelScale = myDisplayScale
+        )
+        LOG.info(
+            "processInlineImage: grid={}x{} sized-against={}x{} cellPx={}x{} scale={} intrinsic={}x{} -> px={}x{} cells={}x{} anchor=({},{})",
+            myTerminalWidth, myTerminalHeight, saneWidthCells, saneHeightCells,
+            myCellWidthPx, myCellHeightPx, myDisplayScale, image.intrinsicWidth, image.intrinsicHeight,
+            dimensions.pixelWidth, dimensions.pixelHeight,
+            dimensions.cellWidth, dimensions.cellHeight, anchorCol, bufferRow
         )
 
         // Store image data in cache
@@ -676,6 +690,13 @@ class BossTerminal(
             myCellWidthPx = cellWidthPx
             myCellHeightPx = cellHeightPx
             LOG.debug("Cell dimensions updated: {}x{} px", cellWidthPx, cellHeightPx)
+        }
+    }
+
+    /** See [myDisplayScale]. Pushed by the UI alongside [setCellDimensions]. */
+    fun setDisplayScale(scale: Float) {
+        if (scale > 0f) {
+            myDisplayScale = scale
         }
     }
 

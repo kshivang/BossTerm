@@ -663,8 +663,11 @@ fun ProperTerminal(
   // Calculate line spacing gap (extra space added by line spacing)
   val lineSpacingGap = cellHeight - baseCellHeight
 
-  // Update terminal with actual cell dimensions for accurate image placement
-  LaunchedEffect(cellWidth, cellHeight) {
+  // Update terminal with actual cell dimensions for accurate image placement.
+  // Cell metrics are DEVICE px; the display scale lets image sizing interpret
+  // intrinsic/px-spec image dimensions as logical px (half-size otherwise on 2x).
+  LaunchedEffect(cellWidth, cellHeight, density) {
+    terminal.setDisplayScale(density.density)
     terminal.setCellDimensions(cellWidth, cellHeight)
   }
 
@@ -971,6 +974,7 @@ fun ProperTerminal(
             // guard keeps a transient degenerate pass from latching readiness
             // while the buffer still holds its unmeasured initial grid.
             if (!terminal.isUiLayoutReady && newCols >= 4 && newRows >= 3) {
+              terminal.setDisplayScale(density.density)
               terminal.setCellDimensions(cellWidth, cellHeight)
               terminal.markUiLayoutReady()
             }

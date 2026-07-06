@@ -93,6 +93,27 @@ class ImageDimensionCalculatorTest {
     }
 
     @Test
+    fun autoAutoOnRetinaTargetsLogicalSize() {
+        // On a 2x display, cell metrics arrive in device px. Without pixelScale
+        // a 400x200 image spans only 400 device px = 200 logical px (half size).
+        // With pixelScale=2 it must span 800 device px, i.e. its logical size.
+        val image = autoImage(400, 200)
+        val dims = ImageDimensionCalculator.calculate(
+            image = image,
+            terminalWidthCells = cols,
+            terminalHeightCells = rows,
+            cellWidthPx = cellW * 2,   // device px on 2x
+            cellHeightPx = cellH * 2,
+            pixelScale = 2f
+        )
+        assertEquals(800, dims.pixelWidth)
+        assertEquals(400, dims.pixelHeight)
+        // Cell footprint is device-px / device-cell — same count as on a 1x display.
+        assertEquals(40, dims.cellWidth)
+        assertEquals(10, dims.cellHeight)
+    }
+
+    @Test
     fun explicitPercentSpecsAreFittedWithinBounds() {
         // Sanity check on the pre-existing "both specified" branch.
         val image = TerminalImage(

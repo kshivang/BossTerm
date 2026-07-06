@@ -308,6 +308,10 @@ data class CachedMeasurement(
  */
 object TerminalCanvasRenderer {
 
+    // Dedupe set for the image-geometry anomaly log below — each distinct
+    // geometry logs once, not once per frame.
+    private val imageDiagSeen = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     /**
      * LRU cache for text measurements (issue #147 - special character rendering optimization).
      * Caches TextMeasurer results to avoid expensive measure() calls for repeated characters.
@@ -790,6 +794,16 @@ object TerminalCanvasRenderer {
                             } else {
                                 effCellsX = imageCell.totalCellsX
                                 effCellsY = imageCell.totalCellsY
+                            }
+                            // Anomaly flight-recorder (#326): draw-time geometry disagreeing
+                            // with the baked footprint is exactly the state that produced
+                            // silent image corruption before; log it (deduped) so a field
+                            // report comes with numbers. Healthy frames log nothing.
+                            if (effCellsX != imageCell.totalCellsX || anchorCol < 0) {
+                                val sig = "img=${imageCell.imageId} lineIdx=$lineIndex col=$col cellXY=(${imageCell.cellX},${imageCell.cellY}) " +
+                                        "total=(${imageCell.totalCellsX},${imageCell.totalCellsY}) eff=($effCellsX,$effCellsY) " +
+                                        "anchorCol=$anchorCol visCols=${ctx.visibleCols}"
+                                if (imageDiagSeen.add(sig)) println("IMG-REFIT $sig")
                             }
                             // Cells beyond the re-fit footprint hold no slice; leave background.
                             if (imageCell.cellX < effCellsX && imageCell.cellY < effCellsY) {

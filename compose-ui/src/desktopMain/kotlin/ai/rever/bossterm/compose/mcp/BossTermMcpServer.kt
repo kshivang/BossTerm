@@ -1252,11 +1252,18 @@ class BossTermMcpServer(
 
     /**
      * Suspend until [session] is ready to receive geometry-dependent content, or
-     * [timeoutMs] elapses. Readiness is TWO independent conditions (issue #324):
-     * the shell has signalled OSC 133;A (prompt ready), and the Compose UI has
-     * completed its first layout pass ([BossTerminal.isUiLayoutReady] — real cell
-     * metrics + initial grid resize). The prompt often wins that race, so waiting
-     * on it alone would size images against the placeholder 80x24 @ 10x20px grid.
+     * [timeoutMs] elapses. Readiness is THREE conditions (issue #324):
+     *
+     *  1. The shell has signalled OSC 133;A (prompt ready).
+     *  2. The Compose UI has completed a layout pass ([BossTerminal.isUiLayoutReady]
+     *     — real cell metrics + a grid resize). The prompt often wins that race,
+     *     so waiting on it alone would size images against the placeholder
+     *     80x24 @ 10x20px grid.
+     *  3. The grid has stopped changing. The FIRST layout pass of a fresh
+     *     tab/split can be degenerate (a transient 2-row grid mid-settle);
+     *     content injected at that moment is sized against the throwaway grid
+     *     and baked that way into the buffer, so we require the dimensions to
+     *     hold still across consecutive samples before trusting them.
      */
     private suspend fun awaitPaneReady(session: TerminalSession, timeoutMs: Long) {
         val terminal = session.terminal
@@ -1268,9 +1275,34 @@ class BossTermMcpServer(
         }
         terminal.addCommandStateListener(listener)
         try {
-            withTimeoutOrNull(timeoutMs) {
-                signal.await()
+            // Prompt readiness runs on the user-configured budget (missing
+            // shell integration should cost no more than it does today) ...
+            withTimeoutOrNull(timeoutMs) { signal.await() }
+            // ... while layout settle gets its own fixed budget: sharing one
+            // budget let a slow shell rc exhaust the wait and inject against a
+            // mid-settle grid. Normally completes in well under 500ms.
+            withTimeoutOrNull(LAYOUT_SETTLE_TIMEOUT_MS) {
                 while (!terminal.isUiLayoutReady) delay(25)
+                var stableSamples = 0
+                var lastWidth = -1
+                var lastHeight = -1
+                while (stableSamples < GRID_STABLE_SAMPLES) {
+                    val width = session.textBuffer.width
+                    val height = session.textBuffer.height
+                    // A fresh pane's first layout pass can measure a throwaway
+                    // near-zero canvas, producing rows == coerceAtLeast(2).
+                    // Such a grid is never a real pane — keep waiting for the
+                    // settled layout even if it is momentarily "stable".
+                    val sane = width >= MIN_SANE_GRID_COLS && height >= MIN_SANE_GRID_ROWS
+                    if (sane && width == lastWidth && height == lastHeight) {
+                        stableSamples++
+                    } else {
+                        stableSamples = 0
+                        lastWidth = width
+                        lastHeight = height
+                    }
+                    delay(GRID_STABLE_SAMPLE_MS)
+                }
             }
         } finally {
             terminal.removeCommandStateListener(listener)
@@ -2384,6 +2416,35 @@ class BossTermMcpServer(
          * it would invite agents to set it sky-high and lose TUI detection.
          */
         private const val TUI_POLL_INTERVAL_MS = 100L
+
+        /**
+         * Grid-stability gate for `awaitPaneReady`: the buffer's cols/rows must
+         * be unchanged across this many consecutive samples, taken this far
+         * apart, before a freshly-created pane is trusted with geometry-
+         * dependent content. 3 x 60ms ≈ one to two Compose layout/resize beats:
+         * long enough to outlive the transient first-pass grid (observed: a
+         * 2-row measure before a fresh tab settles), short enough to be
+         * imperceptible next to shell startup.
+         */
+        private const val GRID_STABLE_SAMPLES = 3
+        private const val GRID_STABLE_SAMPLE_MS = 60L
+
+        /**
+         * Floor below which a grid is treated as a transient layout artifact
+         * rather than a real pane (ProperTerminal clamps degenerate measures
+         * to 2 rows/cols, and no usable pane is 2 rows tall). A genuinely
+         * tiny pane falls back to the overall timeout instead of the gate.
+         */
+        private const val MIN_SANE_GRID_COLS = 10
+        private const val MIN_SANE_GRID_ROWS = 3
+
+        /**
+         * Dedicated budget for the UI-layout-ready + grid-stability wait in
+         * `awaitPaneReady`, independent of the shell-prompt budget so a slow
+         * shell rc can't starve it. Generous vs. the ~200-500ms it takes in
+         * practice; small vs. a user noticing a hung tool call.
+         */
+        private const val LAYOUT_SETTLE_TIMEOUT_MS = 3_000L
 
         /**
          * Valid values for `mcpRunCommandDefaultPanel`. Excludes "reuse"

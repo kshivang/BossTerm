@@ -953,15 +953,19 @@ fun ProperTerminal(
               }
               // Force redraw with new buffer dimensions (critical for initial size)
               display.requestImmediateRedraw()
-              if (!hasPerformedInitialResize) {
-                // First layout pass complete: real grid applied above, and cell metrics
-                // pushed here explicitly — the LaunchedEffect(cellWidth, cellHeight) that
-                // normally pushes them has no ordering guarantee vs. this layout callback.
-                // MCP show_image gates image placement on this latch (issue #324).
-                terminal.setCellDimensions(cellWidth, cellHeight)
-                terminal.markUiLayoutReady()
-              }
               hasPerformedInitialResize = true
+            }
+            // Layout latch for MCP show_image (issue #324): this terminal has now
+            // been measured by a real layout pass — real cell metrics pushed
+            // explicitly (the LaunchedEffect that normally pushes them has no
+            // ordering guarantee vs. this callback), grid resize applied above
+            // if needed. Keyed on the TERMINAL's own latch, NOT on
+            // hasPerformedInitialResize: this composition is reused across tab
+            // switches, so the composition-scoped flag is already true when a
+            // freshly created tab's session first lands here.
+            if (!terminal.isUiLayoutReady) {
+              terminal.setCellDimensions(cellWidth, cellHeight)
+              terminal.markUiLayoutReady()
             }
           }
         }

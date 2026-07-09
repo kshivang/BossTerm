@@ -110,11 +110,20 @@ enum class McpAttachTarget(
         // env of each `claude` process (verified against Claude Code 2.x,
         // user scope). Our PTYs export the per-embedder port var, so a
         // session inside one of our terminals dials THIS instance's actual
-        // bound port; sessions outside any of our terminals fall back to
-        // [port], which the manager's auto-reattach keeps current. The
-        // other CLIs have no documented expansion — they stay on plain URLs.
-        override fun registrationUrl(serverName: String, port: Int): String =
-            "http://127.0.0.1:\${${McpTerminalRegistry.portEnvVarName(serverName)}:-$port}"
+        // bound port; sessions outside any of our terminals use the `:-`
+        // fallback. That fallback is the CONFIGURED port, not [port]: when
+        // the server fallback-walked off its configured port (something else
+        // held it at launch), [port] is a transient collision artifact, and
+        // baking it into the CLI's persistent config points the registration
+        // at whichever app owns that port after this instance quits — e.g. a
+        // stale `bossterm` fallback of 7677 dialing BossConsole's `boss`
+        // server and mirroring its entire toolset under a second name. The
+        // other CLIs have no documented expansion — they stay on plain URLs
+        // with the live bound port.
+        override fun registrationUrl(serverName: String, port: Int): String {
+            val fallback = McpTerminalRegistry.configuredMcpPort ?: port
+            return "http://127.0.0.1:\${${McpTerminalRegistry.portEnvVarName(serverName)}:-$fallback}"
+        }
     },
     CODEX(
         displayName = "Codex",

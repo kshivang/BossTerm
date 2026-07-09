@@ -19,6 +19,30 @@ class McpRegistrationUrlTest {
     }
 
     @Test
+    fun `claude code fallback is the configured port even when the server walked to another`() {
+        // Configured 7676 was busy at launch; the server fallback-walked and
+        // bound 7677. The registered URL's `:-` default must stay 7676 — baking
+        // the walked 7677 would leave a persistent registration that dials
+        // whatever app owns 7677 after this instance quits (BossConsole's
+        // `boss` server), mirroring its toolset under a second name.
+        McpTerminalRegistry.setConfiguredPort(7676)
+        try {
+            assertEquals(
+                "http://127.0.0.1:\${BOSSTERM_MCP_PORT:-7676}",
+                McpAttachTarget.CLAUDE_CODE.registrationUrl("bossterm", 7677)
+            )
+            // Plain-URL CLIs have no env expansion: only the live bound port
+            // works for them, so they keep registering it.
+            assertEquals(
+                "http://127.0.0.1:7677",
+                McpAttachTarget.CODEX.registrationUrl("bossterm", 7677)
+            )
+        } finally {
+            McpTerminalRegistry.setConfiguredPort(null)
+        }
+    }
+
+    @Test
     fun `other clis keep the plain url`() {
         for (target in McpAttachTarget.entries - McpAttachTarget.CLAUDE_CODE) {
             assertEquals("http://127.0.0.1:7677", target.registrationUrl("boss", 7677))

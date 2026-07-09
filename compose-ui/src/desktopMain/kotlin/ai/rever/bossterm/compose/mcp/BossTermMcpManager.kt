@@ -234,6 +234,11 @@ class BossTermMcpManager(
     }
 
     private suspend fun reconcile(desired: McpRuntimeConfig) {
+        // Publish the configured (pre-fallback-walk) port so registration-URL
+        // builders bake a stable default instead of a walked bound port. See
+        // McpTerminalRegistry.configuredMcpPort for why baking the bound port
+        // cross-wires CLI registrations after this instance quits.
+        registry.setConfiguredPort(desired.port)
         mutex.withLock {
             val currentPort = runningPort
             val currentlyRunning = runningEngine != null

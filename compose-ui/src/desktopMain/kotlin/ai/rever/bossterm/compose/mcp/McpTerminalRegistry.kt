@@ -130,6 +130,30 @@ object McpTerminalRegistry {
     }
 
     /**
+     * The embedder's *configured* MCP port — the settings value the manager
+     * tries to bind first, before any fallback-walk. Published by
+     * [BossTermMcpManager] on every reconcile; null until the first one.
+     *
+     * Claude Code registrations bake this (not the walked bound port) into
+     * the `${VAR:-port}` URL fallback. The bound port can be a transient
+     * collision artifact — e.g. another process squatting our default at
+     * launch — and freezing it into the CLI's persistent config points the
+     * registration at whoever owns that port after we quit. That is how a
+     * standalone `bossterm` registration ended up dialing BossConsole's
+     * `boss` server on 7677 and mirroring its whole toolset under a second
+     * name. The configured port is where this app will be found on a normal
+     * launch; sessions inside our own terminals never consult the fallback
+     * at all (the injected env var carries the live bound port).
+     */
+    @Volatile var configuredMcpPort: Int? = null
+        private set
+
+    /** @suppress Manager-only (nullable so tests can reset). */
+    internal fun setConfiguredPort(port: Int?) {
+        configuredMcpPort = port
+    }
+
+    /**
      * Name of the env var carrying this embedder's actually-bound MCP port,
      * injected into every PTY this app spawns. Claude Code registrations use
      * it via `${VAR:-default}` URL expansion, so a session inside one of our

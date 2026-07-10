@@ -15,6 +15,7 @@ import io.ktor.server.request.host
 import io.ktor.server.request.httpMethod
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
+import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -27,6 +28,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -99,6 +101,11 @@ class BossTermMcpManager(
     private var watcherJob: Job? = null
     private var disabledToolsWatcherJob: Job? = null
     private var preferredShellWatcherJob: Job? = null
+
+    // Streamable HTTP (Codex) session bookkeeping for the running engine.
+    // Guarded by [mutex] like the engine fields; null while stopped.
+    private var streamableSessions: StreamableMcpSessions? = null
+    private var streamableSweeperJob: Job? = null
 
     // Caches caller-tab resolution by the client's ephemeral TCP port. That
     // port is stable for a connection's lifetime and its owning PID can't
@@ -390,6 +397,7 @@ class BossTermMcpManager(
     private fun tryStartOnPort(port: Int, desiredPort: Int): StartOutcome {
         val mcpServerWrapper = BossTermMcpServer(registry, config, settingsManager)
         val mcpServer = mcpServerWrapper.createServer()
+        val streamable = StreamableMcpSessions(mcpServer)
         val allowedHosts = setOf("127.0.0.1", "localhost", "127.0.0.1:$port", "localhost:$port")
         try {
             if (port == desiredPort) {
@@ -481,6 +489,7 @@ class BossTermMcpManager(
                             ContentType.Application.Json
                         )
                     }
+                    route(STREAMABLE_PATH) { mountStreamableMcp(streamable) }
                     mcp { mcpServer }
                 }
             }
@@ -488,6 +497,31 @@ class BossTermMcpManager(
             runningEngine = engine
             runningPort = port
             runningServer = mcpServerWrapper
+            streamableSessions = streamable
+            // Streamable HTTP clients that vanish without DELETE (crashed or
+            // just exited, as codex does per invocation) leave sessions behind;
+            // sweep them so a long-running app doesn't accrete one per run.
+            streamableSweeperJob = parentScope.launch {
+                while (true) {
+                    delay(STREAMABLE_SWEEP_INTERVAL_MS)
+                    // evictIdle contains its own per-transport failure handling;
+                    // this guard is belt-and-suspenders so no future exception
+                    // can kill the sweeper for the life of the engine and
+                    // silently reintroduce the leak it exists to prevent.
+                    // Cancellation must still propagate or stop() would hang
+                    // the loop forever.
+                    try {
+                        val evicted = streamable.evictIdle(STREAMABLE_IDLE_TTL_MS)
+                        if (evicted > 0) {
+                            log.info("Evicted {} idle streamable MCP session(s)", evicted)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        log.warn("Streamable MCP sweep failed; retrying next interval: {}", e.message)
+                    }
+                }
+            }
             registry.setRunning(port)
             // The marker is gated on the "use run_command as default shell"
             // setting: it exists ONLY while the user has opted in, so the
@@ -497,13 +531,16 @@ class BossTermMcpManager(
                 writePortMarker(port)
             }
             log.info(
-                "BossTerm MCP server ready: http://{}:{}{} (SSE transport, {} state(s) registered)",
-                HOST, port, PATH, registry.stateCount()
+                "BossTerm MCP server ready: http://{}:{}{} (SSE), http://{}:{}{} (streamable HTTP, {} state(s) registered)",
+                HOST, port, PATH, HOST, port, STREAMABLE_PATH, registry.stateCount()
             )
             launchAutoReattach(port)
             return StartOutcome.Started
         } catch (e: Throwable) {
             mcpServerWrapper.detachServer()
+            streamableSweeperJob?.cancel()
+            streamableSweeperJob = null
+            streamableSessions = null
             runningEngine = null
             runningPort = null
             runningServer = null
@@ -666,6 +703,12 @@ class BossTermMcpManager(
         } catch (e: Throwable) {
             log.warn("Error while stopping BossTerm MCP server on port {}: {}", port, e.message)
         } finally {
+            streamableSweeperJob?.cancel()
+            streamableSweeperJob = null
+            // Close streamable transports so their ServerSessions leave the
+            // (about-to-be-detached) Server rather than lingering until GC.
+            streamableSessions?.closeAll()
+            streamableSessions = null
             // Detach the wrapper first so any in-flight manage_tools handler
             // (or a stray applyDisabledSet from the watcher) becomes a no-op
             // instead of mutating a Server that's no longer bound to any
@@ -747,6 +790,16 @@ class BossTermMcpManager(
         private const val HOST = "127.0.0.1"
         /** Path the SSE/POST endpoints are reachable at. SDK 0.8.3 only honors root. */
         private const val PATH = "/"
+        /** Streamable HTTP endpoint for clients such as Codex. */
+        private const val STREAMABLE_PATH = "/mcp"
+
+        /**
+         * Idle TTL for streamable sessions. Generous on purpose: an evicted
+         * client just gets 404 and re-initializes (the spec requires it), so
+         * the only cost of a long TTL is a small lingering session object.
+         */
+        private const val STREAMABLE_IDLE_TTL_MS = 2 * 60 * 60 * 1000L
+        private const val STREAMABLE_SWEEP_INTERVAL_MS = 15 * 60 * 1000L
         private const val STOP_GRACE_MS = 500L
         private const val STOP_TIMEOUT_MS = 1500L
 

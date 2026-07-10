@@ -84,7 +84,7 @@ class McpRegistrationScannerTest {
             model = "gpt-5"
 
             [mcp_servers.boss]
-            url = "http://127.0.0.1:7677"
+            url = "http://127.0.0.1:7677/mcp"
 
             [other_section]
             url = "https://remote.example.com"

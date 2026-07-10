@@ -39,7 +39,7 @@ class StreamableMcpSessionsTest {
     private lateinit var server: Server
     private lateinit var sessions: StreamableMcpSessions
 
-    private fun freshSessions(): StreamableMcpSessions {
+    private fun freshSessions(maxSessions: Int = StreamableMcpSessions.DEFAULT_MAX_SESSIONS): StreamableMcpSessions {
         now = 0L
         server = Server(
             serverInfo = Implementation(name = "test-server", version = "0.0.1"),
@@ -47,7 +47,7 @@ class StreamableMcpSessionsTest {
                 capabilities = ServerCapabilities(tools = ServerCapabilities.Tools(listChanged = true))
             )
         )
-        sessions = StreamableMcpSessions(server) { now }
+        sessions = StreamableMcpSessions(server, maxSessions) { now }
         return sessions
     }
 
@@ -206,6 +206,23 @@ class StreamableMcpSessionsTest {
         assertEquals(1, server.sessions.size)
         assertEquals(HttpStatusCode.NotFound, client.mcpPost(TOOLS_LIST, stale).status)
         assertEquals(HttpStatusCode.OK, client.mcpPost(TOOLS_LIST, fresh).status)
+    }
+
+    @Test
+    fun `session cap evicts the longest-idle session`() = testApplication {
+        freshSessions(maxSessions = 2)
+        mountEndpoint()
+        val oldest = client.initializeSession()
+        now = 1_000L
+        val middle = client.initializeSession()
+        now = 2_000L
+        val newest = client.initializeSession()
+
+        assertEquals(2, sessions.sessionCount)
+        assertEquals(2, server.sessions.size)
+        assertEquals(HttpStatusCode.NotFound, client.mcpPost(TOOLS_LIST, oldest).status)
+        assertEquals(HttpStatusCode.OK, client.mcpPost(TOOLS_LIST, middle).status)
+        assertEquals(HttpStatusCode.OK, client.mcpPost(TOOLS_LIST, newest).status)
     }
 
     @Test

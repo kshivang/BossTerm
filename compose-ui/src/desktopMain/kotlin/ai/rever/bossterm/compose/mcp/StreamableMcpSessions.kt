@@ -44,11 +44,17 @@ import java.util.concurrent.ConcurrentHashMap
  *    client that crashes — or simply exits without DELETE, as each `codex`
  *    invocation does — would park its session here forever. [evictIdle] sweeps
  *    those; an evicted client that returns sees 404 and re-initializes.
+ *  - [maxSessions] bounds accretion between sweeps: steady state is roughly
+ *    one abandoned session per codex invocation inside the idle TTL, so a
+ *    burst of invocations could otherwise pile up unbounded until the next
+ *    sweep. Initializing past the cap evicts the longest-idle session first
+ *    (which, evicted, just re-initializes if it ever comes back).
  *
  * [clock] is injectable for tests; production uses wall time.
  */
 internal class StreamableMcpSessions(
     private val mcpServer: Server,
+    private val maxSessions: Int = DEFAULT_MAX_SESSIONS,
     private val clock: () -> Long = System::currentTimeMillis
 ) {
 
@@ -90,6 +96,11 @@ internal class StreamableMcpSessions(
             sessions[id] = Entry(transport).apply { lastActivityMs = clock() }
         }
         transport.setOnSessionClosed { id -> sessions.remove(id) }
+        // The create-then-maybe-teardown shape (rather than checking the
+        // method first) is forced by the SDK: it owns body parsing inside
+        // handlePostRequest, so peeking at the method up front would need
+        // double-receive plumbing. A stray anonymous POST therefore churns
+        // one ServerSession create+close — loopback-gated, acceptable.
         mcpServer.createSession(transport)
         try {
             transport.handlePostRequest(null, call)
@@ -101,6 +112,27 @@ internal class StreamableMcpSessions(
                 // ServerSession created above leaves the shared server's
                 // registry instead of leaking one entry per stray POST.
                 transport.closeQuietly()
+            }
+        }
+        if (transport.sessionId != null) {
+            enforceSessionCap()
+        }
+    }
+
+    /**
+     * Evict longest-idle sessions until the map is back within [maxSessions].
+     * Runs after each successful initialize, so the map size is bounded even
+     * when a burst of codex invocations lands between two idle sweeps.
+     */
+    private suspend fun enforceSessionCap() {
+        while (sessions.size > maxSessions) {
+            val oldest = sessions.entries.minByOrNull { it.value.lastActivityMs } ?: return
+            if (sessions.remove(oldest.key, oldest.value)) {
+                oldest.value.transport.closeQuietly()
+                log.info(
+                    "Streamable MCP session cap {} reached; evicted longest-idle session {}",
+                    maxSessions, oldest.key
+                )
             }
         }
     }
@@ -191,6 +223,13 @@ internal class StreamableMcpSessions(
     companion object {
         /** Session id header defined by the MCP streamable HTTP transport. */
         const val SESSION_ID_HEADER = "mcp-session-id"
+
+        /**
+         * Generous soft cap: real concurrent clients number in the single
+         * digits; everything past that is abandoned codex sessions awaiting
+         * the idle sweep, and evicting those early is harmless (see kdoc).
+         */
+        const val DEFAULT_MAX_SESSIONS = 256
     }
 }
 

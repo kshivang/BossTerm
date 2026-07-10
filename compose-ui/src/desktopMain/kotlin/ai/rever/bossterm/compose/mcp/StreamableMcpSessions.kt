@@ -124,7 +124,10 @@ internal class StreamableMcpSessions(
      * when a burst of codex invocations lands between two idle sweeps.
      * [protectId] (the session that just initialized) is never a candidate:
      * with millisecond clock granularity a burst can produce timestamp ties,
-     * and the newcomer must not lose its own tie-break.
+     * and the newcomer must not lose its own tie-break. Two initializes
+     * racing AT the cap could still evict each other's newcomer (each call
+     * protects only its own) — accepted: reaching it needs 256 live sessions
+     * plus a same-instant double-initialize, and the loser just re-inits.
      */
     private suspend fun enforceSessionCap(protectId: String) {
         while (sessions.size > maxSessions) {

@@ -135,6 +135,13 @@ internal class StreamableMcpSessions(
     /**
      * Close sessions with no activity for [idleTtlMs], reclaiming their
      * transports and `ServerSession`s. Returns how many were evicted.
+     *
+     * Known benign race: a POST that stamps [Entry.lastActivityMs] while a
+     * sweep is reading the pre-stamp value can have its transport closed
+     * mid-request. Reaching it requires the request to land in the same
+     * instant the session crosses the idle TTL (hours), and the cost is one
+     * failed response on a session the client re-initializes anyway — not
+     * worth a per-entry lock.
      */
     suspend fun evictIdle(idleTtlMs: Long): Int {
         val cutoff = clock() - idleTtlMs
@@ -192,6 +199,11 @@ internal class StreamableMcpSessions(
  * route-scoped and wired to the SDK's own [McpJson]: the SDK's JSON-response
  * mode replies via `call.respond(JSONRPCMessage)`, which needs a server-side
  * converter — and must not leak onto the root SSE/identity routes.
+ *
+ * Precondition: mount only inside an application that already rejects
+ * non-loopback Host headers (BossTermMcpManager's app-level intercept).
+ * The transports are built with `enableDnsRebindingProtection = false` on
+ * that assumption — mounted elsewhere, /mcp would be open to DNS rebinding.
  */
 internal fun Route.mountStreamableMcp(sessions: StreamableMcpSessions) {
     install(ContentNegotiation) { json(McpJson) }

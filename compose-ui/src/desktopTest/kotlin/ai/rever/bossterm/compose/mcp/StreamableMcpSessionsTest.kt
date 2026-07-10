@@ -129,6 +129,21 @@ class StreamableMcpSessionsTest {
     }
 
     @Test
+    fun `established session survives a failed request`() = testApplication {
+        freshSessions()
+        mountEndpoint()
+        val sessionId = client.initializeSession()
+
+        // Deliberate contract: a single bad request must not tear the
+        // session down — only DELETE, idle eviction, or engine stop do.
+        assertEquals(HttpStatusCode.BadRequest, client.mcpPost("""{"jsonrpc": garbage""", sessionId).status)
+
+        assertEquals(1, sessions.sessionCount)
+        assertEquals(1, server.sessions.size)
+        assertEquals(HttpStatusCode.OK, client.mcpPost(TOOLS_LIST, sessionId).status)
+    }
+
+    @Test
     fun `unknown session id gets 404 so the client re-initializes`() = testApplication {
         freshSessions()
         mountEndpoint()

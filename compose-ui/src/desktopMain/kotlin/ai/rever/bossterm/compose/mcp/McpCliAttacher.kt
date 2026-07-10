@@ -267,6 +267,10 @@ object McpCliAttacher {
         // (BOSS plugin hot-swap/update), any lazy class load there dies with
         // NoClassDefFoundError. Touching them at object init pins them for
         // the classloader's lifetime.
+        //
+        // NOT dead code: evaluating each `::class.java` literal is the intended
+        // side effect (it forces the JVM to load the class). Removing this
+        // "unused" list silently reintroduces the hot-swap crash.
         listOf(
             McpAttachResult.Success::class.java,
             McpAttachResult.CopiedToClipboard::class.java,

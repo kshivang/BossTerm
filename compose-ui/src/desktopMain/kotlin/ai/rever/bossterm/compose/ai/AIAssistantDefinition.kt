@@ -183,7 +183,8 @@ object AIAssistants {
             id = AIAssistantIds.CODEX,
             displayName = "Codex (OpenAI)",
             command = "codex",
-            yoloFlag = "--full-auto",
+            // Codex CLI dropped --full-auto (gone as of codex-cli 0.144.0); this is its documented replacement
+            yoloFlag = "--sandbox workspace-write --ask-for-approval never",
             yoloLabel = "Full Auto",
             installCommand = "npm install -g @openai/codex",
             npmInstallCommand = "npm install -g @openai/codex",

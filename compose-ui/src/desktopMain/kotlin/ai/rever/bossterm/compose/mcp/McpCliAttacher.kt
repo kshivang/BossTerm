@@ -128,7 +128,10 @@ enum class McpAttachTarget(
         persistenceKey = "CODEX",
         // codex-cli 0.130 uses `--url <url>` and only supports streamable
         // HTTP (no SSE client), so it gets BossTerm's /mcp endpoint rather
-        // than the SSE root used by Claude/Gemini/OpenCode.
+        // than the SSE root used by Claude/Gemini/OpenCode. An older note
+        // here claimed streamable HTTP "needs an SDK upgrade" — wrong: MCP
+        // SDK 0.8.3 (the pinned version) already ships the server transport,
+        // exercised end-to-end by StreamableMcpSessionsTest. Don't re-add it.
         removeCommand = listOf("codex", "mcp", "remove", "{NAME}"),
         addCommand = listOf("codex", "mcp", "add", "{NAME}", "--url", "{URL}"),
         clipboardFallback = """

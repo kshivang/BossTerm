@@ -4,7 +4,6 @@ import ai.rever.bossterm.compose.settings.SettingsManager
 import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
-import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
 import io.ktor.server.application.install
@@ -15,16 +14,12 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.host
 import io.ktor.server.request.httpMethod
 import io.ktor.server.response.respondText
-import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
-import io.ktor.server.routing.post
+import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import io.ktor.server.sse.SSE
-import io.ktor.server.sse.sse
-import io.modelcontextprotocol.kotlin.sdk.server.Server
-import io.modelcontextprotocol.kotlin.sdk.server.StreamableHttpServerTransport
 import io.modelcontextprotocol.kotlin.sdk.server.mcp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -33,6 +28,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -105,6 +101,11 @@ class BossTermMcpManager(
     private var watcherJob: Job? = null
     private var disabledToolsWatcherJob: Job? = null
     private var preferredShellWatcherJob: Job? = null
+
+    // Streamable HTTP (Codex) session bookkeeping for the running engine.
+    // Guarded by [mutex] like the engine fields; null while stopped.
+    private var streamableSessions: StreamableMcpSessions? = null
+    private var streamableSweeperJob: Job? = null
 
     // Caches caller-tab resolution by the client's ephemeral TCP port. That
     // port is stable for a connection's lifetime and its owning PID can't
@@ -396,7 +397,7 @@ class BossTermMcpManager(
     private fun tryStartOnPort(port: Int, desiredPort: Int): StartOutcome {
         val mcpServerWrapper = BossTermMcpServer(registry, config, settingsManager)
         val mcpServer = mcpServerWrapper.createServer()
-        val streamableTransports = ConcurrentHashMap<String, StreamableHttpServerTransport>()
+        val streamable = StreamableMcpSessions(mcpServer)
         val allowedHosts = setOf("127.0.0.1", "localhost", "127.0.0.1:$port", "localhost:$port")
         try {
             if (port == desiredPort) {
@@ -488,30 +489,7 @@ class BossTermMcpManager(
                             ContentType.Application.Json
                         )
                     }
-                    post(STREAMABLE_PATH) {
-                        val transport = streamableTransportForPost(
-                            call,
-                            streamableTransports,
-                            mcpServer
-                        ) ?: return@post
-                        transport.handlePostRequest(null, call)
-                    }
-                    sse(STREAMABLE_PATH) {
-                        val transport = streamableTransportForSession(
-                            call,
-                            streamableTransports
-                        ) ?: return@sse
-                        transport.handleGetRequest(this, call)
-                    }
-                    delete(STREAMABLE_PATH) {
-                        val sessionId = call.streamableSessionId()
-                        val transport = streamableTransportForSession(
-                            call,
-                            streamableTransports
-                        ) ?: return@delete
-                        transport.handleDeleteRequest(call)
-                        sessionId?.let(streamableTransports::remove)
-                    }
+                    route(STREAMABLE_PATH) { mountStreamableMcp(streamable) }
                     mcp { mcpServer }
                 }
             }
@@ -519,6 +497,19 @@ class BossTermMcpManager(
             runningEngine = engine
             runningPort = port
             runningServer = mcpServerWrapper
+            streamableSessions = streamable
+            // Streamable HTTP clients that vanish without DELETE (crashed or
+            // just exited, as codex does per invocation) leave sessions behind;
+            // sweep them so a long-running app doesn't accrete one per run.
+            streamableSweeperJob = parentScope.launch {
+                while (true) {
+                    delay(STREAMABLE_SWEEP_INTERVAL_MS)
+                    val evicted = streamable.evictIdle(STREAMABLE_IDLE_TTL_MS)
+                    if (evicted > 0) {
+                        log.info("Evicted {} idle streamable MCP session(s)", evicted)
+                    }
+                }
+            }
             registry.setRunning(port)
             // The marker is gated on the "use run_command as default shell"
             // setting: it exists ONLY while the user has opted in, so the
@@ -535,6 +526,9 @@ class BossTermMcpManager(
             return StartOutcome.Started
         } catch (e: Throwable) {
             mcpServerWrapper.detachServer()
+            streamableSweeperJob?.cancel()
+            streamableSweeperJob = null
+            streamableSessions = null
             runningEngine = null
             runningPort = null
             runningServer = null
@@ -569,50 +563,6 @@ class BossTermMcpManager(
             log.error("BossTerm MCP server failed to start on {}:{}", HOST, port, e)
             return StartOutcome.HardFailed
         }
-    }
-
-    private suspend fun streamableTransportForPost(
-        call: ApplicationCall,
-        streamableTransports: ConcurrentHashMap<String, StreamableHttpServerTransport>,
-        mcpServer: Server
-    ): StreamableHttpServerTransport? {
-        val sessionId = call.streamableSessionId()
-        if (sessionId != null) {
-            return streamableTransports[sessionId] ?: rejectStreamableSession(call, "Session not found.")
-        }
-
-        val transport = StreamableHttpServerTransport(
-            enableJsonResponse = true,
-            enableDnsRebindingProtection = false
-        )
-        transport.setOnSessionInitialized { initializedSessionId ->
-            streamableTransports[initializedSessionId] = transport
-        }
-        transport.setOnSessionClosed { closedSessionId ->
-            streamableTransports.remove(closedSessionId)
-        }
-        mcpServer.createSession(transport)
-        return transport
-    }
-
-    private suspend fun streamableTransportForSession(
-        call: ApplicationCall,
-        streamableTransports: ConcurrentHashMap<String, StreamableHttpServerTransport>
-    ): StreamableHttpServerTransport? {
-        val sessionId = call.streamableSessionId()
-            ?: return rejectStreamableSession(call, "Missing mcp-session-id header.")
-        return streamableTransports[sessionId] ?: rejectStreamableSession(call, "Session not found.")
-    }
-
-    private fun ApplicationCall.streamableSessionId(): String? =
-        request.headers[STREAMABLE_SESSION_ID_HEADER]?.takeIf { it.isNotBlank() }
-
-    private suspend fun rejectStreamableSession(
-        call: ApplicationCall,
-        message: String
-    ): StreamableHttpServerTransport? {
-        call.respondText(message, status = HttpStatusCode.BadRequest)
-        return null
     }
 
     /**
@@ -741,6 +691,12 @@ class BossTermMcpManager(
         } catch (e: Throwable) {
             log.warn("Error while stopping BossTerm MCP server on port {}: {}", port, e.message)
         } finally {
+            streamableSweeperJob?.cancel()
+            streamableSweeperJob = null
+            // Close streamable transports so their ServerSessions leave the
+            // (about-to-be-detached) Server rather than lingering until GC.
+            streamableSessions?.closeAll()
+            streamableSessions = null
             // Detach the wrapper first so any in-flight manage_tools handler
             // (or a stray applyDisabledSet from the watcher) becomes a no-op
             // instead of mutating a Server that's no longer bound to any
@@ -824,7 +780,14 @@ class BossTermMcpManager(
         private const val PATH = "/"
         /** Streamable HTTP endpoint for clients such as Codex. */
         private const val STREAMABLE_PATH = "/mcp"
-        private const val STREAMABLE_SESSION_ID_HEADER = "mcp-session-id"
+
+        /**
+         * Idle TTL for streamable sessions. Generous on purpose: an evicted
+         * client just gets 404 and re-initializes (the spec requires it), so
+         * the only cost of a long TTL is a small lingering session object.
+         */
+        private const val STREAMABLE_IDLE_TTL_MS = 2 * 60 * 60 * 1000L
+        private const val STREAMABLE_SWEEP_INTERVAL_MS = 15 * 60 * 1000L
         private const val STOP_GRACE_MS = 500L
         private const val STOP_TIMEOUT_MS = 1500L
 

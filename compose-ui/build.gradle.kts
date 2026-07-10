@@ -130,6 +130,11 @@ kotlin {
                 // otherwise be inaccessible from a downstream module.
                 api("io.modelcontextprotocol:kotlin-sdk-server:0.8.3")
                 implementation("io.ktor:ktor-server-cio:3.2.3")
+                // Streamable HTTP MCP endpoint (/mcp, for Codex): the SDK's
+                // JSON-response mode replies via call.respond(JSONRPCMessage),
+                // which needs server-side content negotiation (route-scoped to
+                // /mcp, wired to the SDK's McpJson).
+                implementation("io.ktor:ktor-server-content-negotiation:3.2.3")
                 // Session sharing (issue #276): WebSocket endpoint for the web viewer.
                 implementation("io.ktor:ktor-server-websockets:3.2.3")
                 // QR code for the share dialog (pure-Java, no Android deps).
@@ -137,7 +142,13 @@ kotlin {
             }
         }
 
-        val desktopTest by getting
+        val desktopTest by getting {
+            dependencies {
+                // In-process ktor app for the streamable HTTP MCP endpoint
+                // contract test (StreamableMcpSessionsTest).
+                implementation("io.ktor:ktor-server-test-host:3.2.3")
+            }
+        }
     }
 }
 

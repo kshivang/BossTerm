@@ -15,6 +15,8 @@ import io.ktor.server.routing.post
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.StreamableHttpServerTransport
 import io.modelcontextprotocol.kotlin.sdk.types.McpJson
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -73,6 +75,9 @@ internal class StreamableMcpSessions(
     private suspend fun initializeSession(call: ApplicationCall) {
         val transport = StreamableHttpServerTransport(
             enableJsonResponse = true,
+            // Not dropped, just not duplicated: the manager's app-level
+            // intercept already 403s any non-loopback Host header before
+            // routing, so it covers /mcp along with every other route.
             enableDnsRebindingProtection = false
         )
         transport.setOnSessionInitialized { id ->
@@ -80,13 +85,19 @@ internal class StreamableMcpSessions(
         }
         transport.setOnSessionClosed { id -> sessions.remove(id) }
         mcpServer.createSession(transport)
-        transport.handlePostRequest(null, call)
-        if (transport.sessionId == null) {
-            // The SDK rejected the request (not an initialize, or malformed)
-            // without minting a session id. Close the transport so the
-            // ServerSession created above leaves the shared server's registry
-            // instead of leaking one entry per stray POST.
-            transport.close()
+        try {
+            transport.handlePostRequest(null, call)
+        } finally {
+            if (transport.sessionId == null) {
+                // No session id was minted: the SDK rejected the request (not
+                // an initialize, or malformed), or the handler threw / the
+                // call was cancelled mid-flight. Close the transport so the
+                // ServerSession created above leaves the shared server's
+                // registry instead of leaking one entry per stray POST.
+                // NonCancellable because close() suspends and this finally
+                // may already be running on a cancelled call.
+                withContext(NonCancellable) { transport.close() }
+            }
         }
     }
 

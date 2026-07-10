@@ -117,6 +117,18 @@ class StreamableMcpSessionsTest {
     }
 
     @Test
+    fun `malformed body without session id is rejected and leaks no session`() = testApplication {
+        freshSessions()
+        mountEndpoint()
+
+        val response = client.mcpPost("""{"jsonrpc": garbage""")
+
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        assertEquals(0, sessions.sessionCount)
+        assertEquals(0, server.sessions.size)
+    }
+
+    @Test
     fun `unknown session id gets 404 so the client re-initializes`() = testApplication {
         freshSessions()
         mountEndpoint()

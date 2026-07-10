@@ -67,6 +67,7 @@ internal class StreamableMcpSessions(
 
     private val sessions = ConcurrentHashMap<String, Entry>()
 
+    /** Observability for tests (and future diagnostics); unused in prod paths. */
     val sessionCount: Int
         get() = sessions.size
 
@@ -114,19 +115,22 @@ internal class StreamableMcpSessions(
                 transport.closeQuietly()
             }
         }
-        if (transport.sessionId != null) {
-            enforceSessionCap()
-        }
+        transport.sessionId?.let { enforceSessionCap(protectId = it) }
     }
 
     /**
      * Evict longest-idle sessions until the map is back within [maxSessions].
      * Runs after each successful initialize, so the map size is bounded even
      * when a burst of codex invocations lands between two idle sweeps.
+     * [protectId] (the session that just initialized) is never a candidate:
+     * with millisecond clock granularity a burst can produce timestamp ties,
+     * and the newcomer must not lose its own tie-break.
      */
-    private suspend fun enforceSessionCap() {
+    private suspend fun enforceSessionCap(protectId: String) {
         while (sessions.size > maxSessions) {
-            val oldest = sessions.entries.minByOrNull { it.value.lastActivityMs } ?: return
+            val oldest = sessions.entries
+                .filter { it.key != protectId }
+                .minByOrNull { it.value.lastActivityMs } ?: return
             if (sessions.remove(oldest.key, oldest.value)) {
                 oldest.value.transport.closeQuietly()
                 log.info(

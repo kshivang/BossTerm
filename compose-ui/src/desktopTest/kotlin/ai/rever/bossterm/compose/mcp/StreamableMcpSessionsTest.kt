@@ -226,6 +226,20 @@ class StreamableMcpSessionsTest {
     }
 
     @Test
+    fun `session cap never evicts the just-initialized session on a timestamp tie`() = testApplication {
+        freshSessions(maxSessions = 1)
+        mountEndpoint()
+        // Both sessions initialize at now = 0: with millisecond granularity a
+        // burst produces ties, and the newcomer must win its own tie-break.
+        val first = client.initializeSession()
+        val second = client.initializeSession()
+
+        assertEquals(1, sessions.sessionCount)
+        assertEquals(HttpStatusCode.NotFound, client.mcpPost(TOOLS_LIST, first).status)
+        assertEquals(HttpStatusCode.OK, client.mcpPost(TOOLS_LIST, second).status)
+    }
+
+    @Test
     fun `closeAll empties both registries`() = testApplication {
         freshSessions()
         mountEndpoint()

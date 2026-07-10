@@ -34,7 +34,7 @@ class McpRegistrationUrlTest {
             // Plain-URL CLIs have no env expansion: only the live bound port
             // works for them, so they keep registering it.
             assertEquals(
-                "http://127.0.0.1:7677",
+                "http://127.0.0.1:7677/mcp",
                 McpAttachTarget.CODEX.registrationUrl("bossterm", 7677)
             )
         } finally {
@@ -43,8 +43,16 @@ class McpRegistrationUrlTest {
     }
 
     @Test
+    fun `codex registers the streamable http path`() {
+        assertEquals(
+            "http://127.0.0.1:7677/mcp",
+            McpAttachTarget.CODEX.registrationUrl("boss", 7677)
+        )
+    }
+
+    @Test
     fun `other clis keep the plain url`() {
-        for (target in McpAttachTarget.entries - McpAttachTarget.CLAUDE_CODE) {
+        for (target in McpAttachTarget.entries - McpAttachTarget.CLAUDE_CODE - McpAttachTarget.CODEX) {
             assertEquals("http://127.0.0.1:7677", target.registrationUrl("boss", 7677))
         }
     }

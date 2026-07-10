@@ -4,6 +4,7 @@ import ai.rever.bossterm.compose.settings.SettingsManager
 import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
 import io.ktor.server.application.install
@@ -14,11 +15,16 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.host
 import io.ktor.server.request.httpMethod
 import io.ktor.server.response.respondText
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
+import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import io.ktor.server.sse.SSE
+import io.ktor.server.sse.sse
+import io.modelcontextprotocol.kotlin.sdk.server.Server
+import io.modelcontextprotocol.kotlin.sdk.server.StreamableHttpServerTransport
 import io.modelcontextprotocol.kotlin.sdk.server.mcp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -390,6 +396,7 @@ class BossTermMcpManager(
     private fun tryStartOnPort(port: Int, desiredPort: Int): StartOutcome {
         val mcpServerWrapper = BossTermMcpServer(registry, config, settingsManager)
         val mcpServer = mcpServerWrapper.createServer()
+        val streamableTransports = ConcurrentHashMap<String, StreamableHttpServerTransport>()
         val allowedHosts = setOf("127.0.0.1", "localhost", "127.0.0.1:$port", "localhost:$port")
         try {
             if (port == desiredPort) {
@@ -481,6 +488,30 @@ class BossTermMcpManager(
                             ContentType.Application.Json
                         )
                     }
+                    post(STREAMABLE_PATH) {
+                        val transport = streamableTransportForPost(
+                            call,
+                            streamableTransports,
+                            mcpServer
+                        ) ?: return@post
+                        transport.handlePostRequest(null, call)
+                    }
+                    sse(STREAMABLE_PATH) {
+                        val transport = streamableTransportForSession(
+                            call,
+                            streamableTransports
+                        ) ?: return@sse
+                        transport.handleGetRequest(this, call)
+                    }
+                    delete(STREAMABLE_PATH) {
+                        val sessionId = call.streamableSessionId()
+                        val transport = streamableTransportForSession(
+                            call,
+                            streamableTransports
+                        ) ?: return@delete
+                        transport.handleDeleteRequest(call)
+                        sessionId?.let(streamableTransports::remove)
+                    }
                     mcp { mcpServer }
                 }
             }
@@ -497,8 +528,8 @@ class BossTermMcpManager(
                 writePortMarker(port)
             }
             log.info(
-                "BossTerm MCP server ready: http://{}:{}{} (SSE transport, {} state(s) registered)",
-                HOST, port, PATH, registry.stateCount()
+                "BossTerm MCP server ready: http://{}:{}{} (SSE), http://{}:{}{} (streamable HTTP, {} state(s) registered)",
+                HOST, port, PATH, HOST, port, STREAMABLE_PATH, registry.stateCount()
             )
             launchAutoReattach(port)
             return StartOutcome.Started
@@ -538,6 +569,50 @@ class BossTermMcpManager(
             log.error("BossTerm MCP server failed to start on {}:{}", HOST, port, e)
             return StartOutcome.HardFailed
         }
+    }
+
+    private suspend fun streamableTransportForPost(
+        call: ApplicationCall,
+        streamableTransports: ConcurrentHashMap<String, StreamableHttpServerTransport>,
+        mcpServer: Server
+    ): StreamableHttpServerTransport? {
+        val sessionId = call.streamableSessionId()
+        if (sessionId != null) {
+            return streamableTransports[sessionId] ?: rejectStreamableSession(call, "Session not found.")
+        }
+
+        val transport = StreamableHttpServerTransport(
+            enableJsonResponse = true,
+            enableDnsRebindingProtection = false
+        )
+        transport.setOnSessionInitialized { initializedSessionId ->
+            streamableTransports[initializedSessionId] = transport
+        }
+        transport.setOnSessionClosed { closedSessionId ->
+            streamableTransports.remove(closedSessionId)
+        }
+        mcpServer.createSession(transport)
+        return transport
+    }
+
+    private suspend fun streamableTransportForSession(
+        call: ApplicationCall,
+        streamableTransports: ConcurrentHashMap<String, StreamableHttpServerTransport>
+    ): StreamableHttpServerTransport? {
+        val sessionId = call.streamableSessionId()
+            ?: return rejectStreamableSession(call, "Missing mcp-session-id header.")
+        return streamableTransports[sessionId] ?: rejectStreamableSession(call, "Session not found.")
+    }
+
+    private fun ApplicationCall.streamableSessionId(): String? =
+        request.headers[STREAMABLE_SESSION_ID_HEADER]?.takeIf { it.isNotBlank() }
+
+    private suspend fun rejectStreamableSession(
+        call: ApplicationCall,
+        message: String
+    ): StreamableHttpServerTransport? {
+        call.respondText(message, status = HttpStatusCode.BadRequest)
+        return null
     }
 
     /**
@@ -747,6 +822,9 @@ class BossTermMcpManager(
         private const val HOST = "127.0.0.1"
         /** Path the SSE/POST endpoints are reachable at. SDK 0.8.3 only honors root. */
         private const val PATH = "/"
+        /** Streamable HTTP endpoint for clients such as Codex. */
+        private const val STREAMABLE_PATH = "/mcp"
+        private const val STREAMABLE_SESSION_ID_HEADER = "mcp-session-id"
         private const val STOP_GRACE_MS = 500L
         private const val STOP_TIMEOUT_MS = 1500L
 

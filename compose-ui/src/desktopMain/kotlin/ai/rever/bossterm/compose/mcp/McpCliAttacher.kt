@@ -48,13 +48,11 @@ private const val OPENCODE_REMOVE_SCRIPT = "" +
  * the embedder's `BossTermMcpConfig.serverName` (or `"bossterm"` for the
  * default app), and `{URL}` with the target's [McpAttachTarget.registrationUrl]
  * — plain `http://127.0.0.1:<port>` for most CLIs, the `${VAR:-port}`
- * env-expanded form for Claude Code.
+ * env-expanded form for Claude Code, and the streamable HTTP `/mcp` URL for Codex.
  *
  * Tested CLI shapes (last verified May 2026):
  *  - Claude Code: `claude mcp add --transport sse <name> <url>` (verified)
- *  - Codex 0.130: `codex mcp add <name> --url <url>` (registers OK, but
- *      Codex only speaks streamable HTTP — runtime connection to BossTerm's
- *      current SSE-only SDK will fail until the SDK is upgraded)
+ *  - Codex 0.130: `codex mcp add <name> --url <url>/mcp` (streamable HTTP)
  *  - Gemini 0.28: `gemini mcp add <name> --transport sse <url>` (verified)
  *  - OpenCode 1.1: `opencode mcp add` is interactive in this version, no
  *      flags accepted — will exit non-zero, clipboard fallback fires.
@@ -129,21 +127,19 @@ enum class McpAttachTarget(
         displayName = "Codex",
         persistenceKey = "CODEX",
         // codex-cli 0.130 uses `--url <url>` and only supports streamable
-        // HTTP (no SSE client). The registration will succeed but at
-        // runtime Codex won't actually connect to BossTerm's SDK-0.8.3
-        // SSE endpoint — that needs an SDK upgrade to expose streamable
-        // HTTP transport. Tracked as a follow-up.
+        // HTTP (no SSE client), so it gets BossTerm's /mcp endpoint rather
+        // than the SSE root used by Claude/Gemini/OpenCode.
         removeCommand = listOf("codex", "mcp", "remove", "{NAME}"),
         addCommand = listOf("codex", "mcp", "add", "{NAME}", "--url", "{URL}"),
         clipboardFallback = """
             # Append to ~/.codex/config.toml
-            # Note: codex only speaks streamable HTTP; BossTerm currently
-            # serves SSE so the runtime connection will fail until the SDK
-            # is upgraded.
             [mcp_servers.{NAME}]
             url = "{URL}"
         """.trimIndent()
-    ),
+    ) {
+        override fun registrationUrl(serverName: String, port: Int): String =
+            "http://127.0.0.1:$port/mcp"
+    },
     GEMINI(
         displayName = "Gemini CLI",
         persistenceKey = "GEMINI",
@@ -205,7 +201,8 @@ enum class McpAttachTarget(
     /**
      * The URL string registered with this CLI for a server named [serverName]
      * bound to [port]. Plain `http://127.0.0.1:<port>` by default; CLAUDE_CODE
-     * overrides with the `${VAR:-port}` env-expanded form (see its entry).
+     * overrides with the `${VAR:-port}` env-expanded form and CODEX appends
+     * the streamable HTTP path.
      */
     open fun registrationUrl(serverName: String, port: Int): String =
         "http://127.0.0.1:$port"
@@ -275,11 +272,8 @@ object McpCliAttacher {
         quiet: Boolean = false
     ): McpAttachResult =
         withContext(Dispatchers.IO) {
-            // SDK 0.8.3 mounts SSE+POST at the application root; the path
-            // overload is broken (see BossTermMcpManager kdoc). So the URL
-            // we register with each CLI is loopback + port, no path suffix.
             // Per-target form: Claude Code gets the ${VAR:-port} env-expanded
-            // variant so in-terminal sessions track this instance's live port.
+            // variant, Codex gets /mcp, and SSE clients keep the root URL.
             val url = target.registrationUrl(serverName, port)
             try {
                 // First, best-effort remove. Many CLIs' `mcp add` is not

@@ -102,6 +102,14 @@ class BossTermMcpManager(
     private var disabledToolsWatcherJob: Job? = null
     private var preferredShellWatcherJob: Job? = null
 
+    // In-flight auto-reattach fan-out (see launchAutoReattach). Tracked so stop()
+    // can cancel it: when an embedding host unloads this instance's classloader
+    // (BOSS plugin hot-swap/update), an orphaned reattach coroutine that keeps
+    // running past dispose crashes with NoClassDefFoundError on its next lazy
+    // class load. Also cancelled by the next launchAutoReattach so two fan-outs
+    // never race each other's CLI-config rewrites.
+    private var reattachJob: Job? = null
+
     // Streamable HTTP (Codex) session bookkeeping for the running engine.
     // Guarded by [mutex] like the engine fields; null while stopped.
     private var streamableSessions: StreamableMcpSessions? = null
@@ -233,6 +241,8 @@ class BossTermMcpManager(
         disabledToolsWatcherJob = null
         preferredShellWatcherJob?.cancel()
         preferredShellWatcherJob = null
+        reattachJob?.cancel()
+        reattachJob = null
         // Async shutdown so callers (including Compose onDispose on the UI
         // thread) don't block waiting for Ktor's grace period.
         parentScope.launch(Dispatchers.IO) {
@@ -642,7 +652,10 @@ class BossTermMcpManager(
         val targets = registry.attachedTargets.value
         if (targets.isEmpty()) return
         log.info("Auto-reattaching {} CLI(s) to new endpoint…", targets.size)
-        parentScope.launch(Dispatchers.IO) {
+        // A rebind supersedes any still-running fan-out from the previous bind —
+        // let the newer port win instead of racing two writers over CLI configs.
+        reattachJob?.cancel()
+        reattachJob = parentScope.launch(Dispatchers.IO) {
             // One identity probe per distinct registered port (several CLIs
             // usually point at the same default), before the fan-out.
             val registeredPorts = targets.associateWith { target ->

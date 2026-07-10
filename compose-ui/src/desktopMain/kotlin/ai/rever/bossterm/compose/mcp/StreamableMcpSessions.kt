@@ -17,6 +17,7 @@ import io.modelcontextprotocol.kotlin.sdk.server.StreamableHttpServerTransport
 import io.modelcontextprotocol.kotlin.sdk.types.McpJson
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -51,6 +52,8 @@ internal class StreamableMcpSessions(
     private val clock: () -> Long = System::currentTimeMillis
 ) {
 
+    private val log = LoggerFactory.getLogger(StreamableMcpSessions::class.java)
+
     private class Entry(val transport: StreamableHttpServerTransport) {
         @Volatile
         var lastActivityMs: Long = 0L
@@ -69,6 +72,9 @@ internal class StreamableMcpSessions(
         }
         val entry = sessions[sessionId] ?: return call.rejectUnknownSession()
         entry.lastActivityMs = clock()
+        // Unlike initializeSession there is deliberately no teardown guard:
+        // an established session must survive a single failed request; only
+        // DELETE, idle eviction, or engine stop end it.
         entry.transport.handlePostRequest(null, call)
     }
 
@@ -94,9 +100,7 @@ internal class StreamableMcpSessions(
                 // call was cancelled mid-flight. Close the transport so the
                 // ServerSession created above leaves the shared server's
                 // registry instead of leaking one entry per stray POST.
-                // NonCancellable because close() suspends and this finally
-                // may already be running on a cancelled call.
-                withContext(NonCancellable) { transport.close() }
+                transport.closeQuietly()
             }
         }
     }
@@ -137,7 +141,7 @@ internal class StreamableMcpSessions(
         var evicted = 0
         for ((id, entry) in sessions) {
             if (entry.lastActivityMs <= cutoff && sessions.remove(id, entry)) {
-                entry.transport.close()
+                entry.transport.closeQuietly()
                 evicted++
             }
         }
@@ -148,8 +152,25 @@ internal class StreamableMcpSessions(
     suspend fun closeAll() {
         for ((id, entry) in sessions) {
             if (sessions.remove(id, entry)) {
-                entry.transport.close()
+                entry.transport.closeQuietly()
             }
+        }
+    }
+
+    /**
+     * Close without letting the caller's context interfere: NonCancellable
+     * because every call site can run on an already-cancelled job (request
+     * finally, sweeper cancel, engine stop) and close() suspends on a mutex —
+     * a cancelled caller would abort at that suspension point and skip the
+     * cleanup. Failures are logged, not thrown: by the time this runs the map
+     * entry is already gone, so one bad transport must not abort the rest of
+     * a sweep/closeAll or mask a request's original exception.
+     */
+    private suspend fun StreamableHttpServerTransport.closeQuietly() {
+        try {
+            withContext(NonCancellable) { close() }
+        } catch (e: Throwable) {
+            log.warn("Failed to close streamable MCP transport (session {}): {}", sessionId, e.message)
         }
     }
 

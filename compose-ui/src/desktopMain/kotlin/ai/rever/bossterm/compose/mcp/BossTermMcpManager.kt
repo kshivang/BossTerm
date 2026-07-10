@@ -504,9 +504,21 @@ class BossTermMcpManager(
             streamableSweeperJob = parentScope.launch {
                 while (true) {
                     delay(STREAMABLE_SWEEP_INTERVAL_MS)
-                    val evicted = streamable.evictIdle(STREAMABLE_IDLE_TTL_MS)
-                    if (evicted > 0) {
-                        log.info("Evicted {} idle streamable MCP session(s)", evicted)
+                    // evictIdle contains its own per-transport failure handling;
+                    // this guard is belt-and-suspenders so no future exception
+                    // can kill the sweeper for the life of the engine and
+                    // silently reintroduce the leak it exists to prevent.
+                    // Cancellation must still propagate or stop() would hang
+                    // the loop forever.
+                    try {
+                        val evicted = streamable.evictIdle(STREAMABLE_IDLE_TTL_MS)
+                        if (evicted > 0) {
+                            log.info("Evicted {} idle streamable MCP session(s)", evicted)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        log.warn("Streamable MCP sweep failed; retrying next interval: {}", e.message)
                     }
                 }
             }

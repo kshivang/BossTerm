@@ -258,6 +258,26 @@ object McpCliAttacher {
     /** Per-process timeout for any single shell-out. */
     private const val PROCESS_TIMEOUT_SECONDS = 15L
 
+    init {
+        // Force-load the classes attach() needs on the stretch between
+        // runProcess() returning and the next suspension point. runProcess
+        // blocks uninterruptibly in waitFor(), so even a cancelled coroutine
+        // executes that stretch before it can observe cancellation — and when
+        // an embedding host has unloaded this classloader in the meantime
+        // (BOSS plugin hot-swap/update), any lazy class load there dies with
+        // NoClassDefFoundError. Touching them at object init pins them for
+        // the classloader's lifetime.
+        //
+        // NOT dead code: evaluating each `::class.java` literal is the intended
+        // side effect (it forces the JVM to load the class). Removing this
+        // "unused" list silently reintroduces the hot-swap crash.
+        listOf(
+            McpAttachResult.Success::class.java,
+            McpAttachResult.CopiedToClipboard::class.java,
+            ProcessOutcome::class.java,
+        )
+    }
+
     /**
      * Attempt to register the BossTerm MCP server with [target].
      *

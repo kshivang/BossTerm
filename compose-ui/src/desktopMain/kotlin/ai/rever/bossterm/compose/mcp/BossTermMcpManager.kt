@@ -102,6 +102,24 @@ class BossTermMcpManager(
     private var disabledToolsWatcherJob: Job? = null
     private var preferredShellWatcherJob: Job? = null
 
+    // In-flight auto-reattach fan-out (see launchAutoReattach). Tracked so stop()
+    // can cancel it: when an embedding host unloads this instance's classloader
+    // (BOSS plugin hot-swap/update), an orphaned reattach coroutine that keeps
+    // running past dispose crashes with NoClassDefFoundError on its next lazy
+    // class load. Also cancelled by the next launchAutoReattach so two fan-outs
+    // never race each other's CLI-config rewrites. Unlike the watcher jobs above
+    // (written only from single-threaded start()), this is written under [mutex]
+    // from reconcile — so stop() cancels it inside the same lock, giving the
+    // read a happens-before edge and closing the assign-vs-cancel race.
+    // Internal (not private) for the lifecycle tests.
+    internal var reattachJob: Job? = null
+
+    // Test seam: replaces the reattach fan-out body so lifecycle tests can hold
+    // the job open without shelling out to real CLIs (which would rewrite the
+    // developer's actual CLI configs) or probing real registration files.
+    // Null in production.
+    internal var reattachBodyOverrideForTest: (suspend (Int) -> Unit)? = null
+
     // Streamable HTTP (Codex) session bookkeeping for the running engine.
     // Guarded by [mutex] like the engine fields; null while stopped.
     private var streamableSessions: StreamableMcpSessions? = null
@@ -234,9 +252,18 @@ class BossTermMcpManager(
         preferredShellWatcherJob?.cancel()
         preferredShellWatcherJob = null
         // Async shutdown so callers (including Compose onDispose on the UI
-        // thread) don't block waiting for Ktor's grace period.
+        // thread) don't block waiting for Ktor's grace period. The reattach
+        // fan-out is cancelled inside the lock — its writer (launchAutoReattach,
+        // reached from reconcile) assigns under the same mutex, so cancelling
+        // here can't race a concurrent assignment or read a stale reference.
+        // No new fan-out can start after this block: watcherJob (the only
+        // reconcile trigger) was cancelled synchronously above.
         parentScope.launch(Dispatchers.IO) {
-            mutex.withLock { stopRunningEngineLocked() }
+            mutex.withLock {
+                reattachJob?.cancel()
+                reattachJob = null
+                stopRunningEngineLocked()
+            }
         }
     }
 
@@ -638,11 +665,15 @@ class BossTermMcpManager(
      * (the Settings/Toolbox button) stays impolite on purpose: the user
      * asked THIS instance to own the registration.
      */
-    private fun launchAutoReattach(port: Int) {
+    internal fun launchAutoReattach(port: Int) {
         val targets = registry.attachedTargets.value
         if (targets.isEmpty()) return
         log.info("Auto-reattaching {} CLI(s) to new endpoint…", targets.size)
-        parentScope.launch(Dispatchers.IO) {
+        // A rebind supersedes any still-running fan-out from the previous bind —
+        // let the newer port win instead of racing two writers over CLI configs.
+        reattachJob?.cancel()
+        reattachJob = parentScope.launch(Dispatchers.IO) {
+            reattachBodyOverrideForTest?.let { it(port); return@launch }
             // One identity probe per distinct registered port (several CLIs
             // usually point at the same default), before the fan-out.
             val registeredPorts = targets.associateWith { target ->

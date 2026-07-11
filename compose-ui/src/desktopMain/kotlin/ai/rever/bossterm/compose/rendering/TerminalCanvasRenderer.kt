@@ -386,6 +386,42 @@ object TerminalCanvasRenderer {
     }
 
     /**
+     * [drawText] that skips glyphs whose [topLeft] falls outside the canvas.
+     *
+     * Compose's `drawText(textMeasurer, …)` lays the text out with
+     * `maxWidth = canvasWidth - topLeft.x` / `maxHeight = canvasHeight - topLeft.y`
+     * (unclamped), so a topLeft past the right/bottom edge produces negative
+     * constraints and `Constraints()` throws IllegalArgumentException
+     * ("maxWidth must be >= than minWidth…"), killing the whole window.
+     *
+     * That happens whenever visual columns outrun the canvas: glyphs the buffer
+     * stores in one cell but the renderer draws two cells wide (emoji, ambiguous-
+     * width symbols) push `visualCol` past `visibleCols`, which is clamped in
+     * BUFFER columns. At full window width the overshoot stays inside the canvas;
+     * shrink the window (live resize, the update banner squeezing the terminal)
+     * and the drawn x crosses the edge → crash. Such glyphs are clipped by the
+     * canvas anyway, so skipping them is visually identical.
+     *
+     * The `>=` check is slightly stricter than the throw condition: a glyph
+     * exactly on the edge would measure at zero-width constraints without
+     * throwing, but it renders nothing, so it is skipped too.
+     */
+    internal fun DrawScope.drawTextClipped(
+        textMeasurer: TextMeasurer,
+        text: String,
+        topLeft: Offset,
+        style: TextStyle
+    ) {
+        if (topLeft.x >= size.width || topLeft.y >= size.height) return
+        drawText(
+            textMeasurer = textMeasurer,
+            text = text,
+            topLeft = topLeft,
+            style = style
+        )
+    }
+
+    /**
      * Main rendering entry point. Renders the entire terminal buffer.
      * Uses a 3-pass system:
      * - Pass 1: Draw all backgrounds (and cache character analysis)
@@ -734,7 +770,7 @@ object TerminalCanvasRenderer {
                             else androidx.compose.ui.text.font.FontStyle.Normal
                     ).also { variants[variantIndex] = it }
 
-                    drawText(
+                    drawTextClipped(
                         textMeasurer = ctx.textMeasurer,
                         text = batchText.toString(),
                         topLeft = Offset(x, y),
@@ -1401,7 +1437,12 @@ object TerminalCanvasRenderer {
         val centerX = x + (allocatedWidth - scaledWidth) / 2f
 
         scale(scaleX = scaleValue, scaleY = scaleValue, pivot = Offset(x, y + ctx.cellHeight / 2f)) {
-            drawText(
+            // topLeft is a pre-scale coordinate but the clip guard (like Compose's own
+            // constraint math) compares it against the unscaled canvas size, so for
+            // scaleValue < 1 an edge glyph whose rendered position is in-bounds may be
+            // skipped rather than clip-drawn. Intentionally conservative: that exact
+            // case is the one that used to throw.
+            drawTextClipped(
                 textMeasurer = ctx.textMeasurer,
                 text = grapheme.text,
                 topLeft = Offset(x + (centerX - x) / scaleValue, y),
@@ -1540,7 +1581,7 @@ object TerminalCanvasRenderer {
             if (glyphWidth < ctx.cellWidth * 1.5f) {
                 val scaleX = allocatedWidth / glyphWidth.coerceAtLeast(1f)
                 scale(scaleX = scaleX, scaleY = 1f, pivot = Offset(x, y + ctx.cellWidth)) {
-                    drawText(
+                    drawTextClipped(
                         textMeasurer = ctx.textMeasurer,
                         text = textToRender,
                         topLeft = Offset(x, y),
@@ -1550,7 +1591,7 @@ object TerminalCanvasRenderer {
             } else {
                 val emptySpace = (allocatedWidth - glyphWidth).coerceAtLeast(0f)
                 val centeringOffset = emptySpace / 2f
-                drawText(
+                drawTextClipped(
                     textMeasurer = ctx.textMeasurer,
                     text = textToRender,
                     topLeft = Offset(x + centeringOffset, y),
@@ -1582,7 +1623,10 @@ object TerminalCanvasRenderer {
             val centerX = x + (allocatedWidth - scaledWidth) / 2f
 
             scale(scaleX = scaleValue, scaleY = scaleValue, pivot = Offset(x, y + ctx.cellHeight / 2f)) {
-                drawText(
+                // Pre-scale topLeft vs unscaled canvas size: intentionally conservative
+                // for scaleValue < 1 — an edge glyph may be skipped rather than
+                // clip-drawn (see the same note in renderZWJSequence).
+                drawTextClipped(
                     textMeasurer = ctx.textMeasurer,
                     text = textToRender,
                     topLeft = Offset(x + (centerX - x) / scaleValue, y),
@@ -1594,7 +1638,7 @@ object TerminalCanvasRenderer {
             val cached = getCachedMeasurement(ctx, charTextToRender, fontForChar, textStyle)
             val glyphWidth = cached.width
             val centeringOffset = ((ctx.cellWidth - glyphWidth) / 2f).coerceAtLeast(0f)
-            drawText(
+            drawTextClipped(
                 textMeasurer = ctx.textMeasurer,
                 text = charTextToRender,
                 topLeft = Offset(x + centeringOffset, y),
@@ -1608,14 +1652,14 @@ object TerminalCanvasRenderer {
             val baselineAlignmentOffset = ctx.cellBaseline - glyphBaseline
             val centeringOffset = ((ctx.cellWidth - glyphWidth) / 2f).coerceAtLeast(0f)
 
-            drawText(
+            drawTextClipped(
                 textMeasurer = ctx.textMeasurer,
                 text = charTextToRender,
                 topLeft = Offset(x + centeringOffset, y + baselineAlignmentOffset),
                 style = textStyle
             )
         } else {
-            drawText(
+            drawTextClipped(
                 textMeasurer = ctx.textMeasurer,
                 text = charTextToRender,
                 topLeft = Offset(x, y),

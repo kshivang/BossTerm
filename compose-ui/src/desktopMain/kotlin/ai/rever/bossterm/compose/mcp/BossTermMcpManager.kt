@@ -90,7 +90,9 @@ class BossTermMcpManager(
 
     // Guarded by [mutex]. The Server itself is hoisted to a class-level field
     // and re-bound to a transport each time the engine restarts.
-    private var runningEngine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
+    // internal (not private) so McpEngineTeardownTest can install a stub
+    // engine and exercise stopRunningEngineLocked without binding a port.
+    internal var runningEngine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     private var runningPort: Int? = null
 
     // Holds the live BossTermMcpServer wrapper so the disabled-tools watcher
@@ -124,6 +126,13 @@ class BossTermMcpManager(
     // Guarded by [mutex] like the engine fields; null while stopped.
     private var streamableSessions: StreamableMcpSessions? = null
     private var streamableSweeperJob: Job? = null
+
+    // Substitutes the closeAll step in [stopRunningEngineLocked]. The failure
+    // that step guards against (NoClassDefFoundError from a classloader the
+    // host closed after dispose — see [stop]) can't be produced in a unit
+    // test, so McpEngineTeardownTest injects a throwing close here to pin the
+    // contract that the bookkeeping below the guard still runs.
+    internal var closeAllOverrideForTest: (suspend () -> Unit)? = null
 
     // Caches caller-tab resolution by the client's ephemeral TCP port. That
     // port is stable for a connection's lifetime and its owning PID can't
@@ -275,6 +284,12 @@ class BossTermMcpManager(
                     reattachJob = null
                     stopRunningEngineLocked()
                 }
+            } catch (e: CancellationException) {
+                // parentScope cancellation, not a teardown failure — let the
+                // coroutine complete as cancelled rather than mis-logging it
+                // below. Rethrowing needs no lazy load: CancellationException
+                // aliases the (parent-loader) JDK class.
+                throw e
             } catch (t: Throwable) {
                 log.warn("MCP engine teardown after stop() failed (classloader likely closed): {}", t.toString())
             }
@@ -541,9 +556,15 @@ class BossTermMcpManager(
             // an embedding host closes the classloader at that point — a
             // first-time load of the class there crashed the host with
             // NoClassDefFoundError. Same eager-preload pattern as
-            // McpCliAttacher (#331); calling it IS the intended side effect.
-            // Launched before the engine accepts connections so the no-op
-            // can't race (and close) a real client's freshly-minted session.
+            // McpCliAttacher (#331); calling it IS the intended side effect —
+            // launched, not awaited, because warming a suspend fun's class
+            // requires invoking it. Scheduled before the engine accepts
+            // connections: the session map is empty here and a client needs a
+            // connect + initialize round-trip to mint a session, so the no-op
+            // close finishing first is practically certain. If it ever did
+            // observe a freshly-minted session, closing it is the same benign
+            // eviction the idle sweeper and session cap already impose — the
+            // client sees 404 and re-initializes.
             parentScope.launch { streamable.closeAll() }
             engine.start(wait = false)
             runningEngine = engine
@@ -748,7 +769,9 @@ class BossTermMcpManager(
         }
     }
 
-    private suspend fun stopRunningEngineLocked() {
+    // internal (not private) for McpEngineTeardownTest; production callers
+    // hold [mutex].
+    internal suspend fun stopRunningEngineLocked() {
         val engine = runningEngine ?: return
         val port = runningPort
         try {
@@ -768,7 +791,14 @@ class BossTermMcpManager(
             // see stop()): closing live sessions can need a first-time class
             // load the warm-up at bind time couldn't reach (closeQuietly).
             try {
-                streamableSessions?.closeAll()
+                val closeOverride = closeAllOverrideForTest
+                if (closeOverride != null) closeOverride() else streamableSessions?.closeAll()
+            } catch (e: CancellationException) {
+                // Deliberately NOT rethrown: everything below is plain
+                // non-suspending bookkeeping that must still run, and the
+                // cancelled job still completes as cancelled once this
+                // function returns. Logged as what it is, not as a failure.
+                log.info("Streamable MCP session close cancelled during engine stop; finishing bookkeeping")
             } catch (t: Throwable) {
                 log.warn("Failed to close streamable MCP sessions during engine stop: {}", t.toString())
             }

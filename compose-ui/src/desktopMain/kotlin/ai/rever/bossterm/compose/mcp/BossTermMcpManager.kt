@@ -90,7 +90,9 @@ class BossTermMcpManager(
 
     // Guarded by [mutex]. The Server itself is hoisted to a class-level field
     // and re-bound to a transport each time the engine restarts.
-    private var runningEngine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
+    // internal (not private) so McpEngineTeardownTest can install a stub
+    // engine and exercise stopRunningEngineLocked without binding a port.
+    internal var runningEngine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     private var runningPort: Int? = null
 
     // Holds the live BossTermMcpServer wrapper so the disabled-tools watcher
@@ -124,6 +126,13 @@ class BossTermMcpManager(
     // Guarded by [mutex] like the engine fields; null while stopped.
     private var streamableSessions: StreamableMcpSessions? = null
     private var streamableSweeperJob: Job? = null
+
+    // Substitutes the closeAll step in [stopRunningEngineLocked]. The failure
+    // that step guards against (NoClassDefFoundError from a classloader the
+    // host closed after dispose — see [stop]) can't be produced in a unit
+    // test, so McpEngineTeardownTest injects a throwing close here to pin the
+    // contract that the bookkeeping below the guard still runs.
+    internal var closeAllOverrideForTest: (suspend () -> Unit)? = null
 
     // Caches caller-tab resolution by the client's ephemeral TCP port. That
     // port is stable for a connection's lifetime and its owning PID can't
@@ -258,11 +267,34 @@ class BossTermMcpManager(
         // here can't race a concurrent assignment or read a stale reference.
         // No new fan-out can start after this block: watcherJob (the only
         // reconcile trigger) was cancelled synchronously above.
+        // Nothing in this coroutine may escape uncaught: it runs AFTER stop()
+        // (and, in an embedding host, dispose()) has returned, and a plugin
+        // hot-swap closes this instance's classloader at that point — so any
+        // first-time lazy class load in the teardown path throws
+        // NoClassDefFoundError from the closed loader and would crash the host
+        // (this killed BOSS via StreamableMcpSessions.closeAll's state-machine
+        // class; same failure mode as the #331 reattach orphan). Plain
+        // try/catch on purpose: it compiles inline and needs no class of its
+        // own. Cleanup past the failure point is forfeited, which is fine —
+        // the engine stop has already been requested and the instance is dying.
         parentScope.launch(Dispatchers.IO) {
-            mutex.withLock {
-                reattachJob?.cancel()
-                reattachJob = null
-                stopRunningEngineLocked()
+            try {
+                mutex.withLock {
+                    reattachJob?.cancel()
+                    reattachJob = null
+                    stopRunningEngineLocked()
+                }
+            } catch (e: CancellationException) {
+                // parentScope cancellation, not a teardown failure — let the
+                // coroutine complete as cancelled rather than mis-logging it
+                // below. Rethrowing needs no lazy load: CancellationException
+                // aliases the (parent-loader) JDK class.
+                throw e
+            } catch (t: Throwable) {
+                // Full stack on purpose: anything landing here is an unknown
+                // failure mode, and the trace is what identifies the next
+                // StreamableMcpSessions-style lazy-load site.
+                log.warn("MCP engine teardown after stop() failed (classloader likely closed)", t)
             }
         }
     }
@@ -520,6 +552,33 @@ class BossTermMcpManager(
                     mcp { mcpServer }
                 }
             }
+            // Warm closeAll's suspend state-machine class while this
+            // classloader can still load classes (a no-op on the empty session
+            // map). The engine teardown in stop() runs on a background
+            // coroutine after dispose() has returned, and a plugin hot-swap in
+            // an embedding host closes the classloader at that point — a
+            // first-time load of the class there crashed the host with
+            // NoClassDefFoundError. Same eager-preload pattern as
+            // McpCliAttacher (#331); calling it IS the intended side effect —
+            // launched, not awaited, because warming a suspend fun's class
+            // requires invoking it. Scheduled before the engine accepts
+            // connections: the session map is empty here and a client needs a
+            // connect + initialize round-trip to mint a session, so the no-op
+            // close finishing first is practically certain. If it ever did
+            // observe a freshly-minted session, closing it is the same benign
+            // eviction the idle sweeper and session cap already impose — the
+            // client sees 404 and re-initializes.
+            parentScope.launch {
+                // On the fresh empty map closeAll cannot throw — this guard
+                // exists so no future change to closeAll can ever cancel
+                // parentScope (not guaranteed to be a SupervisorJob) from a
+                // fire-and-forget warm-up.
+                try {
+                    streamable.closeAll()
+                } catch (t: Throwable) {
+                    log.warn("Streamable MCP closeAll warm-up failed: {}", t.toString())
+                }
+            }
             engine.start(wait = false)
             runningEngine = engine
             runningPort = port
@@ -723,7 +782,9 @@ class BossTermMcpManager(
         }
     }
 
-    private suspend fun stopRunningEngineLocked() {
+    // internal (not private) for McpEngineTeardownTest; production callers
+    // hold [mutex].
+    internal suspend fun stopRunningEngineLocked() {
         val engine = runningEngine ?: return
         val port = runningPort
         try {
@@ -738,7 +799,22 @@ class BossTermMcpManager(
             streamableSweeperJob = null
             // Close streamable transports so their ServerSessions leave the
             // (about-to-be-detached) Server rather than lingering until GC.
-            streamableSessions?.closeAll()
+            // Guarded so the bookkeeping below still runs when this teardown
+            // executes after the host closed our classloader (post-hot-swap,
+            // see stop()): closing live sessions can need a first-time class
+            // load the warm-up at bind time couldn't reach (closeQuietly).
+            try {
+                val closeOverride = closeAllOverrideForTest
+                if (closeOverride != null) closeOverride() else streamableSessions?.closeAll()
+            } catch (e: CancellationException) {
+                // Deliberately NOT rethrown: everything below is plain
+                // non-suspending bookkeeping that must still run, and the
+                // cancelled job still completes as cancelled once this
+                // function returns. Logged as what it is, not as a failure.
+                log.info("Streamable MCP session close cancelled during engine stop; finishing bookkeeping")
+            } catch (t: Throwable) {
+                log.warn("Failed to close streamable MCP sessions during engine stop: {}", t.toString())
+            }
             streamableSessions = null
             // Detach the wrapper first so any in-flight manage_tools handler
             // (or a stray applyDisabledSet from the watcher) becomes a no-op
@@ -812,8 +888,16 @@ class BossTermMcpManager(
         }
     }
 
+    // The production path is fixed at ~/.bossterm/mcp.port on purpose: the
+    // PreToolUse hook reads exactly that file, and embedders that relocate
+    // the settings dir (bossterm.settings.dir) must still publish the marker
+    // where the hook looks. The override exists so tests exercising
+    // stopRunningEngineLocked can't delete a developer's real marker.
+    internal var portMarkerFileOverrideForTest: File? = null
+
     private fun mcpPortMarkerFile(): File =
-        File(System.getProperty("user.home"), ".bossterm/mcp.port")
+        portMarkerFileOverrideForTest
+            ?: File(System.getProperty("user.home"), ".bossterm/mcp.port")
 
     private data class McpRuntimeConfig(val enabled: Boolean, val port: Int)
 

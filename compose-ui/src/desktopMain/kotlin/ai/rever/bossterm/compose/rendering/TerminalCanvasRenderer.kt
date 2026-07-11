@@ -401,6 +401,10 @@ object TerminalCanvasRenderer {
      * shrink the window (live resize, the update banner squeezing the terminal)
      * and the drawn x crosses the edge → crash. Such glyphs are clipped by the
      * canvas anyway, so skipping them is visually identical.
+     *
+     * The `>=` check is slightly stricter than the throw condition: a glyph
+     * exactly on the edge would measure at zero-width constraints without
+     * throwing, but it renders nothing, so it is skipped too.
      */
     internal fun DrawScope.drawTextClipped(
         textMeasurer: TextMeasurer,
@@ -1433,6 +1437,11 @@ object TerminalCanvasRenderer {
         val centerX = x + (allocatedWidth - scaledWidth) / 2f
 
         scale(scaleX = scaleValue, scaleY = scaleValue, pivot = Offset(x, y + ctx.cellHeight / 2f)) {
+            // topLeft is a pre-scale coordinate but the clip guard (like Compose's own
+            // constraint math) compares it against the unscaled canvas size, so for
+            // scaleValue < 1 an edge glyph whose rendered position is in-bounds may be
+            // skipped rather than clip-drawn. Intentionally conservative: that exact
+            // case is the one that used to throw.
             drawTextClipped(
                 textMeasurer = ctx.textMeasurer,
                 text = grapheme.text,
@@ -1614,6 +1623,9 @@ object TerminalCanvasRenderer {
             val centerX = x + (allocatedWidth - scaledWidth) / 2f
 
             scale(scaleX = scaleValue, scaleY = scaleValue, pivot = Offset(x, y + ctx.cellHeight / 2f)) {
+                // Pre-scale topLeft vs unscaled canvas size: intentionally conservative
+                // for scaleValue < 1 — an edge glyph may be skipped rather than
+                // clip-drawn (see the same note in renderZWJSequence).
                 drawTextClipped(
                     textMeasurer = ctx.textMeasurer,
                     text = textToRender,

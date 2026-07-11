@@ -291,7 +291,10 @@ class BossTermMcpManager(
                 // aliases the (parent-loader) JDK class.
                 throw e
             } catch (t: Throwable) {
-                log.warn("MCP engine teardown after stop() failed (classloader likely closed): {}", t.toString())
+                // Full stack on purpose: anything landing here is an unknown
+                // failure mode, and the trace is what identifies the next
+                // StreamableMcpSessions-style lazy-load site.
+                log.warn("MCP engine teardown after stop() failed (classloader likely closed)", t)
             }
         }
     }
@@ -565,7 +568,17 @@ class BossTermMcpManager(
             // observe a freshly-minted session, closing it is the same benign
             // eviction the idle sweeper and session cap already impose — the
             // client sees 404 and re-initializes.
-            parentScope.launch { streamable.closeAll() }
+            parentScope.launch {
+                // On the fresh empty map closeAll cannot throw — this guard
+                // exists so no future change to closeAll can ever cancel
+                // parentScope (not guaranteed to be a SupervisorJob) from a
+                // fire-and-forget warm-up.
+                try {
+                    streamable.closeAll()
+                } catch (t: Throwable) {
+                    log.warn("Streamable MCP closeAll warm-up failed: {}", t.toString())
+                }
+            }
             engine.start(wait = false)
             runningEngine = engine
             runningPort = port
@@ -875,8 +888,16 @@ class BossTermMcpManager(
         }
     }
 
+    // The production path is fixed at ~/.bossterm/mcp.port on purpose: the
+    // PreToolUse hook reads exactly that file, and embedders that relocate
+    // the settings dir (bossterm.settings.dir) must still publish the marker
+    // where the hook looks. The override exists so tests exercising
+    // stopRunningEngineLocked can't delete a developer's real marker.
+    internal var portMarkerFileOverrideForTest: File? = null
+
     private fun mcpPortMarkerFile(): File =
-        File(System.getProperty("user.home"), ".bossterm/mcp.port")
+        portMarkerFileOverrideForTest
+            ?: File(System.getProperty("user.home"), ".bossterm/mcp.port")
 
     private data class McpRuntimeConfig(val enabled: Boolean, val port: Int)
 

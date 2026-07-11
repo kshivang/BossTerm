@@ -10,7 +10,6 @@ import kotlinx.coroutines.runBlocking
 import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.AfterTest
-import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertNull
 
@@ -26,33 +25,26 @@ import kotlin.test.assertNull
  * The real failure (a closed classloader) can't be produced in a unit test,
  * so the close step is substituted via
  * [BossTermMcpManager.closeAllOverrideForTest], and the engine is a stub that
- * was never started so no port is bound.
+ * was never started so no port is bound. The port marker is redirected into
+ * the temp settings dir ([BossTermMcpManager.portMarkerFileOverrideForTest])
+ * so the teardown's marker delete can't touch a developer's real
+ * `~/.bossterm/mcp.port`.
  */
 class McpEngineTeardownTest {
 
     private val scope = CoroutineScope(SupervisorJob())
     private val settingsDir = createTempDirectory("mcp-teardown-test").toFile().apply { deleteOnExit() }
 
-    // stopRunningEngineLocked's finally deletes the REAL ~/.bossterm/mcp.port
-    // (the PreToolUse-hook marker); snapshot and restore it so running this
-    // test on a developer machine can't disturb an opted-in setup.
-    private val portMarker = File(System.getProperty("user.home"), ".bossterm/mcp.port")
-    private var savedPortMarker: ByteArray? = null
-
     private fun newManager() = BossTermMcpManager(
         registry = McpTerminalRegistry,
         settingsManager = SettingsManager(File(settingsDir, "settings.json").absolutePath),
         parentScope = scope,
-    )
-
-    @BeforeTest
-    fun snapshotPortMarker() {
-        savedPortMarker = if (portMarker.exists()) portMarker.readBytes() else null
+    ).apply {
+        portMarkerFileOverrideForTest = File(settingsDir, "mcp.port")
     }
 
     @AfterTest
     fun tearDown() {
-        savedPortMarker?.let { portMarker.writeBytes(it) }
         McpTerminalRegistry.setStopped()
         scope.cancel()
     }

@@ -258,11 +258,25 @@ class BossTermMcpManager(
         // here can't race a concurrent assignment or read a stale reference.
         // No new fan-out can start after this block: watcherJob (the only
         // reconcile trigger) was cancelled synchronously above.
+        // Nothing in this coroutine may escape uncaught: it runs AFTER stop()
+        // (and, in an embedding host, dispose()) has returned, and a plugin
+        // hot-swap closes this instance's classloader at that point — so any
+        // first-time lazy class load in the teardown path throws
+        // NoClassDefFoundError from the closed loader and would crash the host
+        // (this killed BOSS via StreamableMcpSessions.closeAll's state-machine
+        // class; same failure mode as the #331 reattach orphan). Plain
+        // try/catch on purpose: it compiles inline and needs no class of its
+        // own. Cleanup past the failure point is forfeited, which is fine —
+        // the engine stop has already been requested and the instance is dying.
         parentScope.launch(Dispatchers.IO) {
-            mutex.withLock {
-                reattachJob?.cancel()
-                reattachJob = null
-                stopRunningEngineLocked()
+            try {
+                mutex.withLock {
+                    reattachJob?.cancel()
+                    reattachJob = null
+                    stopRunningEngineLocked()
+                }
+            } catch (t: Throwable) {
+                log.warn("MCP engine teardown after stop() failed (classloader likely closed): {}", t.toString())
             }
         }
     }
@@ -520,6 +534,17 @@ class BossTermMcpManager(
                     mcp { mcpServer }
                 }
             }
+            // Warm closeAll's suspend state-machine class while this
+            // classloader can still load classes (a no-op on the empty session
+            // map). The engine teardown in stop() runs on a background
+            // coroutine after dispose() has returned, and a plugin hot-swap in
+            // an embedding host closes the classloader at that point — a
+            // first-time load of the class there crashed the host with
+            // NoClassDefFoundError. Same eager-preload pattern as
+            // McpCliAttacher (#331); calling it IS the intended side effect.
+            // Launched before the engine accepts connections so the no-op
+            // can't race (and close) a real client's freshly-minted session.
+            parentScope.launch { streamable.closeAll() }
             engine.start(wait = false)
             runningEngine = engine
             runningPort = port
@@ -738,7 +763,15 @@ class BossTermMcpManager(
             streamableSweeperJob = null
             // Close streamable transports so their ServerSessions leave the
             // (about-to-be-detached) Server rather than lingering until GC.
-            streamableSessions?.closeAll()
+            // Guarded so the bookkeeping below still runs when this teardown
+            // executes after the host closed our classloader (post-hot-swap,
+            // see stop()): closing live sessions can need a first-time class
+            // load the warm-up at bind time couldn't reach (closeQuietly).
+            try {
+                streamableSessions?.closeAll()
+            } catch (t: Throwable) {
+                log.warn("Failed to close streamable MCP sessions during engine stop: {}", t.toString())
+            }
             streamableSessions = null
             // Detach the wrapper first so any in-flight manage_tools handler
             // (or a stray applyDisabledSet from the watcher) becomes a no-op

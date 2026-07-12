@@ -4,9 +4,30 @@ import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkInfo
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkType
 import ai.rever.bossterm.terminal.TerminalCustomCommandListener
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.io.File
 import java.net.URI
+import java.net.URISyntaxException
 import java.util.Base64
+import java.util.UUID
+
+/**
+ * Process-wide secret authenticating open requests from the shell shim.
+ *
+ * Injected into every session's environment as BOSSTERM_OPEN_TOKEN and echoed
+ * back by the shim inside the OSC payload. Content merely *displayed* in the
+ * terminal (cat of a crafted file, curl of attacker-controlled output, a log
+ * line) cannot know it, so [OpenTargetOSCListener] ignores any OpenTarget
+ * sequence that doesn't carry it — auto-opening stays gated on the shim,
+ * which only forwards what a locally executed command explicitly asked to
+ * open.
+ */
+object OpenTargetToken {
+    val value: String by lazy { UUID.randomUUID().toString() }
+}
 
 /**
  * A TerminalCustomCommandListener for CLI-originated open requests.
@@ -14,33 +35,47 @@ import java.util.Base64
  * The shell-integration `open`/`xdg-open`/`$BROWSER` shim forwards plain
  * "open this URL or file" invocations from CLI commands as:
  *
- *     OSC 1341;OpenTarget;<base64(target)> BEL
+ *     OSC 1341;OpenTarget;<token>;<base64(target)> BEL
  *
- * which arrives here as args ["OpenTarget", "<base64>"]. The target is
- * classified into a [HyperlinkInfo] and dispatched through the same
- * link-open handler used for Ctrl/Cmd+click, so embedding hosts can route
- * it (e.g. show an open-with dialog). When no handler is wired, or the
- * handler declines, the target opens with the system default — matching
- * what the shimmed command would have done anyway.
+ * which arrives here as args ["OpenTarget", "<token>", "<base64>"]. After
+ * verifying the token ([OpenTargetToken]), the target is validated and
+ * classified into a [HyperlinkInfo] and dispatched — on the main thread,
+ * like Ctrl/Cmd+click — through the same link-open handler, so embedding
+ * hosts can route it (e.g. show an open-with dialog). When no handler is
+ * wired, or the handler declines, the target opens with the system default,
+ * matching what the shimmed command would have done anyway.
+ *
+ * Because no user click gates this path, only targets a CLI could
+ * legitimately ask to open are honored (see [classifyOpenTarget]): http/https
+ * URLs and existing absolute filesystem paths. ssh://, mailto:, custom
+ * schemes, and relative or non-existing paths are refused.
  *
  * The handler is read through a provider on every event because the host
  * wires it from the composition, after the session (and this listener)
  * already exists.
- *
- * Thread safety: called from the emulator processing thread. Handlers must
- * not assume the UI thread.
  */
 class OpenTargetOSCListener(
-    private val handlerProvider: () -> ((HyperlinkInfo) -> Boolean)?
+    private val handlerProvider: () -> ((HyperlinkInfo) -> Boolean)?,
+    private val fallbackOpener: (String) -> Unit = HyperlinkDetector::openUrl,
+    dispatchScope: CoroutineScope? = null
 ) : TerminalCustomCommandListener {
 
+    // Dispatch on the main thread so handlers see the same threading as the
+    // Ctrl/Cmd+click path (tab creation, snapshot state, focus).
+    private val scope = dispatchScope ?: CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
     override fun process(args: MutableList<String?>) {
-        if (args.size < 2 || args[0] != OPEN_TARGET_COMMAND) return
-        val target = decodeTarget(args[1]) ?: return
+        if (args.size < 3 || args[0] != OPEN_TARGET_COMMAND) return
+        // Unauthenticated request (missing/stale token): ignore silently —
+        // this is exactly the crafted-content injection case.
+        if (args[1] != OpenTargetToken.value) return
+        val target = decodeTarget(args[2]) ?: return
         val info = classifyOpenTarget(target) ?: return
-        val handled = handlerProvider()?.invoke(info) ?: false
-        if (!handled) {
-            HyperlinkDetector.openUrl(info.url)
+        scope.launch {
+            val handled = handlerProvider()?.invoke(info) ?: false
+            if (!handled) {
+                fallbackOpener(info.url)
+            }
         }
     }
 
@@ -60,51 +95,57 @@ class OpenTargetOSCListener(
 }
 
 /**
- * Classify a raw open-request target (URL or file path) into [HyperlinkInfo],
- * mirroring the semantics of [ai.rever.bossterm.compose.hyperlinks.toHyperlinkInfo].
- * Returns null for targets that can't be meaningfully opened (blank input).
+ * Validate and classify an open-request target. This is deliberately an
+ * allow-list, not a general classifier like `Hyperlink.toHyperlinkInfo()`:
+ * with no user click gating this path, anything outside "web URL or existing
+ * absolute filesystem path" is refused by returning null.
  */
 internal fun classifyOpenTarget(target: String): HyperlinkInfo? {
     val trimmed = target.trim()
     if (trimmed.isEmpty()) return null
 
-    val scheme = trimmed.substringBefore("://", "").lowercase().takeIf {
-        it.isNotEmpty() && it != trimmed.lowercase()
+    if (trimmed.startsWith("http://", ignoreCase = true) ||
+        trimmed.startsWith("https://", ignoreCase = true)
+    ) {
+        return HyperlinkInfo(
+            url = trimmed,
+            type = HyperlinkType.HTTP,
+            patternId = "osc:open-target",
+            matchedText = trimmed,
+            isFile = false,
+            isFolder = false,
+            scheme = trimmed.substringBefore("://").lowercase(),
+            isBuiltin = false
+        )
     }
 
+    // Filesystem target: a file: URL or an absolute path. Relative paths are
+    // refused rather than resolved — resolving against the JVM working
+    // directory would be wrong (the shim absolutizes against the shell's cwd
+    // before sending), and an injected relative path must not resolve at all.
     val file: File? = when {
         trimmed.startsWith("file:") -> try {
             File(URI(trimmed))
-        } catch (e: Exception) {
+        } catch (e: URISyntaxException) {
+            null
+        } catch (e: IllegalArgumentException) {
             null
         }
-        scheme == null && !trimmed.startsWith("mailto:") -> File(trimmed)
-        else -> null
+        else -> File(trimmed).takeIf { it.isAbsolute }
     }
-    val isFile = file?.isFile == true
-    val isFolder = file?.isDirectory == true
-
-    val type = when {
-        scheme == "http" || scheme == "https" -> HyperlinkType.HTTP
-        scheme == "ftp" || scheme == "ftps" -> HyperlinkType.FTP
-        trimmed.startsWith("mailto:") -> HyperlinkType.EMAIL
-        isFolder -> HyperlinkType.FOLDER
-        isFile -> HyperlinkType.FILE
-        else -> HyperlinkType.CUSTOM
+    if (file != null && (file.isFile || file.isDirectory)) {
+        val isFolder = file.isDirectory
+        return HyperlinkInfo(
+            url = file.absolutePath,
+            type = if (isFolder) HyperlinkType.FOLDER else HyperlinkType.FILE,
+            patternId = "osc:open-target",
+            matchedText = trimmed,
+            isFile = !isFolder,
+            isFolder = isFolder,
+            scheme = "file".takeIf { trimmed.startsWith("file:") },
+            isBuiltin = false
+        )
     }
 
-    // For filesystem targets hand hosts the resolved absolute path (the shim
-    // already absolutizes plain paths; file: URLs are resolved here).
-    val url = if (isFile || isFolder) file!!.absolutePath else trimmed
-
-    return HyperlinkInfo(
-        url = url,
-        type = type,
-        patternId = "osc:open-target",
-        matchedText = trimmed,
-        isFile = isFile,
-        isFolder = isFolder,
-        scheme = scheme ?: "mailto".takeIf { trimmed.startsWith("mailto:") },
-        isBuiltin = false
-    )
+    return null
 }

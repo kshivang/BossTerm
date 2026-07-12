@@ -47,11 +47,16 @@ passthrough() {
 
 # Only intercept directly inside a BossTerm session. Nested terminals set
 # their own TERM_PROGRAM, and tmux/screen may not pass raw OSC through.
+# BOSSTERM_OPEN_TOKEN authenticates the request to the emulator: the listener
+# ignores OpenTarget sequences without it, so displayed content can't forge
+# open requests.
 [ "$TERM_PROGRAM" = "BossTerm" ] || passthrough "$@"
+[ -n "$BOSSTERM_OPEN_TOKEN" ] || passthrough "$@"
 [ -n "$BOSSTERM_DISABLE_OPEN_INTERCEPT" ] && passthrough "$@"
 [ -n "$TMUX" ] && passthrough "$@"
 [ -n "$STY" ] && passthrough "$@"
 [ "$#" -eq 1 ] || passthrough "$@"
+command -v base64 >/dev/null 2>&1 || passthrough "$@"
 
 target=$1
 case $target in
@@ -73,5 +78,5 @@ esac
 # Need a writable controlling terminal to reach the emulator.
 [ -w /dev/tty ] || passthrough "$@"
 b64=$(printf '%s' "$target" | base64 | tr -d '\n')
-{ printf '\033]1341;OpenTarget;%s\007' "$b64" >/dev/tty; } 2>/dev/null || passthrough "$@"
+{ printf '\033]1341;OpenTarget;%s;%s\007' "$BOSSTERM_OPEN_TOKEN" "$b64" >/dev/tty; } 2>/dev/null || passthrough "$@"
 exit 0

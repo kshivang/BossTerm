@@ -77,7 +77,7 @@ class TabController(
      * route both paths identically. Registered at session creation (not in the
      * composition) so requests from background tabs are still handled. When
      * null or returning false, the target opens with the system default.
-     * Invoked on the emulator thread.
+     * Invoked on the main thread, like the Ctrl/Cmd+click path.
      */
     var openTargetLinkHandler: ((ai.rever.bossterm.compose.hyperlinks.HyperlinkInfo) -> Boolean)? = null
 
@@ -1221,6 +1221,9 @@ class TabController(
                 put("COLORTERM", "truecolor")
                 put("TERM_PROGRAM", "BossTerm")
                 put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
+                // Authenticates OSC 1341;OpenTarget requests from the open/
+                // xdg-open shim — see OpenTargetToken.
+                put("BOSSTERM_OPEN_TOKEN", ai.rever.bossterm.compose.osc.OpenTargetToken.value)
                 // Tells programs in the shell (e.g. Claude Code) which Boss/BossTerm
                 // MCP server is local to THIS host, so they pick the matching
                 // `mcp__<name>__*` toolset instead of a sibling app's. "boss" in
@@ -1406,6 +1409,9 @@ class TabController(
                     put("COLORTERM", "truecolor")
                     put("TERM_PROGRAM", "BossTerm")
                     put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
+                    // Authenticates OSC 1341;OpenTarget requests from the open/
+                    // xdg-open shim — see OpenTargetToken.
+                    put("BOSSTERM_OPEN_TOKEN", ai.rever.bossterm.compose.osc.OpenTargetToken.value)
                     // Identify the local Boss/BossTerm MCP server so in-shell
                     // programs (e.g. Claude Code) pick the matching `mcp__<name>__*`
                     // toolset. (This pre-connect path takes no caller-supplied

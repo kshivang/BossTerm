@@ -413,7 +413,7 @@ class TabController(
         // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
         // same handler as Ctrl/Cmd+click links; system default when unhandled.
         terminal.addCustomCommandListener(
-            ai.rever.bossterm.compose.osc.OpenTargetOSCListener { openTargetLinkHandler }
+            ai.rever.bossterm.compose.osc.OpenTargetOSCListener(handlerProvider = { openTargetLinkHandler })
         )
 
         // Register window title listener for reactive updates (OSC 0/1/2 sequences)
@@ -792,7 +792,7 @@ class TabController(
         // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
         // same handler as Ctrl/Cmd+click links; system default when unhandled.
         terminal.addCustomCommandListener(
-            ai.rever.bossterm.compose.osc.OpenTargetOSCListener { openTargetLinkHandler }
+            ai.rever.bossterm.compose.osc.OpenTargetOSCListener(handlerProvider = { openTargetLinkHandler })
         )
 
         // Register window title listener for reactive updates (OSC 0/1/2 sequences)
@@ -1039,7 +1039,7 @@ class TabController(
         // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
         // same handler as Ctrl/Cmd+click links; system default when unhandled.
         terminal.addCustomCommandListener(
-            ai.rever.bossterm.compose.osc.OpenTargetOSCListener { openTargetLinkHandler }
+            ai.rever.bossterm.compose.osc.OpenTargetOSCListener(handlerProvider = { openTargetLinkHandler })
         )
 
         terminal.addApplicationTitleListener(object : TerminalApplicationTitleListener {

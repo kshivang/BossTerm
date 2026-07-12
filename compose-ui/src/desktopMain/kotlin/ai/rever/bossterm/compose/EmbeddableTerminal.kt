@@ -590,7 +590,7 @@ class EmbeddableTerminalState {
         // Registered at creation (not in the composition) so requests from a
         // hidden/uncomposed terminal keep working.
         session?.terminal?.addCustomCommandListener(
-            ai.rever.bossterm.compose.osc.OpenTargetOSCListener { openTargetLinkHandler }
+            ai.rever.bossterm.compose.osc.OpenTargetOSCListener(handlerProvider = { openTargetLinkHandler })
         )
 
         // Start process in session's coroutine scope

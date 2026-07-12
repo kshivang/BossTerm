@@ -4,13 +4,17 @@ import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkInfo
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkType
 import ai.rever.bossterm.terminal.TerminalCustomCommandListener
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.slf4j.LoggerFactory
 import java.io.File
 import java.net.URI
 import java.net.URISyntaxException
+import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
 
@@ -57,7 +61,8 @@ object OpenTargetToken {
 class OpenTargetOSCListener(
     private val handlerProvider: () -> ((HyperlinkInfo) -> Boolean)?,
     private val fallbackOpener: (String) -> Unit = HyperlinkDetector::openUrl,
-    dispatchScope: CoroutineScope? = null
+    dispatchScope: CoroutineScope? = null,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) : TerminalCustomCommandListener {
 
     // Dispatch on the main thread so handlers see the same threading as the
@@ -67,20 +72,40 @@ class OpenTargetOSCListener(
     override fun process(args: MutableList<String?>) {
         if (args.size < 3 || args[0] != OPEN_TARGET_COMMAND) return
         // Unauthenticated request (missing/stale token): ignore silently —
-        // this is exactly the crafted-content injection case.
-        if (args[1] != OpenTargetToken.value) return
-        val target = decodeTarget(args[2]) ?: return
-        val info = classifyOpenTarget(target) ?: return
+        // this is exactly the crafted-content injection case. Constant-time
+        // comparison out of caution; there is no realistic timing oracle here.
+        val token = args[1] ?: return
+        if (!MessageDigest.isEqual(
+                token.toByteArray(Charsets.UTF_8),
+                OpenTargetToken.value.toByteArray(Charsets.UTF_8)
+            )
+        ) {
+            return
+        }
+        val encoded = args[2]
         scope.launch {
-            val handled = handlerProvider()?.invoke(info) ?: false
-            if (!handled) {
-                fallbackOpener(info.url)
+            // Classification touches the filesystem (isFile/isDirectory), so
+            // it runs on IO — never on the emulator parse thread (which called
+            // process()) and not on Main either, in case of a hung mount.
+            val info = withContext(ioDispatcher) {
+                decodeTarget(encoded)?.let { classifyOpenTarget(it) }
+            } ?: return@launch
+            try {
+                val handled = handlerProvider()?.invoke(info) ?: false
+                if (!handled) {
+                    fallbackOpener(info.url)
+                }
+            } catch (e: Exception) {
+                // A throwing host handler must not crash the main thread.
+                LOG.warn("Open-target handler failed for ${info.url}", e)
             }
         }
     }
 
     companion object {
         const val OPEN_TARGET_COMMAND = "OpenTarget"
+
+        private val LOG = LoggerFactory.getLogger(OpenTargetOSCListener::class.java)
 
         private fun decodeTarget(encoded: String?): String? {
             if (encoded.isNullOrBlank()) return null

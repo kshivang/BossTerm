@@ -32,7 +32,9 @@ class OpenTargetOSCListenerTest {
                 }
             },
             fallbackOpener = { fallbacks.add(it) },
-            dispatchScope = CoroutineScope(Dispatchers.Unconfined)
+            // Unconfined for both keeps process() fully synchronous in tests.
+            dispatchScope = CoroutineScope(Dispatchers.Unconfined),
+            ioDispatcher = Dispatchers.Unconfined
         )
     }
 

@@ -202,7 +202,7 @@ object ShellIntegrationInjector {
                 shim.copyTo(target, overwrite = true)
                 target.setExecutable(true)
             } catch (e: Exception) {
-                System.err.println("[ShellIntegration] Error installing open shim '$name': ${e.message}")
+                LOG.warn("Error installing open shim '$name'", e)
             }
         }
     }

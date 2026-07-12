@@ -71,7 +71,10 @@ http://* | https://* | file://*)
     # Only intercept existing regular files; directories and everything else
     # (app names, mailto:, custom schemes, ...) keep their system behavior.
     [ -f "$target" ] || passthrough "$@"
-    target=$(CDPATH= cd -- "$(dirname -- "$target")" && pwd)/$(basename -- "$target")
+    # Absolutize against the shell's cwd; if that fails (untraversable
+    # parent), fall through rather than emitting a bogus path.
+    target_dir=$(CDPATH= cd -- "$(dirname -- "$target")" 2>/dev/null && pwd) || passthrough "$@"
+    target=$target_dir/$(basename -- "$target")
     ;;
 esac
 

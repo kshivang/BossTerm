@@ -257,6 +257,31 @@ fun TabbedTerminal(
         )
     }
 
+    // Shared link-open handler: SSH URLs open a new tab with an SSH connection,
+    // everything else is delegated to the caller's onLinkClick (false = let the
+    // terminal open the system default). Used for Ctrl/Cmd+click (via
+    // SplitContainer) and for CLI-originated open requests (OSC
+    // 1341;OpenTarget, via TabController) so both paths behave identically.
+    val linkOpenHandler: (HyperlinkInfo) -> Boolean = remember(onLinkClick, tabController) {
+        { info ->
+            if (info.scheme == "ssh" || info.patternId == "builtin:ssh") {
+                val sshInfo = HyperlinkDetector.parseSshConnection(info.url)
+                if (sshInfo != null) {
+                    // Open new tab with SSH command
+                    tabController.createTab(initialCommand = sshInfo.toCommand())
+                    true // Handled
+                } else {
+                    // Parse failed, delegate to user callback or default
+                    onLinkClick?.invoke(info) ?: false
+                }
+            } else {
+                // Not SSH, delegate to user callback or default
+                onLinkClick?.invoke(info) ?: false
+            }
+        }
+    }
+    SideEffect { tabController.openTargetLinkHandler = linkOpenHandler }
+
     // Track window focus state reactively for overlay
     val isWindowFocusedState by remember { derivedStateOf { isWindowFocused() } }
 
@@ -1715,24 +1740,9 @@ fun TabbedTerminal(
                 splitFocusBorderEnabled = settings.splitFocusBorderEnabled,
                 splitFocusBorderColor = settings.splitFocusBorderColorValue,
                 splitMinimumSize = settings.splitMinimumSize,
-                // Wrap onLinkClick to handle SSH URLs by opening new tab with SSH connection
-                onLinkClick = { info ->
-                    // Check if this is an SSH URL
-                    if (info.scheme == "ssh" || info.patternId == "builtin:ssh") {
-                        val sshInfo = HyperlinkDetector.parseSshConnection(info.url)
-                        if (sshInfo != null) {
-                            // Open new tab with SSH command
-                            tabController.createTab(initialCommand = sshInfo.toCommand())
-                            true // Handled
-                        } else {
-                            // Parse failed, delegate to user callback or default
-                            onLinkClick?.invoke(info) ?: false
-                        }
-                    } else {
-                        // Not SSH, delegate to user callback or default
-                        onLinkClick?.invoke(info) ?: false
-                    }
-                },
+                // Shared handler: SSH URLs open a new tab, everything else
+                // delegates to the caller's onLinkClick (see linkOpenHandler).
+                onLinkClick = linkOpenHandler,
                 customContextMenuItems = contextMenuItems,
                 // Combine user-provided items with AI assistant and VCS items
                 customContextMenuItemsProvider = {

@@ -71,6 +71,17 @@ class TabController(
         private set
 
     /**
+     * Handler for CLI-originated open requests (OSC 1341;OpenTarget from the
+     * shell-integration open/xdg-open/$BROWSER shim). Wired by TabbedTerminal
+     * to the same handler used for Ctrl/Cmd+click links, so embedding hosts
+     * route both paths identically. Registered at session creation (not in the
+     * composition) so requests from background tabs are still handled. When
+     * null or returning false, the target opens with the system default.
+     * Invoked on the emulator thread.
+     */
+    var openTargetLinkHandler: ((ai.rever.bossterm.compose.hyperlinks.HyperlinkInfo) -> Boolean)? = null
+
+    /**
      * Derive a tab title from a working directory (Warp-style): home → "~",
      * otherwise the directory's base name. Null/blank → "~".
      */
@@ -398,6 +409,12 @@ class TabController(
         // Register OSC 7 listener for working directory tracking (Phase 4)
         val oscListener = WorkingDirectoryOSCListener(workingDirectoryState)
         terminal.addCustomCommandListener(oscListener)
+
+        // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
+        // same handler as Ctrl/Cmd+click links; system default when unhandled.
+        terminal.addCustomCommandListener(
+            ai.rever.bossterm.compose.osc.OpenTargetOSCListener { openTargetLinkHandler }
+        )
 
         // Register window title listener for reactive updates (OSC 0/1/2 sequences)
         terminal.addApplicationTitleListener(object : TerminalApplicationTitleListener {
@@ -772,6 +789,12 @@ class TabController(
         val oscListener = WorkingDirectoryOSCListener(workingDirectoryState)
         terminal.addCustomCommandListener(oscListener)
 
+        // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
+        // same handler as Ctrl/Cmd+click links; system default when unhandled.
+        terminal.addCustomCommandListener(
+            ai.rever.bossterm.compose.osc.OpenTargetOSCListener { openTargetLinkHandler }
+        )
+
         // Register window title listener for reactive updates (OSC 0/1/2 sequences)
         terminal.addApplicationTitleListener(object : TerminalApplicationTitleListener {
             override fun onApplicationTitleChanged(newApplicationTitle: String) {
@@ -1012,6 +1035,12 @@ class TabController(
 
         val oscListener = WorkingDirectoryOSCListener(workingDirectoryState)
         terminal.addCustomCommandListener(oscListener)
+
+        // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
+        // same handler as Ctrl/Cmd+click links; system default when unhandled.
+        terminal.addCustomCommandListener(
+            ai.rever.bossterm.compose.osc.OpenTargetOSCListener { openTargetLinkHandler }
+        )
 
         terminal.addApplicationTitleListener(object : TerminalApplicationTitleListener {
             override fun onApplicationTitleChanged(newApplicationTitle: String) {

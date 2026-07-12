@@ -69,5 +69,17 @@ autoload -Uz add-zsh-hook
 add-zsh-hook precmd _bossterm_precmd
 add-zsh-hook preexec _bossterm_preexec
 
+# Route plain `open <url|file>` / `xdg-open <target>` / `$BROWSER` calls from
+# CLI commands back to the terminal (OSC 1341;OpenTarget) so the host app can
+# choose how to open them. Opt out with BOSSTERM_DISABLE_OPEN_INTERCEPT=1.
+__bossterm_shim_bin="$HOME/.bossterm/shell-integration/bin"
+if [[ -z "${BOSSTERM_DISABLE_OPEN_INTERCEPT-}" && -x "$__bossterm_shim_bin/boss-open" ]]; then
+    if [[ ":$PATH:" != *":$__bossterm_shim_bin:"* ]]; then
+        export PATH="$__bossterm_shim_bin:$PATH"
+    fi
+    [[ -z "${BROWSER-}" ]] && export BROWSER="$__bossterm_shim_bin/boss-open"
+fi
+unset __bossterm_shim_bin
+
 # Emit initial prompt marker
 printf '\e]133;A\a'

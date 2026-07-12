@@ -56,5 +56,18 @@ function __bossterm_fish_postexec --on-event fish_postexec
     set -g __bossterm_last_status $status
 end
 
+# Route plain `open <url|file>` / `xdg-open <target>` / `$BROWSER` calls from
+# CLI commands back to the terminal (OSC 1341;OpenTarget) so the host app can
+# choose how to open them. Opt out with BOSSTERM_DISABLE_OPEN_INTERCEPT=1.
+set -l __bossterm_shim_bin "$HOME/.bossterm/shell-integration/bin"
+if not set -q BOSSTERM_DISABLE_OPEN_INTERCEPT; and test -x "$__bossterm_shim_bin/boss-open"
+    if not contains -- "$__bossterm_shim_bin" $PATH
+        set -gx PATH "$__bossterm_shim_bin" $PATH
+    end
+    if not set -q BROWSER
+        set -gx BROWSER "$__bossterm_shim_bin/boss-open"
+    end
+end
+
 # Emit initial prompt marker
 printf '\e]133;A\a'

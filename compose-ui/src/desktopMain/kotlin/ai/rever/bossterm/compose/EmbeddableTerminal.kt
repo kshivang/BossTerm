@@ -293,6 +293,12 @@ fun EmbeddableTerminal(
         }
     }
 
+    // Keep CLI-originated open requests (OSC 1341;OpenTarget) routed through
+    // the same onLinkClick handler as Ctrl/Cmd+click. The listener itself is
+    // registered at session creation (see initializeSession); here we only
+    // keep the handler current.
+    SideEffect { effectiveState.openTargetLinkHandler = onLinkClick }
+
     // Fire onReady when connected
     val connectionState = session?.connectionState?.value
     LaunchedEffect(connectionState) {
@@ -525,6 +531,16 @@ class EmbeddableTerminalState {
     private var initialized = false
 
     /**
+     * Handler for CLI-originated open requests (OSC 1341;OpenTarget from the
+     * shell-integration open/xdg-open/$BROWSER shim). Kept on the state (not
+     * the composition) so requests are still routed while the composable is
+     * not composed. Wired by EmbeddableTerminal to its onLinkClick parameter.
+     * When null or returning false, the target opens with the system default.
+     * Invoked on the main thread, like the Ctrl/Cmd+click path.
+     */
+    var openTargetLinkHandler: ((HyperlinkInfo) -> Boolean)? = null
+
+    /**
      * Whether the terminal is connected to a shell process.
      */
     val isConnected: Boolean
@@ -568,6 +584,14 @@ class EmbeddableTerminalState {
 
         // Create session
         session = createTerminalSession(settings, onOutput)
+
+        // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
+        // same handler as Ctrl/Cmd+click links; system default when unhandled.
+        // Registered at creation (not in the composition) so requests from a
+        // hidden/uncomposed terminal keep working.
+        session?.terminal?.addCustomCommandListener(
+            ai.rever.bossterm.compose.osc.OpenTargetOSCListener(handlerProvider = { openTargetLinkHandler })
+        )
 
         // Start process in session's coroutine scope
         session?.coroutineScope?.launch {
@@ -927,6 +951,9 @@ private suspend fun initializeProcess(
             put("TERM", "xterm-256color")
             put("COLORTERM", "truecolor")
             put("TERM_PROGRAM", "BossTerm")
+            // Authenticates OSC 1341;OpenTarget requests from the open/xdg-open
+            // shim — see OpenTargetToken.
+            put("BOSSTERM_OPEN_TOKEN", ai.rever.bossterm.compose.osc.OpenTargetToken.value)
             // Identify the local Boss/BossTerm MCP server so in-shell programs
             // (e.g. Claude Code) pick the matching `mcp__<name>__*` toolset. An
             // explicit override in `environment` still wins (applied last).

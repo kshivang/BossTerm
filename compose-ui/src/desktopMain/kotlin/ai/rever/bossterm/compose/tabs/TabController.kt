@@ -71,6 +71,17 @@ class TabController(
         private set
 
     /**
+     * Handler for CLI-originated open requests (OSC 1341;OpenTarget from the
+     * shell-integration open/xdg-open/$BROWSER shim). Wired by TabbedTerminal
+     * to the same handler used for Ctrl/Cmd+click links, so embedding hosts
+     * route both paths identically. Registered at session creation (not in the
+     * composition) so requests from background tabs are still handled. When
+     * null or returning false, the target opens with the system default.
+     * Invoked on the main thread, like the Ctrl/Cmd+click path.
+     */
+    var openTargetLinkHandler: ((ai.rever.bossterm.compose.hyperlinks.HyperlinkInfo) -> Boolean)? = null
+
+    /**
      * Derive a tab title from a working directory (Warp-style): home → "~",
      * otherwise the directory's base name. Null/blank → "~".
      */
@@ -398,6 +409,12 @@ class TabController(
         // Register OSC 7 listener for working directory tracking (Phase 4)
         val oscListener = WorkingDirectoryOSCListener(workingDirectoryState)
         terminal.addCustomCommandListener(oscListener)
+
+        // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
+        // same handler as Ctrl/Cmd+click links; system default when unhandled.
+        terminal.addCustomCommandListener(
+            ai.rever.bossterm.compose.osc.OpenTargetOSCListener(handlerProvider = { openTargetLinkHandler })
+        )
 
         // Register window title listener for reactive updates (OSC 0/1/2 sequences)
         terminal.addApplicationTitleListener(object : TerminalApplicationTitleListener {
@@ -772,6 +789,12 @@ class TabController(
         val oscListener = WorkingDirectoryOSCListener(workingDirectoryState)
         terminal.addCustomCommandListener(oscListener)
 
+        // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
+        // same handler as Ctrl/Cmd+click links; system default when unhandled.
+        terminal.addCustomCommandListener(
+            ai.rever.bossterm.compose.osc.OpenTargetOSCListener(handlerProvider = { openTargetLinkHandler })
+        )
+
         // Register window title listener for reactive updates (OSC 0/1/2 sequences)
         terminal.addApplicationTitleListener(object : TerminalApplicationTitleListener {
             override fun onApplicationTitleChanged(newApplicationTitle: String) {
@@ -1013,6 +1036,12 @@ class TabController(
         val oscListener = WorkingDirectoryOSCListener(workingDirectoryState)
         terminal.addCustomCommandListener(oscListener)
 
+        // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
+        // same handler as Ctrl/Cmd+click links; system default when unhandled.
+        terminal.addCustomCommandListener(
+            ai.rever.bossterm.compose.osc.OpenTargetOSCListener(handlerProvider = { openTargetLinkHandler })
+        )
+
         terminal.addApplicationTitleListener(object : TerminalApplicationTitleListener {
             override fun onApplicationTitleChanged(newApplicationTitle: String) {
                 display.windowTitle = newApplicationTitle
@@ -1192,6 +1221,9 @@ class TabController(
                 put("COLORTERM", "truecolor")
                 put("TERM_PROGRAM", "BossTerm")
                 put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
+                // Authenticates OSC 1341;OpenTarget requests from the open/
+                // xdg-open shim — see OpenTargetToken.
+                put("BOSSTERM_OPEN_TOKEN", ai.rever.bossterm.compose.osc.OpenTargetToken.value)
                 // Tells programs in the shell (e.g. Claude Code) which Boss/BossTerm
                 // MCP server is local to THIS host, so they pick the matching
                 // `mcp__<name>__*` toolset instead of a sibling app's. "boss" in
@@ -1377,6 +1409,9 @@ class TabController(
                     put("COLORTERM", "truecolor")
                     put("TERM_PROGRAM", "BossTerm")
                     put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
+                    // Authenticates OSC 1341;OpenTarget requests from the open/
+                    // xdg-open shim — see OpenTargetToken.
+                    put("BOSSTERM_OPEN_TOKEN", ai.rever.bossterm.compose.osc.OpenTargetToken.value)
                     // Identify the local Boss/BossTerm MCP server so in-shell
                     // programs (e.g. Claude Code) pick the matching `mcp__<name>__*`
                     // toolset. (This pre-connect path takes no caller-supplied

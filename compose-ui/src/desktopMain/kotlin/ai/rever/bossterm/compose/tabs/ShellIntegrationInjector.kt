@@ -25,13 +25,15 @@ object ShellIntegrationInjector {
         "bossterm_shell_integration.zsh",
         "bash-loader",
         "bossterm_shell_integration.bash",
-        "fish/vendor_conf.d/bossterm_shell_integration.fish"
+        "fish/vendor_conf.d/bossterm_shell_integration.fish",
+        "bin/boss-open"
     )
 
     // Lazy-initialized integration directory
     private val integrationDir: File by lazy {
         File(System.getProperty("user.home"), ".bossterm/shell-integration").also { dir ->
             extractAllResources(dir)
+            installOpenShims(dir)
         }
     }
 
@@ -169,7 +171,7 @@ object ShellIntegrationInjector {
                     // Make scripts executable
                     if (resource.endsWith(".bash") || resource.endsWith(".zsh") ||
                         resource.endsWith(".fish") || resource == "bash-loader" ||
-                        resource == ".zshenv") {
+                        resource == ".zshenv" || resource.startsWith("bin/")) {
                         targetFile.setExecutable(true)
                     }
                 } else {
@@ -177,6 +179,30 @@ object ShellIntegrationInjector {
                 }
             } catch (e: Exception) {
                 System.err.println("[ShellIntegration] Error extracting $resource: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Install the open-request shim under the names CLI tools actually spawn.
+     * The integration scripts prepend bin/ to PATH, so plain `open <url>` /
+     * `xdg-open <url>` calls from CLI commands are forwarded to the terminal
+     * as OSC 1341;OpenTarget instead of going straight to the OS default.
+     */
+    private fun installOpenShims(dir: File) {
+        val shim = File(dir, "bin/boss-open")
+        if (!shim.isFile) return
+        val names = buildList {
+            add("xdg-open")
+            if (ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isMacOS()) add("open")
+        }
+        for (name in names) {
+            try {
+                val target = File(dir, "bin/$name")
+                shim.copyTo(target, overwrite = true)
+                target.setExecutable(true)
+            } catch (e: Exception) {
+                LOG.warn("Error installing open shim '$name'", e)
             }
         }
     }

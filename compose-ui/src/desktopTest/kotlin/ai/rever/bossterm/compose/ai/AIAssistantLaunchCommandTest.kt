@@ -23,11 +23,9 @@ class AIAssistantLaunchCommandTest {
     }
 
     @Test
-    fun `codex launches with sandboxed auto flags`() {
-        // Codex CLI rejects the old --full-auto; the replacement keeps the
-        // sandbox --full-auto implied instead of a full approval bypass.
+    fun `codex launches with danger full access sandbox`() {
         assertEquals(
-            "codex --sandbox workspace-write --ask-for-approval never\n",
+            "codex --sandbox danger-full-access\n",
             provider.getLaunchCommand(builtin(AIAssistantIds.CODEX))
         )
     }

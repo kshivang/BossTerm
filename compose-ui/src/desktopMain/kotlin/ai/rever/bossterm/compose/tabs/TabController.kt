@@ -729,6 +729,9 @@ class TabController(
             if (!TerminalSessionSlots.tryReserve(1)) {
                 tab.connectionState.value = ConnectionState.Error(TerminalSessionSlots.EXHAUSTED_MESSAGE)
                 _showSessionCapacityDialog.value = true
+                // No drain loop will ever run — close the stream so writers don't feed
+                // a queue nobody reads. (The loop's finally does this on the normal path.)
+                runCatching { tab.dataStream.close() }
             } else {
                 scope.launch(TerminalSessionDispatcher) {
                     try {

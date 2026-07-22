@@ -292,9 +292,9 @@ fun TabbedTerminal(
             title = { Text("No terminal threads available") },
             text = {
                 Text(
-                    "All ${TerminalSessionSlots.MAX_THREADS} terminal session threads are in use " +
-                        "(${TerminalSessionSlots.usedThreads} reserved), so this terminal could not " +
-                        "start a shell. Close some terminal tabs or splits to free threads, then try again."
+                    "All ${TerminalSessionSlots.MAX_THREADS} terminal session threads are in use, " +
+                        "so this terminal could not start a shell. Close some terminal tabs or " +
+                        "splits to free threads, then try again."
                 )
             },
             confirmButton = {

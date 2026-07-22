@@ -184,6 +184,9 @@ class TerminalSessionCore(
                 if (h == null) {
                     _connectionState.value = State.Error("Failed to spawn process")
                     connected.complete(false)
+                    // The exit monitor was never armed, so nothing else will run close() —
+                    // without it the TerminalSessionSlots reservation leaks permanently.
+                    close()
                     return@launch
                 }
                 handle = h
@@ -249,9 +252,11 @@ class TerminalSessionCore(
                     }
                 }
 
-                // Exit monitor on a DEDICATED thread — not this coroutine — so we don't pin a
-                // coroutine pool thread in a blocking waitFor for the whole life of the session
-                // (waitFor itself parks a TerminalSessionDispatcher permit; see PlatformServices).
+                // Exit monitor on a DEDICATED thread — not a `scope` coroutine — purely so the
+                // teardown below runs independently of scope.cancel() in close(). Note waitFor()
+                // parks a TerminalSessionDispatcher permit regardless (accounted as one of the
+                // session's three), so this thread no longer avoids any pool pinning; it becomes
+                // removable once the pty4j-reaper exit-callback follow-up lands.
                 // On exit we self-close so the scope + write consumer
                 // + write channel are torn down (otherwise a naturally-exited shell leaks them).
                 Thread({
@@ -265,6 +270,11 @@ class TerminalSessionCore(
                 _connectionState.value = State.Error("Terminal initialization failed: ${e.message}")
                 connected.complete(false)
                 log.error("session {} init failed: {}", id, e.message)
+                // The exit monitor was never armed, so nothing else will run close() —
+                // without it the TerminalSessionSlots reservation leaks permanently.
+                // close() also kills a half-spawned PTY via `handle`, and is a no-op
+                // if a concurrent closeSession already ran.
+                close()
             }
         }
     }

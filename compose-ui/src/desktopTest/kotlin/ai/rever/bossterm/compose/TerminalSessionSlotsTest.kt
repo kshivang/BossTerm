@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose
 
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -118,6 +120,54 @@ class TerminalSessionSlotsTest {
                 .coerceIn(128, TerminalSessionSlots.HARD_MAX_THREADS),
             TerminalSessionSlots.defaultMaxThreads()
         )
+    }
+
+    // --- wiring tests: the reserve → launch → invokeOnCompletion-release pattern ---
+    // These mirror launchSessionCoroutine's mechanism on the real dispatcher without
+    // constructing a TabController: the leak-prone cases are cancel-before-start and
+    // cancel-while-running, both of which must return the reservation.
+
+    @Test
+    fun `reservation is returned when the scope is cancelled before the coroutine starts`() {
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob())
+        scope.cancel()
+
+        assertTrue(TerminalSessionSlots.tryReserve())
+        val reserved = TerminalSessionSlots.usedThreads
+        val released = java.util.concurrent.CountDownLatch(1)
+
+        scope.launch(TerminalSessionDispatcher) {
+            // never runs — the scope is already cancelled
+        }.invokeOnCompletion {
+            TerminalSessionSlots.release()
+            released.countDown()
+        }
+
+        assertTrue(released.await(5, java.util.concurrent.TimeUnit.SECONDS), "completion hook must fire for a never-started job")
+        assertEquals(reserved - TerminalSessionSlots.THREADS_PER_SESSION, TerminalSessionSlots.usedThreads)
+    }
+
+    @Test
+    fun `reservation is returned when a running session coroutine is cancelled`() {
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob())
+
+        assertTrue(TerminalSessionSlots.tryReserve())
+        val reserved = TerminalSessionSlots.usedThreads
+        val running = java.util.concurrent.CountDownLatch(1)
+        val released = java.util.concurrent.CountDownLatch(1)
+
+        scope.launch(TerminalSessionDispatcher) {
+            running.countDown()
+            kotlinx.coroutines.awaitCancellation()
+        }.invokeOnCompletion {
+            TerminalSessionSlots.release()
+            released.countDown()
+        }
+
+        assertTrue(running.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        scope.cancel()
+        assertTrue(released.await(5, java.util.concurrent.TimeUnit.SECONDS), "completion hook must fire on cancellation")
+        assertEquals(reserved - TerminalSessionSlots.THREADS_PER_SESSION, TerminalSessionSlots.usedThreads)
     }
 
     @Test

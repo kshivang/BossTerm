@@ -196,6 +196,10 @@ class TabController(
         }
         // invokeOnCompletion rather than try/finally: it also fires when the scope is
         // cancelled before the coroutine ever starts, so the reservation can't leak.
+        // A Job completes only after all its CHILDREN complete — and the session's
+        // reader/emulator loops are launched as children inside block() — so this
+        // release fires only after every loop has actually unwound, keeping the
+        // accounting from running ahead of the physically occupied permits.
         tab.coroutineScope.launch(TerminalSessionDispatcher) {
             block()
         }.invokeOnCompletion {
@@ -1240,8 +1244,10 @@ class TabController(
                     workingDirectoryState.value = config.workingDir
                 }
 
-                // Initialize terminal session with collected config
-                initializeTerminalSessionWithConfig(tab, config)
+                // Initialize terminal session with collected config. Passing this session
+                // coroutine's scope makes the reader/emulator loops its CHILDREN, so
+                // launchSessionCoroutine's release fires only after they unwind.
+                initializeTerminalSessionWithConfig(this, tab, config)
 
             } catch (e: Exception) {
                 tab.connectionState.value = ConnectionState.Error(
@@ -1258,6 +1264,7 @@ class TabController(
      * Initialize terminal session with pre-collected configuration.
      */
     private suspend fun initializeTerminalSessionWithConfig(
+        sessionScope: CoroutineScope,
         tab: TerminalTab,
         config: PreConnectConfig
     ) {
@@ -1371,7 +1378,11 @@ class TabController(
 
             // Start emulator processing coroutine. Blocks in dataStream.char between
             // chunks, so it must not hold one of Dispatchers.Default's nCPU permits.
-            tab.coroutineScope.launch(TerminalSessionDispatcher) {
+            // Launched in sessionScope — a CHILD of the session coroutine, not a
+            // sibling on tab.coroutineScope — so launchSessionCoroutine's release
+            // fires only after this loop unwinds and the accounting never runs
+            // ahead of the physically occupied permits.
+            sessionScope.launch(TerminalSessionDispatcher) {
                 try {
                     while (handle.isAlive()) {
                         try {
@@ -1391,11 +1402,11 @@ class TabController(
             }
 
             // Read PTY output in background (uses shared helper to eliminate duplication)
-            startPtyReaderCoroutine(tab.coroutineScope, tab, handle)
+            startPtyReaderCoroutine(sessionScope, tab, handle)
 
             // Start debug state capture coroutine if enabled
             tab.debugCollector?.let { collector ->
-                tab.coroutineScope.launch(Dispatchers.IO) {
+                sessionScope.launch(Dispatchers.IO) {
                     try {
                         while (handle.isAlive() && isActive) {
                             delay(settings.debugCaptureInterval)

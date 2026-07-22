@@ -158,7 +158,14 @@ class TerminalSessionCore(
     fun addRawOutputListener(listener: (String) -> Unit) = dataStream.addRawOutputListener(listener)
     fun removeRawOutputListener(listener: (String) -> Unit) = dataStream.removeRawOutputListener(listener)
 
-    /** Spawn the PTY and start the read/emulate/exit-monitor loops. Idempotent. */
+    /**
+     * Spawn the PTY and start the read/emulate/exit-monitor loops. Idempotent.
+     *
+     * A TerminalSessionSlots refusal is PERMANENT for this core: `started` is
+     * consumed before the reservation attempt, so a refused core stays a no-op
+     * even after capacity frees up. Intentional — start() is one-shot; a caller
+     * that wants to retry after the user closes sessions constructs a new core.
+     */
     fun start() {
         if (!started.compareAndSet(false, true)) return // atomic idempotency — never spawn two PTYs
         // Reserve the session's long-lived threads (reader, emulator, waitFor) up front —

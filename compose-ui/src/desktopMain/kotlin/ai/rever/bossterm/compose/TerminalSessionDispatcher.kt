@@ -24,10 +24,14 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
  *
  * The view's parallelism is [TerminalSessionSlots.HARD_MAX_THREADS] plus a
  * little headroom — the ceiling of the configurable budget, since the view is
- * created once and cannot be resized at runtime. The headroom also covers the
- * advisory nature of the accounting (a session's reservation can be released
- * slightly before its loops finish unwinding during teardown), so short-lived
- * work on the view never depends on a permit being free at exactly the budget.
+ * created once and cannot be resized at runtime. TabController releases only
+ * after the session Job (including its child loops) completes, and
+ * EmbeddableTerminal counts down all three loop jobs, so their accounting
+ * never runs ahead of the physically occupied permits. The daemon path
+ * (TerminalSessionCore) still releases in close() while its loops unwind —
+ * a small constant headroom, NOT proportional to concurrent daemon closes,
+ * which is acceptable because the loops exit as soon as the killed PTY's
+ * isAlive() flips false.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 val TerminalSessionDispatcher: CoroutineDispatcher =

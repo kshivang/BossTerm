@@ -1020,7 +1020,7 @@ private suspend fun initializeProcess(
 
         // Start emulator coroutine. Blocks in dataStream.char between chunks, so it
         // must not hold one of Dispatchers.Default's nCPU permits.
-        session.coroutineScope.launch(TerminalSessionDispatcher) {
+        val emulatorJob = session.coroutineScope.launch(TerminalSessionDispatcher) {
             try {
                 while (processHandle.isAlive()) {
                     try {
@@ -1041,7 +1041,7 @@ private suspend fun initializeProcess(
 
         // Start output reader coroutine — blocks in processHandle.read() for the
         // session's whole life, kept off the shared Dispatchers.IO permits.
-        session.coroutineScope.launch(TerminalSessionDispatcher) {
+        val readerJob = session.coroutineScope.launch(TerminalSessionDispatcher) {
             while (processHandle.isAlive()) {
                 val output = processHandle.read()
                 if (output != null) {
@@ -1123,16 +1123,23 @@ private suspend fun initializeProcess(
         }
 
         // Monitor process exit (waitFor parks a TerminalSessionDispatcher thread).
-        // Its completion — normal exit or scope cancellation on dispose — returns the
-        // session's TerminalSessionSlots reservation.
-        session.coroutineScope.launch(TerminalSessionDispatcher) {
+        val exitMonitorJob = session.coroutineScope.launch(TerminalSessionDispatcher) {
             val exitCode = processHandle.waitFor()
             session.connectionState.value = ConnectionState.Error("Process exited with code $exitCode")
             onExit?.invoke(exitCode)
-        }.invokeOnCompletion {
-            TerminalSessionSlots.release()
         }
-        // Ownership transferred: the exit monitor's completion hook releases from here on.
+
+        // Release the reservation only after ALL three session loops have completed —
+        // normal exit or scope cancellation on dispose — so the accounting never runs
+        // ahead of the physically occupied permits during a mass close.
+        // invokeOnCompletion fires even for already-completed or never-started jobs.
+        val remainingLoops = java.util.concurrent.atomic.AtomicInteger(3)
+        listOf(emulatorJob, readerJob, exitMonitorJob).forEach { job ->
+            job.invokeOnCompletion {
+                if (remainingLoops.decrementAndGet() == 0) TerminalSessionSlots.release()
+            }
+        }
+        // Ownership transferred: the loop-completion countdown releases from here on.
         slotsHeld = false
 
     } catch (e: CancellationException) {

@@ -5,12 +5,21 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import javax.imageio.ImageIO
 
-internal data class DecodedRaster(
+internal class DecodedRaster(
     val pngData: ByteArray,
     val width: Int,
     val height: Int
 )
 
+/**
+ * Bounds both encoded input and decoded working memory.
+ *
+ * ARGB conversion can temporarily retain the source [IntArray] and a
+ * [BufferedImage] at the same time. The 16M-pixel ceiling therefore permits
+ * roughly 128 MiB of pixel buffers at peak, plus the encoded PNG output. The
+ * 50 MiB encoded-image quotas elsewhere are cache limits, not total decoder
+ * working-memory limits.
+ */
 internal object RasterCodec {
     const val MAX_ENCODED_BYTES: Int = 50 * 1024 * 1024
     const val MAX_BASE64_CHARS: Int = 70 * 1024 * 1024
@@ -18,7 +27,7 @@ internal object RasterCodec {
     // maximum-size encoded payload.
     const val MAX_CONTROL_STRING_CHARS: Int = MAX_BASE64_CHARS + 64 * 1024
     const val MAX_DIMENSION: Int = 16_384
-    const val MAX_PIXELS: Long = 64L * 1024 * 1024
+    const val MAX_PIXELS: Long = 16L * 1024 * 1024
 
     fun readPng(data: ByteArray): DecodedRaster {
         require(data.size <= MAX_ENCODED_BYTES) { "image exceeds the 50 MiB limit" }
@@ -29,9 +38,34 @@ internal object RasterCodec {
                 data[4] == 0x0d.toByte() && data[5] == 0x0a.toByte() &&
                 data[6] == 0x1a.toByte() && data[7] == 0x0a.toByte()
         ) { "payload is not a PNG image" }
-        val image = ImageIO.read(ByteArrayInputStream(data))
-            ?: throw IllegalArgumentException("payload is not a decodable PNG image")
+        require(data.size >= PNG_DIMENSIONS_END_OFFSET) { "PNG payload is truncated before IHDR dimensions" }
+        require(readUnsignedInt(data, 8) == PNG_IHDR_DATA_BYTES.toLong()) { "PNG does not begin with a valid IHDR" }
+        require(
+            data[12] == 'I'.code.toByte() && data[13] == 'H'.code.toByte() &&
+                data[14] == 'D'.code.toByte() && data[15] == 'R'.code.toByte()
+        ) { "PNG does not begin with an IHDR chunk" }
+
+        val declaredWidth = readUnsignedInt(data, 16)
+        val declaredHeight = readUnsignedInt(data, 20)
+        require(declaredWidth <= Int.MAX_VALUE && declaredHeight <= Int.MAX_VALUE) {
+            "PNG dimensions are outside the supported range"
+        }
+        // Validate IHDR before ImageIO allocates the decoded raster. This is the
+        // decompression-bomb boundary for f=100 and zlib-wrapped PNG payloads.
+        validateDimensions(declaredWidth.toInt(), declaredHeight.toInt())
+
+        val image = try {
+            ImageIO.read(ByteArrayInputStream(data))
+                ?: throw IllegalArgumentException("payload is not a decodable PNG image")
+        } catch (error: IllegalArgumentException) {
+            throw error
+        } catch (_: Exception) {
+            throw IllegalArgumentException("payload is not a decodable PNG image")
+        }
         validateDimensions(image.width, image.height)
+        require(image.width == declaredWidth.toInt() && image.height == declaredHeight.toInt()) {
+            "decoded PNG dimensions do not match IHDR"
+        }
         return DecodedRaster(data, image.width, image.height)
     }
 
@@ -72,4 +106,13 @@ internal object RasterCodec {
         }
         require(width.toLong() * height <= MAX_PIXELS) { "image exceeds the pixel limit" }
     }
+
+    private fun readUnsignedInt(data: ByteArray, offset: Int): Long =
+        ((data[offset].toLong() and 0xff) shl 24) or
+            ((data[offset + 1].toLong() and 0xff) shl 16) or
+            ((data[offset + 2].toLong() and 0xff) shl 8) or
+            (data[offset + 3].toLong() and 0xff)
+
+    private const val PNG_IHDR_DATA_BYTES = 13
+    private const val PNG_DIMENSIONS_END_OFFSET = 24
 }

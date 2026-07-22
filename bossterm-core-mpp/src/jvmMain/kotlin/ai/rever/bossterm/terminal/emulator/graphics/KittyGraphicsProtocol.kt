@@ -16,7 +16,14 @@ import java.nio.file.StandardOpenOption
 import java.util.Base64
 import java.util.zip.InflaterInputStream
 
-/** Stateful implementation of the commonly used Kitty graphics protocol commands. */
+/**
+ * Stateful implementation of the commonly used Kitty graphics protocol commands.
+ *
+ * Stored transfers and placed terminal images have independent 50 MiB cache
+ * budgets. Placement copies retain the same [ByteArray] reference, so one image
+ * is not duplicated, but disjoint stored-only and placed-only sets can retain up
+ * to the combined budget.
+ */
 internal class KittyGraphicsProtocol {
     private data class Command(
         val controls: Map<Char, String>,

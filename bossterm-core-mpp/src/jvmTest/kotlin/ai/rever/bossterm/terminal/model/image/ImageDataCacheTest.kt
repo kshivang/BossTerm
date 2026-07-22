@@ -2,6 +2,7 @@ package ai.rever.bossterm.terminal.model.image
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.concurrent.thread
 
 class ImageDataCacheTest {
 
@@ -16,5 +17,22 @@ class ImageDataCacheTest {
 
         assertEquals(1, cache.imageCount)
         assertEquals(25, cache.totalMemoryUsed)
+    }
+
+    @Test
+    fun concurrentReplacementsKeepByteAccountingConsistent() {
+        val cache = ImageDataCache()
+        val workers = List(8) {
+            thread(start = true) {
+                repeat(1_000) {
+                    cache.storeImage(TerminalImage(id = 42, data = ByteArray(7)))
+                }
+            }
+        }
+
+        workers.forEach(Thread::join)
+
+        assertEquals(1, cache.imageCount)
+        assertEquals(7, cache.totalMemoryUsed)
     }
 }

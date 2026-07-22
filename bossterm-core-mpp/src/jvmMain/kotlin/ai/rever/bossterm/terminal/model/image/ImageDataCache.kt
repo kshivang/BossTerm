@@ -22,12 +22,15 @@ class ImageDataCache(
     private val images = ConcurrentHashMap<Long, TerminalImage>()
     private val accessOrder = ConcurrentHashMap<Long, Long>() // id -> access timestamp
     private val accessCounter = AtomicLong(0)
+    @Volatile
     private var totalBytes: Long = 0
 
     /**
      * Store image data. Returns imageId for reference from ImageAnchorCell.
      */
+    @Synchronized
     fun storeImage(image: TerminalImage): Long {
+        require(image.data.size.toLong() <= maxTotalBytes) { "image exceeds the cache byte limit" }
         val replaced = images.remove(image.id)
         if (replaced != null) {
             totalBytes -= replaced.data.size
@@ -47,7 +50,9 @@ class ImageDataCache(
      */
     fun getImage(imageId: Long): TerminalImage? {
         val image = images[imageId] ?: return null
-        accessOrder[imageId] = accessCounter.incrementAndGet()
+        // Do not resurrect an access-order entry if a concurrent cache
+        // mutation removed the image after the read above.
+        accessOrder.computeIfPresent(imageId) { _, _ -> accessCounter.incrementAndGet() }
         return image
     }
 
@@ -60,6 +65,7 @@ class ImageDataCache(
      * Remove image from cache.
      * Called when image cells are cleared from buffer (text overwrite, scroll out).
      */
+    @Synchronized
     fun removeImage(imageId: Long): Boolean {
         val image = images.remove(imageId) ?: return false
         totalBytes -= image.data.size
@@ -71,6 +77,7 @@ class ImageDataCache(
     /**
      * Clear all cached images.
      */
+    @Synchronized
     fun clearAll() {
         images.clear()
         accessOrder.clear()

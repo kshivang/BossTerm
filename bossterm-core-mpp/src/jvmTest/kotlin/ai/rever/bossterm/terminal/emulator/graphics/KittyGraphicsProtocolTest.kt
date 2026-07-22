@@ -148,6 +148,23 @@ class KittyGraphicsProtocolTest {
     }
 
     @Test
+    fun unicodePlaceholderInheritanceContinuesAcrossAdjacentTextBatches() {
+        val recording = RecordingTerminal()
+        val protocol = KittyGraphicsProtocol()
+        val encoded = Base64.getEncoder().encodeToString(byteArrayOf(0x12, 0x34, 0x56, 0xff.toByte()))
+        protocol.process("Ga=T,U=1,f=32,s=1,v=1,i=42,C=1;$encoded", recording.terminal)
+        recording.currentStyle = TextStyle(TerminalColor.index(42), null)
+        val base = String(Character.toChars(KittyUnicodePlaceholder.CODE_POINT))
+
+        assertTrue(protocol.processText(base + "\u0305", recording.terminal))
+        assertTrue(protocol.processText(base, recording.terminal))
+        assertTrue(protocol.processText(base, recording.terminal))
+
+        assertEquals(listOf(0, 1, 2), recording.placeholderCells.map { it.cellX })
+        assertEquals(listOf(0, 0, 0), recording.placeholderCells.map { it.cellY })
+    }
+
+    @Test
     fun screenWideDeleteDoesNotDeleteVirtualPlacements() {
         val recording = RecordingTerminal()
         val protocol = KittyGraphicsProtocol()
@@ -161,6 +178,18 @@ class KittyGraphicsProtocolTest {
 
         assertEquals(1, recording.placeholderCells.size)
         assertEquals(recording.placeholderCells.mapTo(mutableSetOf()) { it.image.id }, recording.retainedOnClear.single())
+    }
+
+    @Test
+    fun missingPlaceholderPrototypeBecomesBlankInsteadOfLeakingPrivateUseGlyphs() {
+        val recording = RecordingTerminal()
+        recording.currentStyle = TextStyle(TerminalColor.index(42), null)
+        val placeholder = String(Character.toChars(KittyUnicodePlaceholder.CODE_POINT)) + "\u0305\u0305"
+
+        assertTrue(KittyGraphicsProtocol().processText(placeholder, recording.terminal))
+
+        assertEquals(listOf(" "), recording.writtenText)
+        assertTrue(recording.placeholderCells.isEmpty())
     }
 
     @Test

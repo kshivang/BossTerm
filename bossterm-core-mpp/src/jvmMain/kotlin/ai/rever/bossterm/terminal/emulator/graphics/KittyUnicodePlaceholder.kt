@@ -3,6 +3,7 @@ package ai.rever.bossterm.terminal.emulator.graphics
 /** Decoder for Kitty's U+10EEEE Unicode image-placeholder coordinates. */
 internal object KittyUnicodePlaceholder {
     const val CODE_POINT = 0x10EEEE
+    val text: String = String(Character.toChars(CODE_POINT))
 
     data class Position(val row: Int, val column: Int, val imageIdHighByte: Int)
 
@@ -44,6 +45,8 @@ internal object KittyUnicodePlaceholder {
         0xA6F0, 0xA6F1, 0xA8E0, 0xA8E1, 0xA8E2, 0xA8E3, 0xA8E4, 0xA8E5
     )
     private val indexByDiacritic = diacritics.withIndex().associate { it.value to it.index }
+
+    fun isDiacritic(codePoint: Int): Boolean = codePoint in indexByDiacritic
 
     fun decode(codePoints: IntArray, previous: Position?): Position? {
         if (codePoints.firstOrNull() != CODE_POINT || codePoints.size > 4) return null

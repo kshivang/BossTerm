@@ -7,6 +7,7 @@ import ai.rever.bossterm.terminal.*
 import ai.rever.bossterm.terminal.emulator.mouse.MouseFormat
 import ai.rever.bossterm.terminal.emulator.mouse.MouseMode
 import ai.rever.bossterm.terminal.emulator.graphics.KittyGraphicsProtocol
+import ai.rever.bossterm.terminal.emulator.graphics.KittyUnicodePlaceholder
 import ai.rever.bossterm.terminal.emulator.graphics.RasterCodec
 import ai.rever.bossterm.terminal.emulator.graphics.SixelDecoder
 import ai.rever.bossterm.terminal.util.CharUtils
@@ -116,7 +117,8 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
 
     @Throws(IOException::class)
     private fun readNonControlCharacters(maxChars: Int, ambiguousAreDWC: kotlin.Boolean): String {
-        val result = myDataStream.readNonControlCharacters(maxChars) ?: return ""
+        var result = myDataStream.readNonControlCharacters(maxChars) ?: return ""
+        result = completeTrailingKittyPlaceholder(result)
 
         // Segment into grapheme clusters to handle surrogate pairs, emoji, etc.
         val graphemes = GraphemeUtils.segmentIntoGraphemes(result)
@@ -168,6 +170,55 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
         }
 
         return outputText
+    }
+
+    /**
+     * [TerminalDataStream.readNonControlCharacters] limits UTF-16 code units,
+     * not grapheme cells. A limit can therefore split U+10EEEE from one of its
+     * coordinate diacritics. Complete only that trailing protocol grapheme
+     * before generic segmentation; the first unrelated character is pushed
+     * back for normal processing.
+     */
+    @Throws(IOException::class)
+    private fun completeTrailingKittyPlaceholder(text: String): String {
+        if (text.isEmpty()) return text
+        val completed = StringBuilder(text)
+
+        if (completed.last().isHighSurrogate()) {
+            val next = try {
+                myDataStream.char
+            } catch (_: TerminalDataStream.EOF) {
+                return text
+            }
+            if (next.isLowSurrogate()) {
+                completed.append(next)
+            } else {
+                myDataStream.pushChar(next)
+                return text
+            }
+        }
+
+        val baseIndex = completed.lastIndexOf(KittyUnicodePlaceholder.text)
+        if (baseIndex < 0) return completed.toString()
+        val suffix = completed.substring(baseIndex + KittyUnicodePlaceholder.text.length)
+        if (suffix.any { !KittyUnicodePlaceholder.isDiacritic(it.code) }) return completed.toString()
+
+        var diacriticCount = suffix.length
+        while (diacriticCount < MAX_KITTY_PLACEHOLDER_DIACRITICS) {
+            val next = try {
+                myDataStream.char
+            } catch (_: TerminalDataStream.EOF) {
+                break
+            }
+            if (KittyUnicodePlaceholder.isDiacritic(next.code)) {
+                completed.append(next)
+                diacriticCount++
+            } else {
+                myDataStream.pushChar(next)
+                break
+            }
+        }
+        return completed.toString()
     }
 
     @Throws(IOException::class)
@@ -1781,6 +1832,7 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
         private val DCS: Char = 0x90.toChar()
         private val ST: Char = 0x9c.toChar()
         private val APC: Char = 0x9f.toChar()
+        private const val MAX_KITTY_PLACEHOLDER_DIACRITICS = 3
         private val LOG: Logger = LoggerFactory.getLogger(BossEmulator::class.java)
 
         private var logThrottlerCounter = 0

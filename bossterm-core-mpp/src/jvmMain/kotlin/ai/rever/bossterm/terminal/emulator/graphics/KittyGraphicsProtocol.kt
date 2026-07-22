@@ -42,6 +42,8 @@ internal class KittyGraphicsProtocol {
     private var pendingTransfer: PendingTransfer? = null
     private var nextGeneratedId = 1L
     private var storedBytes = 0L
+    private var previousPlaceholder: KittyUnicodePlaceholder.Position? = null
+    private var previousPlaceholderImageIdLow: Long? = null
 
     fun process(apcBody: String, terminal: Terminal?): Boolean {
         if (!apcBody.startsWith('G')) return false
@@ -99,6 +101,8 @@ internal class KittyGraphicsProtocol {
         imageIdsByNumber.clear()
         virtualImagesById.clear()
         storedBytes = 0
+        previousPlaceholder = null
+        previousPlaceholderImageIdLow = null
     }
 
     /**
@@ -109,9 +113,9 @@ internal class KittyGraphicsProtocol {
     fun processText(text: String, terminal: Terminal?): Boolean {
         if (terminal == null || !text.contains(PLACEHOLDER_TEXT)) return false
 
-        val lowerImageId = foregroundImageId(terminal) ?: return false
+        val lowerImageId = foregroundImageId(terminal)
         val output = StringBuilder()
-        var previous: KittyUnicodePlaceholder.Position? = null
+        var previous = previousPlaceholder.takeIf { previousPlaceholderImageIdLow == lowerImageId }
 
         fun flushText() {
             if (output.isNotEmpty()) {
@@ -128,13 +132,17 @@ internal class KittyGraphicsProtocol {
             }
 
             val position = KittyUnicodePlaceholder.decode(grapheme.codePoints, previous)
-            val imageId = position?.let {
-                lowerImageId or (it.imageIdHighByte.toLong() shl 24)
-            }
+            val imageId = position?.let { positionValue -> lowerImageId?.let {
+                it or (positionValue.imageIdHighByte.toLong() shl 24)
+            } }
             val image = imageId?.let(virtualImagesById::get)
             if (position == null || image == null) {
-                output.append(grapheme.text)
-                previous = null
+                // U+10EEEE is reserved for this protocol. If its prototype has
+                // expired or its coordinates are malformed, it is an empty cell
+                // rather than a printable private-use glyph.
+                flushText()
+                terminal.writeCharacters(" ")
+                previous = position
                 continue
             }
 
@@ -143,6 +151,8 @@ internal class KittyGraphicsProtocol {
             previous = position
         }
         flushText()
+        previousPlaceholder = previous
+        previousPlaceholderImageIdLow = lowerImageId
         return true
     }
 
@@ -536,7 +546,7 @@ internal class KittyGraphicsProtocol {
         controls['a'] == "q" || controls.containsKey('i') || controls.containsKey('I')
 
     private companion object {
-        private val PLACEHOLDER_TEXT = String(Character.toChars(KittyUnicodePlaceholder.CODE_POINT))
+        private val PLACEHOLDER_TEXT = KittyUnicodePlaceholder.text
         private const val UINT32_MAX = 0xffff_ffffL
         private const val MAX_RESPONSE_CHARS = 256
         private const val MAX_STORED_BYTES = 50 * 1024 * 1024

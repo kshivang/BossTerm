@@ -485,6 +485,33 @@ class TerminalTextBuffer internal constructor(
   }
 
   /**
+   * Replace one text cell with one slice of a virtual image. Writing the blank
+   * first gives transparent pixels the placeholder's current background and
+   * ensures later text overwrites remove the image through the normal path.
+   */
+  fun writeImagePlaceholderCell(
+    row: Int,
+    col: Int,
+    imageId: Long,
+    cellX: Int,
+    cellY: Int,
+    cellWidth: Int,
+    cellHeight: Int
+  ) {
+    myLock.lock()
+    try {
+      if (row !in 0 until screenLinesStorage.size || col !in 0 until width) return
+      val line = screenLinesStorage[row]
+      line.writeString(col, CharBuffer(' ', 1), styleState.current)
+      line.setImageCell(col, ImageCell(imageId, cellX, cellY, cellWidth, cellHeight))
+      fireModelChangeEvent()
+      changesMulticaster.linesChanged(fromIndex = row)
+    } finally {
+      myLock.unlock()
+    }
+  }
+
+  /**
    * Remove image cells from both scrollback and the visible screen.
    *
    * Line positions change during scroll and resize, so per-image deletion
@@ -506,6 +533,31 @@ class TerminalTextBuffer internal constructor(
         val line = screenLinesStorage[index]
         val changed = if (imageId == null) line.clearAllImageCells() else line.clearImageCells(imageId)
         if (changed && firstChangedLine == null) firstChangedLine = index
+      }
+      firstChangedLine?.let {
+        fireModelChangeEvent()
+        changesMulticaster.linesChanged(fromIndex = it)
+      }
+    } finally {
+      myLock.unlock()
+    }
+  }
+
+  /** Remove physical placements while retaining Unicode-placeholder cells. */
+  fun clearImageCellsExcept(retainedImageIds: Set<Long>) {
+    myLock.lock()
+    try {
+      val historySize = historyLinesStorage.size
+      var firstChangedLine: Int? = null
+      for (index in 0 until historySize) {
+        if (historyLinesStorage[index].clearImageCellsExcept(retainedImageIds) && firstChangedLine == null) {
+          firstChangedLine = index - historySize
+        }
+      }
+      for (index in 0 until screenLinesStorage.size) {
+        if (screenLinesStorage[index].clearImageCellsExcept(retainedImageIds) && firstChangedLine == null) {
+          firstChangedLine = index
+        }
       }
       firstChangedLine?.let {
         fireModelChangeEvent()

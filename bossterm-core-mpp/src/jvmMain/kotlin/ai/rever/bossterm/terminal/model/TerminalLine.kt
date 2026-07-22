@@ -120,6 +120,15 @@ class TerminalLine {
         return true
     }
 
+    /** Clear image cells other than those backed by retained virtual images. */
+    fun clearImageCellsExcept(retainedImageIds: Set<Long>): Boolean {
+        val cells = myImageCells ?: return false
+        if (!cells.entries.removeIf { it.value.imageId !in retainedImageIds }) return false
+        if (cells.isEmpty()) myImageCells = null
+        incrementSnapshotVersion()
+        return true
+    }
+
     // ============ End Image Cell Methods ============
 
     constructor()

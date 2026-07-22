@@ -5,6 +5,7 @@ import ai.rever.bossterm.terminal.Terminal
 import ai.rever.bossterm.terminal.model.image.DimensionSpec
 import ai.rever.bossterm.terminal.model.image.ImageFormat
 import ai.rever.bossterm.terminal.model.image.TerminalImage
+import ai.rever.bossterm.terminal.util.GraphemeUtils
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
@@ -37,6 +38,7 @@ internal class KittyGraphicsProtocol {
 
     private val imagesById = linkedMapOf<Long, TerminalImage>()
     private val imageIdsByNumber = mutableMapOf<Long, Long>()
+    private val virtualImagesById = mutableMapOf<Long, TerminalImage>()
     private var pendingTransfer: PendingTransfer? = null
     private var nextGeneratedId = 1L
     private var storedBytes = 0L
@@ -95,7 +97,53 @@ internal class KittyGraphicsProtocol {
         pendingTransfer = null
         imagesById.clear()
         imageIdsByNumber.clear()
+        virtualImagesById.clear()
         storedBytes = 0
+    }
+
+    /**
+     * Consume Kitty Unicode image placeholders from an otherwise ordinary text
+     * run. Returning true means this method wrote every part of [text], including
+     * non-placeholder spans, so the emulator must not write it a second time.
+     */
+    fun processText(text: String, terminal: Terminal?): Boolean {
+        if (terminal == null || !text.contains(PLACEHOLDER_TEXT)) return false
+
+        val lowerImageId = foregroundImageId(terminal) ?: return false
+        val output = StringBuilder()
+        var previous: KittyUnicodePlaceholder.Position? = null
+
+        fun flushText() {
+            if (output.isNotEmpty()) {
+                terminal.writeCharacters(output.toString())
+                output.setLength(0)
+            }
+        }
+
+        for (grapheme in GraphemeUtils.segmentIntoGraphemes(text)) {
+            if (grapheme.codePoints.firstOrNull() != KittyUnicodePlaceholder.CODE_POINT) {
+                output.append(grapheme.text)
+                previous = null
+                continue
+            }
+
+            val position = KittyUnicodePlaceholder.decode(grapheme.codePoints, previous)
+            val imageId = position?.let {
+                lowerImageId or (it.imageIdHighByte.toLong() shl 24)
+            }
+            val image = imageId?.let(virtualImagesById::get)
+            if (position == null || image == null) {
+                output.append(grapheme.text)
+                previous = null
+                continue
+            }
+
+            flushText()
+            terminal.processInlineImagePlaceholder(image, position.column, position.row)
+            previous = position
+        }
+        flushText()
+        return true
     }
 
     private fun processComplete(command: Command, terminal: Terminal?) {
@@ -122,7 +170,11 @@ internal class KittyGraphicsProtocol {
                 storeImage(externalId, image)
                 imageNumberFor(command.controls)?.let { number -> imageIdsByNumber[number] = externalId }
                 if (action == 'T') {
-                    place(image, command.controls, terminal)
+                    if (command.controls['U'] == "1") {
+                        createVirtualPlacement(externalId, image, command.controls)
+                    } else {
+                        place(image, command.controls, terminal)
+                    }
                 }
                 if (responseRequested(command.controls)) {
                     respond(terminal, command.controls + ('i' to externalId.toString()), success = true)
@@ -131,7 +183,12 @@ internal class KittyGraphicsProtocol {
 
             'p' -> {
                 val image = findImage(command.controls)
-                place(image, command.controls, terminal)
+                val externalId = externalIdFor(command.controls)
+                if (command.controls['U'] == "1") {
+                    createVirtualPlacement(externalId, image, command.controls)
+                } else {
+                    place(image, command.controls, terminal)
+                }
                 respond(terminal, command.controls, success = true)
             }
 
@@ -172,13 +229,7 @@ internal class KittyGraphicsProtocol {
     }
 
     private fun place(image: TerminalImage, controls: Map<Char, String>, terminal: Terminal?) {
-        val columns = placementDimension(controls['c'])
-        val rows = placementDimension(controls['r'])
-        val sizedImage = image.copy(
-            widthSpec = columns?.let(DimensionSpec::Cells) ?: DimensionSpec.Auto,
-            heightSpec = rows?.let(DimensionSpec::Cells) ?: DimensionSpec.Auto,
-            preserveAspectRatio = columns == null || rows == null
-        )
+        val sizedImage = sizedImage(image, controls, preserveAspectRatio = null)
         val placement = terminal?.processInlineImage(sizedImage, moveCursor = false)
         if (controls['C'] != "1" && placement != null) {
             // Kitty moves relative to the original cursor in both axes. This is
@@ -189,18 +240,44 @@ internal class KittyGraphicsProtocol {
         }
     }
 
+    private fun createVirtualPlacement(externalId: Long, image: TerminalImage, controls: Map<Char, String>) {
+        // Virtual placements are prototypes. Their cells are materialized only
+        // when U+10EEEE placeholders appear in the normal text stream.
+        virtualImagesById[externalId] = sizedImage(image, controls, preserveAspectRatio = true)
+    }
+
+    private fun sizedImage(
+        image: TerminalImage,
+        controls: Map<Char, String>,
+        preserveAspectRatio: Boolean?
+    ): TerminalImage {
+        val columns = placementDimension(controls['c'])
+        val rows = placementDimension(controls['r'])
+        return image.copy(
+            widthSpec = columns?.let(DimensionSpec::Cells) ?: DimensionSpec.Auto,
+            heightSpec = rows?.let(DimensionSpec::Cells) ?: DimensionSpec.Auto,
+            preserveAspectRatio = preserveAspectRatio ?: (columns == null || rows == null)
+        )
+    }
+
     private fun delete(controls: Map<Char, String>, terminal: Terminal?) {
         pendingTransfer = null
         val selector = controls['d']?.firstOrNull() ?: 'a'
         when (selector) {
             'a', 'A' -> {
-                terminal?.clearAllImages()
-                if (selector == 'A') reset()
+                // Screen-position selectors never affect virtual placements;
+                // their visible cells are erased by normal text operations.
+                val retainedImageIds = virtualImagesById.values.mapTo(mutableSetOf()) { it.id }
+                terminal?.clearImagesExcept(retainedImageIds)
+                if (selector == 'A') {
+                    imagesById.keys.filter { it !in virtualImagesById }.forEach(::removeStoredImage)
+                }
             }
             'i', 'I' -> {
                 val externalId = controls['i']?.toLongOrNull()
                     ?: throw IllegalArgumentException("EINVAL: delete-by-id requires i")
                 val image = imagesById[externalId] ?: return
+                virtualImagesById.remove(externalId)
                 terminal?.removeInlineImage(image.id)
                 if (selector == 'I') removeStoredImage(externalId)
             }
@@ -209,6 +286,7 @@ internal class KittyGraphicsProtocol {
                     ?: throw IllegalArgumentException("EINVAL: delete-by-number requires I")
                 val externalId = imageIdsByNumber[number] ?: return
                 val image = imagesById[externalId] ?: return
+                virtualImagesById.remove(externalId)
                 terminal?.removeInlineImage(image.id)
                 if (selector == 'N') removeStoredImage(externalId)
             }
@@ -224,6 +302,7 @@ internal class KittyGraphicsProtocol {
             imagesById.remove(oldest.key)
             storedBytes -= oldest.value.data.size
             imageIdsByNumber.entries.removeIf { it.value == oldest.key }
+            virtualImagesById.remove(oldest.key)
         }
         imagesById[externalId] = image
         storedBytes += image.data.size
@@ -232,6 +311,7 @@ internal class KittyGraphicsProtocol {
     private fun removeStoredImage(externalId: Long) {
         imagesById.remove(externalId)?.let { storedBytes -= it.data.size }
         imageIdsByNumber.entries.removeIf { it.value == externalId }
+        virtualImagesById.remove(externalId)
     }
 
     private fun findImage(controls: Map<Char, String>): TerminalImage {
@@ -245,6 +325,24 @@ internal class KittyGraphicsProtocol {
             imageIdsByNumber[number]?.let(imagesById::get)?.let { return it }
         }
         throw IllegalArgumentException("ENOENT: Kitty image was not found")
+    }
+
+    private fun externalIdFor(controls: Map<Char, String>): Long {
+        controls['i']?.toLongOrNull()?.let { return it }
+        imageNumberFor(controls)?.let { number ->
+            imageIdsByNumber[number]?.let { return it }
+        }
+        throw IllegalArgumentException("ENOENT: Kitty image was not found")
+    }
+
+    private fun foregroundImageId(terminal: Terminal): Long? {
+        val foreground = terminal.currentTextStyle()?.foreground ?: return null
+        return if (foreground.isIndexed) {
+            foreground.colorIndex.toLong() and 0xff
+        } else {
+            val color = foreground.toColor()
+            ((color.red.toLong() shl 16) or (color.green.toLong() shl 8) or color.blue.toLong()) and 0xffffff
+        }
     }
 
     private fun imageIdFor(controls: Map<Char, String>): Long {
@@ -438,6 +536,7 @@ internal class KittyGraphicsProtocol {
         controls['a'] == "q" || controls.containsKey('i') || controls.containsKey('I')
 
     private companion object {
+        private val PLACEHOLDER_TEXT = String(Character.toChars(KittyUnicodePlaceholder.CODE_POINT))
         private const val UINT32_MAX = 0xffff_ffffL
         private const val MAX_RESPONSE_CHARS = 256
         private const val MAX_STORED_BYTES = 50 * 1024 * 1024

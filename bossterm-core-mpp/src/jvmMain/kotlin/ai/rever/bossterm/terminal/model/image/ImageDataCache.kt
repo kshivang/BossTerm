@@ -85,6 +85,12 @@ class ImageDataCache(
         LOG.debug("Cleared all images")
     }
 
+    /** Drop cached images that do not back a retained virtual placement. */
+    @Synchronized
+    fun retainOnly(retainedImageIds: Set<Long>) {
+        images.keys.filter { it !in retainedImageIds }.forEach(::removeImage)
+    }
+
     /**
      * Get current number of cached images.
      */

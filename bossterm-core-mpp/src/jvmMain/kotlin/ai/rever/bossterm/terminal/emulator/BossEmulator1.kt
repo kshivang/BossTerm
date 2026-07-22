@@ -107,7 +107,9 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
                 val nonControlCharacters =
                     readNonControlCharacters(terminal?.distanceToLineEnd() ?: 0, terminal?.ambiguousCharsAreDoubleWidth() ?: false)
 
-                terminal?.writeCharacters(nonControlCharacters)
+                if (!kittyGraphicsProtocol.processText(nonControlCharacters, terminal)) {
+                    terminal?.writeCharacters(nonControlCharacters)
+                }
             }
         }
     }

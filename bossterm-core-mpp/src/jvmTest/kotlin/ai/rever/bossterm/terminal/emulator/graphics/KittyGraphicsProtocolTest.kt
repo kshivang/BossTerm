@@ -3,6 +3,8 @@ package ai.rever.bossterm.terminal.emulator.graphics
 import ai.rever.bossterm.core.Color
 import ai.rever.bossterm.core.util.Ascii
 import ai.rever.bossterm.terminal.Terminal
+import ai.rever.bossterm.terminal.TerminalColor
+import ai.rever.bossterm.terminal.TextStyle
 import ai.rever.bossterm.terminal.model.image.DimensionSpec
 import ai.rever.bossterm.terminal.model.image.TerminalImage
 import ai.rever.bossterm.terminal.model.image.TerminalImagePlacement
@@ -104,6 +106,64 @@ class KittyGraphicsProtocolTest {
     }
 
     @Test
+    fun unicodePlaceholderUsesVirtualPlacementWithoutPrintingItsGlyphs() {
+        val recording = RecordingTerminal()
+        val protocol = KittyGraphicsProtocol()
+        val externalId = 0x0179c4L
+        val encoded = Base64.getEncoder().encodeToString(byteArrayOf(0x12, 0x34, 0x56, 0xff.toByte()))
+
+        protocol.process("Ga=T,U=1,f=32,s=1,v=1,i=$externalId,c=4,r=5,C=1;$encoded", recording.terminal)
+        assertTrue(recording.images.isEmpty())
+
+        recording.currentStyle = TextStyle(TerminalColor.rgb(0x01, 0x79, 0xc4), null)
+        val placeholder = String(Character.toChars(KittyUnicodePlaceholder.CODE_POINT)) + "\u030e\u0310"
+        assertTrue(protocol.processText("left$placeholder right", recording.terminal))
+
+        val cell = recording.placeholderCells.single()
+        assertEquals(externalId, cell.imageId)
+        assertEquals(3, cell.cellX)
+        assertEquals(2, cell.cellY)
+        assertEquals(DimensionSpec.Cells(4), cell.image.widthSpec)
+        assertEquals(DimensionSpec.Cells(5), cell.image.heightSpec)
+        assertTrue(cell.image.preserveAspectRatio)
+        assertEquals(listOf("left", " right"), recording.writtenText)
+    }
+
+    @Test
+    fun unicodePlaceholderInheritsColumnsAndDecodesHighImageIdByte() {
+        val recording = RecordingTerminal()
+        val protocol = KittyGraphicsProtocol()
+        val externalId = 42L + (2L shl 24)
+        val encoded = Base64.getEncoder().encodeToString(byteArrayOf(0x12, 0x34, 0x56, 0xff.toByte()))
+        protocol.process("Ga=T,U=1,f=32,s=1,v=1,i=$externalId,C=1;$encoded", recording.terminal)
+        recording.currentStyle = TextStyle(TerminalColor.index(42), null)
+
+        val base = String(Character.toChars(KittyUnicodePlaceholder.CODE_POINT))
+        val first = base + "\u0305\u0305\u030e"
+        assertTrue(protocol.processText(first + base, recording.terminal))
+
+        assertEquals(listOf(0, 1), recording.placeholderCells.map { it.cellX })
+        assertEquals(listOf(0, 0), recording.placeholderCells.map { it.cellY })
+        assertTrue(recording.writtenText.isEmpty())
+    }
+
+    @Test
+    fun screenWideDeleteDoesNotDeleteVirtualPlacements() {
+        val recording = RecordingTerminal()
+        val protocol = KittyGraphicsProtocol()
+        val encoded = Base64.getEncoder().encodeToString(byteArrayOf(0x12, 0x34, 0x56, 0xff.toByte()))
+        protocol.process("Ga=T,U=1,f=32,s=1,v=1,i=42,C=1;$encoded", recording.terminal)
+        protocol.process("Ga=d,d=A,q=2", recording.terminal)
+
+        recording.currentStyle = TextStyle(TerminalColor.index(42), null)
+        val placeholder = String(Character.toChars(KittyUnicodePlaceholder.CODE_POINT)) + "\u0305\u0305"
+        assertTrue(protocol.processText(placeholder, recording.terminal))
+
+        assertEquals(1, recording.placeholderCells.size)
+        assertEquals(recording.placeholderCells.mapTo(mutableSetOf()) { it.image.id }, recording.retainedOnClear.single())
+    }
+
+    @Test
     fun softDeleteKeepsImageDataButHardDeleteRemovesIt() {
         val recording = RecordingTerminal()
         val protocol = KittyGraphicsProtocol()
@@ -134,12 +194,17 @@ class KittyGraphicsProtocolTest {
     }
 
     private data class Placement(val imageId: Long, val image: TerminalImage, val moveCursor: Boolean)
+    private data class PlaceholderCell(val imageId: Long, val image: TerminalImage, val cellX: Int, val cellY: Int)
 
     private class RecordingTerminal {
         val responses = mutableListOf<String>()
         val images = mutableListOf<Placement>()
         val cursorForward = mutableListOf<Int>()
         val cursorDown = mutableListOf<Int>()
+        val placeholderCells = mutableListOf<PlaceholderCell>()
+        val writtenText = mutableListOf<String>()
+        val retainedOnClear = mutableListOf<Set<Long>>()
+        var currentStyle: TextStyle = TextStyle.EMPTY
 
         val terminal: Terminal = Proxy.newProxyInstance(
             Terminal::class.java.classLoader,
@@ -157,6 +222,26 @@ class KittyGraphicsProtocolTest {
                     val width = (image.widthSpec as? DimensionSpec.Cells)?.count ?: 1
                     val height = (image.heightSpec as? DimensionSpec.Cells)?.count ?: 1
                     TerminalImagePlacement(image, 0, 0, width, height, width, height)
+                }
+                "processInlineImagePlaceholder" -> {
+                    val image = arguments?.get(0) as TerminalImage
+                    placeholderCells += PlaceholderCell(
+                        image.name!!.removePrefix("kitty-").removeSuffix(".png").toLong(),
+                        image,
+                        arguments[1] as Int,
+                        arguments[2] as Int
+                    )
+                    null
+                }
+                "currentTextStyle" -> currentStyle
+                "writeCharacters" -> {
+                    writtenText += arguments?.get(0) as String
+                    null
+                }
+                "clearImagesExcept" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    retainedOnClear += (arguments?.get(0) as Set<Long>).toSet()
+                    null
                 }
                 "cursorForward" -> cursorForward += arguments?.get(0) as Int
                 "cursorDown" -> cursorDown += arguments?.get(0) as Int

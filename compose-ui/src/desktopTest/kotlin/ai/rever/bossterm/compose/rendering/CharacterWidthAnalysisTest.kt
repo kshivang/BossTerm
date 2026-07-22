@@ -26,6 +26,7 @@ class CharacterWidthAnalysisTest {
 
         assertEquals(0xF0331, analysis.actualCodePoint)
         assertEquals(icon, analysis.charTextToRender)
+        assertEquals(icon[1], analysis.lowSurrogate)
         assertFalse(analysis.isDoubleWidth)
         assertEquals(1, analysis.visualWidth)
     }

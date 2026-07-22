@@ -375,8 +375,13 @@ class TerminalTextBuffer internal constructor(
     }
   }
 
-  fun writeString(x: Int, y: Int, str: CharBuffer) {
-    writeString(x, y, str, styleState.current)
+  fun writeString(
+    x: Int,
+    y: Int,
+    str: CharBuffer,
+    ambiguousCharsAreDoubleWidth: Boolean = false
+  ): Int {
+    return writeString(x, y, str, styleState.current, ambiguousCharsAreDoubleWidth)
   }
 
   fun addLine(line: TerminalLine) {
@@ -385,13 +390,20 @@ class TerminalTextBuffer internal constructor(
     changesMulticaster.linesChanged(fromIndex = screenLinesStorage.size - 1)
   }
 
-  private fun writeString(x: Int, y: Int, str: CharBuffer, style: TextStyle) {
+  private fun writeString(
+    x: Int,
+    y: Int,
+    str: CharBuffer,
+    style: TextStyle,
+    ambiguousCharsAreDoubleWidth: Boolean
+  ): Int {
     val line = screenLinesStorage[y - 1]
-    line.writeString(x, str, style)
+    val visualWidth = line.writeStringVisual(x, str, style, ambiguousCharsAreDoubleWidth)
 
     textProcessing?.processHyperlinks(screenLinesStorage, line)
     fireModelChangeEvent()
     changesMulticaster.linesChanged(fromIndex = y - 1)
+    return visualWidth
   }
 
   /**
@@ -502,7 +514,12 @@ class TerminalTextBuffer internal constructor(
     try {
       if (row !in 0 until screenLinesStorage.size || col !in 0 until width) return
       val line = screenLinesStorage[row]
-      line.writeString(col, CharBuffer(' ', 1), styleState.current)
+      line.writeStringVisual(
+        visualX = col,
+        str = CharBuffer(' ', 1),
+        style = styleState.current,
+        ambiguousCharsAreDoubleWidth = false
+      )
       line.setImageCell(col, ImageCell(imageId, cellX, cellY, cellWidth, cellHeight))
       fireModelChangeEvent()
       changesMulticaster.linesChanged(fromIndex = row)
@@ -760,7 +777,13 @@ class TerminalTextBuffer internal constructor(
   fun eraseCharacters(leftX: Int, rightX: Int, y: Int) {
     val style = createEmptyStyleWithCurrentColor()
     if (y >= 0) {
-      screenLinesStorage[y].clearArea(leftX, rightX, style)
+      screenLinesStorage[y].clearAreaVisual(
+        leftX = leftX,
+        rightX = rightX,
+        maxVisualWidth = width,
+        style = style,
+        ambiguousCharsAreDoubleWidth = false
+      )
       fireModelChangeEvent()
       changesMulticaster.linesChanged(fromIndex = y)
       if (textProcessing != null && y < height) {

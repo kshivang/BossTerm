@@ -136,6 +136,15 @@ object ColumnConversionUtils {
 
             currentVisualCol += charWidth
             col++
+
+            // A cell boundary lies after the complete encoded grapheme, not
+            // between its UTF-16 code units. In particular, advance past the
+            // low surrogate of a single-width supplementary PUA glyph.
+            while (col < width) {
+                val trailing = shouldSkipChar(line, col, width)
+                if (!trailing.shouldSkip) break
+                col += trailing.colsToAdvance
+            }
         }
         return col
     }

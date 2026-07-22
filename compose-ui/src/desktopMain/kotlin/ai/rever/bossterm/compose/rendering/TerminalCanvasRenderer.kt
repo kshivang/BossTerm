@@ -267,8 +267,8 @@ fun analyzeCharacter(
  * frame — thousands of short-lived allocations per redraw during bulk output. A new
  * instance is allocated per render call (so it stays thread-safe on the shared renderer
  * object, and starts all-null with no reset needed), but that is a single array
- * allocation instead of per-cell churn. `row`/`col` are always within
- * `[0, visibleRows) × [0, visibleCols)` on the hot path; out-of-range access is treated
+ * allocation instead of per-cell churn. Lines containing multi-unit graphemes
+ * can have buffer columns beyond `visibleCols`; out-of-range access is treated
  * as a miss so callers fall back to recomputing, exactly like the old map.
  */
 private class AnalysisCache(private val rows: Int, private val cols: Int) {
@@ -558,7 +558,8 @@ object TerminalCanvasRenderer {
 
             var col = 0
             var visualCol = 0  // Track visual position separately from buffer position
-            while (col < ctx.visibleCols) {
+            val bufferLimit = maxOf(ctx.visibleCols, line.length())
+            while (col < bufferLimit && visualCol < ctx.visibleCols) {
                 val char = line.charAt(col)
                 val style = line.getStyleAt(col)
 
@@ -567,7 +568,7 @@ object TerminalCanvasRenderer {
                 // We already rendered emoji1, now skip ZWJ and everything after until DWC
                 if (char.code == UnicodeConstants.ZWJ) {
                     col++
-                    while (col < ctx.visibleCols && line.charAt(col) != CharUtils.DWC) {
+                    while (col < bufferLimit && line.charAt(col) != CharUtils.DWC) {
                         col++
                     }
                     continue
@@ -575,7 +576,7 @@ object TerminalCanvasRenderer {
 
                 // Use shared skip logic for simple cases (DWC, variation selectors,
                 // low surrogates, skin tones, gender symbols after ZWJ)
-                val skipResult = ColumnConversionUtils.shouldSkipChar(line, col, ctx.visibleCols)
+                val skipResult = ColumnConversionUtils.shouldSkipChar(line, col, bufferLimit)
                 if (skipResult.shouldSkip) {
                     col += skipResult.colsToAdvance
                     continue
@@ -583,7 +584,7 @@ object TerminalCanvasRenderer {
 
                 // Handle Regional Indicator sequences (flag emoji) as a single unit
                 // Flags like 🇺🇸 are two Regional Indicators that should render as one 2-cell glyph
-                val flagColCount = checkRegionalIndicatorSequence(line, col, ctx.visibleCols)
+                val flagColCount = checkRegionalIndicatorSequence(line, col, bufferLimit)
                 if (flagColCount > 0) {
                     val x = kotlin.math.floor(visualCol * ctx.cellWidth)
                     val y = kotlin.math.floor(row * ctx.cellHeight)
@@ -627,7 +628,7 @@ object TerminalCanvasRenderer {
                 val y = kotlin.math.floor(row * ctx.cellHeight)
 
                 // Use shared character analysis helper and cache the result
-                val analysis = analyzeCharacter(char, line, col, ctx.visibleCols, ctx.ambiguousCharsAreDoubleWidth)
+                val analysis = analyzeCharacter(char, line, col, bufferLimit, ctx.ambiguousCharsAreDoubleWidth)
                 analysisCache[row, col] = analysis
 
                 // Get attributes
@@ -821,10 +822,11 @@ object TerminalCanvasRenderer {
 
             var col = 0
             var visualCol = 0
+            val bufferLimit = maxOf(ctx.visibleCols, line.length())
 
-            while (col < ctx.visibleCols) {
+            while (col < bufferLimit && visualCol < ctx.visibleCols) {
                 // Check for image cell first (cell-based image rendering)
-                val imageCell = line.getImageCellAt(col)
+                val imageCell = line.getImageCellAt(visualCol)
                 if (imageCell != null) {
                     // Flush any pending text batch before rendering image cell
                     flushBatch()
@@ -841,7 +843,7 @@ object TerminalCanvasRenderer {
                             // the image's whole buffer lifetime. Re-fit at draw time instead:
                             // compress the full bitmap into the columns actually reachable from
                             // the anchor, shrinking rows by the same factor to keep aspect.
-                            val anchorCol = col - imageCell.cellX
+                            val anchorCol = visualCol - imageCell.cellX
                             val effectiveGrid = refitImageCellGrid(
                                 totalColumns = imageCell.totalCellsX,
                                 totalRows = imageCell.totalCellsY,
@@ -904,7 +906,7 @@ object TerminalCanvasRenderer {
                 run {
                     var i = col
                     var count = 0
-                    while (i < snapshot.width && count < 20) {
+                    while (i < bufferLimit && count < 20) {
                         val c = line.charAt(i)
                         if (c != CharUtils.DWC) {
                             builder.append(c)
@@ -917,8 +919,8 @@ object TerminalCanvasRenderer {
 
                 // Use fast-path detection functions (issue #143 optimization)
                 val hasZWJ = GraphemeUtils.containsZWJ(cleanText)
-                val hasSkinTone = checkFollowingSkinTone(line, col, snapshot.width)
-                val hasRegionalIndicator = checkRegionalIndicatorSequence(line, col, snapshot.width) > 0
+                val hasSkinTone = checkFollowingSkinTone(line, col, bufferLimit)
+                val hasRegionalIndicator = checkRegionalIndicatorSequence(line, col, bufferLimit) > 0
 
                 if (hasZWJ || hasSkinTone || hasRegionalIndicator) {
                     val graphemes = GraphemeUtils.segmentIntoGraphemes(cleanText)
@@ -927,7 +929,7 @@ object TerminalCanvasRenderer {
                         if (grapheme.hasZWJ || hasSkinTone || hasRegionalIndicator) {
                             flushBatch()
                             val (colsSkipped, visualWidth) = renderZWJSequence(
-                                ctx, row, visualCol, col, grapheme, line, snapshot.width, style
+                                ctx, row, visualCol, col, grapheme, line, bufferLimit, style
                             )
                             col += colsSkipped
                             visualCol += visualWidth
@@ -941,11 +943,11 @@ object TerminalCanvasRenderer {
 
                 // Use cached analysis from renderBackgrounds, or compute if not found
                 val analysis = analysisCache[row, col]
-                    ?: analyzeCharacter(char, line, col, snapshot.width, ctx.ambiguousCharsAreDoubleWidth)
+                    ?: analyzeCharacter(char, line, col, bufferLimit, ctx.ambiguousCharsAreDoubleWidth)
 
                 // Get nextChar for rendering emoji with variation selectors
                 val nextCharOffset = if (analysis.isWcwidthDoubleWidth) 2 else 1
-                val nextChar = if (col + nextCharOffset < snapshot.width) line.charAt(col + nextCharOffset) else null
+                val nextChar = if (col + nextCharOffset < bufferLimit) line.charAt(col + nextCharOffset) else null
 
                 // Skip standalone variation selectors
                 if (UnicodeConstants.isVariationSelector(char) && !analysis.isEmojiOrWideSymbol) {
@@ -992,7 +994,11 @@ object TerminalCanvasRenderer {
                     else -> true
                 }
 
-                val canBatch = !analysis.isDoubleWidth && !analysis.isEmojiOrWideSymbol && !analysis.isCursiveOrMath && !analysis.isTechnicalSymbol &&
+                // The batching path appends one Char at a time. Keep surrogate
+                // pairs on the per-character path so their low surrogate is not
+                // dropped and rendered as U+FFFD by the text shaper.
+                val canBatch = analysis.lowSurrogate == null &&
+                    !analysis.isDoubleWidth && !analysis.isEmojiOrWideSymbol && !analysis.isCursiveOrMath && !analysis.isTechnicalSymbol &&
                     !isHidden && isBlinkVisible && char != ' ' && char != '\u0000'
 
                 val styleMatches = batchText.isNotEmpty() &&

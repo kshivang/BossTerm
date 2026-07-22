@@ -23,6 +23,7 @@ import ai.rever.bossterm.terminal.model.image.TerminalImageListener
 import ai.rever.bossterm.terminal.model.image.TerminalImagePlacement
 import ai.rever.bossterm.terminal.model.image.TerminalImageStorage
 import ai.rever.bossterm.terminal.util.CharUtils
+import ai.rever.bossterm.terminal.util.ColumnConversionUtils
 import ai.rever.bossterm.terminal.util.GraphemeUtils
 import org.jetbrains.annotations.Nls
 import org.slf4j.Logger
@@ -173,7 +174,16 @@ class BossTerminal(
             myCursorX = 0
             // clear the end of the line in the text buffer
             val line = terminalTextBuffer.getLine(myCursorY - 1)
-            terminalTextBuffer.deleteCharacters(myTerminalWidth, myCursorY - 1, line.length() - myTerminalWidth)
+            val bufferBoundary = ColumnConversionUtils.visualColToBufferCol(
+                line,
+                myTerminalWidth,
+                line.length()
+            )
+            terminalTextBuffer.deleteCharacters(
+                bufferBoundary,
+                myCursorY - 1,
+                line.length() - bufferBoundary
+            )
             terminalTextBuffer.setLineWrapped(myCursorY - 1, false)
             if (this.isAutoWrap) {
                 terminalTextBuffer.setLineWrapped(myCursorY - 1, true)
@@ -208,8 +218,12 @@ class BossTerminal(
 
             if (string.size != 0) {
                 val characters = newCharBuf(string)
-                terminalTextBuffer.writeString(myCursorX, myCursorY, characters)
-                myCursorX += characters.length
+                myCursorX += terminalTextBuffer.writeString(
+                    myCursorX,
+                    myCursorY,
+                    characters,
+                    ambiguousCharsAreDoubleWidth()
+                )
 
                 // Track last written character for REP (CSI Ps b)
                 // Use efficient getLastGrapheme() instead of full segmentation

@@ -4,6 +4,7 @@ import ai.rever.bossterm.terminal.StyledTextConsumer
 import ai.rever.bossterm.terminal.TextStyle
 import ai.rever.bossterm.terminal.model.image.ImageCell
 import ai.rever.bossterm.terminal.util.CharUtils
+import ai.rever.bossterm.terminal.util.ColumnConversionUtils
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.util.*
@@ -192,6 +193,99 @@ class TerminalLine {
         writeCharacters(x, style, str)
     }
 
+    /**
+     * Overwrite terminal cells while preserving this line's variable-length
+     * UTF-16 encoding. A supplementary single-width glyph occupies two buffer
+     * code units but one terminal cell; raw-index replacement would leave the
+     * previous range's final code unit behind.
+     *
+     * @return number of terminal cells occupied by [str]
+     */
+    fun writeStringVisual(
+        visualX: Int,
+        str: CharBuffer,
+        style: TextStyle,
+        ambiguousCharsAreDoubleWidth: Boolean
+    ): Int {
+        if (str.length == 0) return 0
+
+        val oldLength = myTextEntries.length()
+        val oldVisualLength = ColumnConversionUtils.bufferColToVisualCol(this, oldLength, oldLength)
+        val startBuffer = if (visualX >= oldVisualLength) {
+            oldLength
+        } else {
+            ColumnConversionUtils.visualColToBufferCol(this, visualX, oldLength)
+        }
+        val visualWidth = CharUtils.getTextLengthGraphemeAware(
+            str.toString(),
+            ambiguousCharsAreDoubleWidth
+        )
+        val endVisual = visualX + visualWidth
+        val endBuffer = if (endVisual >= oldVisualLength) {
+            oldLength
+        } else {
+            ColumnConversionUtils.visualColToBufferCol(this, endVisual, oldLength)
+        }
+        val gap = (visualX - oldVisualLength).coerceAtLeast(0)
+
+        replaceCharacters(
+            start = startBuffer,
+            end = endBuffer,
+            gap = gap,
+            characters = str,
+            style = style
+        )
+
+        if (myImageCells != null && visualWidth > 0) {
+            clearImageCellsInRange(visualX, endVisual)
+        }
+        incrementSnapshotVersion()
+        return visualWidth
+    }
+
+    private fun replaceCharacters(
+        start: Int,
+        end: Int,
+        gap: Int,
+        characters: CharBuffer,
+        style: TextStyle
+    ) {
+        val oldLength = myTextEntries.length()
+        val old = toBuf(myTextEntries, oldLength)
+        val replacementLength = gap + characters.length
+        val newLength = start + replacementLength + (oldLength - end)
+        val chars = CharArray(newLength)
+        val styles: Array<TextStyle?> = arrayOfNulls(newLength)
+
+        if (start > 0) {
+            old.first.copyInto(chars, endIndex = start)
+            old.second.copyInto(styles, endIndex = start)
+        }
+        for (index in 0 until gap) {
+            chars[start + index] = CharUtils.NUL_CHAR
+            styles[start + index] = TextStyle.EMPTY
+        }
+        for (index in 0 until characters.length) {
+            chars[start + gap + index] = characters[index]
+            styles[start + gap + index] = style
+        }
+        if (end < oldLength) {
+            old.first.copyInto(
+                destination = chars,
+                destinationOffset = start + replacementLength,
+                startIndex = end,
+                endIndex = oldLength
+            )
+            old.second.copyInto(
+                destination = styles,
+                destinationOffset = start + replacementLength,
+                startIndex = end,
+                endIndex = oldLength
+            )
+        }
+        myTextEntries = collectFromBuffer(chars, styles)
+    }
+
     fun insertString(x: Int, str: CharBuffer, style: TextStyle) {
         insertCharacters(x, style, str)
     }
@@ -343,6 +437,24 @@ class TerminalLine {
                 if (rightX >= myTextEntries.length()) CharUtils.NUL_CHAR else CharUtils.EMPTY_CHAR,
                 rightX - leftX
             )
+        )
+    }
+
+    fun clearAreaVisual(
+        leftX: Int,
+        rightX: Int,
+        maxVisualWidth: Int,
+        style: TextStyle,
+        ambiguousCharsAreDoubleWidth: Boolean
+    ) {
+        val resolvedRight = if (rightX == -1) maxVisualWidth else rightX.coerceAtMost(maxVisualWidth)
+        val count = (resolvedRight - leftX).coerceAtLeast(0)
+        if (count == 0) return
+        writeStringVisual(
+            visualX = leftX,
+            str = CharBuffer(CharUtils.EMPTY_CHAR, count),
+            style = style,
+            ambiguousCharsAreDoubleWidth = ambiguousCharsAreDoubleWidth
         )
     }
 

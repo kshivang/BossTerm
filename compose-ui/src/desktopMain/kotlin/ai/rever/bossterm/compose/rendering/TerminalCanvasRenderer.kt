@@ -1,9 +1,13 @@
 package ai.rever.bossterm.compose.rendering
 
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.text.TextMeasurer
@@ -23,13 +27,14 @@ import ai.rever.bossterm.terminal.CursorShape
 import ai.rever.bossterm.terminal.model.TerminalLine
 import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
 import ai.rever.bossterm.terminal.model.image.ImageCell
-import ai.rever.bossterm.terminal.model.image.ImageDataCache
+import ai.rever.bossterm.terminal.model.image.TerminalImage
 import ai.rever.bossterm.terminal.util.CharUtils
 import ai.rever.bossterm.terminal.util.ColumnConversionUtils
 import ai.rever.bossterm.terminal.util.GraphemeUtils
 import ai.rever.bossterm.terminal.util.UnicodeConstants
 import ai.rever.bossterm.terminal.TextStyle as BossTextStyle
 import org.jetbrains.skia.FontMgr
+import kotlin.math.floor
 
 /**
  * Holds all the state needed for terminal rendering.
@@ -93,7 +98,7 @@ data class RenderingContext(
     val blinkProbe: BooleanArray? = null,
 
     // Cell-based image rendering (images flow with text)
-    val imageDataCache: ImageDataCache? = null,
+    val imageDataById: Map<Long, TerminalImage> = emptyMap(),
     val terminalWidthCells: Int = 80,
     val terminalHeightCells: Int = 24,
 
@@ -307,6 +312,22 @@ data class CachedMeasurement(
 internal data class ImageCellGrid(val columns: Int, val rows: Int)
 
 /**
+ * The source and destination rectangle for one terminal image cell.
+ *
+ * Keeping this calculation shared between the text pass and cursor pass is
+ * important: the cursor uses the image cell's alpha as an occlusion mask, so
+ * even a resized/re-fitted image must line up with the pixels already drawn by
+ * the text canvas.
+ */
+data class ImageCellSlice(
+    val bitmap: ImageBitmap,
+    val srcOffset: androidx.compose.ui.unit.IntOffset,
+    val srcSize: androidx.compose.ui.unit.IntSize,
+    val dstOffset: androidx.compose.ui.unit.IntOffset,
+    val dstSize: androidx.compose.ui.unit.IntSize,
+)
+
+/**
  * Re-fit an image's baked cell footprint to the columns reachable in the live
  * pane while preserving its cell-grid aspect ratio.
  */
@@ -326,6 +347,52 @@ internal fun refitImageCellGrid(
 
     val fittedRows = ((safeRows * availableColumns + safeColumns / 2) / safeColumns).coerceAtLeast(1)
     return ImageCellGrid(availableColumns, fittedRows)
+}
+
+internal fun imageCellSlice(
+    imageCell: ImageCell,
+    bitmap: ImageBitmap,
+    visualColumn: Int,
+    screenRow: Int,
+    visibleColumns: Int,
+    cellWidth: Float,
+    cellHeight: Float,
+): ImageCellSlice? {
+    val anchorColumn = visualColumn - imageCell.cellX
+    val effectiveGrid = refitImageCellGrid(
+        totalColumns = imageCell.totalCellsX,
+        totalRows = imageCell.totalCellsY,
+        anchorColumn = anchorColumn,
+        visibleColumns = visibleColumns,
+    )
+    val effectiveColumns = effectiveGrid.columns
+    val effectiveRows = effectiveGrid.rows
+    if (imageCell.cellX !in 0 until effectiveColumns || imageCell.cellY !in 0 until effectiveRows) {
+        return null
+    }
+
+    val srcX1 = imageCell.cellX * bitmap.width / effectiveColumns
+    val srcX2 = (imageCell.cellX + 1) * bitmap.width / effectiveColumns
+    val srcY1 = imageCell.cellY * bitmap.height / effectiveRows
+    val srcY2 = (imageCell.cellY + 1) * bitmap.height / effectiveRows
+    val dstX1 = (visualColumn * cellWidth).toInt()
+    val dstX2 = ((visualColumn + 1) * cellWidth).toInt()
+    val dstY1 = (screenRow * cellHeight).toInt()
+    val dstY2 = ((screenRow + 1) * cellHeight).toInt()
+
+    return ImageCellSlice(
+        bitmap = bitmap,
+        srcOffset = androidx.compose.ui.unit.IntOffset(srcX1, srcY1),
+        srcSize = androidx.compose.ui.unit.IntSize(
+            (srcX2 - srcX1).coerceAtLeast(1),
+            (srcY2 - srcY1).coerceAtLeast(1),
+        ),
+        dstOffset = androidx.compose.ui.unit.IntOffset(dstX1, dstY1),
+        dstSize = androidx.compose.ui.unit.IntSize(
+            (dstX2 - dstX1).coerceAtLeast(1),
+            (dstY2 - dstY1).coerceAtLeast(1),
+        ),
+    )
 }
 
 /**
@@ -835,55 +902,28 @@ object TerminalCanvasRenderer {
                     flushBatch()
 
                     // Render this cell's portion of the image
-                    val image = ctx.imageDataCache?.getImage(imageCell.imageId)
+                    val image = ctx.imageDataById[imageCell.imageId]
                     if (image != null) {
                         val bitmap = ImageRenderer.getOrDecodeImage(image)
                         if (bitmap != null) {
-                            // The cell footprint (totalCellsX/Y) is a one-time snapshot of the
-                            // grid at insertion time; the live grid can be narrower (insertion
-                            // raced pane layout, or the pane shrank since). Slicing against the
-                            // stale footprint would hard-crop every column past visibleCols for
-                            // the image's whole buffer lifetime. Re-fit at draw time instead:
-                            // compress the full bitmap into the columns actually reachable from
-                            // the anchor, shrinking rows by the same factor to keep aspect.
-                            val anchorCol = visualCol - imageCell.cellX
-                            val effectiveGrid = refitImageCellGrid(
-                                totalColumns = imageCell.totalCellsX,
-                                totalRows = imageCell.totalCellsY,
-                                anchorColumn = anchorCol,
-                                visibleColumns = ctx.visibleCols
-                            )
-                            val effCellsX = effectiveGrid.columns
-                            val effCellsY = effectiveGrid.rows
-                            // Cells beyond the re-fit footprint hold no slice; leave background.
-                            if (imageCell.cellX < effCellsX && imageCell.cellY < effCellsY) {
-                                // Calculate source region - use exact boundaries to avoid gaps
-                                val srcX1 = imageCell.cellX * bitmap.width / effCellsX
-                                val srcX2 = (imageCell.cellX + 1) * bitmap.width / effCellsX
-                                val srcY1 = imageCell.cellY * bitmap.height / effCellsY
-                                val srcY2 = (imageCell.cellY + 1) * bitmap.height / effCellsY
-                                val srcX = srcX1
-                                val srcY = srcY1
-                                val srcW = (srcX2 - srcX1).coerceAtLeast(1)
-                                val srcH = (srcY2 - srcY1).coerceAtLeast(1)
-
-                                // Destination - use exact boundaries to avoid gaps
-                                val dstX1 = (visualCol * ctx.cellWidth).toInt()
-                                val dstX2 = ((visualCol + 1) * ctx.cellWidth).toInt()
-                                val dstY1 = (row * ctx.cellHeight).toInt()
-                                val dstY2 = ((row + 1) * ctx.cellHeight).toInt()
-                                val dstX = dstX1
-                                val dstY = dstY1
-                                val dstW = (dstX2 - dstX1).coerceAtLeast(1)
-                                val dstH = (dstY2 - dstY1).coerceAtLeast(1)
-
-                                // Draw the portion of the image for this cell
+                            // The footprint is a one-time snapshot of the insertion grid. Re-fit
+                            // against the live width, then use the same slice calculation as the
+                            // cursor occlusion pass so animated image pixels and cursor masking align.
+                            imageCellSlice(
+                                imageCell = imageCell,
+                                bitmap = bitmap,
+                                visualColumn = visualCol,
+                                screenRow = row,
+                                visibleColumns = ctx.visibleCols,
+                                cellWidth = ctx.cellWidth,
+                                cellHeight = ctx.cellHeight,
+                            )?.let { slice ->
                                 drawImage(
-                                    image = bitmap,
-                                    srcOffset = androidx.compose.ui.unit.IntOffset(srcX, srcY),
-                                    srcSize = androidx.compose.ui.unit.IntSize(srcW, srcH),
-                                    dstOffset = androidx.compose.ui.unit.IntOffset(dstX, dstY),
-                                    dstSize = androidx.compose.ui.unit.IntSize(dstW, dstH)
+                                    image = slice.bitmap,
+                                    srcOffset = slice.srcOffset,
+                                    srcSize = slice.srcSize,
+                                    dstOffset = slice.dstOffset,
+                                    dstSize = slice.dstSize,
                                 )
                             }
                         }
@@ -1285,11 +1325,10 @@ object TerminalCanvasRenderer {
      * changes on the ~0.5s blink, and Compose's Canvas has no partial invalidation — reading
      * the blink flag inside the text pass forced a full re-render of every visible cell twice
      * a second. Drawing the cursor in a dedicated layer means a blink repaints only this tiny
-     * Canvas. The cursor is a translucent overlay (it never inverts the glyph underneath), so
-     * stacking it in a separate layer is visually identical to drawing it last in one canvas.
+     * Canvas. Inline-image alpha is applied as an occlusion mask within this layer so the cursor
+     * behaves as if it were behind image pixels instead of tinting animated Kitty/Sixel content.
      *
-     * Parameters are passed explicitly (rather than via [RenderingContext]) so the cursor layer
-     * needs no buffer snapshot — only cheap, composition-scoped cursor state. [visibleRows] is
+     * Parameters are passed explicitly (rather than via [RenderingContext]); [visibleRows] is
      * derived from the DrawScope size, matching the text canvas's own bounds computation.
      */
     fun DrawScope.renderCursorOverlay(
@@ -1303,10 +1342,11 @@ object TerminalCanvasRenderer {
         cellHeight: Float,
         isFocused: Boolean,
         cursorColor: Color?,
-        focusedAlpha: Float = 0.7f,
+        focusedAlpha: Float = 1f,
         unfocusedAlpha: Float = 0.3f,
+        imageOcclusion: ImageCellSlice? = null,
     ) {
-        if (!cursorVisible) return
+        if (!cursorVisible || cellWidth <= 0f || cellHeight <= 0f) return
         // cursorY is 1-indexed in the screen buffer, adjust to 0-indexed
         val bufferCursorY = (cursorY - 1).coerceAtLeast(0)
         // Convert buffer position to screen position by adding scrollOffset
@@ -1327,38 +1367,70 @@ object TerminalCanvasRenderer {
 
         if (!shouldShowCursor) return
 
-        val x = cursorX * cellWidth
-        val y = cursorScreenRow * cellHeight
-        // Calculate size as difference to next cell to avoid floating-point gaps
-        val w = (cursorX + 1) * cellWidth - x
-        val h = (cursorScreenRow + 1) * cellHeight - y
-        val cursorAlpha = if (isFocused) focusedAlpha else unfocusedAlpha
-        val drawColor = (cursorColor ?: Color.White).copy(alpha = cursorAlpha)
+        // Align every cursor edge to the same device-pixel cell boundaries used by
+        // inline images. Sub-pixel rectangles can antialias into a neighboring cell,
+        // which is especially visible against a transparent animated sprite.
+        val x = floor(cursorX * cellWidth)
+        val y = floor(cursorScreenRow * cellHeight)
+        val right = floor((cursorX + 1) * cellWidth)
+        val bottom = floor((cursorScreenRow + 1) * cellHeight)
+        val w = right - x
+        val h = bottom - y
+        if (w <= 0f || h <= 0f || right <= 0f || bottom <= 0f || x >= size.width || y >= size.height) return
 
-        when (cursorShape) {
-            CursorShape.BLINK_BLOCK, CursorShape.STEADY_BLOCK, null -> {
-                drawRect(
-                    color = drawColor,
-                    topLeft = Offset(x, y),
-                    size = Size(w, h)
+        val cursorAlpha = (if (isFocused) focusedAlpha else unfocusedAlpha).coerceIn(0f, 1f)
+        val drawColor = (cursorColor ?: Color.White).copy(alpha = cursorAlpha)
+        // xterm uses a one-CSS-pixel underline/bar (scaled by DPR), not a
+        // percentage of the cell. Compose dp has the same logical-pixel behavior.
+        val edgeThickness = 1.dp.toPx().coerceAtMost(minOf(w, h))
+        val layerBounds = Rect(
+            left = x.coerceAtLeast(0f),
+            top = y.coerceAtLeast(0f),
+            right = right.coerceAtMost(size.width),
+            bottom = bottom.coerceAtMost(size.height),
+        )
+
+        // Isolate DstOut to this small cursor layer. The image alpha below then
+        // removes the cursor only where an inline image has pixels: opaque Codex
+        // Pet pixels stay pristine, while transparent parts still reveal the caret.
+        drawContext.canvas.saveLayer(layerBounds, Paint())
+        try {
+            when (cursorShape) {
+                CursorShape.BLINK_BLOCK, CursorShape.STEADY_BLOCK, null -> {
+                    drawRect(
+                        color = drawColor,
+                        topLeft = Offset(x, y),
+                        size = Size(w, h)
+                    )
+                }
+                CursorShape.BLINK_UNDERLINE, CursorShape.STEADY_UNDERLINE -> {
+                    drawRect(
+                        color = drawColor,
+                        topLeft = Offset(x, bottom - edgeThickness),
+                        size = Size(w, edgeThickness)
+                    )
+                }
+                CursorShape.BLINK_VERTICAL_BAR, CursorShape.STEADY_VERTICAL_BAR -> {
+                    drawRect(
+                        color = drawColor,
+                        topLeft = Offset(x, y),
+                        size = Size(edgeThickness, h)
+                    )
+                }
+            }
+
+            imageOcclusion?.let { slice ->
+                drawImage(
+                    image = slice.bitmap,
+                    srcOffset = slice.srcOffset,
+                    srcSize = slice.srcSize,
+                    dstOffset = slice.dstOffset,
+                    dstSize = slice.dstSize,
+                    blendMode = BlendMode.DstOut,
                 )
             }
-            CursorShape.BLINK_UNDERLINE, CursorShape.STEADY_UNDERLINE -> {
-                val underlineHeight = h * 0.2f
-                drawRect(
-                    color = drawColor,
-                    topLeft = Offset(x, y + h - underlineHeight),
-                    size = Size(w, underlineHeight)
-                )
-            }
-            CursorShape.BLINK_VERTICAL_BAR, CursorShape.STEADY_VERTICAL_BAR -> {
-                val barWidth = w * 0.15f
-                drawRect(
-                    color = drawColor,
-                    topLeft = Offset(x, y),
-                    size = Size(barWidth, h)
-                )
-            }
+        } finally {
+            drawContext.canvas.restore()
         }
     }
 

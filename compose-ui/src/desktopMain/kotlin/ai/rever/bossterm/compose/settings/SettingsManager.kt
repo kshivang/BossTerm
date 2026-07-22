@@ -11,6 +11,21 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
 import java.io.File
 
+internal fun migrateCursorRenderingDefaults(
+    settings: TerminalSettings,
+    hasCursorRenderingVersion: Boolean,
+): TerminalSettings {
+    if (hasCursorRenderingVersion) return settings
+
+    // 0.7 was the old focused default. Upgrade that value once to xterm parity, while
+    // preserving every non-default opacity a user may already have chosen.
+    return if (settings.cursorFocusedAlpha == 0.7f) {
+        settings.copy(cursorFocusedAlpha = 1f, cursorRenderingVersion = 2)
+    } else {
+        settings.copy(cursorRenderingVersion = 2)
+    }
+}
+
 /**
  * Manager for terminal settings with persistence support.
  * Settings are saved to ~/.bossterm/settings.json by default,
@@ -223,7 +238,11 @@ class SettingsManager(private val customSettingsPath: String? = null) {
             if (settingsFile.exists()) {
                 wasFreshInstall = false
                 val jsonString = settingsFile.readText()
-                val loadedSettings = json.decodeFromString<TerminalSettings>(jsonString)
+                val rawSettings = json.parseToJsonElement(jsonString).jsonObject
+                val loadedSettings = migrateCursorRenderingDefaults(
+                    settings = json.decodeFromString<TerminalSettings>(jsonString),
+                    hasCursorRenderingVersion = "cursorRenderingVersion" in rawSettings,
+                )
                 publish(loadedSettings)
                 println("Settings loaded from: ${settingsFile.absolutePath}")
 

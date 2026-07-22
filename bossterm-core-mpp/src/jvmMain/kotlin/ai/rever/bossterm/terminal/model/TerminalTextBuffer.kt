@@ -14,7 +14,6 @@ import ai.rever.bossterm.terminal.util.CharUtils
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.locks.Lock
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.math.max
 import kotlin.math.min
@@ -71,7 +70,7 @@ class TerminalTextBuffer internal constructor(
   val screenLinesCount: Int
     get() = screenLinesStorage.size
 
-  private val myLock: Lock = ReentrantLock()
+  private val myLock = ReentrantLock()
 
   /**
    * Incremental snapshot builder for optimized copy-on-write snapshots.
@@ -99,7 +98,7 @@ class TerminalTextBuffer internal constructor(
   }
 
   // ===== BATCH CHANGE TRACKING =====
-  // Suppresses intermediate modelChanged events during rapid sequences like clear+write
+  // Keeps rapid sequences like clear+write invisible until the complete update is ready.
   @Volatile
   private var batchDepth: Int = 0
   @Volatile
@@ -290,11 +289,14 @@ class TerminalTextBuffer internal constructor(
 
   /**
    * Begin a batch of operations. Model change events are suppressed until endBatch() is called.
+   * Snapshots are also excluded for the lifetime of the batch, so an immediate redraw cannot
+   * observe a partially applied PTY chunk (notably a half-rewritten Kitty image placeholder).
    * Batches can be nested - only the outermost endBatch() fires the event.
    *
    * Use this to group related operations (e.g., clear line + write text) into an atomic update.
    */
   fun beginBatch() {
+    myLock.lock()
     batchDepth++
   }
 
@@ -303,7 +305,9 @@ class TerminalTextBuffer internal constructor(
    * fires a single modelChanged event.
    */
   fun endBatch() {
-    if (batchDepth > 0) {
+    check(myLock.isHeldByCurrentThread) { "endBatch() must run on the thread that called beginBatch()" }
+    try {
+      check(batchDepth > 0) { "endBatch() called without a matching beginBatch()" }
       batchDepth--
       if (batchDepth == 0 && batchHasChanges) {
         batchHasChanges = false
@@ -311,6 +315,8 @@ class TerminalTextBuffer internal constructor(
           modelListener.modelChanged()
         }
       }
+    } finally {
+      myLock.unlock()
     }
   }
 

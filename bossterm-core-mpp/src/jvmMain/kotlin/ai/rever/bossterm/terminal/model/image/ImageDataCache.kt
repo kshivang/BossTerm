@@ -66,6 +66,14 @@ class ImageDataCache(
     fun hasImage(imageId: Long): Boolean = images.containsKey(imageId)
 
     /**
+     * Capture the image objects backing one render frame. The returned map owns
+     * its entries, so a Kitty hard-delete can remove an image from this cache
+     * without making an already captured frame temporarily lose its bitmap.
+     */
+    @Synchronized
+    fun snapshotImages(): Map<Long, TerminalImage> = images.toMap()
+
+    /**
      * Remove image from cache.
      * Called when image cells are cleared from buffer (text overwrite, scroll out).
      */

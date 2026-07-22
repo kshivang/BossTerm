@@ -57,5 +57,6 @@ class ThemeDefaultsTest {
         assertEquals(t.selection, s.selectionColor)
         assertEquals(t.searchMatch, s.foundPatternColor)
         assertEquals(t.hyperlink, s.hyperlinkColor)
+        assertEquals(1f, s.cursorFocusedAlpha, "focused cursor should match the opaque browser cursor")
     }
 }

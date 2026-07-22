@@ -52,6 +52,8 @@ import ai.rever.bossterm.terminal.emulator.mouse.MouseButtonCodes
 import ai.rever.bossterm.terminal.emulator.mouse.MouseMode
 import ai.rever.bossterm.terminal.model.BufferSnapshot
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
+import ai.rever.bossterm.terminal.model.image.TerminalImage
+import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
 import ai.rever.bossterm.terminal.util.CharUtils
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -83,7 +85,9 @@ import ai.rever.bossterm.compose.scrollbar.rememberTerminalScrollbarAdapter
 import ai.rever.bossterm.compose.search.SearchBar
 import ai.rever.bossterm.compose.rendering.RenderingContext
 import ai.rever.bossterm.compose.rendering.RenderableBlock
+import ai.rever.bossterm.compose.rendering.ImageRenderer
 import ai.rever.bossterm.compose.rendering.TerminalCanvasRenderer
+import ai.rever.bossterm.compose.rendering.imageCellSlice
 import ai.rever.bossterm.compose.blocks.BlockState
 import ai.rever.bossterm.compose.selection.SelectionEngine
 import ai.rever.bossterm.compose.settings.SettingsManager
@@ -119,6 +123,20 @@ private class GridStabilityTracker {
   var scheduledRows: Int = -1
   var job: Job? = null
 }
+
+/** A complete immutable frame retained while an application performs ?2026 updates. */
+private data class StableTerminalRenderFrame(
+  val buffer: VersionedBufferSnapshot,
+  val imagesById: Map<Long, TerminalImage>,
+  val cursorX: Int,
+  val cursorY: Int,
+  val cursorVisible: Boolean,
+  val cursorShape: CursorShape?,
+)
+
+private class StableTerminalRenderFrameHolder(
+  var frame: StableTerminalRenderFrame,
+)
 
 /**
  * Proper terminal implementation using BossTerm's emulator.
@@ -1839,14 +1857,38 @@ fun ProperTerminal(
         // Snapshot cached by Compose - recreated when display triggers redraw OR buffer dimensions change
         // Cursor state is captured atomically to prevent flickering from partial updates
         val currentTrigger = display.redrawTrigger.value
-        val bufferSnapshot = remember(currentTrigger, textBuffer.width, textBuffer.height) {
-          textBuffer.createIncrementalSnapshot()
+        val imageDataCache = terminal.getImageDataCache()
+        val stableFrameHolder = remember(textBuffer, display) {
+          StableTerminalRenderFrameHolder(
+            StableTerminalRenderFrame(
+              buffer = textBuffer.createIncrementalSnapshot(),
+              imagesById = imageDataCache.snapshotImages(),
+              cursorX = display.cursorXSnapshot,
+              cursorY = display.cursorYSnapshot,
+              cursorVisible = display.cursorVisibleSnapshot,
+              cursorShape = display.cursorShapeSnapshot,
+            )
+          )
         }
-        // Capture cursor state atomically with redrawTrigger - prevents partial updates
-        val cursorX = remember(currentTrigger) { display.cursorXSnapshot }
-        val cursorY = remember(currentTrigger) { display.cursorYSnapshot }
-        val cursorVisible = remember(currentTrigger) { display.cursorVisibleSnapshot }
-        val cursorShape = remember(currentTrigger) { display.cursorShapeSnapshot }
+        val renderFrame = remember(currentTrigger, textBuffer.width, textBuffer.height) {
+          display.captureStableRenderFrame {
+            StableTerminalRenderFrame(
+              buffer = textBuffer.createIncrementalSnapshot(),
+              imagesById = imageDataCache.snapshotImages(),
+              cursorX = display.cursorXSnapshot,
+              cursorY = display.cursorYSnapshot,
+              cursorVisible = display.cursorVisibleSnapshot,
+              cursorShape = display.cursorShapeSnapshot,
+            )
+          }?.also { stableFrameHolder.frame = it } ?: stableFrameHolder.frame
+        }
+        val bufferSnapshot = renderFrame.buffer
+        // Cursor and content must come from the same committed ?2026 frame. Kitty
+        // image updates temporarily move the real cursor to the placement anchor.
+        val cursorX = renderFrame.cursorX
+        val cursorY = renderFrame.cursorY
+        val cursorVisible = renderFrame.cursorVisible
+        val cursorShape = renderFrame.cursorShape
         // Type-ahead manager can override cursor X for local echo prediction
         val effectiveCursorX = tab.typeAheadManager?.let { it.cursorX - 1 } ?: cursorX
 
@@ -1959,7 +2001,7 @@ fun ProperTerminal(
             isModifierPressed = isModifierPressed,
             slowBlinkVisible = slowBlinkVisible,
             rapidBlinkVisible = rapidBlinkVisible,
-            imageDataCache = terminal.getImageDataCache(),
+            imageDataById = renderFrame.imagesById,
             terminalWidthCells = bufferSnapshot.width,
             terminalHeightCells = bufferSnapshot.height,
             precomputedHyperlinks = precomputedHyperlinks,
@@ -1990,8 +2032,8 @@ fun ProperTerminal(
         // cursorBlinkVisible, so the ~0.5s blink invalidates just this tiny layer instead of
         // re-running the full text render. Cursor position is read from the same
         // composition-scoped snapshots the text canvas uses, so it stays in sync as content
-        // and scroll change. The cursor is a translucent overlay, so a separate layer is
-        // visually identical to drawing it last in one canvas.
+        // and scroll change. If the cursor intersects an inline image, that cell's alpha masks
+        // the cursor so animated sprite pixels remain above it, matching browser compositing.
         Canvas(modifier = Modifier.padding(start = 4.dp, top = 4.dp).fillMaxSize().clipToBounds()) {
           if (size.width < cellWidth || size.height < cellHeight) return@Canvas
           val customCursorColor = terminal.cursorColor
@@ -1999,6 +2041,24 @@ fun ProperTerminal(
             Color(customCursorColor.red, customCursorColor.green, customCursorColor.blue)
           } else activeTheme.cursorColor
           with(TerminalCanvasRenderer) {
+            val bufferCursorRow = (cursorY - 1).coerceAtLeast(0)
+            val cursorScreenRow = bufferCursorRow + scrollOffset
+            val cursorImageCell = bufferSnapshot.getLine(bufferCursorRow).getImageCellAt(effectiveCursorX)
+            val cursorImageSlice = cursorImageCell?.let { imageCell ->
+              renderFrame.imagesById[imageCell.imageId]?.let { image ->
+                ImageRenderer.getOrDecodeImage(image)
+              }?.let { bitmap ->
+                imageCellSlice(
+                  imageCell = imageCell,
+                  bitmap = bitmap,
+                  visualColumn = effectiveCursorX,
+                  screenRow = cursorScreenRow,
+                  visibleColumns = (size.width / cellWidth).toInt().coerceAtMost(bufferSnapshot.width),
+                  cellWidth = cellWidth,
+                  cellHeight = cellHeight,
+                )
+              }
+            }
             renderCursorOverlay(
               cursorVisible = cursorVisible,
               cursorBlinkVisible = cursorBlinkVisible,
@@ -2012,6 +2072,7 @@ fun ProperTerminal(
               cursorColor = baseCursorColor,
               focusedAlpha = settings.cursorFocusedAlpha,
               unfocusedAlpha = settings.cursorUnfocusedAlpha,
+              imageOcclusion = cursorImageSlice,
             )
           }
         }

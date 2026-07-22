@@ -90,6 +90,7 @@ class ComposeTerminalDisplay : TerminalDisplay {
     private val syncUpdateLock = Any()
     @Volatile private var _synchronizedUpdateEnabled = false
     @Volatile private var _pendingRedrawDuringSync = false
+    private var synchronizedUpdateGeneration = 0L
     private val _windowTitle = MutableStateFlow("")
     private val _iconTitle = MutableStateFlow("")
     private val _mouseMode = mutableStateOf(MouseMode.MOUSE_REPORTING_NONE)
@@ -427,6 +428,29 @@ class ComposeTerminalDisplay : TerminalDisplay {
     }
 
     /**
+     * Capture render data only when it did not overlap a synchronized update.
+     *
+     * Checking only at redraw-request time is insufficient: Compose may execute
+     * the corresponding recomposition after a later ?2026h has started. The
+     * generation check also catches a complete h/l pair that occurs while
+     * [capture] is running. The display lock is deliberately not held during
+     * [capture], because buffer mutations can request redraws while holding the
+     * terminal buffer lock and the opposite lock order would deadlock.
+     */
+    fun <T> captureStableRenderFrame(capture: () -> T): T? {
+        val generation = synchronized(syncUpdateLock) {
+            if (_synchronizedUpdateEnabled) null else synchronizedUpdateGeneration
+        } ?: return null
+
+        val result = capture()
+        return synchronized(syncUpdateLock) {
+            result.takeIf {
+                !_synchronizedUpdateEnabled && synchronizedUpdateGeneration == generation
+            }
+        }
+    }
+
+    /**
      * Set synchronized update mode (DEC Private Mode 2026).
      * When enabled, redraws are suppressed until mode is disabled.
      * When disabled, if any redraws were pending, one redraw is triggered.
@@ -445,13 +469,19 @@ class ComposeTerminalDisplay : TerminalDisplay {
         val shouldRedraw: Boolean
         synchronized(syncUpdateLock) {
             if (enabled) {
-                _synchronizedUpdateEnabled = true
-                _pendingRedrawDuringSync = false
+                if (!_synchronizedUpdateEnabled) {
+                    _synchronizedUpdateEnabled = true
+                    _pendingRedrawDuringSync = false
+                    synchronizedUpdateGeneration++
+                }
                 shouldRedraw = false
             } else {
-                shouldRedraw = _pendingRedrawDuringSync
-                _synchronizedUpdateEnabled = false
-                _pendingRedrawDuringSync = false
+                shouldRedraw = _synchronizedUpdateEnabled && _pendingRedrawDuringSync
+                if (_synchronizedUpdateEnabled) {
+                    _synchronizedUpdateEnabled = false
+                    _pendingRedrawDuringSync = false
+                    synchronizedUpdateGeneration++
+                }
             }
         }
 

@@ -47,4 +47,17 @@ class ImageDataCacheTest {
         assertEquals(listOf(1L), removed)
         assertEquals(1, cache.imageCount)
     }
+
+    @Test
+    fun frameSnapshotRetainsImageAfterLiveCacheDeletion() {
+        val cache = ImageDataCache()
+        val image = TerminalImage(id = 42, data = ByteArray(4))
+        cache.storeImage(image)
+
+        val frameImages = cache.snapshotImages()
+        cache.removeImage(image.id)
+
+        assertEquals(image, frameImages[image.id])
+        assertEquals(null, cache.getImage(image.id))
+    }
 }

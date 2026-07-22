@@ -109,6 +109,11 @@ import java.awt.datatransfer.DataFlavor
 import java.io.File
 import javax.swing.JFileChooser
 
+/**
+ * UI-thread confined. Both onGloballyPositioned and jobs launched by
+ * rememberCoroutineScope run on Compose's UI dispatcher; callers must preserve
+ * that confinement if this tracker is moved or reused elsewhere.
+ */
 private class GridStabilityTracker {
   var scheduledColumns: Int = -1
   var scheduledRows: Int = -1

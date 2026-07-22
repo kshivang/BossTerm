@@ -1210,7 +1210,10 @@ class BossTermMcpServer(
                 ?: return@addTool errorResult("Target pane does not support image output")
 
             // Per-pane mutex serializes with concurrent run_command / run_in_panel /
-            // show_image calls on the same pane.
+            // show_image calls on the same pane. Keep the readiness wait inside the
+            // lock intentionally: it can cost up to LAYOUT_SETTLE_TIMEOUT_MS on a
+            // slow layout, but releasing here would let later pane writes overtake
+            // this image and race its prompt/layout-dependent placement.
             registry.paneMutex(resolvedPaneId).withLock {
                 // Freshly created panes haven't drawn their first prompt (or been laid
                 // out, which sets real cell metrics). Wait for OSC 133;A so the image

@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.daemon
 
 import ai.rever.bossterm.compose.PlatformServices
 import ai.rever.bossterm.compose.TerminalSessionDispatcher
+import ai.rever.bossterm.compose.TerminalSessionSlots
 import ai.rever.bossterm.compose.getPlatformServices
 import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
 import ai.rever.bossterm.compose.settings.TerminalSettings
@@ -98,6 +99,10 @@ class TerminalSessionCore(
     var onExit: (() -> Unit)? = null
     private val exitNotified = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    // TerminalSessionSlots accounting: reserved in start(), released exactly once in close().
+    private var slotsReserved = false
+    private val slotsReleased = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val started = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile private var closed = false
@@ -156,6 +161,15 @@ class TerminalSessionCore(
     /** Spawn the PTY and start the read/emulate/exit-monitor loops. Idempotent. */
     fun start() {
         if (!started.compareAndSet(false, true)) return // atomic idempotency — never spawn two PTYs
+        // Reserve the session's long-lived threads (reader, emulator, waitFor) up front —
+        // a refused session must fail visibly instead of queueing on a starved dispatcher
+        // and silently never spawning its shell.
+        if (!TerminalSessionSlots.tryReserve()) {
+            _connectionState.value = State.Error(TerminalSessionSlots.EXHAUSTED_MESSAGE)
+            connected.complete(false)
+            return
+        }
+        slotsReserved = true
         launchWriteConsumer()
         scope.launch {
             try {
@@ -326,6 +340,7 @@ class TerminalSessionCore(
     fun close(): Thread? {
         if (closed) return null
         closed = true
+        if (slotsReserved && slotsReleased.compareAndSet(false, true)) TerminalSessionSlots.release()
         connected.complete(false) // release a write consumer still waiting to start
         writeChannel.close()
         val h = handle

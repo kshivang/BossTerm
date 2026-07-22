@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.AlertDialog
 import androidx.compose.material.Button
 import androidx.compose.material.ButtonDefaults
 import androidx.compose.material.Surface
@@ -281,6 +282,28 @@ fun TabbedTerminal(
         }
     }
     SideEffect { tabController.openTargetLinkHandler = linkOpenHandler }
+
+    // Shown when a new terminal was refused because every TerminalSessionDispatcher
+    // thread is pinned by a live session — the only remedy is closing terminals.
+    val showSessionCapacityDialog by tabController.showSessionCapacityDialog.collectAsState()
+    if (showSessionCapacityDialog) {
+        AlertDialog(
+            onDismissRequest = { tabController.dismissSessionCapacityDialog() },
+            title = { Text("No terminal threads available") },
+            text = {
+                Text(
+                    "All ${TerminalSessionSlots.MAX_THREADS} terminal session threads are in use " +
+                        "(${TerminalSessionSlots.usedThreads} reserved), so this terminal could not " +
+                        "start a shell. Close some terminal tabs or splits to free threads, then try again."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { tabController.dismissSessionCapacityDialog() }) {
+                    Text("OK")
+                }
+            }
+        )
+    }
 
     // Track window focus state reactively for overlay
     val isWindowFocusedState by remember { derivedStateOf { isWindowFocused() } }

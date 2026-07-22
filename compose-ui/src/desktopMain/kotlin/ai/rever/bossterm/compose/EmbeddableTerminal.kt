@@ -985,10 +985,19 @@ private suspend fun initializeProcess(
             workingDirectory = effectiveWorkingDir
         )
 
+        // Reserve the session's three long-lived threads (reader, emulator, waitFor)
+        // before spawning — a refused session must not spawn a process it can never
+        // read from. Released when the exit monitor below completes.
+        if (!TerminalSessionSlots.tryReserve()) {
+            session.connectionState.value = ConnectionState.Error(TerminalSessionSlots.EXHAUSTED_MESSAGE)
+            return
+        }
+
         // Spawn PTY process
         val processHandle = platformServices.getProcessService().spawnProcess(processConfig)
 
         if (processHandle == null) {
+            TerminalSessionSlots.release()
             session.connectionState.value = ConnectionState.Error("Failed to spawn process")
             return
         }
@@ -1100,11 +1109,15 @@ private suspend fun initializeProcess(
             }
         }
 
-        // Monitor process exit (waitFor parks a TerminalSessionDispatcher thread)
+        // Monitor process exit (waitFor parks a TerminalSessionDispatcher thread).
+        // Its completion — normal exit or scope cancellation on dispose — returns the
+        // session's TerminalSessionSlots reservation.
         session.coroutineScope.launch(TerminalSessionDispatcher) {
             val exitCode = processHandle.waitFor()
             session.connectionState.value = ConnectionState.Error("Process exited with code $exitCode")
             onExit?.invoke(exitCode)
+        }.invokeOnCompletion {
+            TerminalSessionSlots.release()
         }
 
     } catch (e: Exception) {

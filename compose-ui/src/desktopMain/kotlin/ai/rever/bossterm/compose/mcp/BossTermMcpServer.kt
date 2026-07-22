@@ -19,6 +19,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -1209,16 +1210,21 @@ class BossTermMcpServer(
                 ?: return@addTool errorResult("Target pane does not support image output")
 
             // Per-pane mutex serializes with concurrent run_command / run_in_panel /
-            // show_image calls on the same pane.
+            // show_image calls on the same pane. Keep the readiness wait inside the
+            // lock intentionally: it can cost up to LAYOUT_SETTLE_TIMEOUT_MS on a
+            // slow layout, but releasing here would let later pane writes overtake
+            // this image and race its prompt/layout-dependent placement.
             registry.paneMutex(resolvedPaneId).withLock {
                 // Freshly created panes haven't drawn their first prompt (or been laid
-                // out, which sets real cell metrics). Wait for OSC 133;A so placement
-                // sizes against the real grid and lands below a clean prompt.
+                // out, which sets real cell metrics). Wait for OSC 133;A so the image
+                // lands below a clean prompt, AND for the UI layout latch so placement
+                // sizes against the real grid instead of the 80x24 placeholder — the
+                // two signals arrive on independent paths with no ordering guarantee.
                 if (freshlyCreated) {
                     val shellReadyTimeoutMs = settingsManager.settings.value
                         .mcpRunCommandShellReadyTimeoutMs
                         .coerceIn(0, MAX_SHELL_READY_TIMEOUT_MS).toLong()
-                    if (shellReadyTimeoutMs > 0) awaitPromptReady(tab, shellReadyTimeoutMs)
+                    if (shellReadyTimeoutMs > 0) awaitPaneReady(tab, shellReadyTimeoutMs)
                 }
 
                 val osc = buildOsc1337Image(
@@ -1249,11 +1255,21 @@ class BossTermMcpServer(
     }
 
     /**
-     * Suspend until [session]'s shell signals OSC 133;A (prompt ready) or
-     * [timeoutMs] elapses. Used to defer image injection on freshly created
-     * panes until the pane is laid out and the prompt is drawn.
+     * Suspend until [session] is ready to receive geometry-dependent content, or
+     * [timeoutMs] elapses. Readiness is THREE conditions (issue #324):
+     *
+     *  1. The shell has signalled OSC 133;A (prompt ready).
+     *  2. The Compose UI has completed a layout pass ([BossTerminal.isUiLayoutReady]
+     *     — real cell metrics + a grid resize). The prompt often wins that race,
+     *     so waiting on it alone would size images against the placeholder
+     *     80x24 @ 10x20px grid.
+     *  3. The grid has stopped changing. The FIRST layout pass of a fresh
+     *     tab/split can be degenerate (a transient 2-row grid mid-settle);
+     *     content injected at that moment is sized against the throwaway grid
+     *     and baked that way into the buffer, so we require the dimensions to
+     *     hold still across consecutive samples before trusting them.
      */
-    private suspend fun awaitPromptReady(session: TerminalSession, timeoutMs: Long) {
+    private suspend fun awaitPaneReady(session: TerminalSession, timeoutMs: Long) {
         val terminal = session.terminal
         val signal = CompletableDeferred<Unit>()
         val listener = object : CommandStateListener {
@@ -1263,7 +1279,44 @@ class BossTermMcpServer(
         }
         terminal.addCommandStateListener(listener)
         try {
-            withTimeoutOrNull(timeoutMs) { signal.await() }
+            // Prompt and layout readiness arrive independently, so run their
+            // independent timeout budgets concurrently. Worst-case latency is
+            // max(prompt, layout), rather than their sum.
+            coroutineScope {
+                val promptWait = async {
+                    withTimeoutOrNull(timeoutMs) { signal.await() }
+                }
+                val layoutWait = async {
+                    val settledGrid = withTimeoutOrNull(LAYOUT_SETTLE_TIMEOUT_MS) {
+                        while (!terminal.isUiLayoutReady) delay(25)
+                        var stableSamples = 0
+                        var lastWidth = -1
+                        var lastHeight = -1
+                        while (stableSamples < GRID_STABLE_SAMPLES) {
+                            val width = session.textBuffer.width
+                            val height = session.textBuffer.height
+                            // Do not reject a genuinely tiny pane. The terminal's
+                            // actual 5x2 minimum is valid; stability across samples
+                            // distinguishes it from a throwaway first layout pass.
+                            val valid = width >= MIN_TERMINAL_GRID_COLS && height >= MIN_TERMINAL_GRID_ROWS
+                            if (valid && width == lastWidth && height == lastHeight) {
+                                stableSamples++
+                            } else {
+                                stableSamples = 0
+                                lastWidth = width
+                                lastHeight = height
+                            }
+                            delay(GRID_STABLE_SAMPLE_MS)
+                        }
+                        lastWidth to lastHeight
+                    }
+                    if (settledGrid != null) {
+                        terminal.markGridStable(settledGrid.first, settledGrid.second)
+                    }
+                }
+                promptWait.await()
+                layoutWait.await()
+            }
         } finally {
             terminal.removeCommandStateListener(listener)
         }
@@ -2376,6 +2429,34 @@ class BossTermMcpServer(
          * it would invite agents to set it sky-high and lose TUI detection.
          */
         private const val TUI_POLL_INTERVAL_MS = 100L
+
+        /**
+         * Grid-stability gate for `awaitPaneReady`: the buffer's cols/rows must
+         * be unchanged across this many consecutive samples, taken this far
+         * apart, before a freshly-created pane is trusted with geometry-
+         * dependent content. 3 x 60ms ≈ one to two Compose layout/resize beats:
+         * long enough to outlive the transient first-pass grid (observed: a
+         * 2-row measure before a fresh tab settles), short enough to be
+         * imperceptible next to shell startup.
+         */
+        private const val GRID_STABLE_SAMPLES = 3
+        private const val GRID_STABLE_SAMPLE_MS = 60L
+
+        /**
+         * BossTerminal's actual grid minimum. A 5x2 pane is small but valid;
+         * the consecutive-sample gate above, rather than an arbitrary size
+         * floor, distinguishes stable layout from a transient first pass.
+         */
+        private const val MIN_TERMINAL_GRID_COLS = 5
+        private const val MIN_TERMINAL_GRID_ROWS = 2
+
+        /**
+         * Dedicated budget for the UI-layout-ready + grid-stability wait in
+         * `awaitPaneReady`, independent of the shell-prompt budget so a slow
+         * shell rc can't starve it. Generous vs. the ~200-500ms it takes in
+         * practice; small vs. a user noticing a hung tool call.
+         */
+        private const val LAYOUT_SETTLE_TIMEOUT_MS = 3_000L
 
         /**
          * Valid values for `mcpRunCommandDefaultPanel`. Excludes "reuse"

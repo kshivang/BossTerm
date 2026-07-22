@@ -110,6 +110,32 @@ class BossTerminal(
     @Volatile
     private var myCellHeightPx: Float = 20f // Default estimate until UI sets actual value
 
+    // Device pixels per logical pixel of the display this terminal renders on
+    // (2.0 on retina). Cell metrics above are DEVICE px; inline-image sizing
+    // needs this to interpret intrinsic/px-spec image dimensions (logical px).
+    @Volatile
+    private var myDisplayScale: Float = 1f
+
+    // True once the UI has completed its first layout pass for this session: real cell
+    // pixel metrics pushed AND the initial grid resize applied. Until then, sizing math
+    // runs against the 80x24 @ 10x20px placeholders above. Shell-prompt readiness
+    // (OSC 133;A) gives NO ordering guarantee relative to this — callers that place
+    // geometry-dependent content (inline images) must gate on this flag too.
+    @Volatile
+    private var myUiLayoutReady = false
+
+    // Last trusted grid. Normal-sized grids are trusted immediately on resize;
+    // genuinely tiny grids are trusted after the UI stability gate confirms them.
+    // Transient layout artifacts can momentarily shrink the grid to the terminal
+    // minimum before the pane reaches its real size;
+    // if an inline image lands in exactly that window, sizing against the live grid
+    // bakes a squashed footprint into the buffer permanently. These remember the
+    // geometry the pane actually settles at so processInlineImage can fall back.
+    // Keep the pair in one volatile holder so readers cannot combine dimensions
+    // from two different resize events.
+    @Volatile
+    private var myLastTrustedGrid: TerminalGrid? = null
+
     override fun setModeEnabled(mode: TerminalMode?, enabled: Boolean) {
         mode?.let {
             if (enabled) {
@@ -568,13 +594,31 @@ class BossTerminal(
         var bufferRow = myCursorY - 1  // 0-indexed screen row
         val anchorCol = myCursorX  // Save original column for placement
 
-        // Calculate image dimensions
+        // Calculate image dimensions. Until a small live grid has remained stable,
+        // size against the last trusted grid instead — the footprint below is a
+        // one-time snapshot baked into the buffer, so sizing against a transient
+        // first layout pass would remain wrong after the pane settles.
+        val currentGrid = TerminalGrid(myTerminalWidth, myTerminalHeight)
+        val sizingGrid =
+            if (currentGrid.columns >= AUTO_TRUST_GRID_COLS && currentGrid.rows >= AUTO_TRUST_GRID_ROWS) {
+                currentGrid
+            } else {
+                myLastTrustedGrid ?: currentGrid
+            }
         val dimensions = ImageDimensionCalculator.calculate(
             image = image,
-            terminalWidthCells = myTerminalWidth,
-            terminalHeightCells = myTerminalHeight,
+            terminalWidthCells = sizingGrid.columns,
+            terminalHeightCells = sizingGrid.rows,
             cellWidthPx = myCellWidthPx,
-            cellHeightPx = myCellHeightPx
+            cellHeightPx = myCellHeightPx,
+            pixelScale = myDisplayScale
+        )
+        LOG.debug(
+            "processInlineImage: grid={}x{} sized-against={}x{} cellPx={}x{} scale={} intrinsic={}x{} -> px={}x{} cells={}x{} anchor=({},{})",
+            myTerminalWidth, myTerminalHeight, sizingGrid.columns, sizingGrid.rows,
+            myCellWidthPx, myCellHeightPx, myDisplayScale, image.intrinsicWidth, image.intrinsicHeight,
+            dimensions.pixelWidth, dimensions.pixelHeight,
+            dimensions.cellWidth, dimensions.cellHeight, anchorCol, bufferRow
         )
 
         // Store image data in cache
@@ -651,9 +695,38 @@ class BossTerminal(
         }
     }
 
+    /** See [myDisplayScale]. Pushed by the UI alongside [setCellDimensions]. */
+    fun setDisplayScale(scale: Float) {
+        if (scale > 0f) {
+            myDisplayScale = scale
+        }
+    }
+
     /** Last cell pixel size the UI measured (physical px) — used for remote "fit-to-client" resizing. */
     val cellWidthPx: Float get() = myCellWidthPx
     val cellHeightPx: Float get() = myCellHeightPx
+
+    /** See [markUiLayoutReady]. */
+    val isUiLayoutReady: Boolean get() = myUiLayoutReady
+
+    /**
+     * Called by the UI once real cell metrics have been pushed via [setCellDimensions]
+     * and the initial grid resize for this session has been applied — i.e. sizing math
+     * no longer runs against placeholder defaults. One-way latch.
+     */
+    fun markUiLayoutReady() {
+        myUiLayoutReady = true
+    }
+
+    /**
+     * Record a grid after the UI has observed it remain unchanged across consecutive
+     * layout samples. The dimensions are supplied together so a concurrent resize
+     * cannot produce a mixed pair. This lets a legitimate tiny pane replace the
+     * normal-sized fallback without trusting a one-frame resize blip.
+     */
+    fun markGridStable(columns: Int, rows: Int) {
+        myLastTrustedGrid = TerminalGrid(columns, rows)
+    }
 
     /**
      * Notify image storage when buffer scrolls.
@@ -1668,6 +1741,9 @@ class BossTerminal(
                 resizeListener.onResize(oldTermSize, newTermSize)
             }
         })
+        if (newTermSize.columns >= AUTO_TRUST_GRID_COLS && newTermSize.rows >= AUTO_TRUST_GRID_ROWS) {
+            myLastTrustedGrid = TerminalGrid(newTermSize.columns, newTermSize.rows)
+        }
     }
 
     override fun fillScreen(c: Char) {
@@ -1837,8 +1913,18 @@ class BossTerminal(
         private const val MIN_COLUMNS = 5
         private const val MIN_ROWS = 2
 
+        /**
+         * Normal-sized grids can be trusted immediately. Smaller grids may be
+         * legitimate, so the UI stability gate records those explicitly via
+         * [markGridStable] before geometry-dependent content is inserted.
+         */
+        private const val AUTO_TRUST_GRID_COLS = 10
+        private const val AUTO_TRUST_GRID_ROWS = 3
+
         fun ensureTermMinimumSize(termSize: TermSize): TermSize {
             return TermSize(max(MIN_COLUMNS, termSize.columns), max(MIN_ROWS, termSize.rows))
         }
     }
+
+    private data class TerminalGrid(val columns: Int, val rows: Int)
 }

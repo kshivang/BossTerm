@@ -302,6 +302,30 @@ data class CachedMeasurement(
     val firstBaseline: Float
 )
 
+internal data class ImageCellGrid(val columns: Int, val rows: Int)
+
+/**
+ * Re-fit an image's baked cell footprint to the columns reachable in the live
+ * pane while preserving its cell-grid aspect ratio.
+ */
+internal fun refitImageCellGrid(
+    totalColumns: Int,
+    totalRows: Int,
+    anchorColumn: Int,
+    visibleColumns: Int
+): ImageCellGrid {
+    val safeColumns = totalColumns.coerceAtLeast(1)
+    val safeRows = totalRows.coerceAtLeast(1)
+    // A negative anchor means the image is clipped on the left. Count those
+    // virtual off-screen cells intentionally so the remaining slice indices stay
+    // aligned with the original image grid rather than re-fitting a second time.
+    val availableColumns = (visibleColumns - anchorColumn).coerceAtLeast(1)
+    if (safeColumns <= availableColumns) return ImageCellGrid(safeColumns, safeRows)
+
+    val fittedRows = ((safeRows * availableColumns + safeColumns / 2) / safeColumns).coerceAtLeast(1)
+    return ImageCellGrid(availableColumns, fittedRows)
+}
+
 /**
  * Terminal canvas renderer that handles all drawing operations.
  * Separates rendering logic from the composable for better maintainability.
@@ -808,34 +832,53 @@ object TerminalCanvasRenderer {
                     if (image != null) {
                         val bitmap = ImageRenderer.getOrDecodeImage(image)
                         if (bitmap != null) {
-                            // Calculate source region - use exact boundaries to avoid gaps
-                            val srcX1 = imageCell.cellX * bitmap.width / imageCell.totalCellsX
-                            val srcX2 = (imageCell.cellX + 1) * bitmap.width / imageCell.totalCellsX
-                            val srcY1 = imageCell.cellY * bitmap.height / imageCell.totalCellsY
-                            val srcY2 = (imageCell.cellY + 1) * bitmap.height / imageCell.totalCellsY
-                            val srcX = srcX1
-                            val srcY = srcY1
-                            val srcW = (srcX2 - srcX1).coerceAtLeast(1)
-                            val srcH = (srcY2 - srcY1).coerceAtLeast(1)
-
-                            // Destination - use exact boundaries to avoid gaps
-                            val dstX1 = (visualCol * ctx.cellWidth).toInt()
-                            val dstX2 = ((visualCol + 1) * ctx.cellWidth).toInt()
-                            val dstY1 = (row * ctx.cellHeight).toInt()
-                            val dstY2 = ((row + 1) * ctx.cellHeight).toInt()
-                            val dstX = dstX1
-                            val dstY = dstY1
-                            val dstW = (dstX2 - dstX1).coerceAtLeast(1)
-                            val dstH = (dstY2 - dstY1).coerceAtLeast(1)
-
-                            // Draw the portion of the image for this cell
-                            drawImage(
-                                image = bitmap,
-                                srcOffset = androidx.compose.ui.unit.IntOffset(srcX, srcY),
-                                srcSize = androidx.compose.ui.unit.IntSize(srcW, srcH),
-                                dstOffset = androidx.compose.ui.unit.IntOffset(dstX, dstY),
-                                dstSize = androidx.compose.ui.unit.IntSize(dstW, dstH)
+                            // The cell footprint (totalCellsX/Y) is a one-time snapshot of the
+                            // grid at insertion time; the live grid can be narrower (insertion
+                            // raced pane layout, or the pane shrank since). Slicing against the
+                            // stale footprint would hard-crop every column past visibleCols for
+                            // the image's whole buffer lifetime. Re-fit at draw time instead:
+                            // compress the full bitmap into the columns actually reachable from
+                            // the anchor, shrinking rows by the same factor to keep aspect.
+                            val anchorCol = col - imageCell.cellX
+                            val effectiveGrid = refitImageCellGrid(
+                                totalColumns = imageCell.totalCellsX,
+                                totalRows = imageCell.totalCellsY,
+                                anchorColumn = anchorCol,
+                                visibleColumns = ctx.visibleCols
                             )
+                            val effCellsX = effectiveGrid.columns
+                            val effCellsY = effectiveGrid.rows
+                            // Cells beyond the re-fit footprint hold no slice; leave background.
+                            if (imageCell.cellX < effCellsX && imageCell.cellY < effCellsY) {
+                                // Calculate source region - use exact boundaries to avoid gaps
+                                val srcX1 = imageCell.cellX * bitmap.width / effCellsX
+                                val srcX2 = (imageCell.cellX + 1) * bitmap.width / effCellsX
+                                val srcY1 = imageCell.cellY * bitmap.height / effCellsY
+                                val srcY2 = (imageCell.cellY + 1) * bitmap.height / effCellsY
+                                val srcX = srcX1
+                                val srcY = srcY1
+                                val srcW = (srcX2 - srcX1).coerceAtLeast(1)
+                                val srcH = (srcY2 - srcY1).coerceAtLeast(1)
+
+                                // Destination - use exact boundaries to avoid gaps
+                                val dstX1 = (visualCol * ctx.cellWidth).toInt()
+                                val dstX2 = ((visualCol + 1) * ctx.cellWidth).toInt()
+                                val dstY1 = (row * ctx.cellHeight).toInt()
+                                val dstY2 = ((row + 1) * ctx.cellHeight).toInt()
+                                val dstX = dstX1
+                                val dstY = dstY1
+                                val dstW = (dstX2 - dstX1).coerceAtLeast(1)
+                                val dstH = (dstY2 - dstY1).coerceAtLeast(1)
+
+                                // Draw the portion of the image for this cell
+                                drawImage(
+                                    image = bitmap,
+                                    srcOffset = androidx.compose.ui.unit.IntOffset(srcX, srcY),
+                                    srcSize = androidx.compose.ui.unit.IntSize(srcW, srcH),
+                                    dstOffset = androidx.compose.ui.unit.IntOffset(dstX, dstY),
+                                    dstSize = androidx.compose.ui.unit.IntSize(dstW, dstH)
+                                )
+                            }
                         }
                     }
 

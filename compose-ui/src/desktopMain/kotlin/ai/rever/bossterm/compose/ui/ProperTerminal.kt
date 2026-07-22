@@ -108,6 +108,18 @@ import androidx.compose.ui.draganddrop.awtTransferable
 import java.awt.datatransfer.DataFlavor
 import java.io.File
 import javax.swing.JFileChooser
+
+/**
+ * UI-thread confined. Both onGloballyPositioned and jobs launched by
+ * rememberCoroutineScope run on Compose's UI dispatcher; callers must preserve
+ * that confinement if this tracker is moved or reused elsewhere.
+ */
+private class GridStabilityTracker {
+  var scheduledColumns: Int = -1
+  var scheduledRows: Int = -1
+  var job: Job? = null
+}
+
 /**
  * Proper terminal implementation using BossTerm's emulator.
  * This uses the real BossTerminal, BossEmulator, and TerminalTextBuffer from the core module.
@@ -184,6 +196,11 @@ fun ProperTerminal(
   val terminal = tab.terminal
   val textBuffer = tab.textBuffer
   val display = tab.display
+  val gridStabilityTracker = remember(terminal) { GridStabilityTracker() }
+
+  DisposableEffect(terminal) {
+    onDispose { gridStabilityTracker.job?.cancel() }
+  }
 
   // Command blocks captured for this session (OSC 133). Collected so the gutter
   // and scrollbar markers repaint as commands start and finish. Falls back to a
@@ -663,8 +680,11 @@ fun ProperTerminal(
   // Calculate line spacing gap (extra space added by line spacing)
   val lineSpacingGap = cellHeight - baseCellHeight
 
-  // Update terminal with actual cell dimensions for accurate image placement
-  LaunchedEffect(cellWidth, cellHeight) {
+  // Update terminal with actual cell dimensions for accurate image placement.
+  // Cell metrics are DEVICE px; the display scale lets image sizing interpret
+  // intrinsic/px-spec image dimensions as logical px (half-size otherwise on 2x).
+  LaunchedEffect(cellWidth, cellHeight, density) {
+    terminal.setDisplayScale(density.density)
     terminal.setCellDimensions(cellWidth, cellHeight)
   }
 
@@ -932,16 +952,17 @@ fun ProperTerminal(
           // Ensure we have valid dimensions (minimum 10x10 pixels to prevent crashes)
           if (newWidth >= 10 && newHeight >= 10 && cellWidth > 0f && cellHeight > 0f) {
             // Use floor division to ensure we don't calculate more rows than actually fit
-            val newCols = (newWidth / cellWidth).toInt().coerceAtLeast(2)
+            val newCols = (newWidth / cellWidth).toInt().coerceAtLeast(5)
             val newRows = (newHeight / cellHeight).toInt().coerceAtLeast(2)
             val currentCols = textBuffer.width
             val currentRows = textBuffer.height
 
-            // Resize on first render OR when dimensions change (ensures PTY gets correct size on startup)
-            if ((!hasPerformedInitialResize || (currentCols != newCols || currentRows != newRows)) && newCols >= 2 && newRows >= 2) {
-              val newTermSize = TermSize(newCols, newRows)
+            // Resize on first render OR when dimensions change (ensures PTY gets correct size on startup).
+            // Tiny panes are valid; geometry-dependent MCP content separately waits
+            // for consecutive stable samples so a transient first pass is not trusted.
+            if (!hasPerformedInitialResize || currentCols != newCols || currentRows != newRows) {
               // Resize terminal buffer and notify PTY process (sends SIGWINCH)
-              terminal.resize(newTermSize, RequestOrigin.User)
+              terminal.resize(TermSize(newCols, newRows), RequestOrigin.User)
               // Clear type-ahead predictions on resize (terminal state is no longer predictable)
               tab.typeAheadManager?.onResize()
               // Reset scroll to bottom on resize - history size may have changed, making old offset invalid
@@ -954,6 +975,47 @@ fun ProperTerminal(
               // Force redraw with new buffer dimensions (critical for initial size)
               display.requestImmediateRedraw()
               hasPerformedInitialResize = true
+            }
+            // Layout latch for MCP show_image (issue #324): this terminal has now
+            // been measured by a layout pass — real cell metrics pushed
+            // explicitly (the LaunchedEffect that normally pushes them has no
+            // ordering guarantee vs. this callback), grid resize applied above
+            // if needed. Keyed on the TERMINAL's own latch, NOT on
+            // hasPerformedInitialResize: this composition is reused across tab
+            // switches, so the composition-scoped flag is already true when a
+            // freshly created tab's session first lands here. Geometry-dependent
+            // paths use the separate grid-stability gate below before trusting
+            // the measured dimensions.
+            if (!terminal.isUiLayoutReady) {
+              // This deliberately duplicates the LaunchedEffect metric push:
+              // this layout callback is the ordering boundary for the ready latch.
+              terminal.setDisplayScale(density.density)
+              terminal.setCellDimensions(cellWidth, cellHeight)
+              terminal.markUiLayoutReady()
+            }
+            // Trust small grids only after they remain unchanged long enough to
+            // outlive the transient first layout pass. This also covers show_image
+            // calls that reuse an existing tiny pane and therefore do not run the
+            // freshly-created-pane readiness gate in BossTermMcpServer.
+            if (gridStabilityTracker.scheduledColumns != newCols ||
+              gridStabilityTracker.scheduledRows != newRows
+            ) {
+              gridStabilityTracker.scheduledColumns = newCols
+              gridStabilityTracker.scheduledRows = newRows
+              gridStabilityTracker.job?.cancel()
+              gridStabilityTracker.job = scope.launch {
+                kotlinx.coroutines.delay(180)
+                if (textBuffer.width == newCols && textBuffer.height == newRows) {
+                  terminal.markGridStable(newCols, newRows)
+                } else if (gridStabilityTracker.scheduledColumns == newCols &&
+                  gridStabilityTracker.scheduledRows == newRows
+                ) {
+                  // An external resize won the race. Let the next layout callback
+                  // schedule this measured grid again instead of treating it as done.
+                  gridStabilityTracker.scheduledColumns = -1
+                  gridStabilityTracker.scheduledRows = -1
+                }
+              }
             }
           }
         }

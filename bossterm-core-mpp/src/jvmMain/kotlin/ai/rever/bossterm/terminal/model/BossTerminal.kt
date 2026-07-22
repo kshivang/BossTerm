@@ -131,10 +131,10 @@ class BossTerminal(
     // if an inline image lands in exactly that window, sizing against the live grid
     // bakes a squashed footprint into the buffer permanently. These remember the
     // geometry the pane actually settles at so processInlineImage can fall back.
+    // Keep the pair in one volatile holder so readers cannot combine dimensions
+    // from two different resize events.
     @Volatile
-    private var myLastTrustedWidth = 0
-    @Volatile
-    private var myLastTrustedHeight = 0
+    private var myLastTrustedGrid: TerminalGrid? = null
 
     override fun setModeEnabled(mode: TerminalMode?, enabled: Boolean) {
         mode?.let {
@@ -598,23 +598,24 @@ class BossTerminal(
         // size against the last trusted grid instead — the footprint below is a
         // one-time snapshot baked into the buffer, so sizing against a transient
         // first layout pass would remain wrong after the pane settles.
-        val trustedWidthCells =
-            if (myTerminalWidth >= AUTO_TRUST_GRID_COLS || myLastTrustedWidth <= 0) myTerminalWidth
-            else myLastTrustedWidth
-        val trustedHeightCells =
-            if (myTerminalHeight >= AUTO_TRUST_GRID_ROWS || myLastTrustedHeight <= 0) myTerminalHeight
-            else myLastTrustedHeight
+        val currentGrid = TerminalGrid(myTerminalWidth, myTerminalHeight)
+        val sizingGrid =
+            if (currentGrid.columns >= AUTO_TRUST_GRID_COLS && currentGrid.rows >= AUTO_TRUST_GRID_ROWS) {
+                currentGrid
+            } else {
+                myLastTrustedGrid ?: currentGrid
+            }
         val dimensions = ImageDimensionCalculator.calculate(
             image = image,
-            terminalWidthCells = trustedWidthCells,
-            terminalHeightCells = trustedHeightCells,
+            terminalWidthCells = sizingGrid.columns,
+            terminalHeightCells = sizingGrid.rows,
             cellWidthPx = myCellWidthPx,
             cellHeightPx = myCellHeightPx,
             pixelScale = myDisplayScale
         )
         LOG.debug(
             "processInlineImage: grid={}x{} sized-against={}x{} cellPx={}x{} scale={} intrinsic={}x{} -> px={}x{} cells={}x{} anchor=({},{})",
-            myTerminalWidth, myTerminalHeight, trustedWidthCells, trustedHeightCells,
+            myTerminalWidth, myTerminalHeight, sizingGrid.columns, sizingGrid.rows,
             myCellWidthPx, myCellHeightPx, myDisplayScale, image.intrinsicWidth, image.intrinsicHeight,
             dimensions.pixelWidth, dimensions.pixelHeight,
             dimensions.cellWidth, dimensions.cellHeight, anchorCol, bufferRow
@@ -718,13 +719,13 @@ class BossTerminal(
     }
 
     /**
-     * Record the current grid after the UI has observed it remain unchanged across
-     * consecutive layout samples. This lets a legitimate tiny pane replace the
-     * normal-sized fallback without treating a one-frame resize blip as trusted.
+     * Record a grid after the UI has observed it remain unchanged across consecutive
+     * layout samples. The dimensions are supplied together so a concurrent resize
+     * cannot produce a mixed pair. This lets a legitimate tiny pane replace the
+     * normal-sized fallback without trusting a one-frame resize blip.
      */
-    fun markCurrentGridStable() {
-        myLastTrustedWidth = myTerminalWidth
-        myLastTrustedHeight = myTerminalHeight
+    fun markGridStable(columns: Int, rows: Int) {
+        myLastTrustedGrid = TerminalGrid(columns, rows)
     }
 
     /**
@@ -1741,8 +1742,7 @@ class BossTerminal(
             }
         })
         if (newTermSize.columns >= AUTO_TRUST_GRID_COLS && newTermSize.rows >= AUTO_TRUST_GRID_ROWS) {
-            myLastTrustedWidth = newTermSize.columns
-            myLastTrustedHeight = newTermSize.rows
+            myLastTrustedGrid = TerminalGrid(newTermSize.columns, newTermSize.rows)
         }
     }
 
@@ -1916,7 +1916,7 @@ class BossTerminal(
         /**
          * Normal-sized grids can be trusted immediately. Smaller grids may be
          * legitimate, so the UI stability gate records those explicitly via
-         * [markCurrentGridStable] before geometry-dependent content is inserted.
+         * [markGridStable] before geometry-dependent content is inserted.
          */
         private const val AUTO_TRUST_GRID_COLS = 10
         private const val AUTO_TRUST_GRID_ROWS = 3
@@ -1925,4 +1925,6 @@ class BossTerminal(
             return TermSize(max(MIN_COLUMNS, termSize.columns), max(MIN_ROWS, termSize.rows))
         }
     }
+
+    private data class TerminalGrid(val columns: Int, val rows: Int)
 }

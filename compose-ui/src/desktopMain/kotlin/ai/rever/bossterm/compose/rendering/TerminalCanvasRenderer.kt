@@ -316,6 +316,9 @@ internal fun refitImageCellGrid(
 ): ImageCellGrid {
     val safeColumns = totalColumns.coerceAtLeast(1)
     val safeRows = totalRows.coerceAtLeast(1)
+    // A negative anchor means the image is clipped on the left. Count those
+    // virtual off-screen cells intentionally so the remaining slice indices stay
+    // aligned with the original image grid rather than re-fitting a second time.
     val availableColumns = (visibleColumns - anchorColumn).coerceAtLeast(1)
     if (safeColumns <= availableColumns) return ImageCellGrid(safeColumns, safeRows)
 

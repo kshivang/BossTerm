@@ -1284,7 +1284,7 @@ class BossTermMcpServer(
                     withTimeoutOrNull(timeoutMs) { signal.await() }
                 }
                 val layoutWait = async {
-                    val settled = withTimeoutOrNull(LAYOUT_SETTLE_TIMEOUT_MS) {
+                    val settledGrid = withTimeoutOrNull(LAYOUT_SETTLE_TIMEOUT_MS) {
                         while (!terminal.isUiLayoutReady) delay(25)
                         var stableSamples = 0
                         var lastWidth = -1
@@ -1305,10 +1305,10 @@ class BossTermMcpServer(
                             }
                             delay(GRID_STABLE_SAMPLE_MS)
                         }
-                        true
-                    } == true
-                    if (settled) {
-                        terminal.markCurrentGridStable()
+                        lastWidth to lastHeight
+                    }
+                    if (settledGrid != null) {
+                        terminal.markGridStable(settledGrid.first, settledGrid.second)
                     }
                 }
                 promptWait.await()

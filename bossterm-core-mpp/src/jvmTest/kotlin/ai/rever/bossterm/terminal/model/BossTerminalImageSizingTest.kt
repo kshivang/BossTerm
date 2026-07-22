@@ -29,12 +29,24 @@ class BossTerminalImageSizingTest {
         val terminal = createTerminal()
         terminal.resize(TermSize(100, 20), RequestOrigin.User)
         terminal.resize(TermSize(5, 2), RequestOrigin.User)
-        terminal.markCurrentGridStable()
+        terminal.markGridStable(columns = 5, rows = 2)
 
         val placement = terminal.processInlineImage(autoImage())!!
 
         assertEquals(5, placement.cellWidth)
         assertEquals(2, placement.cellHeight)
+    }
+
+    @Test
+    fun transientDimensionFallsBackToOneTrustedGridPair() {
+        val terminal = createTerminal()
+        terminal.resize(TermSize(81, 24), RequestOrigin.User)
+        terminal.resize(TermSize(100, 2), RequestOrigin.User)
+
+        val placement = terminal.processInlineImage(autoImage(width = 900, height = 300))!!
+
+        assertEquals(81, placement.cellWidth)
+        assertEquals(14, placement.cellHeight)
     }
 
     private fun createTerminal(): BossTerminal {
@@ -45,10 +57,10 @@ class BossTerminalImageSizingTest {
         }
     }
 
-    private fun autoImage() = TerminalImage(
+    private fun autoImage(width: Int = 500, height: Int = 300) = TerminalImage(
         data = ByteArray(1),
-        intrinsicWidth = 500,
-        intrinsicHeight = 300
+        intrinsicWidth = width,
+        intrinsicHeight = height
     )
 
     private class NoopTerminalDisplay : TerminalDisplay {

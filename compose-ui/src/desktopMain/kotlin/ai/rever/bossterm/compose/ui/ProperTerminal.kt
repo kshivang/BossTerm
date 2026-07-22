@@ -108,6 +108,13 @@ import androidx.compose.ui.draganddrop.awtTransferable
 import java.awt.datatransfer.DataFlavor
 import java.io.File
 import javax.swing.JFileChooser
+
+private class GridStabilityTracker {
+  var scheduledColumns: Int = -1
+  var scheduledRows: Int = -1
+  var job: Job? = null
+}
+
 /**
  * Proper terminal implementation using BossTerm's emulator.
  * This uses the real BossTerminal, BossEmulator, and TerminalTextBuffer from the core module.
@@ -184,10 +191,10 @@ fun ProperTerminal(
   val terminal = tab.terminal
   val textBuffer = tab.textBuffer
   val display = tab.display
-  var gridStabilityJob by remember(terminal) { mutableStateOf<Job?>(null) }
+  val gridStabilityTracker = remember(terminal) { GridStabilityTracker() }
 
   DisposableEffect(terminal) {
-    onDispose { gridStabilityJob?.cancel() }
+    onDispose { gridStabilityTracker.job?.cancel() }
   }
 
   // Command blocks captured for this session (OSC 133). Collected so the gutter
@@ -949,9 +956,8 @@ fun ProperTerminal(
             // Tiny panes are valid; geometry-dependent MCP content separately waits
             // for consecutive stable samples so a transient first pass is not trusted.
             if (!hasPerformedInitialResize || currentCols != newCols || currentRows != newRows) {
-              val newTermSize = TermSize(newCols, newRows)
               // Resize terminal buffer and notify PTY process (sends SIGWINCH)
-              terminal.resize(newTermSize, RequestOrigin.User)
+              terminal.resize(TermSize(newCols, newRows), RequestOrigin.User)
               // Clear type-ahead predictions on resize (terminal state is no longer predictable)
               tab.typeAheadManager?.onResize()
               // Reset scroll to bottom on resize - history size may have changed, making old offset invalid
@@ -976,6 +982,8 @@ fun ProperTerminal(
             // paths use the separate grid-stability gate below before trusting
             // the measured dimensions.
             if (!terminal.isUiLayoutReady) {
+              // This deliberately duplicates the LaunchedEffect metric push:
+              // this layout callback is the ordering boundary for the ready latch.
               terminal.setDisplayScale(density.density)
               terminal.setCellDimensions(cellWidth, cellHeight)
               terminal.markUiLayoutReady()
@@ -984,11 +992,24 @@ fun ProperTerminal(
             // outlive the transient first layout pass. This also covers show_image
             // calls that reuse an existing tiny pane and therefore do not run the
             // freshly-created-pane readiness gate in BossTermMcpServer.
-            gridStabilityJob?.cancel()
-            gridStabilityJob = scope.launch {
-              kotlinx.coroutines.delay(180)
-              if (textBuffer.width == newCols && textBuffer.height == newRows) {
-                terminal.markCurrentGridStable()
+            if (gridStabilityTracker.scheduledColumns != newCols ||
+              gridStabilityTracker.scheduledRows != newRows
+            ) {
+              gridStabilityTracker.scheduledColumns = newCols
+              gridStabilityTracker.scheduledRows = newRows
+              gridStabilityTracker.job?.cancel()
+              gridStabilityTracker.job = scope.launch {
+                kotlinx.coroutines.delay(180)
+                if (textBuffer.width == newCols && textBuffer.height == newRows) {
+                  terminal.markGridStable(newCols, newRows)
+                } else if (gridStabilityTracker.scheduledColumns == newCols &&
+                  gridStabilityTracker.scheduledRows == newRows
+                ) {
+                  // An external resize won the race. Let the next layout callback
+                  // schedule this measured grid again instead of treating it as done.
+                  gridStabilityTracker.scheduledColumns = -1
+                  gridStabilityTracker.scheduledRows = -1
+                }
               }
             }
           }

@@ -1,6 +1,8 @@
 package ai.rever.bossterm.compose.daemon
 
 import ai.rever.bossterm.compose.PlatformServices
+import ai.rever.bossterm.compose.TerminalSessionDispatcher
+import ai.rever.bossterm.compose.TerminalSessionSlots
 import ai.rever.bossterm.compose.getPlatformServices
 import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
 import ai.rever.bossterm.compose.settings.TerminalSettings
@@ -97,6 +99,10 @@ class TerminalSessionCore(
     var onExit: (() -> Unit)? = null
     private val exitNotified = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    // TerminalSessionSlots accounting: reserved in start(), released exactly once in close().
+    private var slotsReserved = false
+    private val slotsReleased = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val started = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile private var closed = false
@@ -152,9 +158,25 @@ class TerminalSessionCore(
     fun addRawOutputListener(listener: (String) -> Unit) = dataStream.addRawOutputListener(listener)
     fun removeRawOutputListener(listener: (String) -> Unit) = dataStream.removeRawOutputListener(listener)
 
-    /** Spawn the PTY and start the read/emulate/exit-monitor loops. Idempotent. */
+    /**
+     * Spawn the PTY and start the read/emulate/exit-monitor loops. Idempotent.
+     *
+     * A TerminalSessionSlots refusal is PERMANENT for this core: `started` is
+     * consumed before the reservation attempt, so a refused core stays a no-op
+     * even after capacity frees up. Intentional — start() is one-shot; a caller
+     * that wants to retry after the user closes sessions constructs a new core.
+     */
     fun start() {
         if (!started.compareAndSet(false, true)) return // atomic idempotency — never spawn two PTYs
+        // Reserve the session's long-lived threads (reader, emulator, waitFor) up front —
+        // a refused session must fail visibly instead of queueing on a starved dispatcher
+        // and silently never spawning its shell.
+        if (!TerminalSessionSlots.tryReserve()) {
+            _connectionState.value = State.Error(TerminalSessionSlots.EXHAUSTED_MESSAGE)
+            connected.complete(false)
+            return
+        }
+        slotsReserved = true
         launchWriteConsumer()
         scope.launch {
             try {
@@ -169,6 +191,9 @@ class TerminalSessionCore(
                 if (h == null) {
                     _connectionState.value = State.Error("Failed to spawn process")
                     connected.complete(false)
+                    // The exit monitor was never armed, so nothing else will run close() —
+                    // without it the TerminalSessionSlots reservation leaks permanently.
+                    close()
                     return@launch
                 }
                 handle = h
@@ -188,7 +213,9 @@ class TerminalSessionCore(
                 (lastResize ?: (initCols to initRows)).let { (c, r) -> runCatching { h.resize(c, r) } }
 
                 // Emulator processing loop — drains the data stream into the terminal model.
-                launch(Dispatchers.Default) {
+                // Blocks in dataStream.char between chunks, so it must not hold one of
+                // Dispatchers.Default's nCPU permits.
+                launch(TerminalSessionDispatcher) {
                     try {
                         while (h.isAlive()) {
                             try {
@@ -208,7 +235,8 @@ class TerminalSessionCore(
                 }
 
                 // PTY reader loop — grapheme-safe chunking, matches TabController.startPtyReaderCoroutine.
-                launch(Dispatchers.IO) {
+                // Blocks in h.read() for the session's whole life, kept off the shared IO permits.
+                launch(TerminalSessionDispatcher) {
                     val maxChunkSize = 64 * 1024
                     try {
                         while (h.isAlive()) {
@@ -231,9 +259,12 @@ class TerminalSessionCore(
                     }
                 }
 
-                // Exit monitor on a DEDICATED thread — not this coroutine — so we don't pin a
-                // Dispatchers.IO pool thread (shared with the reader loops) in a blocking waitFor for
-                // the whole life of the session. On exit we self-close so the scope + write consumer
+                // Exit monitor on a DEDICATED thread — not a `scope` coroutine — purely so the
+                // teardown below runs independently of scope.cancel() in close(). Note waitFor()
+                // parks a TerminalSessionDispatcher permit regardless (accounted as one of the
+                // session's three), so this thread no longer avoids any pool pinning; it becomes
+                // removable once the pty4j-reaper exit-callback follow-up lands.
+                // On exit we self-close so the scope + write consumer
                 // + write channel are torn down (otherwise a naturally-exited shell leaks them).
                 Thread({
                     runCatching { runBlocking { h.waitFor() } }
@@ -246,6 +277,11 @@ class TerminalSessionCore(
                 _connectionState.value = State.Error("Terminal initialization failed: ${e.message}")
                 connected.complete(false)
                 log.error("session {} init failed: {}", id, e.message)
+                // The exit monitor was never armed, so nothing else will run close() —
+                // without it the TerminalSessionSlots reservation leaks permanently.
+                // close() also kills a half-spawned PTY via `handle`, and is a no-op
+                // if a concurrent closeSession already ran.
+                close()
             }
         }
     }
@@ -321,6 +357,7 @@ class TerminalSessionCore(
     fun close(): Thread? {
         if (closed) return null
         closed = true
+        if (slotsReserved && slotsReleased.compareAndSet(false, true)) TerminalSessionSlots.release()
         connected.complete(false) // release a write consumer still waiting to start
         writeChannel.close()
         val h = handle

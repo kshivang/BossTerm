@@ -9,6 +9,8 @@ import ai.rever.bossterm.terminal.model.StyleState
 import ai.rever.bossterm.terminal.model.TerminalApplicationTitleListener
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import ai.rever.bossterm.compose.vcs.GitUtils
@@ -17,6 +19,8 @@ import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.compose.ConnectionState
 import ai.rever.bossterm.compose.PlatformServices
 import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
+import ai.rever.bossterm.compose.TerminalSessionDispatcher
+import ai.rever.bossterm.compose.TerminalSessionSlots
 import ai.rever.bossterm.compose.debug.ChunkSource
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
@@ -159,6 +163,49 @@ class TabController(
      * 3. SupervisorJob prevents individual failures from cancelling siblings
      */
     private val cleanupScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    /**
+     * Raised when a new session is refused because [TerminalSessionSlots] is exhausted
+     * (every TerminalSessionDispatcher thread is pinned by a live session). The hosting
+     * UI shows a dialog asking the user to close some terminals; the affected pane
+     * itself is put into [ConnectionState.Error] with the same message.
+     */
+    private val _showSessionCapacityDialog = MutableStateFlow(false)
+    val showSessionCapacityDialog: StateFlow<Boolean> get() = _showSessionCapacityDialog
+
+    fun dismissSessionCapacityDialog() {
+        _showSessionCapacityDialog.value = false
+    }
+
+    /**
+     * Launch the long-lived coroutine that owns a shell session (spawn → reader/emulator
+     * loops → waitFor). Reserves the session's thread budget from [TerminalSessionSlots]
+     * first: when the budget is exhausted the session is NOT started — the tab goes to an
+     * error state and [showSessionCapacityDialog] is raised — because launching anyway
+     * would queue on a starved dispatcher and silently never spawn a shell.
+     */
+    private fun launchSessionCoroutine(tab: TerminalTab, block: suspend CoroutineScope.() -> Unit) {
+        // Reserve synchronously on the caller's thread, BEFORE dispatching: at exact
+        // saturation every TerminalSessionDispatcher thread is parked in a live loop,
+        // so a coroutine dispatched just to check-and-report would itself queue
+        // forever — the silent hang this accounting exists to prevent.
+        if (!TerminalSessionSlots.tryReserve()) {
+            tab.connectionState.value = ConnectionState.Error(TerminalSessionSlots.EXHAUSTED_MESSAGE)
+            _showSessionCapacityDialog.value = true
+            return
+        }
+        // invokeOnCompletion rather than try/finally: it also fires when the scope is
+        // cancelled before the coroutine ever starts, so the reservation can't leak.
+        // A Job completes only after all its CHILDREN complete — and the session's
+        // reader/emulator loops are launched as children inside block() — so this
+        // release fires only after every loop has actually unwound, keeping the
+        // accounting from running ahead of the physically occupied permits.
+        tab.coroutineScope.launch(TerminalSessionDispatcher) {
+            block()
+        }.invokeOnCompletion {
+            TerminalSessionSlots.release()
+        }
+    }
 
     /**
      * Add a session lifecycle listener.
@@ -680,17 +727,30 @@ class TabController(
         // Skipped for a container tab ([feedsStream] = false): it owns no remote pane of its own
         // (its panes are separate mirror sessions in the split tree), so it needs no parked thread.
         if (feedsStream) {
-            scope.launch(Dispatchers.Default) {
-                try {
-                    while (isActive) {
-                        try {
-                            tab.emulator.processChar(tab.dataStream.char, tab.terminal)
-                        } catch (_: Exception) {
-                            break // EOF on close, or stream error — stop the loop
+            // Mirror drain loop pins one thread — reserve it synchronously (never on
+            // the view itself; see launchSessionCoroutine) so exhaustion is reported
+            // instead of the loop queueing forever.
+            if (!TerminalSessionSlots.tryReserve(1)) {
+                tab.connectionState.value = ConnectionState.Error(TerminalSessionSlots.EXHAUSTED_MESSAGE)
+                _showSessionCapacityDialog.value = true
+                // No drain loop will ever run — close the stream so writers don't feed
+                // a queue nobody reads. (The loop's finally does this on the normal path.)
+                runCatching { tab.dataStream.close() }
+            } else {
+                scope.launch(TerminalSessionDispatcher) {
+                    try {
+                        while (isActive) {
+                            try {
+                                tab.emulator.processChar(tab.dataStream.char, tab.terminal)
+                            } catch (_: Exception) {
+                                break // EOF on close, or stream error — stop the loop
+                            }
                         }
+                    } finally {
+                        runCatching { tab.dataStream.close() }
                     }
-                } finally {
-                    runCatching { tab.dataStream.close() }
+                }.invokeOnCompletion {
+                    TerminalSessionSlots.release(1)
                 }
             }
         }
@@ -1156,8 +1216,9 @@ class TabController(
 
         switchToTab(tabs.size - 1)
 
-        // Run pre-connection handler in coroutine
-        tab.coroutineScope.launch(Dispatchers.IO) {
+        // Run pre-connection handler in coroutine. On TerminalSessionDispatcher:
+        // this coroutine ends in handle.waitFor() and so lives as long as the shell.
+        launchSessionCoroutine(tab) {
             try {
                 // Create questioner that updates tab's connection state
                 val questioner = ComposeQuestioner { newState ->
@@ -1175,7 +1236,7 @@ class TabController(
                             closeTab(tabIndex)
                         }
                     }
-                    return@launch
+                    return@launchSessionCoroutine
                 }
 
                 // Update working directory from config
@@ -1183,8 +1244,10 @@ class TabController(
                     workingDirectoryState.value = config.workingDir
                 }
 
-                // Initialize terminal session with collected config
-                initializeTerminalSessionWithConfig(tab, config)
+                // Initialize terminal session with collected config. Passing this session
+                // coroutine's scope makes the reader/emulator loops its CHILDREN, so
+                // launchSessionCoroutine's release fires only after they unwind.
+                initializeTerminalSessionWithConfig(this, tab, config)
 
             } catch (e: Exception) {
                 tab.connectionState.value = ConnectionState.Error(
@@ -1201,6 +1264,7 @@ class TabController(
      * Initialize terminal session with pre-collected configuration.
      */
     private suspend fun initializeTerminalSessionWithConfig(
+        sessionScope: CoroutineScope,
         tab: TerminalTab,
         config: PreConnectConfig
     ) {
@@ -1312,8 +1376,13 @@ class TabController(
                 tab.textBuffer.endBatch()
             }
 
-            // Start emulator processing coroutine
-            tab.coroutineScope.launch(Dispatchers.Default) {
+            // Start emulator processing coroutine. Blocks in dataStream.char between
+            // chunks, so it must not hold one of Dispatchers.Default's nCPU permits.
+            // Launched in sessionScope — a CHILD of the session coroutine, not a
+            // sibling on tab.coroutineScope — so launchSessionCoroutine's release
+            // fires only after this loop unwinds and the accounting never runs
+            // ahead of the physically occupied permits.
+            sessionScope.launch(TerminalSessionDispatcher) {
                 try {
                     while (handle.isAlive()) {
                         try {
@@ -1333,16 +1402,18 @@ class TabController(
             }
 
             // Read PTY output in background (uses shared helper to eliminate duplication)
-            startPtyReaderCoroutine(tab.coroutineScope, tab, handle)
+            startPtyReaderCoroutine(sessionScope, tab, handle)
 
             // Start debug state capture coroutine if enabled
             tab.debugCollector?.let { collector ->
-                tab.coroutineScope.launch(Dispatchers.IO) {
+                sessionScope.launch(Dispatchers.IO) {
                     try {
                         while (handle.isAlive() && isActive) {
                             delay(settings.debugCaptureInterval)
                             collector.captureState()
                         }
+                    } catch (e: CancellationException) {
+                        throw e // normal tab close — nothing to log
                     } catch (e: Exception) {
                         println("DEBUG: State capture coroutine stopped: ${e.message}")
                     }
@@ -1371,6 +1442,8 @@ class TabController(
                 }
             }
 
+        } catch (e: CancellationException) {
+            throw e // normal tab close / dispose — not an initialization failure
         } catch (e: Exception) {
             tab.connectionState.value = ConnectionState.Error(
                 message = "Terminal initialization failed: ${e.message ?: "Unknown error"}",
@@ -1402,7 +1475,9 @@ class TabController(
         initialCommand: String? = null,
         onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)? = null
     ) {
-        tab.coroutineScope.launch(Dispatchers.IO) {
+        // On TerminalSessionDispatcher: this coroutine ends in handle.waitFor()
+        // and so lives as long as the shell.
+        launchSessionCoroutine(tab) {
             try {
                 // Set TERM environment variables for TUI compatibility
                 val terminalEnvironment = buildMap {
@@ -1450,7 +1525,7 @@ class TabController(
                         message = "Failed to spawn process",
                         cause = null
                     )
-                    return@launch
+                    return@launchSessionCoroutine
                 }
 
                 tab.processHandle.value = handle
@@ -1475,10 +1550,11 @@ class TabController(
                     }.also { tab.terminal.addCommandStateListener(it) }
                 }
 
-                // Start emulator processing coroutine
+                // Start emulator processing coroutine. Blocks in dataStream.char between
+                // chunks, so it must not hold one of Dispatchers.Default's nCPU permits.
                 // Note: Initial prompt will display via ModelListener → requestImmediateRedraw()
                 // when buffer content changes. No need for premature redraw here.
-                launch(Dispatchers.Default) {
+                launch(TerminalSessionDispatcher) {
                     try {
                         while (handle.isAlive()) {
                             try {
@@ -1511,6 +1587,8 @@ class TabController(
                                 delay(settings.debugCaptureInterval)
                                 collector.captureState()
                             }
+                        } catch (e: CancellationException) {
+                            throw e // normal tab close — nothing to log
                         } catch (e: Exception) {
                             println("DEBUG: State capture coroutine stopped: ${e.message}")
                         }
@@ -1603,6 +1681,8 @@ class TabController(
                     }
                 }
 
+            } catch (e: CancellationException) {
+                throw e // normal tab close / dispose — not an initialization failure
             } catch (e: Exception) {
                 tab.connectionState.value = ConnectionState.Error(
                     message = "Terminal initialization failed: ${e.message ?: "Unknown error"}",
@@ -1630,7 +1710,9 @@ class TabController(
         tab: TerminalTab,
         handle: PlatformServices.ProcessService.ProcessHandle
     ) {
-        scope.launch(Dispatchers.IO) {
+        // Blocks in handle.read() (JNA pty poll) for the session's whole life —
+        // one pinned thread per session, kept off the shared Dispatchers.IO permits.
+        scope.launch(TerminalSessionDispatcher) {
             val maxChunkSize = 64 * 1024
 
             try {

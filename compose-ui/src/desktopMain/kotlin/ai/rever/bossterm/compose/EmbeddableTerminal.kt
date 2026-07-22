@@ -23,13 +23,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.ai.AIAssistantDefinition
@@ -935,6 +938,13 @@ private suspend fun initializeProcess(
     onExit: ((Int) -> Unit)?,
     platformServices: PlatformServices = getPlatformServices()
 ) {
+    // True while this function owns a TerminalSessionSlots reservation that no
+    // completion hook will release — the outer catch must return it on failure.
+    var slotsHeld = false
+    // Set once spawned; lets the catch blocks reap a half-started process whose
+    // exit monitor was never armed (killing it also unwinds any reader/emulator
+    // loops already launched against it, freeing their dispatcher permits).
+    var spawnedHandle: PlatformServices.ProcessService.ProcessHandle? = null
     try {
         // Determine shell arguments (login shell)
         val args = if (command.endsWith("/zsh") || command.endsWith("/bash") ||
@@ -985,19 +995,32 @@ private suspend fun initializeProcess(
             workingDirectory = effectiveWorkingDir
         )
 
+        // Reserve the session's three long-lived threads (reader, emulator, waitFor)
+        // before spawning — a refused session must not spawn a process it can never
+        // read from. Released when the exit monitor below completes.
+        if (!TerminalSessionSlots.tryReserve()) {
+            session.connectionState.value = ConnectionState.Error(TerminalSessionSlots.EXHAUSTED_MESSAGE)
+            return
+        }
+        slotsHeld = true
+
         // Spawn PTY process
         val processHandle = platformServices.getProcessService().spawnProcess(processConfig)
 
         if (processHandle == null) {
+            slotsHeld = false
+            TerminalSessionSlots.release()
             session.connectionState.value = ConnectionState.Error("Failed to spawn process")
             return
         }
+        spawnedHandle = processHandle
 
         session.processHandle.value = processHandle
         session.connectionState.value = ConnectionState.Connected(processHandle)
 
-        // Start emulator coroutine
-        session.coroutineScope.launch(Dispatchers.Default) {
+        // Start emulator coroutine. Blocks in dataStream.char between chunks, so it
+        // must not hold one of Dispatchers.Default's nCPU permits.
+        val emulatorJob = session.coroutineScope.launch(TerminalSessionDispatcher) {
             try {
                 while (processHandle.isAlive()) {
                     try {
@@ -1016,8 +1039,9 @@ private suspend fun initializeProcess(
             }
         }
 
-        // Start output reader coroutine
-        session.coroutineScope.launch(Dispatchers.IO) {
+        // Start output reader coroutine — blocks in processHandle.read() for the
+        // session's whole life, kept off the shared Dispatchers.IO permits.
+        val readerJob = session.coroutineScope.launch(TerminalSessionDispatcher) {
             while (processHandle.isAlive()) {
                 val output = processHandle.read()
                 if (output != null) {
@@ -1098,14 +1122,46 @@ private suspend fun initializeProcess(
             }
         }
 
-        // Monitor process exit
-        session.coroutineScope.launch(Dispatchers.IO) {
+        // Monitor process exit (waitFor parks a TerminalSessionDispatcher thread).
+        val exitMonitorJob = session.coroutineScope.launch(TerminalSessionDispatcher) {
             val exitCode = processHandle.waitFor()
             session.connectionState.value = ConnectionState.Error("Process exited with code $exitCode")
             onExit?.invoke(exitCode)
         }
 
+        // Release the reservation only after ALL three session loops have completed —
+        // normal exit or scope cancellation on dispose — so the accounting never runs
+        // ahead of the physically occupied permits during a mass close.
+        // invokeOnCompletion fires even for already-completed or never-started jobs.
+        val remainingLoops = java.util.concurrent.atomic.AtomicInteger(3)
+        listOf(emulatorJob, readerJob, exitMonitorJob).forEach { job ->
+            job.invokeOnCompletion {
+                if (remainingLoops.decrementAndGet() == 0) TerminalSessionSlots.release()
+            }
+        }
+        // Ownership transferred: the loop-completion countdown releases from here on.
+        slotsHeld = false
+
+    } catch (e: CancellationException) {
+        // Dispose mid-init — not an error. Reap the half-started process (so any
+        // reader/emulator loops already launched unwind and free their permits),
+        // return the reservation, and propagate instead of logging a spurious Error.
+        if (slotsHeld) {
+            spawnedHandle?.let { h -> withContext(NonCancellable) { runCatching { h.kill() } } }
+            TerminalSessionSlots.release()
+        }
+        throw e
     } catch (e: Exception) {
+        // Anything thrown between reserving and arming the exit monitor (e.g.
+        // spawnProcess throwing instead of returning null) lands here. Kill the
+        // half-started process FIRST so the reader/emulator loops launched above
+        // unwind — isAlive() flips false and their permits free — instead of
+        // running orphaned, then return the reservation or capacity shrinks
+        // permanently.
+        if (slotsHeld) {
+            spawnedHandle?.let { h -> runCatching { h.kill() } }
+            TerminalSessionSlots.release()
+        }
         session.connectionState.value = ConnectionState.Error(e.message ?: "Failed to start process")
     }
 }

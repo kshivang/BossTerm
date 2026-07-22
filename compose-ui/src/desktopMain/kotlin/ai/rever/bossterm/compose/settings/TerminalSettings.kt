@@ -587,6 +587,15 @@ data class TerminalSettings(
     val bufferMaxLines: Int = 10000,
 
     /**
+     * Thread budget for concurrent terminal sessions (TerminalSessionSlots).
+     * Each full session pins ~3 threads (PTY reader, emulator loop, exit wait).
+     * 0 = automatic: scaled to the machine (16 × CPU cores, clamped 128–512).
+     * Non-zero values are clamped to 32–512. When the budget is exhausted, new
+     * terminals are refused with a dialog instead of hanging without a shell.
+     */
+    val maxSessionThreads: Int = 0,
+
+    /**
      * Cursor blink rate in milliseconds (0 = no blink)
      */
     val caretBlinkMs: Int = 500,

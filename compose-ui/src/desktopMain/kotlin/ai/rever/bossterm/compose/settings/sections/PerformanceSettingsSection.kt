@@ -5,10 +5,12 @@ import androidx.compose.material.Button
 import androidx.compose.material.ButtonDefaults
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ai.rever.bossterm.compose.TerminalSessionSlots
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SystemInfoUtils
@@ -29,6 +31,10 @@ fun PerformanceSettingsSection(
     // Platform detection
     val isMacOS = ShellCustomizationUtils.isMacOS()
     val isWindows = ShellCustomizationUtils.isWindows()
+
+    // Machine-scaled auto value for the session thread budget — constant for the
+    // process lifetime, so no need to query Runtime on every recomposition.
+    val autoSessionThreads = remember { TerminalSessionSlots.defaultMaxThreads() }
 
     // Calculate dynamic GPU cache limits based on system memory and user's max percent setting
     // Computed directly (no remember) to ensure reactivity when max percent changes
@@ -217,6 +223,21 @@ fun PerformanceSettingsSection(
                 onValueChange = { onSettingsChange(settings.copy(bufferMaxLines = it)) },
                 range = 1000..100000,
                 description = "Maximum lines in history (1000-100000)"
+            )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Session thread budget
+        SettingsSection(title = "Sessions") {
+            SettingsNumberInput(
+                label = "Max Session Threads",
+                value = settings.maxSessionThreads,
+                onValueChange = { onSettingsChange(settings.copy(maxSessionThreads = it)) },
+                range = 0..TerminalSessionSlots.HARD_MAX_THREADS,
+                description = "Thread budget for terminal sessions, ~3 per session " +
+                    "(0 = auto: 16 × CPU cores, currently $autoSessionThreads; " +
+                    "custom values clamp to ${TerminalSessionSlots.MIN_THREADS}-${TerminalSessionSlots.HARD_MAX_THREADS})"
             )
         }
 

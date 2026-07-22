@@ -253,7 +253,9 @@ class DesktopProcessService : PlatformServices.ProcessService {
             }
         }
 
-        override suspend fun waitFor(): Int = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        // Parks a thread for the process's whole life — must stay off the shared
+        // Dispatchers.IO permits (see TerminalSessionDispatcher).
+        override suspend fun waitFor(): Int = kotlinx.coroutines.withContext(TerminalSessionDispatcher) {
             process.waitFor()
         }
 

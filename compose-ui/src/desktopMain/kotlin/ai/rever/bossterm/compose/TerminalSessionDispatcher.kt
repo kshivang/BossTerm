@@ -51,7 +51,15 @@ val TerminalSessionDispatcher: CoroutineDispatcher =
  *   arming whatever completion hook normally releases.
  */
 object TerminalSessionSlots {
-    /** Permit budget of [TerminalSessionDispatcher]. */
+    /**
+     * Permit budget of [TerminalSessionDispatcher]. A fixed cap, deliberately not
+     * scaled to cores or memory: parked session threads cost little beyond their
+     * stacks, and hitting the cap degrades gracefully into the refusal dialog.
+     * The process's real terminal-thread ceiling is this budget (plus the view's
+     * small headroom) plus one dedicated exit-monitor OS thread per DAEMON
+     * session (see TerminalSessionCore) until the pty4j-reaper exit-callback
+     * follow-up removes those.
+     */
     const val MAX_THREADS = 256
 
     /** Long-lived threads a full local session pins: PTY reader + emulator loop + waitFor. */

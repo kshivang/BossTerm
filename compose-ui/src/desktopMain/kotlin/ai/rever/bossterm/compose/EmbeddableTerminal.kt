@@ -23,13 +23,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.ai.AIAssistantDefinition
@@ -938,6 +941,10 @@ private suspend fun initializeProcess(
     // True while this function owns a TerminalSessionSlots reservation that no
     // completion hook will release — the outer catch must return it on failure.
     var slotsHeld = false
+    // Set once spawned; lets the catch blocks reap a half-started process whose
+    // exit monitor was never armed (killing it also unwinds any reader/emulator
+    // loops already launched against it, freeing their dispatcher permits).
+    var spawnedHandle: PlatformServices.ProcessService.ProcessHandle? = null
     try {
         // Determine shell arguments (login shell)
         val args = if (command.endsWith("/zsh") || command.endsWith("/bash") ||
@@ -1006,6 +1013,7 @@ private suspend fun initializeProcess(
             session.connectionState.value = ConnectionState.Error("Failed to spawn process")
             return
         }
+        spawnedHandle = processHandle
 
         session.processHandle.value = processHandle
         session.connectionState.value = ConnectionState.Connected(processHandle)
@@ -1127,11 +1135,26 @@ private suspend fun initializeProcess(
         // Ownership transferred: the exit monitor's completion hook releases from here on.
         slotsHeld = false
 
+    } catch (e: CancellationException) {
+        // Dispose mid-init — not an error. Reap the half-started process (so any
+        // reader/emulator loops already launched unwind and free their permits),
+        // return the reservation, and propagate instead of logging a spurious Error.
+        if (slotsHeld) {
+            spawnedHandle?.let { h -> withContext(NonCancellable) { runCatching { h.kill() } } }
+            TerminalSessionSlots.release()
+        }
+        throw e
     } catch (e: Exception) {
         // Anything thrown between reserving and arming the exit monitor (e.g.
-        // spawnProcess throwing instead of returning null) lands here — return
-        // the reservation or capacity shrinks permanently.
-        if (slotsHeld) TerminalSessionSlots.release()
+        // spawnProcess throwing instead of returning null) lands here. Kill the
+        // half-started process FIRST so the reader/emulator loops launched above
+        // unwind — isAlive() flips false and their permits free — instead of
+        // running orphaned, then return the reservation or capacity shrinks
+        // permanently.
+        if (slotsHeld) {
+            spawnedHandle?.let { h -> runCatching { h.kill() } }
+            TerminalSessionSlots.release()
+        }
         session.connectionState.value = ConnectionState.Error(e.message ?: "Failed to start process")
     }
 }

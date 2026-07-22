@@ -136,13 +136,12 @@ data class RenderableBlock(
  *
  * @property isWcwidthDoubleWidth True if the character is double-width by any of:
  *   - `wcwidth()` returns 2 (CJK, fullwidth forms)
- *   - A DWC marker exists at col+1 (buffer-level marking)
+ *   - A DWC marker follows the base grapheme (buffer-level marking)
  *   - A variation selector at col+1 has DWC at col+2 (emoji+VS layout)
  *
- * @property isBaseDoubleWidth True if:
- *   - Code point >= U+1F100 (supplementary plane, always 2-cell), OR
- *   - [isWcwidthDoubleWidth] is true
- *   This captures characters that are inherently double-width regardless of modifiers.
+ * @property isBaseDoubleWidth True when [isWcwidthDoubleWidth] is true.
+ *   Supplementary-plane code points are not inherently wide: in particular,
+ *   Nerd Font glyphs in the supplementary private-use area are one cell by default.
  *
  * @property isDoubleWidth True if:
  *   - [isBaseDoubleWidth] is true, OR
@@ -215,14 +214,17 @@ fun analyzeCharacter(
     val wcwidthResult = char != ' ' && char != '\u0000' &&
         CharUtils.isDoubleWidthCharacter(actualCodePoint, ambiguousCharsAreDoubleWidth)
 
-    // Check for DWC at col+1, OR DWC at col+2 when col+1 is variation selector
-    // For emoji+VS like ⚠️: Buffer = [⚠][FE0F][DWC] - DWC is at col+2
+    // Scan through surrogate pairs/grapheme extenders for the buffer's DWC marker.
+    // Keep the BMP emoji+VS check because that layout starts with a non-surrogate:
+    // ⚠️ is stored as [⚠][FE0F][DWC].
     val hasVariationSelectorAtCol1 = charAtCol1 != null && UnicodeConstants.isVariationSelector(charAtCol1)
-    val isWcwidthDoubleWidth = charAtCol1 == CharUtils.DWC ||
+    val isWcwidthDoubleWidth = ColumnConversionUtils.getCharacterVisualWidth(line, col, width) == 2 ||
         (hasVariationSelectorAtCol1 && charAtCol2 == CharUtils.DWC) ||
         wcwidthResult
 
-    val isBaseDoubleWidth = if (actualCodePoint >= UnicodeConstants.ENCLOSED_ALPHANUMERIC_SUPPLEMENT_RANGE.first) true else isWcwidthDoubleWidth
+    // Match the buffer and iTerm2: supplementary characters are wide only when
+    // Unicode width data, the ambiguous-width setting, or a DWC marker says so.
+    val isBaseDoubleWidth = isWcwidthDoubleWidth
 
     // Check for variation selector - handle both DWC and non-DWC cases
     val nextCharOffset = if (isWcwidthDoubleWidth) 2 else 1

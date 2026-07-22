@@ -503,19 +503,19 @@ object CharUtils {
 
 
     /* auxiliary function for binary search in interval table */
-    fun bisearch(ucs: Char, table: Array<CharArray?>, max: Int): Int {
+    fun bisearch(ucs: Int, table: Array<CharArray?>, max: Int): Int {
         var max = max
         var min = 0
         var mid: Int
 
         val first = table[0] ?: return 0
         val last = table[max] ?: return 0
-        if (ucs < first[0] || ucs > last[1]) return 0
+        if (ucs < first[0].code || ucs > last[1].code) return 0
         while (max >= min) {
             mid = (min + max) / 2
             val midEntry = table[mid] ?: return 0
-            if (ucs > midEntry[1]) min = mid + 1
-            else if (ucs < midEntry[0]) max = mid - 1
+            if (ucs > midEntry[1].code) min = mid + 1
+            else if (ucs < midEntry[0].code) max = mid - 1
             else return 1
         }
 
@@ -532,14 +532,20 @@ object CharUtils {
         if (ucs < 32 || (ucs >= 0x7f && ucs < 0xa0)) return -1
 
         if (ambiguousIsDoubleWidth) {
-            if (bisearch(ucs.toChar(), AMBIGUOUS, AMBIGUOUS.size - 1) > 0) {
+            // iTerm2 classifies both supplementary private-use planes as
+            // East Asian Ambiguous. Nerd Font icons commonly live here, so
+            // they occupy one cell by default and two only with this option.
+            if (bisearch(ucs, AMBIGUOUS, AMBIGUOUS.size - 1) > 0 ||
+                ucs in 0xF0000..0xFFFFD ||
+                ucs in 0x100000..0x10FFFD
+            ) {
                 return 2
             }
         }
 
 
         /* binary search in table of non-spacing characters */
-        if (bisearch(ucs.toChar(), COMBINING, COMBINING.size - 1) > 0) {
+        if (bisearch(ucs, COMBINING, COMBINING.size - 1) > 0) {
             return 0
         }
 

@@ -35,4 +35,16 @@ class ImageDataCacheTest {
         assertEquals(1, cache.imageCount)
         assertEquals(7, cache.totalMemoryUsed)
     }
+
+    @Test
+    fun lruEvictionNotifiesMetadataOwner() {
+        val removed = mutableListOf<Long>()
+        val cache = ImageDataCache(maxImages = 1, onImageRemoved = removed::add)
+
+        cache.storeImage(TerminalImage(id = 1, data = ByteArray(1)))
+        cache.storeImage(TerminalImage(id = 2, data = ByteArray(1)))
+
+        assertEquals(listOf(1L), removed)
+        assertEquals(1, cache.imageCount)
+    }
 }

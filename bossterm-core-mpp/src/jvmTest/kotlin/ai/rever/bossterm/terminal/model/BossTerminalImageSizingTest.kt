@@ -74,6 +74,18 @@ class BossTerminalImageSizingTest {
         assertEquals(null, terminal.terminalTextBuffer.getLine(0).getImageCellAt(0))
     }
 
+    @Test
+    fun placeholderDimensionsArePrunedWithImageCacheEviction() {
+        val terminal = createTerminal()
+
+        repeat(101) {
+            terminal.processInlineImagePlaceholder(autoImage(), cellX = 0, cellY = 0)
+        }
+
+        assertEquals(100, terminal.getImageDataCache().imageCount)
+        assertEquals(100, terminal.placeholderDimensionCacheSize)
+    }
+
     private fun createTerminal(): BossTerminal {
         val styleState = StyleState()
         val textBuffer = TerminalTextBuffer(width = 80, height = 24, styleState = styleState)

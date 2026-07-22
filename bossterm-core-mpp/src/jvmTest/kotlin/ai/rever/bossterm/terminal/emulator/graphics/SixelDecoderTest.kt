@@ -38,6 +38,14 @@ class SixelDecoderTest {
     }
 
     @Test
+    fun aspectParameterOneUsesTheVt340TwoToOneDefault() {
+        val raster = SixelDecoder.decode("~", aspectParameter = 1)
+
+        assertEquals(1, raster.width)
+        assertEquals(12, raster.height)
+    }
+
+    @Test
     fun explicitRasterClipsTheUnusedRowsInTheLastBand() {
         val raster = SixelDecoder.decode("\"1;1;1;1#224;2;100;0;0#224@", aspectParameter = 9)
 

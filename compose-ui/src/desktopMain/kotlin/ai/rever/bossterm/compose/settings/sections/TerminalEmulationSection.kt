@@ -27,6 +27,13 @@ fun TerminalEmulationSection(
                 onCheckedChange = { onSettingsChange(settings.copy(decCompatibilityMode = it)) },
                 description = "Enable DEC terminal compatibility"
             )
+
+            SettingsToggle(
+                label = "Allow Kitty File Image Transfers",
+                checked = settings.allowKittyFileTransfers,
+                onCheckedChange = { onSettingsChange(settings.copy(allowKittyFileTransfers = it)) },
+                description = "Let local or remote programs display user-readable image files; in-band images still work when disabled"
+            )
         }
 
         Spacer(modifier = Modifier.height(24.dp))

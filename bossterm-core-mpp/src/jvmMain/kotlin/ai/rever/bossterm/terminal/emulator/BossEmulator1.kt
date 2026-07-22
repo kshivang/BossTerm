@@ -47,8 +47,21 @@ import kotlin.plus
 class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
     DataStreamIteratingEmulator(dataStream, terminal) {
 
-    private val kittyGraphicsProtocol = KittyGraphicsProtocol()
+    private var kittyGraphicsProtocol = KittyGraphicsProtocol()
     private var maxGraphicsControlChars = RasterCodec.MAX_CONTROL_STRING_CHARS
+
+    /**
+     * Configure whether Kitty `t=f/t=t` commands may read local files. The
+     * existing two-argument constructor remains file-compatible and defaults
+     * this protocol feature on.
+     */
+    constructor(
+        dataStream: TerminalDataStream,
+        terminal: Terminal?,
+        allowKittyFileTransfers: kotlin.Boolean
+    ) : this(dataStream, terminal) {
+        kittyGraphicsProtocol = KittyGraphicsProtocol(allowKittyFileTransfers)
+    }
 
     internal constructor(
         dataStream: TerminalDataStream,
@@ -347,8 +360,11 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
                 Ascii.ESC -> {
                     val next = myDataStream.char
                     if (next == '\\') return result.toString()
-                    result.append(ch)
-                    result.append(next)
+                    // ESC only has meaning here as the 7-bit ST introducer.
+                    // Continuing would fold an unrelated escape sequence into
+                    // the graphics payload and could accidentally render it.
+                    LOG.warn("Aborting graphics control sequence after a stray ESC")
+                    return ""
                 }
                 else -> result.append(ch)
             }

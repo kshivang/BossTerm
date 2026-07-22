@@ -74,7 +74,7 @@ class TerminalSessionCore(
     val terminal: BossTerminal = BossTerminal(display, textBuffer, styleState)
     val dataStream: BlockingTerminalDataStream =
         BlockingTerminalDataStream(performanceMode = PerformanceMode.fromString(settings.performanceMode))
-    val emulator: BossEmulator = BossEmulator(dataStream, terminal)
+    val emulator: BossEmulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
 
     // ---- resolved launch command (login-shell defaults match TabController.createTab) ----
     private val effectiveCommand: String

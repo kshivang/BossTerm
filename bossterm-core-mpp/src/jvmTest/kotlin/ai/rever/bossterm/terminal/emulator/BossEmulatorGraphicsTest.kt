@@ -63,6 +63,21 @@ class BossEmulatorGraphicsTest {
         assertEquals(emptyList(), recording.text)
     }
 
+    @Test
+    fun strayEscapeAbortsGraphicsControlStringAndEmulationContinues() {
+        val recording = RecordingTerminal()
+        val input = buildString {
+            append(Ascii.ESC).append("_Gi=1,a=q,t=d,f=24,s=1,v=1;AAAA")
+            append(Ascii.ESC).append('X')
+            append("tail")
+        }
+
+        emulate(input, recording)
+
+        assertEquals(emptyList(), recording.responses)
+        assertEquals(listOf("tail"), recording.text)
+    }
+
     private fun emulate(
         input: String,
         recording: RecordingTerminal,

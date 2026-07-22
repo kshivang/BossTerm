@@ -826,6 +826,9 @@ object TerminalCanvasRenderer {
 
             while (col < bufferLimit && visualCol < ctx.visibleCols) {
                 // Check for image cell first (cell-based image rendering)
+                // Image-cell keys are terminal visual columns. On pure image rows
+                // buffer and visual columns coincide; using visualCol here also
+                // preserves that invariant when UTF-16 text precedes a placeholder.
                 val imageCell = line.getImageCellAt(visualCol)
                 if (imageCell != null) {
                     // Flush any pending text batch before rendering image cell

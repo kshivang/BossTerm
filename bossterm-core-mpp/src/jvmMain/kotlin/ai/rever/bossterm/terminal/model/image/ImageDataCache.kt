@@ -5,15 +5,18 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Simple LRU cache for image data.
+ * Thread-safe, bounded LRU cache for image data.
  * Images are referenced by ID from ImageAnchorCell in the terminal buffer.
  *
  * Unlike TerminalImageStorage, this class does NOT track placements -
  * that's handled by image cells in the buffer, which flow naturally with text.
+ * [onImageRemoved] lets owners discard metadata that must not outlive a cached
+ * image, including removals caused by automatic LRU eviction.
  */
 class ImageDataCache(
     private val maxImages: Int = 100,
-    private val maxTotalBytes: Long = 50 * 1024 * 1024 // 50MB
+    private val maxTotalBytes: Long = 50 * 1024 * 1024, // 50MB
+    private val onImageRemoved: (Long) -> Unit = {}
 ) {
     companion object {
         private val LOG = LoggerFactory.getLogger(ImageDataCache::class.java)
@@ -35,6 +38,7 @@ class ImageDataCache(
         if (replaced != null) {
             totalBytes -= replaced.data.size
             accessOrder.remove(image.id)
+            onImageRemoved(image.id)
         }
         ensureCapacity(image.data.size.toLong())
         images[image.id] = image
@@ -70,6 +74,7 @@ class ImageDataCache(
         val image = images.remove(imageId) ?: return false
         totalBytes -= image.data.size
         accessOrder.remove(imageId)
+        onImageRemoved(imageId)
         LOG.debug("Removed image id={}, remaining images={}", imageId, images.size)
         return true
     }
@@ -79,9 +84,11 @@ class ImageDataCache(
      */
     @Synchronized
     fun clearAll() {
+        val removedImageIds = images.keys.toList()
         images.clear()
         accessOrder.clear()
         totalBytes = 0
+        removedImageIds.forEach(onImageRemoved)
         LOG.debug("Cleared all images")
     }
 

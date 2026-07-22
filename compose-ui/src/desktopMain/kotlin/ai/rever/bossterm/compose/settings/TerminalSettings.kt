@@ -626,6 +626,12 @@ data class TerminalSettings(
     val decCompatibilityMode: Boolean = true,
 
     /**
+     * Allow Kitty `t=f/t=t` graphics commands to read local image files.
+     * Disable this to restrict child/SSH output to in-band image data only.
+     */
+    val allowKittyFileTransfers: Boolean = true,
+
+    /**
      * Treat ambiguous-width characters as double-width
      */
     val ambiguousCharsAreDoubleWidth: Boolean = false,

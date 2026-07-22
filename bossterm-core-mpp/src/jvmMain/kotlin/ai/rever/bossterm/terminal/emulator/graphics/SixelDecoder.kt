@@ -134,6 +134,8 @@ internal object SixelDecoder {
     }
 
     private fun aspectRatioFor(parameter: Int): Double = when (parameter) {
+        // VT340 treats both the omitted/zero value and parameter 1 as 2:1.
+        0, 1 -> 2.0
         2 -> 5.0
         3, 4 -> 3.0
         5, 6 -> 2.0

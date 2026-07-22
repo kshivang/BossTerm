@@ -10,6 +10,7 @@ import ai.rever.bossterm.terminal.model.image.TerminalImage
 import ai.rever.bossterm.terminal.model.image.TerminalImagePlacement
 import java.lang.reflect.Proxy
 import java.nio.file.Files
+import java.nio.file.Path
 import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -221,6 +222,87 @@ class KittyGraphicsProtocolTest {
         assertEquals("${Ascii.ESC}_Gi=12;OK${Ascii.ESC}\\", recording.responses.single())
         assertFalse(Files.exists(file))
     }
+
+    @Test
+    fun fileTransportCanBeDisabledWithoutDisablingDirectImages() {
+        val recording = RecordingTerminal()
+        val protocol = KittyGraphicsProtocol(allowFileTransfers = false)
+        val encodedPath = encodedPath("/tmp/example.png")
+
+        protocol.process("Gi=13,a=q,t=f,f=100;$encodedPath", recording.terminal)
+        val direct = Base64.getEncoder().encodeToString(byteArrayOf(0x12, 0x34, 0x56, 0xff.toByte()))
+        protocol.process("Gi=14,a=q,t=d,f=32,s=1,v=1;$direct", recording.terminal)
+
+        assertTrue(recording.responses[0].contains("EACCES: file-backed Kitty transfers are disabled"))
+        assertEquals("${Ascii.ESC}_Gi=14;OK${Ascii.ESC}\\", recording.responses[1])
+    }
+
+    @Test
+    fun rejectsRelativeAndNulFileTransportPaths() {
+        val relative = RecordingTerminal()
+        KittyGraphicsProtocol().process(
+            "Gi=15,a=q,t=f,f=100;${encodedPath("image.png")}",
+            relative.terminal
+        )
+
+        val nul = RecordingTerminal()
+        KittyGraphicsProtocol().process(
+            "Gi=16,a=q,t=f,f=100;${encodedPath("/tmp/image\u0000.png")}",
+            nul.terminal
+        )
+
+        assertTrue(relative.responses.single().contains("EINVAL: image file path must be absolute"))
+        assertTrue(nul.responses.single().contains("EINVAL: invalid image file path"))
+    }
+
+    @Test
+    fun rejectsSensitiveDevicePathsAfterCanonicalization() {
+        val recording = RecordingTerminal()
+
+        KittyGraphicsProtocol().process(
+            "Gi=17,a=q,t=f,f=100;${encodedPath("/dev/null")}",
+            recording.terminal
+        )
+
+        assertTrue(recording.responses.single().contains("EACCES: image path is not allowed"))
+    }
+
+    @Test
+    fun sensitiveFileTransportRootsStayDenylisted() {
+        val protocol = KittyGraphicsProtocol()
+
+        assertTrue(protocol.isSensitivePath(Path.of("/proc/version")))
+        assertTrue(protocol.isSensitivePath(Path.of("/sys/kernel")))
+        assertTrue(protocol.isSensitivePath(Path.of("/dev/null")))
+        assertFalse(protocol.isSensitivePath(Path.of("/dev/shm/image.png")))
+    }
+
+    @Test
+    fun temporaryTransportDoesNotDeleteOutsideApprovedTemporaryRoots() {
+        val recording = RecordingTerminal()
+        val png = RasterCodec.encodeArgb(intArrayOf(0xffabcdef.toInt()), 1, 1).pngData
+        val file = Files.createTempFile(
+            Path.of("").toAbsolutePath(),
+            "tty-graphics-protocol-",
+            ".png"
+        )
+        try {
+            Files.write(file, png)
+
+            KittyGraphicsProtocol().process(
+                "Gi=18,a=q,t=t,f=100;${encodedPath(file.toString())}",
+                recording.terminal
+            )
+
+            assertEquals("${Ascii.ESC}_Gi=18;OK${Ascii.ESC}\\", recording.responses.single())
+            assertTrue(Files.exists(file))
+        } finally {
+            Files.deleteIfExists(file)
+        }
+    }
+
+    private fun encodedPath(path: String): String =
+        Base64.getEncoder().encodeToString(path.toByteArray())
 
     private data class Placement(val imageId: Long, val image: TerminalImage, val moveCursor: Boolean)
     private data class PlaceholderCell(val imageId: Long, val image: TerminalImage, val cellX: Int, val cellY: Int)

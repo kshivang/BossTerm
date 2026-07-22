@@ -893,7 +893,7 @@ private fun createTerminalSession(
         textBuffer.endBatch()
     }
 
-    val emulator = BossEmulator(dataStream, terminal)
+    val emulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
     val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     return TerminalTab(

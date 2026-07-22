@@ -1,5 +1,6 @@
 package ai.rever.bossterm.terminal.model
 
+import ai.rever.bossterm.core.util.Ascii
 import ai.rever.bossterm.terminal.StyledTextConsumer
 import ai.rever.bossterm.terminal.TextStyle
 import ai.rever.bossterm.terminal.model.image.ImageCell
@@ -20,6 +21,13 @@ import kotlin.math.min
  */
 class TerminalLine {
     private var myTextEntries = TextEntries()
+    // False is a hot-path guarantee: every encoded buffer unit occupies one
+    // terminal cell, so visual and buffer columns are interchangeable. A
+    // non-ASCII write switches to the precise mapping path until a replacement
+    // or full clear proves the remaining line is cell-aligned again.
+    private var myRequiresVisualColumnMapping = false
+    internal val requiresVisualColumnMapping: Boolean
+        get() = myRequiresVisualColumnMapping
     var isWrapped: Boolean = false
         set(value) {
             if (field != value) {
@@ -136,6 +144,7 @@ class TerminalLine {
 
     constructor(entry: TextEntry) {
         myTextEntries.add(entry)
+        myRequiresVisualColumnMapping = entry.text.requiresVisualColumnMapping()
     }
 
     val text: String
@@ -159,6 +168,7 @@ class TerminalLine {
             result.myTextEntries.add(TextEntry(entry.style, entry.text))
         }
         result.isWrapped = this.isWrapped
+        result.myRequiresVisualColumnMapping = myRequiresVisualColumnMapping
         // Copy image cells if present
         myImageCells?.let { cells ->
             result.myImageCells = cells.toMutableMap()
@@ -171,8 +181,14 @@ class TerminalLine {
         if (typeAheadLine != null) {
             return typeAheadLine.charAt(x)
         }
-        val text = this.text
-        return if (x < text.length) text.get(x) else CharUtils.EMPTY_CHAR
+        var entryOffset = x
+        for (entry in myTextEntries) {
+            // NUL padding is excluded from [text] and reads as an empty cell.
+            if (entry.isNul) return CharUtils.EMPTY_CHAR
+            if (entryOffset < entry.length) return entry.text[entryOffset]
+            entryOffset -= entry.length
+        }
+        return CharUtils.EMPTY_CHAR
     }
 
     /**
@@ -185,6 +201,7 @@ class TerminalLine {
     fun clear(filler: TextEntry) {
         myTextEntries.clear()
         myTextEntries.add(filler)
+        myRequiresVisualColumnMapping = filler.text.requiresVisualColumnMapping()
         myImageCells = null  // Clear all image cells
         incrementSnapshotVersion()
     }
@@ -208,6 +225,14 @@ class TerminalLine {
         ambiguousCharsAreDoubleWidth: Boolean
     ): Int {
         if (str.length == 0) return 0
+
+        if (!myRequiresVisualColumnMapping && !str.requiresVisualColumnMapping()) {
+            // The overwhelmingly common bulk-output path: ASCII buffer indices
+            // are already terminal-cell indices, so avoid three line scans and
+            // the grapheme segmenter on every append/write.
+            writeCharacters(visualX, style, str)
+            return str.length
+        }
 
         val oldLength = myTextEntries.length()
         val oldVisualLength = ColumnConversionUtils.bufferColToVisualCol(this, oldLength, oldLength)
@@ -284,6 +309,7 @@ class TerminalLine {
             )
         }
         myTextEntries = collectFromBuffer(chars, styles)
+        myRequiresVisualColumnMapping = chars.any { it.code > Ascii.DEL.code }
     }
 
     fun insertString(x: Int, str: CharBuffer, style: TextStyle) {
@@ -308,6 +334,8 @@ class TerminalLine {
             len = max(len, x + characters.length)
             myTextEntries = merge(x, characters, style, myTextEntries, len)
         }
+        myRequiresVisualColumnMapping =
+            myRequiresVisualColumnMapping || characters.requiresVisualColumnMapping()
         incrementSnapshotVersion()
     }
 
@@ -329,6 +357,8 @@ class TerminalLine {
             pair.second[i + x] = style
         }
         myTextEntries = Companion.collectFromBuffer(pair.first, pair.second)
+        myRequiresVisualColumnMapping =
+            myRequiresVisualColumnMapping || characters.requiresVisualColumnMapping()
         incrementSnapshotVersion()
     }
 
@@ -778,5 +808,12 @@ class TerminalLine {
 
             return result
         }
+    }
+
+    private fun CharBuffer.requiresVisualColumnMapping(): Boolean {
+        for (index in 0 until length) {
+            if (this[index].code > Ascii.DEL.code) return true
+        }
+        return false
     }
 }

@@ -18,14 +18,23 @@ import java.util.Base64
 import java.util.zip.InflaterInputStream
 
 /**
- * Stateful implementation of the commonly used Kitty graphics protocol commands.
+ * Stateful implementation of the BossTerm-supported Kitty graphics subset.
+ *
+ * Supported actions are transmit/query (`a=t/T/q`), place (`a=p`), and the
+ * implemented delete selectors (`a=d`). Supported media are direct data (`t=d`)
+ * and, when [allowFileTransfers] is enabled, file/temporary-file (`t=f/t`). PNG
+ * and 24/32-bit raw pixels are accepted, including zlib-compressed payloads.
+ * Shared memory (`t=s`), animation/frame composition, Kitty remote control, and
+ * kittens are intentionally outside this terminal graphics capability.
  *
  * Stored transfers and placed terminal images have independent 50 MiB cache
  * budgets. Placement copies retain the same [ByteArray] reference, so one image
  * is not duplicated, but disjoint stored-only and placed-only sets can retain up
  * to the combined budget.
  */
-internal class KittyGraphicsProtocol {
+internal class KittyGraphicsProtocol(
+    private val allowFileTransfers: Boolean = true
+) {
     private data class Command(
         val controls: Map<Char, String>,
         val payload: String
@@ -224,7 +233,10 @@ internal class KittyGraphicsProtocol {
         }
         var decoded = when (medium) {
             'd' -> payload
-            'f', 't' -> readFilePayload(payload, command.controls, deleteAfterRead = medium == 't')
+            'f', 't' -> {
+                require(allowFileTransfers) { "EACCES: file-backed Kitty transfers are disabled" }
+                readFilePayload(payload, command.controls, deleteAfterRead = medium == 't')
+            }
             else -> throw IllegalArgumentException("ENOTSUP: unsupported Kitty transmission medium")
         }
         if (command.controls['o'] == "z") decoded = inflateBounded(decoded)
@@ -417,8 +429,8 @@ internal class KittyGraphicsProtocol {
         } catch (_: Exception) {
             throw IllegalArgumentException("ENOENT: image file was not found")
         }
-        require(Files.isRegularFile(path)) { "EINVAL: image path is not a regular file" }
         require(!isSensitivePath(path)) { "EACCES: image path is not allowed" }
+        require(Files.isRegularFile(path)) { "EINVAL: image path is not a regular file" }
 
         // Kitty's t=f transport is intentionally a local-process capability:
         // it reads a file already accessible to the terminal user's account
@@ -468,7 +480,7 @@ internal class KittyGraphicsProtocol {
         return parsed
     }
 
-    private fun isSensitivePath(path: Path): Boolean {
+    internal fun isSensitivePath(path: Path): Boolean {
         val normalized = path.normalize().toString()
         return normalized == "/proc" || normalized.startsWith("/proc/") ||
             normalized == "/sys" || normalized.startsWith("/sys/") ||

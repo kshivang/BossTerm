@@ -105,9 +105,6 @@ class BossTerminal(
         CopyOnWriteArrayList<TerminalImageListener>()
     private val myImageStorage = TerminalImageStorage()
 
-    // Cell-based image storage - images stored as cells in buffer, flow with text
-    private val myImageDataCache = ImageDataCache()
-
     private data class CachedPlaceholderDimensions(
         val widthSpec: DimensionSpec,
         val heightSpec: DimensionSpec,
@@ -120,6 +117,11 @@ class BossTerminal(
     )
 
     private val myPlaceholderDimensions = ConcurrentHashMap<Long, CachedPlaceholderDimensions>()
+
+    // Cell-based image storage - images stored as cells in buffer, flow with text.
+    // The eviction callback keeps derived placeholder metadata bounded by the
+    // same lifetime as the image bytes, including automatic LRU eviction.
+    private val myImageDataCache = ImageDataCache(onImageRemoved = myPlaceholderDimensions::remove)
 
     // Cell dimensions in pixels - set by UI, used for image placement calculations
     @Volatile
@@ -710,11 +712,13 @@ class BossTerminal(
             wrapLines()
             scrollY()
 
+            if (!myImageDataCache.hasImage(image.id)) {
+                // Cache the bytes first so a rejected image cannot leave behind
+                // derived dimensions with no corresponding cache entry.
+                myImageDataCache.storeImage(image)
+            }
             val dimensions = placeholderDimensions(image)
             if (cellX in 0 until dimensions.cellWidth && cellY in 0 until dimensions.cellHeight) {
-                if (!myImageDataCache.hasImage(image.id)) {
-                    myImageDataCache.storeImage(image)
-                }
                 terminalTextBuffer.writeImagePlaceholderCell(
                     row = myCursorY - 1,
                     col = myCursorX,
@@ -814,6 +818,9 @@ class BossTerminal(
      * Used by renderer to fetch image data by ID from ImageAnchorCells.
      */
     fun getImageDataCache(): ImageDataCache = myImageDataCache
+
+    internal val placeholderDimensionCacheSize: Int
+        get() = myPlaceholderDimensions.size
 
     override fun setCellDimensions(cellWidthPx: Float, cellHeightPx: Float) {
         if (cellWidthPx > 0 && cellHeightPx > 0) {

@@ -935,6 +935,9 @@ private suspend fun initializeProcess(
     onExit: ((Int) -> Unit)?,
     platformServices: PlatformServices = getPlatformServices()
 ) {
+    // True while this function owns a TerminalSessionSlots reservation that no
+    // completion hook will release — the outer catch must return it on failure.
+    var slotsHeld = false
     try {
         // Determine shell arguments (login shell)
         val args = if (command.endsWith("/zsh") || command.endsWith("/bash") ||
@@ -992,11 +995,13 @@ private suspend fun initializeProcess(
             session.connectionState.value = ConnectionState.Error(TerminalSessionSlots.EXHAUSTED_MESSAGE)
             return
         }
+        slotsHeld = true
 
         // Spawn PTY process
         val processHandle = platformServices.getProcessService().spawnProcess(processConfig)
 
         if (processHandle == null) {
+            slotsHeld = false
             TerminalSessionSlots.release()
             session.connectionState.value = ConnectionState.Error("Failed to spawn process")
             return
@@ -1119,8 +1124,14 @@ private suspend fun initializeProcess(
         }.invokeOnCompletion {
             TerminalSessionSlots.release()
         }
+        // Ownership transferred: the exit monitor's completion hook releases from here on.
+        slotsHeld = false
 
     } catch (e: Exception) {
+        // Anything thrown between reserving and arming the exit monitor (e.g.
+        // spawnProcess throwing instead of returning null) lands here — return
+        // the reservation or capacity shrinks permanently.
+        if (slotsHeld) TerminalSessionSlots.release()
         session.connectionState.value = ConnectionState.Error(e.message ?: "Failed to start process")
     }
 }

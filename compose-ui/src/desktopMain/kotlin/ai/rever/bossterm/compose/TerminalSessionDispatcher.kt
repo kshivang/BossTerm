@@ -19,12 +19,18 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
  * A [limitedParallelism][CoroutineDispatcher.limitedParallelism] view of
  * `Dispatchers.IO` draws from its own permit budget (threads created for it
  * do not count against the global 64), so session loops can never exhaust
- * the shared pools. 256 permits ≈ 85 concurrent sessions; threads are
- * created lazily, so idle cost is zero.
+ * the shared pools. 256 accounted threads ≈ 85 concurrent sessions; threads
+ * are created lazily, so idle cost is zero.
+ *
+ * The view's parallelism is [TerminalSessionSlots.MAX_THREADS] plus a little
+ * headroom: [TerminalSessionSlots] accounting is advisory (a session's
+ * reservation can be released slightly before its loops finish unwinding
+ * during teardown), so short-lived work on the view must never depend on a
+ * permit being free at exactly the accounted budget.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 val TerminalSessionDispatcher: CoroutineDispatcher =
-    Dispatchers.IO.limitedParallelism(256, "bossterm-session")
+    Dispatchers.IO.limitedParallelism(TerminalSessionSlots.MAX_THREADS + 4, "bossterm-session")
 
 /**
  * Advisory accounting for [TerminalSessionDispatcher]'s permit budget.
@@ -34,6 +40,15 @@ val TerminalSessionDispatcher: CoroutineDispatcher =
  * outright (error state + a "close some terminals" dialog) instead of being
  * queued on the dispatcher — a queued session would silently never start,
  * which is exactly the failure mode this exists to make visible.
+ *
+ * Two rules for callers:
+ * - [tryReserve] must run OUTSIDE [TerminalSessionDispatcher] (synchronously on
+ *   the caller's thread, before dispatching): at exact saturation every view
+ *   thread is parked in a live loop, so a coroutine dispatched just to check
+ *   and report the refusal would itself queue forever.
+ * - every successful [tryReserve] must be paired with exactly one [release],
+ *   on ALL exit paths — including exceptions thrown between reserving and
+ *   arming whatever completion hook normally releases.
  */
 object TerminalSessionSlots {
     /** Permit budget of [TerminalSessionDispatcher]. */
@@ -63,8 +78,12 @@ object TerminalSessionSlots {
         }
     }
 
-    /** Return [n] previously reserved threads. Callers must pair this 1:1 with a successful [tryReserve]. */
+    /**
+     * Return [n] previously reserved threads. Callers must pair this 1:1 with a
+     * successful [tryReserve]; clamped at zero so a mis-paired release can't
+     * corrupt the budget into admitting sessions the dispatcher can't run.
+     */
     fun release(n: Int = THREADS_PER_SESSION) {
-        used.addAndGet(-n)
+        used.updateAndGet { (it - n).coerceAtLeast(0) }
     }
 }

@@ -185,17 +185,21 @@ class TabController(
      * would queue on a starved dispatcher and silently never spawn a shell.
      */
     private fun launchSessionCoroutine(tab: TerminalTab, block: suspend CoroutineScope.() -> Unit) {
+        // Reserve synchronously on the caller's thread, BEFORE dispatching: at exact
+        // saturation every TerminalSessionDispatcher thread is parked in a live loop,
+        // so a coroutine dispatched just to check-and-report would itself queue
+        // forever — the silent hang this accounting exists to prevent.
+        if (!TerminalSessionSlots.tryReserve()) {
+            tab.connectionState.value = ConnectionState.Error(TerminalSessionSlots.EXHAUSTED_MESSAGE)
+            _showSessionCapacityDialog.value = true
+            return
+        }
+        // invokeOnCompletion rather than try/finally: it also fires when the scope is
+        // cancelled before the coroutine ever starts, so the reservation can't leak.
         tab.coroutineScope.launch(TerminalSessionDispatcher) {
-            if (!TerminalSessionSlots.tryReserve()) {
-                tab.connectionState.value = ConnectionState.Error(TerminalSessionSlots.EXHAUSTED_MESSAGE)
-                _showSessionCapacityDialog.value = true
-                return@launch
-            }
-            try {
-                block()
-            } finally {
-                TerminalSessionSlots.release()
-            }
+            block()
+        }.invokeOnCompletion {
+            TerminalSessionSlots.release()
         }
     }
 
@@ -719,24 +723,27 @@ class TabController(
         // Skipped for a container tab ([feedsStream] = false): it owns no remote pane of its own
         // (its panes are separate mirror sessions in the split tree), so it needs no parked thread.
         if (feedsStream) {
-            scope.launch(TerminalSessionDispatcher) {
-                // Mirror drain loop pins one thread — account for it so exhaustion is detected.
-                if (!TerminalSessionSlots.tryReserve(1)) {
-                    tab.connectionState.value = ConnectionState.Error(TerminalSessionSlots.EXHAUSTED_MESSAGE)
-                    _showSessionCapacityDialog.value = true
-                    return@launch
-                }
-                try {
-                    while (isActive) {
-                        try {
-                            tab.emulator.processChar(tab.dataStream.char, tab.terminal)
-                        } catch (_: Exception) {
-                            break // EOF on close, or stream error — stop the loop
+            // Mirror drain loop pins one thread — reserve it synchronously (never on
+            // the view itself; see launchSessionCoroutine) so exhaustion is reported
+            // instead of the loop queueing forever.
+            if (!TerminalSessionSlots.tryReserve(1)) {
+                tab.connectionState.value = ConnectionState.Error(TerminalSessionSlots.EXHAUSTED_MESSAGE)
+                _showSessionCapacityDialog.value = true
+            } else {
+                scope.launch(TerminalSessionDispatcher) {
+                    try {
+                        while (isActive) {
+                            try {
+                                tab.emulator.processChar(tab.dataStream.char, tab.terminal)
+                            } catch (_: Exception) {
+                                break // EOF on close, or stream error — stop the loop
+                            }
                         }
+                    } finally {
+                        runCatching { tab.dataStream.close() }
                     }
-                } finally {
+                }.invokeOnCompletion {
                     TerminalSessionSlots.release(1)
-                    runCatching { tab.dataStream.close() }
                 }
             }
         }

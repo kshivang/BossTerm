@@ -484,6 +484,25 @@ class TerminalTextBuffer internal constructor(
     }
   }
 
+  /** Remove image cells from both scrollback and the visible screen. */
+  fun clearImageCells(imageId: Long? = null) {
+    myLock.lock()
+    try {
+      for (index in 0 until historyLinesStorage.size) {
+        val line = historyLinesStorage[index]
+        if (imageId == null) line.clearAllImageCells() else line.clearImageCells(imageId)
+      }
+      for (index in 0 until screenLinesStorage.size) {
+        val line = screenLinesStorage[index]
+        if (imageId == null) line.clearAllImageCells() else line.clearImageCells(imageId)
+      }
+      fireModelChangeEvent()
+      changesMulticaster.linesChanged(fromIndex = -historyLinesStorage.size)
+    } finally {
+      myLock.unlock()
+    }
+  }
+
   fun scrollArea(scrollRegionTop: Int, dy: Int, scrollRegionBottom: Int) {
     if (dy == 0) {
       return

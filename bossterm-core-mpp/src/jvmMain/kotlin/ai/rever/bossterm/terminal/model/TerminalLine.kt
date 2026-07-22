@@ -111,6 +111,15 @@ class TerminalLine {
         }
     }
 
+    /** Clear only cells that reference the specified cached image. */
+    fun clearImageCells(imageId: Long) {
+        val cells = myImageCells ?: return
+        if (cells.entries.removeIf { it.value.imageId == imageId }) {
+            if (cells.isEmpty()) myImageCells = null
+            incrementSnapshotVersion()
+        }
+    }
+
     // ============ End Image Cell Methods ============
 
     constructor()

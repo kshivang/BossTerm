@@ -324,6 +324,15 @@ interface Terminal {
     fun processInlineImage(image: TerminalImage): TerminalImagePlacement? { return null }
 
     /**
+     * Place an image while allowing protocols such as Kitty to manage cursor
+     * movement themselves. Implementations without specialized cursor handling
+     * retain the normal inline-image behavior.
+     */
+    fun processInlineImage(image: TerminalImage, moveCursor: Boolean): TerminalImagePlacement? {
+        return processInlineImage(image)
+    }
+
+    /**
      * Get all image placements in the given row range.
      * Used by the renderer to draw images.
      *
@@ -342,6 +351,9 @@ interface Terminal {
      * Clear all images.
      */
     fun clearAllImages() {}
+
+    /** Remove every buffer placement backed by one cached image id. */
+    fun removeInlineImage(imageId: Long) {}
 
     /**
      * Set the cell dimensions in pixels.

@@ -951,6 +951,11 @@ private suspend fun initializeProcess(
             put("TERM", "xterm-256color")
             put("COLORTERM", "truecolor")
             put("TERM_PROGRAM", "BossTerm")
+            // Compatibility marker used by clients such as Codex to select the
+            // Kitty graphics transport. The value only needs to be a stable,
+            // non-empty window identifier; BossTerm does not expose kitty's
+            // remote-control socket.
+            put("KITTY_WINDOW_ID", Integer.toUnsignedString(session.id.hashCode()))
             // Authenticates OSC 1341;OpenTarget requests from the open/xdg-open
             // shim — see OpenTargetToken.
             put("BOSSTERM_OPEN_TOKEN", ai.rever.bossterm.compose.osc.OpenTargetToken.value)

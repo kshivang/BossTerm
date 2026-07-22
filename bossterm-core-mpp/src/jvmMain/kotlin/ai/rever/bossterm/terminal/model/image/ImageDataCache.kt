@@ -28,6 +28,11 @@ class ImageDataCache(
      * Store image data. Returns imageId for reference from ImageAnchorCell.
      */
     fun storeImage(image: TerminalImage): Long {
+        val replaced = images.remove(image.id)
+        if (replaced != null) {
+            totalBytes -= replaced.data.size
+            accessOrder.remove(image.id)
+        }
         ensureCapacity(image.data.size.toLong())
         images[image.id] = image
         accessOrder[image.id] = accessCounter.incrementAndGet()

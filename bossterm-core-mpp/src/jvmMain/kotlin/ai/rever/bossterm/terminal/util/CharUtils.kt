@@ -30,8 +30,11 @@ object CharUtils {
     var VT102_RESPONSE: ByteArray = makeCode(ESC, '['.code, '?'.code, '6'.code, 'c'.code)
 
     // VT220 with color support for better TUI compatibility (Neovim, vim, less)
-    // CSI ? 62 ; 1 c = VT220 terminal with 132 column mode (Primary DA)
-    var VT220_RESPONSE: ByteArray = makeCode(ESC, '['.code, '?'.code, '6'.code, '2'.code, ';'.code, '1'.code, 'c'.code)
+    // CSI ? 62 ; 1 ; 4 c = VT220 with 132-column mode and Sixel graphics.
+    var VT220_RESPONSE: ByteArray = makeCode(
+        ESC, '['.code, '?'.code, '6'.code, '2'.code, ';'.code,
+        '1'.code, ';'.code, '4'.code, 'c'.code
+    )
 
     // Secondary DA response: CSI > 1 ; 10 ; 0 c
     // Format: >Pp;Pv;Pc c where Pp=terminal type (1=VT220), Pv=version, Pc=ROM cartridge (0=none)

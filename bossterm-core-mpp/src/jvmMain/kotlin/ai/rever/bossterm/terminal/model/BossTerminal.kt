@@ -588,6 +588,10 @@ class BossTerminal(
     }
 
     override fun processInlineImage(image: TerminalImage): TerminalImagePlacement? {
+        return processInlineImage(image, moveCursor = true)
+    }
+
+    override fun processInlineImage(image: TerminalImage, moveCursor: Boolean): TerminalImagePlacement? {
         // Place image at current cursor position
         // myCursorY is 1-indexed (1 to height), convert to 0-indexed buffer row
         // Buffer row: 0 = first screen line, negative = history
@@ -648,12 +652,14 @@ class BossTerminal(
             currentBufferRow++
         }
 
-        // Move cursor below the image (iTerm2 behavior)
-        // currentBufferRow now points to the row after the last image row
-        myCursorX = 0
-        myCursorY = currentBufferRow.coerceAtMost(myTerminalHeight)
-
-        myDisplay.setCursor(myCursorX, myCursorY)
+        if (moveCursor) {
+            // Move cursor below the image (iTerm2 behavior). Kitty placements can
+            // explicitly request that the cursor remain untouched with C=1.
+            // currentBufferRow now points to the row after the last image row.
+            myCursorX = 0
+            myCursorY = currentBufferRow.coerceAtMost(myTerminalHeight)
+            myDisplay.setCursor(myCursorX, myCursorY)
+        }
 
         // Return placement for backward compatibility with rendering
         // anchorRow can be negative if image top scrolled into history
@@ -679,6 +685,12 @@ class BossTerminal(
     override fun clearAllImages() {
         myImageStorage.clearAll()
         myImageDataCache.clearAll()
+        terminalTextBuffer.clearImageCells()
+    }
+
+    override fun removeInlineImage(imageId: Long) {
+        myImageDataCache.removeImage(imageId)
+        terminalTextBuffer.clearImageCells(imageId)
     }
 
     /**

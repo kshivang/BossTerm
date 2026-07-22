@@ -17,6 +17,7 @@ import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.compose.ConnectionState
 import ai.rever.bossterm.compose.PlatformServices
 import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
+import ai.rever.bossterm.compose.TerminalSessionDispatcher
 import ai.rever.bossterm.compose.debug.ChunkSource
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
@@ -680,7 +681,7 @@ class TabController(
         // Skipped for a container tab ([feedsStream] = false): it owns no remote pane of its own
         // (its panes are separate mirror sessions in the split tree), so it needs no parked thread.
         if (feedsStream) {
-            scope.launch(Dispatchers.Default) {
+            scope.launch(TerminalSessionDispatcher) {
                 try {
                     while (isActive) {
                         try {
@@ -1156,8 +1157,9 @@ class TabController(
 
         switchToTab(tabs.size - 1)
 
-        // Run pre-connection handler in coroutine
-        tab.coroutineScope.launch(Dispatchers.IO) {
+        // Run pre-connection handler in coroutine. On TerminalSessionDispatcher:
+        // this coroutine ends in handle.waitFor() and so lives as long as the shell.
+        tab.coroutineScope.launch(TerminalSessionDispatcher) {
             try {
                 // Create questioner that updates tab's connection state
                 val questioner = ComposeQuestioner { newState ->
@@ -1312,8 +1314,9 @@ class TabController(
                 tab.textBuffer.endBatch()
             }
 
-            // Start emulator processing coroutine
-            tab.coroutineScope.launch(Dispatchers.Default) {
+            // Start emulator processing coroutine. Blocks in dataStream.char between
+            // chunks, so it must not hold one of Dispatchers.Default's nCPU permits.
+            tab.coroutineScope.launch(TerminalSessionDispatcher) {
                 try {
                     while (handle.isAlive()) {
                         try {
@@ -1402,7 +1405,9 @@ class TabController(
         initialCommand: String? = null,
         onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)? = null
     ) {
-        tab.coroutineScope.launch(Dispatchers.IO) {
+        // On TerminalSessionDispatcher: this coroutine ends in handle.waitFor()
+        // and so lives as long as the shell.
+        tab.coroutineScope.launch(TerminalSessionDispatcher) {
             try {
                 // Set TERM environment variables for TUI compatibility
                 val terminalEnvironment = buildMap {
@@ -1475,10 +1480,11 @@ class TabController(
                     }.also { tab.terminal.addCommandStateListener(it) }
                 }
 
-                // Start emulator processing coroutine
+                // Start emulator processing coroutine. Blocks in dataStream.char between
+                // chunks, so it must not hold one of Dispatchers.Default's nCPU permits.
                 // Note: Initial prompt will display via ModelListener → requestImmediateRedraw()
                 // when buffer content changes. No need for premature redraw here.
-                launch(Dispatchers.Default) {
+                launch(TerminalSessionDispatcher) {
                     try {
                         while (handle.isAlive()) {
                             try {
@@ -1630,7 +1636,9 @@ class TabController(
         tab: TerminalTab,
         handle: PlatformServices.ProcessService.ProcessHandle
     ) {
-        scope.launch(Dispatchers.IO) {
+        // Blocks in handle.read() (JNA pty poll) for the session's whole life —
+        // one pinned thread per session, kept off the shared Dispatchers.IO permits.
+        scope.launch(TerminalSessionDispatcher) {
             val maxChunkSize = 64 * 1024
 
             try {

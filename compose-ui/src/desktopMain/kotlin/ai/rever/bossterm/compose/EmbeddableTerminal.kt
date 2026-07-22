@@ -996,8 +996,9 @@ private suspend fun initializeProcess(
         session.processHandle.value = processHandle
         session.connectionState.value = ConnectionState.Connected(processHandle)
 
-        // Start emulator coroutine
-        session.coroutineScope.launch(Dispatchers.Default) {
+        // Start emulator coroutine. Blocks in dataStream.char between chunks, so it
+        // must not hold one of Dispatchers.Default's nCPU permits.
+        session.coroutineScope.launch(TerminalSessionDispatcher) {
             try {
                 while (processHandle.isAlive()) {
                     try {
@@ -1016,8 +1017,9 @@ private suspend fun initializeProcess(
             }
         }
 
-        // Start output reader coroutine
-        session.coroutineScope.launch(Dispatchers.IO) {
+        // Start output reader coroutine — blocks in processHandle.read() for the
+        // session's whole life, kept off the shared Dispatchers.IO permits.
+        session.coroutineScope.launch(TerminalSessionDispatcher) {
             while (processHandle.isAlive()) {
                 val output = processHandle.read()
                 if (output != null) {
@@ -1098,8 +1100,8 @@ private suspend fun initializeProcess(
             }
         }
 
-        // Monitor process exit
-        session.coroutineScope.launch(Dispatchers.IO) {
+        // Monitor process exit (waitFor parks a TerminalSessionDispatcher thread)
+        session.coroutineScope.launch(TerminalSessionDispatcher) {
             val exitCode = processHandle.waitFor()
             session.connectionState.value = ConnectionState.Error("Process exited with code $exitCode")
             onExit?.invoke(exitCode)

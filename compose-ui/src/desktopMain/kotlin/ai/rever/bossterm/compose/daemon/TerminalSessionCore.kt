@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.daemon
 
 import ai.rever.bossterm.compose.PlatformServices
+import ai.rever.bossterm.compose.TerminalSessionDispatcher
 import ai.rever.bossterm.compose.getPlatformServices
 import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
 import ai.rever.bossterm.compose.settings.TerminalSettings
@@ -188,7 +189,9 @@ class TerminalSessionCore(
                 (lastResize ?: (initCols to initRows)).let { (c, r) -> runCatching { h.resize(c, r) } }
 
                 // Emulator processing loop — drains the data stream into the terminal model.
-                launch(Dispatchers.Default) {
+                // Blocks in dataStream.char between chunks, so it must not hold one of
+                // Dispatchers.Default's nCPU permits.
+                launch(TerminalSessionDispatcher) {
                     try {
                         while (h.isAlive()) {
                             try {
@@ -208,7 +211,8 @@ class TerminalSessionCore(
                 }
 
                 // PTY reader loop — grapheme-safe chunking, matches TabController.startPtyReaderCoroutine.
-                launch(Dispatchers.IO) {
+                // Blocks in h.read() for the session's whole life, kept off the shared IO permits.
+                launch(TerminalSessionDispatcher) {
                     val maxChunkSize = 64 * 1024
                     try {
                         while (h.isAlive()) {
@@ -232,8 +236,9 @@ class TerminalSessionCore(
                 }
 
                 // Exit monitor on a DEDICATED thread — not this coroutine — so we don't pin a
-                // Dispatchers.IO pool thread (shared with the reader loops) in a blocking waitFor for
-                // the whole life of the session. On exit we self-close so the scope + write consumer
+                // coroutine pool thread in a blocking waitFor for the whole life of the session
+                // (waitFor itself parks a TerminalSessionDispatcher permit; see PlatformServices).
+                // On exit we self-close so the scope + write consumer
                 // + write channel are torn down (otherwise a naturally-exited shell leaks them).
                 Thread({
                     runCatching { runBlocking { h.waitFor() } }

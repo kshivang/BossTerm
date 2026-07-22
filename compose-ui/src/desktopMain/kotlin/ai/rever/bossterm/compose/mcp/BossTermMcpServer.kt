@@ -19,6 +19,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -1275,34 +1276,43 @@ class BossTermMcpServer(
         }
         terminal.addCommandStateListener(listener)
         try {
-            // Prompt readiness runs on the user-configured budget (missing
-            // shell integration should cost no more than it does today) ...
-            withTimeoutOrNull(timeoutMs) { signal.await() }
-            // ... while layout settle gets its own fixed budget: sharing one
-            // budget let a slow shell rc exhaust the wait and inject against a
-            // mid-settle grid. Normally completes in well under 500ms.
-            withTimeoutOrNull(LAYOUT_SETTLE_TIMEOUT_MS) {
-                while (!terminal.isUiLayoutReady) delay(25)
-                var stableSamples = 0
-                var lastWidth = -1
-                var lastHeight = -1
-                while (stableSamples < GRID_STABLE_SAMPLES) {
-                    val width = session.textBuffer.width
-                    val height = session.textBuffer.height
-                    // A fresh pane's first layout pass can measure a throwaway
-                    // near-zero canvas, producing rows == coerceAtLeast(2).
-                    // Such a grid is never a real pane — keep waiting for the
-                    // settled layout even if it is momentarily "stable".
-                    val sane = width >= MIN_SANE_GRID_COLS && height >= MIN_SANE_GRID_ROWS
-                    if (sane && width == lastWidth && height == lastHeight) {
-                        stableSamples++
-                    } else {
-                        stableSamples = 0
-                        lastWidth = width
-                        lastHeight = height
-                    }
-                    delay(GRID_STABLE_SAMPLE_MS)
+            // Prompt and layout readiness arrive independently, so run their
+            // independent timeout budgets concurrently. Worst-case latency is
+            // max(prompt, layout), rather than their sum.
+            coroutineScope {
+                val promptWait = async {
+                    withTimeoutOrNull(timeoutMs) { signal.await() }
                 }
+                val layoutWait = async {
+                    val settled = withTimeoutOrNull(LAYOUT_SETTLE_TIMEOUT_MS) {
+                        while (!terminal.isUiLayoutReady) delay(25)
+                        var stableSamples = 0
+                        var lastWidth = -1
+                        var lastHeight = -1
+                        while (stableSamples < GRID_STABLE_SAMPLES) {
+                            val width = session.textBuffer.width
+                            val height = session.textBuffer.height
+                            // Do not reject a genuinely tiny pane. The terminal's
+                            // actual 5x2 minimum is valid; stability across samples
+                            // distinguishes it from a throwaway first layout pass.
+                            val valid = width >= MIN_TERMINAL_GRID_COLS && height >= MIN_TERMINAL_GRID_ROWS
+                            if (valid && width == lastWidth && height == lastHeight) {
+                                stableSamples++
+                            } else {
+                                stableSamples = 0
+                                lastWidth = width
+                                lastHeight = height
+                            }
+                            delay(GRID_STABLE_SAMPLE_MS)
+                        }
+                        true
+                    } == true
+                    if (settled) {
+                        terminal.markCurrentGridStable()
+                    }
+                }
+                promptWait.await()
+                layoutWait.await()
             }
         } finally {
             terminal.removeCommandStateListener(listener)
@@ -2430,13 +2440,12 @@ class BossTermMcpServer(
         private const val GRID_STABLE_SAMPLE_MS = 60L
 
         /**
-         * Floor below which a grid is treated as a transient layout artifact
-         * rather than a real pane (ProperTerminal clamps degenerate measures
-         * to 2 rows/cols, and no usable pane is 2 rows tall). A genuinely
-         * tiny pane falls back to the overall timeout instead of the gate.
+         * BossTerminal's actual grid minimum. A 5x2 pane is small but valid;
+         * the consecutive-sample gate above, rather than an arbitrary size
+         * floor, distinguishes stable layout from a transient first pass.
          */
-        private const val MIN_SANE_GRID_COLS = 10
-        private const val MIN_SANE_GRID_ROWS = 3
+        private const val MIN_TERMINAL_GRID_COLS = 5
+        private const val MIN_TERMINAL_GRID_ROWS = 2
 
         /**
          * Dedicated budget for the UI-layout-ready + grid-stability wait in

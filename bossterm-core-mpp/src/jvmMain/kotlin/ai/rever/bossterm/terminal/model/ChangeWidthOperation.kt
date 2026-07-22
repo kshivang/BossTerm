@@ -1,7 +1,6 @@
 package ai.rever.bossterm.terminal.model
 
 import ai.rever.bossterm.core.compatibility.Point
-import ai.rever.bossterm.terminal.model.image.ImageCell
 import ai.rever.bossterm.terminal.util.GraphemeBoundaryUtils
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
@@ -219,35 +218,15 @@ internal class ChangeWidthOperation(
             return
         }
 
-        // Get image cells sorted by column
-        val imageCells = if (line.hasImageCells()) {
-            line.getAllImageCells().toSortedMap()
-        } else {
-            sortedMapOf()
-        }
-        val placedImageCols = mutableSetOf<Int>()
-
-        // Track current input column position
-        var inputCol = 0
         var addedContent = false
 
-        // Process text entries, interleaving image cells at their original positions
+        // Image-bearing lines returned above, so only text entries remain here.
         line.forEachEntry(Consumer { entry: TerminalLine.TextEntry? ->
             if (entry?.isNul != false) {
                 return@Consumer
             }
             var entryProcessedLength = 0
             while (entryProcessedLength < entry.length) {
-                // Place any image cells that come before current text position
-                val currentInputPos = inputCol + entryProcessedLength
-                for ((imgCol, imgCell) in imageCells) {
-                    if (imgCol !in placedImageCols && imgCol <= currentInputPos) {
-                        placeImageCell(imgCell)
-                        placedImageCols.add(imgCol)
-                        addedContent = true
-                    }
-                }
-
                 // Ensure we have a current line
                 ensureCurrentLine()
 
@@ -274,17 +253,7 @@ internal class ChangeWidthOperation(
                     myCurrentLineLength = 0
                 }
             }
-            inputCol += entry.length
         })
-
-        // Place any remaining image cells
-        for ((imgCol, imgCell) in imageCells) {
-            if (imgCol !in placedImageCols) {
-                placeImageCell(imgCell)
-                placedImageCols.add(imgCol)
-                addedContent = true
-            }
-        }
 
         // Handle empty lines that aren't truly null
         if (!addedContent && myCurrentLine == null) {
@@ -307,23 +276,6 @@ internal class ChangeWidthOperation(
             myCurrentLineLength = 0
             myAllLines.add(newLine)
         }
-    }
-
-    /**
-     * Place a single image cell at current position.
-     * Image cells are treated like text - one cell per column position, wrap when line full.
-     */
-    private fun placeImageCell(cell: ImageCell) {
-        // Wrap if line is full
-        if (myCurrentLine != null && myCurrentLineLength == myNewWidth) {
-            myCurrentLine?.isWrapped = true
-            myCurrentLine = null
-            myCurrentLineLength = 0
-        }
-        ensureCurrentLine()
-
-        myCurrentLine?.setImageCell(myCurrentLineLength, cell)
-        myCurrentLineLength++
     }
 
     class TrackingPoint(val x: Int, val y: Int, val forceVisible: Boolean) {

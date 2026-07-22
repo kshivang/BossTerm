@@ -124,15 +124,17 @@ class BossTerminal(
     @Volatile
     private var myUiLayoutReady = false
 
-    // Last plausible grid, tracked on every resize. Transient layout artifacts can
-    // momentarily shrink the grid to a size no real pane has (rows clamped to 2);
+    // Last trusted grid. Normal-sized grids are trusted immediately on resize;
+    // genuinely tiny grids are trusted after the UI stability gate confirms them.
+    // Transient layout artifacts can momentarily shrink the grid to the terminal
+    // minimum before the pane reaches its real size;
     // if an inline image lands in exactly that window, sizing against the live grid
     // bakes a squashed footprint into the buffer permanently. These remember the
     // geometry the pane actually settles at so processInlineImage can fall back.
     @Volatile
-    private var myLastSaneWidth = 0
+    private var myLastTrustedWidth = 0
     @Volatile
-    private var myLastSaneHeight = 0
+    private var myLastTrustedHeight = 0
 
     override fun setModeEnabled(mode: TerminalMode?, enabled: Boolean) {
         mode?.let {
@@ -592,28 +594,27 @@ class BossTerminal(
         var bufferRow = myCursorY - 1  // 0-indexed screen row
         val anchorCol = myCursorX  // Save original column for placement
 
-        // Calculate image dimensions. If the live grid is degenerate (a transient
-        // layout artifact, e.g. rows clamped to 2 mid-settle), size against the
-        // last sane grid instead — the footprint below is a one-time snapshot
-        // baked into the buffer, so sizing against the blip is permanent while
-        // the blip itself lasts one frame.
-        val saneWidthCells =
-            if (myTerminalWidth >= MIN_SANE_GRID_COLS || myLastSaneWidth <= 0) myTerminalWidth
-            else myLastSaneWidth
-        val saneHeightCells =
-            if (myTerminalHeight >= MIN_SANE_GRID_ROWS || myLastSaneHeight <= 0) myTerminalHeight
-            else myLastSaneHeight
+        // Calculate image dimensions. Until a small live grid has remained stable,
+        // size against the last trusted grid instead — the footprint below is a
+        // one-time snapshot baked into the buffer, so sizing against a transient
+        // first layout pass would remain wrong after the pane settles.
+        val trustedWidthCells =
+            if (myTerminalWidth >= AUTO_TRUST_GRID_COLS || myLastTrustedWidth <= 0) myTerminalWidth
+            else myLastTrustedWidth
+        val trustedHeightCells =
+            if (myTerminalHeight >= AUTO_TRUST_GRID_ROWS || myLastTrustedHeight <= 0) myTerminalHeight
+            else myLastTrustedHeight
         val dimensions = ImageDimensionCalculator.calculate(
             image = image,
-            terminalWidthCells = saneWidthCells,
-            terminalHeightCells = saneHeightCells,
+            terminalWidthCells = trustedWidthCells,
+            terminalHeightCells = trustedHeightCells,
             cellWidthPx = myCellWidthPx,
             cellHeightPx = myCellHeightPx,
             pixelScale = myDisplayScale
         )
-        LOG.info(
+        LOG.debug(
             "processInlineImage: grid={}x{} sized-against={}x{} cellPx={}x{} scale={} intrinsic={}x{} -> px={}x{} cells={}x{} anchor=({},{})",
-            myTerminalWidth, myTerminalHeight, saneWidthCells, saneHeightCells,
+            myTerminalWidth, myTerminalHeight, trustedWidthCells, trustedHeightCells,
             myCellWidthPx, myCellHeightPx, myDisplayScale, image.intrinsicWidth, image.intrinsicHeight,
             dimensions.pixelWidth, dimensions.pixelHeight,
             dimensions.cellWidth, dimensions.cellHeight, anchorCol, bufferRow
@@ -714,6 +715,16 @@ class BossTerminal(
      */
     fun markUiLayoutReady() {
         myUiLayoutReady = true
+    }
+
+    /**
+     * Record the current grid after the UI has observed it remain unchanged across
+     * consecutive layout samples. This lets a legitimate tiny pane replace the
+     * normal-sized fallback without treating a one-frame resize blip as trusted.
+     */
+    fun markCurrentGridStable() {
+        myLastTrustedWidth = myTerminalWidth
+        myLastTrustedHeight = myTerminalHeight
     }
 
     /**
@@ -1729,9 +1740,9 @@ class BossTerminal(
                 resizeListener.onResize(oldTermSize, newTermSize)
             }
         })
-        if (newTermSize.columns >= MIN_SANE_GRID_COLS && newTermSize.rows >= MIN_SANE_GRID_ROWS) {
-            myLastSaneWidth = newTermSize.columns
-            myLastSaneHeight = newTermSize.rows
+        if (newTermSize.columns >= AUTO_TRUST_GRID_COLS && newTermSize.rows >= AUTO_TRUST_GRID_ROWS) {
+            myLastTrustedWidth = newTermSize.columns
+            myLastTrustedHeight = newTermSize.rows
         }
     }
 
@@ -1903,13 +1914,12 @@ class BossTerminal(
         private const val MIN_ROWS = 2
 
         /**
-         * Floor below which a grid is treated as a transient layout artifact
-         * rather than a real pane, for purposes of inline-image sizing (see
-         * myLastSaneWidth/Height). Distinct from MIN_COLUMNS/MIN_ROWS, which
-         * only clamp what a resize request may set.
+         * Normal-sized grids can be trusted immediately. Smaller grids may be
+         * legitimate, so the UI stability gate records those explicitly via
+         * [markCurrentGridStable] before geometry-dependent content is inserted.
          */
-        private const val MIN_SANE_GRID_COLS = 10
-        private const val MIN_SANE_GRID_ROWS = 3
+        private const val AUTO_TRUST_GRID_COLS = 10
+        private const val AUTO_TRUST_GRID_ROWS = 3
 
         fun ensureTermMinimumSize(termSize: TermSize): TermSize {
             return TermSize(max(MIN_COLUMNS, termSize.columns), max(MIN_ROWS, termSize.rows))

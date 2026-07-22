@@ -302,15 +302,32 @@ data class CachedMeasurement(
     val firstBaseline: Float
 )
 
+internal data class ImageCellGrid(val columns: Int, val rows: Int)
+
+/**
+ * Re-fit an image's baked cell footprint to the columns reachable in the live
+ * pane while preserving its cell-grid aspect ratio.
+ */
+internal fun refitImageCellGrid(
+    totalColumns: Int,
+    totalRows: Int,
+    anchorColumn: Int,
+    visibleColumns: Int
+): ImageCellGrid {
+    val safeColumns = totalColumns.coerceAtLeast(1)
+    val safeRows = totalRows.coerceAtLeast(1)
+    val availableColumns = (visibleColumns - anchorColumn).coerceAtLeast(1)
+    if (safeColumns <= availableColumns) return ImageCellGrid(safeColumns, safeRows)
+
+    val fittedRows = ((safeRows * availableColumns + safeColumns / 2) / safeColumns).coerceAtLeast(1)
+    return ImageCellGrid(availableColumns, fittedRows)
+}
+
 /**
  * Terminal canvas renderer that handles all drawing operations.
  * Separates rendering logic from the composable for better maintainability.
  */
 object TerminalCanvasRenderer {
-
-    // Dedupe set for the image-geometry anomaly log below — each distinct
-    // geometry logs once, not once per frame.
-    private val imageDiagSeen = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     /**
      * LRU cache for text measurements (issue #147 - special character rendering optimization).
@@ -784,27 +801,14 @@ object TerminalCanvasRenderer {
                             // compress the full bitmap into the columns actually reachable from
                             // the anchor, shrinking rows by the same factor to keep aspect.
                             val anchorCol = col - imageCell.cellX
-                            val availableCols = ctx.visibleCols - anchorCol
-                            val effCellsX: Int
-                            val effCellsY: Int
-                            if (imageCell.totalCellsX > availableCols) {
-                                effCellsX = availableCols.coerceAtLeast(1)
-                                effCellsY = ((imageCell.totalCellsY * effCellsX + imageCell.totalCellsX / 2) /
-                                        imageCell.totalCellsX).coerceAtLeast(1)
-                            } else {
-                                effCellsX = imageCell.totalCellsX
-                                effCellsY = imageCell.totalCellsY
-                            }
-                            // Anomaly flight-recorder (#326): draw-time geometry disagreeing
-                            // with the baked footprint is exactly the state that produced
-                            // silent image corruption before; log it (deduped) so a field
-                            // report comes with numbers. Healthy frames log nothing.
-                            if (effCellsX != imageCell.totalCellsX || anchorCol < 0) {
-                                val sig = "img=${imageCell.imageId} lineIdx=$lineIndex col=$col cellXY=(${imageCell.cellX},${imageCell.cellY}) " +
-                                        "total=(${imageCell.totalCellsX},${imageCell.totalCellsY}) eff=($effCellsX,$effCellsY) " +
-                                        "anchorCol=$anchorCol visCols=${ctx.visibleCols}"
-                                if (imageDiagSeen.add(sig)) println("IMG-REFIT $sig")
-                            }
+                            val effectiveGrid = refitImageCellGrid(
+                                totalColumns = imageCell.totalCellsX,
+                                totalRows = imageCell.totalCellsY,
+                                anchorColumn = anchorCol,
+                                visibleColumns = ctx.visibleCols
+                            )
+                            val effCellsX = effectiveGrid.columns
+                            val effCellsY = effectiveGrid.rows
                             // Cells beyond the re-fit footprint hold no slice; leave background.
                             if (imageCell.cellX < effCellsX && imageCell.cellY < effCellsY) {
                                 // Calculate source region - use exact boundaries to avoid gaps

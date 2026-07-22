@@ -184,6 +184,11 @@ fun ProperTerminal(
   val terminal = tab.terminal
   val textBuffer = tab.textBuffer
   val display = tab.display
+  var gridStabilityJob by remember(terminal) { mutableStateOf<Job?>(null) }
+
+  DisposableEffect(terminal) {
+    onDispose { gridStabilityJob?.cancel() }
+  }
 
   // Command blocks captured for this session (OSC 133). Collected so the gutter
   // and scrollbar markers repaint as commands start and finish. Falls back to a
@@ -935,18 +940,15 @@ fun ProperTerminal(
           // Ensure we have valid dimensions (minimum 10x10 pixels to prevent crashes)
           if (newWidth >= 10 && newHeight >= 10 && cellWidth > 0f && cellHeight > 0f) {
             // Use floor division to ensure we don't calculate more rows than actually fit
-            val newCols = (newWidth / cellWidth).toInt().coerceAtLeast(2)
+            val newCols = (newWidth / cellWidth).toInt().coerceAtLeast(5)
             val newRows = (newHeight / cellHeight).toInt().coerceAtLeast(2)
             val currentCols = textBuffer.width
             val currentRows = textBuffer.height
 
             // Resize on first render OR when dimensions change (ensures PTY gets correct size on startup).
-            // Floor of 3 rows / 4 cols: a fresh tab's layout can transiently measure a
-            // near-zero canvas (rows would clamp to 2) before settling; applying that
-            // artifact resizes the buffer to a grid no real pane has, and anything
-            // sized against it mid-blip (MCP show_image) bakes wrong permanently.
-            // Skipping keeps the previous grid until a plausible measure arrives.
-            if ((!hasPerformedInitialResize || (currentCols != newCols || currentRows != newRows)) && newCols >= 4 && newRows >= 3) {
+            // Tiny panes are valid; geometry-dependent MCP content separately waits
+            // for consecutive stable samples so a transient first pass is not trusted.
+            if (!hasPerformedInitialResize || currentCols != newCols || currentRows != newRows) {
               val newTermSize = TermSize(newCols, newRows)
               // Resize terminal buffer and notify PTY process (sends SIGWINCH)
               terminal.resize(newTermSize, RequestOrigin.User)
@@ -964,19 +966,30 @@ fun ProperTerminal(
               hasPerformedInitialResize = true
             }
             // Layout latch for MCP show_image (issue #324): this terminal has now
-            // been measured by a real (sane) layout pass — real cell metrics pushed
+            // been measured by a layout pass — real cell metrics pushed
             // explicitly (the LaunchedEffect that normally pushes them has no
             // ordering guarantee vs. this callback), grid resize applied above
             // if needed. Keyed on the TERMINAL's own latch, NOT on
             // hasPerformedInitialResize: this composition is reused across tab
             // switches, so the composition-scoped flag is already true when a
-            // freshly created tab's session first lands here. The sane-dims
-            // guard keeps a transient degenerate pass from latching readiness
-            // while the buffer still holds its unmeasured initial grid.
-            if (!terminal.isUiLayoutReady && newCols >= 4 && newRows >= 3) {
+            // freshly created tab's session first lands here. Geometry-dependent
+            // paths use the separate grid-stability gate below before trusting
+            // the measured dimensions.
+            if (!terminal.isUiLayoutReady) {
               terminal.setDisplayScale(density.density)
               terminal.setCellDimensions(cellWidth, cellHeight)
               terminal.markUiLayoutReady()
+            }
+            // Trust small grids only after they remain unchanged long enough to
+            // outlive the transient first layout pass. This also covers show_image
+            // calls that reuse an existing tiny pane and therefore do not run the
+            // freshly-created-pane readiness gate in BossTermMcpServer.
+            gridStabilityJob?.cancel()
+            gridStabilityJob = scope.launch {
+              kotlinx.coroutines.delay(180)
+              if (textBuffer.width == newCols && textBuffer.height == newRows) {
+                terminal.markCurrentGridStable()
+              }
             }
           }
         }

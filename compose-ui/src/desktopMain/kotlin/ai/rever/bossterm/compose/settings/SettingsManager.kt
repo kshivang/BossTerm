@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.settings
 
+import ai.rever.bossterm.compose.TerminalSessionSlots
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,6 +26,17 @@ class SettingsManager(private val customSettingsPath: String? = null) {
      * Current settings as a StateFlow (reactive)
      */
     val settings: StateFlow<TerminalSettings> = _settings.asStateFlow()
+
+    /**
+     * Single funnel for every settings publication: updates the flow and applies
+     * settings-derived process-wide side effects (currently the terminal-session
+     * thread budget, which lives outside the flow so non-UI session owners like
+     * the daemon core see it without observing settings).
+     */
+    private fun publish(newSettings: TerminalSettings) {
+        _settings.value = newSettings
+        TerminalSessionSlots.applyConfiguredBudget(newSettings.maxSessionThreads)
+    }
 
     /**
      * `true` if the settings file did not exist when [loadFromFile] last ran
@@ -90,7 +102,7 @@ class SettingsManager(private val customSettingsPath: String? = null) {
      */
     fun updateSettings(newSettings: TerminalSettings) {
         synchronized(saveLock) {
-            _settings.value = newSettings
+            publish(newSettings)
             writeToFileLocked(newSettings)
         }
     }
@@ -119,7 +131,7 @@ class SettingsManager(private val customSettingsPath: String? = null) {
             val merged = json.encodeToJsonElement(TerminalSettings.serializer(), current).jsonObject.toMutableMap()
             for ((k, v) in ed) if (base[k] != v) merged[k] = v // field the user changed → apply over current
             val result = json.decodeFromJsonElement(TerminalSettings.serializer(), JsonObject(merged))
-            _settings.value = result
+            publish(result)
             writeToFileLocked(result)
         }
     }
@@ -136,7 +148,7 @@ class SettingsManager(private val customSettingsPath: String? = null) {
     fun updateSetting(updater: TerminalSettings.() -> TerminalSettings) {
         synchronized(saveLock) {
             val result = currentOnDiskOrMemory().updater()
-            _settings.value = result
+            publish(result)
             writeToFileLocked(result)
         }
     }
@@ -212,7 +224,7 @@ class SettingsManager(private val customSettingsPath: String? = null) {
                 wasFreshInstall = false
                 val jsonString = settingsFile.readText()
                 val loadedSettings = json.decodeFromString<TerminalSettings>(jsonString)
-                _settings.value = loadedSettings
+                publish(loadedSettings)
                 println("Settings loaded from: ${settingsFile.absolutePath}")
 
                 // Migrate (write new-default fields back) ONLY if re-encoding actually differs from disk.
@@ -230,7 +242,7 @@ class SettingsManager(private val customSettingsPath: String? = null) {
         } catch (e: Exception) {
             System.err.println("Failed to load settings, using defaults: ${e.message}")
             e.printStackTrace()
-            _settings.value = TerminalSettings.DEFAULT
+            publish(TerminalSettings.DEFAULT)
         }
     }
 

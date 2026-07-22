@@ -9,6 +9,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ai.rever.bossterm.compose.TerminalSessionSlots
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SystemInfoUtils
@@ -217,6 +218,21 @@ fun PerformanceSettingsSection(
                 onValueChange = { onSettingsChange(settings.copy(bufferMaxLines = it)) },
                 range = 1000..100000,
                 description = "Maximum lines in history (1000-100000)"
+            )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Session thread budget
+        SettingsSection(title = "Sessions") {
+            SettingsNumberInput(
+                label = "Max Session Threads",
+                value = settings.maxSessionThreads,
+                onValueChange = { onSettingsChange(settings.copy(maxSessionThreads = it)) },
+                range = 0..TerminalSessionSlots.HARD_MAX_THREADS,
+                description = "Thread budget for terminal sessions, ~3 per session " +
+                    "(0 = auto: 16 × CPU cores, currently ${TerminalSessionSlots.defaultMaxThreads()}; " +
+                    "custom values clamp to ${TerminalSessionSlots.MIN_THREADS}-${TerminalSessionSlots.HARD_MAX_THREADS})"
             )
         }
 

@@ -22,15 +22,16 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
  * the shared pools. 256 accounted threads ≈ 85 concurrent sessions; threads
  * are created lazily, so idle cost is zero.
  *
- * The view's parallelism is [TerminalSessionSlots.MAX_THREADS] plus a little
- * headroom: [TerminalSessionSlots] accounting is advisory (a session's
- * reservation can be released slightly before its loops finish unwinding
- * during teardown), so short-lived work on the view must never depend on a
- * permit being free at exactly the accounted budget.
+ * The view's parallelism is [TerminalSessionSlots.HARD_MAX_THREADS] plus a
+ * little headroom — the ceiling of the configurable budget, since the view is
+ * created once and cannot be resized at runtime. The headroom also covers the
+ * advisory nature of the accounting (a session's reservation can be released
+ * slightly before its loops finish unwinding during teardown), so short-lived
+ * work on the view never depends on a permit being free at exactly the budget.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 val TerminalSessionDispatcher: CoroutineDispatcher =
-    Dispatchers.IO.limitedParallelism(TerminalSessionSlots.MAX_THREADS + 4, "bossterm-session")
+    Dispatchers.IO.limitedParallelism(TerminalSessionSlots.HARD_MAX_THREADS + 4, "bossterm-session")
 
 /**
  * Advisory accounting for [TerminalSessionDispatcher]'s permit budget.
@@ -52,15 +53,17 @@ val TerminalSessionDispatcher: CoroutineDispatcher =
  */
 object TerminalSessionSlots {
     /**
-     * Permit budget of [TerminalSessionDispatcher]. A fixed cap, deliberately not
-     * scaled to cores or memory: parked session threads cost little beyond their
-     * stacks, and hitting the cap degrades gracefully into the refusal dialog.
-     * The process's real terminal-thread ceiling is this budget (plus the view's
-     * small headroom) plus one dedicated exit-monitor OS thread per DAEMON
-     * session (see TerminalSessionCore) until the pty4j-reaper exit-callback
-     * follow-up removes those.
+     * Absolute ceiling for the accounting budget. Also sizes the dispatcher view
+     * (plus headroom), which is created once and cannot be resized at runtime —
+     * so [maxThreads] may move freely below this via settings, never above.
+     * The process's real terminal-thread ceiling is this plus one dedicated
+     * exit-monitor OS thread per DAEMON session (see TerminalSessionCore) until
+     * the pty4j-reaper exit-callback follow-up removes those.
      */
-    const val MAX_THREADS = 256
+    const val HARD_MAX_THREADS = 512
+
+    /** Smallest configurable budget — keeps a degenerate setting from bricking terminals. */
+    const val MIN_THREADS = 32
 
     /** Long-lived threads a full local session pins: PTY reader + emulator loop + waitFor. */
     const val THREADS_PER_SESSION = 3
@@ -69,9 +72,38 @@ object TerminalSessionSlots {
     const val EXHAUSTED_MESSAGE =
         "No terminal threads available — close some terminal tabs or splits, then try again."
 
+    /**
+     * Machine-scaled default budget: 16 threads (~5 sessions) per CPU core,
+     * clamped to [128, [HARD_MAX_THREADS]]. Parked session threads cost little
+     * beyond their stacks, so this scales with how many sessions a machine's
+     * owner plausibly runs rather than with any hard resource limit.
+     */
+    fun defaultMaxThreads(): Int =
+        (Runtime.getRuntime().availableProcessors() * 16).coerceIn(128, HARD_MAX_THREADS)
+
+    /**
+     * Current accounting budget. Machine-scaled by default, user-configurable
+     * via settings (`TerminalSettings.maxSessionThreads` → [applyConfiguredBudget]).
+     * Lowering it below current usage simply refuses NEW sessions until enough
+     * close — live sessions are never touched.
+     */
+    @Volatile
+    var maxThreads: Int = defaultMaxThreads()
+        private set
+
+    /**
+     * Apply the configured budget from settings: `<= 0` means automatic
+     * (machine-scaled [defaultMaxThreads]); anything else is clamped to
+     * [[MIN_THREADS], [HARD_MAX_THREADS]].
+     */
+    fun applyConfiguredBudget(configured: Int) {
+        maxThreads = if (configured <= 0) defaultMaxThreads()
+        else configured.coerceIn(MIN_THREADS, HARD_MAX_THREADS)
+    }
+
     private val used = java.util.concurrent.atomic.AtomicInteger(0)
 
-    /** Currently reserved threads; UI may show this alongside [MAX_THREADS]. */
+    /** Currently reserved threads; UI may show this alongside [maxThreads]. */
     val usedThreads: Int get() = used.get()
 
     /**
@@ -81,7 +113,7 @@ object TerminalSessionSlots {
     fun tryReserve(n: Int = THREADS_PER_SESSION): Boolean {
         while (true) {
             val current = used.get()
-            if (current + n > MAX_THREADS) return false
+            if (current + n > maxThreads) return false
             if (used.compareAndSet(current, current + n)) return true
         }
     }

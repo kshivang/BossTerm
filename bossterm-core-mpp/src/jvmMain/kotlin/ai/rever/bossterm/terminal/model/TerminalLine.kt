@@ -104,20 +104,20 @@ class TerminalLine {
     /**
      * Clear all image cells in this line.
      */
-    fun clearAllImageCells() {
-        if (myImageCells != null) {
-            myImageCells = null
-            incrementSnapshotVersion()
-        }
+    fun clearAllImageCells(): Boolean {
+        if (myImageCells == null) return false
+        myImageCells = null
+        incrementSnapshotVersion()
+        return true
     }
 
     /** Clear only cells that reference the specified cached image. */
-    fun clearImageCells(imageId: Long) {
-        val cells = myImageCells ?: return
-        if (cells.entries.removeIf { it.value.imageId == imageId }) {
-            if (cells.isEmpty()) myImageCells = null
-            incrementSnapshotVersion()
-        }
+    fun clearImageCells(imageId: Long): Boolean {
+        val cells = myImageCells ?: return false
+        if (!cells.entries.removeIf { it.value.imageId == imageId }) return false
+        if (cells.isEmpty()) myImageCells = null
+        incrementSnapshotVersion()
+        return true
     }
 
     // ============ End Image Cell Methods ============

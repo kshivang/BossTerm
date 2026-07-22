@@ -484,20 +484,33 @@ class TerminalTextBuffer internal constructor(
     }
   }
 
-  /** Remove image cells from both scrollback and the visible screen. */
+  /**
+   * Remove image cells from both scrollback and the visible screen.
+   *
+   * Line positions change during scroll and resize, so per-image deletion
+   * deliberately scans the buffer instead of maintaining a fragile row index.
+   * Notifications begin at the earliest actual match, avoiding the previous
+   * full-history repaint when an id is absent or only appears near the bottom.
+   */
   fun clearImageCells(imageId: Long? = null) {
     myLock.lock()
     try {
-      for (index in 0 until historyLinesStorage.size) {
+      val historySize = historyLinesStorage.size
+      var firstChangedLine: Int? = null
+      for (index in 0 until historySize) {
         val line = historyLinesStorage[index]
-        if (imageId == null) line.clearAllImageCells() else line.clearImageCells(imageId)
+        val changed = if (imageId == null) line.clearAllImageCells() else line.clearImageCells(imageId)
+        if (changed && firstChangedLine == null) firstChangedLine = index - historySize
       }
       for (index in 0 until screenLinesStorage.size) {
         val line = screenLinesStorage[index]
-        if (imageId == null) line.clearAllImageCells() else line.clearImageCells(imageId)
+        val changed = if (imageId == null) line.clearAllImageCells() else line.clearImageCells(imageId)
+        if (changed && firstChangedLine == null) firstChangedLine = index
       }
-      fireModelChangeEvent()
-      changesMulticaster.linesChanged(fromIndex = -historyLinesStorage.size)
+      firstChangedLine?.let {
+        fireModelChangeEvent()
+        changesMulticaster.linesChanged(fromIndex = it)
+      }
     } finally {
       myLock.unlock()
     }

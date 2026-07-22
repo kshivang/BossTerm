@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.daemon
 
 import ai.rever.bossterm.compose.PlatformServices
 import ai.rever.bossterm.compose.getPlatformServices
+import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.tabs.ShellIntegrationInjector
@@ -408,9 +409,7 @@ class TerminalSessionCore(
             put("TERM", "xterm-256color")
             put("COLORTERM", "truecolor")
             put("TERM_PROGRAM", "BossTerm")
-            // Advertise the Kitty graphics transport without changing TERM
-            // away from the broadly available xterm-256color terminfo.
-            put("KITTY_WINDOW_ID", Integer.toUnsignedString(id.hashCode()))
+            putBossTermGraphicsEnvironment(id)
             put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
             put("PWD", workingDir ?: System.getProperty("user.home"))
         }.toMutableMap()

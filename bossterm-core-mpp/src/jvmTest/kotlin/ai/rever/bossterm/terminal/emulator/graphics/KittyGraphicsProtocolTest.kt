@@ -33,6 +33,31 @@ class KittyGraphicsProtocolTest {
     }
 
     @Test
+    fun capabilityQueryWithoutIdentifierStillResponds() {
+        val recording = RecordingTerminal()
+
+        KittyGraphicsProtocol().process("Ga=q,s=1,v=1,t=d,f=24;AAAA", recording.terminal)
+
+        assertEquals("${Ascii.ESC}_G;OK${Ascii.ESC}\\", recording.responses.single())
+    }
+
+    @Test
+    fun transmitWithoutIdentifierStaysSilent() {
+        val recording = RecordingTerminal()
+        val encoded = Base64.getEncoder().encodeToString(byteArrayOf(0x12, 0x34, 0x56, 0xff.toByte()))
+
+        KittyGraphicsProtocol().process("Ga=T,f=32,s=1,v=1,C=1;$encoded", recording.terminal)
+
+        assertEquals(1, recording.images.size)
+        assertTrue(recording.responses.isEmpty())
+    }
+
+    @Test
+    fun graphicsControlStringHasHeadroomBeyondMaximumPayload() {
+        assertTrue(RasterCodec.MAX_CONTROL_STRING_CHARS > RasterCodec.MAX_BASE64_CHARS)
+    }
+
+    @Test
     fun assemblesChunkedPngAndPreservesCursorWhenRequested() {
         val recording = RecordingTerminal()
         val protocol = KittyGraphicsProtocol()

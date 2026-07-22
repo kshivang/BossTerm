@@ -16,6 +16,7 @@ import ai.rever.bossterm.compose.ComposeQuestioner
 import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.compose.ConnectionState
 import ai.rever.bossterm.compose.PlatformServices
+import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
 import ai.rever.bossterm.compose.debug.ChunkSource
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
@@ -1220,9 +1221,7 @@ class TabController(
                 put("TERM", "xterm-256color")
                 put("COLORTERM", "truecolor")
                 put("TERM_PROGRAM", "BossTerm")
-                // Advertise the Kitty graphics transport without changing TERM
-                // away from the broadly available xterm-256color terminfo.
-                put("KITTY_WINDOW_ID", Integer.toUnsignedString(tab.id.hashCode()))
+                putBossTermGraphicsEnvironment(tab.id)
                 put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
                 // Authenticates OSC 1341;OpenTarget requests from the open/
                 // xdg-open shim — see OpenTargetToken.
@@ -1411,9 +1410,7 @@ class TabController(
                     put("TERM", "xterm-256color")
                     put("COLORTERM", "truecolor")
                     put("TERM_PROGRAM", "BossTerm")
-                    // Advertise the Kitty graphics transport without changing TERM
-                    // away from the broadly available xterm-256color terminfo.
-                    put("KITTY_WINDOW_ID", Integer.toUnsignedString(tab.id.hashCode()))
+                    putBossTermGraphicsEnvironment(tab.id)
                     put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
                     // Authenticates OSC 1341;OpenTarget requests from the open/
                     // xdg-open shim — see OpenTargetToken.

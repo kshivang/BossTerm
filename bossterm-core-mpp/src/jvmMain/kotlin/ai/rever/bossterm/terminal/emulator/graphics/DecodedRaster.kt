@@ -13,6 +13,10 @@ internal data class DecodedRaster(
 
 internal object RasterCodec {
     const val MAX_ENCODED_BYTES: Int = 50 * 1024 * 1024
+    const val MAX_BASE64_CHARS: Int = 70 * 1024 * 1024
+    // Leave room for Kitty control fields and future extensions around a
+    // maximum-size encoded payload.
+    const val MAX_CONTROL_STRING_CHARS: Int = MAX_BASE64_CHARS + 64 * 1024
     const val MAX_DIMENSION: Int = 16_384
     const val MAX_PIXELS: Long = 64L * 1024 * 1024
 

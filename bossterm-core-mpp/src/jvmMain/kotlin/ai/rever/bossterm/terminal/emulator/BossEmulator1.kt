@@ -7,6 +7,7 @@ import ai.rever.bossterm.terminal.*
 import ai.rever.bossterm.terminal.emulator.mouse.MouseFormat
 import ai.rever.bossterm.terminal.emulator.mouse.MouseMode
 import ai.rever.bossterm.terminal.emulator.graphics.KittyGraphicsProtocol
+import ai.rever.bossterm.terminal.emulator.graphics.RasterCodec
 import ai.rever.bossterm.terminal.emulator.graphics.SixelDecoder
 import ai.rever.bossterm.terminal.util.CharUtils
 import ai.rever.bossterm.terminal.util.GraphemeCluster
@@ -46,6 +47,16 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
     DataStreamIteratingEmulator(dataStream, terminal) {
 
     private val kittyGraphicsProtocol = KittyGraphicsProtocol()
+    private var maxGraphicsControlChars = RasterCodec.MAX_CONTROL_STRING_CHARS
+
+    internal constructor(
+        dataStream: TerminalDataStream,
+        terminal: Terminal?,
+        maxGraphicsControlChars: Int
+    ) : this(dataStream, terminal) {
+        require(maxGraphicsControlChars > 0)
+        this.maxGraphicsControlChars = maxGraphicsControlChars
+    }
 
     // ===== Multipart File Transfer State =====
     // Tracks in-progress multipart file uploads (OSC 1337;MultipartFile/FilePart/FileEnd)
@@ -275,7 +286,7 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
     @Throws(IOException::class)
     private fun readControlString(): String {
         val result = StringBuilder()
-        while (result.length < MAX_GRAPHICS_CONTROL_CHARS) {
+        while (result.length < maxGraphicsControlChars) {
             val ch = myDataStream.char
             when (ch) {
                 ST -> return result.toString()
@@ -289,7 +300,8 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
                 else -> result.append(ch)
             }
         }
-        throw IOException("graphics control sequence exceeds the ${MAX_GRAPHICS_CONTROL_CHARS}-character limit")
+        LOG.warn("Aborting graphics control sequence after {} characters", maxGraphicsControlChars)
+        return ""
     }
 
     private fun doProcessOsc(args: SystemCommandSequence): kotlin.Boolean {
@@ -1767,7 +1779,6 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
         private val DCS: Char = 0x90.toChar()
         private val ST: Char = 0x9c.toChar()
         private val APC: Char = 0x9f.toChar()
-        private const val MAX_GRAPHICS_CONTROL_CHARS = 70 * 1024 * 1024
         private val LOG: Logger = LoggerFactory.getLogger(BossEmulator::class.java)
 
         private var logThrottlerCounter = 0

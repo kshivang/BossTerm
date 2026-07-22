@@ -55,7 +55,9 @@ internal class KittyGraphicsProtocol {
             if (command.controls['m'] == "1") {
                 val pending = pendingTransfer
                 if (pending == null) {
-                    require(command.payload.length <= MAX_BASE64_CHARS) { "EFBIG: encoded payload exceeds the limit" }
+                    require(command.payload.length <= RasterCodec.MAX_BASE64_CHARS) {
+                        "EFBIG: encoded payload exceeds the limit"
+                    }
                     pendingTransfer = PendingTransfer(command.controls, StringBuilder(command.payload))
                 } else {
                     appendChunk(pending.payload, command.payload)
@@ -115,7 +117,9 @@ internal class KittyGraphicsProtocol {
                 if (action == 'T') {
                     place(image, command.controls, terminal)
                 }
-                respond(terminal, command.controls + ('i' to externalId.toString()), success = true)
+                if (responseRequested(command.controls)) {
+                    respond(terminal, command.controls + ('i' to externalId.toString()), success = true)
+                }
             }
 
             'p' -> {
@@ -135,7 +139,9 @@ internal class KittyGraphicsProtocol {
 
     private fun decode(command: Command): DecodedRaster {
         val medium = command.controls['t']?.firstOrNull() ?: 'd'
-        require(command.payload.length <= MAX_BASE64_CHARS) { "EFBIG: encoded payload exceeds the limit" }
+        require(command.payload.length <= RasterCodec.MAX_BASE64_CHARS) {
+            "EFBIG: encoded payload exceeds the limit"
+        }
 
         val payload = try {
             Base64.getDecoder().decode(command.payload)
@@ -299,6 +305,12 @@ internal class KittyGraphicsProtocol {
         require(Files.isRegularFile(path)) { "EINVAL: image path is not a regular file" }
         require(!isSensitivePath(path)) { "EACCES: image path is not allowed" }
 
+        // Kitty's t=f transport is intentionally a local-process capability:
+        // it reads a file already accessible to the terminal user's account
+        // and never sends those bytes back to the child process. Keep regular-
+        // file, virtual-filesystem, range, and size checks here as defense in
+        // depth without breaking the protocol's arbitrary-path contract.
+
         val offset = nonNegativeLong(controls['O'], "offset")
         val requestedSize = nonNegativeLong(controls['S'], "size")
         val result = try {
@@ -367,7 +379,7 @@ internal class KittyGraphicsProtocol {
     }
 
     private fun appendChunk(destination: StringBuilder, chunk: String) {
-        require(destination.length.toLong() + chunk.length <= MAX_BASE64_CHARS) {
+        require(destination.length.toLong() + chunk.length <= RasterCodec.MAX_BASE64_CHARS.toLong()) {
             "EFBIG: encoded payload exceeds the limit"
         }
         destination.append(chunk)
@@ -395,6 +407,7 @@ internal class KittyGraphicsProtocol {
         success: Boolean,
         message: String = "OK"
     ) {
+        if (!responseRequested(controls)) return
         val quiet = controls['q']?.toIntOrNull() ?: 0
         if (quiet == 2 || success && quiet == 1) return
         val identifiers = buildList {
@@ -414,9 +427,11 @@ internal class KittyGraphicsProtocol {
         terminal?.deviceStatusReport(response)
     }
 
+    private fun responseRequested(controls: Map<Char, String>): Boolean =
+        controls['a'] == "q" || controls.containsKey('i') || controls.containsKey('I')
+
     private companion object {
         private const val UINT32_MAX = 0xffff_ffffL
-        private const val MAX_BASE64_CHARS = 70L * 1024 * 1024
         private const val MAX_RESPONSE_CHARS = 256
         private const val MAX_STORED_BYTES = 50 * 1024 * 1024
         private const val MAX_STORED_IMAGES = 100

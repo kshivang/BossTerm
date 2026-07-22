@@ -30,8 +30,28 @@ class BossEmulatorGraphicsTest {
         assertEquals(emptyList(), recording.text)
     }
 
-    private fun emulate(input: String, recording: RecordingTerminal) {
-        val emulator = BossEmulator(StringDataStream(input), recording.terminal)
+    @Test
+    fun oversizedGraphicsControlStringAbortsWithoutKillingTheEmulator() {
+        val recording = RecordingTerminal()
+        val input = "${Ascii.ESC}_G123${Ascii.CAN}X"
+
+        emulate(input, recording, maxGraphicsControlChars = 4)
+
+        assertEquals(listOf("X"), recording.text)
+        assertEquals(emptyList(), recording.images)
+    }
+
+    private fun emulate(
+        input: String,
+        recording: RecordingTerminal,
+        maxGraphicsControlChars: Int? = null
+    ) {
+        val stream = StringDataStream(input)
+        val emulator = if (maxGraphicsControlChars == null) {
+            BossEmulator(stream, recording.terminal)
+        } else {
+            BossEmulator(stream, recording.terminal, maxGraphicsControlChars)
+        }
         while (emulator.hasNext()) emulator.next()
     }
 

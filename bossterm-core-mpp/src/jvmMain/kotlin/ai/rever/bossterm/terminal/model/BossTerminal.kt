@@ -168,6 +168,8 @@ class BossTerminal(
     }
 
     override fun disconnected() {
+        terminalTextBuffer.abortBatches()
+        myDisplay.setSynchronizedUpdate(false)
         myDisplay.setCursorVisible(false)
     }
 

@@ -17,8 +17,9 @@ internal fun migrateCursorRenderingDefaults(
 ): TerminalSettings {
     if (hasCursorRenderingVersion) return settings
 
-    // 0.7 was the old focused default. Upgrade that value once to xterm parity, while
-    // preserving every non-default opacity a user may already have chosen.
+    // 0.7 was the old focused default. There is no persisted provenance that can
+    // distinguish it from an explicitly selected 70%, so legacy 0.7 values are
+    // intentionally treated as the old default and upgraded once to xterm parity.
     return if (settings.cursorFocusedAlpha == 0.7f) {
         settings.copy(cursorFocusedAlpha = 1f, cursorRenderingVersion = 2)
     } else {

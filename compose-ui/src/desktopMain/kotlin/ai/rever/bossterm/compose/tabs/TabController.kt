@@ -669,7 +669,7 @@ class TabController(
         val dataStream = BlockingTerminalDataStream(
             performanceMode = PerformanceMode.fromString(settings.performanceMode)
         )
-        // Batch each appended chunk so a clear+write renders atomically (no flicker).
+        // Batch each appended chunk so clear+write sequences request one redraw.
         dataStream.onChunkStart = { textBuffer.beginBatch() }
         dataStream.onChunkEnd = { textBuffer.endBatch() }
         val emulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)

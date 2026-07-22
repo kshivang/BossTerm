@@ -14,6 +14,7 @@ import ai.rever.bossterm.terminal.util.CharUtils
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.locks.Lock
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.math.max
 import kotlin.math.min
@@ -70,7 +71,7 @@ class TerminalTextBuffer internal constructor(
   val screenLinesCount: Int
     get() = screenLinesStorage.size
 
-  private val myLock = ReentrantLock()
+  private val myLock: Lock = ReentrantLock()
 
   /**
    * Incremental snapshot builder for optimized copy-on-write snapshots.
@@ -98,11 +99,11 @@ class TerminalTextBuffer internal constructor(
   }
 
   // ===== BATCH CHANGE TRACKING =====
-  // Keeps rapid sequences like clear+write invisible until the complete update is ready.
-  @Volatile
+  // Suppresses intermediate modelChanged events during rapid sequences like clear+write.
+  private val batchStateLock = Any()
   private var batchDepth: Int = 0
-  @Volatile
   private var batchHasChanges: Boolean = false
+  private var batchOwner: Thread? = null
 
   @JvmOverloads
   constructor(width: Int, height: Int, styleState: StyleState, maxHistoryLinesCount: Int = LinesStorage.DEFAULT_MAX_LINES_COUNT) : this(
@@ -289,15 +290,19 @@ class TerminalTextBuffer internal constructor(
 
   /**
    * Begin a batch of operations. Model change events are suppressed until endBatch() is called.
-   * Snapshots are also excluded for the lifetime of the batch, so an immediate redraw cannot
-   * observe a partially applied PTY chunk (notably a half-rewritten Kitty image placeholder).
    * Batches can be nested - only the outermost endBatch() fires the event.
    *
-   * Use this to group related operations (e.g., clear line + write text) into an atomic update.
+   * Use this to coalesce notifications for related operations (e.g., clear line + write text).
    */
   fun beginBatch() {
-    myLock.lock()
-    batchDepth++
+    synchronized(batchStateLock) {
+      val currentThread = Thread.currentThread()
+      check(batchDepth == 0 || batchOwner === currentThread) {
+        "Nested beginBatch() must run on the thread that owns the active batch"
+      }
+      if (batchDepth == 0) batchOwner = currentThread
+      batchDepth++
+    }
   }
 
   /**
@@ -305,23 +310,49 @@ class TerminalTextBuffer internal constructor(
    * fires a single modelChanged event.
    */
   fun endBatch() {
-    check(myLock.isHeldByCurrentThread) { "endBatch() must run on the thread that called beginBatch()" }
-    try {
+    synchronized(batchStateLock) {
       check(batchDepth > 0) { "endBatch() called without a matching beginBatch()" }
+      check(batchOwner === Thread.currentThread()) {
+        "endBatch() must run on the thread that called beginBatch()"
+      }
       batchDepth--
-      if (batchDepth == 0 && batchHasChanges) {
-        batchHasChanges = false
-        for (modelListener in listeners) {
-          modelListener.modelChanged()
+      if (batchDepth == 0) {
+        batchOwner = null
+        if (batchHasChanges) {
+          batchHasChanges = false
+          notifyModelChanged()
         }
       }
-    } finally {
-      myLock.unlock()
     }
   }
 
   /**
-   * Execute a block of operations as an atomic batch.
+   * Finish every outstanding batch after the emulator exits unexpectedly.
+   *
+   * If interpretation throws before the data stream can invoke its chunk-end
+   * callback, the emulator's teardown path must clear the batch so future model
+   * notifications are not suppressed forever.
+   *
+   * This must run on the emulator thread that began the batch. Calling it when no
+   * batch is active is a no-op, which also makes it safe on normal disconnects.
+   */
+  internal fun abortBatches() {
+    synchronized(batchStateLock) {
+      if (batchDepth == 0) return
+      check(batchOwner === Thread.currentThread()) {
+        "abortBatches() must run on the thread that called beginBatch()"
+      }
+
+      val shouldNotify = batchHasChanges
+      batchDepth = 0
+      batchHasChanges = false
+      batchOwner = null
+      if (shouldNotify) notifyModelChanged()
+    }
+  }
+
+  /**
+   * Execute a block while coalescing its model change notifications.
    * Suppresses intermediate model change events, firing only once at the end.
    */
   inline fun <T> batch(block: () -> T): T {
@@ -334,14 +365,19 @@ class TerminalTextBuffer internal constructor(
   }
 
   private fun fireModelChangeEvent() {
-    if (batchDepth > 0) {
-      // Inside a batch - just mark that changes occurred
-      batchHasChanges = true
-    } else {
-      // Not batched - fire immediately
-      for (modelListener in listeners) {
-        modelListener.modelChanged()
+    synchronized(batchStateLock) {
+      if (batchDepth > 0) {
+        // Inside a batch - just mark that changes occurred
+        batchHasChanges = true
+      } else {
+        notifyModelChanged()
       }
+    }
+  }
+
+  private fun notifyModelChanged() {
+    for (modelListener in listeners) {
+      modelListener.modelChanged()
     }
   }
 

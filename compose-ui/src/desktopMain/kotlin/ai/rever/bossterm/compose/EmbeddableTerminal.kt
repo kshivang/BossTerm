@@ -893,7 +893,7 @@ private fun createTerminalSession(
         textBuffer.endBatch()
     }
 
-    val emulator = BossEmulator(dataStream, terminal)
+    val emulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
     val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     return TerminalTab(
@@ -951,6 +951,7 @@ private suspend fun initializeProcess(
             put("TERM", "xterm-256color")
             put("COLORTERM", "truecolor")
             put("TERM_PROGRAM", "BossTerm")
+            putBossTermGraphicsEnvironment(session.id)
             // Authenticates OSC 1341;OpenTarget requests from the open/xdg-open
             // shim — see OpenTargetToken.
             put("BOSSTERM_OPEN_TOKEN", ai.rever.bossterm.compose.osc.OpenTargetToken.value)

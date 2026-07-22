@@ -1,9 +1,11 @@
 package ai.rever.bossterm.terminal.model
 
+import ai.rever.bossterm.core.util.Ascii
 import ai.rever.bossterm.terminal.StyledTextConsumer
 import ai.rever.bossterm.terminal.TextStyle
 import ai.rever.bossterm.terminal.model.image.ImageCell
 import ai.rever.bossterm.terminal.util.CharUtils
+import ai.rever.bossterm.terminal.util.ColumnConversionUtils
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.util.*
@@ -19,6 +21,13 @@ import kotlin.math.min
  */
 class TerminalLine {
     private var myTextEntries = TextEntries()
+    // False is a hot-path guarantee: every encoded buffer unit occupies one
+    // terminal cell, so visual and buffer columns are interchangeable. A
+    // non-ASCII write switches to the precise mapping path until a replacement
+    // or full clear proves the remaining line is cell-aligned again.
+    private var myRequiresVisualColumnMapping = false
+    internal val requiresVisualColumnMapping: Boolean
+        get() = myRequiresVisualColumnMapping
     var isWrapped: Boolean = false
         set(value) {
             if (field != value) {
@@ -104,11 +113,29 @@ class TerminalLine {
     /**
      * Clear all image cells in this line.
      */
-    fun clearAllImageCells() {
-        if (myImageCells != null) {
-            myImageCells = null
-            incrementSnapshotVersion()
-        }
+    fun clearAllImageCells(): Boolean {
+        if (myImageCells == null) return false
+        myImageCells = null
+        incrementSnapshotVersion()
+        return true
+    }
+
+    /** Clear only cells that reference the specified cached image. */
+    fun clearImageCells(imageId: Long): Boolean {
+        val cells = myImageCells ?: return false
+        if (!cells.entries.removeIf { it.value.imageId == imageId }) return false
+        if (cells.isEmpty()) myImageCells = null
+        incrementSnapshotVersion()
+        return true
+    }
+
+    /** Clear image cells other than those backed by retained virtual images. */
+    fun clearImageCellsExcept(retainedImageIds: Set<Long>): Boolean {
+        val cells = myImageCells ?: return false
+        if (!cells.entries.removeIf { it.value.imageId !in retainedImageIds }) return false
+        if (cells.isEmpty()) myImageCells = null
+        incrementSnapshotVersion()
+        return true
     }
 
     // ============ End Image Cell Methods ============
@@ -117,6 +144,7 @@ class TerminalLine {
 
     constructor(entry: TextEntry) {
         myTextEntries.add(entry)
+        myRequiresVisualColumnMapping = entry.text.requiresVisualColumnMapping()
     }
 
     val text: String
@@ -140,6 +168,7 @@ class TerminalLine {
             result.myTextEntries.add(TextEntry(entry.style, entry.text))
         }
         result.isWrapped = this.isWrapped
+        result.myRequiresVisualColumnMapping = myRequiresVisualColumnMapping
         // Copy image cells if present
         myImageCells?.let { cells ->
             result.myImageCells = cells.toMutableMap()
@@ -152,8 +181,14 @@ class TerminalLine {
         if (typeAheadLine != null) {
             return typeAheadLine.charAt(x)
         }
-        val text = this.text
-        return if (x < text.length) text.get(x) else CharUtils.EMPTY_CHAR
+        var entryOffset = x
+        for (entry in myTextEntries) {
+            // NUL padding is excluded from [text] and reads as an empty cell.
+            if (entry.isNul) return CharUtils.EMPTY_CHAR
+            if (entryOffset < entry.length) return entry.text[entryOffset]
+            entryOffset -= entry.length
+        }
+        return CharUtils.EMPTY_CHAR
     }
 
     /**
@@ -166,12 +201,115 @@ class TerminalLine {
     fun clear(filler: TextEntry) {
         myTextEntries.clear()
         myTextEntries.add(filler)
+        myRequiresVisualColumnMapping = filler.text.requiresVisualColumnMapping()
         myImageCells = null  // Clear all image cells
         incrementSnapshotVersion()
     }
 
     fun writeString(x: Int, str: CharBuffer, style: TextStyle) {
         writeCharacters(x, style, str)
+    }
+
+    /**
+     * Overwrite terminal cells while preserving this line's variable-length
+     * UTF-16 encoding. A supplementary single-width glyph occupies two buffer
+     * code units but one terminal cell; raw-index replacement would leave the
+     * previous range's final code unit behind.
+     *
+     * @return number of terminal cells occupied by [str]
+     */
+    fun writeStringVisual(
+        visualX: Int,
+        str: CharBuffer,
+        style: TextStyle,
+        ambiguousCharsAreDoubleWidth: Boolean
+    ): Int {
+        if (str.length == 0) return 0
+
+        if (!myRequiresVisualColumnMapping && !str.requiresVisualColumnMapping()) {
+            // The overwhelmingly common bulk-output path: ASCII buffer indices
+            // are already terminal-cell indices, so avoid three line scans and
+            // the grapheme segmenter on every append/write.
+            writeCharacters(visualX, style, str)
+            return str.length
+        }
+
+        val oldLength = myTextEntries.length()
+        val oldVisualLength = ColumnConversionUtils.bufferColToVisualCol(this, oldLength, oldLength)
+        val startBuffer = if (visualX >= oldVisualLength) {
+            oldLength
+        } else {
+            ColumnConversionUtils.visualColToBufferCol(this, visualX, oldLength)
+        }
+        val visualWidth = CharUtils.getTextLengthGraphemeAware(
+            str.toString(),
+            ambiguousCharsAreDoubleWidth
+        )
+        val endVisual = visualX + visualWidth
+        val endBuffer = if (endVisual >= oldVisualLength) {
+            oldLength
+        } else {
+            ColumnConversionUtils.visualColToBufferCol(this, endVisual, oldLength)
+        }
+        val gap = (visualX - oldVisualLength).coerceAtLeast(0)
+
+        replaceCharacters(
+            start = startBuffer,
+            end = endBuffer,
+            gap = gap,
+            characters = str,
+            style = style
+        )
+
+        if (myImageCells != null && visualWidth > 0) {
+            clearImageCellsInRange(visualX, endVisual)
+        }
+        incrementSnapshotVersion()
+        return visualWidth
+    }
+
+    private fun replaceCharacters(
+        start: Int,
+        end: Int,
+        gap: Int,
+        characters: CharBuffer,
+        style: TextStyle
+    ) {
+        val oldLength = myTextEntries.length()
+        val old = toBuf(myTextEntries, oldLength)
+        val replacementLength = gap + characters.length
+        val newLength = start + replacementLength + (oldLength - end)
+        val chars = CharArray(newLength)
+        val styles: Array<TextStyle?> = arrayOfNulls(newLength)
+
+        if (start > 0) {
+            old.first.copyInto(chars, endIndex = start)
+            old.second.copyInto(styles, endIndex = start)
+        }
+        for (index in 0 until gap) {
+            chars[start + index] = CharUtils.NUL_CHAR
+            styles[start + index] = TextStyle.EMPTY
+        }
+        for (index in 0 until characters.length) {
+            chars[start + gap + index] = characters[index]
+            styles[start + gap + index] = style
+        }
+        if (end < oldLength) {
+            old.first.copyInto(
+                destination = chars,
+                destinationOffset = start + replacementLength,
+                startIndex = end,
+                endIndex = oldLength
+            )
+            old.second.copyInto(
+                destination = styles,
+                destinationOffset = start + replacementLength,
+                startIndex = end,
+                endIndex = oldLength
+            )
+        }
+        myTextEntries = collectFromBuffer(chars, styles)
+        myRequiresVisualColumnMapping = chars.any { it.code > Ascii.DEL.code }
     }
 
     fun insertString(x: Int, str: CharBuffer, style: TextStyle) {
@@ -196,6 +334,8 @@ class TerminalLine {
             len = max(len, x + characters.length)
             myTextEntries = merge(x, characters, style, myTextEntries, len)
         }
+        myRequiresVisualColumnMapping =
+            myRequiresVisualColumnMapping || characters.requiresVisualColumnMapping()
         incrementSnapshotVersion()
     }
 
@@ -217,6 +357,8 @@ class TerminalLine {
             pair.second[i + x] = style
         }
         myTextEntries = Companion.collectFromBuffer(pair.first, pair.second)
+        myRequiresVisualColumnMapping =
+            myRequiresVisualColumnMapping || characters.requiresVisualColumnMapping()
         incrementSnapshotVersion()
     }
 
@@ -325,6 +467,24 @@ class TerminalLine {
                 if (rightX >= myTextEntries.length()) CharUtils.NUL_CHAR else CharUtils.EMPTY_CHAR,
                 rightX - leftX
             )
+        )
+    }
+
+    fun clearAreaVisual(
+        leftX: Int,
+        rightX: Int,
+        maxVisualWidth: Int,
+        style: TextStyle,
+        ambiguousCharsAreDoubleWidth: Boolean
+    ) {
+        val resolvedRight = if (rightX == -1) maxVisualWidth else rightX.coerceAtMost(maxVisualWidth)
+        val count = (resolvedRight - leftX).coerceAtLeast(0)
+        if (count == 0) return
+        writeStringVisual(
+            visualX = leftX,
+            str = CharBuffer(CharUtils.EMPTY_CHAR, count),
+            style = style,
+            ambiguousCharsAreDoubleWidth = ambiguousCharsAreDoubleWidth
         )
     }
 
@@ -648,5 +808,12 @@ class TerminalLine {
 
             return result
         }
+    }
+
+    private fun CharBuffer.requiresVisualColumnMapping(): Boolean {
+        for (index in 0 until length) {
+            if (this[index].code > Ascii.DEL.code) return true
+        }
+        return false
     }
 }

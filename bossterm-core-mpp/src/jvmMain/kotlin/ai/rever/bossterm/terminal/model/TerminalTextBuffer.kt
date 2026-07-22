@@ -375,8 +375,13 @@ class TerminalTextBuffer internal constructor(
     }
   }
 
-  fun writeString(x: Int, y: Int, str: CharBuffer) {
-    writeString(x, y, str, styleState.current)
+  fun writeString(
+    x: Int,
+    y: Int,
+    str: CharBuffer,
+    ambiguousCharsAreDoubleWidth: Boolean = false
+  ): Int {
+    return writeString(x, y, str, styleState.current, ambiguousCharsAreDoubleWidth)
   }
 
   fun addLine(line: TerminalLine) {
@@ -385,13 +390,20 @@ class TerminalTextBuffer internal constructor(
     changesMulticaster.linesChanged(fromIndex = screenLinesStorage.size - 1)
   }
 
-  private fun writeString(x: Int, y: Int, str: CharBuffer, style: TextStyle) {
+  private fun writeString(
+    x: Int,
+    y: Int,
+    str: CharBuffer,
+    style: TextStyle,
+    ambiguousCharsAreDoubleWidth: Boolean
+  ): Int {
     val line = screenLinesStorage[y - 1]
-    line.writeString(x, str, style)
+    val visualWidth = line.writeStringVisual(x, str, style, ambiguousCharsAreDoubleWidth)
 
     textProcessing?.processHyperlinks(screenLinesStorage, line)
     fireModelChangeEvent()
     changesMulticaster.linesChanged(fromIndex = y - 1)
+    return visualWidth
   }
 
   /**
@@ -478,6 +490,95 @@ class TerminalTextBuffer internal constructor(
         if (col < width) {
           line.setImageCell(col, ImageCell(imageId, cellX, cellY, cellWidth, cellHeight))
         }
+      }
+    } finally {
+      myLock.unlock()
+    }
+  }
+
+  /**
+   * Replace one text cell with one slice of a virtual image. Writing the blank
+   * first gives transparent pixels the placeholder's current background and
+   * ensures later text overwrites remove the image through the normal path.
+   */
+  fun writeImagePlaceholderCell(
+    row: Int,
+    col: Int,
+    imageId: Long,
+    cellX: Int,
+    cellY: Int,
+    cellWidth: Int,
+    cellHeight: Int
+  ) {
+    myLock.lock()
+    try {
+      if (row !in 0 until screenLinesStorage.size || col !in 0 until width) return
+      val line = screenLinesStorage[row]
+      line.writeStringVisual(
+        visualX = col,
+        str = CharBuffer(' ', 1),
+        style = styleState.current,
+        ambiguousCharsAreDoubleWidth = false
+      )
+      line.setImageCell(col, ImageCell(imageId, cellX, cellY, cellWidth, cellHeight))
+      fireModelChangeEvent()
+      changesMulticaster.linesChanged(fromIndex = row)
+    } finally {
+      myLock.unlock()
+    }
+  }
+
+  /**
+   * Remove image cells from both scrollback and the visible screen.
+   *
+   * Line positions change during scroll and resize, so per-image deletion
+   * deliberately scans the buffer instead of maintaining a fragile row index.
+   * Notifications begin at the earliest actual match, avoiding the previous
+   * full-history repaint when an id is absent or only appears near the bottom.
+   */
+  fun clearImageCells(imageId: Long? = null) {
+    myLock.lock()
+    try {
+      val historySize = historyLinesStorage.size
+      var firstChangedLine: Int? = null
+      for (index in 0 until historySize) {
+        val line = historyLinesStorage[index]
+        val changed = if (imageId == null) line.clearAllImageCells() else line.clearImageCells(imageId)
+        if (changed && firstChangedLine == null) firstChangedLine = index - historySize
+      }
+      for (index in 0 until screenLinesStorage.size) {
+        val line = screenLinesStorage[index]
+        val changed = if (imageId == null) line.clearAllImageCells() else line.clearImageCells(imageId)
+        if (changed && firstChangedLine == null) firstChangedLine = index
+      }
+      firstChangedLine?.let {
+        fireModelChangeEvent()
+        changesMulticaster.linesChanged(fromIndex = it)
+      }
+    } finally {
+      myLock.unlock()
+    }
+  }
+
+  /** Remove physical placements while retaining Unicode-placeholder cells. */
+  fun clearImageCellsExcept(retainedImageIds: Set<Long>) {
+    myLock.lock()
+    try {
+      val historySize = historyLinesStorage.size
+      var firstChangedLine: Int? = null
+      for (index in 0 until historySize) {
+        if (historyLinesStorage[index].clearImageCellsExcept(retainedImageIds) && firstChangedLine == null) {
+          firstChangedLine = index - historySize
+        }
+      }
+      for (index in 0 until screenLinesStorage.size) {
+        if (screenLinesStorage[index].clearImageCellsExcept(retainedImageIds) && firstChangedLine == null) {
+          firstChangedLine = index
+        }
+      }
+      firstChangedLine?.let {
+        fireModelChangeEvent()
+        changesMulticaster.linesChanged(fromIndex = it)
       }
     } finally {
       myLock.unlock()
@@ -676,7 +777,13 @@ class TerminalTextBuffer internal constructor(
   fun eraseCharacters(leftX: Int, rightX: Int, y: Int) {
     val style = createEmptyStyleWithCurrentColor()
     if (y >= 0) {
-      screenLinesStorage[y].clearArea(leftX, rightX, style)
+      screenLinesStorage[y].clearAreaVisual(
+        leftX = leftX,
+        rightX = rightX,
+        maxVisualWidth = width,
+        style = style,
+        ambiguousCharsAreDoubleWidth = false
+      )
       fireModelChangeEvent()
       changesMulticaster.linesChanged(fromIndex = y)
       if (textProcessing != null && y < height) {

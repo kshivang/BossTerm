@@ -16,6 +16,7 @@ import ai.rever.bossterm.compose.ComposeQuestioner
 import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.compose.ConnectionState
 import ai.rever.bossterm.compose.PlatformServices
+import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
 import ai.rever.bossterm.compose.debug.ChunkSource
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
@@ -442,7 +443,7 @@ class TabController(
         terminal.addClipboardListener(clipboardHandler)
 
         // Create emulator with terminal
-        val emulator = BossEmulator(dataStream, terminal)
+        val emulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
 
         // Always create debug collector (so it's available when user enables debug mode in settings)
         val debugCollector = ai.rever.bossterm.compose.debug.DebugDataCollector(
@@ -624,7 +625,7 @@ class TabController(
         // Batch each appended chunk so a clear+write renders atomically (no flicker).
         dataStream.onChunkStart = { textBuffer.beginBatch() }
         dataStream.onChunkEnd = { textBuffer.endBatch() }
-        val emulator = BossEmulator(dataStream, terminal)
+        val emulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
         val tab = TerminalTab(
@@ -819,7 +820,7 @@ class TabController(
         terminal.addClipboardListener(clipboardHandler)
 
         // Create emulator with terminal
-        val emulator = BossEmulator(dataStream, terminal)
+        val emulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
 
         // Always create debug collector (so it's available when user enables debug mode)
         val debugCollector = ai.rever.bossterm.compose.debug.DebugDataCollector(
@@ -1064,7 +1065,7 @@ class TabController(
         val clipboardHandler = ClipboardHandler(settings)
         terminal.addClipboardListener(clipboardHandler)
 
-        val emulator = BossEmulator(dataStream, terminal)
+        val emulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
 
         // Always create debug collector (so it's available when user enables debug mode in settings)
         val debugCollector = ai.rever.bossterm.compose.debug.DebugDataCollector(
@@ -1220,6 +1221,7 @@ class TabController(
                 put("TERM", "xterm-256color")
                 put("COLORTERM", "truecolor")
                 put("TERM_PROGRAM", "BossTerm")
+                putBossTermGraphicsEnvironment(tab.id)
                 put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
                 // Authenticates OSC 1341;OpenTarget requests from the open/
                 // xdg-open shim — see OpenTargetToken.
@@ -1408,6 +1410,7 @@ class TabController(
                     put("TERM", "xterm-256color")
                     put("COLORTERM", "truecolor")
                     put("TERM_PROGRAM", "BossTerm")
+                    putBossTermGraphicsEnvironment(tab.id)
                     put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
                     // Authenticates OSC 1341;OpenTarget requests from the open/
                     // xdg-open shim — see OpenTargetToken.

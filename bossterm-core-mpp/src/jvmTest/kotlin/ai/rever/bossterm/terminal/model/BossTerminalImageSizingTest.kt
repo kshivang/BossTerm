@@ -6,6 +6,7 @@ import ai.rever.bossterm.terminal.RequestOrigin
 import ai.rever.bossterm.terminal.TerminalDisplay
 import ai.rever.bossterm.terminal.emulator.mouse.MouseFormat
 import ai.rever.bossterm.terminal.emulator.mouse.MouseMode
+import ai.rever.bossterm.terminal.model.image.DimensionSpec
 import ai.rever.bossterm.terminal.model.image.TerminalImage
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -47,6 +48,42 @@ class BossTerminalImageSizingTest {
 
         assertEquals(81, placement.cellWidth)
         assertEquals(14, placement.cellHeight)
+    }
+
+    @Test
+    fun unicodePlaceholderWritesOneMovableImageCell() {
+        val terminal = createTerminal()
+        val image = autoImage(width = 40, height = 100).copy(
+            widthSpec = DimensionSpec.Cells(4),
+            heightSpec = DimensionSpec.Cells(5),
+            preserveAspectRatio = false
+        )
+
+        terminal.processInlineImagePlaceholder(image, cellX = 2, cellY = 3)
+
+        val cell = terminal.terminalTextBuffer.getLine(0).getImageCellAt(0)!!
+        assertEquals(image.id, cell.imageId)
+        assertEquals(2, cell.cellX)
+        assertEquals(3, cell.cellY)
+        assertEquals(4, cell.totalCellsX)
+        assertEquals(5, cell.totalCellsY)
+        assertEquals(2, terminal.cursorX)
+
+        terminal.cursorPosition(1, 1)
+        terminal.writeCharacters("x")
+        assertEquals(null, terminal.terminalTextBuffer.getLine(0).getImageCellAt(0))
+    }
+
+    @Test
+    fun placeholderDimensionsArePrunedWithImageCacheEviction() {
+        val terminal = createTerminal()
+
+        repeat(101) {
+            terminal.processInlineImagePlaceholder(autoImage(), cellX = 0, cellY = 0)
+        }
+
+        assertEquals(100, terminal.getImageDataCache().imageCount)
+        assertEquals(100, terminal.placeholderDimensionCacheSize)
     }
 
     private fun createTerminal(): BossTerminal {

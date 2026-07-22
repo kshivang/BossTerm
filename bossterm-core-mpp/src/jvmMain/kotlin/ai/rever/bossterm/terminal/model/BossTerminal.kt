@@ -14,13 +14,16 @@ import ai.rever.bossterm.terminal.emulator.charset.GraphicSetState
 import ai.rever.bossterm.terminal.emulator.mouse.*
 import ai.rever.bossterm.terminal.model.hyperlinks.LinkInfo
 import ai.rever.bossterm.terminal.model.hyperlinks.LinkResultItem
+import ai.rever.bossterm.terminal.model.image.DimensionSpec
 import ai.rever.bossterm.terminal.model.image.ImageDataCache
 import ai.rever.bossterm.terminal.model.image.ImageDimensionCalculator
+import ai.rever.bossterm.terminal.model.image.ImageDimensions
 import ai.rever.bossterm.terminal.model.image.TerminalImage
 import ai.rever.bossterm.terminal.model.image.TerminalImageListener
 import ai.rever.bossterm.terminal.model.image.TerminalImagePlacement
 import ai.rever.bossterm.terminal.model.image.TerminalImageStorage
 import ai.rever.bossterm.terminal.util.CharUtils
+import ai.rever.bossterm.terminal.util.ColumnConversionUtils
 import ai.rever.bossterm.terminal.util.GraphemeUtils
 import org.jetbrains.annotations.Nls
 import org.slf4j.Logger
@@ -29,6 +32,7 @@ import java.io.UnsupportedEncodingException
 import java.nio.charset.Charset
 import java.text.Normalizer
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.function.Consumer
 import kotlin.concurrent.Volatile
@@ -101,8 +105,23 @@ class BossTerminal(
         CopyOnWriteArrayList<TerminalImageListener>()
     private val myImageStorage = TerminalImageStorage()
 
-    // Cell-based image storage - images stored as cells in buffer, flow with text
-    private val myImageDataCache = ImageDataCache()
+    private data class CachedPlaceholderDimensions(
+        val widthSpec: DimensionSpec,
+        val heightSpec: DimensionSpec,
+        val preserveAspectRatio: Boolean,
+        val grid: TerminalGrid,
+        val cellWidthPx: Float,
+        val cellHeightPx: Float,
+        val displayScale: Float,
+        val dimensions: ImageDimensions
+    )
+
+    private val myPlaceholderDimensions = ConcurrentHashMap<Long, CachedPlaceholderDimensions>()
+
+    // Cell-based image storage - images stored as cells in buffer, flow with text.
+    // The eviction callback keeps derived placeholder metadata bounded by the
+    // same lifetime as the image bytes, including automatic LRU eviction.
+    private val myImageDataCache = ImageDataCache(onImageRemoved = myPlaceholderDimensions::remove)
 
     // Cell dimensions in pixels - set by UI, used for image placement calculations
     @Volatile
@@ -157,7 +176,16 @@ class BossTerminal(
             myCursorX = 0
             // clear the end of the line in the text buffer
             val line = terminalTextBuffer.getLine(myCursorY - 1)
-            terminalTextBuffer.deleteCharacters(myTerminalWidth, myCursorY - 1, line.length() - myTerminalWidth)
+            val bufferBoundary = ColumnConversionUtils.visualColToBufferCol(
+                line,
+                myTerminalWidth,
+                line.length()
+            )
+            terminalTextBuffer.deleteCharacters(
+                bufferBoundary,
+                myCursorY - 1,
+                line.length() - bufferBoundary
+            )
             terminalTextBuffer.setLineWrapped(myCursorY - 1, false)
             if (this.isAutoWrap) {
                 terminalTextBuffer.setLineWrapped(myCursorY - 1, true)
@@ -192,8 +220,12 @@ class BossTerminal(
 
             if (string.size != 0) {
                 val characters = newCharBuf(string)
-                terminalTextBuffer.writeString(myCursorX, myCursorY, characters)
-                myCursorX += characters.length
+                myCursorX += terminalTextBuffer.writeString(
+                    myCursorX,
+                    myCursorY,
+                    characters,
+                    ambiguousCharsAreDoubleWidth()
+                )
 
                 // Track last written character for REP (CSI Ps b)
                 // Use efficient getLastGrapheme() instead of full segmentation
@@ -588,6 +620,10 @@ class BossTerminal(
     }
 
     override fun processInlineImage(image: TerminalImage): TerminalImagePlacement? {
+        return processInlineImage(image, moveCursor = true)
+    }
+
+    override fun processInlineImage(image: TerminalImage, moveCursor: Boolean): TerminalImagePlacement? {
         // Place image at current cursor position
         // myCursorY is 1-indexed (1 to height), convert to 0-indexed buffer row
         // Buffer row: 0 = first screen line, negative = history
@@ -648,12 +684,14 @@ class BossTerminal(
             currentBufferRow++
         }
 
-        // Move cursor below the image (iTerm2 behavior)
-        // currentBufferRow now points to the row after the last image row
-        myCursorX = 0
-        myCursorY = currentBufferRow.coerceAtMost(myTerminalHeight)
-
-        myDisplay.setCursor(myCursorX, myCursorY)
+        if (moveCursor) {
+            // Move cursor below the image (iTerm2 behavior). Kitty placements can
+            // explicitly request that the cursor remain untouched with C=1.
+            // currentBufferRow now points to the row after the last image row.
+            myCursorX = 0
+            myCursorY = currentBufferRow.coerceAtMost(myTerminalHeight)
+            myDisplay.setCursor(myCursorX, myCursorY)
+        }
 
         // Return placement for backward compatibility with rendering
         // anchorRow can be negative if image top scrolled into history
@@ -668,6 +706,85 @@ class BossTerminal(
         )
     }
 
+    override fun processInlineImagePlaceholder(image: TerminalImage, cellX: Int, cellY: Int) {
+        terminalTextBuffer.lock()
+        try {
+            wrapLines()
+            scrollY()
+
+            if (!myImageDataCache.hasImage(image.id)) {
+                // Cache the bytes first so a rejected image cannot leave behind
+                // derived dimensions with no corresponding cache entry.
+                myImageDataCache.storeImage(image)
+            }
+            val dimensions = placeholderDimensions(image)
+            if (cellX in 0 until dimensions.cellWidth && cellY in 0 until dimensions.cellHeight) {
+                terminalTextBuffer.writeImagePlaceholderCell(
+                    row = myCursorY - 1,
+                    col = myCursorX,
+                    imageId = image.id,
+                    cellX = cellX,
+                    cellY = cellY,
+                    cellWidth = dimensions.cellWidth,
+                    cellHeight = dimensions.cellHeight
+                )
+            } else {
+                // A placeholder outside the virtual placement is still a real
+                // text cell and must erase whatever occupied the cell before it.
+                terminalTextBuffer.writeString(myCursorX, myCursorY, CharBuffer(' ', 1))
+            }
+            myCursorX++
+            myLastWrittenChar = null
+            finishText()
+        } finally {
+            terminalTextBuffer.unlock()
+        }
+    }
+
+    override fun currentTextStyle(): TextStyle = myStyleState.current
+
+    private fun placeholderDimensions(image: TerminalImage): ImageDimensions {
+        val currentGrid = TerminalGrid(myTerminalWidth, myTerminalHeight)
+        val sizingGrid =
+            if (currentGrid.columns >= AUTO_TRUST_GRID_COLS && currentGrid.rows >= AUTO_TRUST_GRID_ROWS) {
+                currentGrid
+            } else {
+                myLastTrustedGrid ?: currentGrid
+            }
+        val cached = myPlaceholderDimensions[image.id]
+        if (
+            cached != null &&
+            cached.widthSpec == image.widthSpec &&
+            cached.heightSpec == image.heightSpec &&
+            cached.preserveAspectRatio == image.preserveAspectRatio &&
+            cached.grid == sizingGrid &&
+            cached.cellWidthPx == myCellWidthPx &&
+            cached.cellHeightPx == myCellHeightPx &&
+            cached.displayScale == myDisplayScale
+        ) {
+            return cached.dimensions
+        }
+        val dimensions = ImageDimensionCalculator.calculate(
+            image = image,
+            terminalWidthCells = sizingGrid.columns,
+            terminalHeightCells = sizingGrid.rows,
+            cellWidthPx = myCellWidthPx,
+            cellHeightPx = myCellHeightPx,
+            pixelScale = myDisplayScale
+        )
+        myPlaceholderDimensions[image.id] = CachedPlaceholderDimensions(
+            widthSpec = image.widthSpec,
+            heightSpec = image.heightSpec,
+            preserveAspectRatio = image.preserveAspectRatio,
+            grid = sizingGrid,
+            cellWidthPx = myCellWidthPx,
+            cellHeightPx = myCellHeightPx,
+            displayScale = myDisplayScale,
+            dimensions = dimensions
+        )
+        return dimensions
+    }
+
     override fun getImagePlacements(startRow: Int, endRow: Int): List<TerminalImagePlacement> {
         return myImageStorage.getPlacementsInRange(startRow, endRow)
     }
@@ -679,6 +796,21 @@ class BossTerminal(
     override fun clearAllImages() {
         myImageStorage.clearAll()
         myImageDataCache.clearAll()
+        myPlaceholderDimensions.clear()
+        terminalTextBuffer.clearImageCells()
+    }
+
+    override fun clearImagesExcept(retainedImageIds: Set<Long>) {
+        myImageStorage.clearAll()
+        myImageDataCache.retainOnly(retainedImageIds)
+        myPlaceholderDimensions.keys.removeIf { it !in retainedImageIds }
+        terminalTextBuffer.clearImageCellsExcept(retainedImageIds)
+    }
+
+    override fun removeInlineImage(imageId: Long) {
+        myImageDataCache.removeImage(imageId)
+        myPlaceholderDimensions.remove(imageId)
+        terminalTextBuffer.clearImageCells(imageId)
     }
 
     /**
@@ -686,6 +818,9 @@ class BossTerminal(
      * Used by renderer to fetch image data by ID from ImageAnchorCells.
      */
     fun getImageDataCache(): ImageDataCache = myImageDataCache
+
+    internal val placeholderDimensionCacheSize: Int
+        get() = myPlaceholderDimensions.size
 
     override fun setCellDimensions(cellWidthPx: Float, cellHeightPx: Float) {
         if (cellWidthPx > 0 && cellHeightPx > 0) {

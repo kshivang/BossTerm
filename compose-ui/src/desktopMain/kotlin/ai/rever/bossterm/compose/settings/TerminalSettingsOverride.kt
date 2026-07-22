@@ -102,6 +102,7 @@ data class TerminalSettingsOverride(
 
     // ===== Terminal Emulation Settings =====
     val decCompatibilityMode: Boolean? = null,
+    val allowKittyFileTransfers: Boolean? = null,
     val ambiguousCharsAreDoubleWidth: Boolean? = null,
     val characterEncoding: String? = null,
     val simulateMouseScrollInAlternateScreen: Boolean? = null,
@@ -249,6 +250,7 @@ fun TerminalSettings.withOverrides(override: TerminalSettingsOverride?): Termina
 
         // Terminal Emulation Settings
         decCompatibilityMode = override.decCompatibilityMode ?: decCompatibilityMode,
+        allowKittyFileTransfers = override.allowKittyFileTransfers ?: allowKittyFileTransfers,
         ambiguousCharsAreDoubleWidth = override.ambiguousCharsAreDoubleWidth ?: ambiguousCharsAreDoubleWidth,
         characterEncoding = override.characterEncoding ?: characterEncoding,
         simulateMouseScrollInAlternateScreen = override.simulateMouseScrollInAlternateScreen ?: simulateMouseScrollInAlternateScreen,

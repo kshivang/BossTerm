@@ -6,6 +6,10 @@ import ai.rever.bossterm.core.util.TermSize
 import ai.rever.bossterm.terminal.*
 import ai.rever.bossterm.terminal.emulator.mouse.MouseFormat
 import ai.rever.bossterm.terminal.emulator.mouse.MouseMode
+import ai.rever.bossterm.terminal.emulator.graphics.KittyGraphicsProtocol
+import ai.rever.bossterm.terminal.emulator.graphics.KittyUnicodePlaceholder
+import ai.rever.bossterm.terminal.emulator.graphics.RasterCodec
+import ai.rever.bossterm.terminal.emulator.graphics.SixelDecoder
 import ai.rever.bossterm.terminal.util.CharUtils
 import ai.rever.bossterm.terminal.util.GraphemeCluster
 import ai.rever.bossterm.terminal.util.GraphemeUtils
@@ -42,6 +46,31 @@ import kotlin.plus
  */
 class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
     DataStreamIteratingEmulator(dataStream, terminal) {
+
+    private var kittyGraphicsProtocol = KittyGraphicsProtocol()
+    private var maxGraphicsControlChars = RasterCodec.MAX_CONTROL_STRING_CHARS
+
+    /**
+     * Configure whether Kitty `t=f/t=t` commands may read local files. The
+     * existing two-argument constructor remains file-compatible and defaults
+     * this protocol feature on.
+     */
+    constructor(
+        dataStream: TerminalDataStream,
+        terminal: Terminal?,
+        allowKittyFileTransfers: kotlin.Boolean
+    ) : this(dataStream, terminal) {
+        kittyGraphicsProtocol = KittyGraphicsProtocol(allowKittyFileTransfers)
+    }
+
+    internal constructor(
+        dataStream: TerminalDataStream,
+        terminal: Terminal?,
+        maxGraphicsControlChars: Int
+    ) : this(dataStream, terminal) {
+        require(maxGraphicsControlChars > 0)
+        this.maxGraphicsControlChars = maxGraphicsControlChars
+    }
 
     // ===== Multipart File Transfer State =====
     // Tracks in-progress multipart file uploads (OSC 1337;MultipartFile/FilePart/FileEnd)
@@ -81,6 +110,8 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
             Ascii.HT -> terminal?.horizontalTab()
             Ascii.ESC -> processEscapeSequence(myDataStream.char, myTerminal)
             SystemCommandSequence.OSC -> processOsc()
+            DCS -> processDcs()
+            APC -> processApc()
             else -> if (ch <= Ascii.US) {
                 val sb = StringBuilder("Unhandled control character:")
                 CharUtils.appendChar(sb, CharUtils.CharacterType.NONE, ch)
@@ -90,14 +121,17 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
                 val nonControlCharacters =
                     readNonControlCharacters(terminal?.distanceToLineEnd() ?: 0, terminal?.ambiguousCharsAreDoubleWidth() ?: false)
 
-                terminal?.writeCharacters(nonControlCharacters)
+                if (!kittyGraphicsProtocol.processText(nonControlCharacters, terminal)) {
+                    terminal?.writeCharacters(nonControlCharacters)
+                }
             }
         }
     }
 
     @Throws(IOException::class)
     private fun readNonControlCharacters(maxChars: Int, ambiguousAreDWC: kotlin.Boolean): String {
-        val result = myDataStream.readNonControlCharacters(maxChars) ?: return ""
+        var result = myDataStream.readNonControlCharacters(maxChars) ?: return ""
+        result = completeTrailingKittyPlaceholder(result)
 
         // Segment into grapheme clusters to handle surrogate pairs, emoji, etc.
         val graphemes = GraphemeUtils.segmentIntoGraphemes(result)
@@ -151,6 +185,55 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
         return outputText
     }
 
+    /**
+     * [TerminalDataStream.readNonControlCharacters] limits UTF-16 code units,
+     * not grapheme cells. A limit can therefore split U+10EEEE from one of its
+     * coordinate diacritics. Complete only that trailing protocol grapheme
+     * before generic segmentation; the first unrelated character is pushed
+     * back for normal processing.
+     */
+    @Throws(IOException::class)
+    private fun completeTrailingKittyPlaceholder(text: String): String {
+        if (text.isEmpty()) return text
+        val completed = StringBuilder(text)
+
+        if (completed.last().isHighSurrogate()) {
+            val next = try {
+                myDataStream.char
+            } catch (_: TerminalDataStream.EOF) {
+                return text
+            }
+            if (next.isLowSurrogate()) {
+                completed.append(next)
+            } else {
+                myDataStream.pushChar(next)
+                return text
+            }
+        }
+
+        val baseIndex = completed.lastIndexOf(KittyUnicodePlaceholder.text)
+        if (baseIndex < 0) return completed.toString()
+        val suffix = completed.substring(baseIndex + KittyUnicodePlaceholder.text.length)
+        if (suffix.any { !KittyUnicodePlaceholder.isDiacritic(it.code) }) return completed.toString()
+
+        var diacriticCount = suffix.length
+        while (diacriticCount < MAX_KITTY_PLACEHOLDER_DIACRITICS) {
+            val next = try {
+                myDataStream.char
+            } catch (_: TerminalDataStream.EOF) {
+                break
+            }
+            if (KittyUnicodePlaceholder.isDiacritic(next.code)) {
+                completed.append(next)
+                diacriticCount++
+            } else {
+                myDataStream.pushChar(next)
+                break
+            }
+        }
+        return completed.toString()
+    }
+
     @Throws(IOException::class)
     private fun processEscapeSequence(ch: Char, terminal: Terminal?) {
         when (ch) {
@@ -187,15 +270,10 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
             'M' -> terminal?.reverseIndex()
             'N' -> terminal?.singleShiftSelect(2) //Single Shift Select of G2 Character Set (SS2). This affects next character only.
             'O' -> terminal?.singleShiftSelect(3) //Single Shift Select of G3 Character Set (SS3). This affects next character only.
-            'P' -> {
-                val command = SystemCommandSequence(myDataStream)
-
-                if (!deviceControlString(command)) {
-                    LOG.warn("Error processing DCS: ESCP" + command)
-                }
-            }
+            'P' -> processDcs()
 
             ']' -> processOsc()
+            '_' -> processApc()
             '6' -> unsupported("Back Index (DECBI), VT420 and up")
             '7' -> terminal?.saveCursor()
             '8' -> terminal?.restoreCursor()
@@ -203,7 +281,10 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
             '=' -> setModeEnabled(TerminalMode.Keypad, true)
             '>' -> setModeEnabled(TerminalMode.Keypad, false)
             'F' -> terminal?.cursorPosition(1, terminal.terminalHeight)
-            'c' -> terminal?.reset(true)
+            'c' -> {
+                kittyGraphicsProtocol.reset()
+                terminal?.reset(true)
+            }
             'n' -> myTerminal?.mapCharsetToGL(2)
             'o' -> myTerminal?.mapCharsetToGL(3)
             '|' -> myTerminal?.mapCharsetToGR(3)
@@ -227,8 +308,69 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
         }
     }
 
-    private fun deviceControlString(args: SystemCommandSequence?): kotlin.Boolean {
-        return false
+    @Throws(IOException::class)
+    private fun processDcs() {
+        val body = readControlString()
+        val finalIndex = body.indexOf('q')
+        if (finalIndex < 0 || body.substring(0, finalIndex).any { !it.isDigit() && it != ';' }) {
+            if (LOG.isDebugEnabled()) LOG.debug("Ignoring unsupported DCS sequence")
+            return
+        }
+
+        try {
+            val parameters = body.substring(0, finalIndex).split(';')
+            val aspectParameter = parameters.getOrNull(0)?.toIntOrNull() ?: 0
+            val backgroundMode = parameters.getOrNull(1)?.toIntOrNull() ?: 0
+            val background = if (backgroundMode == 1) 0 else myTerminal?.windowBackground?.rGB ?: 0xff000000.toInt()
+            val raster = SixelDecoder.decode(body.substring(finalIndex + 1), aspectParameter, background)
+            myTerminal?.processInlineImage(
+                TerminalImage(
+                    data = raster.pngData,
+                    name = "sixel.png",
+                    format = ImageFormat.PNG,
+                    intrinsicWidth = raster.width,
+                    intrinsicHeight = raster.height
+                )
+            )
+        } catch (error: IllegalArgumentException) {
+            LOG.warn("Rejected invalid sixel image: {}", error.message)
+        }
+    }
+
+    @Throws(IOException::class)
+    private fun processApc() {
+        val body = readControlString()
+        try {
+            if (!kittyGraphicsProtocol.process(body, myTerminal) && LOG.isDebugEnabled()) {
+                LOG.debug("Ignoring unsupported APC sequence")
+            }
+        } catch (error: IllegalArgumentException) {
+            LOG.warn("Rejected invalid Kitty graphics command: {}", error.message)
+        }
+    }
+
+    @Throws(IOException::class)
+    private fun readControlString(): String {
+        val result = StringBuilder()
+        while (result.length < maxGraphicsControlChars) {
+            val ch = myDataStream.char
+            when (ch) {
+                ST -> return result.toString()
+                Ascii.CAN, Ascii.SUB -> return ""
+                Ascii.ESC -> {
+                    val next = myDataStream.char
+                    if (next == '\\') return result.toString()
+                    // ESC only has meaning here as the 7-bit ST introducer.
+                    // Continuing would fold an unrelated escape sequence into
+                    // the graphics payload and could accidentally render it.
+                    LOG.warn("Aborting graphics control sequence after a stray ESC")
+                    return ""
+                }
+                else -> result.append(ch)
+            }
+        }
+        LOG.warn("Aborting graphics control sequence after {} characters", maxGraphicsControlChars)
+        return ""
     }
 
     private fun doProcessOsc(args: SystemCommandSequence): kotlin.Boolean {
@@ -1703,6 +1845,10 @@ class BossEmulator(dataStream: TerminalDataStream, terminal: Terminal?) :
     }
 
     companion object {
+        private val DCS: Char = 0x90.toChar()
+        private val ST: Char = 0x9c.toChar()
+        private val APC: Char = 0x9f.toChar()
+        private const val MAX_KITTY_PLACEHOLDER_DIACRITICS = 3
         private val LOG: Logger = LoggerFactory.getLogger(BossEmulator::class.java)
 
         private var logThrottlerCounter = 0

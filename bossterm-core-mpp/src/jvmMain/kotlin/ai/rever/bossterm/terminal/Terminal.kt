@@ -324,6 +324,27 @@ interface Terminal {
     fun processInlineImage(image: TerminalImage): TerminalImagePlacement? { return null }
 
     /**
+     * Place an image while allowing protocols such as Kitty to manage cursor
+     * movement themselves. Implementations without specialized cursor handling
+     * retain the normal inline-image behavior.
+     */
+    fun processInlineImage(image: TerminalImage, moveCursor: Boolean): TerminalImagePlacement? {
+        return processInlineImage(image)
+    }
+
+    /**
+     * Replace the cell at the cursor with one slice of an inline image, then
+     * advance by one cell. Kitty Unicode placeholders use this so normal text
+     * operations remain responsible for moving and erasing the displayed image.
+     */
+    fun processInlineImagePlaceholder(image: TerminalImage, cellX: Int, cellY: Int) {
+        cursorForward(1)
+    }
+
+    /** Current rendition used to decode color-addressed image placeholders. */
+    fun currentTextStyle(): TextStyle? = null
+
+    /**
      * Get all image placements in the given row range.
      * Used by the renderer to draw images.
      *
@@ -342,6 +363,14 @@ interface Terminal {
      * Clear all images.
      */
     fun clearAllImages() {}
+
+    /** Clear placements except images backing Kitty virtual placements. */
+    fun clearImagesExcept(retainedImageIds: Set<Long>) {
+        if (retainedImageIds.isEmpty()) clearAllImages()
+    }
+
+    /** Remove every buffer placement backed by one cached image id. */
+    fun removeInlineImage(imageId: Long) {}
 
     /**
      * Set the cell dimensions in pixels.

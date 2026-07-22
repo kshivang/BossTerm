@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.daemon
 
 import ai.rever.bossterm.compose.PlatformServices
 import ai.rever.bossterm.compose.getPlatformServices
+import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.tabs.ShellIntegrationInjector
@@ -73,7 +74,7 @@ class TerminalSessionCore(
     val terminal: BossTerminal = BossTerminal(display, textBuffer, styleState)
     val dataStream: BlockingTerminalDataStream =
         BlockingTerminalDataStream(performanceMode = PerformanceMode.fromString(settings.performanceMode))
-    val emulator: BossEmulator = BossEmulator(dataStream, terminal)
+    val emulator: BossEmulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
 
     // ---- resolved launch command (login-shell defaults match TabController.createTab) ----
     private val effectiveCommand: String
@@ -408,6 +409,7 @@ class TerminalSessionCore(
             put("TERM", "xterm-256color")
             put("COLORTERM", "truecolor")
             put("TERM_PROGRAM", "BossTerm")
+            putBossTermGraphicsEnvironment(id)
             put("TERM_FEATURES", "T2:M:H:Ts0:Ts1:Ts2:Sc0:Sc1:Sc2:B:U:Aw")
             put("PWD", workingDir ?: System.getProperty("user.home"))
         }.toMutableMap()

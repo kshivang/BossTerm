@@ -293,6 +293,9 @@ class TerminalTextBuffer internal constructor(
    * Batches can be nested - only the outermost endBatch() fires the event.
    *
    * Use this to coalesce notifications for related operations (e.g., clear line + write text).
+   * The outermost begin, every nested begin, and the matching [endBatch] calls are
+   * thread-confined: they must all run on the same thread. Concurrent batches are
+   * unsupported and fail fast; snapshot reads remain independently thread-safe.
    */
   fun beginBatch() {
     synchronized(batchStateLock) {
@@ -307,10 +310,11 @@ class TerminalTextBuffer internal constructor(
 
   /**
    * End a batch of operations. If this is the outermost batch and changes occurred,
-   * fires a single modelChanged event.
+   * fires a single modelChanged event. Must run on the thread that owns the batch;
+   * an unmatched or cross-thread call fails fast.
    */
   fun endBatch() {
-    synchronized(batchStateLock) {
+    val shouldNotify = synchronized(batchStateLock) {
       check(batchDepth > 0) { "endBatch() called without a matching beginBatch()" }
       check(batchOwner === Thread.currentThread()) {
         "endBatch() must run on the thread that called beginBatch()"
@@ -320,10 +324,15 @@ class TerminalTextBuffer internal constructor(
         batchOwner = null
         if (batchHasChanges) {
           batchHasChanges = false
-          notifyModelChanged()
+          true
+        } else {
+          false
         }
+      } else {
+        false
       }
     }
+    if (shouldNotify) notifyModelChanged()
   }
 
   /**
@@ -337,18 +346,19 @@ class TerminalTextBuffer internal constructor(
    * batch is active is a no-op, which also makes it safe on normal disconnects.
    */
   internal fun abortBatches() {
-    synchronized(batchStateLock) {
-      if (batchDepth == 0) return
+    val shouldNotify = synchronized(batchStateLock) {
+      if (batchDepth == 0) return@synchronized false
       check(batchOwner === Thread.currentThread()) {
         "abortBatches() must run on the thread that called beginBatch()"
       }
 
-      val shouldNotify = batchHasChanges
+      val hadChanges = batchHasChanges
       batchDepth = 0
       batchHasChanges = false
       batchOwner = null
-      if (shouldNotify) notifyModelChanged()
+      hadChanges
     }
+    if (shouldNotify) notifyModelChanged()
   }
 
   /**
@@ -365,14 +375,16 @@ class TerminalTextBuffer internal constructor(
   }
 
   private fun fireModelChangeEvent() {
-    synchronized(batchStateLock) {
+    val shouldNotify = synchronized(batchStateLock) {
       if (batchDepth > 0) {
         // Inside a batch - just mark that changes occurred
         batchHasChanges = true
+        false
       } else {
-        notifyModelChanged()
+        true
       }
     }
+    if (shouldNotify) notifyModelChanged()
   }
 
   private fun notifyModelChanged() {

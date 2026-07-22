@@ -1383,17 +1383,21 @@ object TerminalCanvasRenderer {
         // xterm uses a one-CSS-pixel underline/bar (scaled by DPR), not a
         // percentage of the cell. Compose dp has the same logical-pixel behavior.
         val edgeThickness = 1.dp.toPx().coerceAtMost(minOf(w, h))
-        val layerBounds = Rect(
-            left = x.coerceAtLeast(0f),
-            top = y.coerceAtLeast(0f),
-            right = right.coerceAtMost(size.width),
-            bottom = bottom.coerceAtMost(size.height),
-        )
 
         // Isolate DstOut to this small cursor layer. The image alpha below then
         // removes the cursor only where an inline image has pixels: opaque Codex
         // Pet pixels stay pristine, while transparent parts still reveal the caret.
-        drawContext.canvas.saveLayer(layerBounds, Paint())
+        // The common no-image path draws directly and avoids an offscreen layer.
+        val needsOcclusionLayer = imageOcclusion != null
+        if (needsOcclusionLayer) {
+            val layerBounds = Rect(
+                left = x.coerceAtLeast(0f),
+                top = y.coerceAtLeast(0f),
+                right = right.coerceAtMost(size.width),
+                bottom = bottom.coerceAtMost(size.height),
+            )
+            drawContext.canvas.saveLayer(layerBounds, Paint())
+        }
         try {
             when (cursorShape) {
                 CursorShape.BLINK_BLOCK, CursorShape.STEADY_BLOCK, null -> {
@@ -1430,7 +1434,9 @@ object TerminalCanvasRenderer {
                 )
             }
         } finally {
-            drawContext.canvas.restore()
+            if (needsOcclusionLayer) {
+                drawContext.canvas.restore()
+            }
         }
     }
 

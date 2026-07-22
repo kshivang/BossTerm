@@ -1,10 +1,12 @@
 package ai.rever.bossterm.compose.rendering
 
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.toPixelMap
@@ -18,6 +20,15 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class CursorOverlayTest {
+
+    private class LayerCountingCanvas(private val delegate: Canvas) : Canvas by delegate {
+        var savedLayerCount = 0
+
+        override fun saveLayer(bounds: Rect, paint: Paint) {
+            savedLayerCount++
+            delegate.saveLayer(bounds, paint)
+        }
+    }
 
     private fun draw(
         width: Int,
@@ -34,6 +45,23 @@ class CursorOverlayTest {
             block = block,
         )
         return bitmap
+    }
+
+    private fun savedLayerCount(
+        width: Int,
+        height: Int,
+        block: DrawScope.() -> Unit,
+    ): Int {
+        val bitmap = ImageBitmap(width, height)
+        val canvas = LayerCountingCanvas(Canvas(bitmap))
+        CanvasDrawScope().draw(
+            density = Density(1f),
+            layoutDirection = LayoutDirection.Ltr,
+            canvas = canvas,
+            size = Size(width.toFloat(), height.toFloat()),
+            block = block,
+        )
+        return canvas.savedLayerCount
     }
 
     @Test
@@ -58,6 +86,28 @@ class CursorOverlayTest {
         val cursorPixel = bitmap.toPixelMap()[5, 10]
         assertEquals(1f, cursorPixel.alpha, 0.01f)
         assertTrue(cursorPixel.red > 0.99f)
+    }
+
+    @Test
+    fun cursorWithoutImageAvoidsOffscreenLayer() {
+        val layers = savedLayerCount(width = 10, height = 20) {
+            with(TerminalCanvasRenderer) {
+                renderCursorOverlay(
+                    cursorVisible = true,
+                    cursorBlinkVisible = true,
+                    cursorShape = CursorShape.STEADY_BLOCK,
+                    cursorX = 0,
+                    cursorY = 1,
+                    scrollOffset = 0,
+                    cellWidth = 10f,
+                    cellHeight = 20f,
+                    isFocused = true,
+                    cursorColor = Color.Red,
+                )
+            }
+        }
+
+        assertEquals(0, layers)
     }
 
     @Test

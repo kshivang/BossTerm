@@ -15,6 +15,37 @@ import kotlin.test.assertTrue
 class TerminalTextBufferBatchTest {
 
     @Test
+    fun modelListenerRunsOutsideBatchStateLock() {
+        val buffer = TerminalTextBuffer(width = 8, height = 2, styleState = StyleState())
+        buffer.getLine(0)
+        val executor = Executors.newSingleThreadExecutor()
+        buffer.addModelListener(object : TerminalModelListener {
+            override fun modelChanged() {
+                executor.submit {
+                    buffer.beginBatch()
+                    buffer.endBatch()
+                }.get(2, TimeUnit.SECONDS)
+            }
+        })
+
+        try {
+            buffer.beginBatch()
+            buffer.writeImagePlaceholderCell(
+                row = 0,
+                col = 0,
+                imageId = 42,
+                cellX = 0,
+                cellY = 0,
+                cellWidth = 1,
+                cellHeight = 1
+            )
+            buffer.endBatch()
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun snapshotsStayResponsiveAndDisconnectClearsAbandonedBatch() {
         val styleState = StyleState()
         val buffer = TerminalTextBuffer(width = 8, height = 2, styleState = styleState)

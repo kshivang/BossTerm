@@ -1391,6 +1391,8 @@ class TabController(
                             delay(settings.debugCaptureInterval)
                             collector.captureState()
                         }
+                    } catch (e: CancellationException) {
+                        throw e // normal tab close — nothing to log
                     } catch (e: Exception) {
                         println("DEBUG: State capture coroutine stopped: ${e.message}")
                     }
@@ -1419,6 +1421,8 @@ class TabController(
                 }
             }
 
+        } catch (e: CancellationException) {
+            throw e // normal tab close / dispose — not an initialization failure
         } catch (e: Exception) {
             tab.connectionState.value = ConnectionState.Error(
                 message = "Terminal initialization failed: ${e.message ?: "Unknown error"}",
@@ -1562,6 +1566,8 @@ class TabController(
                                 delay(settings.debugCaptureInterval)
                                 collector.captureState()
                             }
+                        } catch (e: CancellationException) {
+                            throw e // normal tab close — nothing to log
                         } catch (e: Exception) {
                             println("DEBUG: State capture coroutine stopped: ${e.message}")
                         }
@@ -1654,6 +1660,8 @@ class TabController(
                     }
                 }
 
+            } catch (e: CancellationException) {
+                throw e // normal tab close / dispose — not an initialization failure
             } catch (e: Exception) {
                 tab.connectionState.value = ConnectionState.Error(
                     message = "Terminal initialization failed: ${e.message ?: "Unknown error"}",

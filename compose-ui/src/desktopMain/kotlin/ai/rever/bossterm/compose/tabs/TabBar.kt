@@ -84,6 +84,19 @@ private val RemoteAccent: Color = Color(0xFF4FC3F7)
 private val TabChipGap: Dp = 3.dp
 
 /**
+ * Consume secondary presses before click gestures can treat them as primary actions.
+ * An optional callback supports controls that also open a context menu.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+private fun Modifier.consumeSecondaryPress(onSecondaryPress: (() -> Unit)? = null): Modifier =
+    onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
+        if (event.button == PointerButton.Secondary) {
+            event.changes.forEach { it.consume() }
+            onSecondaryPress?.invoke()
+        }
+    }
+
+/**
  * Preset accent colors offered in the chip "Color" submenu (Warp-style).
  * Stored as ARGB hex ("0xAARRGGBB") to match [ai.rever.bossterm.compose.settings.TerminalSettings].
  */
@@ -461,11 +474,7 @@ fun TabBar(
         IconButton(
             onClick = onClick,
             modifier = Modifier.size(30.dp)
-                .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
-                    if (event.button == PointerButton.Secondary) {
-                        event.changes.forEach { it.consume() }
-                    }
-                }
+                .consumeSecondaryPress()
         ) {
             Icon(imageVector = icon, contentDescription = desc, tint = barMuted, modifier = Modifier.size(16.dp))
         }
@@ -581,11 +590,8 @@ fun TabBar(
                                 }) {
                                     Box(
                                         modifier = Modifier.size(24.dp).clip(RoundedCornerShape(6.dp))
-                                            .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
-                                                if (event.button == PointerButton.Secondary) {
-                                                    event.changes.forEach { it.consume() }
-                                                    showMenuFor(group.tabIndex, pane.paneId)
-                                                }
+                                            .consumeSecondaryPress {
+                                                showMenuFor(group.tabIndex, pane.paneId)
                                             }
                                             .clickable { onPaneSelected(group.tabIndex, pane.paneId) },
                                         contentAlignment = Alignment.Center
@@ -641,12 +647,7 @@ fun TabBar(
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 2.dp)
-                                    .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
-                                        if (event.button == PointerButton.Secondary) {
-                                            event.changes.forEach { it.consume() }
-                                            showRemoteGroupMenu(rg)
-                                        }
-                                    },
+                                    .consumeSecondaryPress { showRemoteGroupMenu(rg) },
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
@@ -880,11 +881,7 @@ fun TabBar(
                 ) {
                     Row(
                         modifier = Modifier.weight(1f).clip(RoundedCornerShape(6.dp))
-                            .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
-                                if (event.button == PointerButton.Secondary) {
-                                    event.changes.forEach { it.consume() }
-                                }
-                            }
+                            .consumeSecondaryPress()
                             .clickable(onClick = onAddRemote)
                             .padding(vertical = 6.dp, horizontal = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -902,11 +899,7 @@ fun TabBar(
                         IconButton(
                             onClick = toggle,
                             modifier = Modifier.size(28.dp)
-                                .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
-                                    if (event.button == PointerButton.Secondary) {
-                                        event.changes.forEach { it.consume() }
-                                    }
-                                }
+                                .consumeSecondaryPress()
                         ) {
                             Icon(
                                 imageVector = Icons.Default.ChevronLeft,
@@ -985,14 +978,9 @@ private fun TabItem(
             .then(
                 if (isEditing) Modifier
                 else Modifier
-                    .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
-                        // Observe and consume secondary presses before combinedClickable can
-                        // interpret them as a normal selection gesture.
-                        if (event.button == PointerButton.Secondary) {
-                            event.changes.forEach { it.consume() }
-                            onContextMenu()
-                        }
-                    }
+                    // Observe and consume secondary presses before combinedClickable can
+                    // interpret them as a normal selection gesture.
+                    .consumeSecondaryPress(onContextMenu)
                     .combinedClickable(onClick = onSelected, onDoubleClick = onStartRename)
             ),
         shape = RoundedCornerShape(6.dp),

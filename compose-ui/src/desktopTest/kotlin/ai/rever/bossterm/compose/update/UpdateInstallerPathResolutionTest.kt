@@ -76,6 +76,43 @@ class UpdateInstallerPathResolutionTest {
     }
 
     @Test
+    fun `Spotlight candidates prefer Applications regardless of result order`() {
+        val applicationsPath = "/Applications/BossTerm Preview.app"
+        val candidates = listOf(
+            "/Users/test/Downloads/BossTerm.app",
+            applicationsPath,
+            "/Users/test/Applications/BossTerm.app"
+        )
+
+        assertEquals(
+            applicationsPath,
+            preferredInstalledAppPath(candidates.asSequence()) { true }
+        )
+        assertEquals(
+            applicationsPath,
+            preferredInstalledAppPath(candidates.reversed().asSequence()) { true }
+        )
+    }
+
+    @Test
+    fun `Spotlight candidates use path order as a deterministic tie breaker`() {
+        val expectedPath = "/Users/alpha/Applications/BossTerm.app"
+        val candidates = listOf(
+            "/Users/zulu/Applications/BossTerm.app",
+            expectedPath
+        )
+
+        assertEquals(
+            expectedPath,
+            preferredInstalledAppPath(candidates.asSequence()) { true }
+        )
+        assertEquals(
+            expectedPath,
+            preferredInstalledAppPath(candidates.reversed().asSequence()) { true }
+        )
+    }
+
+    @Test
     fun `unresolved translocated path is preserved`() {
         val path = "/private/var/folders/xx/T/AppTranslocation/uuid/d/BossTerm.app"
 

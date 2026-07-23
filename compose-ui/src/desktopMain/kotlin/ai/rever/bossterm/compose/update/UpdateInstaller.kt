@@ -31,6 +31,24 @@ internal fun macOSAppBundlePathFromLibraryPath(libraryPath: String): String? {
         .firstNotNullOfOrNull(::macOSAppBundlePathIn)
 }
 
+/** Choose a valid Spotlight result deterministically, preferring system-wide installs. */
+internal fun preferredInstalledAppPath(
+    candidates: Sequence<String>,
+    appExists: (String) -> Boolean
+): String? {
+    return candidates
+        .map { it.trim() }
+        .filter { it.endsWith(MACOS_APP_BUNDLE_SUFFIX) }
+        .filterNot { it.contains(APP_TRANSLOCATION_PATH_SEGMENT) }
+        .filterNot { it.contains("/Frameworks/") || it.contains("/Helpers/") }
+        .filter(appExists)
+        .sortedWith(
+            compareBy<String> { !it.startsWith("$MACOS_APPLICATIONS_DIRECTORY/") }
+                .thenBy { it }
+        )
+        .firstOrNull()
+}
+
 /**
  * Resolve a macOS app bundle path without coupling the decision logic to the
  * filesystem or Spotlight.
@@ -471,12 +489,10 @@ object UpdateInstaller {
                 return null
             }
 
-            output.lineSequence()
-                .map { it.trim() }
-                .filter { it.endsWith(MACOS_APP_BUNDLE_SUFFIX) }
-                .filterNot { it.contains(APP_TRANSLOCATION_PATH_SEGMENT) }
-                .filterNot { it.contains("/Frameworks/") || it.contains("/Helpers/") }
-                .firstOrNull { File(it).exists() }
+            preferredInstalledAppPath(
+                candidates = output.lineSequence(),
+                appExists = { File(it).exists() }
+            )
         } catch (e: Exception) {
             println("⚠️ mdfind lookup for installed BossTerm failed: ${e.message}")
             null

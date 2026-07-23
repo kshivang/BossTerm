@@ -1881,225 +1881,227 @@ fun ProperTerminal(
             }
           )
         }
-        // A first mount during ?2026 has no trusted fallback frame yet. Leave the
-        // terminal canvas empty until the synchronized update publishes its redraw.
-        renderFrame ?: return@Box
-        val bufferSnapshot = renderFrame.buffer
-        // Cursor and content must come from the same committed ?2026 frame. Kitty
-        // image updates temporarily move the real cursor to the placement anchor.
-        val cursorX = renderFrame.cursorX
-        val cursorY = renderFrame.cursorY
-        val cursorVisible = renderFrame.cursorVisible
-        val cursorShape = renderFrame.cursorShape
-        // Type-ahead manager can override cursor X for local echo prediction
-        val effectiveCursorX = tab.typeAheadManager?.let { it.cursorX - 1 } ?: cursorX
+        // A first mount during ?2026 has no trusted fallback frame yet. Leave only
+        // terminal-dependent layers empty until the synchronized update publishes
+        // its redraw; sibling overlays such as search remain composed.
+        if (renderFrame != null) {
+          val bufferSnapshot = renderFrame.buffer
+          // Cursor and content must come from the same committed ?2026 frame. Kitty
+          // image updates temporarily move the real cursor to the placement anchor.
+          val cursorX = renderFrame.cursorX
+          val cursorY = renderFrame.cursorY
+          val cursorVisible = renderFrame.cursorVisible
+          val cursorShape = renderFrame.cursorShape
+          // Type-ahead manager can override cursor X for local echo prediction
+          val effectiveCursorX = tab.typeAheadManager?.let { it.cursorX - 1 } ?: cursorX
 
-        Canvas(modifier = Modifier.padding(start = 4.dp, top = 4.dp).fillMaxSize().clipToBounds()) {
-          // Guard against invalid canvas sizes during resize - prevents drawText constraint failures
-          if (size.width < cellWidth || size.height < cellHeight) return@Canvas
+          Canvas(modifier = Modifier.padding(start = 4.dp, top = 4.dp).fillMaxSize().clipToBounds()) {
+            // Guard against invalid canvas sizes during resize - prevents drawText constraint failures
+            if (size.width < cellWidth || size.height < cellHeight) return@Canvas
 
-          // Capture canvas size for auto-scroll bounds detection in pointer event handlers
-          canvasSize = size
+            // Capture canvas size for auto-scroll bounds detection in pointer event handlers
+            canvasSize = size
 
-          // Calculate visible bounds - limit rendering to what fits in canvas
-          // Use ceil for rows to include partially visible bottom row (Canvas clips automatically)
-          val visibleCols = (size.width / cellWidth).toInt().coerceAtMost(bufferSnapshot.width)
-          val visibleRows = kotlin.math.ceil(size.height / cellHeight).toInt().coerceAtMost(bufferSnapshot.height)
+            // Calculate visible bounds - limit rendering to what fits in canvas
+            // Use ceil for rows to include partially visible bottom row (Canvas clips automatically)
+            val visibleCols = (size.width / cellWidth).toInt().coerceAtMost(bufferSnapshot.width)
+            val visibleRows = kotlin.math.ceil(size.height / cellHeight).toInt().coerceAtMost(bufferSnapshot.height)
 
-          // Get cursor color from terminal (OSC 12), falling back to the active theme's
-          // cursor color so the cursor stays visible against light and dark backgrounds
-          // alike when no app has overridden it.
-          val customCursorColor = terminal.cursorColor
-          val baseCursorColor = if (customCursorColor != null) {
-            Color(customCursorColor.red, customCursorColor.green, customCursorColor.blue)
-          } else activeTheme.cursorColor
+            // Get cursor color from terminal (OSC 12), falling back to the active theme's
+            // cursor color so the cursor stays visible against light and dark backgrounds
+            // alike when no app has overridden it.
+            val customCursorColor = terminal.cursorColor
+            val baseCursorColor = if (customCursorColor != null) {
+              Color(customCursorColor.red, customCursorColor.green, customCursorColor.blue)
+            } else activeTheme.cursorColor
 
-          // Version-based hyperlink caching: compute hash including scroll position
-          // since visible content changes with scroll even if buffer content is same
-          val currentVersionHash = bufferSnapshot.computeVersionHash() * 31 + scrollOffset
+            // Version-based hyperlink caching: compute hash including scroll position
+            // since visible content changes with scroll even if buffer content is same
+            val currentVersionHash = bufferSnapshot.computeVersionHash() * 31 + scrollOffset
 
-          // Reuse cached hyperlinks if buffer content and scroll position unchanged
-          val precomputedHyperlinks = if (currentVersionHash == lastHyperlinkVersionHash &&
-                                          cachedHyperlinks.isNotEmpty()) {
-            cachedHyperlinks
-          } else {
-            null // Force fresh detection
-          }
-
-          // Resolve content-anchored selection to current coordinates
-          // This allows selection to follow content as terminal scrolls
-          // selectionTracker is the single source of truth for selection
-          val resolvedSelection = selectionTracker.resolveToCoordinates(bufferSnapshot)
-          val effectiveSelectionStart = resolvedSelection?.toStartPair()
-          val effectiveSelectionEnd = resolvedSelection?.toEndPair()
-          val effectiveSelectionMode = resolvedSelection?.mode ?: selectionMode
-
-          // Resolve command blocks to on-screen rows (empty unless the feature is
-          // enabled). Reading the collected `commandBlocks` state here subscribes
-          // the draw to block changes so the gutter repaints as commands run.
-          val resolvedCommandBlocks: List<RenderableBlock> = if (settings.commandBlocksEnabled) {
-            commandBlocks.mapNotNull { block ->
-              val startBuf = selectionTracker.resolveAnchorRow(block.startAnchor, bufferSnapshot)
-                ?: return@mapNotNull null
-              val endBuf = block.endAnchor?.let { selectionTracker.resolveAnchorRow(it, bufferSnapshot) }
-              val startScreen = startBuf + scrollOffset
-              val endScreen = endBuf?.let { it + scrollOffset } ?: visibleRows
-              if (endScreen < 0 || startScreen > visibleRows) return@mapNotNull null
-              val color = when (block.state) {
-                BlockState.SUCCESS -> settings.commandBlockSuccessColorValue
-                BlockState.ERROR -> settings.commandBlockErrorColorValue
-                BlockState.RUNNING -> settings.commandBlockRunningColorValue
-              }
-              RenderableBlock(
-                startRow = startScreen.coerceAtLeast(0),
-                endRow = endScreen.coerceIn(0, visibleRows),
-                color = color
-              )
+            // Reuse cached hyperlinks if buffer content and scroll position unchanged
+            val precomputedHyperlinks = if (currentVersionHash == lastHyperlinkVersionHash &&
+                                            cachedHyperlinks.isNotEmpty()) {
+              cachedHyperlinks
+            } else {
+              null // Force fresh detection
             }
-          } else {
-            emptyList()
-          }
 
-          // Reset the per-frame blink probe; renderText() sets an entry true if it
-          // draws a SLOW_BLINK / RAPID_BLINK cell in the visible region this frame.
-          blinkProbe[0] = false
-          blinkProbe[1] = false
+            // Resolve content-anchored selection to current coordinates
+            // This allows selection to follow content as terminal scrolls
+            // selectionTracker is the single source of truth for selection
+            val resolvedSelection = selectionTracker.resolveToCoordinates(bufferSnapshot)
+            val effectiveSelectionStart = resolvedSelection?.toStartPair()
+            val effectiveSelectionEnd = resolvedSelection?.toEndPair()
+            val effectiveSelectionMode = resolvedSelection?.mode ?: selectionMode
 
-          // Build rendering context with all state
-          val renderingContext = RenderingContext(
-            bufferSnapshot = bufferSnapshot,
-            blinkProbe = blinkProbe,
-            cellWidth = cellWidth,
-            cellHeight = cellHeight,
-            baseCellHeight = baseCellHeight,
-            cellBaseline = cellMetrics.third,
-            scrollOffset = scrollOffset,
-            visibleCols = visibleCols,
-            visibleRows = visibleRows,
-            textMeasurer = textMeasurer,
-            measurementFontFamily = sharedFont,
-            fontSize = effectiveFontSize,
-            settings = settings,
-            ambiguousCharsAreDoubleWidth = display.ambiguousCharsAreDoubleWidth(),
-            selectionStart = effectiveSelectionStart,
-            selectionEnd = effectiveSelectionEnd,
-            selectionMode = effectiveSelectionMode,
-            searchVisible = searchVisible,
-            searchQuery = searchQuery,
-            searchMatches = searchMatches,
-            currentMatchIndex = currentMatchIndex,
-            cursorX = effectiveCursorX,
-            cursorY = cursorY,
-            cursorVisible = cursorVisible,
-            // The text pass no longer draws the cursor (it lives in its own overlay Canvas
-            // below), so pass a constant here. Reading the real cursorBlinkVisible state in
-            // this draw lambda would re-subscribe the whole text canvas to the blink and
-            // defeat the optimization.
-            cursorBlinkVisible = true,
-            cursorShape = cursorShape,
-            cursorColor = baseCursorColor,
-            isFocused = isFocused,
-            hoveredHyperlink = hoveredHyperlink,
-            isModifierPressed = isModifierPressed,
-            slowBlinkVisible = slowBlinkVisible,
-            rapidBlinkVisible = rapidBlinkVisible,
-            imageDataById = renderFrame.imagesById,
-            terminalWidthCells = bufferSnapshot.width,
-            terminalHeightCells = bufferSnapshot.height,
-            precomputedHyperlinks = precomputedHyperlinks,
-            workingDirectory = tab.workingDirectory.value,
-            detectFilePaths = settings.detectFilePaths,
-            hyperlinkRegistry = hyperlinkRegistry,
-            commandBlocks = resolvedCommandBlocks
-          )
-
-          // Render terminal using extracted renderer - returns detected hyperlinks
-          with(TerminalCanvasRenderer) {
-            val detectedHyperlinks = renderTerminal(renderingContext)
-            // Update cache for next frame
-            cachedHyperlinks = detectedHyperlinks
-            lastHyperlinkVersionHash = currentVersionHash
-          }
-
-          // Reflect the renderer's blink-presence findings into composition state. Only
-          // an actual change notifies (mutableStateOf uses structural equality), so this
-          // re-arms/parks the blink loops on transitions and is a no-op otherwise — no
-          // per-frame recomposition. Reads here are in the draw phase, not composition.
-          if (hasSlowBlinkText != blinkProbe[0]) hasSlowBlinkText = blinkProbe[0]
-          if (hasRapidBlinkText != blinkProbe[1]) hasRapidBlinkText = blinkProbe[1]
-        }
-
-        // Cursor overlay — drawn in its own Canvas, stacked on top of the text canvas above
-        // (same modifier, so coordinates line up exactly). This is the ONLY place that reads
-        // cursorBlinkVisible, so the ~0.5s blink invalidates just this tiny layer instead of
-        // re-running the full text render. Cursor position is read from the same
-        // composition-scoped snapshots the text canvas uses, so it stays in sync as content
-        // and scroll change. If the cursor intersects an inline image, that cell's alpha masks
-        // the cursor so animated sprite pixels remain above it, matching browser compositing.
-        Canvas(modifier = Modifier.padding(start = 4.dp, top = 4.dp).fillMaxSize().clipToBounds()) {
-          if (size.width < cellWidth || size.height < cellHeight) return@Canvas
-          val customCursorColor = terminal.cursorColor
-          val baseCursorColor = if (customCursorColor != null) {
-            Color(customCursorColor.red, customCursorColor.green, customCursorColor.blue)
-          } else activeTheme.cursorColor
-          with(TerminalCanvasRenderer) {
-            val bufferCursorRow = (cursorY - 1).coerceAtLeast(0)
-            val cursorScreenRow = bufferCursorRow + scrollOffset
-            val cursorImageCell = bufferSnapshot.getLine(bufferCursorRow).getImageCellAt(effectiveCursorX)
-            val cursorImageSlice = cursorImageCell?.let { imageCell ->
-              renderFrame.imagesById[imageCell.imageId]?.let { image ->
-                ImageRenderer.getOrDecodeImage(image)
-              }?.let { bitmap ->
-                imageCellSlice(
-                  imageCell = imageCell,
-                  bitmap = bitmap,
-                  visualColumn = effectiveCursorX,
-                  screenRow = cursorScreenRow,
-                  visibleColumns = (size.width / cellWidth).toInt().coerceAtMost(bufferSnapshot.width),
-                  cellWidth = cellWidth,
-                  cellHeight = cellHeight,
+            // Resolve command blocks to on-screen rows (empty unless the feature is
+            // enabled). Reading the collected `commandBlocks` state here subscribes
+            // the draw to block changes so the gutter repaints as commands run.
+            val resolvedCommandBlocks: List<RenderableBlock> = if (settings.commandBlocksEnabled) {
+              commandBlocks.mapNotNull { block ->
+                val startBuf = selectionTracker.resolveAnchorRow(block.startAnchor, bufferSnapshot)
+                  ?: return@mapNotNull null
+                val endBuf = block.endAnchor?.let { selectionTracker.resolveAnchorRow(it, bufferSnapshot) }
+                val startScreen = startBuf + scrollOffset
+                val endScreen = endBuf?.let { it + scrollOffset } ?: visibleRows
+                if (endScreen < 0 || startScreen > visibleRows) return@mapNotNull null
+                val color = when (block.state) {
+                  BlockState.SUCCESS -> settings.commandBlockSuccessColorValue
+                  BlockState.ERROR -> settings.commandBlockErrorColorValue
+                  BlockState.RUNNING -> settings.commandBlockRunningColorValue
+                }
+                RenderableBlock(
+                  startRow = startScreen.coerceAtLeast(0),
+                  endRow = endScreen.coerceIn(0, visibleRows),
+                  color = color
                 )
               }
+            } else {
+              emptyList()
             }
-            renderCursorOverlay(
-              cursorVisible = cursorVisible,
-              cursorBlinkVisible = cursorBlinkVisible,
-              cursorShape = cursorShape,
-              cursorX = effectiveCursorX,
-              cursorY = cursorY,
-              scrollOffset = scrollOffset,
+
+            // Reset the per-frame blink probe; renderText() sets an entry true if it
+            // draws a SLOW_BLINK / RAPID_BLINK cell in the visible region this frame.
+            blinkProbe[0] = false
+            blinkProbe[1] = false
+
+            // Build rendering context with all state
+            val renderingContext = RenderingContext(
+              bufferSnapshot = bufferSnapshot,
+              blinkProbe = blinkProbe,
               cellWidth = cellWidth,
               cellHeight = cellHeight,
-              isFocused = isFocused,
+              baseCellHeight = baseCellHeight,
+              cellBaseline = cellMetrics.third,
+              scrollOffset = scrollOffset,
+              visibleCols = visibleCols,
+              visibleRows = visibleRows,
+              textMeasurer = textMeasurer,
+              measurementFontFamily = sharedFont,
+              fontSize = effectiveFontSize,
+              settings = settings,
+              ambiguousCharsAreDoubleWidth = display.ambiguousCharsAreDoubleWidth(),
+              selectionStart = effectiveSelectionStart,
+              selectionEnd = effectiveSelectionEnd,
+              selectionMode = effectiveSelectionMode,
+              searchVisible = searchVisible,
+              searchQuery = searchQuery,
+              searchMatches = searchMatches,
+              currentMatchIndex = currentMatchIndex,
+              cursorX = effectiveCursorX,
+              cursorY = cursorY,
+              cursorVisible = cursorVisible,
+              // The text pass no longer draws the cursor (it lives in its own overlay Canvas
+              // below), so pass a constant here. Reading the real cursorBlinkVisible state in
+              // this draw lambda would re-subscribe the whole text canvas to the blink and
+              // defeat the optimization.
+              cursorBlinkVisible = true,
+              cursorShape = cursorShape,
               cursorColor = baseCursorColor,
-              focusedAlpha = settings.cursorFocusedAlpha,
-              unfocusedAlpha = settings.cursorUnfocusedAlpha,
-              imageOcclusion = cursorImageSlice,
+              isFocused = isFocused,
+              hoveredHyperlink = hoveredHyperlink,
+              isModifierPressed = isModifierPressed,
+              slowBlinkVisible = slowBlinkVisible,
+              rapidBlinkVisible = rapidBlinkVisible,
+              imageDataById = renderFrame.imagesById,
+              terminalWidthCells = bufferSnapshot.width,
+              terminalHeightCells = bufferSnapshot.height,
+              precomputedHyperlinks = precomputedHyperlinks,
+              workingDirectory = tab.workingDirectory.value,
+              detectFilePaths = settings.detectFilePaths,
+              hyperlinkRegistry = hyperlinkRegistry,
+              commandBlocks = resolvedCommandBlocks
             )
-          }
-        }
 
-        // IME (Input Method Editor) handler for CJK input
-        // Provides invisible TextField for IME composition (Pinyin, Hiragana, etc.)
-        IMEHandler(
-          enabled = imeState.isEnabled,
-          cursorX = cursorX,
-          cursorY = (cursorY - 1).coerceAtLeast(0), // Adjust for 1-indexed cursor
-          charWidth = cellWidth,
-          charHeight = cellHeight,
-          onTextCommit = { text ->
-            // Forward composed text to terminal
-            scope.launch {
-              tab.writeUserInput(text)
+            // Render terminal using extracted renderer - returns detected hyperlinks
+            with(TerminalCanvasRenderer) {
+              val detectedHyperlinks = renderTerminal(renderingContext)
+              // Update cache for next frame
+              cachedHyperlinks = detectedHyperlinks
+              lastHyperlinkVersionHash = currentVersionHash
             }
-            // Disable IME after successful input and restore focus to terminal
-            imeState.disable()
-            scope.launch {
-              delay(50)
-              focusRequester.requestFocus()
+
+            // Reflect the renderer's blink-presence findings into composition state. Only
+            // an actual change notifies (mutableStateOf uses structural equality), so this
+            // re-arms/parks the blink loops on transitions and is a no-op otherwise — no
+            // per-frame recomposition. Reads here are in the draw phase, not composition.
+            if (hasSlowBlinkText != blinkProbe[0]) hasSlowBlinkText = blinkProbe[0]
+            if (hasRapidBlinkText != blinkProbe[1]) hasRapidBlinkText = blinkProbe[1]
+          }
+
+          // Cursor overlay — drawn in its own Canvas, stacked on top of the text canvas above
+          // (same modifier, so coordinates line up exactly). This is the ONLY place that reads
+          // cursorBlinkVisible, so the ~0.5s blink invalidates just this tiny layer instead of
+          // re-running the full text render. Cursor position is read from the same
+          // composition-scoped snapshots the text canvas uses, so it stays in sync as content
+          // and scroll change. If the cursor intersects an inline image, that cell's alpha masks
+          // the cursor so animated sprite pixels remain above it, matching browser compositing.
+          Canvas(modifier = Modifier.padding(start = 4.dp, top = 4.dp).fillMaxSize().clipToBounds()) {
+            if (size.width < cellWidth || size.height < cellHeight) return@Canvas
+            val customCursorColor = terminal.cursorColor
+            val baseCursorColor = if (customCursorColor != null) {
+              Color(customCursorColor.red, customCursorColor.green, customCursorColor.blue)
+            } else activeTheme.cursorColor
+            with(TerminalCanvasRenderer) {
+              val bufferCursorRow = (cursorY - 1).coerceAtLeast(0)
+              val cursorScreenRow = bufferCursorRow + scrollOffset
+              val cursorImageCell = bufferSnapshot.getLine(bufferCursorRow).getImageCellAt(effectiveCursorX)
+              val cursorImageSlice = cursorImageCell?.let { imageCell ->
+                renderFrame.imagesById[imageCell.imageId]?.let { image ->
+                  ImageRenderer.getOrDecodeImage(image)
+                }?.let { bitmap ->
+                  imageCellSlice(
+                    imageCell = imageCell,
+                    bitmap = bitmap,
+                    visualColumn = effectiveCursorX,
+                    screenRow = cursorScreenRow,
+                    visibleColumns = (size.width / cellWidth).toInt().coerceAtMost(bufferSnapshot.width),
+                    cellWidth = cellWidth,
+                    cellHeight = cellHeight,
+                  )
+                }
+              }
+              renderCursorOverlay(
+                cursorVisible = cursorVisible,
+                cursorBlinkVisible = cursorBlinkVisible,
+                cursorShape = cursorShape,
+                cursorX = effectiveCursorX,
+                cursorY = cursorY,
+                scrollOffset = scrollOffset,
+                cellWidth = cellWidth,
+                cellHeight = cellHeight,
+                isFocused = isFocused,
+                cursorColor = baseCursorColor,
+                focusedAlpha = settings.cursorFocusedAlpha,
+                unfocusedAlpha = settings.cursorUnfocusedAlpha,
+                imageOcclusion = cursorImageSlice,
+              )
             }
           }
-        )
+
+          // IME (Input Method Editor) handler for CJK input
+          // Provides invisible TextField for IME composition (Pinyin, Hiragana, etc.)
+          IMEHandler(
+            enabled = imeState.isEnabled,
+            cursorX = cursorX,
+            cursorY = (cursorY - 1).coerceAtLeast(0), // Adjust for 1-indexed cursor
+            charWidth = cellWidth,
+            charHeight = cellHeight,
+            onTextCommit = { text ->
+              // Forward composed text to terminal
+              scope.launch {
+                tab.writeUserInput(text)
+              }
+              // Disable IME after successful input and restore focus to terminal
+              imeState.disable()
+              scope.launch {
+                delay(50)
+                focusRequester.requestFocus()
+              }
+            }
+          )
+        }
 
         // Search bar UI
         SearchBar(

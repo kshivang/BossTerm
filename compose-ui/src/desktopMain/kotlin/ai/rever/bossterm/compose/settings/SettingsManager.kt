@@ -241,7 +241,7 @@ class SettingsManager(private val customSettingsPath: String? = null) {
                 val jsonString = settingsFile.readText()
                 val rawSettings = json.parseToJsonElement(jsonString).jsonObject
                 val loadedSettings = migrateCursorRenderingDefaults(
-                    settings = json.decodeFromString<TerminalSettings>(jsonString),
+                    settings = json.decodeFromJsonElement(TerminalSettings.serializer(), rawSettings),
                     hasCursorRenderingVersion = "cursorRenderingVersion" in rawSettings,
                 )
                 publish(loadedSettings)

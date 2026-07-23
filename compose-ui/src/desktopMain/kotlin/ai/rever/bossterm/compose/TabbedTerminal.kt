@@ -1513,6 +1513,17 @@ fun TabbedTerminal(
                         tabController.createTab(workingDir = wd)
                     }
                 },
+                onCreateWorktree = { tabIndex, paneId ->
+                    // Target the pane that was right-clicked, even when it is not currently
+                    // focused, then leave the path/branch portion for the user to complete.
+                    val tab = tabController.tabs.getOrNull(tabIndex) ?: return@TabBar
+                    val session = sessionFor(tabIndex, paneId) ?: return@TabBar
+                    tabController.switchToTab(tabIndex)
+                    splitStates[tab.id]?.setFocusedPane(paneId)
+                    val cwd = session.workingDirectory.value
+                    val command = GitUtils.gitCommand("worktree add ", cwd).removeSuffix("\n")
+                    session.writeUserInput(command)
+                },
                 onShareTab = { index ->
                     tabController.tabs.getOrNull(index)?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
                 },

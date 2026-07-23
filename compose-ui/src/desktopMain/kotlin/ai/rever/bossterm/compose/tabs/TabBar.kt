@@ -46,6 +46,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerButton
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.text.TextStyle
@@ -235,8 +236,8 @@ private val REMOTE_AI_ASSISTANTS = listOf(
  * - Close button per chip (X)
  * - New tab button (+)
  * - Active/focused pane highlighting
- * - Right-click context menu: Rename…, Color ▸, Duplicate, Close, Close Others,
- *   Close Tabs Below, Move Tab to New Window
+ * - Right-click context menu: Create Worktree for This…, Rename…, Color ▸,
+ *   Duplicate, Close, Close Others, Close Tabs Below, Move Tab to New Window
  * - Double-click a chip to rename inline
  *
  * Styling matches the Material 3 design of the search bar for visual consistency.
@@ -256,6 +257,7 @@ fun TabBar(
     onCloseOthers: (Int) -> Unit = {},
     onCloseBelow: (Int) -> Unit = {},
     onDuplicate: (Int) -> Unit = {},
+    onCreateWorktree: (tabIndex: Int, paneId: String) -> Unit = { _, _ -> },
     onShareTab: (Int) -> Unit = {},
     onShareWindow: (Int) -> Unit = {},
     onShareAll: (Int) -> Unit = {},
@@ -297,6 +299,13 @@ fun TabBar(
         )
         val items = listOf(
             ContextMenuController.MenuItem(id = "new_tab", label = "New Tab", enabled = true, action = { onNewTab() }),
+            ContextMenuController.MenuItem(
+                id = "create_worktree",
+                label = "Create Worktree for This…",
+                enabled = true,
+                action = { onCreateWorktree(tabIndex, paneId) }
+            ),
+            ContextMenuController.MenuSeparator(id = "separator_worktree"),
             ContextMenuController.MenuItem(id = "rename_tab", label = "Rename…", enabled = true, action = { editingPaneId = paneId }),
             colorSubmenu,
             ContextMenuController.MenuSeparator(id = "separator_tab_ops"),
@@ -487,11 +496,37 @@ fun TabBar(
         )
     }
 
+    // Right-clicking empty sidebar chrome targets the active pane. Child controls consume
+    // their own secondary presses, so the Final-pass handler below only handles background.
+    val showActivePaneMenu: () -> Unit = {
+        val allGroups = groups + remoteGroups.flatMap { it.groups + it.nested.flatMap { n -> n.groups } }
+        val group = allGroups.firstOrNull { it.tabIndex == activeTabIndex }
+        val pane = group?.panes?.firstOrNull { it.paneId == focusedPaneId } ?: group?.panes?.firstOrNull()
+        if (group != null && pane != null) {
+            val ctx = remoteByTabIndex[group.tabIndex]
+            if (ctx != null) showRemoteChipMenu(ctx.first, ctx.second, group.tabIndex, pane.paneId)
+            else showChipMenu(group.tabIndex, pane.paneId)
+        }
+    }
+
     Surface(
-        modifier = modifier.then(
-            if (vertical) Modifier.fillMaxHeight().width(if (collapsed) TabBarRailWidth else verticalWidth)
-            else Modifier.fillMaxWidth().height(TabBarHeight)
-        ),
+        modifier = modifier
+            .then(
+                if (vertical) Modifier.fillMaxHeight().width(if (collapsed) TabBarRailWidth else verticalWidth)
+                else Modifier.fillMaxWidth().height(TabBarHeight)
+            )
+            .then(
+                if (vertical) {
+                    Modifier.onPointerEvent(PointerEventType.Press, PointerEventPass.Final) { event ->
+                        if (event.button == PointerButton.Secondary && event.changes.none { it.isConsumed }) {
+                            event.changes.forEach { it.consume() }
+                            showActivePaneMenu()
+                        }
+                    }
+                } else {
+                    Modifier
+                }
+            ),
         color = barBg,
         shadowElevation = 2.dp
     ) {
@@ -532,6 +567,17 @@ fun TabBar(
                                 }) {
                                     Box(
                                         modifier = Modifier.size(24.dp).clip(RoundedCornerShape(6.dp))
+                                            .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
+                                                if (event.button == PointerButton.Secondary) {
+                                                    event.changes.forEach { it.consume() }
+                                                    val ctx = remoteByTabIndex[group.tabIndex]
+                                                    if (ctx != null) {
+                                                        showRemoteChipMenu(ctx.first, ctx.second, group.tabIndex, pane.paneId)
+                                                    } else {
+                                                        showChipMenu(group.tabIndex, pane.paneId)
+                                                    }
+                                                }
+                                            }
                                             .clickable { onPaneSelected(group.tabIndex, pane.paneId) },
                                         contentAlignment = Alignment.Center
                                     ) {
@@ -586,8 +632,11 @@ fun TabBar(
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp, vertical = 2.dp)
-                                    .onPointerEvent(PointerEventType.Press) { event ->
-                                        if (event.button == PointerButton.Secondary) showRemoteGroupMenu(rg)
+                                    .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
+                                        if (event.button == PointerButton.Secondary) {
+                                            event.changes.forEach { it.consume() }
+                                            showRemoteGroupMenu(rg)
+                                        }
                                     },
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -913,13 +962,15 @@ private fun TabItem(
             .then(
                 if (isEditing) Modifier
                 else Modifier
-                    .combinedClickable(onClick = onSelected, onDoubleClick = onStartRename)
-                    .onPointerEvent(PointerEventType.Press) { event ->
-                        // Handle right-click for context menu
+                    .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
+                        // Observe and consume secondary presses before combinedClickable can
+                        // interpret them as a normal selection gesture.
                         if (event.button == PointerButton.Secondary) {
+                            event.changes.forEach { it.consume() }
                             onContextMenu()
                         }
                     }
+                    .combinedClickable(onClick = onSelected, onDoubleClick = onStartRename)
             ),
         shape = RoundedCornerShape(6.dp),
         color = if (isActive) itemRaised else itemBg,

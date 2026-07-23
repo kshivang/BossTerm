@@ -134,9 +134,15 @@ private data class StableTerminalRenderFrame(
   val cursorShape: CursorShape?,
 )
 
-private class StableTerminalRenderFrameHolder(
-  var frame: StableTerminalRenderFrame,
-)
+/** UI-thread-confined retention of the last frame accepted by the sync gate. */
+internal class StableRenderFrameHolder<T : Any> {
+  private var frame: T? = null
+
+  fun retain(candidate: T?): T? {
+    if (candidate != null) frame = candidate
+    return frame
+  }
+}
 
 /**
  * Proper terminal implementation using BossTerm's emulator.
@@ -1855,33 +1861,29 @@ fun ProperTerminal(
         // Create snapshot for lock-free rendering with copy-on-write optimization
         // Uses version tracking to reuse unchanged lines (99%+ allocation reduction)
         // Snapshot cached by Compose - recreated when display triggers redraw OR buffer dimensions change
-        // Cursor state is captured atomically to prevent flickering from partial updates
+        // Buffer, images, and cursor state are retained as one accepted render frame.
         val currentTrigger = display.redrawTrigger.value
         val imageDataCache = terminal.getImageDataCache()
         val stableFrameHolder = remember(textBuffer, display) {
-          StableTerminalRenderFrameHolder(
-            StableTerminalRenderFrame(
-              buffer = textBuffer.createIncrementalSnapshot(),
-              imagesById = imageDataCache.snapshotImages(),
-              cursorX = display.cursorXSnapshot,
-              cursorY = display.cursorYSnapshot,
-              cursorVisible = display.cursorVisibleSnapshot,
-              cursorShape = display.cursorShapeSnapshot,
-            )
-          )
+          StableRenderFrameHolder<StableTerminalRenderFrame>()
         }
         val renderFrame = remember(currentTrigger, textBuffer.width, textBuffer.height) {
-          display.captureStableRenderFrame {
-            StableTerminalRenderFrame(
-              buffer = textBuffer.createIncrementalSnapshot(),
-              imagesById = imageDataCache.snapshotImages(),
-              cursorX = display.cursorXSnapshot,
-              cursorY = display.cursorYSnapshot,
-              cursorVisible = display.cursorVisibleSnapshot,
-              cursorShape = display.cursorShapeSnapshot,
-            )
-          }?.also { stableFrameHolder.frame = it } ?: stableFrameHolder.frame
+          stableFrameHolder.retain(
+            display.captureStableRenderFrame {
+              StableTerminalRenderFrame(
+                buffer = textBuffer.createIncrementalSnapshot(),
+                imagesById = imageDataCache.snapshotImages(),
+                cursorX = display.cursorXSnapshot,
+                cursorY = display.cursorYSnapshot,
+                cursorVisible = display.cursorVisibleSnapshot,
+                cursorShape = display.cursorShapeSnapshot,
+              )
+            }
+          )
         }
+        // A first mount during ?2026 has no trusted fallback frame yet. Leave the
+        // terminal canvas empty until the synchronized update publishes its redraw.
+        renderFrame ?: return@Box
         val bufferSnapshot = renderFrame.buffer
         // Cursor and content must come from the same committed ?2026 frame. Kitty
         // image updates temporarily move the real cursor to the placement anchor.

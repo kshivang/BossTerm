@@ -136,15 +136,20 @@ class TabController(
             }
         }
 
-        // Track the git branch of the working directory for the left tab-bar's
-        // third chip line (Warp-style title / cwd / branch). Debounced + collectLatest
-        // so a rapid `cd` cancels the stale lookup; null outside a repository.
+        // Track repository membership and the git branch of the working directory for
+        // repository-only actions and the left tab-bar's third chip line. Debounced +
+        // collectLatest so a rapid `cd` cancels the stale lookup.
         session.coroutineScope.launch {
             snapshotFlow { session.workingDirectory.value }
                 .distinctUntilChanged()
                 .collectLatest { cwd ->
+                    session.isGitRepo.value = null
                     delay(350)
-                    session.gitBranch.value = withContext(Dispatchers.IO) { GitUtils.getCurrentBranch(cwd) }
+                    val repository = withContext(Dispatchers.IO) {
+                        GitUtils.getRepositoryState(cwd)
+                    }
+                    session.gitBranch.value = repository.branch
+                    session.isGitRepo.value = repository.isRepository
                 }
         }
     }

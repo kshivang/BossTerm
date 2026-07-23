@@ -599,13 +599,12 @@ fun TabbedTerminal(
             onGitBranch = { gitCmd(GitUtils.Commands.BRANCH) }
             onGitCheckoutPrev = { gitCmd(GitUtils.Commands.CHECKOUT_PREV) }
             onGitCheckoutNew = {
-                // Uses gitCommand but without trailing newline (user types branch name)
-                val cwd = getWorkingDir()
-                if (cwd != null) {
-                    writeToTerminal("git -C \"$cwd\" ${GitUtils.Commands.CHECKOUT_NEW}")
-                } else {
-                    writeToTerminal("git ${GitUtils.Commands.CHECKOUT_NEW}")
-                }
+                // Prefill only: the user still needs to type the new branch name.
+                val command = GitUtils.gitCommand(
+                    GitUtils.Commands.CHECKOUT_NEW,
+                    getWorkingDir()
+                ).removeSuffix("\n")
+                writeToTerminal(command)
             }
             onGitStash = { gitCmd(GitUtils.Commands.STASH) }
             onGitStashPop = { gitCmd(GitUtils.Commands.STASH_POP) }
@@ -1235,17 +1234,20 @@ fun TabbedTerminal(
                 val st = splitStates[tab.id]
                 val panes = if (st != null && !summaryMode) {
                     st.getAllPanes().map { p ->
+                        val terminalPane = p.session as? ai.rever.bossterm.compose.tabs.TerminalTab
                         ai.rever.bossterm.compose.tabs.TabBarPane(
                             p.id, p.session.title.value, colorHexFor(p.session),
                             subtitle = abbreviateCwd(p.session.workingDirectory.value),
-                            branch = (p.session as? ai.rever.bossterm.compose.tabs.TerminalTab)?.gitBranch?.value
+                            branch = terminalPane?.gitBranch?.value,
+                            isGitRepo = if (terminalPane == null) false else terminalPane.isGitRepo.value
                         )
                     }
                 } else {
                     listOf(ai.rever.bossterm.compose.tabs.TabBarPane(
                         tab.id, tab.title.value, colorHexFor(tab),
                         subtitle = abbreviateCwd(tab.workingDirectory.value),
-                        branch = tab.gitBranch.value
+                        branch = tab.gitBranch.value,
+                        isGitRepo = tab.isGitRepo.value
                     ))
                 }
                 tab to ai.rever.bossterm.compose.tabs.TabBarGroup(index, panes)
@@ -1512,6 +1514,19 @@ fun TabbedTerminal(
                         val wd = t?.workingDirectory?.value
                         tabController.createTab(workingDir = wd)
                     }
+                },
+                onCreateWorktree = { tabIndex, paneId ->
+                    // Target the pane that was right-clicked, even when it is not currently
+                    // focused, then leave the path/branch portion for the user to complete.
+                    // Like the existing checkout/clone prefill actions, this appends without
+                    // clearing existing prompt input and does not submit the command.
+                    val tab = tabController.tabs.getOrNull(tabIndex) ?: return@TabBar
+                    val session = sessionFor(tabIndex, paneId) ?: return@TabBar
+                    tabController.switchToTab(tabIndex)
+                    splitStates[tab.id]?.setFocusedPane(paneId)
+                    val cwd = session.workingDirectory.value
+                    val command = GitUtils.gitCommand("worktree add ", cwd).removeSuffix("\n")
+                    session.writeUserInput(command)
                 },
                 onShareTab = { index ->
                     tabController.tabs.getOrNull(index)?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }

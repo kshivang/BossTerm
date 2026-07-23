@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.vcs
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -8,6 +9,25 @@ import java.util.concurrent.TimeUnit
  * Used by both context menu (VersionControlMenuProvider) and window menu (MenuActions).
  */
 object GitUtils {
+
+    internal data class RepositoryState(
+        val branch: String?,
+        val isRepository: Boolean
+    )
+
+    /**
+     * Quote one path as a single shell argument. POSIX single quotes prevent interpolation
+     * and are escaped by ending and reopening the quoted segment. On Windows, where filenames
+     * cannot contain a double quote, wrapping prevents argument break-out but cmd.exe and
+     * PowerShell may still expand their own interpolation sigils inside the quoted value.
+     */
+    internal fun shellQuote(value: String, isWindows: Boolean = ShellCustomizationUtils.isWindows()): String {
+        return if (isWindows) {
+            "\"$value\""
+        } else {
+            "'" + value.replace("'", "'\"'\"'") + "'"
+        }
+    }
 
     /**
      * Check if a directory is inside a git repository.
@@ -65,31 +85,46 @@ object GitUtils {
     }
 
     /**
-     * Get the current branch name.
+     * Resolve repository membership and the current branch with one git process.
+     * symbolic-ref exits 1 for detached HEAD, which still means the cwd is a repo.
      */
-    fun getCurrentBranch(cwd: String?): String? {
-        if (cwd == null) return null
+    internal fun getRepositoryState(cwd: String?): RepositoryState {
+        if (cwd == null) return RepositoryState(branch = null, isRepository = false)
         var process: Process? = null
         return try {
-            process = ProcessBuilder("git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD")
+            process = ProcessBuilder("git", "-C", cwd, "symbolic-ref", "--quiet", "--short", "HEAD")
                 .redirectErrorStream(true)
                 .start()
-            val output = process.inputStream.bufferedReader().use { it.readText().trim() }
             val completed = process.waitFor(2, TimeUnit.SECONDS)
             if (!completed) {
                 process.destroyForcibly()
-                null
-            } else if (process.exitValue() == 0 && output.isNotEmpty() && output != "HEAD") {
-                output
-            } else null
+                RepositoryState(branch = null, isRepository = false)
+            } else {
+                val output = process.inputStream.bufferedReader().use { it.readText() }
+                parseRepositoryState(process.exitValue(), output)
+            }
         } catch (e: Exception) {
-            null
+            RepositoryState(branch = null, isRepository = false)
         } finally {
             process?.inputStream?.close()
             process?.errorStream?.close()
             process?.outputStream?.close()
         }
     }
+
+    internal fun parseRepositoryState(exitCode: Int, output: String): RepositoryState {
+        return when (exitCode) {
+            0 -> RepositoryState(
+                branch = output.trim().takeIf { it.isNotEmpty() },
+                isRepository = true
+            )
+            1 -> RepositoryState(branch = null, isRepository = true)
+            else -> RepositoryState(branch = null, isRepository = false)
+        }
+    }
+
+    /** Get the current branch name, or null for detached HEAD and non-repositories. */
+    fun getCurrentBranch(cwd: String?): String? = getRepositoryState(cwd).branch
 
     /**
      * Get list of local branches.
@@ -130,7 +165,7 @@ object GitUtils {
      */
     fun gitCommand(cmd: String, cwd: String?): String {
         return if (cwd != null) {
-            "git -C \"$cwd\" $cmd\n"
+            "git -C ${shellQuote(cwd)} $cmd\n"
         } else {
             "git $cmd\n"
         }
@@ -144,7 +179,7 @@ object GitUtils {
      */
     fun ghCommand(cmd: String, cwd: String?): String {
         return if (cwd != null) {
-            "cd \"$cwd\" && gh $cmd\n"
+            "cd ${shellQuote(cwd)} && gh $cmd\n"
         } else {
             "gh $cmd\n"
         }

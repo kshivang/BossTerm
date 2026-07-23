@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.vcs
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -8,6 +9,19 @@ import java.util.concurrent.TimeUnit
  * Used by both context menu (VersionControlMenuProvider) and window menu (MenuActions).
  */
 object GitUtils {
+
+    /**
+     * Quote one shell argument without allowing interpolation. Windows filenames cannot
+     * contain a double quote; POSIX single quotes are escaped by ending and reopening the
+     * quoted segment.
+     */
+    internal fun shellQuote(value: String, isWindows: Boolean = ShellCustomizationUtils.isWindows()): String {
+        return if (isWindows) {
+            "\"$value\""
+        } else {
+            "'" + value.replace("'", "'\"'\"'") + "'"
+        }
+    }
 
     /**
      * Check if a directory is inside a git repository.
@@ -130,7 +144,7 @@ object GitUtils {
      */
     fun gitCommand(cmd: String, cwd: String?): String {
         return if (cwd != null) {
-            "git -C \"$cwd\" $cmd\n"
+            "git -C ${shellQuote(cwd)} $cmd\n"
         } else {
             "git $cmd\n"
         }
@@ -144,7 +158,7 @@ object GitUtils {
      */
     fun ghCommand(cmd: String, cwd: String?): String {
         return if (cwd != null) {
-            "cd \"$cwd\" && gh $cmd\n"
+            "cd ${shellQuote(cwd)} && gh $cmd\n"
         } else {
             "gh $cmd\n"
         }

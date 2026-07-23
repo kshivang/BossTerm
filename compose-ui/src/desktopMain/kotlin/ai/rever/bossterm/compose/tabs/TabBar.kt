@@ -107,14 +107,16 @@ internal fun parseTabColor(hex: String?): Color? {
  * One pane shown as a chip in the tab bar. [colorHex] is the resolved accent
  * (manual or auto). [subtitle] (abbreviated cwd) and [branch] (git branch) are
  * the second and third lines shown on the vertical (left) bar's Warp-style chips;
- * both are ignored by the single-line top bar.
+ * both are ignored by the single-line top bar. [isGitRepo] gates repository-only
+ * actions in the local chip menu.
  */
 data class TabBarPane(
     val paneId: String,
     val title: String,
     val colorHex: String? = null,
     val subtitle: String? = null,
-    val branch: String? = null
+    val branch: String? = null,
+    val isGitRepo: Boolean = false
 )
 
 /** A tab and its panes, rendered as a visually-grouped cluster of chips. */
@@ -288,6 +290,10 @@ fun TabBar(
     // "Rename…" menu item; cleared on commit/cancel.
     var editingPaneId by remember { mutableStateOf<String?>(null) }
 
+    val localGitRepoByPane = groups.flatMap { group ->
+        group.panes.map { pane -> (group.tabIndex to pane.paneId) to pane.isGitRepo }
+    }.toMap()
+
     val showChipMenu: (Int, String) -> Unit = { tabIndex, paneId ->
         val colorSubmenu = ContextMenuController.MenuSubmenu(
             id = "tab_color",
@@ -302,7 +308,7 @@ fun TabBar(
             ContextMenuController.MenuItem(
                 id = "create_worktree",
                 label = "Create Worktree for This…",
-                enabled = true,
+                enabled = localGitRepoByPane[tabIndex to paneId] == true,
                 action = { onCreateWorktree(tabIndex, paneId) }
             ),
             ContextMenuController.MenuSeparator(id = "separator_worktree"),
@@ -430,6 +436,12 @@ fun TabBar(
         }
     }
 
+    val showMenuFor: (Int, String) -> Unit = { tabIndex, paneId ->
+        val remote = remoteByTabIndex[tabIndex]
+        if (remote != null) showRemoteChipMenu(remote.first, remote.second, tabIndex, paneId)
+        else showChipMenu(tabIndex, paneId)
+    }
+
     // Tab-bar chrome follows the active terminal theme, so the left panel
     // re-styles live when the theme/palette is switched (collectAsState recomposes).
     val tabBarTheme by ThemeManager.instance.currentTheme.collectAsState()
@@ -446,7 +458,15 @@ fun TabBar(
 
     // A single compact action button for the left bar's top toolbar.
     val barButton: @Composable (ImageVector, String, () -> Unit) -> Unit = { icon, desc, onClick ->
-        IconButton(onClick = onClick, modifier = Modifier.size(30.dp)) {
+        IconButton(
+            onClick = onClick,
+            modifier = Modifier.size(30.dp)
+                .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
+                    if (event.button == PointerButton.Secondary) {
+                        event.changes.forEach { it.consume() }
+                    }
+                }
+        ) {
             Icon(imageVector = icon, contentDescription = desc, tint = barMuted, modifier = Modifier.size(16.dp))
         }
     }
@@ -487,11 +507,7 @@ fun TabBar(
             },
             onCancelRename = { editingPaneId = null },
             onClose = { onPaneClosed(group.tabIndex, pane.paneId) },
-            onContextMenu = {
-                val ctx = remoteByTabIndex[group.tabIndex]
-                if (ctx != null) showRemoteChipMenu(ctx.first, ctx.second, group.tabIndex, pane.paneId)
-                else showChipMenu(group.tabIndex, pane.paneId)
-            },
+            onContextMenu = { showMenuFor(group.tabIndex, pane.paneId) },
             modifier = chipModifier
         )
     }
@@ -503,9 +519,7 @@ fun TabBar(
         val group = allGroups.firstOrNull { it.tabIndex == activeTabIndex }
         val pane = group?.panes?.firstOrNull { it.paneId == focusedPaneId } ?: group?.panes?.firstOrNull()
         if (group != null && pane != null) {
-            val ctx = remoteByTabIndex[group.tabIndex]
-            if (ctx != null) showRemoteChipMenu(ctx.first, ctx.second, group.tabIndex, pane.paneId)
-            else showChipMenu(group.tabIndex, pane.paneId)
+            showMenuFor(group.tabIndex, pane.paneId)
         }
     }
 
@@ -570,12 +584,7 @@ fun TabBar(
                                             .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
                                                 if (event.button == PointerButton.Secondary) {
                                                     event.changes.forEach { it.consume() }
-                                                    val ctx = remoteByTabIndex[group.tabIndex]
-                                                    if (ctx != null) {
-                                                        showRemoteChipMenu(ctx.first, ctx.second, group.tabIndex, pane.paneId)
-                                                    } else {
-                                                        showChipMenu(group.tabIndex, pane.paneId)
-                                                    }
+                                                    showMenuFor(group.tabIndex, pane.paneId)
                                                 }
                                             }
                                             .clickable { onPaneSelected(group.tabIndex, pane.paneId) },
@@ -871,7 +880,13 @@ fun TabBar(
                 ) {
                     Row(
                         modifier = Modifier.weight(1f).clip(RoundedCornerShape(6.dp))
-                            .clickable(onClick = onAddRemote).padding(vertical = 6.dp, horizontal = 8.dp),
+                            .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
+                                if (event.button == PointerButton.Secondary) {
+                                    event.changes.forEach { it.consume() }
+                                }
+                            }
+                            .clickable(onClick = onAddRemote)
+                            .padding(vertical = 6.dp, horizontal = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
@@ -884,7 +899,15 @@ fun TabBar(
                         Text("Add remote", color = Color(0xFFB0B0B0), fontSize = 12.sp)
                     }
                     onToggleCollapse?.let { toggle ->
-                        IconButton(onClick = toggle, modifier = Modifier.size(28.dp)) {
+                        IconButton(
+                            onClick = toggle,
+                            modifier = Modifier.size(28.dp)
+                                .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
+                                    if (event.button == PointerButton.Secondary) {
+                                        event.changes.forEach { it.consume() }
+                                    }
+                                }
+                        ) {
                             Icon(
                                 imageVector = Icons.Default.ChevronLeft,
                                 contentDescription = "Collapse sidebar",

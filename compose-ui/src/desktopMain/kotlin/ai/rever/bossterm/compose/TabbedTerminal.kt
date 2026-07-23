@@ -1235,17 +1235,20 @@ fun TabbedTerminal(
                 val st = splitStates[tab.id]
                 val panes = if (st != null && !summaryMode) {
                     st.getAllPanes().map { p ->
+                        val terminalPane = p.session as? ai.rever.bossterm.compose.tabs.TerminalTab
                         ai.rever.bossterm.compose.tabs.TabBarPane(
                             p.id, p.session.title.value, colorHexFor(p.session),
                             subtitle = abbreviateCwd(p.session.workingDirectory.value),
-                            branch = (p.session as? ai.rever.bossterm.compose.tabs.TerminalTab)?.gitBranch?.value
+                            branch = terminalPane?.gitBranch?.value,
+                            isGitRepo = terminalPane?.isGitRepo?.value == true
                         )
                     }
                 } else {
                     listOf(ai.rever.bossterm.compose.tabs.TabBarPane(
                         tab.id, tab.title.value, colorHexFor(tab),
                         subtitle = abbreviateCwd(tab.workingDirectory.value),
-                        branch = tab.gitBranch.value
+                        branch = tab.gitBranch.value,
+                        isGitRepo = tab.isGitRepo.value
                     ))
                 }
                 tab to ai.rever.bossterm.compose.tabs.TabBarGroup(index, panes)

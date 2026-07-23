@@ -1240,7 +1240,7 @@ fun TabbedTerminal(
                             p.id, p.session.title.value, colorHexFor(p.session),
                             subtitle = abbreviateCwd(p.session.workingDirectory.value),
                             branch = terminalPane?.gitBranch?.value,
-                            isGitRepo = terminalPane?.isGitRepo?.value == true
+                            isGitRepo = if (terminalPane == null) false else terminalPane.isGitRepo.value
                         )
                     }
                 } else {

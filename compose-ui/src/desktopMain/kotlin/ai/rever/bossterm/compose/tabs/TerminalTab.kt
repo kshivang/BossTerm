@@ -351,12 +351,11 @@ data class TerminalTab(
     val gitBranch: MutableState<String?> = mutableStateOf(null)
 
     /**
-     * Whether [workingDirectory] is inside a git repository. Tracked alongside
-     * [gitBranch]; unlike a nullable branch, this remains true for detached HEAD.
-     * Starts false, so repository-only actions stay disabled until the debounced
-     * background probe for a newly opened tab or changed directory completes.
+     * Whether [workingDirectory] is inside a git repository. Null means the
+     * debounced background probe is still pending; true remains distinct from a
+     * nullable [gitBranch] for detached HEAD.
      */
-    val isGitRepo: MutableState<Boolean> = mutableStateOf(false)
+    val isGitRepo: MutableState<Boolean?> = mutableStateOf(null)
 
     // === Content-Anchored Selection ===
 

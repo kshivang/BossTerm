@@ -143,6 +143,7 @@ class TabController(
             snapshotFlow { session.workingDirectory.value }
                 .distinctUntilChanged()
                 .collectLatest { cwd ->
+                    session.isGitRepo.value = null
                     delay(350)
                     val (branch, isRepo) = withContext(Dispatchers.IO) {
                         val currentBranch = GitUtils.getCurrentBranch(cwd)

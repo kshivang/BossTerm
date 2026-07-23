@@ -121,7 +121,7 @@ internal fun parseTabColor(hex: String?): Color? {
  * (manual or auto). [subtitle] (abbreviated cwd) and [branch] (git branch) are
  * the second and third lines shown on the vertical (left) bar's Warp-style chips;
  * both are ignored by the single-line top bar. [isGitRepo] gates repository-only
- * actions in the local chip menu.
+ * actions in the local chip menu; null means repository detection is pending.
  */
 data class TabBarPane(
     val paneId: String,
@@ -129,8 +129,11 @@ data class TabBarPane(
     val colorHex: String? = null,
     val subtitle: String? = null,
     val branch: String? = null,
-    val isGitRepo: Boolean = false
+    val isGitRepo: Boolean? = false
 )
+
+/** Keep worktree creation optimistic while repository detection is still pending. */
+internal fun canCreateWorktree(isGitRepo: Boolean?): Boolean = isGitRepo != false
 
 /** A tab and its panes, rendered as a visually-grouped cluster of chips. */
 data class TabBarGroup(val tabIndex: Int, val panes: List<TabBarPane>)
@@ -321,7 +324,7 @@ fun TabBar(
             ContextMenuController.MenuItem(
                 id = "create_worktree",
                 label = "Create Worktree for This…",
-                enabled = localGitRepoByPane[tabIndex to paneId] == true,
+                enabled = canCreateWorktree(localGitRepoByPane[tabIndex to paneId]),
                 action = { onCreateWorktree(tabIndex, paneId) }
             ),
             ContextMenuController.MenuSeparator(id = "separator_worktree"),

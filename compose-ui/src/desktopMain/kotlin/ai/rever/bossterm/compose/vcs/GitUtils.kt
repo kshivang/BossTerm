@@ -11,9 +11,10 @@ import java.util.concurrent.TimeUnit
 object GitUtils {
 
     /**
-     * Quote one shell argument without allowing interpolation. Windows filenames cannot
-     * contain a double quote; POSIX single quotes are escaped by ending and reopening the
-     * quoted segment.
+     * Quote one path as a single shell argument. POSIX single quotes prevent interpolation
+     * and are escaped by ending and reopening the quoted segment. On Windows, where filenames
+     * cannot contain a double quote, wrapping prevents argument break-out but cmd.exe and
+     * PowerShell may still expand their own interpolation sigils inside the quoted value.
      */
     internal fun shellQuote(value: String, isWindows: Boolean = ShellCustomizationUtils.isWindows()): String {
         return if (isWindows) {

@@ -353,6 +353,8 @@ data class TerminalTab(
     /**
      * Whether [workingDirectory] is inside a git repository. Tracked alongside
      * [gitBranch]; unlike a nullable branch, this remains true for detached HEAD.
+     * Starts false, so repository-only actions stay disabled until the debounced
+     * background probe for a newly opened tab or changed directory completes.
      */
     val isGitRepo: MutableState<Boolean> = mutableStateOf(false)
 

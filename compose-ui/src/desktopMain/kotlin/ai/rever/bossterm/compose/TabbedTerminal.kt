@@ -1519,6 +1519,8 @@ fun TabbedTerminal(
                 onCreateWorktree = { tabIndex, paneId ->
                     // Target the pane that was right-clicked, even when it is not currently
                     // focused, then leave the path/branch portion for the user to complete.
+                    // Like the existing checkout/clone prefill actions, this appends without
+                    // clearing existing prompt input and does not submit the command.
                     val tab = tabController.tabs.getOrNull(tabIndex) ?: return@TabBar
                     val session = sessionFor(tabIndex, paneId) ?: return@TabBar
                     tabController.switchToTab(tabIndex)

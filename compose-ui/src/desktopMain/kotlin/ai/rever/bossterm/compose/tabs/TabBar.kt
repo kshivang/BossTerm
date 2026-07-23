@@ -53,6 +53,7 @@ import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInParent
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -322,6 +323,36 @@ fun TabBar(
     val localTabBounds = remember { mutableMapOf<Int, androidx.compose.ui.geometry.Rect>() }
     val localTabOrder = groups.map { it.tabIndex }
     val latestOnTabReordered by rememberUpdatedState(onTabReordered)
+    val isWindowFocused = LocalWindowInfo.current.isWindowFocused
+    val resetTabDrag: () -> Unit = {
+        primaryPressedTabIndex = null
+        draggedTabIndex = null
+        draggedTabOffsetY = 0f
+    }
+    val finishTabDrag: (Int) -> Unit = { sourceIndex ->
+        val targetIndex = if (draggedTabIndex == sourceIndex) {
+            localTabBounds[sourceIndex]?.let { bounds ->
+                nearestTabIndex(
+                    pointerY = bounds.center.y + draggedTabOffsetY,
+                    tabCenters = groups.mapNotNull { candidate ->
+                        localTabBounds[candidate.tabIndex]?.center?.y?.let { centerY ->
+                            candidate.tabIndex to centerY
+                        }
+                    }
+                )
+            }
+        } else {
+            null
+        }
+        resetTabDrag()
+        if (targetIndex != null && targetIndex != sourceIndex) {
+            latestOnTabReordered(sourceIndex, targetIndex)
+        }
+    }
+
+    LaunchedEffect(isWindowFocused) {
+        if (!isWindowFocused) resetTabDrag()
+    }
 
     val localGitRepoByPane = remember(groups) {
         groups.flatMap { group ->
@@ -570,6 +601,19 @@ fun TabBar(
                 } else {
                     Modifier
                 }
+            )
+            .then(
+                if (vertical) {
+                    Modifier
+                        .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) {
+                            if (draggedTabIndex != null) resetTabDrag()
+                        }
+                        .onPointerEvent(PointerEventType.Exit, PointerEventPass.Initial) {
+                            resetTabDrag()
+                        }
+                } else {
+                    Modifier
+                }
             ),
         color = barBg,
         shadowElevation = 2.dp
@@ -665,61 +709,53 @@ fun TabBar(
                                     }
                                 }
                                 .onPointerEvent(PointerEventType.Release, PointerEventPass.Initial) { event ->
-                                    if (
-                                        event.button == PointerButton.Primary &&
-                                        primaryPressedTabIndex == group.tabIndex
-                                    ) {
-                                        primaryPressedTabIndex = null
+                                    if (event.button == PointerButton.Primary) {
+                                        if (draggedTabIndex == group.tabIndex) {
+                                            finishTabDrag(group.tabIndex)
+                                        } else {
+                                            primaryPressedTabIndex = null
+                                        }
                                     }
                                 }
                                 .pointerInput(group.tabIndex, localTabOrder) {
-                                    var totalDragY = 0f
                                     var acceptsDrag = false
-                                    detectDragGestures(
-                                        onDragStart = {
-                                            acceptsDrag = primaryPressedTabIndex == group.tabIndex
-                                            if (acceptsDrag) {
-                                                totalDragY = 0f
-                                                draggedTabIndex = group.tabIndex
-                                                draggedTabOffsetY = 0f
-                                            }
-                                        },
-                                        onDragCancel = {
-                                            if (acceptsDrag) {
-                                                primaryPressedTabIndex = null
-                                                draggedTabIndex = null
-                                                draggedTabOffsetY = 0f
-                                            }
-                                        },
-                                        onDragEnd = {
-                                            if (acceptsDrag) {
-                                                val sourceBounds = localTabBounds[group.tabIndex]
-                                                val targetIndex = sourceBounds?.let { bounds ->
-                                                    nearestTabIndex(
-                                                        pointerY = bounds.center.y + totalDragY,
-                                                        tabCenters = groups.mapNotNull { candidate ->
-                                                            localTabBounds[candidate.tabIndex]?.center?.y?.let { centerY ->
-                                                                candidate.tabIndex to centerY
-                                                            }
-                                                        }
-                                                    )
+                                    try {
+                                        detectDragGestures(
+                                            onDragStart = {
+                                                acceptsDrag = primaryPressedTabIndex == group.tabIndex
+                                                if (acceptsDrag) {
+                                                    draggedTabIndex = group.tabIndex
+                                                    draggedTabOffsetY = 0f
                                                 }
-                                                primaryPressedTabIndex = null
-                                                draggedTabIndex = null
-                                                draggedTabOffsetY = 0f
-                                                if (targetIndex != null && targetIndex != group.tabIndex) {
-                                                    latestOnTabReordered(group.tabIndex, targetIndex)
+                                            },
+                                            onDragCancel = {
+                                                if (acceptsDrag) {
+                                                    resetTabDrag()
+                                                    acceptsDrag = false
+                                                }
+                                            },
+                                            onDragEnd = {
+                                                if (acceptsDrag) {
+                                                    finishTabDrag(group.tabIndex)
+                                                    acceptsDrag = false
+                                                }
+                                            },
+                                            onDrag = { change, dragAmount ->
+                                                if (
+                                                    acceptsDrag &&
+                                                    draggedTabIndex == group.tabIndex
+                                                ) {
+                                                    change.consume()
+                                                    draggedTabOffsetY += dragAmount.y
                                                 }
                                             }
-                                        },
-                                        onDrag = { change, dragAmount ->
-                                            if (acceptsDrag) {
-                                                change.consume()
-                                                totalDragY += dragAmount.y
-                                                draggedTabOffsetY = totalDragY
-                                            }
+                                        )
+                                    } finally {
+                                        if (acceptsDrag) {
+                                            resetTabDrag()
+                                            acceptsDrag = false
                                         }
-                                    )
+                                    }
                                 },
                             verticalArrangement = Arrangement.spacedBy(TabChipGap)
                         ) {

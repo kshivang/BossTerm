@@ -264,7 +264,7 @@ fun PerformanceSettingsSection(
                 valueRange = 0f..1f,
                 steps = 9,
                 valueDisplay = { "${(it * 100).toInt()}%" },
-                description = "Cursor opacity while the terminal is focused. Raise to 100% to disable transparency."
+                description = "Cursor opacity while the terminal is focused. 100% matches the browser viewer."
             )
 
             SettingsSlider(

@@ -24,6 +24,7 @@ import ai.rever.bossterm.compose.TerminalSessionSlots
 import ai.rever.bossterm.compose.debug.ChunkSource
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
+import ai.rever.bossterm.compose.terminal.drainTerminalEmulator
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.getPlatformServices
 import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
@@ -40,7 +41,6 @@ import ai.rever.bossterm.compose.TerminalSession
 import ai.rever.bossterm.core.typeahead.TerminalTypeAheadManager
 import ai.rever.bossterm.core.typeahead.TypeAheadTerminalModel
 import ai.rever.bossterm.terminal.util.GraphemeBoundaryUtils
-import java.io.EOFException
 
 /**
  * Controller for managing multiple terminal tabs.
@@ -669,7 +669,7 @@ class TabController(
         val dataStream = BlockingTerminalDataStream(
             performanceMode = PerformanceMode.fromString(settings.performanceMode)
         )
-        // Batch each appended chunk so a clear+write renders atomically (no flicker).
+        // Batch each appended chunk so clear+write sequences request one redraw.
         dataStream.onChunkStart = { textBuffer.beginBatch() }
         dataStream.onChunkEnd = { textBuffer.endBatch() }
         val emulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
@@ -738,17 +738,12 @@ class TabController(
                 runCatching { tab.dataStream.close() }
             } else {
                 scope.launch(TerminalSessionDispatcher) {
-                    try {
-                        while (isActive) {
-                            try {
-                                tab.emulator.processChar(tab.dataStream.char, tab.terminal)
-                            } catch (_: Exception) {
-                                break // EOF on close, or stream error — stop the loop
-                            }
-                        }
-                    } finally {
-                        runCatching { tab.dataStream.close() }
-                    }
+                    drainTerminalEmulator(
+                        emulator = tab.emulator,
+                        dataStream = tab.dataStream,
+                        terminal = tab.terminal,
+                        shouldContinue = { isActive },
+                    )
                 }.invokeOnCompletion {
                     TerminalSessionSlots.release(1)
                 }
@@ -1383,22 +1378,15 @@ class TabController(
             // fires only after this loop unwinds and the accounting never runs
             // ahead of the physically occupied permits.
             sessionScope.launch(TerminalSessionDispatcher) {
-                try {
-                    while (handle.isAlive()) {
-                        try {
-                            tab.emulator.processChar(tab.dataStream.char, tab.terminal)
-                        } catch (_: EOFException) {
-                            break
-                        } catch (e: Exception) {
-                            if (e !is ai.rever.bossterm.terminal.TerminalDataStream.EOF) {
-                                println("WARNING: Error processing terminal output: ${e.message}")
-                            }
-                            break
-                        }
-                    }
-                } finally {
-                    tab.dataStream.close()
-                }
+                drainTerminalEmulator(
+                    emulator = tab.emulator,
+                    dataStream = tab.dataStream,
+                    terminal = tab.terminal,
+                    shouldContinue = handle::isAlive,
+                    onProcessingError = { e ->
+                        println("WARNING: Error processing terminal output: ${e.message}")
+                    },
+                )
             }
 
             // Read PTY output in background (uses shared helper to eliminate duplication)
@@ -1555,25 +1543,15 @@ class TabController(
                 // Note: Initial prompt will display via ModelListener → requestImmediateRedraw()
                 // when buffer content changes. No need for premature redraw here.
                 launch(TerminalSessionDispatcher) {
-                    try {
-                        while (handle.isAlive()) {
-                            try {
-                                tab.emulator.processChar(tab.dataStream.char, tab.terminal)
-                                // Note: Redraws are triggered by scrollArea() when buffer changes
-                                // No need for explicit requestRedraw() here - it causes redundant requests
-                                // scrollArea() now uses smart priority (IMMEDIATE for interactive, debounced for bulk)
-                            } catch (_: EOFException) {
-                                break
-                            } catch (e: Exception) {
-                                if (e !is ai.rever.bossterm.terminal.TerminalDataStream.EOF) {
-                                    println("WARNING: Error processing terminal output: ${e.message}")
-                                }
-                                break
-                            }
-                        }
-                    } finally {
-                        tab.dataStream.close()
-                    }
+                    drainTerminalEmulator(
+                        emulator = tab.emulator,
+                        dataStream = tab.dataStream,
+                        terminal = tab.terminal,
+                        shouldContinue = handle::isAlive,
+                        onProcessingError = { e ->
+                            println("WARNING: Error processing terminal output: ${e.message}")
+                        },
+                    )
                 }
 
                 // Read PTY output in background (uses shared helper to eliminate duplication)

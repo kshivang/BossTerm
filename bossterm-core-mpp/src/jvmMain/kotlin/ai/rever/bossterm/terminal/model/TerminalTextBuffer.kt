@@ -99,11 +99,13 @@ class TerminalTextBuffer internal constructor(
   }
 
   // ===== BATCH CHANGE TRACKING =====
-  // Suppresses intermediate modelChanged events during rapid sequences like clear+write
-  @Volatile
+  // Suppresses intermediate modelChanged events during rapid sequences like clear+write.
+  // This coalesces redraw requests; it does not make independent snapshot reads atomic.
+  // Applications that require atomic presentation must use DEC synchronized updates (?2026).
+  private val batchStateLock = Any()
   private var batchDepth: Int = 0
-  @Volatile
   private var batchHasChanges: Boolean = false
+  private var batchOwner: Thread? = null
 
   @JvmOverloads
   constructor(width: Int, height: Int, styleState: StyleState, maxHistoryLinesCount: Int = LinesStorage.DEFAULT_MAX_LINES_COUNT) : this(
@@ -292,30 +294,85 @@ class TerminalTextBuffer internal constructor(
    * Begin a batch of operations. Model change events are suppressed until endBatch() is called.
    * Batches can be nested - only the outermost endBatch() fires the event.
    *
-   * Use this to group related operations (e.g., clear line + write text) into an atomic update.
+   * Use this to coalesce notifications for related operations (e.g., clear line + write text).
+   * The outermost begin, every nested begin, and the matching [endBatch] calls are
+   * thread-confined: they must all run on the same thread. Concurrent batches are
+   * unsupported and fail fast; snapshot reads remain independently thread-safe.
    */
   fun beginBatch() {
-    batchDepth++
-  }
-
-  /**
-   * End a batch of operations. If this is the outermost batch and changes occurred,
-   * fires a single modelChanged event.
-   */
-  fun endBatch() {
-    if (batchDepth > 0) {
-      batchDepth--
-      if (batchDepth == 0 && batchHasChanges) {
-        batchHasChanges = false
-        for (modelListener in listeners) {
-          modelListener.modelChanged()
-        }
+    synchronized(batchStateLock) {
+      val currentThread = Thread.currentThread()
+      check(batchDepth == 0 || batchOwner === currentThread) {
+        "Nested beginBatch() must run on the thread that owns the active batch"
       }
+      if (batchDepth == 0) batchOwner = currentThread
+      batchDepth++
     }
   }
 
   /**
-   * Execute a block of operations as an atomic batch.
+   * End a batch of operations. If this is the outermost batch and changes occurred,
+   * fires a single modelChanged event. Must run on the thread that owns the batch;
+   * an unmatched or cross-thread call fails fast.
+   */
+  fun endBatch() {
+    val shouldNotify = synchronized(batchStateLock) {
+      check(batchDepth > 0) { "endBatch() called without a matching beginBatch()" }
+      check(batchOwner === Thread.currentThread()) {
+        "endBatch() must run on the thread that called beginBatch()"
+      }
+      batchDepth--
+      if (batchDepth == 0) {
+        batchOwner = null
+        if (batchHasChanges) {
+          batchHasChanges = false
+          true
+        } else {
+          false
+        }
+      } else {
+        false
+      }
+    }
+    if (shouldNotify) notifyModelChanged()
+  }
+
+  /**
+   * Finish every outstanding batch after the emulator exits unexpectedly.
+   *
+   * If interpretation throws before the data stream can invoke its chunk-end
+   * callback, the emulator's teardown path must clear the batch so future model
+   * notifications are not suppressed forever.
+   *
+   * Production drains invoke this on the emulator thread that began the batch.
+   * As a last-resort recovery path it also resets a mismatched owner after logging,
+   * rather than throwing and preventing the terminal from clearing synchronized
+   * update mode. Calling it when no batch is active remains a no-op.
+   */
+  internal fun abortBatches() {
+    var mismatchedOwner: Thread? = null
+    val shouldNotify = synchronized(batchStateLock) {
+      if (batchDepth == 0) return@synchronized false
+      if (batchOwner !== Thread.currentThread()) mismatchedOwner = batchOwner
+
+      val hadChanges = batchHasChanges
+      batchDepth = 0
+      batchHasChanges = false
+      batchOwner = null
+      hadChanges
+    }
+    mismatchedOwner?.let { owner ->
+      LOG.warn(
+        "abortBatches() recovered a batch owned by thread '{}' from teardown thread '{}'",
+        owner.name,
+        Thread.currentThread().name
+      )
+    }
+    if (shouldNotify) notifyModelChanged()
+  }
+
+  /**
+   * Execute a block while coalescing its model change notifications.
    * Suppresses intermediate model change events, firing only once at the end.
    */
   inline fun <T> batch(block: () -> T): T {
@@ -328,14 +385,21 @@ class TerminalTextBuffer internal constructor(
   }
 
   private fun fireModelChangeEvent() {
-    if (batchDepth > 0) {
-      // Inside a batch - just mark that changes occurred
-      batchHasChanges = true
-    } else {
-      // Not batched - fire immediately
-      for (modelListener in listeners) {
-        modelListener.modelChanged()
+    val shouldNotify = synchronized(batchStateLock) {
+      if (batchDepth > 0) {
+        // Inside a batch - just mark that changes occurred
+        batchHasChanges = true
+        false
+      } else {
+        true
       }
+    }
+    if (shouldNotify) notifyModelChanged()
+  }
+
+  private fun notifyModelChanged() {
+    for (modelListener in listeners) {
+      modelListener.modelChanged()
     }
   }
 

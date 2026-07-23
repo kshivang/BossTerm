@@ -602,10 +602,16 @@ data class TerminalSettings(
 
     /**
      * Cursor opacity while the terminal is focused (0.0 = invisible, 1.0 = fully opaque).
-     * Default 0.7 keeps a translucent block/bar; raise to 1.0 to disable transparency
-     * entirely, e.g. if the cursor is hard to see against a light theme.
+     * The fully opaque default matches the browser viewer (xterm) and keeps the active
+     * cursor crisp against both light and dark themes.
      */
-    val cursorFocusedAlpha: Float = 0.7f,
+    val cursorFocusedAlpha: Float = 1f,
+
+    /**
+     * Schema marker for one-time cursor rendering migrations. This is persisted so choosing
+     * the former 70% opacity manually after upgrading remains a stable user preference.
+     */
+    val cursorRenderingVersion: Int = 2,
 
     /**
      * Cursor opacity while the terminal is unfocused (0.0 = invisible, 1.0 = fully opaque).

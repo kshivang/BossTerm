@@ -130,7 +130,7 @@ object UpdateScriptGenerator {
             if [ -d $escapedTargetAppPath ]; then
                 rm -rf $escapedTargetAppPath
                 if [ ${'$'}? -ne 0 ]; then
-                    echo "Failed to remove old app"
+                    echo "Failed to remove old app at $escapedTargetAppPath (path may be read-only or need admin permissions)"
                     hdiutil detach "${'$'}VOLUME" -quiet
                     exit 1
                 fi
@@ -145,10 +145,25 @@ object UpdateScriptGenerator {
             fi
 
             echo "Installation successful!"
+
+            # Clear quarantine before relaunch so Gatekeeper does not run the newly
+            # installed, notarized app from another read-only App Translocation mount.
+            echo "Clearing quarantine attribute..."
+            if ! xattr -dr com.apple.quarantine $escapedTargetAppPath; then
+                echo "Warning: failed to clear quarantine attribute; future launches may be translocated"
+            fi
+
             hdiutil detach "${'$'}VOLUME" -quiet
 
+            # A successful `open` only means LaunchServices accepted the request;
+            # it does not verify that BossTerm stayed running after launch.
             echo "Launching new BossTerm..."
             open $escapedTargetAppPath
+            if [ ${'$'}? -ne 0 ]; then
+                echo "First relaunch attempt failed - retrying in 2s..."
+                sleep 2
+                open $escapedTargetAppPath || echo "Relaunch failed - please start BossTerm manually"
+            fi
 
             sleep 2
             rm -f "${'$'}0"

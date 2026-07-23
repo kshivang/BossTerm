@@ -4,6 +4,73 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+
+private const val APP_TRANSLOCATION_PATH_SEGMENT = "/AppTranslocation/"
+private const val MACOS_APP_BUNDLE_SUFFIX = ".app"
+private const val MACOS_APPLICATIONS_DIRECTORY = "/Applications"
+private const val SPOTLIGHT_LOOKUP_TIMEOUT_SECONDS = 5L
+
+/** Return the outermost complete `.app` path segment in [path]. */
+internal fun macOSAppBundlePathIn(path: String): String? {
+    val pathSegments = path.split('/')
+    val bundleIndex = pathSegments.indexOfFirst {
+        it.length > MACOS_APP_BUNDLE_SUFFIX.length &&
+            it.endsWith(MACOS_APP_BUNDLE_SUFFIX)
+    }
+    if (bundleIndex < 0) return null
+
+    return pathSegments.take(bundleIndex + 1).joinToString("/")
+}
+
+/** Extract the first app bundle represented in `java.library.path`. */
+internal fun macOSAppBundlePathFromLibraryPath(libraryPath: String): String? {
+    return libraryPath
+        .split(File.pathSeparatorChar)
+        .firstNotNullOfOrNull(::macOSAppBundlePathIn)
+}
+
+/** Choose a valid Spotlight result deterministically, preferring system-wide installs. */
+internal fun preferredInstalledAppPath(
+    candidates: Sequence<String>,
+    appExists: (String) -> Boolean
+): String? {
+    return candidates
+        .map { it.trim() }
+        .filter { it.endsWith(MACOS_APP_BUNDLE_SUFFIX) }
+        .filterNot { it.contains(APP_TRANSLOCATION_PATH_SEGMENT) }
+        .filterNot { it.contains("/Frameworks/") || it.contains("/Helpers/") }
+        .filter(appExists)
+        .sortedWith(
+            compareBy<String> { !it.startsWith("$MACOS_APPLICATIONS_DIRECTORY/") }
+                .thenBy { it }
+        )
+        .firstOrNull()
+}
+
+/**
+ * Resolve a macOS app bundle path without coupling the decision logic to the
+ * filesystem or Spotlight.
+ */
+internal fun realAppPathFor(
+    path: String,
+    appExists: (String) -> Boolean,
+    installedAppLookup: () -> String?
+): String {
+    if (!path.contains(APP_TRANSLOCATION_PATH_SEGMENT)) return path
+
+    val bundleName = macOSAppBundlePathIn(
+        path.substringAfter(APP_TRANSLOCATION_PATH_SEGMENT)
+    )
+        ?.substringAfterLast('/')
+        ?: return path
+
+    val applicationsPath = "$MACOS_APPLICATIONS_DIRECTORY/$bundleName"
+    if (appExists(applicationsPath)) return applicationsPath
+
+    return installedAppLookup()?.takeIf(appExists) ?: path
+}
 
 /**
  * Platform-specific update installation logic.
@@ -346,31 +413,88 @@ object UpdateInstaller {
     fun getCurrentApplicationPath(): String? {
         return try {
             val libraryPath = System.getProperty("java.library.path")
-            val bundlePath = libraryPath
-                ?.split(":")
-                ?.find { it.contains(".app") }
-                ?.let { "${it.substringBefore(".app")}.app" }
+            val bundlePath = libraryPath?.let(::macOSAppBundlePathFromLibraryPath)
 
-            if (bundlePath?.contains(".app") == true && File(bundlePath).exists()) {
-                return bundlePath
+            if (bundlePath != null && File(bundlePath).exists()) {
+                return resolveRealAppPath(bundlePath)
             }
 
             val jarPath = UpdateInstaller::class.java.protectionDomain.codeSource.location.path
             var currentFile = File(jarPath)
             for (i in 0..5) {
                 if (currentFile.name.endsWith(".app")) {
-                    return currentFile.absolutePath
+                    return resolveRealAppPath(currentFile.absolutePath)
                 }
                 currentFile = currentFile.parentFile ?: break
             }
 
-            val applicationsPath = "/Applications/BossTerm.app"
+            val applicationsPath = "$MACOS_APPLICATIONS_DIRECTORY/$BOSSTERM_MACOS_APP_BUNDLE_NAME"
             if (File(applicationsPath).exists()) {
                 return applicationsPath
             }
 
             null
         } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Resolve a Gatekeeper App Translocation path back to the writable installed
+     * bundle before generating the in-place update helper script.
+     */
+    private fun resolveRealAppPath(path: String): String {
+        if (!path.contains(APP_TRANSLOCATION_PATH_SEGMENT)) return path
+
+        println("⚠️ BossTerm is running translocated by Gatekeeper; resolving the installed app path")
+
+        val resolvedPath = realAppPathFor(
+            path = path,
+            appExists = { File(it).exists() },
+            installedAppLookup = ::findInstalledAppViaSpotlight
+        )
+
+        if (resolvedPath != path) {
+            println("✅ Resolved installed BossTerm app path: $resolvedPath")
+            return resolvedPath
+        }
+
+        println("⚠️ Could not resolve the installed app path; keeping translocated path: $path")
+        return path
+    }
+
+    /** Locate the installed BossTerm app via Spotlight without blocking on a full output pipe. */
+    private fun findInstalledAppViaSpotlight(): String? {
+        return try {
+            val process = ProcessBuilder(
+                "mdfind", "kMDItemCFBundleIdentifier == '$BOSSTERM_MACOS_BUNDLE_ID'"
+            )
+                .redirectErrorStream(true)
+                .start()
+
+            val outputFuture = CompletableFuture.supplyAsync {
+                process.inputStream.bufferedReader().use { it.readText() }
+            }
+
+            if (!process.waitFor(SPOTLIGHT_LOOKUP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                outputFuture.cancel(true)
+                println("⚠️ mdfind lookup timed out after $SPOTLIGHT_LOOKUP_TIMEOUT_SECONDS seconds")
+                return null
+            }
+
+            val output = outputFuture.get(1, TimeUnit.SECONDS)
+            if (process.exitValue() != 0) {
+                println("⚠️ mdfind lookup failed with exit code ${process.exitValue()}")
+                return null
+            }
+
+            preferredInstalledAppPath(
+                candidates = output.lineSequence(),
+                appExists = { File(it).exists() }
+            )
+        } catch (e: Exception) {
+            println("⚠️ mdfind lookup for installed BossTerm failed: ${e.message}")
             null
         }
     }

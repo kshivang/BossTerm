@@ -134,13 +134,14 @@ private data class StableTerminalRenderFrame(
   val cursorShape: CursorShape?,
 )
 
-/** UI-thread-confined retention of the last frame accepted by the sync gate. */
+/** UI-thread-confined retention committed only after an accepted composition applies. */
 internal class StableRenderFrameHolder<T : Any> {
   private var frame: T? = null
 
-  fun retain(candidate: T?): T? {
-    if (candidate != null) frame = candidate
-    return frame
+  fun frameFor(candidate: T?): T? = candidate ?: frame
+
+  fun commit(candidate: T) {
+    frame = candidate
   }
 }
 
@@ -1867,19 +1868,22 @@ fun ProperTerminal(
         val stableFrameHolder = remember(textBuffer, display) {
           StableRenderFrameHolder<StableTerminalRenderFrame>()
         }
-        val renderFrame = remember(currentTrigger, textBuffer.width, textBuffer.height) {
-          stableFrameHolder.retain(
-            display.captureStableRenderFrame {
-              StableTerminalRenderFrame(
-                buffer = textBuffer.createIncrementalSnapshot(),
-                imagesById = imageDataCache.snapshotImages(),
-                cursorX = display.cursorXSnapshot,
-                cursorY = display.cursorYSnapshot,
-                cursorVisible = display.cursorVisibleSnapshot,
-                cursorShape = display.cursorShapeSnapshot,
-              )
-            }
-          )
+        val capturedFrame = remember(currentTrigger, textBuffer.width, textBuffer.height) {
+          display.captureStableRenderFrame {
+            StableTerminalRenderFrame(
+              buffer = textBuffer.createIncrementalSnapshot(),
+              imagesById = imageDataCache.snapshotImages(),
+              cursorX = display.cursorXSnapshot,
+              cursorY = display.cursorYSnapshot,
+              cursorVisible = display.cursorVisibleSnapshot,
+              cursorShape = display.cursorShapeSnapshot,
+            )
+          }
+        }
+        val renderFrame = stableFrameHolder.frameFor(capturedFrame)
+        SideEffect {
+          // Only frames from a composition that reached apply become future fallbacks.
+          capturedFrame?.let(stableFrameHolder::commit)
         }
         // A first mount during ?2026 has no trusted fallback frame yet. Leave only
         // terminal-dependent layers empty until the synchronized update publishes

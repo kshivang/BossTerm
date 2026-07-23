@@ -77,7 +77,7 @@ class TerminalTextBufferBatchTest {
                 firstCellWritten.countDown()
                 assertTrue(disconnect.await(2, TimeUnit.SECONDS))
 
-                // Mirrors TerminalStarter's finally path after processChar() throws.
+                // Mirrors the production emulator drain's finally path after processChar() throws.
                 terminal.disconnected()
             }
 

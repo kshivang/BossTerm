@@ -10,6 +10,7 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.tabs.ShellIntegrationInjector
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
+import ai.rever.bossterm.compose.terminal.drainTerminalEmulator
 import ai.rever.bossterm.core.util.TermSize
 import ai.rever.bossterm.terminal.RequestOrigin
 import ai.rever.bossterm.terminal.TerminalCustomCommandListener
@@ -33,7 +34,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
-import java.io.EOFException
 import java.net.URI
 import java.util.UUID
 
@@ -216,22 +216,15 @@ class TerminalSessionCore(
                 // Blocks in dataStream.char between chunks, so it must not hold one of
                 // Dispatchers.Default's nCPU permits.
                 launch(TerminalSessionDispatcher) {
-                    try {
-                        while (h.isAlive()) {
-                            try {
-                                emulator.processChar(dataStream.char, terminal)
-                            } catch (_: EOFException) {
-                                break
-                            } catch (e: Exception) {
-                                if (e !is ai.rever.bossterm.terminal.TerminalDataStream.EOF) {
-                                    log.warn("emulator processing error: {}", e.message)
-                                }
-                                break
-                            }
-                        }
-                    } finally {
-                        dataStream.close()
-                    }
+                    drainTerminalEmulator(
+                        emulator = emulator,
+                        dataStream = dataStream,
+                        terminal = terminal,
+                        shouldContinue = h::isAlive,
+                        onProcessingError = { e ->
+                            log.warn("emulator processing error: {}", e.message)
+                        },
+                    )
                 }
 
                 // PTY reader loop — grapheme-safe chunking, matches TabController.startPtyReaderCoroutine.

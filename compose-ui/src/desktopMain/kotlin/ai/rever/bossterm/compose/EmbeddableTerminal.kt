@@ -50,6 +50,7 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationMenuProvider
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.terminal.BlockingTerminalDataStream
 import ai.rever.bossterm.compose.terminal.PerformanceMode
+import ai.rever.bossterm.compose.terminal.drainTerminalEmulator
 import ai.rever.bossterm.compose.ui.ProperTerminal
 import ai.rever.bossterm.compose.util.loadTerminalFont
 import ai.rever.bossterm.compose.features.ContextMenuController
@@ -1021,22 +1022,15 @@ private suspend fun initializeProcess(
         // Start emulator coroutine. Blocks in dataStream.char between chunks, so it
         // must not hold one of Dispatchers.Default's nCPU permits.
         val emulatorJob = session.coroutineScope.launch(TerminalSessionDispatcher) {
-            try {
-                while (processHandle.isAlive()) {
-                    try {
-                        session.emulator.processChar(session.dataStream.char, session.terminal)
-                    } catch (e: java.io.EOFException) {
-                        break
-                    } catch (e: Exception) {
-                        if (e !is ai.rever.bossterm.terminal.TerminalDataStream.EOF) {
-                            println("WARNING: Error processing terminal output: ${e.message}")
-                        }
-                        break
-                    }
-                }
-            } finally {
-                session.dataStream.close()
-            }
+            drainTerminalEmulator(
+                emulator = session.emulator,
+                dataStream = session.dataStream,
+                terminal = session.terminal,
+                shouldContinue = processHandle::isAlive,
+                onProcessingError = { e ->
+                    println("WARNING: Error processing terminal output: ${e.message}")
+                },
+            )
         }
 
         // Start output reader coroutine — blocks in processHandle.read() for the

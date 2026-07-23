@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose
 import ai.rever.bossterm.compose.ui.StableRenderFrameHolder
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 class SynchronizedRenderFrameTest {
@@ -43,19 +44,32 @@ class SynchronizedRenderFrameTest {
         val holder = StableRenderFrameHolder<String>()
         try {
             display.setSynchronizedUpdate(true)
-            assertNull(holder.retain(display.captureStableRenderFrame { "partial initial" }))
+            assertNull(holder.frameFor(display.captureStableRenderFrame { "partial initial" }))
 
             display.setSynchronizedUpdate(false)
-            assertEquals("complete", holder.retain(display.captureStableRenderFrame { "complete" }))
+            val complete = assertNotNull(display.captureStableRenderFrame { "complete" })
+            assertEquals("complete", holder.frameFor(complete))
+            holder.commit(complete)
 
             display.setSynchronizedUpdate(true)
             assertEquals(
                 "complete",
-                holder.retain(display.captureStableRenderFrame { "later partial" }),
+                holder.frameFor(display.captureStableRenderFrame { "later partial" }),
             )
         } finally {
             display.setSynchronizedUpdate(false)
             display.dispose()
         }
+    }
+
+    @Test
+    fun uncommittedCandidateDoesNotBecomeFallback() {
+        val holder = StableRenderFrameHolder<String>()
+
+        assertEquals("abandoned", holder.frameFor("abandoned"))
+        assertNull(holder.frameFor(null))
+
+        holder.commit("committed")
+        assertEquals("committed", holder.frameFor(null))
     }
 }

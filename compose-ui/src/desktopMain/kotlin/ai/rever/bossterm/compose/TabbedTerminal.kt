@@ -1445,6 +1445,9 @@ fun TabbedTerminal(
                     tabController.switchToTab(tabIndex)
                     tabController.tabs.getOrNull(tabIndex)?.let { t -> splitStates[t.id]?.setFocusedPane(paneId) }
                 },
+                onTabReordered = { fromIndex, toIndex ->
+                    tabController.moveTab(fromIndex, toIndex)
+                },
                 onPaneClosed = { tabIndex, paneId ->
                     val t = tabController.tabs.getOrNull(tabIndex)
                     if (t != null) {

@@ -8,7 +8,7 @@ import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
@@ -36,6 +36,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.lerp
@@ -49,12 +50,17 @@ import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInParent
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import kotlin.math.abs
 
 /** Fixed height of the [TabBar] surface; referenced by overlays that must clear it. */
 val TabBarHeight: Dp = 48.dp
@@ -134,6 +140,10 @@ data class TabBarPane(
 
 /** Keep worktree creation optimistic while repository detection is still pending. */
 internal fun canCreateWorktree(isGitRepo: Boolean?): Boolean = isGitRepo != false
+
+internal fun nearestTabIndex(pointerY: Float, tabCenters: List<Pair<Int, Float>>): Int? {
+    return tabCenters.minByOrNull { (_, centerY) -> abs(centerY - pointerY) }?.first
+}
 
 /** A tab and its panes, rendered as a visually-grouped cluster of chips. */
 data class TabBarGroup(val tabIndex: Int, val panes: List<TabBarPane>)
@@ -256,7 +266,7 @@ private val REMOTE_AI_ASSISTANTS = listOf(
  * - Active/focused pane highlighting
  * - Right-click context menu: Create Worktree for This…, Rename…, Color ▸,
  *   Duplicate, Close, Close Others, Close Tabs Below, Move Tab to New Window
- * - Double-click a chip to rename inline
+ * - Drag a local tab group in the expanded left sidebar to reorder tabs
  *
  * Styling matches the Material 3 design of the search bar for visual consistency.
  */
@@ -269,6 +279,7 @@ fun TabBar(
     onPaneSelected: (tabIndex: Int, paneId: String) -> Unit,
     onPaneClosed: (tabIndex: Int, paneId: String) -> Unit,
     onNewTab: () -> Unit,
+    onTabReordered: (fromIndex: Int, toIndex: Int) -> Unit = { _, _ -> },
     onTabMoveToNewWindow: (Int) -> Unit = {},
     onRename: (tabIndex: Int, paneId: String, newTitle: String) -> Unit = { _, _, _ -> },
     onSetColor: (tabIndex: Int, paneId: String, hex: String?) -> Unit = { _, _, _ -> },
@@ -302,9 +313,15 @@ fun TabBar(
     val contextMenuController = remember { ContextMenuController() }
     val vertical = orientation == TabBarOrientation.LEFT
 
-    // Pane currently being renamed inline (null = none). Set by double-click or the
-    // "Rename…" menu item; cleared on commit/cancel.
+    // Pane currently being renamed inline (null = none). Set by the "Rename…"
+    // context-menu item and cleared on commit/cancel.
     var editingPaneId by remember { mutableStateOf<String?>(null) }
+    var draggedTabIndex by remember { mutableStateOf<Int?>(null) }
+    var draggedTabOffsetY by remember { mutableStateOf(0f) }
+    var primaryPressedTabIndex by remember { mutableStateOf<Int?>(null) }
+    val localTabBounds = remember { mutableMapOf<Int, androidx.compose.ui.geometry.Rect>() }
+    val localTabOrder = groups.map { it.tabIndex }
+    val latestOnTabReordered by rememberUpdatedState(onTabReordered)
 
     val localGitRepoByPane = remember(groups) {
         groups.flatMap { group ->
@@ -514,7 +531,6 @@ fun TabBar(
             colorHex = pane.colorHex,
             isEditing = pane.paneId == editingPaneId,
             onSelected = { onPaneSelected(group.tabIndex, pane.paneId) },
-            onStartRename = { editingPaneId = pane.paneId },
             onCommitRename = { newTitle ->
                 editingPaneId = null
                 onRename(group.tabIndex, pane.paneId, newTitle)
@@ -630,7 +646,83 @@ fun TabBar(
                     verticalArrangement = Arrangement.spacedBy(TabGroupGap)
                 ) {
                     groups.forEach { group ->
-                        Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth()
+                                .onGloballyPositioned { coordinates ->
+                                    localTabBounds[group.tabIndex] = coordinates.boundsInParent()
+                                }
+                                .zIndex(if (draggedTabIndex == group.tabIndex) 1f else 0f)
+                                .graphicsLayer {
+                                    val isDragged = draggedTabIndex == group.tabIndex
+                                    alpha = if (isDragged) 0.88f else 1f
+                                    if (isDragged) {
+                                        translationY = draggedTabOffsetY
+                                    }
+                                }
+                                .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
+                                    if (event.button == PointerButton.Primary) {
+                                        primaryPressedTabIndex = group.tabIndex
+                                    }
+                                }
+                                .onPointerEvent(PointerEventType.Release, PointerEventPass.Initial) { event ->
+                                    if (
+                                        event.button == PointerButton.Primary &&
+                                        primaryPressedTabIndex == group.tabIndex
+                                    ) {
+                                        primaryPressedTabIndex = null
+                                    }
+                                }
+                                .pointerInput(group.tabIndex, localTabOrder) {
+                                    var totalDragY = 0f
+                                    var acceptsDrag = false
+                                    detectDragGestures(
+                                        onDragStart = {
+                                            acceptsDrag = primaryPressedTabIndex == group.tabIndex
+                                            if (acceptsDrag) {
+                                                totalDragY = 0f
+                                                draggedTabIndex = group.tabIndex
+                                                draggedTabOffsetY = 0f
+                                            }
+                                        },
+                                        onDragCancel = {
+                                            if (acceptsDrag) {
+                                                primaryPressedTabIndex = null
+                                                draggedTabIndex = null
+                                                draggedTabOffsetY = 0f
+                                            }
+                                        },
+                                        onDragEnd = {
+                                            if (acceptsDrag) {
+                                                val sourceBounds = localTabBounds[group.tabIndex]
+                                                val targetIndex = sourceBounds?.let { bounds ->
+                                                    nearestTabIndex(
+                                                        pointerY = bounds.center.y + totalDragY,
+                                                        tabCenters = groups.mapNotNull { candidate ->
+                                                            localTabBounds[candidate.tabIndex]?.center?.y?.let { centerY ->
+                                                                candidate.tabIndex to centerY
+                                                            }
+                                                        }
+                                                    )
+                                                }
+                                                primaryPressedTabIndex = null
+                                                draggedTabIndex = null
+                                                draggedTabOffsetY = 0f
+                                                if (targetIndex != null && targetIndex != group.tabIndex) {
+                                                    latestOnTabReordered(group.tabIndex, targetIndex)
+                                                }
+                                            }
+                                        },
+                                        onDrag = { change, dragAmount ->
+                                            if (acceptsDrag) {
+                                                change.consume()
+                                                totalDragY += dragAmount.y
+                                                draggedTabOffsetY = totalDragY
+                                            }
+                                        }
+                                    )
+                                },
+                            verticalArrangement = Arrangement.spacedBy(TabChipGap)
+                        ) {
                             group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
                         }
                     }
@@ -956,7 +1048,6 @@ private fun TabItem(
     colorHex: String?,
     isEditing: Boolean,
     onSelected: () -> Unit,
-    onStartRename: () -> Unit,
     onCommitRename: (String) -> Unit,
     onCancelRename: () -> Unit,
     onClose: () -> Unit,
@@ -983,10 +1074,10 @@ private fun TabItem(
             .then(
                 if (isEditing) Modifier
                 else Modifier
-                    // Observe and consume secondary presses before combinedClickable can
-                    // interpret them as a normal selection gesture.
+                    // Consume secondary presses before clickable can interpret them as a
+                    // normal selection gesture.
                     .consumeSecondaryPress(onContextMenu)
-                    .combinedClickable(onClick = onSelected, onDoubleClick = onStartRename)
+                    .clickable(onClick = onSelected)
             ),
         shape = RoundedCornerShape(6.dp),
         color = if (isActive) itemRaised else itemBg,

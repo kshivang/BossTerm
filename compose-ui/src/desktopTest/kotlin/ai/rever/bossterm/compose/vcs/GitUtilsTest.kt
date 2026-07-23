@@ -31,4 +31,28 @@ class GitUtilsTest {
         }
         assertEquals(expected, GitUtils.gitCommand("worktree add ", "/tmp/a b"))
     }
+
+    @Test
+    fun `repository state includes a symbolic branch`() {
+        assertEquals(
+            GitUtils.RepositoryState(branch = "feature/worktrees", isRepository = true),
+            GitUtils.parseRepositoryState(exitCode = 0, output = "feature/worktrees\n")
+        )
+    }
+
+    @Test
+    fun `repository state keeps detached HEAD inside the repository`() {
+        assertEquals(
+            GitUtils.RepositoryState(branch = null, isRepository = true),
+            GitUtils.parseRepositoryState(exitCode = 1, output = "")
+        )
+    }
+
+    @Test
+    fun `repository state rejects non-repository failures`() {
+        assertEquals(
+            GitUtils.RepositoryState(branch = null, isRepository = false),
+            GitUtils.parseRepositoryState(exitCode = 128, output = "fatal: not a git repository")
+        )
+    }
 }

@@ -599,13 +599,12 @@ fun TabbedTerminal(
             onGitBranch = { gitCmd(GitUtils.Commands.BRANCH) }
             onGitCheckoutPrev = { gitCmd(GitUtils.Commands.CHECKOUT_PREV) }
             onGitCheckoutNew = {
-                // Uses gitCommand but without trailing newline (user types branch name)
-                val cwd = getWorkingDir()
-                if (cwd != null) {
-                    writeToTerminal("git -C \"$cwd\" ${GitUtils.Commands.CHECKOUT_NEW}")
-                } else {
-                    writeToTerminal("git ${GitUtils.Commands.CHECKOUT_NEW}")
-                }
+                // Prefill only: the user still needs to type the new branch name.
+                val command = GitUtils.gitCommand(
+                    GitUtils.Commands.CHECKOUT_NEW,
+                    getWorkingDir()
+                ).removeSuffix("\n")
+                writeToTerminal(command)
             }
             onGitStash = { gitCmd(GitUtils.Commands.STASH) }
             onGitStashPop = { gitCmd(GitUtils.Commands.STASH_POP) }

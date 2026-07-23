@@ -145,12 +145,11 @@ class TabController(
                 .collectLatest { cwd ->
                     session.isGitRepo.value = null
                     delay(350)
-                    val (branch, isRepo) = withContext(Dispatchers.IO) {
-                        val currentBranch = GitUtils.getCurrentBranch(cwd)
-                        currentBranch to (currentBranch != null || GitUtils.isGitRepo(cwd))
+                    val repository = withContext(Dispatchers.IO) {
+                        GitUtils.getRepositoryState(cwd)
                     }
-                    session.gitBranch.value = branch
-                    session.isGitRepo.value = isRepo
+                    session.gitBranch.value = repository.branch
+                    session.isGitRepo.value = repository.isRepository
                 }
         }
     }

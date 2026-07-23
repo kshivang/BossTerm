@@ -129,7 +129,7 @@ data class TabBarPane(
     val colorHex: String? = null,
     val subtitle: String? = null,
     val branch: String? = null,
-    val isGitRepo: Boolean? = false
+    val isGitRepo: Boolean? = null
 )
 
 /** Keep worktree creation optimistic while repository detection is still pending. */
@@ -306,9 +306,11 @@ fun TabBar(
     // "Rename…" menu item; cleared on commit/cancel.
     var editingPaneId by remember { mutableStateOf<String?>(null) }
 
-    val localGitRepoByPane = groups.flatMap { group ->
-        group.panes.map { pane -> (group.tabIndex to pane.paneId) to pane.isGitRepo }
-    }.toMap()
+    val localGitRepoByPane = remember(groups) {
+        groups.flatMap { group ->
+            group.panes.map { pane -> (group.tabIndex to pane.paneId) to pane.isGitRepo }
+        }.toMap()
+    }
 
     val showChipMenu: (Int, String) -> Unit = { tabIndex, paneId ->
         val colorSubmenu = ContextMenuController.MenuSubmenu(

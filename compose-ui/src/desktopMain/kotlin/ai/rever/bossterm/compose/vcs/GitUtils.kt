@@ -10,6 +10,11 @@ import java.util.concurrent.TimeUnit
  */
 object GitUtils {
 
+    internal data class RepositoryState(
+        val branch: String?,
+        val isRepository: Boolean
+    )
+
     /**
      * Quote one path as a single shell argument. POSIX single quotes prevent interpolation
      * and are escaped by ending and reopening the quoted segment. On Windows, where filenames
@@ -80,31 +85,46 @@ object GitUtils {
     }
 
     /**
-     * Get the current branch name.
+     * Resolve repository membership and the current branch with one git process.
+     * symbolic-ref exits 1 for detached HEAD, which still means the cwd is a repo.
      */
-    fun getCurrentBranch(cwd: String?): String? {
-        if (cwd == null) return null
+    internal fun getRepositoryState(cwd: String?): RepositoryState {
+        if (cwd == null) return RepositoryState(branch = null, isRepository = false)
         var process: Process? = null
         return try {
-            process = ProcessBuilder("git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD")
+            process = ProcessBuilder("git", "-C", cwd, "symbolic-ref", "--quiet", "--short", "HEAD")
                 .redirectErrorStream(true)
                 .start()
-            val output = process.inputStream.bufferedReader().use { it.readText().trim() }
             val completed = process.waitFor(2, TimeUnit.SECONDS)
             if (!completed) {
                 process.destroyForcibly()
-                null
-            } else if (process.exitValue() == 0 && output.isNotEmpty() && output != "HEAD") {
-                output
-            } else null
+                RepositoryState(branch = null, isRepository = false)
+            } else {
+                val output = process.inputStream.bufferedReader().use { it.readText() }
+                parseRepositoryState(process.exitValue(), output)
+            }
         } catch (e: Exception) {
-            null
+            RepositoryState(branch = null, isRepository = false)
         } finally {
             process?.inputStream?.close()
             process?.errorStream?.close()
             process?.outputStream?.close()
         }
     }
+
+    internal fun parseRepositoryState(exitCode: Int, output: String): RepositoryState {
+        return when (exitCode) {
+            0 -> RepositoryState(
+                branch = output.trim().takeIf { it.isNotEmpty() },
+                isRepository = true
+            )
+            1 -> RepositoryState(branch = null, isRepository = true)
+            else -> RepositoryState(branch = null, isRepository = false)
+        }
+    }
+
+    /** Get the current branch name, or null for detached HEAD and non-repositories. */
+    fun getCurrentBranch(cwd: String?): String? = getRepositoryState(cwd).branch
 
     /**
      * Get list of local branches.

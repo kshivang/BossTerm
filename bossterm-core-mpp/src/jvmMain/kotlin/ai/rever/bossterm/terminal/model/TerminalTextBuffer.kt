@@ -100,6 +100,8 @@ class TerminalTextBuffer internal constructor(
 
   // ===== BATCH CHANGE TRACKING =====
   // Suppresses intermediate modelChanged events during rapid sequences like clear+write.
+  // This coalesces redraw requests; it does not make independent snapshot reads atomic.
+  // Applications that require atomic presentation must use DEC synchronized updates (?2026).
   private val batchStateLock = Any()
   private var batchDepth: Int = 0
   private var batchHasChanges: Boolean = false
@@ -342,21 +344,29 @@ class TerminalTextBuffer internal constructor(
    * callback, the emulator's teardown path must clear the batch so future model
    * notifications are not suppressed forever.
    *
-   * This must run on the emulator thread that began the batch. Calling it when no
-   * batch is active is a no-op, which also makes it safe on normal disconnects.
+   * Production drains invoke this on the emulator thread that began the batch.
+   * As a last-resort recovery path it also resets a mismatched owner after logging,
+   * rather than throwing and preventing the terminal from clearing synchronized
+   * update mode. Calling it when no batch is active remains a no-op.
    */
   internal fun abortBatches() {
+    var mismatchedOwner: Thread? = null
     val shouldNotify = synchronized(batchStateLock) {
       if (batchDepth == 0) return@synchronized false
-      check(batchOwner === Thread.currentThread()) {
-        "abortBatches() must run on the thread that called beginBatch()"
-      }
+      if (batchOwner !== Thread.currentThread()) mismatchedOwner = batchOwner
 
       val hadChanges = batchHasChanges
       batchDepth = 0
       batchHasChanges = false
       batchOwner = null
       hadChanges
+    }
+    mismatchedOwner?.let { owner ->
+      LOG.warn(
+        "abortBatches() recovered a batch owned by thread '{}' from teardown thread '{}'",
+        owner.name,
+        Thread.currentThread().name
+      )
     }
     if (shouldNotify) notifyModelChanged()
   }

@@ -138,6 +138,33 @@ class CursorOverlayTest {
     }
 
     @Test
+    fun verticalBarUsesOneLogicalPixelAndStaysInsideItsCell() {
+        val bitmap = draw(width = 30, height = 20, density = Density(2f)) {
+            with(TerminalCanvasRenderer) {
+                renderCursorOverlay(
+                    cursorVisible = true,
+                    cursorBlinkVisible = true,
+                    cursorShape = CursorShape.STEADY_VERTICAL_BAR,
+                    cursorX = 1,
+                    cursorY = 1,
+                    scrollOffset = 0,
+                    cellWidth = 7.5f,
+                    cellHeight = 20f,
+                    isFocused = true,
+                    cursorColor = Color.Red,
+                )
+            }
+        }.toPixelMap()
+
+        // 1.dp at 2x density is two device pixels at the floor-aligned left edge x=7.
+        assertEquals(0f, bitmap[6, 10].alpha, 0.01f)
+        assertTrue(bitmap[7, 10].alpha > 0.99f)
+        assertTrue(bitmap[8, 10].alpha > 0.99f)
+        assertEquals(0f, bitmap[9, 10].alpha, 0.01f)
+        assertEquals(0f, bitmap[15, 10].alpha, 0.01f)
+    }
+
+    @Test
     fun inlineImageAlphaOccludesCursorWithoutErasingTheImage() {
         val image = draw(width = 10, height = 20) {
             drawRect(

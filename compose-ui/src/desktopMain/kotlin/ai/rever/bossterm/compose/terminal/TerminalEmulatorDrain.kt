@@ -34,7 +34,9 @@ internal fun drainTerminalEmulator(
         try {
             terminal.disconnected()
         } finally {
-            dataStream.close()
+            // Closing is idempotent and best-effort during teardown. Do not let a
+            // future stream implementation's close failure replace the emulator error.
+            runCatching { dataStream.close() }
         }
     }
 }

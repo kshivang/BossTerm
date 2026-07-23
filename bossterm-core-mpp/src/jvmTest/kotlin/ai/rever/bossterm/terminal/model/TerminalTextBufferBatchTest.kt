@@ -98,6 +98,68 @@ class TerminalTextBufferBatchTest {
         }
     }
 
+    @Test
+    fun disconnectClearsNestedBatchAndPublishesOnce() {
+        val styleState = StyleState()
+        val buffer = TerminalTextBuffer(width = 8, height = 2, styleState = styleState)
+        val terminal = BossTerminal(NoopTerminalDisplay(), buffer, styleState)
+        val modelChanges = AtomicInteger()
+        buffer.addModelListener(object : TerminalModelListener {
+            override fun modelChanged() {
+                modelChanges.incrementAndGet()
+            }
+        })
+
+        buffer.beginBatch()
+        buffer.beginBatch()
+        buffer.writeImagePlaceholderCell(
+            row = 0,
+            col = 0,
+            imageId = 42,
+            cellX = 0,
+            cellY = 0,
+            cellWidth = 1,
+            cellHeight = 1
+        )
+
+        terminal.disconnected()
+
+        assertEquals(1, modelChanges.get())
+        buffer.beginBatch()
+        buffer.endBatch()
+    }
+
+    @Test
+    fun mismatchedTeardownThreadStillClearsBatchAndSynchronizedUpdate() {
+        val styleState = StyleState()
+        val buffer = TerminalTextBuffer(width = 8, height = 2, styleState = styleState)
+        val display = NoopTerminalDisplay()
+        val terminal = BossTerminal(display, buffer, styleState)
+        val executor = Executors.newSingleThreadExecutor()
+
+        try {
+            display.setSynchronizedUpdate(true)
+            buffer.beginBatch()
+            buffer.writeImagePlaceholderCell(
+                row = 0,
+                col = 0,
+                imageId = 42,
+                cellX = 0,
+                cellY = 0,
+                cellWidth = 1,
+                cellHeight = 1
+            )
+
+            executor.submit { terminal.disconnected() }.get(2, TimeUnit.SECONDS)
+
+            assertEquals(false, display.synchronizedUpdateEnabled)
+            buffer.beginBatch()
+            buffer.endBatch()
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
     private class NoopTerminalDisplay : TerminalDisplay {
         var synchronizedUpdateEnabled: Boolean? = null
         override var windowTitle: String? = null

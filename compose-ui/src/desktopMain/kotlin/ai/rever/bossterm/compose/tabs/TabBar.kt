@@ -746,6 +746,9 @@ fun TabBar(
                                         }
                                     }
                                 }
+                                // Desktop contract: the parent keeps wheel/trackpad scrolling,
+                                // while a primary drag begun on a chip owns reordering. Revisit
+                                // this gesture split if the component gains touch support.
                                 .pointerInput(group.tabIndex, localTabOrder) {
                                     var acceptsDrag = false
                                     try {

@@ -3,7 +3,6 @@ package ai.rever.bossterm.compose.tabs
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 class TabReorderTest {
 
@@ -72,7 +71,7 @@ class TabReorderTest {
             val activeRemoteId = controller.tabs[1].id
             controller.switchToTab(1)
 
-            assertTrue(controller.moveTabWithinIndices(0, 4, LOCAL_TAB_INDICES))
+            controller.moveTabWithinIndices(0, 4, LOCAL_TAB_INDICES)
             assertEquals(
                 listOf("local-b", "remote-a", "local-c", "remote-b", "local-a"),
                 controller.tabs.map { it.title.value }
@@ -90,7 +89,7 @@ class TabReorderTest {
         try {
             val activeLocalId = controller.tabs.first().id
 
-            assertTrue(controller.moveTabWithinIndices(0, 4, LOCAL_TAB_INDICES))
+            controller.moveTabWithinIndices(0, 4, LOCAL_TAB_INDICES)
             assertEquals(4, controller.activeTabIndex)
             assertEquals(activeLocalId, controller.activeTabId)
         } finally {
@@ -118,6 +117,8 @@ class TabReorderTest {
     }
 
     private companion object {
+        // Models the sparse slots produced by TabbedTerminal's RemoteSessionManager filter.
+        // The manager-to-UI partition itself remains integration coverage, not a unit fixture here.
         val LOCAL_TAB_INDICES = listOf(0, 2, 4)
     }
 }

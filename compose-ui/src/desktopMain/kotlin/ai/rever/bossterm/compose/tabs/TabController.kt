@@ -1938,13 +1938,13 @@ class TabController(
         fromIndex: Int,
         toIndex: Int,
         movableIndices: List<Int>
-    ): Boolean {
+    ) {
         val newOrder = tabOrderAfterMoveWithin(
             tabCount = tabs.size,
             fromIndex = fromIndex,
             toIndex = toIndex,
             movableIndices = movableIndices
-        ) ?: return false
+        ) ?: return
 
         val previousTabs = tabs.toList()
         val newActiveTabIndex = newOrder.indexOf(activeTabIndex)
@@ -1956,7 +1956,6 @@ class TabController(
             }
         }
         activeTabIndex = newActiveTabIndex
-        return true
     }
 
     /**

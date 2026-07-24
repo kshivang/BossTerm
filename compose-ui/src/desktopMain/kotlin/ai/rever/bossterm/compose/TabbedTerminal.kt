@@ -746,10 +746,11 @@ fun TabbedTerminal(
         }
     }
 
-    // Phase 6: persist session structure on structural change (tab add/close/switch,
+    // Phase 6: persist session structure on structural change (tab add/close/reorder/switch,
     // and split/ratio changes in the active tab via its rootNode identity).
+    val persistedTabOrder = tabController.tabs.map { it.id }
     LaunchedEffect(
-        tabController.tabs.size,
+        persistedTabOrder,
         tabController.activeTabIndex,
         settings.restoreSessionOnLaunch,
         tabController.activeTab?.let { splitStates[it.id]?.rootNode }
@@ -1444,6 +1445,13 @@ fun TabbedTerminal(
                     onDrawerDismiss?.invoke()
                     tabController.switchToTab(tabIndex)
                     tabController.tabs.getOrNull(tabIndex)?.let { t -> splitStates[t.id]?.setFocusedPane(paneId) }
+                },
+                onTabReordered = { fromIndex, toIndex ->
+                    tabController.moveTabWithinIndices(
+                        fromIndex = fromIndex,
+                        toIndex = toIndex,
+                        movableIndices = tabGroups.map { it.tabIndex }
+                    )
                 },
                 onPaneClosed = { tabIndex, paneId ->
                     val t = tabController.tabs.getOrNull(tabIndex)

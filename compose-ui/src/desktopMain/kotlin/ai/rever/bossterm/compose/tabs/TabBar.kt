@@ -8,7 +8,7 @@ import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
@@ -36,6 +36,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.lerp
@@ -49,12 +50,18 @@ import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInParent
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import kotlin.math.abs
 
 /** Fixed height of the [TabBar] surface; referenced by overlays that must clear it. */
 val TabBarHeight: Dp = 48.dp
@@ -134,6 +141,17 @@ data class TabBarPane(
 
 /** Keep worktree creation optimistic while repository detection is still pending. */
 internal fun canCreateWorktree(isGitRepo: Boolean?): Boolean = isGitRepo != false
+
+/** Return the nearest resting tab center; exact midpoint ties favor the first visual group. */
+internal fun nearestTabIndex(pointerY: Float, tabCenters: List<Pair<Int, Float>>): Int? {
+    return tabCenters.minByOrNull { (_, centerY) -> abs(centerY - pointerY) }?.first
+}
+
+/** Return a neighboring tab in visual order; [delta] is normally -1 or 1. */
+internal fun tabReorderNeighbor(tabIndex: Int, tabOrder: List<Int>, delta: Int): Int? {
+    val position = tabOrder.indexOf(tabIndex)
+    return if (position == -1) null else tabOrder.getOrNull(position + delta)
+}
 
 /** A tab and its panes, rendered as a visually-grouped cluster of chips. */
 data class TabBarGroup(val tabIndex: Int, val panes: List<TabBarPane>)
@@ -255,8 +273,9 @@ private val REMOTE_AI_ASSISTANTS = listOf(
  * - New tab button (+)
  * - Active/focused pane highlighting
  * - Right-click context menu: Create Worktree for This…, Rename…, Color ▸,
- *   Duplicate, Close, Close Others, Close Tabs Below, Move Tab to New Window
- * - Double-click a chip to rename inline
+ *   Duplicate, Move Up/Down (or Left/Right), Close, Close Others, Close Tabs Below,
+ *   Move Tab to New Window
+ * - Drag a local tab group in the expanded left sidebar to reorder tabs
  *
  * Styling matches the Material 3 design of the search bar for visual consistency.
  */
@@ -269,6 +288,7 @@ fun TabBar(
     onPaneSelected: (tabIndex: Int, paneId: String) -> Unit,
     onPaneClosed: (tabIndex: Int, paneId: String) -> Unit,
     onNewTab: () -> Unit,
+    onTabReordered: (fromIndex: Int, toIndex: Int) -> Unit = { _, _ -> },
     onTabMoveToNewWindow: (Int) -> Unit = {},
     onRename: (tabIndex: Int, paneId: String, newTitle: String) -> Unit = { _, _, _ -> },
     onSetColor: (tabIndex: Int, paneId: String, hex: String?) -> Unit = { _, _, _ -> },
@@ -302,9 +322,51 @@ fun TabBar(
     val contextMenuController = remember { ContextMenuController() }
     val vertical = orientation == TabBarOrientation.LEFT
 
-    // Pane currently being renamed inline (null = none). Set by double-click or the
-    // "Rename…" menu item; cleared on commit/cancel.
+    // Pane currently being renamed inline (null = none). Set by the "Rename…"
+    // context-menu item and cleared on commit/cancel.
     var editingPaneId by remember { mutableStateOf<String?>(null) }
+    var draggedTabIndex by remember { mutableStateOf<Int?>(null) }
+    var draggedTabOffsetY by remember { mutableStateOf(0f) }
+    var primaryPressedTabIndex by remember { mutableStateOf<Int?>(null) }
+    val localTabOrder = groups.map { it.tabIndex }
+    // Full-list indices are reassigned after closes and remote-layout updates, so replace
+    // the measurement map whenever the set of local slots changes.
+    val localTabBounds = remember(localTabOrder) {
+        mutableMapOf<Int, androidx.compose.ui.geometry.Rect>()
+    }
+    val latestOnTabReordered by rememberUpdatedState(onTabReordered)
+    val isWindowFocused = LocalWindowInfo.current.isWindowFocused
+    val resetTabDrag: () -> Unit = {
+        primaryPressedTabIndex = null
+        draggedTabIndex = null
+        draggedTabOffsetY = 0f
+    }
+    val finishTabDrag: (Int) -> Unit = { sourceIndex ->
+        val targetIndex = if (draggedTabIndex == sourceIndex) {
+            localTabBounds[sourceIndex]?.let { bounds ->
+                // graphicsLayer translation is draw-only, so resting centers intentionally
+                // provide a simple static snap target without a live insertion preview.
+                nearestTabIndex(
+                    pointerY = bounds.center.y + draggedTabOffsetY,
+                    tabCenters = groups.mapNotNull { candidate ->
+                        localTabBounds[candidate.tabIndex]?.center?.y?.let { centerY ->
+                            candidate.tabIndex to centerY
+                        }
+                    }
+                )
+            }
+        } else {
+            null
+        }
+        resetTabDrag()
+        if (targetIndex != null && targetIndex != sourceIndex) {
+            latestOnTabReordered(sourceIndex, targetIndex)
+        }
+    }
+
+    LaunchedEffect(isWindowFocused) {
+        if (!isWindowFocused) resetTabDrag()
+    }
 
     val localGitRepoByPane = remember(groups) {
         groups.flatMap { group ->
@@ -321,6 +383,10 @@ fun TabBar(
             } + ContextMenuController.MenuSeparator(id = "separator_color") +
                 ContextMenuController.MenuItem(id = "color_clear", label = "Clear", enabled = true, action = { onSetColor(tabIndex, paneId, null) })
         )
+        val previousTabIndex = tabReorderNeighbor(tabIndex, localTabOrder, -1)
+        val nextTabIndex = tabReorderNeighbor(tabIndex, localTabOrder, 1)
+        val movePreviousLabel = if (vertical) "Move Tab Up" else "Move Tab Left"
+        val moveNextLabel = if (vertical) "Move Tab Down" else "Move Tab Right"
         val items = listOf(
             ContextMenuController.MenuItem(id = "new_tab", label = "New Tab", enabled = true, action = { onNewTab() }),
             ContextMenuController.MenuItem(
@@ -334,6 +400,18 @@ fun TabBar(
             colorSubmenu,
             ContextMenuController.MenuSeparator(id = "separator_tab_ops"),
             ContextMenuController.MenuItem(id = "duplicate_tab", label = "Duplicate Tab", enabled = true, action = { onDuplicate(tabIndex) }),
+            ContextMenuController.MenuItem(
+                id = "move_tab_previous",
+                label = movePreviousLabel,
+                enabled = previousTabIndex != null,
+                action = { previousTabIndex?.let { latestOnTabReordered(tabIndex, it) } }
+            ),
+            ContextMenuController.MenuItem(
+                id = "move_tab_next",
+                label = moveNextLabel,
+                enabled = nextTabIndex != null,
+                action = { nextTabIndex?.let { latestOnTabReordered(tabIndex, it) } }
+            ),
             ContextMenuController.MenuItem(id = "close_pane", label = "Close", enabled = true, action = { onPaneClosed(tabIndex, paneId) }),
             ContextMenuController.MenuItem(id = "close_others", label = "Close Other Tabs", enabled = true, action = { onCloseOthers(tabIndex) }),
             ContextMenuController.MenuItem(id = "close_below", label = "Close Tabs Below", enabled = true, action = { onCloseBelow(tabIndex) }),
@@ -514,7 +592,6 @@ fun TabBar(
             colorHex = pane.colorHex,
             isEditing = pane.paneId == editingPaneId,
             onSelected = { onPaneSelected(group.tabIndex, pane.paneId) },
-            onStartRename = { editingPaneId = pane.paneId },
             onCommitRename = { newTitle ->
                 editingPaneId = null
                 onRename(group.tabIndex, pane.paneId, newTitle)
@@ -550,6 +627,18 @@ fun TabBar(
                             event.changes.forEach { it.consume() }
                             showActivePaneMenu()
                         }
+                    }
+                } else {
+                    Modifier
+                }
+            )
+            .then(
+                if (vertical) {
+                    Modifier.onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) {
+                        // A fresh press is the fallback cleanup for a release that was lost
+                        // without a focus change. Leaving the narrow sidebar must not cancel
+                        // an otherwise valid in-flight drag.
+                        if (draggedTabIndex != null) resetTabDrag()
                     }
                 } else {
                     Modifier
@@ -630,7 +719,78 @@ fun TabBar(
                     verticalArrangement = Arrangement.spacedBy(TabGroupGap)
                 ) {
                     groups.forEach { group ->
-                        Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth()
+                                .onGloballyPositioned { coordinates ->
+                                    localTabBounds[group.tabIndex] = coordinates.boundsInParent()
+                                }
+                                .zIndex(if (draggedTabIndex == group.tabIndex) 1f else 0f)
+                                .graphicsLayer {
+                                    val isDragged = draggedTabIndex == group.tabIndex
+                                    alpha = if (isDragged) 0.88f else 1f
+                                    if (isDragged) {
+                                        translationY = draggedTabOffsetY
+                                    }
+                                }
+                                .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
+                                    if (event.button == PointerButton.Primary) {
+                                        primaryPressedTabIndex = group.tabIndex
+                                    }
+                                }
+                                .onPointerEvent(PointerEventType.Release, PointerEventPass.Initial) { event ->
+                                    if (event.button == PointerButton.Primary) {
+                                        if (draggedTabIndex == group.tabIndex) {
+                                            finishTabDrag(group.tabIndex)
+                                        } else {
+                                            primaryPressedTabIndex = null
+                                        }
+                                    }
+                                }
+                                // Desktop contract: the parent keeps wheel/trackpad scrolling,
+                                // while a primary drag begun on a chip owns reordering. Revisit
+                                // this gesture split if the component gains touch support.
+                                .pointerInput(group.tabIndex, localTabOrder) {
+                                    var acceptsDrag = false
+                                    try {
+                                        detectDragGestures(
+                                            onDragStart = {
+                                                acceptsDrag = primaryPressedTabIndex == group.tabIndex
+                                                if (acceptsDrag) {
+                                                    draggedTabIndex = group.tabIndex
+                                                    draggedTabOffsetY = 0f
+                                                }
+                                            },
+                                            onDragCancel = {
+                                                if (acceptsDrag) {
+                                                    resetTabDrag()
+                                                    acceptsDrag = false
+                                                }
+                                            },
+                                            onDragEnd = {
+                                                if (acceptsDrag) {
+                                                    finishTabDrag(group.tabIndex)
+                                                    acceptsDrag = false
+                                                }
+                                            },
+                                            onDrag = { change, dragAmount ->
+                                                if (
+                                                    acceptsDrag &&
+                                                    draggedTabIndex == group.tabIndex
+                                                ) {
+                                                    change.consume()
+                                                    draggedTabOffsetY += dragAmount.y
+                                                }
+                                            }
+                                        )
+                                    } finally {
+                                        if (acceptsDrag) {
+                                            resetTabDrag()
+                                            acceptsDrag = false
+                                        }
+                                    }
+                                },
+                            verticalArrangement = Arrangement.spacedBy(TabChipGap)
+                        ) {
                             group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
                         }
                     }
@@ -956,7 +1116,6 @@ private fun TabItem(
     colorHex: String?,
     isEditing: Boolean,
     onSelected: () -> Unit,
-    onStartRename: () -> Unit,
     onCommitRename: (String) -> Unit,
     onCancelRename: () -> Unit,
     onClose: () -> Unit,
@@ -983,10 +1142,10 @@ private fun TabItem(
             .then(
                 if (isEditing) Modifier
                 else Modifier
-                    // Observe and consume secondary presses before combinedClickable can
-                    // interpret them as a normal selection gesture.
+                    // Consume secondary presses before clickable can interpret them as a
+                    // normal selection gesture.
                     .consumeSecondaryPress(onContextMenu)
-                    .combinedClickable(onClick = onSelected, onDoubleClick = onStartRename)
+                    .clickable(onClick = onSelected)
             ),
         shape = RoundedCornerShape(6.dp),
         color = if (isActive) itemRaised else itemBg,

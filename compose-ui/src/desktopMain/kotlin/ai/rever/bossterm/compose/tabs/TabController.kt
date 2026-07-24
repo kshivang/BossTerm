@@ -42,15 +42,6 @@ import ai.rever.bossterm.core.typeahead.TerminalTypeAheadManager
 import ai.rever.bossterm.core.typeahead.TypeAheadTerminalModel
 import ai.rever.bossterm.terminal.util.GraphemeBoundaryUtils
 
-internal fun indexAfterTabMove(index: Int, fromIndex: Int, toIndex: Int): Int {
-    return when {
-        index == fromIndex -> toIndex
-        fromIndex < index && index <= toIndex -> index - 1
-        toIndex <= index && index < fromIndex -> index + 1
-        else -> index
-    }
-}
-
 /**
  * Return the full index permutation for moving a tab only among [movableIndices].
  * Indices outside that subset retain both their item and their position.
@@ -1935,23 +1926,6 @@ class TabController(
 
         // Notify listeners
         notifyAllSessionsClosed()
-    }
-
-    /**
-     * Move one tab to a new index without changing which tab is active.
-     *
-     * @return true when the tab order changed, false for invalid or identical indices.
-     */
-    fun moveTab(fromIndex: Int, toIndex: Int): Boolean {
-        if (fromIndex !in tabs.indices || toIndex !in tabs.indices || fromIndex == toIndex) {
-            return false
-        }
-
-        val newActiveTabIndex = indexAfterTabMove(activeTabIndex, fromIndex, toIndex)
-        val tab = tabs.removeAt(fromIndex)
-        tabs.add(toIndex, tab)
-        activeTabIndex = newActiveTabIndex
-        return true
     }
 
     /**

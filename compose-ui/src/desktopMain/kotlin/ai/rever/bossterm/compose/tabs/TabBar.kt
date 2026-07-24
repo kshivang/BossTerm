@@ -142,6 +142,7 @@ data class TabBarPane(
 /** Keep worktree creation optimistic while repository detection is still pending. */
 internal fun canCreateWorktree(isGitRepo: Boolean?): Boolean = isGitRepo != false
 
+/** Return the nearest resting tab center; exact midpoint ties favor the first visual group. */
 internal fun nearestTabIndex(pointerY: Float, tabCenters: List<Pair<Int, Float>>): Int? {
     return tabCenters.minByOrNull { (_, centerY) -> abs(centerY - pointerY) }?.first
 }
@@ -336,6 +337,8 @@ fun TabBar(
     val finishTabDrag: (Int) -> Unit = { sourceIndex ->
         val targetIndex = if (draggedTabIndex == sourceIndex) {
             localTabBounds[sourceIndex]?.let { bounds ->
+                // graphicsLayer translation is draw-only, so resting centers intentionally
+                // provide a simple static snap target without a live insertion preview.
                 nearestTabIndex(
                     pointerY = bounds.center.y + draggedTabOffsetY,
                     tabCenters = groups.mapNotNull { candidate ->

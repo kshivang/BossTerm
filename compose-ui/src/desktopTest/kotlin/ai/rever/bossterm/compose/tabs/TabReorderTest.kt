@@ -27,4 +27,39 @@ class TabReorderTest {
         assertEquals(1, nearestTabIndex(pointerY = 72f, tabCenters = centers))
         assertEquals(2, nearestTabIndex(pointerY = 130f, tabCenters = centers))
     }
+
+    @Test
+    fun `local reorder leaves interspersed remote slots untouched`() {
+        assertEquals(
+            listOf(2, 1, 4, 3, 0),
+            tabOrderAfterMoveWithin(
+                tabCount = 5,
+                fromIndex = 0,
+                toIndex = 4,
+                movableIndices = listOf(0, 2, 4)
+            )
+        )
+        assertEquals(
+            listOf(4, 1, 0, 3, 2),
+            tabOrderAfterMoveWithin(
+                tabCount = 5,
+                fromIndex = 4,
+                toIndex = 0,
+                movableIndices = listOf(0, 2, 4)
+            )
+        )
+    }
+
+    @Test
+    fun `subset reorder rejects non-local source or target`() {
+        assertEquals(
+            null,
+            tabOrderAfterMoveWithin(
+                tabCount = 5,
+                fromIndex = 0,
+                toIndex = 3,
+                movableIndices = listOf(0, 2, 4)
+            )
+        )
+    }
 }

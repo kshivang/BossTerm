@@ -320,8 +320,12 @@ fun TabBar(
     var draggedTabIndex by remember { mutableStateOf<Int?>(null) }
     var draggedTabOffsetY by remember { mutableStateOf(0f) }
     var primaryPressedTabIndex by remember { mutableStateOf<Int?>(null) }
-    val localTabBounds = remember { mutableMapOf<Int, androidx.compose.ui.geometry.Rect>() }
     val localTabOrder = groups.map { it.tabIndex }
+    // Full-list indices are reassigned after closes and remote-layout updates, so replace
+    // the measurement map whenever the set of local slots changes.
+    val localTabBounds = remember(localTabOrder) {
+        mutableMapOf<Int, androidx.compose.ui.geometry.Rect>()
+    }
     val latestOnTabReordered by rememberUpdatedState(onTabReordered)
     val isWindowFocused = LocalWindowInfo.current.isWindowFocused
     val resetTabDrag: () -> Unit = {
@@ -604,13 +608,12 @@ fun TabBar(
             )
             .then(
                 if (vertical) {
-                    Modifier
-                        .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) {
-                            if (draggedTabIndex != null) resetTabDrag()
-                        }
-                        .onPointerEvent(PointerEventType.Exit, PointerEventPass.Initial) {
-                            resetTabDrag()
-                        }
+                    Modifier.onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) {
+                        // A fresh press is the fallback cleanup for a release that was lost
+                        // without a focus change. Leaving the narrow sidebar must not cancel
+                        // an otherwise valid in-flight drag.
+                        if (draggedTabIndex != null) resetTabDrag()
+                    }
                 } else {
                     Modifier
                 }

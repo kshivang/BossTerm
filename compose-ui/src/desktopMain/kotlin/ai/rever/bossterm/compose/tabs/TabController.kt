@@ -52,6 +52,36 @@ internal fun indexAfterTabMove(index: Int, fromIndex: Int, toIndex: Int): Int {
 }
 
 /**
+ * Return the full index permutation for moving a tab only among [movableIndices].
+ * Indices outside that subset retain both their item and their position.
+ */
+internal fun tabOrderAfterMoveWithin(
+    tabCount: Int,
+    fromIndex: Int,
+    toIndex: Int,
+    movableIndices: List<Int>
+): List<Int>? {
+    if (tabCount <= 0 || fromIndex == toIndex) return null
+
+    val slots = movableIndices.distinct().sorted()
+    if (slots.any { it !in 0 until tabCount }) return null
+
+    val fromSlot = slots.indexOf(fromIndex)
+    val toSlot = slots.indexOf(toIndex)
+    if (fromSlot == -1 || toSlot == -1) return null
+
+    val reorderedItems = slots.toMutableList()
+    val movedItem = reorderedItems.removeAt(fromSlot)
+    reorderedItems.add(toSlot, movedItem)
+
+    return (0 until tabCount).toMutableList().also { order ->
+        slots.forEachIndexed { slotIndex, fullIndex ->
+            order[fullIndex] = reorderedItems[slotIndex]
+        }
+    }
+}
+
+/**
  * Controller for managing multiple terminal tabs.
  *
  * This class is responsible for the lifecycle of terminal tabs, including:
@@ -1920,6 +1950,33 @@ class TabController(
         val newActiveTabIndex = indexAfterTabMove(activeTabIndex, fromIndex, toIndex)
         val tab = tabs.removeAt(fromIndex)
         tabs.add(toIndex, tab)
+        activeTabIndex = newActiveTabIndex
+        return true
+    }
+
+    /**
+     * Move a tab among a subset of full-list indices while leaving all other slots untouched.
+     * Used by the sidebar so local tabs can reorder without shifting mirrored remote tabs.
+     */
+    fun moveTabWithinIndices(
+        fromIndex: Int,
+        toIndex: Int,
+        movableIndices: List<Int>
+    ): Boolean {
+        val newOrder = tabOrderAfterMoveWithin(
+            tabCount = tabs.size,
+            fromIndex = fromIndex,
+            toIndex = toIndex,
+            movableIndices = movableIndices
+        ) ?: return false
+
+        val previousTabs = tabs.toList()
+        val newActiveTabIndex = newOrder.indexOf(activeTabIndex)
+        newOrder.forEachIndexed { newIndex, previousIndex ->
+            if (newIndex != previousIndex) {
+                tabs[newIndex] = previousTabs[previousIndex]
+            }
+        }
         activeTabIndex = newActiveTabIndex
         return true
     }

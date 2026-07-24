@@ -14,8 +14,20 @@ class TabReorderTest {
         assertEquals(null, nearestTabIndex(pointerY = 20f, tabCenters = emptyList()))
         assertEquals(0, nearestTabIndex(pointerY = -10f, tabCenters = centers))
         assertEquals(0, nearestTabIndex(pointerY = 40f, tabCenters = centers))
+        assertEquals(1, nearestTabIndex(pointerY = 40.01f, tabCenters = centers))
         assertEquals(1, nearestTabIndex(pointerY = 72f, tabCenters = centers))
         assertEquals(2, nearestTabIndex(pointerY = 130f, tabCenters = centers))
+    }
+
+    @Test
+    fun `context menu reorder follows sparse local visual order`() {
+        val localOrder = listOf(0, 2, 4)
+
+        assertEquals(null, tabReorderNeighbor(0, localOrder, -1))
+        assertEquals(2, tabReorderNeighbor(0, localOrder, 1))
+        assertEquals(0, tabReorderNeighbor(2, localOrder, -1))
+        assertEquals(4, tabReorderNeighbor(2, localOrder, 1))
+        assertEquals(null, tabReorderNeighbor(4, localOrder, 1))
     }
 
     @Test

@@ -54,6 +54,8 @@ internal fun tabOrderAfterMoveWithin(
 ): List<Int>? {
     if (tabCount <= 0 || fromIndex == toIndex) return null
 
+    // TabbedTerminal derives the visible local groups by filtering a mapIndexed list, so
+    // visual order is the ascending order of their full-list slots.
     val slots = movableIndices.distinct().sorted()
     if (slots.any { it !in 0 until tabCount }) return null
 
@@ -1946,6 +1948,8 @@ class TabController(
 
         val previousTabs = tabs.toList()
         val newActiveTabIndex = newOrder.indexOf(activeTabIndex)
+        // Keep the SnapshotStateList instance stable and write only changed local slots;
+        // non-movable remote slots retain their entries without emitting snapshot writes.
         newOrder.forEachIndexed { newIndex, previousIndex ->
             if (newIndex != previousIndex) {
                 tabs[newIndex] = previousTabs[previousIndex]

@@ -147,6 +147,12 @@ internal fun nearestTabIndex(pointerY: Float, tabCenters: List<Pair<Int, Float>>
     return tabCenters.minByOrNull { (_, centerY) -> abs(centerY - pointerY) }?.first
 }
 
+/** Return a neighboring tab in visual order; [delta] is normally -1 or 1. */
+internal fun tabReorderNeighbor(tabIndex: Int, tabOrder: List<Int>, delta: Int): Int? {
+    val position = tabOrder.indexOf(tabIndex)
+    return if (position == -1) null else tabOrder.getOrNull(position + delta)
+}
+
 /** A tab and its panes, rendered as a visually-grouped cluster of chips. */
 data class TabBarGroup(val tabIndex: Int, val panes: List<TabBarPane>)
 
@@ -267,7 +273,8 @@ private val REMOTE_AI_ASSISTANTS = listOf(
  * - New tab button (+)
  * - Active/focused pane highlighting
  * - Right-click context menu: Create Worktree for This…, Rename…, Color ▸,
- *   Duplicate, Close, Close Others, Close Tabs Below, Move Tab to New Window
+ *   Duplicate, Move Up/Down (or Left/Right), Close, Close Others, Close Tabs Below,
+ *   Move Tab to New Window
  * - Drag a local tab group in the expanded left sidebar to reorder tabs
  *
  * Styling matches the Material 3 design of the search bar for visual consistency.
@@ -376,6 +383,10 @@ fun TabBar(
             } + ContextMenuController.MenuSeparator(id = "separator_color") +
                 ContextMenuController.MenuItem(id = "color_clear", label = "Clear", enabled = true, action = { onSetColor(tabIndex, paneId, null) })
         )
+        val previousTabIndex = tabReorderNeighbor(tabIndex, localTabOrder, -1)
+        val nextTabIndex = tabReorderNeighbor(tabIndex, localTabOrder, 1)
+        val movePreviousLabel = if (vertical) "Move Tab Up" else "Move Tab Left"
+        val moveNextLabel = if (vertical) "Move Tab Down" else "Move Tab Right"
         val items = listOf(
             ContextMenuController.MenuItem(id = "new_tab", label = "New Tab", enabled = true, action = { onNewTab() }),
             ContextMenuController.MenuItem(
@@ -389,6 +400,18 @@ fun TabBar(
             colorSubmenu,
             ContextMenuController.MenuSeparator(id = "separator_tab_ops"),
             ContextMenuController.MenuItem(id = "duplicate_tab", label = "Duplicate Tab", enabled = true, action = { onDuplicate(tabIndex) }),
+            ContextMenuController.MenuItem(
+                id = "move_tab_previous",
+                label = movePreviousLabel,
+                enabled = previousTabIndex != null,
+                action = { previousTabIndex?.let { latestOnTabReordered(tabIndex, it) } }
+            ),
+            ContextMenuController.MenuItem(
+                id = "move_tab_next",
+                label = moveNextLabel,
+                enabled = nextTabIndex != null,
+                action = { nextTabIndex?.let { latestOnTabReordered(tabIndex, it) } }
+            ),
             ContextMenuController.MenuItem(id = "close_pane", label = "Close", enabled = true, action = { onPaneClosed(tabIndex, paneId) }),
             ContextMenuController.MenuItem(id = "close_others", label = "Close Other Tabs", enabled = true, action = { onCloseOthers(tabIndex) }),
             ContextMenuController.MenuItem(id = "close_below", label = "Close Tabs Below", enabled = true, action = { onCloseBelow(tabIndex) }),

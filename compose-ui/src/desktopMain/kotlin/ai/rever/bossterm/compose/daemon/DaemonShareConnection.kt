@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.daemon
 
+import ai.rever.bossterm.compose.share.GraphicsResyncLimiter
 import kotlinx.coroutines.CompletableDeferred
 
 /**
@@ -25,6 +26,7 @@ internal class DaemonShareConnection(
     // Tighter budget than the attach outbox: browser viewers ride real (possibly remote) links, and
     // a healing re-snapshot replaces a big stale backlog more cheaply than delivering it.
     val outbox = FrameOutbox(outputCapacityChars = 2 * 1024 * 1024)
+    internal val graphicsResyncLimiter = GraphicsResyncLimiter()
 }
 
 /**

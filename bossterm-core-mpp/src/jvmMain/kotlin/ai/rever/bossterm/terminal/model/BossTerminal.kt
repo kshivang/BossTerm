@@ -687,7 +687,9 @@ class BossTerminal(
 
                 currentBufferRow++
             }
-            terminalTextBuffer.imageCellRowsChanged(bufferRow)
+            // Change listeners use screen-row coordinates; a tall image can scroll its anchor
+            // into history while it is being placed, but must never publish a negative fromRow.
+            terminalTextBuffer.imageCellRowsChanged(bufferRow.coerceAtLeast(0))
         } finally {
             terminalTextBuffer.endBatch()
         }

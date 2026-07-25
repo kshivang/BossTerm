@@ -154,6 +154,9 @@ class MirrorShare(
         if (viewers.remove(vc)) {
             vc.outbox.close()
             broadcast(ServerMessage.Presence(viewers.size))
+            if (viewers.none { it.supportsPaneGraphics }) {
+                synchronized(taps) { taps.values.forEach { it.monitoringGraphics.set(false) } }
+            }
             // Last viewer gone → undo any "fit host to my screen" resize.
             if (viewers.isEmpty()) SessionShareManager.releaseEmbeddedFit(tabId)
         }
@@ -182,9 +185,16 @@ class MirrorShare(
             val sz = sig.sizes[id] ?: listOf(80, 24)
             out.add(ServerMessage.PaneSnapshot(id, snapshotText(tab), sz[0], sz[1]))
             if (includePaneGraphics) {
-                val tracker = synchronized(taps) { taps[id]?.graphics }
+                val entry = synchronized(taps) { taps[id] }
+                val tracker = entry?.graphics
                     ?: PaneGraphicsTracker(id, tab.textBuffer, tab.terminal.getImageDataCache())
-                out.add(tracker.fullMessage())
+                // The first graphics-capable viewer establishes the shared baseline. A later
+                // viewer gets a private full frame without advancing revisions for existing peers.
+                val full = tracker.fullMessage(
+                    commit = viewers.none { it.supportsPaneGraphics }
+                )
+                if (full.requiredImageIds.isNotEmpty()) entry?.monitoringGraphics?.set(true)
+                out.add(full)
             }
         }
         return out
@@ -227,8 +237,10 @@ class MirrorShare(
     fun handleClient(vc: ViewerConnection, msg: ClientMessage) {
         if (msg is ClientMessage.GraphicsResync) {
             if (vc.supportsPaneGraphics) {
-                synchronized(taps) { taps[msg.paneId]?.graphics?.fullMessage() }
-                    ?.let { vc.outbox.trySend(ShareProtocol.encodeServer(it)) }
+                val tracker = synchronized(taps) { taps[msg.paneId]?.graphics }
+                if (tracker != null && vc.graphicsResyncLimiter.tryAcquire(msg.paneId)) {
+                    vc.outbox.trySend(ShareProtocol.encodeServer(tracker.fullMessage(commit = false)))
+                }
             }
             return
         }
@@ -451,7 +463,7 @@ class MirrorShare(
     }
 
     companion object {
-        private const val GRAPHICS_SYNC_DEBOUNCE_MS = 16L
+        private const val GRAPHICS_SYNC_DEBOUNCE_MS = 100L
 
         // MCP server name/label as the CLI attachers register it / as broadcast to viewers.
         // The embedder's BossTermMcpConfig is a Compose CompositionLocal (unavailable in this
@@ -501,6 +513,7 @@ class MirrorShare(
     private fun reconcile(sig: WindowSig) {
         val paneMap = paneTabMap()
         if (paneMap.isEmpty()) { onEnded(); return }
+        val hasGraphicsViewer = viewers.any { it.supportsPaneGraphics }
         synchronized(taps) {
             (taps.keys - paneMap.keys).toList().forEach { id ->
                 taps.remove(id)?.let(::disposeTap)
@@ -511,7 +524,7 @@ class MirrorShare(
                     val detector = GraphicsSequenceDetector()
                     lateinit var entry: TapEntry
                     val listener: (String) -> Unit = { d ->
-                        if (detector.inspect(d)) {
+                        if (detector.inspect(d) && viewers.any { it.supportsPaneGraphics }) {
                             entry.monitoringGraphics.set(true)
                             scheduleGraphicsSync(id, entry)
                         }
@@ -528,9 +541,11 @@ class MirrorShare(
                     tab.textBuffer.addModelListener(modelListener)
                     val sz = sig.sizes[id] ?: listOf(80, 24)
                     broadcast(ServerMessage.PaneSnapshot(id, snapshotText(tab), sz[0], sz[1]))
-                    val initialGraphics = graphics.fullMessage()
-                    if (initialGraphics.requiredImageIds.isNotEmpty()) entry.monitoringGraphics.set(true)
-                    broadcastGraphics(initialGraphics)
+                    if (hasGraphicsViewer) {
+                        val initialGraphics = graphics.fullMessage()
+                        if (initialGraphics.requiredImageIds.isNotEmpty()) entry.monitoringGraphics.set(true)
+                        broadcastGraphics(initialGraphics)
+                    }
                 }
             }
         }
@@ -539,29 +554,39 @@ class MirrorShare(
     }
 
     private fun scheduleGraphicsSync(id: String, entry: TapEntry) {
+        if (viewers.none { it.supportsPaneGraphics }) return
         if (!entry.graphicsSyncPending.compareAndSet(false, true)) {
             entry.graphicsSyncAgain.set(true)
             return
         }
         entry.graphicsSyncJob = coro.launch {
-            // Coalesce multipart transfers and multiple ImageCell row writes into one browser paint.
-            delay(GRAPHICS_SYNC_DEBOUNCE_MS)
-            entry.graphicsSyncPending.set(false)
-            if (synchronized(taps) { taps[id] } !== entry) return@launch
-            val update = entry.graphics.pollUpdate()
-            if (update != null) {
-                val size = entry.tab.display.termSize.value
-                // xterm.js 5 does not emulate Sixel/Kitty cursor movement. Re-anchor its text and
-                // cursor before applying the authoritative image-cell overlay.
-                broadcastGraphics(ServerMessage.PaneSnapshot(
-                    id, snapshotText(entry.tab), size.columns, size.rows
-                ))
-                broadcastGraphics(update)
-            }
-            entry.monitoringGraphics.set(entry.graphics.hasVisibleGraphics())
-            if (entry.graphicsSyncAgain.getAndSet(false)) {
-                entry.monitoringGraphics.set(true)
-                scheduleGraphicsSync(id, entry)
+            try {
+                // Cap full-buffer graphics scans at 10 Hz while coalescing multipart transfers.
+                delay(GRAPHICS_SYNC_DEBOUNCE_MS)
+                if (synchronized(taps) { taps[id] } !== entry) return@launch
+                val update = entry.graphics.pollUpdate()
+                if (update != null) {
+                    if (update.requiresTextSnapshot) {
+                        val size = entry.tab.display.termSize.value
+                        // xterm.js does not emulate image-protocol cursor movement. Re-anchor text
+                        // only for a real placement/raster change, never for ordinary scrolling.
+                        broadcastGraphics(ServerMessage.PaneSnapshot(
+                            id, snapshotText(entry.tab), size.columns, size.rows
+                        ))
+                    }
+                    broadcastGraphics(update.message)
+                }
+                entry.monitoringGraphics.set(entry.graphics.hasVisibleGraphics())
+            } finally {
+                // Keep the pending flag set through capture + sends. A concurrent model change is
+                // represented by graphicsSyncAgain and cannot launch an overlapping poll.
+                entry.graphicsSyncPending.set(false)
+                if (entry.graphicsSyncAgain.getAndSet(false) &&
+                    synchronized(taps) { taps[id] } === entry
+                ) {
+                    entry.monitoringGraphics.set(true)
+                    scheduleGraphicsSync(id, entry)
+                }
             }
         }
     }
@@ -830,6 +855,7 @@ class ViewerConnection(
     val supportsPaneGraphics: Boolean = false,
 ) {
     val outbox: Channel<String> = Channel(capacity = 2048, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    internal val graphicsResyncLimiter = GraphicsResyncLimiter()
 
     /** A mid-session control request is awaiting the host's decision (dedupes re-requests). */
     @Volatile var controlRequestPending = false

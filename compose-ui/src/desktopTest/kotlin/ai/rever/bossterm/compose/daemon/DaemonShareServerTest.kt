@@ -105,6 +105,11 @@ class DaemonShareServerTest {
                 httpStatus(port, "/fonts/NotoSansSymbols2-Regular.ttf", hostHeader = "127.0.0.1:$port"),
                 "the bundled symbol fallback must be served",
             )
+            assertEquals(
+                404,
+                httpStatus(port, "/fonts/not-public.txt", hostHeader = "127.0.0.1:$port"),
+                "the font route must expose only the two explicit viewer assets",
+            )
             assertTrue(
                 httpStatus(port, "/", hostHeader = "evil.example.com") != 403,
                 "share server is token-gated, not Host-gated — must not 403 by Host",

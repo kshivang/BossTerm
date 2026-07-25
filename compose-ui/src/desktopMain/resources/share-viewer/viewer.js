@@ -954,8 +954,9 @@
   var disconnectShown = false; // final prompt is shown at most once
   var reconnectAttempt = 0;
   var reconnectTimer = null;
-  var connectionWasHealthy = false; // a Layout arrived on this connection
+  var reconnectStableTimer = null;
   var MAX_AUTO_RECONNECTS = 3;
+  var RECONNECT_STABLE_MS = 30000;
   // The automatic budget is exhausted: offer a manual retry (which reloads the page and gives
   // it a fresh budget) or close. Terminal failures such as denial / bad E2E keys never get here.
   function showDisconnected() {
@@ -970,17 +971,24 @@
       } }
     ]);
   }
-  // Retry a transient drop before asking the user. A connection that rendered a Layout was
-  // healthy, so it receives a fresh three-attempt budget just like the native remote client.
+  // A reconnect only earns a fresh budget after remaining healthy continuously. A host that
+  // accepts, sends Layout, then immediately drops therefore still exhausts the three attempts.
+  function markConnectionHealthy(socket) {
+    if (!socket || reconnectAttempt === 0 || reconnectStableTimer) return;
+    reconnectStableTimer = setTimeout(function () {
+      reconnectStableTimer = null;
+      if (ws === socket && socket.readyState === 1) reconnectAttempt = 0;
+    }, RECONNECT_STABLE_MS);
+  }
+
+  // Retry a transient drop before asking the user.
   function handleConnectionLost(socket) {
     if (socket && ws !== socket) return; // stale event from a superseded connection
     if (socket) ws = null;               // disarm its pending encrypt/decrypt callbacks
     setStatus("down");
     if (sessionEnded || reconnectTimer) return;
-    if (connectionWasHealthy) {
-      reconnectAttempt = 0;
-      connectionWasHealthy = false;
-    }
+    if (reconnectStableTimer) clearTimeout(reconnectStableTimer);
+    reconnectStableTimer = null;
     if (reconnectAttempt >= MAX_AUTO_RECONNECTS) {
       showDisconnected();
       return;
@@ -992,10 +1000,11 @@
       "The connection was lost. Automatic attempt " + attempt + " of " + MAX_AUTO_RECONNECTS + ".",
       true
     );
+    var retryDelay = Math.max(500, attempt * 1500 + Math.floor(Math.random() * 501) - 250);
     reconnectTimer = setTimeout(function () {
       reconnectTimer = null;
       if (!sessionEnded) connectWebSocket();
-    }, attempt * 1500);
+    }, retryDelay);
   }
 
   function deviceName() {
@@ -1008,20 +1017,24 @@
   // ImageCell placement grid; this transparent canvas mirrors the native renderer cell-for-cell.
   var MAX_PANE_GRAPHICS_BYTES = 50 * 1024 * 1024; // matches each BossTerm terminal cache
   var MAX_VIEWER_GRAPHICS_BYTES = 128 * 1024 * 1024; // hard bound across all shared panes
+  var MAX_GRAPHICS_RESYNCS = 3;
+  var GRAPHICS_RESYNC_TIMEOUT_MS = 3000;
   var viewerGraphicsBytes = 0;
 
   function newGraphicsState() {
     return { revision: null, cells: [], images: {}, bytes: 0, canvas: null, raf: 0,
-             rejected: {}, resyncPending: false };
+             required: {}, rejected: {}, resyncPending: false, resyncAttempts: 0, resyncTimer: null };
   }
 
   function disposeGraphics(p) {
     if (!p || !p.graphics) return;
     var g = p.graphics;
     if (g.raf) cancelAnimationFrame(g.raf);
+    if (g.resyncTimer) clearTimeout(g.resyncTimer);
     Object.keys(g.images).forEach(function (id) { removeGraphicsImage(g, id); });
     if (g.canvas && g.canvas.parentNode) g.canvas.parentNode.removeChild(g.canvas);
-    g.images = {}; g.cells = []; g.bytes = 0; g.canvas = null; g.raf = 0;
+    g.images = {}; g.cells = []; g.bytes = 0; g.canvas = null; g.raf = 0; g.resyncTimer = null;
+    setPaneGraphicsMode(p, false);
   }
 
   function removeGraphicsImage(g, id) {
@@ -1035,8 +1048,27 @@
 
   function base64Bytes(data) {
     if (!data) return 0;
-    var padding = data.endsWith("==") ? 2 : (data.endsWith("=") ? 1 : 0);
+    var padding = data.length > 1 && data.charAt(data.length - 2) === "=" ? 2 :
+      (data.charAt(data.length - 1) === "=" ? 1 : 0);
     return Math.max(0, Math.floor(data.length * 3 / 4) - padding);
+  }
+
+  function setPaneGraphicsMode(p, enabled) {
+    if (!p || p.graphicsTransparent === enabled) return;
+    var current = p.term.options.theme || {};
+    var next = {}, key;
+    for (key in current) if (Object.prototype.hasOwnProperty.call(current, key)) next[key] = current[key];
+    next.background = enabled ? "rgba(0,0,0,0)" : ((theme && theme.background) || "#1e1e1e");
+    try {
+      if (enabled) {
+        p.term.options.allowTransparency = true;
+        p.term.options.theme = next;
+      } else {
+        p.term.options.theme = next;
+        p.term.options.allowTransparency = false;
+      }
+      p.graphicsTransparent = enabled;
+    } catch (e) {}
   }
 
   function ensureGraphicsCanvas(p) {
@@ -1054,7 +1086,8 @@
     }
     if (g.canvas.parentNode !== screen) {
       // Keep images below xterm's glyph/selection/cursor renderer. The terminal's default
-      // background is transparent; the term host supplies the opaque theme background.
+      // background becomes transparent only while this pane has drawable graphics; the term
+      // host supplies the opaque theme background behind both layers.
       screen.insertBefore(g.canvas, screen.querySelector("canvas"));
     }
     return g.canvas;
@@ -1069,7 +1102,19 @@
   }
 
   function drawPaneGraphics(p) {
-    var g = p.graphics, canvas = ensureGraphicsCanvas(p);
+    var g = p.graphics;
+    var hasDrawableImage = Object.keys(g.images).some(function (id) {
+      var image = g.images[id].image;
+      return image && image.complete && image.naturalWidth && image.naturalHeight;
+    });
+    if (!g.cells.length || !hasDrawableImage) {
+      if (g.canvas && g.canvas.parentNode) g.canvas.parentNode.removeChild(g.canvas);
+      g.canvas = null;
+      setPaneGraphicsMode(p, false);
+      return;
+    }
+    setPaneGraphicsMode(p, true);
+    var canvas = ensureGraphicsCanvas(p);
     if (!canvas) return;
     var screen = p.host.querySelector(".xterm-screen");
     var rect = screen && screen.getBoundingClientRect();
@@ -1085,10 +1130,9 @@
     if (!ctx) return;
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
-    if (!g.cells.length || !p.term.cols || !p.term.rows) return;
+    if (!p.term.cols || !p.term.rows) return;
 
     var buffer = p.term.buffer.active;
-    var baseY = buffer.baseY || 0;
     var viewportY = buffer.viewportY || 0;
     var cellW = rect.width / p.term.cols;
     var cellH = rect.height / p.term.rows;
@@ -1096,7 +1140,7 @@
       var cached = g.images[String(run.imageId)];
       var image = cached && cached.image;
       if (!image || !image.complete || !image.naturalWidth || !image.naturalHeight) return;
-      var visibleRow = baseY + run.row - viewportY;
+      var visibleRow = run.row - viewportY;
       if (visibleRow < 0 || visibleRow >= p.term.rows) return;
       var anchorCol = run.col - run.cellX;
       var availableCols = Math.max(1, p.term.cols - anchorCol);
@@ -1122,28 +1166,60 @@
   }
 
   function requestGraphicsResync(paneId, g) {
-    if (g.resyncPending) return;
+    if (g.resyncPending || g.resyncAttempts >= MAX_GRAPHICS_RESYNCS) return;
     g.resyncPending = true;
+    g.resyncAttempts += 1;
     sendMsg({ t: "graphicsResync", paneId: paneId });
+    g.resyncTimer = setTimeout(function () {
+      g.resyncTimer = null;
+      g.resyncPending = false;
+      requestGraphicsResync(paneId, g);
+    }, GRAPHICS_RESYNC_TIMEOUT_MS);
+  }
+
+  function retryBudgetRejectedImages() {
+    Object.keys(panes).forEach(function (paneId) {
+      var g = panes[paneId].graphics, cleared = false;
+      Object.keys(g.rejected).forEach(function (id) {
+        if (g.rejected[id].reason === "budget") {
+          delete g.rejected[id];
+          cleared = true;
+        }
+      });
+      if (cleared) requestGraphicsResync(paneId, g);
+    });
   }
 
   function applyPaneGraphics(m) {
-    var p = getPane(m.paneId), g = p.graphics;
+    // Layout + PaneSnapshot create every live pane before graphics arrive. Ignore a stale frame
+    // instead of materializing an orphan xterm for an id that has already left the layout.
+    var p = panes[m.paneId];
+    if (!p) return;
+    var g = p.graphics;
     var required = {};
     (m.requiredImageIds || []).forEach(function (id) { required[String(id)] = true; });
+    g.required = required;
     var revisionGap = !m.full && g.revision !== null && m.revision !== g.revision + 1;
+    var freedBudget = false;
 
     if (m.full) {
       Object.keys(g.images).forEach(function (id) {
-        if (!required[id]) removeGraphicsImage(g, id);
+        if (!required[id]) {
+          freedBudget = true;
+          removeGraphicsImage(g, id);
+        }
       });
       Object.keys(g.rejected).forEach(function (id) {
         if (!required[id]) delete g.rejected[id];
       });
+      if (g.resyncTimer) clearTimeout(g.resyncTimer);
+      g.resyncTimer = null;
       g.resyncPending = false;
+      g.resyncAttempts = 0;
     }
     (m.removedImageIds || []).forEach(function (id) {
       id = String(id);
+      if (g.images[id]) freedBudget = true;
       removeGraphicsImage(g, id);
       delete g.rejected[id];
     });
@@ -1151,13 +1227,15 @@
       var id = String(wire.id), old = g.images[id];
       if (old && old.hash === wire.contentHash) return;
       if (old) removeGraphicsImage(g, id);
+      var rejected = g.rejected[id];
+      if (rejected && rejected.reason === "decode" && rejected.hash === wire.contentHash) return;
       delete g.rejected[id];
       var bytes = base64Bytes(wire.data);
       // Host-side caches are bounded too. If aggregate pane state exceeds the browser budget,
       // omit that raster (and remember the rejection) instead of retry-looping or growing forever.
       if (bytes > MAX_PANE_GRAPHICS_BYTES || g.bytes + bytes > MAX_PANE_GRAPHICS_BYTES ||
           viewerGraphicsBytes + bytes > MAX_VIEWER_GRAPHICS_BYTES) {
-        g.rejected[id] = true;
+        g.rejected[id] = { reason: "budget", hash: wire.contentHash };
         return;
       }
       var image = new Image();
@@ -1167,11 +1245,18 @@
       viewerGraphicsBytes += bytes;
       image.onload = function () { scheduleGraphicsDraw(p); };
       image.onerror = function () {
-        if (g.images[id] === item) removeGraphicsImage(g, id);
-        requestGraphicsResync(m.paneId, g);
+        if (g.images[id] === item) {
+          removeGraphicsImage(g, id);
+          // The same bytes will not become decodable after a full-state resend. Keep the rejected
+          // hash until the host replaces or removes it, avoiding an infinite full-payload loop.
+          g.rejected[id] = { reason: "decode", hash: wire.contentHash };
+        }
+        retryBudgetRejectedImages();
+        scheduleGraphicsDraw(p);
       };
       image.src = "data:" + (wire.mimeType || "image/png") + ";base64," + wire.data;
     });
+    if (freedBudget) retryBudgetRejectedImages();
     g.cells = m.cells || [];
     g.revision = m.revision;
     var missing = Object.keys(required).some(function (id) {
@@ -1188,9 +1273,9 @@
     var host = document.createElement("div");
     host.className = "termhost";
     var opts = { cursorBlink: true, convertEol: false, scrollback: 5000,
-                 allowTransparency: true,
+                 allowTransparency: false,
                  fontFamily: DEFAULT_TERMINAL_FONT_FAMILY, fontSize: 13,
-                 theme: { background: "rgba(0,0,0,0)", foreground: "#f8f8f2" } };
+                 theme: { background: (theme && theme.background) || "#1e1e1e", foreground: "#f8f8f2" } };
     if (theme) applyThemeToOpts(opts);
     host.style.background = (theme && theme.background) || "#1e1e1e";
     var term = new Terminal(opts);
@@ -1235,7 +1320,7 @@
       followRaf = requestAnimationFrame(function () { followRaf = 0; followCursor(); });
     });
     attachTouchScroll(host, term);
-    p = { term: term, host: host, graphics: newGraphicsState() };
+    p = { term: term, host: host, graphics: newGraphicsState(), graphicsTransparent: false };
     term.onRender(function () { scheduleGraphicsDraw(p); });
     term.onScroll(function () { scheduleGraphicsDraw(p); });
     term.onResize(function () { scheduleGraphicsDraw(p); });
@@ -1319,7 +1404,7 @@
   function applyThemeToOpts(opts) {
     var a = theme.ansi || [];
     opts.theme = {
-      background: "rgba(0,0,0,0)", foreground: theme.foreground, cursor: theme.cursor,
+      background: theme.background || "#1e1e1e", foreground: theme.foreground, cursor: theme.cursor,
       cursorAccent: theme.cursorAccent, selectionBackground: theme.selectionBackground,
       black: a[0], red: a[1], green: a[2], yellow: a[3], blue: a[4], magenta: a[5], cyan: a[6], white: a[7],
       brightBlack: a[8], brightRed: a[9], brightGreen: a[10], brightYellow: a[11],
@@ -1334,6 +1419,7 @@
     Object.keys(panes).forEach(function (id) {
       var o = {}; applyThemeToOpts(o);
       var t = panes[id].term;
+      if (panes[id].graphicsTransparent) o.theme.background = "rgba(0,0,0,0)";
       t.options.theme = o.theme;
       panes[id].host.style.background = m.background || "#1e1e1e";
       if (o.fontFamily) t.options.fontFamily = o.fontFamily;
@@ -1999,7 +2085,7 @@
   }
 
   function onLayout(m) {
-    connectionWasHealthy = true;
+    markConnectionHealthy(ws);
     layout = m;
     tabBarOnLeft = !!m.tabBarOnLeft;
     summaryMode = !!m.summaryMode;

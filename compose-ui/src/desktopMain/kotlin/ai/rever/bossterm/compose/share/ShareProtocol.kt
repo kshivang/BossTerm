@@ -487,9 +487,9 @@ data class SharedTerminalImage(
 )
 
 /**
- * A horizontally contiguous run of image cells. [row] uses BossTerm buffer coordinates:
- * negative values are scrollback, 0 is the top screen row. The browser maps it with xterm's
- * current `baseY`, so deep scrollback truncation does not skew placement.
+ * A horizontally contiguous run of image cells. [row] is the zero-based absolute buffer index
+ * (oldest retained history line = 0, followed by the screen). This stays stable when a screen line
+ * first scrolls into growing history and matches xterm's `viewportY` coordinate system directly.
  */
 @Serializable
 data class SharedImageCellRun(

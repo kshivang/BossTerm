@@ -48,7 +48,7 @@ class ShareProtocolTest {
             full = true,
             images = listOf(SharedTerminalImage("42", "image/png", "cG5n", "abc")),
             requiredImageIds = listOf("42"),
-            cells = listOf(SharedImageCellRun("42", -1, 2, 0, 0, 3, 3, 2)),
+            cells = listOf(SharedImageCellRun("42", 4, 2, 0, 0, 3, 3, 2)),
         )
         val graphicsJson = ShareProtocol.encodeServer(graphics)
         assertTrue(graphicsJson.contains("\"t\":\"paneGraphics\""))

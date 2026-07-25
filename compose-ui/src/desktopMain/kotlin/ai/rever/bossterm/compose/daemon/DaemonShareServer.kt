@@ -20,6 +20,7 @@ import ai.rever.bossterm.compose.share.TerminalSnapshotEncoder
 import ai.rever.bossterm.compose.share.webTerminalFontFamily
 import ai.rever.bossterm.terminal.model.TerminalModelListener
 import io.ktor.http.CacheControl
+import io.ktor.http.HttpHeaders
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
@@ -27,6 +28,8 @@ import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticResources
 import io.ktor.server.plugins.origin
+import io.ktor.server.response.respondResource
+import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
@@ -148,8 +151,8 @@ class DaemonShareServer(
         /** Delay before re-snapshotting a pane whose output was dropped under back-pressure —
          *  long enough to coalesce a burst of drops into one heal, short enough to feel instant. */
         const val RESNAPSHOT_DELAY_MS = 500L
-        /** One animation frame: coalesces multipart image transfers and row-by-row placements. */
-        const val GRAPHICS_SYNC_DEBOUNCE_MS = 16L
+        /** Caps full-buffer graphics scans at 10 Hz while coalescing multipart transfers. */
+        const val GRAPHICS_SYNC_DEBOUNCE_MS = 100L
     }
 
     /** A granted device key: which share, its role, the client it was issued to, and its windows. */
@@ -461,8 +464,13 @@ class DaemonShareServer(
                     install(WebSockets)
                     routing {
                         webSocket("/ws/{token}") { serveViewer(this) }
-                        staticResources("/fonts", "fonts") {
-                            cacheControl { listOf(CacheControl.NoCache(null)) }
+                        get("/fonts/MesloLGSNF-Regular.ttf") {
+                            call.response.headers.append(HttpHeaders.CacheControl, "no-cache")
+                            call.respondResource("fonts/MesloLGSNF-Regular.ttf")
+                        }
+                        get("/fonts/NotoSansSymbols2-Regular.ttf") {
+                            call.response.headers.append(HttpHeaders.CacheControl, "no-cache")
+                            call.respondResource("fonts/NotoSansSymbols2-Regular.ttf")
                         }
                         // Static web viewer (index.html + viewer.js + css). Share URL:
                         // http://<host>:<port>/?t=<token>. no-cache so a phone re-validates the
@@ -683,34 +691,43 @@ class DaemonShareServer(
                 return
             }
             attachment.graphicsSyncJob = ws.launch {
-                delay(GRAPHICS_SYNC_DEBOUNCE_MS)
-                attachment.graphicsSyncPending.set(false)
-                if (synchronized(attachLock) { attachments[attachment.core.id] } !== attachment) return@launch
-                val update = attachment.graphics.pollUpdate()
-                if (update != null) {
-                    val core = attachment.core
-                    val currentSize = core.display.termSizeFlow.value
-                    // Control frames drain before raw output. Purge chunks already represented by
-                    // this authoritative paint so a Sixel/Kitty sequence cannot replay after it.
-                    vc.outbox.dropQueuedOutput(core.id)
-                    vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(
-                        ServerMessage.PaneSnapshot(
-                            core.id,
-                            TerminalSnapshotEncoder.encode(
-                                core.textBuffer.createSnapshot(),
-                                core.terminal.cursorX,
-                                core.terminal.cursorY,
-                            ),
-                            currentSize.columns,
-                            currentSize.rows,
+                try {
+                    delay(GRAPHICS_SYNC_DEBOUNCE_MS)
+                    if (synchronized(attachLock) { attachments[attachment.core.id] } !== attachment) return@launch
+                    val update = attachment.graphics.pollUpdate()
+                    if (update != null) {
+                        val core = attachment.core
+                        if (update.requiresTextSnapshot) {
+                            val currentSize = core.display.termSizeFlow.value
+                            // Control frames outrank queued raw output. Keep that output instead of
+                            // purging it: replaying a small overlap is preferable to dropping bytes
+                            // the emulator had not interpreted when this snapshot was captured.
+                            vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(
+                                ServerMessage.PaneSnapshot(
+                                    core.id,
+                                    TerminalSnapshotEncoder.encode(
+                                        core.textBuffer.createSnapshot(),
+                                        core.terminal.cursorX,
+                                        core.terminal.cursorY,
+                                    ),
+                                    currentSize.columns,
+                                    currentSize.rows,
+                                )
+                            )))
+                        }
+                        vc.outbox.sendControl(
+                            FrameOutbox.Frame.Text(ShareProtocol.encodeServer(update.message))
                         )
-                    )))
-                    vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(update)))
-                }
-                attachment.monitoringGraphics.set(attachment.graphics.hasVisibleGraphics())
-                if (attachment.graphicsSyncAgain.getAndSet(false)) {
-                    attachment.monitoringGraphics.set(true)
-                    scheduleGraphicsSync(attachment)
+                    }
+                    attachment.monitoringGraphics.set(attachment.graphics.hasVisibleGraphics())
+                } finally {
+                    attachment.graphicsSyncPending.set(false)
+                    if (attachment.graphicsSyncAgain.getAndSet(false) &&
+                        synchronized(attachLock) { attachments[attachment.core.id] } === attachment
+                    ) {
+                        attachment.monitoringGraphics.set(true)
+                        scheduleGraphicsSync(attachment)
+                    }
                 }
             }
         }
@@ -890,8 +907,13 @@ class DaemonShareServer(
                 val msg = decodeIncoming(frame) ?: continue
                 if (msg is ClientMessage.GraphicsResync) {
                     if (vc.supportsPaneGraphics) {
-                        synchronized(attachLock) { attachments[msg.paneId]?.graphics?.fullMessage() }
-                            ?.let { vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(it))) }
+                        val tracker = synchronized(attachLock) { attachments[msg.paneId]?.graphics }
+                        if (tracker != null && vc.graphicsResyncLimiter.tryAcquire(msg.paneId)) {
+                            val full = tracker.fullMessage()
+                            vc.outbox.sendControl(
+                                FrameOutbox.Frame.Text(ShareProtocol.encodeServer(full))
+                            )
+                        }
                     }
                 } else {
                     handleClient(def, vc, msg)
@@ -920,7 +942,8 @@ class DaemonShareServer(
         val tap: (String) -> Unit,
         val modelListener: TerminalModelListener,
         val graphics: PaneGraphicsTracker,
-        @Suppress("unused") val detector: GraphicsSequenceDetector,
+        /** Retains detector state across fragmented PTY chunks for this attachment's lifetime. */
+        val detector: GraphicsSequenceDetector,
     ) {
         val ready = AtomicBoolean(false)
         val monitoringGraphics = AtomicBoolean(false)

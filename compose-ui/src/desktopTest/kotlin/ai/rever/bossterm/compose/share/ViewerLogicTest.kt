@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose.share
 
+import java.nio.file.Files
+import kotlin.io.path.deleteIfExists
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -35,10 +37,16 @@ class ViewerLogicTest {
                 assert.strictEqual(logic.visibleImageRow(100, offset, 95), 0);
                 assert.strictEqual(logic.visibleImageRow(100, offset, 100), -5);
             """.trimIndent()
-        val process = ProcessBuilder("node", "-e", harness)
-            .redirectErrorStream(true)
-            .start()
-        val output = process.inputStream.bufferedReader().use { it.readText() }
-        assertEquals(0, process.waitFor(), output)
+        val script = Files.createTempFile("bossterm-viewer-logic-", ".cjs")
+        try {
+            Files.writeString(script, harness)
+            val process = ProcessBuilder("node", script.toString())
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            assertEquals(0, process.waitFor(), output)
+        } finally {
+            script.deleteIfExists()
+        }
     }
 }

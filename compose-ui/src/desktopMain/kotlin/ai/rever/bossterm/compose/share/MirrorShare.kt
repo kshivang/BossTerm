@@ -183,7 +183,15 @@ class MirrorShare(
                 SettingsManager.instance.settings,
                 VoiceAgentStorage.keyPresentFlow,
             ) { _, _ -> voiceService.status() }
-                .distinctUntilChanged().collect { broadcast(it) }
+                .distinctUntilChanged()
+                .collect { status ->
+                    // Per-viewer, not broadcast: only a controller may see WHY voice is unavailable.
+                    val redacted = status.copy(reason = null)
+                    for (vc in viewers) {
+                        val msg = if (vc.canControl) status else redacted
+                        vc.outbox.sendControl(ShareProtocol.encodeServer(msg))
+                    }
+                }
         }
     }
 
@@ -295,13 +303,16 @@ class MirrorShare(
         }
     }
 
-    /** Theme + Layout + a PaneSnapshot per pane, for a newly-connected viewer. */
-    fun initialMessages(includePaneGraphics: Boolean = false): List<ServerMessage> {
+    /**
+     * Theme + Layout + a PaneSnapshot per pane, for a newly-connected viewer. [canControl] gates the
+     * voice-status reason, which is host configuration (see [VoiceCallService.status]).
+     */
+    fun initialMessages(includePaneGraphics: Boolean = false, canControl: Boolean = false): List<ServerMessage> {
         val sig = computeSignature()
         val out = ArrayList<ServerMessage>()
         out.add(themeMessage())
         out.add(mcpStatusMessage())
-        out.add(voiceService.status())
+        out.add(voiceService.status(withReason = canControl))
         out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
@@ -412,6 +423,11 @@ class MirrorShare(
         when (msg) {
             is ClientMessage.Focus -> { rememberVoiceTab(vc, msg.tabId); return }
             is ClientMessage.VoiceStart -> {
+                // One connection holds at most one call: redialling without a clean voiceEnd used to
+                // orphan the previous token for its full 6h TTL, and since openCall() refuses rather
+                // than evicts, eight redials wedged the share at too_many_calls for that long.
+                voiceService.closeCall(vc.voiceCallToken)
+                vc.voiceCallToken = null
                 rememberVoiceTab(vc, msg.activeTabId)
                 voiceService.handleStart(msg, vc.canControl) { m ->
                     // Record the token on the way OUT. Populating it from an inbound voiceToolCall

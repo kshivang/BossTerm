@@ -62,14 +62,30 @@ internal class VoiceCallService(
      */
     private val liveCalls = LinkedHashMap<String, Long>()
 
-    /** Current availability, for the viewer's Call button (sent on connect + on change). */
-    fun status(): ServerMessage.VoiceStatus {
+    /**
+     * Current availability, for the viewer's Call button (sent on connect + on change).
+     *
+     * [withReason] gates the machine code: "disabled" vs "no_key" tells the reader whether the host
+     * has an OpenAI key configured, which is host configuration a view-only guest has no business
+     * knowing. Controllers get it because it's actionable for them; the host has
+     * `VoiceAvailabilityLine` for the same diagnosis.
+     */
+    fun status(withReason: Boolean = true): ServerMessage.VoiceStatus {
         val s = settings()
-        return when {
-            !s.voiceCallEnabled -> ServerMessage.VoiceStatus(available = false, reason = "disabled")
-            !keyPresent() -> ServerMessage.VoiceStatus(available = false, reason = "no_key")
-            else -> ServerMessage.VoiceStatus(available = true)
+        val reason = when {
+            !s.voiceCallEnabled -> "disabled"
+            !keyPresent() -> "no_key"
+            else -> null
         }
+        return ServerMessage.VoiceStatus(
+            available = reason == null,
+            reason = reason?.takeIf { withReason },
+        )
+    }
+
+    /** Warm the executor's tool surface off the socket thread (see [handleStart]). */
+    private fun warmTools() {
+        runCatching { executor.tools() }
     }
 
     /**
@@ -107,6 +123,7 @@ internal class VoiceCallService(
             return
         }
         scope.launch {
+            warmTools() // building the private MCP server here, not on the socket's receive loop
             val tools = executor.tools()
             val result = broker.mint(
                 apiKey = key,

@@ -136,6 +136,16 @@ object VoiceToolCatalog {
         ),
     )
 
+    /**
+     * The parameter names a tool actually advertises. Both executors filter the model's arguments
+     * through this: the underlying MCP schemas are WIDER than this catalog (run_command also takes
+     * panel/working_dir), and the two surfaces must agree on that invariant — otherwise the next
+     * parameter added to a daemon tool becomes silently reachable from voice.
+     */
+    fun declaredParameters(def: VoiceToolDef): Set<String> =
+        runCatching { (def.parameters["properties"] as? JsonObject)?.keys?.toSet() }
+            .getOrNull().orEmpty()
+
     /** Render [defs] as the OpenAI Realtime session `tools` array (`[{type:"function",…}]`). */
     fun openAiToolsJson(defs: List<VoiceToolDef>): JsonArray = buildJsonArray {
         for (d in defs) {

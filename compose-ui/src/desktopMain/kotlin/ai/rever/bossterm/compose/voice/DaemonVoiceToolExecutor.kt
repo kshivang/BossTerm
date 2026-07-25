@@ -70,8 +70,11 @@ internal class DaemonVoiceToolExecutor(
         }
         if (target == null) throw VoiceToolException("No session available")
 
+        // Same allowlist as the GUI executor: only keys this tool advertises reach DaemonMcpTools.
+        val def = tools().first { it.name == name }
+        val allowed = VoiceToolCatalog.declaredParameters(def)
         val daemonArgs = buildJsonObject {
-            args.forEach { (k, v) -> if (k != "tab_id") put(k, v) }
+            args.forEach { (k, v) -> if (k != "tab_id" && k in allowed) put(k, v) }
             put("session_id", target)
         }
         return when (name) {

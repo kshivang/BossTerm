@@ -138,7 +138,7 @@ internal class GuiVoiceToolExecutor(
         // `panel: "new_tab"` would run the command in a tab the share doesn't mirror, undercutting
         // the "targets are limited to the share" guarantee even though a controller could open a tab
         // by other means.
-        val allowed = declaredParameters(def)
+        val allowed = VoiceToolCatalog.declaredParameters(def)
         val effectiveArgs = buildJsonObject {
             args.forEach { (k, v) -> if (k != "tab_id" && k in allowed) put(k, v) }
             put("tab_id", targetTabId)
@@ -178,12 +178,6 @@ internal class GuiVoiceToolExecutor(
             put("isActive", registry.findState(tab.id)?.activeTabId == tab.id)
         }.toString()
     }
-
-    /** The property names declared in a catalog tool's own JSON schema. */
-    private fun declaredParameters(def: VoiceToolDef): Set<String> =
-        runCatching {
-            (def.parameters["properties"] as? JsonObject)?.keys?.toSet()
-        }.getOrNull().orEmpty()
 
     private fun JsonObject.stringArg(key: String): String? =
         (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content

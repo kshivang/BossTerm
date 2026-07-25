@@ -437,6 +437,13 @@
   // response.done's output[] — handle both, dedupe by call_id.
   function voiceHandleFunctionCall(callId, name, argsJson) {
     if (!callId || voice.seenCalls[callId]) return;
+    // Dedupe set, trimmed so a long call can't grow it without bound: ids only need to outlive
+    // their own round, and anything still pending is preserved.
+    if (Object.keys(voice.seenCalls).length > 400) {
+      var keep = {};
+      Object.keys(voice.pending).forEach(function (id) { keep[id] = true; });
+      voice.seenCalls = keep;
+    }
     voice.seenCalls[callId] = true;
     voice.pending[callId] = true;
     voice.pendingCount += 1;

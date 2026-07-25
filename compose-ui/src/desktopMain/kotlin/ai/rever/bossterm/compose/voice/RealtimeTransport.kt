@@ -1,6 +1,10 @@
 package ai.rever.bossterm.compose.voice
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.net.URI
@@ -61,6 +65,9 @@ internal class JdkRealtimeTransport : RealtimeTransport {
     @Volatile private var writer: Thread? = null
     @Volatile private var open = false
 
+    /** Set by [close]; makes a connect that is still in flight abort its socket instead of keeping it. */
+    @Volatile private var closeRequested = false
+
     override suspend fun connect(
         model: String,
         apiKey: String,
@@ -95,13 +102,24 @@ internal class JdkRealtimeTransport : RealtimeTransport {
         // is user-editable and a stray character would throw URISyntaxException out of connect()
         // instead of surfacing as a failed call.
         val url = "$REALTIME_WS_URL?model=" + URLEncoder.encode(model, StandardCharsets.UTF_8)
-        socket = withContext(Dispatchers.IO) {
+        // NonCancellable so the handshake either produces a socket we own or throws. Cancelling
+        // mid-join used to let join() finish and hand back a LIVE socket while withContext threw
+        // before the assignment — leaving `socket` null, close() a no-op, and a billed realtime
+        // session open to OpenAI until the process exited.
+        val ws = withContext(Dispatchers.IO + NonCancellable) {
             sharedClient.newWebSocketBuilder()
                 .header("Authorization", "Bearer $apiKey")
                 .connectTimeout(Duration.ofSeconds(15))
                 .buildAsync(URI.create(url), listener)
                 .join()
         }
+        // Hung up while we were connecting (either by cancellation or by close() racing the
+        // assignment below): own it just long enough to shut it down.
+        if (!currentCoroutineContext().isActive || closeRequested) {
+            runCatching { ws.abort() }
+            throw CancellationException("voice call ended during connect")
+        }
+        socket = ws
         open = true
         writer = Thread({
             while (open) {
@@ -129,6 +147,7 @@ internal class JdkRealtimeTransport : RealtimeTransport {
     }
 
     override fun close() {
+        closeRequested = true
         open = false
         // A truncated final fragment would otherwise corrupt the first event of the next connect —
         // reachable, since the controller keeps one transport for its whole lifetime.

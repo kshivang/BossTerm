@@ -986,7 +986,10 @@ object SessionShareManager {
         // snapshot may already contain, deterministically replaying it below the snapshot. Once
         // registered, addViewer schedules a graphics poll for every pane to close the graphics
         // admission window even when the pane goes quiet.
-        val initialMessages = share.initialMessages(includePaneGraphics = supportsPaneGraphics)
+        val initialMessages = share.initialMessages(
+            includePaneGraphics = supportsPaneGraphics,
+            canControl = canControl,
+        )
         val vc = share.addViewer(
             canControl,
             hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})",

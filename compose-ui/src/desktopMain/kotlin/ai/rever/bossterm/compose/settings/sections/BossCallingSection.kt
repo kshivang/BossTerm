@@ -74,9 +74,10 @@ internal fun BossCallingSection(
             onCheckedChange = { onSettingsChange(settings.copy(voiceCallEnabled = it)) },
             description = "Show a \"Call BossTerm\" button — in this window and in the share viewer — " +
                     "that starts a voice conversation with an AI agent (OpenAI Realtime) able to " +
-                    "inspect this session and run commands. What the agent reads from your terminal " +
-                    "is sent to OpenAI. On, but idle until you set the API key below; calling from a " +
-                    "share also requires control of it."
+                    "inspect this session and run commands. Starting a call sends your tab titles " +
+                    "and working directories to OpenAI, and anything the agent then reads from the " +
+                    "terminal goes with it. On, but idle until you set the API key below; calling " +
+                    "from a share also requires control of it."
         )
         if (statusLine) VoiceAvailabilityLine(settings)
         if (showAgentOptions) {

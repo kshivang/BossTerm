@@ -738,7 +738,7 @@ class DaemonShareServer(
         // taps/collectors so the outbox only carries output produced AFTER the snapshot (no double paint).
         send(themeMessage())
         send(mcpStatusMessage())
-        send(def.voiceService.status())
+        send(def.voiceService.status(withReason = canControl))
         send(layoutFor(def))
 
         val vc = DaemonShareConnection(
@@ -1120,7 +1120,12 @@ class DaemonShareServer(
                 val status = def.voiceService.status()
                 if (status != def.lastVoiceStatus) {
                     def.lastVoiceStatus = status
-                    def.broadcast(status)
+                    // Per-viewer: the reason is host configuration, for controllers only.
+                    val redacted = status.copy(reason = null)
+                    for (viewer in def.viewers) {
+                        val msg = if (viewer.canControl) status else redacted
+                        viewer.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(msg)))
+                    }
                     // Revoked mid-call: invalidate the call so its tool calls stop too, not just
                     // the button.
                     if (!status.available) def.voiceService.closeCalls()
@@ -1157,6 +1162,11 @@ class DaemonShareServer(
         when (msg) {
             is ClientMessage.Focus -> { rememberVoiceTab(msg.tabId); return }
             is ClientMessage.VoiceStart -> {
+                // One connection holds at most one call: redialling without a clean voiceEnd used to
+                // orphan the previous token for its full 6h TTL, and since openCall() refuses rather
+                // than evicts, eight redials wedged the share at too_many_calls for that long.
+                def.voiceService.closeCall(vc.voiceCallToken)
+                vc.voiceCallToken = null
                 rememberVoiceTab(msg.activeTabId)
                 def.voiceService.handleStart(msg, vc.canControl) { m ->
                     // See MirrorShare: the token is captured from the host's own reply, never from

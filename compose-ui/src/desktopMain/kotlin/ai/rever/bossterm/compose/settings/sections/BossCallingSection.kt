@@ -80,6 +80,15 @@ internal fun BossCallingSection(
                     "terminal goes with it. On, but idle until you set the API key below; calling " +
                     "from a share also requires control of it."
         )
+        SettingsToggle(
+            label = "Allow calls from share viewers",
+            checked = settings.voiceCallShareEnabled,
+            onCheckedChange = { onSettingsChange(settings.copy(voiceCallShareEnabled = it)) },
+            description = "Let someone holding a control-share link start a voice call that can run " +
+                    "commands here. Turn this off to keep Boss Calling for yourself in this window " +
+                    "only — a different trust boundary from calling your own terminal.",
+            enabled = settings.voiceCallEnabled,
+        )
         if (statusLine) VoiceAvailabilityLine(settings)
         if (showAgentOptions) {
             SettingsToggle(
@@ -134,7 +143,9 @@ internal fun BossCallingSection(showAgentOptions: Boolean = true, statusLine: Bo
 private fun VoiceAvailabilityLine(settings: TerminalSettings) {
     val keyPresent by VoiceAgentStorage.keyPresentFlow.collectAsState()
     val (text, color) = when {
-        !settings.voiceCallEnabled -> "Off — viewers see no Call BossTerm button." to TextMuted
+        !settings.voiceCallEnabled -> "Off — no calls from this window or from viewers." to TextMuted
+        !settings.voiceCallShareEnabled ->
+            "In-app only — viewers see no Call BossTerm button." to TextMuted
         !keyPresent -> "No API key yet — viewers see no Call BossTerm button until you add one below." to Danger
         // The viewer shows the button to every device; control is enforced when they click it.
         else -> "Ready — viewers see the Call BossTerm button (calling needs control)." to AccentColor

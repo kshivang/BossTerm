@@ -1050,6 +1050,19 @@ data class TerminalSettings(
     val voiceCallEnabled: Boolean = true,
 
     /**
+     * Whether a REMOTE share viewer may place a voice call, separate from the in-app surface.
+     *
+     * The two are different trust boundaries: [voiceCallEnabled] covers the machine's owner talking
+     * to their own terminal, while this one lets anyone holding a control-share link voice-drive
+     * `run_command`. Splitting them means storing a key to try "Call BossTerm" doesn't silently open
+     * the remote surface too, and turning this off leaves the in-app call working.
+     *
+     * Defaults on, matching the in-app surface. Review feedback recommends defaulting it OFF so the
+     * remote surface is an explicit second opt-in — a product call rather than a code one.
+     */
+    val voiceCallShareEnabled: Boolean = true,
+
+    /**
      * OpenAI Realtime model for Boss Calling. Defaults to the current top-tier realtime model;
      * the viewer never sends this — it is baked into the ephemeral secret the host mints.
      */

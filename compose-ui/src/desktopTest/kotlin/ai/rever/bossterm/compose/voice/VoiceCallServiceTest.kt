@@ -76,6 +76,29 @@ class VoiceCallServiceTest {
         )
     }
 
+    /**
+     * The remote surface has its own switch: turning it off must stop share viewers without touching
+     * the in-app call (which reads voiceCallEnabled only).
+     */
+    @Test
+    fun `the share surface can be turned off independently`() {
+        val svc = VoiceCallService(
+            executor = FakeExecutor(),
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT.copy(voiceCallShareEnabled = false) },
+            loadKey = { "sk-test" },
+            mintTimestamps = ArrayDeque(),
+        )
+        assertEquals("disabled", svc.status().reason, "viewers are told it's unavailable")
+
+        val replies = mutableListOf<ServerMessage>()
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { replies.add(it) }
+        assertEquals("disabled", (replies.single() as ServerMessage.VoiceError).code)
+
+        // Both default on, so the stock install still serves viewers.
+        assertTrue(TerminalSettings.DEFAULT.voiceCallShareEnabled)
+    }
+
     @Test
     fun `voiceStart without control is refused server-side`() {
         val replies = mutableListOf<ServerMessage>()

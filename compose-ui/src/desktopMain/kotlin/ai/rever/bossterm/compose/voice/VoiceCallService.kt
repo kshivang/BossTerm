@@ -80,7 +80,9 @@ internal class VoiceCallService(
     fun status(withReason: Boolean = true): ServerMessage.VoiceStatus {
         val s = settings()
         val reason = when {
-            !s.voiceCallEnabled -> "disabled"
+            // This service only ever serves REMOTE viewers, so both gates apply: the feature switch
+            // and the share-surface switch.
+            !s.voiceCallEnabled || !s.voiceCallShareEnabled -> "disabled"
             !keyPresent() -> "no_key"
             else -> null
         }
@@ -107,7 +109,7 @@ internal class VoiceCallService(
             return
         }
         val s = settings()
-        if (!s.voiceCallEnabled) {
+        if (!s.voiceCallEnabled || !s.voiceCallShareEnabled) {
             reply(ServerMessage.VoiceError(code = "disabled"))
             return
         }
@@ -177,7 +179,8 @@ internal class VoiceCallService(
     ) {
         // The master switch is a kill switch: re-read it here, not just at status/start, so
         // turning Boss Calling off stops an agent that is already mid-call.
-        if (!settings().voiceCallEnabled) {
+        val current = settings()
+        if (!current.voiceCallEnabled || !current.voiceCallShareEnabled) {
             closeCalls()
             reply(toolError(msg.callId, "Boss Calling was turned off on the host"))
             return

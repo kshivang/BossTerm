@@ -167,12 +167,14 @@ internal class HostVoiceCallController(
     /** End the call and release the mic + speaker. */
     fun end() {
         val wasActive = _state.value.active
+        // State FIRST: transport.close() triggers the socket's onClose, and with the state still
+        // "active" that callback would flip a deliberately-ended call to Error.
+        _state.value = HostCallState()
+        _level.value = 0f
         startJob?.cancel()
         startJob = null
         runCatching { audio.stop() }
         runCatching { transport.close() }
-        _state.value = HostCallState()
-        _level.value = 0f
         if (wasActive) log.info("Boss Calling: in-app call ended")
     }
 
@@ -350,6 +352,11 @@ internal class HostVoiceCallController(
             if ("run_command" in names) {
                 appendLine("- Run shell commands with run_command; send_input only for interactive " +
                         "programs (TUIs, prompts); send_signal ctrl_c to interrupt.")
+            } else if ("send_input" in names) {
+                // An embedder with allowWriteTools = false has no run_command; describe what it does
+                // have rather than dropping write guidance entirely.
+                appendLine("- Run shell commands by typing them with send_input (include a trailing " +
+                        "\\n to submit), then read_scrollback for the result; send_signal ctrl_c to interrupt.")
             }
             appendLine("- Say briefly what you are about to do before a slow tool call, and summarize " +
                     "results conversationally — never read raw terminal output verbatim.")

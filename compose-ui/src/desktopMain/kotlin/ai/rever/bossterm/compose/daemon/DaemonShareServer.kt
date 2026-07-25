@@ -237,7 +237,12 @@ class DaemonShareServer(
          * [VoiceAgentStorage.keyPresent], re-read when the file's mtime/size moved — and every
          * [VoiceAgentStorage.STAMP_TRUST_TICKS] ticks regardless, since a same-length replacement
          * inside one second is invisible to the stamp on a coarse-mtime filesystem.
+         *
+         * Synchronized because the 5 s poller and `status()` on the admit path really do run
+         * concurrently, and publishing the new stamp before the new value let a reader take the
+         * fresh stamp and the stale cache.
          */
+        @Synchronized
         fun cachedKeyPresent(): Boolean {
             val stamp = VoiceAgentStorage.keyStamp()
             if (stamp != keyStamp || ++keyStampTicks >= VoiceAgentStorage.STAMP_TRUST_TICKS) {
@@ -1167,6 +1172,13 @@ class DaemonShareServer(
                 return
             }
             is ClientMessage.VoiceToolCall -> {
+                // Defence in depth: the token must be the one THIS connection was issued, not merely
+                // one live somewhere on the share — otherwise another viewer presenting it would
+                // drive the read tools without ever passing handleStart's control gate.
+                if (msg.callToken == null || msg.callToken != vc.voiceCallToken) {
+                    voiceReply(ServerMessage.VoiceError(code = "not_controller"))
+                    return
+                }
                 def.voiceService.handleToolCall(msg, vc.canControl, vc.voiceTabId, voiceReply)
                 return
             }

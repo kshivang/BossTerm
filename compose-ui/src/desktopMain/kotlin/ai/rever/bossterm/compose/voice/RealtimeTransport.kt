@@ -130,6 +130,9 @@ internal class JdkRealtimeTransport : RealtimeTransport {
 
     override fun close() {
         open = false
+        // A truncated final fragment would otherwise corrupt the first event of the next connect —
+        // reachable, since the controller keeps one transport for its whole lifetime.
+        pending.setLength(0)
         writer?.interrupt()
         writer = null
         outgoing.clear()

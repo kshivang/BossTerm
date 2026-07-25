@@ -294,6 +294,36 @@ class VoiceCallServiceTest {
             "the first caller keeps its handle")
     }
 
+    /**
+     * An unbounded result would overflow the host outbox (dropping the viewer) or throw on an
+     * oversized data-channel message AFTER the round was settled — leaving the agent narrating a
+     * result the model never received.
+     */
+    @Test
+    fun `an oversized tool result is truncated rather than sent whole`() = runBlocking {
+        val huge = "x".repeat(400_000)
+        val svc = VoiceCallService(
+            executor = object : VoiceToolExecutor {
+                override fun tools(): List<VoiceToolDef> = VoiceToolCatalog.ALL
+                override fun contextSnapshot(defaultTabId: String?): String = ""
+                override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?) =
+                    """{"data":"$huge"}"""
+            },
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+            mintTimestamps = ArrayDeque(),
+        )
+        val reply = CompletableDeferred<ServerMessage>()
+        svc.handleToolCall(
+            ClientMessage.VoiceToolCall("c1", "read_scrollback", "{}", callToken = svc.openCall()),
+            canControl = true, defaultTabId = "t1",
+        ) { reply.complete(it) }
+        val r = withTimeout(5000) { reply.await() } as ServerMessage.VoiceToolResult
+        assertTrue(r.resultJson.length < 200_000, "must be clamped, was ${r.resultJson.length}")
+        assertTrue(r.resultJson.contains("\"truncated\":true"), r.resultJson.take(120))
+    }
+
     /** Tokens age out, so a call handle can't be replayed indefinitely. */
     @Test
     fun `a token past its TTL stops working`() {

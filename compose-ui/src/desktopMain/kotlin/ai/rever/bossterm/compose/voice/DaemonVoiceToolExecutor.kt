@@ -63,7 +63,10 @@ internal class DaemonVoiceToolExecutor(
             // Needs no target at all — the agent's first orienting call must never fail just because
             // nothing is focused yet (the GUI executor behaves the same way).
             "list_tabs" -> return listTabsJson(scope, target)
-            "get_active_tab" -> return tabInfoJson(target ?: throw VoiceToolException("No session available"))
+            "get_active_tab" -> return tabInfoJson(
+                target ?: throw VoiceToolException("No session available"),
+                viewing = target,
+            )
         }
         if (target == null) throw VoiceToolException("No session available")
 
@@ -94,7 +97,9 @@ internal class DaemonVoiceToolExecutor(
         viewing?.let { put("viewingTabId", it) }
     }.toString()
 
-    private fun tabInfoJson(sessionId: String): String {
+    /** [viewing] is the session the caller is looking at, so `isActive` means the same thing here
+     *  as in [listTabsJson] and in the GUI executor — it used to be hardcoded true. */
+    private fun tabInfoJson(sessionId: String, viewing: String?): String {
         val s = host.list().firstOrNull { it.id == sessionId } ?: return buildJsonObject {
             put("error", "Tab $sessionId is no longer open")
         }.toString()
@@ -102,7 +107,7 @@ internal class DaemonVoiceToolExecutor(
             put("id", s.id)
             put("title", s.title)
             s.cwd?.let { put("cwd", it) }
-            put("isActive", true)
+            put("isActive", s.id == viewing)
         }.toString()
     }
 

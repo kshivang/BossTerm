@@ -429,6 +429,15 @@ class MirrorShare(
                 return
             }
             is ClientMessage.VoiceToolCall -> {
+                // Defence in depth: the token must be the one THIS connection was issued, not merely
+                // one live somewhere on the share — otherwise another viewer presenting it would
+                // drive the read tools without ever passing handleStart's control gate.
+                if (msg.callToken == null || msg.callToken != vc.voiceCallToken) {
+                    vc.outbox.sendControl(
+                        ShareProtocol.encodeServer(ServerMessage.VoiceError(code = "not_controller"))
+                    )
+                    return
+                }
                 voiceService.handleToolCall(msg, vc.canControl, vc.voiceTabId) { m ->
                     // Control lane: a tool result dropped under output back-pressure would leave
                     // the agent waiting on a reply that never comes.
@@ -1045,6 +1054,8 @@ class ViewerConnection(
 internal class BoundedViewerOutbox(
     private val capacityChars: Int = DEFAULT_CAPACITY_CHARS,
     private val capacityFrames: Int = DEFAULT_CAPACITY_FRAMES,
+    private val controlCapacityFrames: Int = CONTROL_CAPACITY_FRAMES,
+    private val controlCapacityChars: Int = CONTROL_CAPACITY_CHARS,
 ) {
     private val lock = Any()
     private val frames = ArrayDeque<String>()
@@ -1057,6 +1068,7 @@ internal class BoundedViewerOutbox(
      * counterpart for in-app shares.
      */
     private val controlFrames = ArrayDeque<String>()
+    private var controlChars = 0
     private var queuedChars = 0
     private val wake = Channel<Unit>(Channel.CONFLATED)
     @Volatile private var closed = false
@@ -1108,22 +1120,59 @@ internal class BoundedViewerOutbox(
         return true
     }
 
-    /** Enqueue a frame that must survive back-pressure (voice control traffic). */
+    /**
+     * Enqueue a frame that must survive back-pressure (voice control traffic).
+     *
+     * Bounded like [ai.rever.bossterm.compose.daemon.FrameOutbox.sendControl], and for the same
+     * reason: a guaranteed lane with no ceiling is a memory hole. Any viewer holding a link can pump
+     * `voiceToolCall` frames — the cheap refusal paths in `VoiceCallService.handleToolCall` reply
+     * before the in-flight gate — while not reading its own socket. Past the bound the connection is
+     * closed rather than grown, because a viewer this far behind is not going to catch up.
+     */
     fun sendControl(text: String): Boolean {
         if (closed || text.isEmpty()) return false
-        synchronized(lock) {
+        val overflow = synchronized(lock) {
             if (closed) return false
-            controlFrames.addLast(text)
+            if (controlFrames.size >= controlCapacityFrames ||
+                controlChars + text.length > controlCapacityChars
+            ) {
+                true
+            } else {
+                controlFrames.addLast(text)
+                controlChars += text.length
+                false
+            }
+        }
+        if (overflow) {
+            log.warn(
+                "Closing stalled viewer outbox: control backlog at {} frames / {} chars",
+                controlFrames.size,
+                controlChars,
+            )
+            close()
+            return false
         }
         wake.trySend(Unit)
         return true
     }
 
     suspend fun drainTo(emit: suspend (String) -> Unit) {
+        var controlBurst = 0
         while (true) {
+            // Prefer control frames, but only [CONTROL_BURST] in a row: draining every one first
+            // would let voice traffic starve pane output entirely.
             val next = synchronized(lock) {
-                controlFrames.removeFirstOrNull()
-                    ?: frames.removeFirstOrNull()?.also { queuedChars -= it.length }
+                val takeControl = controlBurst < CONTROL_BURST
+                val control = if (takeControl) {
+                    controlFrames.removeFirstOrNull()?.also { controlChars -= it.length }
+                } else null
+                if (control != null) {
+                    controlBurst++
+                    control
+                } else {
+                    controlBurst = 0
+                    frames.removeFirstOrNull()?.also { queuedChars -= it.length }
+                }
             }
             if (next != null) {
                 emit(next)
@@ -1139,9 +1188,16 @@ internal class BoundedViewerOutbox(
         wake.close()
     }
 
-    private companion object {
+    internal companion object {
         val log = LoggerFactory.getLogger(BoundedViewerOutbox::class.java)
         const val DEFAULT_CAPACITY_CHARS = 32 * 1024 * 1024
         const val DEFAULT_CAPACITY_FRAMES = 2048
+
+        /** Control-lane bounds — guaranteed delivery, but not at any price. */
+        const val CONTROL_CAPACITY_FRAMES = 1024
+        const val CONTROL_CAPACITY_CHARS = 8 * 1024 * 1024
+
+        /** Control frames drained per pass before yielding to output, so neither starves. */
+        const val CONTROL_BURST = 64
     }
 }

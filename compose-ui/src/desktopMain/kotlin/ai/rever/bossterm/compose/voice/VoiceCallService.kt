@@ -5,6 +5,7 @@ import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.share.ClientMessage
 import ai.rever.bossterm.compose.share.ServerMessage
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -97,6 +98,14 @@ internal class VoiceCallService(
             reply(ServerMessage.VoiceError(code = "rate_limited"))
             return
         }
+        // Reserve the slot BEFORE minting: refusing afterwards means the host already paid for a
+        // billed client_secret it then threw away.
+        val token = openCall()
+        if (token == null) {
+            log.warn("Voice call refused: {} calls already live", MAX_LIVE_CALLS)
+            reply(ServerMessage.VoiceError(code = "too_many_calls"))
+            return
+        }
         scope.launch {
             val tools = executor.tools()
             val result = broker.mint(
@@ -108,25 +117,23 @@ internal class VoiceCallService(
             )
             when (result) {
                 is VoiceSessionBroker.MintResult.Ok -> {
-                    val token = openCall()
-                    if (token == null) {
-                        log.warn("Voice call refused: {} calls already live", MAX_LIVE_CALLS)
-                        reply(ServerMessage.VoiceError(code = "too_many_calls"))
-                    } else {
-                        reply(
-                            ServerMessage.VoiceSession(
-                                clientSecret = result.clientSecret,
-                                model = s.voiceCallModel,
-                                callToken = token,
-                            )
+                    reply(
+                        ServerMessage.VoiceSession(
+                            clientSecret = result.clientSecret,
+                            model = s.voiceCallModel,
+                            callToken = token,
                         )
-                        onCallActivity(true)
-                    }
+                    )
+                    onCallActivity(true)
                 }
-                is VoiceSessionBroker.MintResult.Unauthorized ->
+                is VoiceSessionBroker.MintResult.Unauthorized -> {
+                    closeCall(token) // the reservation didn't become a call
                     reply(ServerMessage.VoiceError(code = "unauthorized"))
-                is VoiceSessionBroker.MintResult.Failed ->
+                }
+                is VoiceSessionBroker.MintResult.Failed -> {
+                    closeCall(token)
                     reply(ServerMessage.VoiceError(code = "mint_failed", message = result.message))
+                }
             }
         }
     }
@@ -162,6 +169,10 @@ internal class VoiceCallService(
             reply(toolError(msg.callId, "The caller does not have control of this session"))
             return
         }
+        if (!scope.isActive) {
+            reply(toolError(msg.callId, "This session is shutting down"))
+            return
+        }
         // Claim the slot atomically — get()-then-increment let two concurrent socket messages both
         // see room and push past the cap. getAndUpdate hands back the PREVIOUS count, so a value
         // below the cap means this call is the one that took the slot.
@@ -180,7 +191,7 @@ internal class VoiceCallService(
         val job = scope.launch {
             bodyRan = true
             try {
-                val resultJson = executor.execute(def.name, args, defaultTabId)
+                val resultJson = clampResult(def.name, executor.execute(def.name, args, defaultTabId))
                 reply(ServerMessage.VoiceToolResult(callId = msg.callId, resultJson = resultJson))
             } catch (e: VoiceToolException) {
                 reply(toolError(msg.callId, e.message ?: "Tool call rejected"))
@@ -192,6 +203,25 @@ internal class VoiceCallService(
             }
         }
         job.invokeOnCompletion { if (!bodyRan) inFlightToolCalls.decrementAndGet() }
+    }
+
+    /**
+     * Bound a tool result before it crosses the wire.
+     *
+     * The GUI handlers self-clip, but the daemon's read_scrollback doesn't — `{"lines": 1000000}`
+     * builds the whole buffer into one JSON string. Host-side that can overflow the outbox and drop
+     * the viewer mid-call; viewer-side an oversized SCTP message throws AFTER the round was settled,
+     * so the agent would narrate a result the model never received. Clamping here covers both.
+     */
+    private fun clampResult(tool: String, resultJson: String): String {
+        if (resultJson.length <= MAX_RESULT_CHARS) return resultJson
+        log.warn("Voice tool {} returned {} chars; truncating", tool, resultJson.length)
+        return buildJsonObject {
+            put("truncated", true)
+            put("originalLength", resultJson.length)
+            put("note", "The result was too large to send; ask for less (fewer lines, a tighter pattern).")
+            put("head", resultJson.take(MAX_RESULT_CHARS / 2))
+        }.toString()
     }
 
     private fun toolError(callId: String, message: String): ServerMessage.VoiceToolResult =
@@ -309,6 +339,12 @@ internal class VoiceCallService(
         val sharedMintTimestamps = ArrayDeque<Long>()
 
         const val MAX_IN_FLIGHT_TOOL_CALLS = 4
+
+        /**
+         * Cap on one tool result. Comfortably above a 200-line scrollback read, well under both the
+         * outbox budget and any SCTP message limit.
+         */
+        const val MAX_RESULT_CHARS = 128 * 1024
 
         /** Mint budget: no faster than one per gap, and no more than N per window. */
         const val MINT_MIN_GAP_MS = 3_000L

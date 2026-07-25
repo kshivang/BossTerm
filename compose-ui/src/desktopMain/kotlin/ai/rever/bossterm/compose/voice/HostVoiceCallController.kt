@@ -288,6 +288,14 @@ internal class HostVoiceCallController(
                 .getOrElse { e ->
                     buildJsonObject { put("error", e.message ?: e.javaClass.simpleName) }.toString()
                 }
+            watchdog.cancel()
+            // Claim the call BEFORE sending: the watchdog may already have answered it, and a second
+            // function_call_output for one call_id is a protocol error.
+            val done = synchronized(roundLock) {
+                if (!pendingCalls.remove(callId)) return@launch // the watchdog already answered
+                outputsOwed += 1
+                pendingCalls.isEmpty()
+            }
             transport.send(
                 buildJsonObject {
                     put("type", "conversation.item.create")
@@ -298,12 +306,6 @@ internal class HostVoiceCallController(
                     }
                 }.toString()
             )
-            watchdog.cancel()
-            val done = synchronized(roundLock) {
-                if (!pendingCalls.remove(callId)) return@launch // the watchdog already answered
-                outputsOwed += 1
-                pendingCalls.isEmpty()
-            }
             if (done) _state.update { it.copy(working = false, activity = null) }
             maybeRequestResponse()
         }
@@ -315,7 +317,11 @@ internal class HostVoiceCallController(
      * The browser path has had this since a lost reply could pin it at "Working…"; the in-app path
      * had no watchdog at all, so a wedged tool left the call silent with no recovery but End call.
      */
+    /** Test seam: fire the watchdog for [callId] now instead of waiting out its timeout. */
+    internal fun timeOutForTest(callId: String) = toolTimedOut(callId, "test")
+
     private fun toolTimedOut(callId: String, tool: String) {
+        // Claim first, same as the success path, so exactly one of the two answers this call.
         val settled = synchronized(roundLock) {
             if (!pendingCalls.remove(callId)) return
             outputsOwed += 1

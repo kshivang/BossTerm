@@ -30,7 +30,8 @@ internal class DaemonVoiceToolExecutor(
 
     override fun contextSnapshot(defaultTabId: String?): String {
         val scope = inScopeSessionIds()
-        val viewing = defaultTabId
+        // Same fallback as execute(): a stale id shouldn't silently drop the marker.
+        val viewing = defaultTabId?.takeIf { it in scope } ?: anchorSessionId()?.takeIf { it in scope }
         val sb = StringBuilder()
         for (s in host.list()) {
             if (s.id !in scope) continue

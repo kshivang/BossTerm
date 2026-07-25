@@ -14,6 +14,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -189,7 +190,11 @@ internal class VoiceCallService(
             reply(toolError(msg.callId, "No active call — start a call before using tools"))
             return
         }
-        val def = executor.tools().firstOrNull { it.name == msg.name }
+        // Resolve against the CATALOG, not the executor, on this thread: executor.tools() can force
+        // the GUI executor to build its private MCP server (and apply the disabled set), and this
+        // runs on the share socket's receive loop — the reason handleStart warms it asynchronously.
+        // The executor still has the last word inside the coroutine below.
+        val def = VoiceToolCatalog.ALL.firstOrNull { it.name == msg.name }
         if (def == null) {
             reply(toolError(msg.callId, "Unknown tool: ${msg.name}"))
             return
@@ -216,10 +221,16 @@ internal class VoiceCallService(
             .getOrElse { JsonObject(emptyMap()) }
         // If [scope] is already cancelled the body never runs, so the claimed slot would leak;
         // release it from the completion handler in that case.
-        var bodyRan = false
+        val bodyRan = AtomicBoolean(false)
         val job = scope.launch {
-            bodyRan = true
+            bodyRan.set(true)
             try {
+                // Off-thread: this is where an unadvertised tool is actually refused (the surface can
+                // differ from the catalog — a read-only embedder config, a daemon share).
+                if (executor.tools().none { it.name == def.name }) {
+                    reply(toolError(msg.callId, "Unknown tool: ${def.name}"))
+                    return@launch
+                }
                 val resultJson = clampToolResult(def.name, executor.execute(def.name, args, defaultTabId))
                 reply(ServerMessage.VoiceToolResult(callId = msg.callId, resultJson = resultJson))
             } catch (e: VoiceToolException) {
@@ -231,7 +242,7 @@ internal class VoiceCallService(
                 inFlightToolCalls.decrementAndGet()
             }
         }
-        job.invokeOnCompletion { if (!bodyRan) inFlightToolCalls.decrementAndGet() }
+        job.invokeOnCompletion { if (!bodyRan.get()) inFlightToolCalls.decrementAndGet() }
     }
 
     private fun toolError(callId: String, message: String): ServerMessage.VoiceToolResult =

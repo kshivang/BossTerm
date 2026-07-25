@@ -5,6 +5,7 @@ import ai.rever.bossterm.compose.share.ClientMessage
 import ai.rever.bossterm.compose.share.ServerMessage
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.post
@@ -15,7 +16,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -440,6 +445,56 @@ class VoiceCallServiceTest {
         withTimeout(5000) { reply.await() }
         Thread.sleep(150) // let any stray callback land
         assertTrue(synchronized(activity) { activity.isEmpty() }, "saw $activity")
+    }
+
+    /**
+     * The mint BODY, asserted against the stub. End-to-end is still unverified, so this is the
+     * closest available check that the request shape is one OpenAI accepts — a missing
+     * `session.audio.output.format.rate` on the sibling WebSocket surface was only caught live.
+     */
+    @Test
+    fun `the mint body carries the session shape OpenAI requires`() = testApplication {
+        val captured = CompletableDeferred<JsonObject>()
+        routing {
+            post("/v1/realtime/client_secrets") {
+                captured.complete(Json.parseToJsonElement(call.receiveText()).jsonObject)
+                call.respondText("""{"value":"ek_stub"}""", ContentType.Application.Json)
+            }
+        }
+        val svc = service(broker = VoiceSessionBroker(baseUrl = "", httpOverride = client))
+        svc.handleStart(ClientMessage.VoiceStart(activeTabId = "t1"), canControl = true) {}
+        val body = withTimeout(5000) { captured.await() }
+
+        val expires = body["expires_after"]!!.jsonObject
+        assertEquals("created_at", expires["anchor"]!!.jsonPrimitive.content)
+        assertTrue(expires["seconds"]!!.jsonPrimitive.content.toInt() > 0)
+
+        val session = body["session"]!!.jsonObject
+        assertEquals("realtime", session["type"]!!.jsonPrimitive.content)
+        assertEquals(
+            listOf("audio"),
+            session["output_modalities"]!!.jsonArray.map { it.jsonPrimitive.content },
+        )
+        assertEquals("auto", session["tool_choice"]!!.jsonPrimitive.content)
+        assertTrue(session["instructions"]!!.jsonPrimitive.content.isNotBlank())
+        assertTrue(session["tools"]!!.jsonArray.isNotEmpty())
+        // Every advertised tool must be a function with a name and an object schema.
+        for (tool in session["tools"]!!.jsonArray) {
+            val t = tool.jsonObject
+            assertEquals("function", t["type"]!!.jsonPrimitive.content)
+            assertTrue(t["name"]!!.jsonPrimitive.content.isNotBlank())
+            assertEquals("object", t["parameters"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        }
+
+        val audio = session["audio"]!!.jsonObject
+        val input = audio["input"]!!.jsonObject
+        assertEquals("semantic_vad", input["turn_detection"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("marin", audio["output"]!!.jsonObject["voice"]!!.jsonPrimitive.content)
+        // NO pcm format on this path, deliberately: the viewer talks WebRTC, so the browser and
+        // OpenAI negotiate the codec between themselves. Raw PCM formats belong to the in-app
+        // WebSocket surface and are asserted in HostVoiceCallControllerTest — including the output
+        // `rate` the docs' example omits and the API rejects the session without.
+        assertEquals(null, input["format"], "WebRTC negotiates its own codec")
     }
 
     @Test

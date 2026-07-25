@@ -50,6 +50,11 @@ class HostVoiceCallControllerTest {
         fun deliver(json: String) = events?.invoke(json)
         fun sentOfType(type: String): List<JsonObject> = sent.map { Json.parseToJsonElement(it).jsonObject }
             .filter { it["type"]?.jsonPrimitive?.content == type }
+
+        /** How many function_call_output items were sent for [callId]. */
+        fun outputsFor(callId: String): Int = sentOfType("conversation.item.create").count {
+            it["item"]?.jsonObject?.get("call_id")?.jsonPrimitive?.content == callId
+        }
     }
 
     private class FakeAudio : VoiceAudioIo {
@@ -228,6 +233,41 @@ class HostVoiceCallControllerTest {
         Thread.sleep(150)
         assertEquals(1, transport.sentOfType("response.create").size, "exactly one per round")
         assertTrue(await { !c.state.value.working }, "the bar stops saying it's working")
+        c.end()
+    }
+
+    /**
+     * Exactly one answer per call. The watchdog and the executor race by design, and a second
+     * function_call_output for one call_id is a protocol error.
+     */
+    @Test
+    fun `a late result after the watchdog fired sends no second output`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val gate = CompletableDeferred<Unit>()
+        val slow = object : VoiceToolExecutor {
+            override fun tools(): List<VoiceToolDef> = VoiceToolCatalog.ALL.filter { !it.guiOnly }
+            override fun contextSnapshot(defaultTabId: String?): String = ""
+            override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?): String {
+                gate.await()
+                return """{"late":true}"""
+            }
+        }
+        val c = controller(transport, audio, slow)
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+
+        transport.deliver(
+            """{"type":"response.function_call_arguments.done","call_id":"slow","name":"read_scrollback","arguments":"{}"}"""
+        )
+        assertTrue(await { c.state.value.working }, "the round is in flight")
+
+        // Answer as the watchdog would, then let the real executor finish.
+        c.timeOutForTest("slow")
+        assertTrue(await { transport.outputsFor("slow") == 1 }, "the watchdog answered")
+        gate.complete(Unit)
+        Thread.sleep(300)
+        assertEquals(1, transport.outputsFor("slow"), "the late result must NOT answer again")
         c.end()
     }
 

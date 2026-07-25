@@ -50,6 +50,17 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
     @Volatile private var playbackUnavailable = false
 
     /**
+     * Set by [stop] and never cleared: this object serves exactly one call.
+     *
+     * end() stops audio before closing the socket, so a `response.output_audio.delta` already in the
+     * listener's hands can call [play] afterwards. Without this, ensurePlayback() saw a clean slate
+     * (playback nulled, playbackUnavailable reset), opened a NEW line, set `running = true` again —
+     * resurrecting the capture loop's exit condition — and started a second playback thread that
+     * nothing stopped. Every end-during-agent-speech leaked a line and a thread.
+     */
+    @Volatile private var disposed = false
+
+    /**
      * Decoded audio waiting for the speaker. Playback is drained on its own thread because
      * `SourceDataLine.write` blocks when the line is full, and [play] is called from the WebSocket
      * callback thread — a backed-up speaker would otherwise stall event dispatch, including the
@@ -59,6 +70,7 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
     private val playQueue = ArrayBlockingQueue<ByteArray>(PLAY_QUEUE_CHUNKS)
 
     override fun startCapture(onChunk: (ByteArray) -> Unit, onLevel: (Float) -> Unit) {
+        check(!disposed) { "this VoiceAudioIo has already been stopped" }
         val line = runCatching {
             val info = DataLine.Info(TargetDataLine::class.java, FORMAT)
             check(AudioSystem.isLineSupported(info)) { "no 24kHz PCM16 capture line" }
@@ -88,6 +100,7 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
     }
 
     override fun play(pcm: ByteArray) {
+        if (disposed) return
         ensurePlayback() ?: return
         // Never block the caller (the socket thread): drop the oldest chunk if the speaker is behind.
         if (!playQueue.offer(pcm)) {
@@ -104,7 +117,7 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
     /** Open the speaker line + its drain thread on first use. Null when there is no output device. */
     private fun ensurePlayback(): SourceDataLine? {
         playback?.let { return it }
-        if (playbackUnavailable) return null
+        if (playbackUnavailable || disposed) return null
         val line = runCatching {
             val info = DataLine.Info(SourceDataLine::class.java, FORMAT)
             (AudioSystem.getLine(info) as SourceDataLine).also {
@@ -131,6 +144,7 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
     }
 
     override fun stop() {
+        disposed = true
         running = false
         playbackUnavailable = false
         captureThread?.interrupt()

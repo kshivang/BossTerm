@@ -92,6 +92,9 @@ internal class GuiVoiceToolExecutor(
 
     override fun contextSnapshot(defaultTabId: String?): String {
         val scope = inScopeTabIds()
+        // Same fallback as execute(): a stale or foreign id would otherwise silently drop the
+        // "the user is viewing this tab" marker instead of pointing at the anchor.
+        val viewing = defaultTabId?.takeIf { it in scope } ?: anchorTabId()?.takeIf { it in scope }
         val sb = StringBuilder()
         for (tab in registry.allTabs()) {
             if (tab.id !in scope) continue
@@ -99,7 +102,7 @@ internal class GuiVoiceToolExecutor(
             sb.append("- \"").append(tab.title.value).append("\" (tab_id ").append(tab.id).append(')')
             tab.workingDirectory.value?.let { sb.append(", cwd ").append(it) }
             if (active) sb.append(" [active]")
-            if (tab.id == (defaultTabId ?: anchorTabId())) sb.append(" ← the user is viewing this tab")
+            if (tab.id == viewing) sb.append(" ← the user is viewing this tab")
             sb.append('\n')
         }
         return sb.toString().trimEnd()

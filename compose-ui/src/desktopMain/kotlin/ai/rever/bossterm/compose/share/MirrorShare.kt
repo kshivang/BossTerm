@@ -185,6 +185,10 @@ class MirrorShare(
             ) { _, _ -> voiceService.status() }
                 .distinctUntilChanged()
                 .collect { status ->
+                    // Server-side kill, same as DaemonShareServer's poller: the viewer ends its own
+                    // call on this push, but a viewer that ignores it is exactly why the server
+                    // check exists.
+                    if (!status.available) voiceService.closeCalls()
                     // Per-viewer, not broadcast: only a controller may see WHY voice is unavailable.
                     val redacted = status.copy(reason = null)
                     for (vc in viewers) {
@@ -424,8 +428,8 @@ class MirrorShare(
             is ClientMessage.Focus -> { rememberVoiceTab(vc, msg.tabId); return }
             is ClientMessage.VoiceStart -> {
                 // One connection holds at most one call: redialling without a clean voiceEnd used to
-                // orphan the previous token for its full 6h TTL, and since openCall() refuses rather
-                // than evicts, eight redials wedged the share at too_many_calls for that long.
+                // orphan the previous token for the whole call-duration ceiling, and since openCall()
+                // refuses rather than evicts, eight redials wedged the share at too_many_calls.
                 voiceService.closeCall(vc.voiceCallToken)
                 vc.voiceCallToken = null
                 rememberVoiceTab(vc, msg.activeTabId)
@@ -1147,23 +1151,25 @@ internal class BoundedViewerOutbox(
      */
     fun sendControl(text: String): Boolean {
         if (closed || text.isEmpty()) return false
-        val overflow = synchronized(lock) {
+        // Snapshot the numbers under the lock: they are only read in the bad case, and torn values
+        // in the one diagnostic that fires there would be actively misleading.
+        val overflow: Pair<Int, Int>? = synchronized(lock) {
             if (closed) return false
             if (controlFrames.size >= controlCapacityFrames ||
                 controlChars + text.length > controlCapacityChars
             ) {
-                true
+                controlFrames.size to controlChars
             } else {
                 controlFrames.addLast(text)
                 controlChars += text.length
-                false
+                null
             }
         }
-        if (overflow) {
+        if (overflow != null) {
             log.warn(
                 "Closing stalled viewer outbox: control backlog at {} frames / {} chars",
-                controlFrames.size,
-                controlChars,
+                overflow.first,
+                overflow.second,
             )
             close()
             return false

@@ -4,6 +4,7 @@ import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.share.ClientMessage
 import ai.rever.bossterm.compose.share.ServerMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -93,11 +94,6 @@ internal class VoiceCallService(
         )
     }
 
-    /** Warm the executor's tool surface off the socket thread (see [handleStart]). */
-    private fun warmTools() {
-        runCatching { executor.tools() }
-    }
-
     /**
      * `voiceStart`: validate, then mint an ephemeral session off [scope] and reply
      * [ServerMessage.VoiceSession] (or [ServerMessage.VoiceError]). Non-suspending — both
@@ -147,8 +143,21 @@ internal class VoiceCallService(
             return
         }
         scope.launch {
-            warmTools() // building the private MCP server here, not on the socket's receive loop
-            val tools = executor.tools()
+            // Everything from here on must either reply or hand the slot back. executor.tools() can
+            // force the GUI executor to build its private MCP server, and a throw there used to kill
+            // this coroutine with no reply at all — the viewer sat at "Connecting…" until its own
+            // watchdog while the reservation leaked for the whole duration ceiling.
+            val tools = try {
+                executor.tools()
+            } catch (e: CancellationException) {
+                closeCall(token)
+                throw e
+            } catch (e: Exception) {
+                log.warn("Voice tool surface unavailable: {}", e.javaClass.simpleName)
+                closeCall(token)
+                reply(ServerMessage.VoiceError(code = "mint_failed", message = "Tools unavailable"))
+                return@launch
+            }
             val result = broker.mint(
                 apiKey = key,
                 model = s.voiceCallModel,

@@ -175,7 +175,12 @@ internal class HostVoiceCallController(
                     },
                     onLevel = { level -> _level.value = level },
                 )
-            } catch (e: VoiceAudioException) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Deliberately broad: VoiceAudioIo also rejects reuse with IllegalStateException, and
+                // an unhandled throw here would leave the state pinned at Connecting with nothing
+                // shown while landing on the shared scope.
                 fail(e.message ?: "No microphone available")
                 return@launch
             }
@@ -316,10 +321,11 @@ internal class HostVoiceCallController(
                 // session config names the offending `session.*` param, and auth/quota failures come
                 // with a code. Anything else is a per-turn hiccup — but surface it in the bar rather
                 // than only logging it, or a call that keeps failing just looks like silence.
-                val type = field("type")
-                val fatal = param?.startsWith("session.") == true ||
-                    code in FATAL_ERROR_CODES ||
-                    type in FATAL_ERROR_TYPES
+                // Fatality is decided by the session param and an explicit code list ONLY. Matching
+                // on type was too broad: conversation_already_has_active_response — the very error the
+                // round bookkeeping exists to avoid — is an `invalid_request_error`, so a recoverable
+                // per-turn rejection would have killed the whole call.
+                val fatal = param?.startsWith("session.") == true || code in FATAL_ERROR_CODES
                 if (fatal) {
                     fail(message ?: "The call was rejected (${code ?: param ?: "unknown"})")
                 } else if (message != null) {
@@ -560,9 +566,5 @@ internal class HostVoiceCallController(
             "insufficient_quota",
             "session_expired",
         )
-
-        /** `error.type` values with the same meaning — kept separate because they are a different
-         *  field in OpenAI's envelope and mixing them misclassifies whichever one moves. */
-        val FATAL_ERROR_TYPES = setOf("invalid_request_error")
     }
 }

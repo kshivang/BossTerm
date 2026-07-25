@@ -64,4 +64,11 @@ interface VoiceToolExecutor {
      * throw [VoiceToolException].
      */
     suspend fun execute(name: String, args: JsonObject, defaultTabId: String?): String
+
+    /**
+     * Release anything the executor built lazily. Called when a call ends; the in-app path builds a
+     * fresh executor per call, so without this each one left a private MCP server registered for the
+     * life of the process.
+     */
+    fun dispose() {}
 }

@@ -1,7 +1,6 @@
 package ai.rever.bossterm.compose.voice
 
 import ai.rever.bossterm.compose.share.CallSegmentState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -36,7 +35,7 @@ private val Danger = Color(0xFFD9534F)
  * The in-app call strip, shown under the status pills while a "Call BossTerm" call is up: a live
  * microphone level meter, what the agent is doing, Mute and End.
  *
- * The meter is real mic loudness from [HostCallState.level] rather than a canned animation — with
+ * The meter is real mic loudness (from [HostVoiceCall.level]) rather than a canned animation — with
  * no browser tab to look at, it is the only way to tell "it can't hear me" from "it's thinking".
  */
 @Composable
@@ -92,8 +91,10 @@ internal fun HostCallBar(modifier: Modifier = Modifier) {
  */
 @Composable
 private fun LevelMeter(muted: Boolean, color: Color) {
+    // No animateFloatAsState: the source already arrives smoothed at ~25 Hz, and animating it kept a
+    // frame-rate animation running for the whole call to add nothing.
     val level by HostVoiceCall.level.collectAsState()
-    val animated by animateFloatAsState(targetValue = if (muted) 0f else level.coerceIn(0f, 1f))
+    val animated = if (muted) 0f else level.coerceIn(0f, 1f)
     Row(
         modifier = Modifier.height(16.dp).width(84.dp),
         verticalAlignment = Alignment.CenterVertically,

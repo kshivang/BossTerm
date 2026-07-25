@@ -59,7 +59,8 @@ internal class GuiVoiceToolExecutor(
     private val wrapper: BossTermMcpServer by lazy { BossTermMcpServer(config = mcpConfig) }
     // createServer()'s return value is deliberately unused: the wrapper owns the map, and every
     // read goes through its locked accessors.
-    private val serverInstance: Any by lazy { wrapper.createServer() }
+    @Volatile private var built = false
+    private val serverInstance: Any by lazy { built = true; wrapper.createServer() }
     @Volatile private var appliedDisabled: Set<String>? = null
 
     /**
@@ -88,6 +89,11 @@ internal class GuiVoiceToolExecutor(
         // with applyDisabledSet and with up to four in-flight tool calls.
         val registered = server().toolNames()
         return VoiceToolCatalog.ALL.filter { it.name in LOCAL_TOOLS || handlerName(it.name) in registered }
+    }
+
+    override fun dispose() {
+        // Only if it was ever built: touching the lazy here would construct one just to drop it.
+        if (appliedDisabled != null || built) runCatching { wrapper.detachServer() }
     }
 
     override fun contextSnapshot(defaultTabId: String?): String {

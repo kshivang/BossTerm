@@ -546,6 +546,29 @@ class VoiceCallServiceTest {
         assertEquals(null, input["format"], "WebRTC negotiates its own codec")
     }
 
+    /**
+     * The GA response puts the secret at the top level as `value`; the older beta shape nested it
+     * under `client_secret.value`. The fallback exists for an account still routed to the old shape,
+     * so it needs to actually work.
+     */
+    @Test
+    fun `a beta-shaped mint response is still understood`() = testApplication {
+        routing {
+            post("/v1/realtime/client_secrets") {
+                call.respondText(
+                    """{"client_secret":{"value":"ek_beta_shape"}}""",
+                    ContentType.Application.Json,
+                )
+            }
+        }
+        val svc = service(broker = VoiceSessionBroker(baseUrl = "", httpOverride = client))
+        val reply = CompletableDeferred<ServerMessage>()
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { reply.complete(it) }
+        val r = withTimeout(5000) { reply.await() }
+        assertIs<ServerMessage.VoiceSession>(r)
+        assertEquals("ek_beta_shape", r.clientSecret)
+    }
+
     @Test
     fun `mint 401 replies unauthorized`() = testApplication {
         routing {

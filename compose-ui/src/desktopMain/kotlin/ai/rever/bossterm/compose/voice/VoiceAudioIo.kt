@@ -146,7 +146,6 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
     override fun stop() {
         disposed = true
         running = false
-        playbackUnavailable = false
         captureThread?.interrupt()
         captureThread = null
         playQueue.clear()

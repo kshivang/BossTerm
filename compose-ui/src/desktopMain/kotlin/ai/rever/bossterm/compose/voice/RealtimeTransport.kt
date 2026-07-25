@@ -72,6 +72,13 @@ internal class JdkRealtimeTransport : RealtimeTransport {
     // would evict a queued function_call_output as readily as a stale mic chunk.
     private val outgoing = ArrayBlockingQueue<String>(OUTGOING_CAPACITY)
     private val outgoingAudio = ArrayBlockingQueue<String>(OUTGOING_AUDIO_CAPACITY)
+
+    /** @suppress Test seam: the lane split is correctness-critical and needs no socket to check. */
+    internal fun queuedForTest(): Pair<List<String>, List<String>> =
+        outgoing.toList() to outgoingAudio.toList()
+
+    /** @suppress Test seam: pretend the socket is up so [send] enqueues. */
+    internal fun openForTest() { open = true }
     @Volatile private var writer: Thread? = null
     @Volatile private var open = false
 
@@ -198,7 +205,7 @@ internal class JdkRealtimeTransport : RealtimeTransport {
         }.onFailure { runCatching { ws.abort() } }
     }
 
-    private companion object {
+    internal companion object {
         const val REALTIME_WS_URL = "wss://api.openai.com/v1/realtime"
 
         /** How long close() waits for the writer to unwind before abandoning it. */

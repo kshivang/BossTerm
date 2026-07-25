@@ -1034,6 +1034,27 @@ data class TerminalSettings(
      */
     val sessionSharingShowIndicator: Boolean = true,
 
+    // ===== Boss Calling (voice agent in the share viewer) =====
+
+    /**
+     * Master switch for Boss Calling: shows a "Call" button in the share viewer that
+     * connects the remote user by voice to an AI agent (OpenAI Realtime) able to inspect
+     * and act on the shared session.
+     *
+     * On by default, because storing an OpenAI API key in `~/.bossterm/voice.json` (entered in
+     * Settings — deliberately NOT stored here, see
+     * [ai.rever.bossterm.compose.voice.VoiceAgentStorage]) is itself the deliberate opt-in: with
+     * no key the feature advertises itself as unavailable and the viewer hides the button. The
+     * switch is what turns Boss Calling off again for a host that keeps a key configured.
+     */
+    val voiceCallEnabled: Boolean = true,
+
+    /** OpenAI Realtime model for Boss Calling. */
+    val voiceCallModel: String = "gpt-realtime",
+
+    /** OpenAI Realtime voice for Boss Calling. */
+    val voiceCallVoice: String = "marin",
+
     /**
      * Show the small green status indicator in the tab bar while the MCP
      * server is running. Has no effect when mcpEnabled is false. Turning

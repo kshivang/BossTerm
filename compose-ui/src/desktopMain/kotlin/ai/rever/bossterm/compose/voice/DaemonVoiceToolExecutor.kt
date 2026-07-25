@@ -1,0 +1,100 @@
+package ai.rever.bossterm.compose.voice
+
+import ai.rever.bossterm.compose.daemon.DaemonMcpTools
+import ai.rever.bossterm.compose.daemon.SessionHost
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+
+/**
+ * [VoiceToolExecutor] for daemon (headless) shares. The daemon has no GUI window/tab model, so
+ * the surface is the smaller [DaemonMcpTools] set — `list_tabs`/`get_active_tab` (answered from
+ * [SessionHost.list], sessions presented as "tabs" so the agent sees one uniform shape),
+ * `read_scrollback`, `send_input`, `send_signal`. GUI-only tools (`run_command`,
+ * `search_output`, …) simply aren't advertised, and the instructions template only lists
+ * advertised tools, so the agent never tries them. Voice arg names (`tab_id`) are mapped onto
+ * the daemon's (`session_id`).
+ */
+internal class DaemonVoiceToolExecutor(
+    private val host: SessionHost,
+    private val inScopeSessionIds: () -> Set<String>,
+    /** Provider, not a value: an ALL-scoped share's fallback session changes as sessions come and go. */
+    private val anchorSessionId: () -> String?,
+) : VoiceToolExecutor {
+
+    private val tools = DaemonMcpTools(host)
+
+    override fun tools(): List<VoiceToolDef> = VoiceToolCatalog.ALL.filter { !it.guiOnly }
+
+    override fun contextSnapshot(defaultTabId: String?): String {
+        val scope = inScopeSessionIds()
+        val viewing = defaultTabId ?: anchorSessionId()
+        val sb = StringBuilder()
+        for (s in host.list()) {
+            if (s.id !in scope) continue
+            sb.append("- \"").append(s.title).append("\" (tab_id ").append(s.id).append(')')
+            s.cwd?.let { sb.append(", cwd ").append(it) }
+            if (!s.alive) sb.append(" [exited]")
+            if (s.id == viewing) sb.append(" ← the user is viewing this tab")
+            sb.append('\n')
+        }
+        return sb.toString().trimEnd()
+    }
+
+    override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?): String {
+        if (tools().none { it.name == name }) throw VoiceToolException("Unknown tool: $name")
+        val scope = inScopeSessionIds()
+        val viewing = defaultTabId ?: anchorSessionId()
+
+        when (name) {
+            "list_tabs" -> return listTabsJson(scope, viewing)
+            "get_active_tab" -> return tabInfoJson(viewing ?: throw VoiceToolException("No session available"))
+        }
+
+        val target = args.stringArg("tab_id") ?: viewing
+            ?: throw VoiceToolException("No session available")
+        if (target !in scope) throw VoiceToolException("Tab $target is not part of this share")
+        val daemonArgs = buildJsonObject {
+            args.forEach { (k, v) -> if (k != "tab_id") put(k, v) }
+            put("session_id", target)
+        }
+        return when (name) {
+            "read_scrollback" -> tools.readScrollback(daemonArgs)
+            "send_input" -> tools.sendInput(daemonArgs)
+            "send_signal" -> tools.sendSignal(daemonArgs)
+            else -> throw VoiceToolException("Tool not available on this host: $name")
+        }
+    }
+
+    private fun listTabsJson(scope: Set<String>, viewing: String?): String = buildJsonObject {
+        put("tabs", buildJsonArray {
+            for (s in host.list()) {
+                if (s.id !in scope) continue
+                add(buildJsonObject {
+                    put("id", s.id)
+                    put("title", s.title)
+                    s.cwd?.let { put("cwd", it) }
+                    put("isActive", s.id == viewing)
+                })
+            }
+        })
+        viewing?.let { put("viewingTabId", it) }
+    }.toString()
+
+    private fun tabInfoJson(sessionId: String): String {
+        val s = host.list().firstOrNull { it.id == sessionId } ?: return buildJsonObject {
+            put("error", "Tab $sessionId is no longer open")
+        }.toString()
+        return buildJsonObject {
+            put("id", s.id)
+            put("title", s.title)
+            s.cwd?.let { put("cwd", it) }
+            put("isActive", true)
+        }.toString()
+    }
+
+    private fun JsonObject.stringArg(key: String): String? =
+        (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+}

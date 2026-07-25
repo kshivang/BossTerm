@@ -86,5 +86,9 @@ fun SessionSharingSettingsSection(
                         "link alone grants access. Approved devices get a 24h key so they aren't re-prompted."
             )
         }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        BossCallingSection(settings = settings, onSettingsChange = onSettingsChange)
     }
 }

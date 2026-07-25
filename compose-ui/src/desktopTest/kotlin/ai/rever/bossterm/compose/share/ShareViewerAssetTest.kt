@@ -36,7 +36,9 @@ class ShareViewerAssetTest {
         // The WebSocket origin is filled in per request (see installShareViewerIndexRoute), because
         // 'self' covering ws:// is CSP3-only. It must stay an origin placeholder, never a scheme
         // wildcard that would permit connecting to any host.
-        assertTrue(html.contains("connect-src 'self' $WS_ORIGIN_PLACEHOLDER;"))
+        // Boss Calling's SDP exchange is the ONLY remote origin the viewer may reach, and it is
+        // named exactly — no wildcard, no other host.
+        assertTrue(html.contains("connect-src 'self' $WS_ORIGIN_PLACEHOLDER https://api.openai.com;"))
         assertFalse(html.contains("ws: wss:"))
         assertTrue(html.contains("MesloLGSNF-Regular.ttf?v=d97946186e97"))
     }

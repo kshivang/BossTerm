@@ -25,6 +25,8 @@ import ai.rever.bossterm.compose.share.isShareViewerIndexResource
 import ai.rever.bossterm.compose.share.resyncSentinel
 import ai.rever.bossterm.compose.share.webViewerScrollbackLines
 import ai.rever.bossterm.compose.share.webTerminalFontFamily
+import ai.rever.bossterm.compose.voice.DaemonVoiceToolExecutor
+import ai.rever.bossterm.compose.voice.VoiceCallService
 import ai.rever.bossterm.terminal.model.TerminalModelListener
 import io.ktor.http.CacheControl
 import io.ktor.server.application.install
@@ -217,6 +219,22 @@ class DaemonShareServer(
 
         val viewers = CopyOnWriteArrayList<DaemonShareConnection>()
         val viewerSeq = AtomicInteger(0)
+
+        // Boss Calling: one service per share; its executor limits tool targets to this share's
+        // scope. The daemon has no cross-process key flow — availability is re-checked from disk
+        // at admit time and on each voiceStart (VoiceAgentStorage stats the file).
+        val voiceService: VoiceCallService by lazy {
+            VoiceCallService(
+                executor = DaemonVoiceToolExecutor(
+                    host = host,
+                    inScopeSessionIds = { inScopeCores(this).map { it.id }.toSet() },
+                    anchorSessionId = { sessionId ?: host.list().firstOrNull()?.id },
+                ),
+                scope = this@DaemonShareServer.scope,
+                settings = { settings() },
+                sessionName = { name },
+            )
+        }
 
         val viewerCount: Int get() = viewers.size
 
@@ -676,6 +694,7 @@ class DaemonShareServer(
         // taps/collectors so the outbox only carries output produced AFTER the snapshot (no double paint).
         send(themeMessage())
         send(mcpStatusMessage())
+        send(def.voiceService.status())
         send(layoutFor(def))
 
         val vc = DaemonShareConnection(
@@ -1018,6 +1037,26 @@ class DaemonShareServer(
      * (they only make sense for the GUI's window→tabs→panes model in MirrorShare).
      */
     private fun handleClient(def: ShareDef, vc: DaemonShareConnection, msg: ClientMessage) {
+        // Voice messages run BEFORE the control gate so a view-only caller gets an explicit
+        // not_controller error (the service re-checks the role) instead of silence. Focus rides
+        // along: it tracks which session the viewer is looking at — the agent's default target.
+        val voiceReply: (ServerMessage) -> Unit = { m ->
+            vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(m)))
+        }
+        when (msg) {
+            is ClientMessage.Focus -> { vc.voiceTabId = msg.tabId; return }
+            is ClientMessage.VoiceStart -> {
+                msg.activeTabId?.let { vc.voiceTabId = it }
+                def.voiceService.handleStart(msg, vc.canControl, voiceReply)
+                return
+            }
+            is ClientMessage.VoiceEnd -> return
+            is ClientMessage.VoiceToolCall -> {
+                def.voiceService.handleToolCall(msg, vc.canControl, vc.voiceTabId, voiceReply)
+                return
+            }
+            else -> {}
+        }
         if (!vc.canControl) return // every mutating action requires the control role
         // A SESSION-scoped share must WRITE-isolate to its one session, not just render-isolate it. The
         // read/layout path (inScopeCores/layoutFor) is already scoped, but without this an approved
@@ -1035,7 +1074,8 @@ class DaemonShareServer(
             is ClientMessage.ClosePane -> if (inScope(msg.paneId)) host.closeSession(msg.paneId)
             // SplitVertical/SplitHorizontal/LaunchAI/RenameTab/SetTabColor/DuplicateTab/CloseOtherTabs/
             // CloseTabsBelow/ResizeSplit/CloseWindow/DisconnectUpstream/OfferShare/SetMcpEnabled/
-            // AttachMcp/Focus/RequestControl/Hello → no-op (daemon sessions are single-pane PTYs).
+            // AttachMcp/RequestControl/Hello → no-op (daemon sessions are single-pane PTYs;
+            // Focus + voice messages are handled before the control gate above).
             else -> {}
         }
     }

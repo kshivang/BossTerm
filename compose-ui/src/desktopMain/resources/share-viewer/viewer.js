@@ -222,6 +222,212 @@
     viewPillEl.style.display = "none";
   }
 
+  // ---- Boss Calling (voice agent) ----
+  // The host mints an ephemeral OpenAI Realtime session (voiceSession); this browser talks
+  // WebRTC directly to OpenAI (audio never rides the tunnel/share socket) and forwards the
+  // agent's function calls to the host over THIS share socket (voiceToolCall → executed
+  // against the shared session → voiceToolResult → back onto the data channel).
+  var voice = { status: null, state: "idle", pc: null, dc: null, mic: null, muted: false, seenCalls: {}, watchdog: null };
+  var voiceMicOk = !!(window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  var voicePillEl = document.getElementById("voicepill");
+  var voiceLabelEl = document.getElementById("voicelabel");
+  var voiceCtlEl = document.getElementById("voicectl");
+  var voiceMuteEl = document.getElementById("voicemute");
+  var voiceHangEl = document.getElementById("voicehang");
+  var voiceToastEl = document.getElementById("voicetoast");
+  var voiceAudioEl = null; // hidden <audio> for the agent's voice, created on first call
+  var voiceToastTimer = null;
+  function toast(text, ms) {
+    voiceToastEl.textContent = text;
+    voiceToastEl.style.display = "block";
+    if (voiceToastTimer) clearTimeout(voiceToastTimer);
+    voiceToastTimer = setTimeout(function () { voiceToastEl.style.display = "none"; }, ms || 4000);
+  }
+  function updateVoicePill() {
+    if (!voice.status || !voice.status.available) {
+      voicePillEl.style.display = "none"; voiceCtlEl.style.display = "none"; return;
+    }
+    voicePillEl.style.display = "";
+    var cls = "badge", label = "Call";
+    if (!voiceMicOk && voice.state === "idle") {
+      cls += " disabled";
+      voicePillEl.title = "Voice calls need an https share link — open the remote (tunnel) link";
+    } else {
+      voicePillEl.title = "Voice-call the session's AI agent";
+    }
+    if (voice.state === "connecting") { cls += " connecting"; label = "Calling…"; }
+    else if (voice.state === "live") { cls += " live"; label = "Live"; }
+    else if (voice.state === "speaking") { cls += " speaking"; label = "Live"; }
+    else if (voice.state === "tool") { cls += " tool"; label = "Running…"; }
+    voicePillEl.className = cls;
+    voiceLabelEl.textContent = label;
+    voiceCtlEl.style.display = voice.state === "idle" ? "none" : "inline-flex";
+    voiceMuteEl.textContent = voice.muted ? "Unmute" : "Mute";
+  }
+  voicePillEl.onclick = function () {
+    if (!voice.status || !voice.status.available || voice.state !== "idle") return;
+    if (!voiceMicOk) { toast("Voice calls need an https share link — open the remote (tunnel) link."); return; }
+    if (viewOnlyGate()) return; // view-only → request-control prompt
+    // Mic first, inside the click gesture (permission prompt), so no minted secret is
+    // wasted on a denied microphone.
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      voice.mic = stream;
+      voice.muted = false;
+      voice.state = "connecting";
+      voice.seenCalls = {};
+      updateVoicePill();
+      sendMsg({ t: "voiceStart", activeTabId: activeTabId });
+      voice.watchdog = setTimeout(function () {
+        if (voice.state === "connecting") {
+          toast("Couldn't establish the voice connection — your network may block WebRTC.");
+          endCall(true);
+        }
+      }, 15000);
+    }).catch(function () {
+      toast("Microphone access was denied — allow the mic for this site and try again.");
+    });
+  };
+  voiceMuteEl.onclick = function () {
+    if (!voice.mic) return;
+    voice.muted = !voice.muted;
+    voice.mic.getAudioTracks().forEach(function (t) { t.enabled = !voice.muted; });
+    updateVoicePill();
+  };
+  voiceHangEl.onclick = function () { endCall(true); toast("Call ended."); };
+  function endCall(sendEnd) {
+    if (voice.watchdog) { clearTimeout(voice.watchdog); voice.watchdog = null; }
+    try { if (voice.dc) voice.dc.close(); } catch (e) {}
+    try { if (voice.pc) voice.pc.close(); } catch (e) {}
+    if (voice.mic) { try { voice.mic.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {} }
+    var wasLive = voice.state !== "idle";
+    voice.dc = null; voice.pc = null; voice.mic = null; voice.muted = false;
+    voice.state = "idle";
+    if (sendEnd && wasLive) sendMsg({ t: "voiceEnd" });
+    updateVoicePill();
+  }
+  function voiceErrorText(m) {
+    switch (m.code) {
+      case "no_key": case "disabled":
+        return "Voice isn't set up on the host — enable Boss Calling in BossTerm Settings.";
+      case "unauthorized":
+        return "The host's OpenAI key was rejected — check it in BossTerm Settings.";
+      case "not_controller":
+        return "You need control of this session to call — request control first.";
+      default:
+        return "Couldn't start the call" + (m.message ? ": " + m.message : ".");
+    }
+  }
+  function voiceDescribeTool(name, argsJson) {
+    try {
+      var a = JSON.parse(argsJson || "{}");
+      if (name === "run_command" && a.script)
+        return "Running: " + a.script.slice(0, 60) + (a.script.length > 60 ? "…" : "");
+      if (name === "read_scrollback") return "Reading the terminal…";
+      if (name === "search_output" && a.pattern) return "Searching for “" + a.pattern.slice(0, 40) + "”…";
+      if (name === "send_input" && a.text)
+        return "Typing: " + a.text.slice(0, 40).replace(/\n/g, "⏎") + "…";
+      if (name === "send_signal" && a.signal) return "Sending " + a.signal + "…";
+    } catch (e) {}
+    return "Running: " + name + "…";
+  }
+  // Function calls surface on the data channel BOTH as function_call_arguments.done and inside
+  // response.done's output[] — handle both, dedupe by call_id.
+  function voiceHandleFunctionCall(callId, name, argsJson) {
+    if (!callId || voice.seenCalls[callId]) return;
+    voice.seenCalls[callId] = true;
+    voice.state = "tool";
+    updateVoicePill();
+    toast(voiceDescribeTool(name, argsJson));
+    sendMsg({ t: "voiceToolCall", callId: callId, name: name, argsJson: argsJson || "{}" });
+  }
+  function voiceDcSend(o) {
+    try { if (voice.dc && voice.dc.readyState === "open") voice.dc.send(JSON.stringify(o)); } catch (e) {}
+  }
+  function connectRealtime(m) {
+    if (voice.state !== "connecting") return; // user hung up while the host was minting
+    var pc;
+    try { pc = new RTCPeerConnection(); } catch (e) {
+      toast("This browser doesn't support WebRTC calls."); endCall(true); return;
+    }
+    voice.pc = pc;
+    voice.mic.getAudioTracks().forEach(function (t) { pc.addTrack(t, voice.mic); });
+    if (!voiceAudioEl) {
+      voiceAudioEl = document.createElement("audio");
+      voiceAudioEl.autoplay = true;
+      voiceAudioEl.style.display = "none";
+      document.body.appendChild(voiceAudioEl);
+    }
+    pc.ontrack = function (e) { voiceAudioEl.srcObject = e.streams[0]; };
+    pc.onconnectionstatechange = function () {
+      if (voice.pc !== pc) return; // a stale pc from an earlier call
+      var st = pc.connectionState;
+      if ((st === "failed" || st === "disconnected" || st === "closed") && voice.state !== "idle") {
+        toast("Voice connection lost.");
+        endCall(true);
+      }
+    };
+    var dc = pc.createDataChannel("oai-events");
+    voice.dc = dc;
+    dc.onopen = function () {
+      if (voice.watchdog) { clearTimeout(voice.watchdog); voice.watchdog = null; }
+      voice.state = "live";
+      updateVoicePill();
+      toast("Connected — say something.");
+    };
+    dc.onmessage = function (ev) {
+      var e; try { e = JSON.parse(ev.data); } catch (x) { return; }
+      switch (e.type) {
+        case "response.function_call_arguments.done":
+          voiceHandleFunctionCall(e.call_id, e.name, e.arguments);
+          break;
+        case "response.done": {
+          var out = (e.response && e.response.output) || [];
+          for (var i = 0; i < out.length; i++) {
+            if (out[i].type === "function_call")
+              voiceHandleFunctionCall(out[i].call_id, out[i].name, out[i].arguments);
+          }
+          break;
+        }
+        case "output_audio_buffer.started":
+          if (voice.state === "live") { voice.state = "speaking"; updateVoicePill(); }
+          break;
+        case "output_audio_buffer.stopped":
+          if (voice.state === "speaking") { voice.state = "live"; updateVoicePill(); }
+          break;
+        case "error":
+          if (e.error && e.error.message) toast("Agent error: " + String(e.error.message).slice(0, 80));
+          break;
+      }
+    };
+    pc.createOffer().then(function (offer) {
+      return pc.setLocalDescription(offer).then(function () {
+        return fetch("https://api.openai.com/v1/realtime/calls?model=" + encodeURIComponent(m.model), {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + m.clientSecret, "Content-Type": "application/sdp" },
+          body: offer.sdp,
+        });
+      });
+    }).then(function (resp) {
+      if (!resp.ok) throw new Error("sdp " + resp.status);
+      return resp.text();
+    }).then(function (answer) {
+      return pc.setRemoteDescription({ type: "answer", sdp: answer });
+    }).catch(function () {
+      if (voice.state !== "idle") {
+        toast("Couldn't establish the voice connection — your network may block WebRTC.");
+        endCall(true);
+      }
+    });
+  }
+  // The tool bridge rides the share socket — when it drops mid-call the agent goes blind,
+  // so end the call rather than leave audio-only limbo.
+  function voiceOnSocketDown() {
+    if (voice.state !== "idle") {
+      endCall(false);
+      toast("Share connection lost — call ended.");
+    }
+  }
+
   var keybarEl = document.getElementById("keybar");
   var menubtnEl = document.getElementById("menubtn");
   var bodyEl = document.getElementById("body");
@@ -1924,6 +2130,9 @@
   function selectPane(tabId, paneId) {
     activeTabId = tabId;
     if (paneId) currentPaneId = paneId;
+    // Mid voice call: tell the host which tab we're looking at now — it's the agent's
+    // default tool target (old hosts ignore focus, so this is safe to send).
+    if (voice.state !== "idle") sendMsg({ t: "focus", tabId: tabId, paneId: paneId || tabId });
     sidebarEl.classList.remove("open"); // close the phone drawer after picking
     renderTabBar();
     renderStage();
@@ -2446,6 +2655,9 @@
     socket.onerror = function () { if (ws === socket) setStatus("down"); };
     socket.onclose = function (ev) {
       if (ws !== socket) return;
+      // Any real drop kills the tool bridge, so end the call — even when an automatic reconnect
+      // follows: the agent would otherwise sit blind waiting for a tool result sendMsg dropped.
+      voiceOnSocketDown();
       if (viewerLogic.isTerminalWebSocketClose(ev && ev.code)) {
         disarmConnectionHealth();
         ws = null;
@@ -2535,6 +2747,21 @@
         presenceEl.textContent = m.viewers === 1 ? "1 viewer" : m.viewers + " viewers"; break;
       case "mcpStatus":
         mcp = m; updateMcpPill(); break;
+      case "voiceStatus":
+        voice.status = m; updateVoicePill(); break;
+      case "voiceSession":
+        connectRealtime(m); break;
+      case "voiceError":
+        toast(voiceErrorText(m));
+        if (voice.state !== "idle") endCall(false);
+        break;
+      case "voiceToolResult":
+        voiceDcSend({ type: "conversation.item.create",
+          item: { type: "function_call_output", call_id: m.callId, output: m.resultJson } });
+        voiceDcSend({ type: "response.create" });
+        if (voice.state === "tool") { voice.state = "live"; updateVoicePill(); }
+        if (m.isError) toast("Tool failed — the agent will explain.");
+        break;
       case "control":
         controlGranted = !!m.granted;
         viewOnlyEl.style.display = controlGranted ? "none" : "";

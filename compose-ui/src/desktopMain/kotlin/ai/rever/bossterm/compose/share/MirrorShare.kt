@@ -10,6 +10,9 @@ import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import ai.rever.bossterm.compose.voice.GuiVoiceToolExecutor
+import ai.rever.bossterm.compose.voice.VoiceAgentStorage
+import ai.rever.bossterm.compose.voice.VoiceCallService
 import ai.rever.bossterm.compose.window.WindowManager
 import ai.rever.bossterm.terminal.model.TerminalModelListener
 import androidx.compose.runtime.getValue
@@ -85,6 +88,20 @@ class MirrorShare(
     val sessionName = androidx.compose.runtime.mutableStateOf(SessionShareManager.defaultSessionName())
     private var observerJob: Job? = null
     private var mcpJob: Job? = null
+    private var voiceJob: Job? = null
+
+    // Boss Calling: one service per share; its executor limits the agent's tool targets to
+    // this share's scope. Lazy — no MCP machinery spins up until a viewer actually calls.
+    private val voiceService by lazy {
+        VoiceCallService(
+            executor = GuiVoiceToolExecutor(
+                inScopeTabIds = { inScopeStates().flatMap { st -> inScopeTabs(st).map { it.id } }.toSet() },
+                anchorTabId = tabId,
+            ),
+            scope = coro,
+            sessionName = { sessionName.value },
+        )
+    }
 
     private class TapEntry(
         val tab: TerminalTab,
@@ -123,11 +140,20 @@ class MirrorShare(
                 )
             }.distinctUntilChanged().collect { broadcast(it) }
         }
+        // Push the Call pill's availability whenever the voice settings or the key change.
+        voiceJob = coro.launch {
+            combine(
+                SettingsManager.instance.settings,
+                VoiceAgentStorage.keyPresentFlow,
+            ) { _, _ -> voiceService.status() }
+                .distinctUntilChanged().collect { broadcast(it) }
+        }
     }
 
     fun stop() {
         observerJob?.cancel()
         mcpJob?.cancel()
+        voiceJob?.cancel()
         synchronized(taps) {
             taps.values.forEach(::disposeTap)
             taps.clear()
@@ -232,6 +258,7 @@ class MirrorShare(
         val out = ArrayList<ServerMessage>()
         out.add(themeMessage())
         out.add(mcpStatusMessage())
+        out.add(voiceService.status())
         out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
@@ -334,6 +361,28 @@ class MirrorShare(
                 }
             }
             return
+        }
+        // Voice messages run BEFORE the control gate so a view-only caller gets an explicit
+        // not_controller error (the service re-checks the role) instead of silence. Focus
+        // rides along: it tracks which tab the viewer is looking at — the voice agent's
+        // default tool target.
+        when (msg) {
+            is ClientMessage.Focus -> { vc.voiceTabId = msg.tabId; return }
+            is ClientMessage.VoiceStart -> {
+                msg.activeTabId?.let { vc.voiceTabId = it }
+                voiceService.handleStart(msg, vc.canControl) { m ->
+                    vc.outbox.trySend(ShareProtocol.encodeServer(m))
+                }
+                return
+            }
+            is ClientMessage.VoiceEnd -> return
+            is ClientMessage.VoiceToolCall -> {
+                voiceService.handleToolCall(msg, vc.canControl, vc.voiceTabId) { m ->
+                    vc.outbox.trySend(ShareProtocol.encodeServer(m))
+                }
+                return
+            }
+            else -> {}
         }
         if (!vc.canControl) return // all mutating actions require the control role
         // Structural actions on a tab WE mirror from another session relay to that origin
@@ -448,7 +497,7 @@ class MirrorShare(
                     }
                 }
             }
-            else -> {} // Hello / Focus: no-op (focus is viewer-side; RequestControl handled above)
+            else -> {} // Hello: no-op (Focus/voice/RequestControl handled above)
         }
     }
 
@@ -912,6 +961,12 @@ class ViewerConnection(
 ) {
     internal val outbox = BoundedViewerOutbox()
     internal val graphicsResyncLimiter = GraphicsResyncLimiter()
+
+    /**
+     * The tab this viewer is looking at (from [ClientMessage.Focus] / [ClientMessage.VoiceStart])
+     * — the voice agent's default tool target. Null until the viewer reports one.
+     */
+    @Volatile var voiceTabId: String? = null
 
     /** A mid-session control request is awaiting the host's decision (dedupes re-requests). */
     @Volatile var controlRequestPending = false

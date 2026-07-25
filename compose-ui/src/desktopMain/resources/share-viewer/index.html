@@ -4,8 +4,12 @@
   <meta charset="utf-8" />
   <!-- Allow pinch-zoom + pan so wide/tall terminals are navigable on phones. -->
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- api.openai.com is the Boss Calling SDP exchange (POST /v1/realtime/calls). It is named
+       unconditionally rather than only when voice is enabled: the policy is baked at page load,
+       so a call started after the host flipped the setting would otherwise be blocked with no
+       way to recover but a reload. Audio itself is WebRTC, not connect-src. -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; base-uri 'none'; form-action 'none'; connect-src 'self' __BOSSTERM_WS_ORIGINS__; img-src 'self' data:; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+        content="default-src 'self'; base-uri 'none'; form-action 'none'; connect-src 'self' __BOSSTERM_WS_ORIGINS__ https://api.openai.com; img-src 'self' data:; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
   <title>BossTerm — shared session</title>
   <!-- xterm.js vendored locally (works fully offline on a LAN). MIT licensed. -->
   <!-- Bundled font notices: fonts/MesloLGSNF-NOTICE.txt and fonts/NotoSansSymbols2-OFL.txt -->
@@ -42,6 +46,24 @@
     #mcppill { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
     #mcppill .dot { width: 7px; height: 7px; border-radius: 50%; background: #6b6b6b; display: inline-block; }
     #mcppill.on .dot { background: #4caf50; }
+    /* Boss Calling pill (voice agent) — dot mirrors call state; buttons appear while on a call */
+    #voicepill { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+    #voicepill .dot { width: 7px; height: 7px; border-radius: 50%; background: #6b6b6b; display: inline-block; }
+    #voicepill.connecting .dot { background: #e5a54b; animation: voicepulse 1s ease-in-out infinite; }
+    #voicepill.live .dot { background: #4caf50; }
+    #voicepill.speaking .dot { background: #4a90e2; }
+    #voicepill.tool .dot { background: #e5a54b; }
+    #voicepill.disabled { opacity: .5; cursor: default; }
+    @keyframes voicepulse { 50% { opacity: .35; } }
+    #voicectl { display: none; gap: 4px; flex: 0 0 auto; }
+    #voicectl button { padding: 2px 8px; border-radius: 5px; border: 1px solid #404040; background: #1e1e1e;
+                       color: #ddd; font-size: 12px; cursor: pointer; -webkit-user-select: none; user-select: none; }
+    #voicectl button:active { background: #4a90e2; color: #fff; border-color: #4a90e2; }
+    /* transient call status line (tool running / errors), bottom-centered over the stage */
+    #voicetoast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 18px; z-index: 35;
+                  display: none; max-width: 80vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                  padding: 7px 14px; border-radius: 8px; background: #2b2b2b; border: 1px solid #505050;
+                  color: #ddd; font-size: 12px; box-shadow: 0 6px 18px rgba(0,0,0,0.55); }
     #tabbar { display: flex; gap: 12px; overflow-x: auto; flex: 1 1 auto; align-items: center; }
     #tabbar.hidden { display: none; }
     /* one cluster per tab; panes of a tab sit tight together, tabs spaced apart */
@@ -190,6 +212,11 @@
     <!-- Control-centric items first (you act on them): request-control, MCP, zoom/fit. -->
     <span class="badge" id="viewonly">view only</span>
     <span class="badge" id="mcppill" style="display:none" title="Host MCP — click to manage"><span class="dot"></span>MCP</span>
+    <span class="badge" id="voicepill" style="display:none" title="Voice-call the session's AI agent"><span class="dot"></span><span id="voicelabel">Call</span></span>
+    <span id="voicectl">
+      <button id="voicemute" title="Mute microphone">Mute</button>
+      <button id="voicehang" title="End the call">End</button>
+    </span>
     <span id="zoom">
       <button id="splittabs" title="Show a split tab one pane at a time — switch panes via the sub-tab chips (on by default on phones)">⊞ Panes</button>
       <button id="zoomout" title="Zoom out">A&minus;</button>
@@ -209,6 +236,7 @@
   <div id="viewpill"></div>
   <div id="keybar"></div>
   <div id="ctxmenu"></div>
+  <div id="voicetoast"></div>
 
   <div id="overlay" style="display:none">
     <div id="overlay-card">

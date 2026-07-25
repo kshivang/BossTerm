@@ -27,6 +27,12 @@ internal class DaemonShareConnection(
     // a healing re-snapshot replaces a big stale backlog more cheaply than delivering it.
     val outbox = FrameOutbox(outputCapacityChars = 2 * 1024 * 1024)
     internal val graphicsResyncLimiter = GraphicsResyncLimiter()
+
+    /**
+     * The session this viewer is looking at (from Focus / VoiceStart) — the voice agent's
+     * default tool target. Null until the viewer reports one.
+     */
+    @Volatile var voiceTabId: String? = null
 }
 
 /**

@@ -12,6 +12,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.components.SettingsSection
 import ai.rever.bossterm.compose.settings.components.SettingsTextField
+import ai.rever.bossterm.compose.settings.sections.BossCallingSection
 import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -277,6 +278,13 @@ fun ShareWindow(
                         )
                     }
                 }
+                Spacer(Modifier.height(20.dp))
+
+                // Voice belongs next to the link: it's part of what the person you're sending it
+                // to can do. Self-persisting (this window carries no settings snapshot), and it
+                // reports whether the Call button is actually reachable — without a key the
+                // viewer shows nothing at all, which is undebuggable from the far end.
+                BossCallingSection(showAgentOptions = false)
                 Spacer(Modifier.height(20.dp))
 
                 RemoteAccessSetupSection(

@@ -10,6 +10,17 @@
   "use strict";
 
   var viewerLogic = window.BossTermViewerLogic;
+  if (!viewerLogic) {
+    // Same origin and same cache policy as this file, so this should be unreachable — but every
+    // reconnect/graphics path below dereferences it, and a bare TypeError deep inside a socket
+    // callback reads as "the share is broken". Fail once, legibly, instead.
+    var logicError = document.createElement("div");
+    logicError.style.padding = "24px";
+    logicError.style.font = "13px -apple-system, Menlo, monospace";
+    logicError.textContent = "The viewer failed to load (viewer-logic.js). Reload to try again.";
+    (document.body || document.documentElement).appendChild(logicError);
+    return;
+  }
   var params = new URLSearchParams(location.search);
   var token = params.get("t");
 
@@ -984,14 +995,20 @@
     }, RECONNECT_STABLE_MS);
   }
 
+  // Drop a pending "this connection settled" timer. A session that ended for good must not leave
+  // one armed to hand a dead socket a fresh retry budget.
+  function disarmConnectionHealth() {
+    if (reconnectStableTimer) clearTimeout(reconnectStableTimer);
+    reconnectStableTimer = null;
+  }
+
   // Retry a transient drop before asking the user.
   function handleConnectionLost(socket) {
     if (socket && ws !== socket) return; // stale event from a superseded connection
     if (socket) ws = null;               // disarm its pending encrypt/decrypt callbacks
     setStatus("down");
     if (sessionEnded || reconnectTimer) return;
-    if (reconnectStableTimer) clearTimeout(reconnectStableTimer);
-    reconnectStableTimer = null;
+    disarmConnectionHealth();
     var decision = viewerLogic.nextReconnectAttempt(reconnectAttempt, MAX_AUTO_RECONNECTS);
     if (!decision.retry) {
       showDisconnected();
@@ -1044,11 +1061,12 @@
              resyncDegraded: false };
   }
 
-  function disposeGraphics(p) {
+  function disposeGraphics(paneId, p) {
     if (!p || !p.graphics) return;
     var g = p.graphics;
     if (g.raf) cancelAnimationFrame(g.raf);
     if (g.resyncTimer) clearTimeout(g.resyncTimer);
+    clearGraphicsDegraded(paneId, g); // a closed pane must not keep warning about its graphics
     Object.keys(g.pending).forEach(function (id) { removePendingGraphicsImage(g, id); });
     Object.keys(g.images).forEach(function (id) { removeGraphicsImage(g, id); });
     if (g.canvas && g.canvas.parentNode) g.canvas.parentNode.removeChild(g.canvas);
@@ -1146,8 +1164,13 @@
 
   function scheduleGraphicsDraw(p) {
     if (!p || !p.graphics || p.graphics.raf) return;
-    p.graphics.raf = requestAnimationFrame(function () {
-      p.graphics.raf = 0;
+    var g = p.graphics;
+    // onRender/onScroll/onResize fire for every pane, and the overwhelming majority never carry
+    // graphics. With nothing placed, nothing decoding, and no canvas left to tear down there is
+    // no frame to draw — skip it rather than queue one rAF per render per pane.
+    if (!g.cells.length && !g.canvas && !Object.keys(g.pending).length) return;
+    g.raf = requestAnimationFrame(function () {
+      g.raf = 0;
       drawPaneGraphics(p);
     });
   }
@@ -1226,12 +1249,25 @@
     }
   }
 
+  // The status dot is shared by every pane, so its tooltip tracks the SET of degraded panes:
+  // one pane recovering must not clear the warning while another is still out of sync.
+  var degradedGraphicsPanes = {};
+  function updateGraphicsStatusTitle() {
+    var degraded = Object.keys(degradedGraphicsPanes).length;
+    statusEl.title = degraded
+      ? (degraded === 1 ? "Terminal graphics are temporarily out of sync in one pane; live output is unaffected."
+                        : "Terminal graphics are temporarily out of sync in " + degraded +
+                          " panes; live output is unaffected.")
+      : "";
+  }
+
   function requestGraphicsResync(paneId, g) {
     if (g.resyncPending) return;
     if (g.resyncAttempts >= MAX_GRAPHICS_RESYNCS) {
       if (!g.resyncDegraded) {
         g.resyncDegraded = true;
-        statusEl.title = "Terminal graphics are temporarily out of sync; live output is unaffected.";
+        degradedGraphicsPanes[paneId] = true;
+        updateGraphicsStatusTitle();
       }
       return;
     }
@@ -1268,15 +1304,19 @@
     }, retryAfterMs);
   }
 
-  function resetGraphicsResync(g) {
+  function resetGraphicsResync(paneId, g) {
     if (g.resyncTimer) clearTimeout(g.resyncTimer);
     g.resyncTimer = null;
     g.resyncPending = false;
     g.resyncAttempts = 0;
-    if (g.resyncDegraded) {
-      g.resyncDegraded = false;
-      statusEl.title = "";
-    }
+    clearGraphicsDegraded(paneId, g);
+  }
+
+  function clearGraphicsDegraded(paneId, g) {
+    if (!g.resyncDegraded) return;
+    g.resyncDegraded = false;
+    delete degradedGraphicsPanes[paneId];
+    updateGraphicsStatusTitle();
   }
 
   function retryBudgetRejectedImages(skipPaneId, skipImageId) {
@@ -1428,7 +1468,7 @@
       return !g.images[id] && !g.pending[id] && !g.rejected[id];
     });
     if (revisionGap || missing) requestGraphicsResync(m.paneId, g);
-    else resetGraphicsResync(g);
+    else resetGraphicsResync(m.paneId, g);
     scheduleGraphicsDraw(p);
   }
 
@@ -2289,7 +2329,7 @@
     m.tabs.forEach(function (t) { collectPaneIds(t.tree, live); });
     Object.keys(panes).forEach(function (id) {
       if (!live[id]) {
-        disposeGraphics(panes[id]);
+        disposeGraphics(id, panes[id]);
         try { panes[id].term.dispose(); } catch (e) {}
         delete panes[id];
       }

@@ -8,9 +8,10 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * A per-connection send queue with TWO lanes, drained by ONE writer coroutine:
  *
- *  - [sendControl] — **guaranteed delivery** (bounded channel). Full-paint snapshots, session/layout
- *    lists, lifecycle (closed), and resizes go here: dropping one corrupts the mirror until the next
- *    resync, so they must never be evicted.
+ *  - [sendControl] — **guaranteed delivery** (bounded channel). Session/layout lists, lifecycle
+ *    (closed), and resizes go here: dropping one corrupts the mirror until the next resync, so they
+ *    must never be evicted. [sendSnapshot] and [sendRecoverableControl] share the lane but trade a
+ *    momentarily-full backlog for a deferred heal / resync sentinel instead of the connection.
  *  - [sendOutput] — **best-effort** (char-bounded deque, drop-oldest). Incremental PTY output goes
  *    here: a stalled client must never back-pressure the PTY, so the oldest output is dropped under
  *    load. Each drop reports the affected session via [onOutputDropped], so the connection can
@@ -107,7 +108,7 @@ internal class FrameOutbox(
         const val MAX_COALESCED_CHARS = 256 * 1024
     }
 
-    /** Enqueue a frame that must not be dropped (snapshot / list / lifecycle / resize). */
+    /** Enqueue a frame that must not be dropped (list / lifecycle / resize). */
     fun sendControl(frame: Frame) {
         if (closed || trySendControlFrame(frame)) return
         val bytes = estimatedBytes(frame)
@@ -117,6 +118,37 @@ internal class FrameOutbox(
             controlCapacityBytes,
         )
         close()
+    }
+
+    /**
+     * Enqueue a full-paint snapshot for [sessionId] — guaranteed while the lane has room, but a
+     * merely-BACKLOGGED lane must not cost the connection.
+     *
+     * [controlCapacityBytes] bounds the whole queued control backlog, and a window/global share
+     * beginning every pane at once (each with a full styled scrollback) can queue snapshot bytes
+     * faster than a slow link drains them. That backlog is transient, so report the session as
+     * dropped instead of closing: the connection's [onOutputDropped] heal re-snapshots it once the
+     * writer has caught up. Only a single frame too large to EVER fit the ceiling is unrecoverable.
+     */
+    fun sendSnapshot(sessionId: String, frame: Frame) {
+        if (closed || trySendControlFrame(frame)) return
+        val bytes = estimatedBytes(frame)
+        if (bytes > controlCapacityBytes) {
+            log.warn(
+                "Closing stalled outbox: snapshot frame needs {} bytes (capacity {})",
+                bytes,
+                controlCapacityBytes,
+            )
+            close()
+            return
+        }
+        log.warn(
+            "Deferring {} snapshot ({} bytes): control backlog is at the {}-byte ceiling",
+            sessionId,
+            bytes,
+            controlCapacityBytes,
+        )
+        onOutputDropped?.invoke(sessionId)
     }
 
     /**

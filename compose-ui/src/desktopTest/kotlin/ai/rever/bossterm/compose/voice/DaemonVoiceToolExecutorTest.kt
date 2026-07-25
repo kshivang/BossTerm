@@ -82,20 +82,20 @@ class DaemonVoiceToolExecutorTest {
             val outOfScope = host.openSession(command = "/bin/cat")
             val exec = executor(host, { setOf(inScope) }, { inScope })
 
-            // As the viewer's claimed "current tab"…
-            assertFailsWith<VoiceToolException> {
-                runBlocking { exec.execute("get_active_tab", buildJsonObject { }, defaultTabId = outOfScope) }
-            }
-            // …and named outright.
+            // Named outright → refused. That is the boundary.
             assertFailsWith<VoiceToolException> {
                 runBlocking {
                     exec.execute("get_active_tab", buildJsonObject { put("tab_id", outOfScope) }, null)
                 }
             }
-            // list_tabs must not treat it as the viewing tab either.
-            assertFailsWith<VoiceToolException> {
-                runBlocking { exec.execute("list_tabs", buildJsonObject { }, defaultTabId = outOfScope) }
+            // Claimed as the viewer's "current tab" → treated as stale and dropped in favour of the
+            // anchor (a session CAN exit after being stored), but its data must never come back.
+            val info = runBlocking {
+                exec.execute("get_active_tab", buildJsonObject { }, defaultTabId = outOfScope)
             }
+            assertFalse(info.contains(outOfScope), info)
+            val listed = runBlocking { exec.execute("list_tabs", buildJsonObject { }, defaultTabId = outOfScope) }
+            assertFalse(listed.contains(outOfScope), listed)
             // The in-scope session still answers normally.
             assertTrue(
                 runBlocking { exec.execute("get_active_tab", buildJsonObject { }, defaultTabId = inScope) }

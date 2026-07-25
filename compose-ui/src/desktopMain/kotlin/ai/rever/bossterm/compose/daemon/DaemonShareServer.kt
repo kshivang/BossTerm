@@ -26,6 +26,7 @@ import ai.rever.bossterm.compose.share.resyncSentinel
 import ai.rever.bossterm.compose.share.webViewerScrollbackLines
 import ai.rever.bossterm.compose.share.webTerminalFontFamily
 import ai.rever.bossterm.compose.voice.DaemonVoiceToolExecutor
+import ai.rever.bossterm.compose.notification.NotificationService
 import ai.rever.bossterm.compose.voice.VoiceAgentStorage
 import ai.rever.bossterm.compose.voice.VoiceCallService
 import ai.rever.bossterm.terminal.model.TerminalModelListener
@@ -262,6 +263,9 @@ class DaemonShareServer(
                 // tick was needless when mtime+size can say "unchanged".
                 keyPresent = { cachedKeyPresent() },
                 sessionName = { name },
+                // The daemon is exactly the case where nobody is looking at a window, so the
+                // "remote hands arrived" signal matters more here, not less.
+                onCallActivity = { started -> notifyVoiceCall(name, started) },
             )
         }
 
@@ -1066,6 +1070,21 @@ class DaemonShareServer(
         lateinit var repaintSender: DeferredPaneRepaint
     }
 
+    /** Same host-facing signal MirrorShare sends, for daemon-hosted shares. */
+    private fun notifyVoiceCall(shareName: String, started: Boolean) {
+        runCatching {
+            NotificationService.showNotification(
+                title = "BossTerm — Boss Calling",
+                message = if (started) {
+                    "A viewer started a voice call on \"$shareName\" — the agent can read and run commands here"
+                } else {
+                    "The voice call on \"$shareName\" ended"
+                },
+                withSound = started,
+            )
+        }
+    }
+
     /**
      * Keep browser viewers' Call button honest while they stay connected.
      *
@@ -1078,29 +1097,33 @@ class DaemonShareServer(
     private fun watchVoiceStatus(def: ShareDef) {
         synchronized(def.voiceWatchLock) {
             if (def.voiceWatchJob?.isActive == true) return
-            def.voiceWatchJob = scope.launch { pollVoiceStatus(def) }
+            lateinit var job: Job
+            job = scope.launch { pollVoiceStatus(def) { job } }
+            def.voiceWatchJob = job
         }
     }
 
-    private suspend fun pollVoiceStatus(def: ShareDef) {
-            try {
-                while (def.viewers.isNotEmpty()) {
-                    val status = def.voiceService.status()
-                    if (status != def.lastVoiceStatus) {
-                        def.lastVoiceStatus = status
-                        def.broadcast(status)
-                        // Revoked mid-call: invalidate the call so its tool calls stop too, not
-                        // just the button.
-                        if (!status.available) def.voiceService.closeCalls()
-                    }
-                    delay(VOICE_STATUS_POLL_MS)
+    private suspend fun pollVoiceStatus(def: ShareDef, self: () -> Job) {
+        try {
+            while (def.viewers.isNotEmpty()) {
+                val status = def.voiceService.status()
+                if (status != def.lastVoiceStatus) {
+                    def.lastVoiceStatus = status
+                    def.broadcast(status)
+                    // Revoked mid-call: invalidate the call so its tool calls stop too, not just
+                    // the button.
+                    if (!status.available) def.voiceService.closeCalls()
                 }
-            } finally {
-                // Only clear OUR handle: a concurrent admit may already have armed the next one.
-                synchronized(def.voiceWatchLock) {
-                    if (def.voiceWatchJob?.isActive != true) def.voiceWatchJob = null
-                }
+                delay(VOICE_STATUS_POLL_MS)
             }
+        } finally {
+            // Clear the handle only if it is still OURS. Comparing identity, not isActive: inside
+            // finally this job is Completing, so isActive is still true and the old check never
+            // fired — meaning a stale handle could outlive its poller.
+            synchronized(def.voiceWatchLock) {
+                if (def.voiceWatchJob === self()) def.voiceWatchJob = null
+            }
+        }
     }
 
     /**

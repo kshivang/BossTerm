@@ -82,6 +82,12 @@ import ai.rever.bossterm.compose.tabs.TabBar
 import ai.rever.bossterm.compose.tabs.TabBarHeight
 import ai.rever.bossterm.compose.tabs.TabController
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import ai.rever.bossterm.compose.share.CallSegmentState
+import ai.rever.bossterm.compose.voice.HostCallBar
+import ai.rever.bossterm.compose.voice.HostCallPhase
+import ai.rever.bossterm.compose.voice.HostVoiceCall
+import ai.rever.bossterm.compose.voice.VoiceAgentStorage
+import ai.rever.bossterm.compose.voice.VoiceKeyDialog
 import ai.rever.bossterm.compose.voice.segmentState
 import ai.rever.bossterm.compose.ui.ProperTerminal
 
@@ -2114,14 +2120,14 @@ fun TabbedTerminal(
         // lambda owns the terminal rendering path, and the call state carries fields that change
         // several times a second while a call is up. Only segment transitions belong here — the
         // level meter collects its own flow inside HostCallBar.
-        val voiceEnabled = settings.voiceCallEnabled
+        val voiceEnabled = settings.voiceCallEnabled && settings.voiceShowStatusIndicator
         val callSegment by remember(voiceEnabled) {
             combine(
-                ai.rever.bossterm.compose.voice.HostVoiceCall.state,
-                ai.rever.bossterm.compose.voice.VoiceAgentStorage.keyPresentFlow,
+                HostVoiceCall.state,
+                VoiceAgentStorage.keyPresentFlow,
             ) { call, keyPresent -> call.segmentState(voiceEnabled, keyPresent) }
                 .distinctUntilChanged()
-        }.collectAsState(ai.rever.bossterm.compose.share.CallSegmentState.Hidden)
+        }.collectAsState(CallSegmentState.Hidden)
         var voiceKeyPrompt by remember { mutableStateOf(false) }
         // The active tab's remote session while it's still view-only — drives the read-only
         // pill, stacked in this same column so it sits BELOW the MCP/Sharing pills.
@@ -2138,7 +2144,7 @@ fun TabbedTerminal(
         } else null
         if (showMcpStatus || showSharingStatus || attachStatus != null || pendingShareRequests.isNotEmpty() ||
             viewOnlyRemote != null || upstreamReadOnly != null ||
-            callSegment != ai.rever.bossterm.compose.share.CallSegmentState.Hidden) {
+            callSegment != CallSegmentState.Hidden) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -2212,26 +2218,26 @@ fun TabbedTerminal(
                         // One click is the whole interaction: ask for a key if there isn't one,
                         // start when idle, end when live, clear a failure when it failed.
                         when (callSegment) {
-                            ai.rever.bossterm.compose.share.CallSegmentState.NeedsKey ->
+                            CallSegmentState.NeedsKey ->
                                 voiceKeyPrompt = true
-                            ai.rever.bossterm.compose.share.CallSegmentState.Failed ->
-                                ai.rever.bossterm.compose.voice.HostVoiceCall.dismissError()
-                            ai.rever.bossterm.compose.share.CallSegmentState.Connecting,
-                            ai.rever.bossterm.compose.share.CallSegmentState.Live,
-                            ai.rever.bossterm.compose.share.CallSegmentState.Speaking,
-                            ai.rever.bossterm.compose.share.CallSegmentState.Working ->
-                                ai.rever.bossterm.compose.voice.HostVoiceCall.end()
-                            else -> ai.rever.bossterm.compose.voice.HostVoiceCall.start()
+                            CallSegmentState.Failed ->
+                                HostVoiceCall.dismissError()
+                            CallSegmentState.Connecting,
+                            CallSegmentState.Live,
+                            CallSegmentState.Speaking,
+                            CallSegmentState.Working ->
+                                HostVoiceCall.end()
+                            else -> HostVoiceCall.start()
                         }
                     },
                 )
-                ai.rever.bossterm.compose.voice.HostCallBar()
+                HostCallBar()
                 if (voiceKeyPrompt) {
-                    ai.rever.bossterm.compose.voice.VoiceKeyDialog(
+                    VoiceKeyDialog(
                         onDismiss = { voiceKeyPrompt = false },
                         onSaved = {
                             voiceKeyPrompt = false
-                            ai.rever.bossterm.compose.voice.HostVoiceCall.start()
+                            HostVoiceCall.start()
                         },
                     )
                 }

@@ -1059,6 +1059,14 @@ data class TerminalSettings(
     val voiceCallVoice: String = "marin",
 
     /**
+     * Show the "Call BossTerm" segment in the tab-bar status strip. Its own toggle, like
+     * [mcpShowStatusIndicator] and [sessionSharingShowIndicator]: because Boss Calling ships
+     * enabled, without this a new pill would appear for everyone — including users who had
+     * deliberately turned the other two off to reclaim that corner.
+     */
+    val voiceShowStatusIndicator: Boolean = true,
+
+    /**
      * Show the small green status indicator in the tab bar while the MCP
      * server is running. Has no effect when mcpEnabled is false. Turning
      * this off also stops forcing the tab bar to render in single-tab mode

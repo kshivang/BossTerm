@@ -232,7 +232,7 @@
   // start while audio is still playing, and collapsing them into one field desynced the bar.
   var voice = { status: null, state: "idle", pc: null, dc: null, mic: null, muted: false,
                 seenCalls: {}, watchdog: null, model: null, callToken: null,
-                speaking: false, pending: {}, pendingCount: 0,
+                speaking: false, pending: {}, pendingCount: 0, timers: {},
                 responseOpen: false, outputsOwed: 0 };
   // The meter's bars are static markup — query once instead of every animation frame.
   var voiceBars = null;
@@ -397,6 +397,8 @@
     var wasLive = voice.state !== "idle";
     voice.dc = null; voice.pc = null; voice.mic = null; voice.muted = false; voice.model = null;
     voice.callToken = null; voice.speaking = false;
+    Object.keys(voice.timers).forEach(function (id) { clearTimeout(voice.timers[id]); });
+    voice.timers = {};
     voice.pending = {}; voice.pendingCount = 0; voice.responseOpen = false; voice.outputsOwed = 0;
     voice.state = "idle";
     if (sendEnd && wasLive) sendMsg({ t: "voiceEnd" });
@@ -412,6 +414,8 @@
         return "You need control of this session to call — request control first.";
       case "rate_limited":
         return "Too many call attempts — wait a moment and try again.";
+      case "too_many_calls":
+        return "This session already has as many voice calls as it allows.";
       default:
         return "Couldn't start the call" + (m.message ? ": " + m.message : ".");
     }
@@ -436,6 +440,12 @@
     voice.seenCalls[callId] = true;
     voice.pending[callId] = true;
     voice.pendingCount += 1;
+    // A reply that never arrives would otherwise pin the call at "Working…" with the agent mute
+    // and no way out but End call. Answer ourselves so it can say so out loud. run_command gets a
+    // long leash (its own host-side clamp is 600s); reads should be near-instant.
+    voice.timers[callId] = setTimeout(function () {
+      voiceToolTimedOut(callId);
+    }, name === "run_command" ? 630000 : 45000);
     voice.responseOpen = true; // a function call only exists inside a response
     updateVoiceBar();
     toast(voiceDescribeTool(name, argsJson));
@@ -456,6 +466,24 @@
     if (voice.responseOpen || voice.pendingCount > 0 || voice.outputsOwed === 0) return;
     voice.outputsOwed = 0;
     voiceDcSend({ type: "response.create" });
+  }
+  /** Hand the model an error result for a call the host never answered, and unblock the round. */
+  function voiceToolTimedOut(callId) {
+    if (!voice.pending[callId]) return;
+    delete voice.pending[callId];
+    delete voice.timers[callId];
+    voice.pendingCount = Math.max(0, voice.pendingCount - 1);
+    voice.outputsOwed += 1;
+    voiceDcSend({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output", call_id: callId,
+        output: JSON.stringify({ error: "The host did not answer this tool call in time." }),
+      },
+    });
+    toast("A tool call timed out — the agent will say so.");
+    updateVoiceBar();
+    voiceMaybeRequestResponse();
   }
   function voiceDcSend(o) {
     try { if (voice.dc && voice.dc.readyState === "open") voice.dc.send(JSON.stringify(o)); } catch (e) {}
@@ -2910,6 +2938,7 @@
         // otherwise bank a spurious response.create for later.
         if (voice.pending[m.callId]) {
           delete voice.pending[m.callId];
+          if (voice.timers[m.callId]) { clearTimeout(voice.timers[m.callId]); delete voice.timers[m.callId]; }
           voice.pendingCount = Math.max(0, voice.pendingCount - 1);
           voice.outputsOwed += 1;
         }

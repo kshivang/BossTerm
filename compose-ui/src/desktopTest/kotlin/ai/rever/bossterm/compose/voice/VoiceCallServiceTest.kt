@@ -265,6 +265,28 @@ class VoiceCallServiceTest {
         gate.complete(Unit)
     }
 
+    /**
+     * At capacity the service refuses a NEW call instead of evicting an existing one: evicting left
+     * the oldest caller's audio running while every tool answered "No active call".
+     */
+    @Test
+    fun `at capacity a new call is refused rather than evicting a live one`() {
+        val svc = service()
+        val first = svc.openCall()
+        val tokens = buildList { add(first); repeat(7) { add(svc.openCall()) } }
+        assertTrue(tokens.all { it != null }, "the first 8 calls are admitted")
+        assertEquals(null, svc.openCall(), "the 9th is refused")
+
+        // The original call still works — it was not evicted.
+        val replies = mutableListOf<ServerMessage>()
+        svc.handleToolCall(
+            ClientMessage.VoiceToolCall("c1", "read_scrollback", "{}", callToken = first),
+            canControl = true, defaultTabId = "t1",
+        ) { replies.add(it) }
+        assertTrue(replies.isEmpty() || !(replies.first() as ServerMessage.VoiceToolResult).isError,
+            "the first caller keeps its handle")
+    }
+
     /** Tokens age out, so a call handle can't be replayed indefinitely. */
     @Test
     fun `a token past its TTL stops working`() {

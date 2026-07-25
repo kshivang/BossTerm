@@ -191,6 +191,8 @@ class MirrorShare(
         observerJob?.cancel()
         mcpJob?.cancel()
         voiceJob?.cancel()
+        // Tearing down the share ends any call riding it — including the host-side "ended" signal.
+        runCatching { voiceService.closeCalls() }
         synchronized(taps) {
             taps.values.forEach(::disposeTap)
             taps.clear()
@@ -412,7 +414,7 @@ class MirrorShare(
             is ClientMessage.VoiceStart -> {
                 rememberVoiceTab(vc, msg.activeTabId)
                 voiceService.handleStart(msg, vc.canControl) { m ->
-                    vc.outbox.trySend(ShareProtocol.encodeServer(m))
+                    vc.outbox.sendControl(ShareProtocol.encodeServer(m))
                 }
                 return
             }
@@ -424,7 +426,9 @@ class MirrorShare(
             is ClientMessage.VoiceToolCall -> {
                 vc.voiceCallToken = msg.callToken ?: vc.voiceCallToken
                 voiceService.handleToolCall(msg, vc.canControl, vc.voiceTabId) { m ->
-                    vc.outbox.trySend(ShareProtocol.encodeServer(m))
+                    // Control lane: a tool result dropped under output back-pressure would leave
+                    // the agent waiting on a reply that never comes.
+                    vc.outbox.sendControl(ShareProtocol.encodeServer(m))
                 }
                 return
             }
@@ -1040,6 +1044,15 @@ internal class BoundedViewerOutbox(
 ) {
     private val lock = Any()
     private val frames = ArrayDeque<String>()
+
+    /**
+     * Frames that must never be dropped, drained ahead of pane output. [trySend] evicts the OLDEST
+     * queued frames under back-pressure, which is exactly wrong for a voice tool result: the moment
+     * that matters is a `run_command` flooding output, when the queued result is the oldest thing
+     * there. The daemon side has always had this lane ([FrameOutbox.sendControl]); this is its
+     * counterpart for in-app shares.
+     */
+    private val controlFrames = ArrayDeque<String>()
     private var queuedChars = 0
     private val wake = Channel<Unit>(Channel.CONFLATED)
     @Volatile private var closed = false
@@ -1091,10 +1104,22 @@ internal class BoundedViewerOutbox(
         return true
     }
 
+    /** Enqueue a frame that must survive back-pressure (voice control traffic). */
+    fun sendControl(text: String): Boolean {
+        if (closed || text.isEmpty()) return false
+        synchronized(lock) {
+            if (closed) return false
+            controlFrames.addLast(text)
+        }
+        wake.trySend(Unit)
+        return true
+    }
+
     suspend fun drainTo(emit: suspend (String) -> Unit) {
         while (true) {
             val next = synchronized(lock) {
-                frames.removeFirstOrNull()?.also { queuedChars -= it.length }
+                controlFrames.removeFirstOrNull()
+                    ?: frames.removeFirstOrNull()?.also { queuedChars -= it.length }
             }
             if (next != null) {
                 emit(next)

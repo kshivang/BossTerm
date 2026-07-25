@@ -113,6 +113,10 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
             return null
         }
         playback = line
+        // Set here as well as in startCapture: if play() ever lands first, the drain loop would see
+        // running == false with an empty queue, exit immediately, and — since `playback` is now
+        // non-null — never be restarted, leaving the agent inaudible for the whole call.
+        running = true
         playbackThread = Thread({
             while (running || playQueue.isNotEmpty()) {
                 val chunk = runCatching { playQueue.poll(200, TimeUnit.MILLISECONDS) }.getOrNull() ?: continue

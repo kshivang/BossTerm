@@ -30,7 +30,7 @@ internal class DaemonVoiceToolExecutor(
 
     override fun contextSnapshot(defaultTabId: String?): String {
         val scope = inScopeSessionIds()
-        val viewing = defaultTabId ?: anchorSessionId()
+        val viewing = defaultTabId
         val sb = StringBuilder()
         for (s in host.list()) {
             if (s.id !in scope) continue
@@ -48,17 +48,22 @@ internal class DaemonVoiceToolExecutor(
         val scope = inScopeSessionIds()
         val viewing = defaultTabId ?: anchorSessionId()
 
-        // Scope-check first, for every tool: `viewing` is viewer-supplied (Focus / VoiceStart) and
-        // the lookups behind get_active_tab scan all of host.list(), so a check that only guarded
-        // the DaemonMcpTools path would still leak a foreign session's title and cwd.
-        val target = args.stringArg("tab_id") ?: viewing
-            ?: throw VoiceToolException("No session available")
-        if (target !in scope) throw VoiceToolException("Tab $target is not part of this share")
+        // A NAMED session is always scope-checked — the lookups here scan all of host.list(), so
+        // that check is the boundary. Viewer-reported focus isn't: the session can exit after it was
+        // stored, and rejecting a stale id broke every tool including the two that take no argument.
+        val requested = args.stringArg("tab_id")
+        if (requested != null && requested !in scope) {
+            throw VoiceToolException("Tab $requested is not part of this share")
+        }
+        val target = requested
+            ?: viewing?.takeIf { it in scope }
+            ?: anchorSessionId()?.takeIf { it in scope }
 
         when (name) {
             "list_tabs" -> return listTabsJson(scope, target)
-            "get_active_tab" -> return tabInfoJson(target)
+            "get_active_tab" -> return tabInfoJson(target ?: throw VoiceToolException("No session available"))
         }
+        if (target == null) throw VoiceToolException("No session available")
 
         val daemonArgs = buildJsonObject {
             args.forEach { (k, v) -> if (k != "tab_id") put(k, v) }

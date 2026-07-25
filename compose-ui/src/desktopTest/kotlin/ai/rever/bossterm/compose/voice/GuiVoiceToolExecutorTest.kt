@@ -41,17 +41,12 @@ class GuiVoiceToolExecutorTest {
     fun `a tab outside the share is refused however it arrives`() {
         val exec = executor(scope = setOf("t1"))
 
+        // A tab the MODEL names is the boundary: refused outright, for every tool including the two
+        // answered locally (they used to bypass the check entirely).
         assertFailsWith<VoiceToolException> {
             runBlocking {
                 exec.execute("read_scrollback", buildJsonObject { put("tab_id", "foreign") }, null)
             }
-        }
-        assertFailsWith<VoiceToolException> {
-            runBlocking { exec.execute("read_scrollback", buildJsonObject { }, defaultTabId = "foreign") }
-        }
-        // The locally-answered tools are gated too — they used to bypass the check entirely.
-        assertFailsWith<VoiceToolException> {
-            runBlocking { exec.execute("get_active_tab", buildJsonObject { }, defaultTabId = "foreign") }
         }
         assertFailsWith<VoiceToolException> {
             runBlocking {
@@ -59,7 +54,40 @@ class GuiVoiceToolExecutorTest {
             }
         }
         assertFailsWith<VoiceToolException> {
-            runBlocking { exec.execute("list_tabs", buildJsonObject { }, defaultTabId = "foreign") }
+            runBlocking { exec.execute("list_tabs", buildJsonObject { put("tab_id", "foreign") }, null) }
+        }
+
+        // A STALE viewer-reported focus is not an attack — the tab was in scope when stored and
+        // then closed — so it falls back to the anchor rather than bricking the surface. What must
+        // never happen is the foreign tab's data coming back.
+        val info = runBlocking { exec.execute("get_active_tab", buildJsonObject { }, defaultTabId = "foreign") }
+        assertFalse(info.contains("foreign"), info)
+        val tabs = runBlocking { exec.execute("list_tabs", buildJsonObject { }, defaultTabId = "foreign") }
+        assertFalse(tabs.contains("foreign"), tabs)
+        val read = runBlocking { exec.execute("read_scrollback", buildJsonObject { }, defaultTabId = "foreign") }
+        assertFalse(read.contains("foreign"), read)
+    }
+
+    /**
+     * The viewer's focused tab is validated when stored, but the tab can close afterwards. A stale
+     * id must not break the whole surface: the two argument-less tools still answer, so the agent
+     * can discover a live id instead of getting "not part of this share" from everything.
+     */
+    @Test
+    fun `a focused tab that closed falls back instead of breaking every tool`() {
+        val exec = executor(scope = setOf("t1"), anchor = "t1")
+
+        // list_tabs takes no target at all — it must answer.
+        val tabs = runBlocking { exec.execute("list_tabs", buildJsonObject { }, defaultTabId = "closed-tab") }
+        assertTrue(tabs.contains("\"tabs\""), tabs)
+        // get_active_tab falls back to the in-scope anchor rather than refusing.
+        val active = runBlocking { exec.execute("get_active_tab", buildJsonObject { }, defaultTabId = "closed-tab") }
+        assertTrue(active.contains("t1") || active.contains("no longer open"), active)
+        // But a tab the MODEL names is still refused — that's the actual boundary.
+        assertFailsWith<VoiceToolException> {
+            runBlocking {
+                exec.execute("get_active_tab", buildJsonObject { put("tab_id", "closed-tab") }, null)
+            }
         }
     }
 

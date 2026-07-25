@@ -88,29 +88,28 @@ internal class GuiVoiceToolExecutor(
         // answered tools. [defaultTabId] comes from the viewer's own Focus/VoiceStart, and the
         // registry lookups behind get_active_tab span every window on the host, so checking only
         // the MCP path would let a viewer name a foreign tab and read back its title and cwd.
-        // Resolved lazily: a NAMED target is always scope-checked, but list_tabs must still answer
-        // when there is no default/anchor to fall back on (otherwise a share with tabs but no
-        // reported focus gets an error instead of its tab list).
+        // A tab the model NAMES is always scope-checked — that's the security boundary. The
+        // viewer-reported focus is not a boundary: it was in scope when stored, but the tab can
+        // close afterwards, and treating a stale id as a violation used to break every tool
+        // including list_tabs/get_active_tab, leaving the agent no way to discover a valid id.
+        // Stale focus therefore falls back to the anchor, which is in scope by construction.
         val requested = args.stringArg("tab_id")
         if (requested != null && requested !in scope) {
             throw VoiceToolException("Tab $requested is not part of this share")
         }
-        val fallback = defaultTabId ?: anchorTabId()
-        if (fallback != null && requested == null && fallback !in scope) {
-            throw VoiceToolException("Tab $fallback is not part of this share")
-        }
+        val focused = defaultTabId?.takeIf { it in scope }
+        val fallback = requested ?: focused ?: anchorTabId()?.takeIf { it in scope }
 
         // Tab enumeration is answered locally so it can be scope-filtered (the MCP handler
-        // enumerates every window on the host).
+        // enumerates every window on the host), and needs no target at all.
         when (name) {
-            "list_tabs" -> return listTabsJson(scope, requested ?: fallback)
+            "list_tabs" -> return listTabsJson(scope, fallback)
             "get_active_tab" -> return tabInfoJson(
-                requested ?: fallback ?: throw VoiceToolException("No terminal tab is available")
+                fallback ?: throw VoiceToolException("No terminal tab is available")
             )
         }
 
-        val targetTabId = requested ?: fallback
-            ?: throw VoiceToolException("No terminal tab is available")
+        val targetTabId = fallback ?: throw VoiceToolException("No terminal tab is available")
 
         val effectiveArgs = buildJsonObject {
             args.forEach { (k, v) -> if (k != "tab_id") put(k, v) }

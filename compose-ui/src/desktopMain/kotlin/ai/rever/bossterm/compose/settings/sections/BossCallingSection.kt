@@ -72,13 +72,22 @@ internal fun BossCallingSection(
             label = "Enable Boss Calling",
             checked = settings.voiceCallEnabled,
             onCheckedChange = { onSettingsChange(settings.copy(voiceCallEnabled = it)) },
-            description = "Show a \"Call BossTerm\" button in the share viewer that connects the remote user by " +
-                    "voice to an AI agent (OpenAI Realtime) that can inspect this session and run " +
-                    "commands. On, but idle until you set the API key below — the button stays " +
-                    "hidden without one. Calling also requires control of the share."
+            description = "Show a \"Call BossTerm\" button — in this window and in the share viewer — " +
+                    "that starts a voice conversation with an AI agent (OpenAI Realtime) able to " +
+                    "inspect this session and run commands. What the agent reads from your terminal " +
+                    "is sent to OpenAI. On, but idle until you set the API key below; calling from a " +
+                    "share also requires control of it."
         )
         if (statusLine) VoiceAvailabilityLine(settings)
         if (showAgentOptions) {
+            SettingsToggle(
+                label = "Show the Call BossTerm indicator",
+                checked = settings.voiceShowStatusIndicator,
+                onCheckedChange = { onSettingsChange(settings.copy(voiceShowStatusIndicator = it)) },
+                description = "Show the \"Call BossTerm\" segment in the tab-bar status strip, " +
+                        "alongside the MCP and Sharing indicators. Turning it off doesn't disable " +
+                        "calling — the share viewer's button is unaffected."
+            )
             SettingsDropdown(
                 label = "Model",
                 options = listOf(

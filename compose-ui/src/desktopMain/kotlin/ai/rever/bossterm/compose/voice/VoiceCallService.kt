@@ -104,14 +104,20 @@ internal class VoiceCallService(
             )
             when (result) {
                 is VoiceSessionBroker.MintResult.Ok -> {
-                    reply(
-                        ServerMessage.VoiceSession(
-                            clientSecret = result.clientSecret,
-                            model = s.voiceCallModel,
-                            callToken = openCall(),
+                    val token = openCall()
+                    if (token == null) {
+                        log.warn("Voice call refused: {} calls already live", MAX_LIVE_CALLS)
+                        reply(ServerMessage.VoiceError(code = "too_many_calls"))
+                    } else {
+                        reply(
+                            ServerMessage.VoiceSession(
+                                clientSecret = result.clientSecret,
+                                model = s.voiceCallModel,
+                                callToken = token,
+                            )
                         )
-                    )
-                    onCallActivity(true)
+                        onCallActivity(true)
+                    }
                 }
                 is VoiceSessionBroker.MintResult.Unauthorized ->
                     reply(ServerMessage.VoiceError(code = "unauthorized"))
@@ -239,13 +245,13 @@ internal class VoiceCallService(
      * Register a freshly minted call and hand back the token the viewer must echo on tool calls.
      * Internal rather than private so tests can open a call without standing up a mint server.
      */
-    internal fun openCall(): String = synchronized(liveCalls) {
-        val token = UUID.randomUUID().toString()
+    internal fun openCall(): String? = synchronized(liveCalls) {
         val now = nowMs()
         liveCalls.entries.removeAll { now - it.value > CALL_TOKEN_TTL_MS }
-        while (liveCalls.size >= MAX_LIVE_CALLS) {
-            liveCalls.remove(liveCalls.keys.first())
-        }
+        // Refuse rather than evict: dropping the oldest token left that caller's audio running while
+        // every tool answered "No active call", with no way back but hanging up and redialling.
+        if (liveCalls.size >= MAX_LIVE_CALLS) return@synchronized null
+        val token = UUID.randomUUID().toString()
         liveCalls[token] = now
         token
     }

@@ -22,18 +22,21 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.Button
 import androidx.compose.material.ButtonDefaults
 import androidx.compose.material.Text
+import androidx.compose.material.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
@@ -65,7 +68,7 @@ internal fun BossCallingSection(
             label = "Enable Boss Calling",
             checked = settings.voiceCallEnabled,
             onCheckedChange = { onSettingsChange(settings.copy(voiceCallEnabled = it)) },
-            description = "Show a Call button in the share viewer that connects the remote user by " +
+            description = "Show a \"Call BossTerm\" button in the share viewer that connects the remote user by " +
                     "voice to an AI agent (OpenAI Realtime) that can inspect this session and run " +
                     "commands. On, but idle until you set the API key below — the button stays " +
                     "hidden without one. Calling also requires control of the share."
@@ -116,9 +119,9 @@ internal fun BossCallingSection(showAgentOptions: Boolean = true, statusLine: Bo
 private fun VoiceAvailabilityLine(settings: TerminalSettings) {
     val keyPresent by VoiceAgentStorage.keyPresentFlow.collectAsState()
     val (text, color) = when {
-        !settings.voiceCallEnabled -> "Off — viewers see no Call button." to TextMuted
-        !keyPresent -> "No API key yet — viewers see no Call button until you add one below." to Danger
-        else -> "Ready — a viewer with control sees the Call button." to AccentColor
+        !settings.voiceCallEnabled -> "Off — viewers see no Call BossTerm button." to TextMuted
+        !keyPresent -> "No API key yet — viewers see no Call BossTerm button until you add one below." to Danger
+        else -> "Ready — a viewer with control sees the Call BossTerm button." to AccentColor
     }
     Text(text = text, color = color, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp))
 }
@@ -176,8 +179,12 @@ private fun VoiceApiKeyField() {
             },
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
         )
+        // Same shape as every other settings action row (see SettingsFilePicker): one accent-filled
+        // primary at 36.dp, and a quiet TextButton beside it — Danger-tinted here because clearing
+        // the key turns the feature off for every viewer.
         Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(top = 8.dp)
         ) {
             Button(
@@ -190,12 +197,13 @@ private fun VoiceApiKeyField() {
                 },
                 enabled = input.isNotBlank(),
                 colors = ButtonDefaults.buttonColors(backgroundColor = AccentColor, contentColor = TextOnAccent),
-            ) { Text("Save key", fontSize = 13.sp) }
-            Button(
-                onClick = { VoiceAgentStorage.clear(); input = "" },
-                enabled = keyPresent,
-                colors = ButtonDefaults.buttonColors(backgroundColor = Danger.copy(alpha = 0.25f), contentColor = TextPrimary),
-            ) { Text("Clear key", fontSize = 13.sp) }
+                modifier = Modifier.height(36.dp),
+            ) { Text("Save key", fontSize = 12.sp) }
+            if (keyPresent) {
+                TextButton(onClick = { VoiceAgentStorage.clear(); input = "" }) {
+                    Text("Clear key", color = Danger, fontSize = 12.sp)
+                }
+            }
         }
     }
 }

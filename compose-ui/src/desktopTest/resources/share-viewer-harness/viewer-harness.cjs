@@ -956,6 +956,7 @@ const scenarios = {
     socket.deliver({ t: "voiceStatus", available: true });
     assert.ok(el("voicebar").classList.contains("on"), "an available host must show the bottom bar");
     assert.strictEqual(el("voicecallbtn").style.display, "inline-flex", "idle shows the Call button");
+    assert.strictEqual(el("voicelabel").textContent, "Call BossTerm", "the button is branded");
     assert.ok(!el("voicecall").classList.contains("on"), "idle hides the in-call strip");
 
     // Clicking Call takes the mic first, then asks the host to mint.

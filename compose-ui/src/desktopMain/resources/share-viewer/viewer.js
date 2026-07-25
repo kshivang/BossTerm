@@ -261,9 +261,9 @@
     if (!inCall) {
       voiceCallBtnEl.className = voiceMicOk ? "" : "disabled";
       voiceCallBtnEl.title = voiceMicOk
-        ? "Voice-call the session's AI agent"
+        ? "Talk to this session's BossTerm agent"
         : "Voice calls need an https share link — open the remote (tunnel) link";
-      voiceLabelEl.textContent = "Call";
+      voiceLabelEl.textContent = "Call BossTerm";
     } else {
       voiceCallBtnEl.className = "";
       voiceCallEl.className = "on" +

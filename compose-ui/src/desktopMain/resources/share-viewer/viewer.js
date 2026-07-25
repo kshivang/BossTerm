@@ -292,14 +292,22 @@
     if (!voice.status || !voice.status.available || voice.state !== "idle") return;
     if (!voiceMicOk) { toast("Voice calls need an https share link — open the remote (tunnel) link."); return; }
     if (viewOnlyGate()) return; // view-only → request-control prompt
-    // Mic first, inside the click gesture (permission prompt), so no minted secret is
-    // wasted on a denied microphone.
+    // Claim the call SYNCHRONOUSLY, before awaiting the mic: the guard above runs again on a second
+    // click while getUserMedia is still pending, and two clicks used to mean two mic streams and two
+    // voiceStarts — the second tripping the host's rate limit, whose voiceError then tore down the
+    // call the first one had just established.
+    voice.state = "connecting";
+    voice.muted = false;
+    voice.seenCalls = {};
+    updateVoiceBar();
+    // Mic inside the click gesture (permission prompt), so no minted secret is wasted on a
+    // denied microphone.
     navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      if (voice.state === "idle") { // hung up while the prompt was open
+        try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+        return;
+      }
       voice.mic = stream;
-      voice.muted = false;
-      voice.state = "connecting";
-      voice.seenCalls = {};
-      updateVoiceBar();
       sendMsg({ t: "voiceStart", activeTabId: activeTabId });
       voice.watchdog = setTimeout(function () {
         if (voice.state === "connecting") {
@@ -308,6 +316,8 @@
         }
       }, 15000);
     }).catch(function () {
+      voice.state = "idle"; // release the claim so the button comes back
+      updateVoiceBar();
       toast("Microphone access was denied — allow the mic for this site and try again.");
     });
   };
@@ -400,6 +410,8 @@
         return "The host's OpenAI key was rejected — check it in BossTerm Settings.";
       case "not_controller":
         return "You need control of this session to call — request control first.";
+      case "rate_limited":
+        return "Too many call attempts — wait a moment and try again.";
       default:
         return "Couldn't start the call" + (m.message ? ": " + m.message : ".");
     }
@@ -2887,7 +2899,9 @@
         connectRealtime(m); break;
       case "voiceError":
         toast(voiceErrorText(m));
-        if (voice.state !== "idle") endCall(false);
+        // A refusal for a DUPLICATE start (rate limit) must not tear down the call that is already
+        // running — only errors that mean "this call can't happen" end it.
+        if (voice.state !== "idle" && !(m.code === "rate_limited" && voice.dc)) endCall(false);
         break;
       case "voiceToolResult":
         voiceDcSend({ type: "conversation.item.create",

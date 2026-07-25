@@ -57,8 +57,16 @@ internal object VoiceAgentStorage {
             .getOrNull()
     }
 
-    /** Whether a non-blank key exists on disk right now (cheap stat + parse; daemon-safe). */
+    /** Whether a non-blank key exists on disk right now (read + parse; daemon-safe). */
     fun keyPresent(file: File = defaultFile()): Boolean = load(file)?.openaiApiKey?.isNotBlank() == true
+
+    /**
+     * Cheap change token for the key file: mtime + size, 0 when absent. Pollers (the daemon has no
+     * cross-process flow) compare this and only re-read on a change, instead of decoding the JSON
+     * on every tick.
+     */
+    fun keyStamp(file: File = defaultFile()): Long =
+        if (file.isFile) file.lastModified() * 31 + file.length() else 0L
 
     /**
      * Persist [config], returning whether it actually reached disk.

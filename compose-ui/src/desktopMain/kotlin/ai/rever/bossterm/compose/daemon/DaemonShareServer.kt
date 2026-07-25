@@ -26,6 +26,7 @@ import ai.rever.bossterm.compose.share.resyncSentinel
 import ai.rever.bossterm.compose.share.webViewerScrollbackLines
 import ai.rever.bossterm.compose.share.webTerminalFontFamily
 import ai.rever.bossterm.compose.voice.DaemonVoiceToolExecutor
+import ai.rever.bossterm.compose.voice.VoiceAgentStorage
 import ai.rever.bossterm.compose.voice.VoiceCallService
 import ai.rever.bossterm.terminal.model.TerminalModelListener
 import io.ktor.http.CacheControl
@@ -227,6 +228,19 @@ class DaemonShareServer(
         val viewers = CopyOnWriteArrayList<DaemonShareConnection>()
         val viewerSeq = AtomicInteger(0)
 
+        @Volatile private var keyStamp: Long = -1L
+        @Volatile private var keyPresentCache: Boolean = false
+
+        /** [VoiceAgentStorage.keyPresent], re-read only when the file's mtime/size moved. */
+        fun cachedKeyPresent(): Boolean {
+            val stamp = VoiceAgentStorage.keyStamp()
+            if (stamp != keyStamp) {
+                keyStamp = stamp
+                keyPresentCache = VoiceAgentStorage.keyPresent()
+            }
+            return keyPresentCache
+        }
+
         /** Last voiceStatus pushed, so [watchVoiceStatus] only broadcasts real changes. */
         @Volatile var lastVoiceStatus: ServerMessage.VoiceStatus? = null
         @Volatile var voiceWatchJob: Job? = null
@@ -244,6 +258,9 @@ class DaemonShareServer(
                 ),
                 scope = this@DaemonShareServer.scope,
                 settings = { settings() },
+                // Stamp-cached: the poller runs every few seconds, and re-decoding voice.json each
+                // tick was needless when mtime+size can say "unchanged".
+                keyPresent = { cachedKeyPresent() },
                 sessionName = { name },
             )
         }

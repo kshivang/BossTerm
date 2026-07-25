@@ -205,12 +205,22 @@ internal class HostVoiceCallController(
             }
 
             "error" -> {
-                val message = runCatching {
-                    event["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
-                }.getOrNull()
-                log.warn("Realtime error: {}", message ?: "(none)")
-                // Session-level errors are fatal; a per-turn hiccup isn't worth dropping a call.
-                if (message?.contains("session", ignoreCase = true) == true) fail(message)
+                val err = runCatching { event["error"]?.jsonObject }.getOrNull()
+                fun field(name: String) = runCatching { err?.get(name)?.jsonPrimitive?.content }.getOrNull()
+                val message = field("message")
+                val code = field("code")
+                val param = field("param")
+                log.warn("Realtime error: code={} param={} message={}", code, param, message ?: "(none)")
+                // Classify on the structured fields, not by substring-matching prose: a rejected
+                // session config names the offending `session.*` param, and auth/quota failures come
+                // with a code. Anything else is a per-turn hiccup — but surface it in the bar rather
+                // than only logging it, or a call that keeps failing just looks like silence.
+                val fatal = param?.startsWith("session.") == true || code in FATAL_ERROR_CODES
+                if (fatal) {
+                    fail(message ?: "The call was rejected (${code ?: param ?: "unknown"})")
+                } else if (message != null) {
+                    _state.update { it.copy(activity = message.take(60)) }
+                }
             }
         }
     }
@@ -338,5 +348,13 @@ internal class HostVoiceCallController(
 
     private companion object {
         val json = Json { ignoreUnknownKeys = true }
+
+        /** Errors that end a call rather than one turn of it. */
+        val FATAL_ERROR_CODES = setOf(
+            "invalid_api_key",
+            "insufficient_quota",
+            "session_expired",
+            "invalid_request_error",
+        )
     }
 }

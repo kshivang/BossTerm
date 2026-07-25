@@ -227,6 +227,65 @@ class VoiceCallServiceTest {
         assertTrue(replies.none { it is ServerMessage.VoiceError }, "a later attempt is allowed again")
     }
 
+    /**
+     * The in-flight cap is claimed with getAndUpdate on the PREVIOUS count; a plain
+     * get()-then-increment let concurrent socket messages both see room and exceed it.
+     */
+    @Test
+    fun `the in-flight cap admits exactly four concurrent tool calls`() {
+        val gate = CompletableDeferred<Unit>()
+        val slow = object : VoiceToolExecutor {
+            override fun tools(): List<VoiceToolDef> = VoiceToolCatalog.ALL
+            override fun contextSnapshot(defaultTabId: String?): String = ""
+            override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?): String {
+                gate.await() // park every call so the cap is what decides
+                return "{}"
+            }
+        }
+        val svc = VoiceCallService(
+            executor = slow,
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+        )
+        val token = svc.openCall()
+        val replies = mutableListOf<ServerMessage>()
+        repeat(6) { i ->
+            svc.handleToolCall(
+                ClientMessage.VoiceToolCall("c$i", "read_scrollback", "{}", callToken = token),
+                canControl = true, defaultTabId = "t1",
+            ) { synchronized(replies) { replies.add(it) } }
+        }
+        // The two beyond the cap are refused immediately; the admitted four are still parked.
+        val refusals = synchronized(replies) {
+            replies.filterIsInstance<ServerMessage.VoiceToolResult>().filter { it.isError }
+        }
+        assertEquals(2, refusals.size, "6 calls against a cap of 4 → 2 refusals")
+        assertTrue(refusals.all { it.resultJson.contains("Too many tool calls") }, refusals.toString())
+        gate.complete(Unit)
+    }
+
+    /** Tokens age out, so a call handle can't be replayed indefinitely. */
+    @Test
+    fun `a token past its TTL stops working`() {
+        var clock = 1_000L
+        val svc = VoiceCallService(
+            executor = FakeExecutor(),
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+            nowMs = { clock },
+        )
+        val token = svc.openCall()
+        clock += 7L * 60 * 60 * 1000 // past the 6h TTL
+        val replies = mutableListOf<ServerMessage>()
+        svc.handleToolCall(
+            ClientMessage.VoiceToolCall("c1", "read_scrollback", "{}", callToken = token),
+            canControl = true, defaultTabId = "t1",
+        ) { replies.add(it) }
+        assertTrue((replies.single() as ServerMessage.VoiceToolResult).isError, "an expired handle is refused")
+    }
+
     @Test
     fun `mint success replies voiceSession with the ephemeral secret only`() = testApplication {
         routing {

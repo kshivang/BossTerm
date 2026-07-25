@@ -88,18 +88,29 @@ internal class GuiVoiceToolExecutor(
         // answered tools. [defaultTabId] comes from the viewer's own Focus/VoiceStart, and the
         // registry lookups behind get_active_tab span every window on the host, so checking only
         // the MCP path would let a viewer name a foreign tab and read back its title and cwd.
-        val targetTabId = args.stringArg("tab_id") ?: defaultTabId ?: anchorTabId()
-            ?: throw VoiceToolException("No terminal tab is available")
-        if (targetTabId !in scope) {
-            throw VoiceToolException("Tab $targetTabId is not part of this share")
+        // Resolved lazily: a NAMED target is always scope-checked, but list_tabs must still answer
+        // when there is no default/anchor to fall back on (otherwise a share with tabs but no
+        // reported focus gets an error instead of its tab list).
+        val requested = args.stringArg("tab_id")
+        if (requested != null && requested !in scope) {
+            throw VoiceToolException("Tab $requested is not part of this share")
+        }
+        val fallback = defaultTabId ?: anchorTabId()
+        if (fallback != null && requested == null && fallback !in scope) {
+            throw VoiceToolException("Tab $fallback is not part of this share")
         }
 
         // Tab enumeration is answered locally so it can be scope-filtered (the MCP handler
         // enumerates every window on the host).
         when (name) {
-            "list_tabs" -> return listTabsJson(scope, targetTabId)
-            "get_active_tab" -> return tabInfoJson(targetTabId)
+            "list_tabs" -> return listTabsJson(scope, requested ?: fallback)
+            "get_active_tab" -> return tabInfoJson(
+                requested ?: fallback ?: throw VoiceToolException("No terminal tab is available")
+            )
         }
+
+        val targetTabId = requested ?: fallback
+            ?: throw VoiceToolException("No terminal tab is available")
 
         val effectiveArgs = buildJsonObject {
             args.forEach { (k, v) -> if (k != "tab_id") put(k, v) }
@@ -114,7 +125,7 @@ internal class GuiVoiceToolExecutor(
         return result.content.filterIsInstance<TextContent>().firstOrNull()?.text ?: "{}"
     }
 
-    private fun listTabsJson(scope: Set<String>, defaultTabId: String?): String = buildJsonObject {
+    private fun listTabsJson(scope: Set<String>, viewingTabId: String?): String = buildJsonObject {
         put("tabs", buildJsonArray {
             for (tab in registry.allTabs()) {
                 if (tab.id !in scope) continue
@@ -126,7 +137,7 @@ internal class GuiVoiceToolExecutor(
                 })
             }
         })
-        (defaultTabId ?: anchorTabId())?.let { put("viewingTabId", it) }
+        viewingTabId?.let { put("viewingTabId", it) }
     }.toString()
 
     private fun tabInfoJson(tabId: String): String {

@@ -10,6 +10,8 @@ import java.net.http.HttpClient
 import java.net.http.WebSocket
 import java.time.Duration
 import java.util.concurrent.CompletionStage
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * The host's own connection to the OpenAI Realtime API, as JSON events in both directions.
@@ -45,13 +47,26 @@ internal class JdkRealtimeTransport : RealtimeTransport {
     @Volatile private var socket: WebSocket? = null
     private val pending = StringBuilder()
 
+    /**
+     * Outgoing events, drained by one writer thread.
+     *
+     * `WebSocket.sendText` throws IllegalStateException if a previous text send hasn't completed —
+     * the JDK contract is to wait on the returned future. This socket has two concurrent producers
+     * (the capture thread at ~25 mic frames/second, and tool coroutines sending function results),
+     * so fire-and-forget sends would collide and, with the failure swallowed, present as "the agent
+     * can't hear me" with nothing but a class name in the log. One consumer that waits for each
+     * future removes the collision entirely.
+     */
+    private val outgoing = LinkedBlockingQueue<String>()
+    @Volatile private var writer: Thread? = null
+    @Volatile private var open = false
+
     override suspend fun connect(
         model: String,
         apiKey: String,
         events: (String) -> Unit,
         onClosed: (String?) -> Unit,
     ) {
-        val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build()
         val listener = object : WebSocket.Listener {
             override fun onText(ws: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
                 ws.request(1)
@@ -81,28 +96,56 @@ internal class JdkRealtimeTransport : RealtimeTransport {
         // instead of surfacing as a failed call.
         val url = "$REALTIME_WS_URL?model=" + URLEncoder.encode(model, StandardCharsets.UTF_8)
         socket = withContext(Dispatchers.IO) {
-            client.newWebSocketBuilder()
+            sharedClient.newWebSocketBuilder()
                 .header("Authorization", "Bearer $apiKey")
                 .connectTimeout(Duration.ofSeconds(15))
                 .buildAsync(URI.create(url), listener)
                 .join()
         }
+        open = true
+        writer = Thread({
+            while (open) {
+                val json = runCatching { outgoing.poll(200, TimeUnit.MILLISECONDS) }.getOrNull() ?: continue
+                val ws = socket ?: break
+                // join() per frame is the point: the next sendText may not start until this one
+                // completes.
+                runCatching { ws.sendText(json, true).join() }
+                    .onFailure { log.warn("Voice send failed: {}", it.javaClass.simpleName) }
+            }
+        }, "boss-voice-ws-writer").apply { isDaemon = true; start() }
     }
 
     override fun send(json: String) {
-        val ws = socket ?: return
-        runCatching { ws.sendText(json, true) }
-            .onFailure { log.warn("Voice send failed: {}", it.javaClass.simpleName) }
+        if (!open) return
+        outgoing.offer(json)
     }
 
     override fun close() {
+        open = false
+        writer?.interrupt()
+        writer = null
+        outgoing.clear()
         val ws = socket ?: return
         socket = null
-        runCatching { ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye") }
-        runCatching { ws.abort() }
+        // Let the close frame actually flush before aborting: abort() straight after sendClose
+        // usually kills the connection first, so the peer sees a hard drop.
+        runCatching {
+            ws.sendClose(WebSocket.NORMAL_CLOSURE, "bye")
+                .orTimeout(2, TimeUnit.SECONDS)
+                .whenComplete { _, _ -> runCatching { ws.abort() } }
+        }.onFailure { runCatching { ws.abort() } }
     }
 
     private companion object {
         const val REALTIME_WS_URL = "wss://api.openai.com/v1/realtime"
+
+        /**
+         * One client for the process. A per-connect client is never closed (HttpClient only became
+         * closeable in Java 21), so building one per call leaked a selector thread and an executor
+         * each time.
+         */
+        val sharedClient: HttpClient by lazy {
+            HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build()
+        }
     }
 }

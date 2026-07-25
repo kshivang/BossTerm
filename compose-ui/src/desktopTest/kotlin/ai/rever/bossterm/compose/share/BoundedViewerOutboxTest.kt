@@ -1,6 +1,9 @@
 package ai.rever.bossterm.compose.share
 
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -62,6 +65,28 @@ class BoundedViewerOutboxTest {
             "output waited behind $outputAt control frames; the burst cap is " +
                 "${BoundedViewerOutbox.CONTROL_BURST}",
         )
+    }
+
+    /**
+     * The burst cap must not park the drain loop while control frames remain. The fairness test
+     * above can't catch this because it closes the outbox first, so the empty pass returns instead
+     * of waiting on `wake` — here the outbox stays OPEN, which is the real case.
+     */
+    @Test
+    fun `a control backlog past the burst cap still drains without new sends`() = runBlocking {
+        val outbox = BoundedViewerOutbox(capacityChars = 1 shl 20, capacityFrames = 4096)
+        val queued = BoundedViewerOutbox.CONTROL_BURST * 3
+        repeat(queued) { outbox.sendControl("c$it") }
+
+        val drained = mutableListOf<String>()
+        val drain = launch { outbox.drainTo { drained.add(it) } }
+        // No further sends: everything already queued must come out on its own.
+        withTimeout(5_000) {
+            while (drained.size < queued) delay(10)
+        }
+        outbox.close()
+        drain.join()
+        assertEquals(queued, drained.size)
     }
 
     @Test

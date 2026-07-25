@@ -452,7 +452,9 @@
     // long leash (its own host-side clamp is 600s); reads should be near-instant.
     voice.timers[callId] = setTimeout(function () {
       voiceToolTimedOut(callId);
-    }, name === "run_command" ? 630000 : 45000);
+      // search_output over a large scrollback with an expensive regex can legitimately take a
+      // while, so reads get 120s rather than 45.
+    }, name === "run_command" ? 630000 : 120000);
     voice.responseOpen = true; // a function call only exists inside a response
     updateVoiceBar();
     toast(voiceDescribeTool(name, argsJson));

@@ -84,6 +84,10 @@ internal class JdkRealtimeTransport : RealtimeTransport {
         events: (String) -> Unit,
         onClosed: (String?) -> Unit,
     ) {
+        // Reset per connect: a stale `closeRequested` made the instance single-use — the next
+        // connect completed the handshake, aborted the live socket, and threw the cancellation the
+        // controller treats as clean teardown, leaving it stuck at "Connecting…" with no error.
+        closeRequested = false
         val listener = object : WebSocket.Listener {
             override fun onText(ws: WebSocket, data: CharSequence, last: Boolean): CompletionStage<*>? {
                 ws.request(1)

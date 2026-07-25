@@ -1178,7 +1178,10 @@ internal class BoundedViewerOutbox(
             // Prefer control frames, but only [CONTROL_BURST] in a row: draining every one first
             // would let voice traffic starve pane output entirely.
             val next = synchronized(lock) {
-                val takeControl = controlBurst < CONTROL_BURST
+                // …unless there is no output to be fair to: with the output queue empty the burst
+                // cap would take nothing and park the loop on `wake` with control frames still
+                // queued — on the one lane advertised as guaranteed.
+                val takeControl = controlBurst < CONTROL_BURST || frames.isEmpty()
                 val control = if (takeControl) {
                     controlFrames.removeFirstOrNull()?.also { controlChars -= it.length }
                 } else null

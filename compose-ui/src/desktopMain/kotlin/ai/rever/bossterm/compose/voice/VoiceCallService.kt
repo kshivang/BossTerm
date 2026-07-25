@@ -116,17 +116,19 @@ internal class VoiceCallService(
             reply(ServerMessage.VoiceError(code = "no_key"))
             return
         }
-        if (!allowMint()) {
-            log.warn("Voice session mint refused: rate limit")
-            reply(ServerMessage.VoiceError(code = "rate_limited"))
-            return
-        }
-        // Reserve the slot BEFORE minting: refusing afterwards means the host already paid for a
-        // billed client_secret it then threw away.
+        // Slot first, budget second: a too_many_calls refusal costs nothing at OpenAI, so it must
+        // not consume one of the mints the budget is there to ration (8 refusals used to leave only
+        // 4 real mints in the window).
         val token = openCall()
         if (token == null) {
             log.warn("Voice call refused: {} calls already live", MAX_LIVE_CALLS)
             reply(ServerMessage.VoiceError(code = "too_many_calls"))
+            return
+        }
+        if (!allowMint()) {
+            log.warn("Voice session mint refused: rate limit")
+            closeCall(token) // hand the slot back; this call never happened
+            reply(ServerMessage.VoiceError(code = "rate_limited"))
             return
         }
         scope.launch {

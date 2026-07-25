@@ -14,8 +14,13 @@ import org.slf4j.LoggerFactory
  * truncated: the share path can overflow the viewer's outbox, and an oversized data-channel or
  * WebSocket frame throws *after* the round was settled, leaving the agent narrating a result the
  * model never received.
+ *
+ * Sized for the WORST expansion, not the payload: the viewer re-wraps this string as a JSON *value*,
+ * so every quote and backslash is escaped again — near 2x for the quote-heavy line arrays
+ * read_scrollback returns. 40 KiB leaves headroom under the ~256 KiB message size a data channel
+ * typically negotiates even after that doubling and the envelope around it.
  */
-internal const val MAX_TOOL_RESULT_CHARS = 128 * 1024
+internal const val MAX_TOOL_RESULT_CHARS = 40 * 1024
 
 /** Bound [resultJson], substituting a self-describing payload when it is too large to send. */
 internal fun clampToolResult(tool: String, resultJson: String): String {

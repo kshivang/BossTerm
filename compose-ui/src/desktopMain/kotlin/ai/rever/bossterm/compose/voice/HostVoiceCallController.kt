@@ -260,6 +260,12 @@ internal class HostVoiceCallController(
 
     private fun handleFunctionCall(callId: String?, name: String?, argsJson: String?) {
         if (callId == null || name == null) return
+        // This path calls the executor directly, so VoiceCallService's re-read doesn't cover it:
+        // check the switch here as well, or a call in flight keeps running tools after it is off.
+        if (!settings().voiceCallEnabled) {
+            fail("Boss Calling was turned off.")
+            return
+        }
         synchronized(roundLock) {
             // Trimmed so a long call can't grow it without bound; anything pending is preserved.
             if (seenCalls.size > 400) seenCalls.retainAll(pendingCalls)
@@ -269,7 +275,8 @@ internal class HostVoiceCallController(
         }
         _state.update { it.copy(working = true, activity = describeTool(name, argsJson)) }
         // run_command has its own 600s clamp; reads should be near-instant.
-        val timeoutMs = if (name == "run_command") 630_000L else 45_000L
+        // Reads get 120s, not 45: search_output over a large scrollback is legitimately slow.
+        val timeoutMs = if (name == "run_command") 630_000L else 120_000L
         scope.launch {
             val watchdog = scope.launch {
                 delay(timeoutMs)

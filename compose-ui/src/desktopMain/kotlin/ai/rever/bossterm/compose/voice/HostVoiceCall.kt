@@ -9,6 +9,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -34,6 +36,7 @@ internal object HostVoiceCall {
 
     @Volatile private var controller: HostVoiceCallController? = null
     @Volatile private var mirrorJob: Job? = null
+    @Volatile private var killSwitchJob: Job? = null
 
     /** Whether a call is possible at all: the feature on, and a key stored. */
     fun available(): Boolean =
@@ -58,6 +61,16 @@ internal object HostVoiceCall {
             ),
         )
         controller = c
+        // The master switch is a kill switch on THIS surface too: the share path ends its call when
+        // voiceStatus goes unavailable, and the surface that owns the microphone must not be the one
+        // that keeps listening after the user turns the feature off.
+        killSwitchJob?.cancel()
+        killSwitchJob = scope.launch {
+            SettingsManager.instance.settings
+                .map { it.voiceCallEnabled }
+                .distinctUntilChanged()
+                .collect { enabled -> if (!enabled) end() }
+        }
         // One mirror per call: the previous controller's collector must go, or every start would
         // add another live collector writing into the same flow.
         mirrorJob?.cancel()
@@ -75,6 +88,8 @@ internal object HostVoiceCall {
         controller = null
         mirrorJob?.cancel()
         mirrorJob = null
+        killSwitchJob?.cancel()
+        killSwitchJob = null
         _state.value = HostCallState()
         _level.value = 0f
     }

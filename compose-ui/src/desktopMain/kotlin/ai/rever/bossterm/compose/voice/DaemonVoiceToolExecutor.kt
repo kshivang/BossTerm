@@ -51,10 +51,15 @@ internal class DaemonVoiceToolExecutor(
         // A NAMED session is always scope-checked — the lookups here scan all of host.list(), so
         // that check is the boundary. Viewer-reported focus isn't: the session can exit after it was
         // stored, and rejecting a stale id broke every tool including the two that take no argument.
-        val requested = args.stringArg("tab_id")
-        if (requested != null && requested !in scope) {
-            throw VoiceToolException("Tab $requested is not part of this share")
+        // Any session id present is scope-checked (the boundary, kept loud); it only becomes the
+        // TARGET for tools that advertise the parameter — get_active_tab declares none, so honouring
+        // one there made `isActive` describe a session the caller isn't viewing.
+        val def = tools().first { it.name == name }
+        val named = args.stringArg("tab_id")
+        if (named != null && named !in scope) {
+            throw VoiceToolException("Tab $named is not part of this share")
         }
+        val requested = named?.takeIf { "tab_id" in VoiceToolCatalog.declaredParameters(def) }
         val target = requested
             ?: viewing?.takeIf { it in scope }
             ?: anchorSessionId()?.takeIf { it in scope }
@@ -71,7 +76,6 @@ internal class DaemonVoiceToolExecutor(
         if (target == null) throw VoiceToolException("No session available")
 
         // Same allowlist as the GUI executor: only keys this tool advertises reach DaemonMcpTools.
-        val def = tools().first { it.name == name }
         val allowed = VoiceToolCatalog.declaredParameters(def)
         val daemonArgs = buildJsonObject {
             args.forEach { (k, v) -> if (k != "tab_id" && k in allowed) put(k, v) }

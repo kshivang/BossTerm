@@ -3,6 +3,8 @@ package ai.rever.bossterm.compose.voice
 import ai.rever.bossterm.compose.mcp.BossTermMcpConfig
 import ai.rever.bossterm.compose.mcp.BossTermMcpServer
 import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
+import ai.rever.bossterm.compose.settings.SettingsManager
+import ai.rever.bossterm.compose.settings.TerminalSettings
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequestParams
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
@@ -39,8 +41,7 @@ internal class GuiVoiceToolExecutor(
      */
     private val anchorTabId: () -> String?,
     private val registry: McpTerminalRegistry = McpTerminalRegistry,
-    private val settings: () -> ai.rever.bossterm.compose.settings.TerminalSettings =
-        { ai.rever.bossterm.compose.settings.SettingsManager.instance.settings.value },
+    private val settings: () -> TerminalSettings = { SettingsManager.instance.settings.value },
 ) : VoiceToolExecutor {
 
     private companion object {
@@ -118,10 +119,15 @@ internal class GuiVoiceToolExecutor(
         // close afterwards, and treating a stale id as a violation used to break every tool
         // including list_tabs/get_active_tab, leaving the agent no way to discover a valid id.
         // Stale focus therefore falls back to the anchor, which is in scope by construction.
-        val requested = args.stringArg("tab_id")
-        if (requested != null && requested !in scope) {
-            throw VoiceToolException("Tab $requested is not part of this share")
+        // Any tab_id present is scope-checked — refusing a foreign id loudly is the documented
+        // boundary, and staying loud beats silently ignoring it. But it only becomes the TARGET for
+        // tools that actually advertise the parameter: get_active_tab declares none, so honouring one
+        // there made `isActive` describe a tab the caller isn't viewing.
+        val named = args.stringArg("tab_id")
+        if (named != null && named !in scope) {
+            throw VoiceToolException("Tab $named is not part of this share")
         }
+        val requested = named?.takeIf { "tab_id" in VoiceToolCatalog.declaredParameters(def) }
         val focused = defaultTabId?.takeIf { it in scope }
         val fallback = requested ?: focused ?: anchorTabId()?.takeIf { it in scope }
 

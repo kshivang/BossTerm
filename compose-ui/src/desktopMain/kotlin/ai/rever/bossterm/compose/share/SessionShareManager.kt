@@ -974,31 +974,36 @@ object SessionShareManager {
 
         val supportsPaneGraphics = hello?.capabilities?.contains(PANE_GRAPHICS_CAPABILITY) == true
 
-        // Admit: Theme + Layout + a PaneSnapshot per pane, THEN register so the outbox
-        // only carries output produced after the snapshot (avoids double-rendering).
-        share.initialMessages(includePaneGraphics = supportsPaneGraphics).forEach { send(it) }
-        send(ServerMessage.Control(granted = canControl))
+        // Register before encoding the snapshots. Output produced during encoding is queued in the
+        // viewer outbox, whose writer starts only after the direct initial frames have been sent.
+        // This preserves ordering while ensuring graphics changes in the admission window schedule
+        // a follow-up update instead of being dropped on an otherwise quiet pane.
         val vc = share.addViewer(
             canControl,
             hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})",
             supportsPaneGraphics,
         )
         vc.grantKey = accessKey // lets an approved mid-session upgrade persist into the grant
-        val sc = serverCipher
-        val writer = ws.launch {
-            vc.outbox.drainTo { text ->
-                sc?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
-            }
-        }
         try {
-            for (frame in ws.incoming) {
-                val msg = decodeIncoming(frame)
-                if (msg != null) share.handleClient(vc, msg)  // input gated by role inside
+            share.initialMessages(includePaneGraphics = supportsPaneGraphics).forEach { send(it) }
+            send(ServerMessage.Control(granted = canControl))
+            val sc = serverCipher
+            val writer = ws.launch {
+                vc.outbox.drainTo { text ->
+                    sc?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
+                }
             }
-        } catch (_: Throwable) {
-            // client gone
+            try {
+                for (frame in ws.incoming) {
+                    val msg = decodeIncoming(frame)
+                    if (msg != null) share.handleClient(vc, msg)  // input gated by role inside
+                }
+            } catch (_: Throwable) {
+                // client gone
+            } finally {
+                writer.cancel()
+            }
         } finally {
-            writer.cancel()
             share.removeViewer(vc)
         }
     }

@@ -36,6 +36,29 @@ object TerminalSnapshotEncoder {
         return sb.toString()
     }
 
+    /**
+     * Repaint only the visible screen without resetting terminal modes or retained scrollback.
+     *
+     * Graphics placement changes need text/cursor re-anchoring, but a full RIS + [encode] makes
+     * xterm rebuild every retained history row. Absolute cursor addressing and per-line erasure
+     * make this payload O(screen size) and leave a scrolled-up viewer's history intact.
+     */
+    fun encodeScreenRepaint(
+        snapshot: BufferSnapshot,
+        cursorX: Int,
+        cursorY: Int,
+    ): String {
+        val sb = StringBuilder()
+        for (row in 0 until snapshot.height) {
+            sb.append("\u001b[0m\u001b[").append(row + 1).append(";1H\u001b[2K")
+            appendStyledLine(sb, snapshot.getLine(row))
+        }
+        val cy = cursorY.coerceIn(1, snapshot.height)
+        val cx = cursorX.coerceAtLeast(1)
+        sb.append("\u001b[0m\u001b[$cy;${cx}H")
+        return sb.toString()
+    }
+
     /** Append one buffer line as SGR-prefixed styled runs, trimming invisible trailing padding. */
     private fun appendStyledLine(sb: StringBuilder, line: TerminalLine) {
         val runs = ArrayList<TerminalLine.TextEntry>()

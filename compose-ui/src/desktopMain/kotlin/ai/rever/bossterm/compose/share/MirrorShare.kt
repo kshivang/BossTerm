@@ -206,15 +206,13 @@ class MirrorShare(
                 id, snapshotText(tab), sz[0], sz[1], webViewerScrollbackLines(tab.textBuffer)
             ))
             if (includePaneGraphics) {
-                val entry = synchronized(taps) { taps[id] }
-                val tracker = entry?.graphics
-                    ?: PaneGraphicsTracker(id, tab.textBuffer, tab.terminal.getImageDataCache())
+                val entry = synchronized(taps) { taps[id] } ?: continue
                 // The first graphics-capable viewer establishes the shared baseline. A later
                 // viewer gets a private full frame without advancing revisions for existing peers.
-                val full = tracker.fullMessage(
-                    commit = viewers.none { it.supportsPaneGraphics }
+                val full = entry.graphics.fullMessage(
+                    commit = viewers.count { it.supportsPaneGraphics } <= 1
                 )
-                if (full.requiredImageIds.isNotEmpty()) entry?.monitoringGraphics?.set(true)
+                if (full.requiredImageIds.isNotEmpty()) entry.monitoringGraphics.set(true)
                 out.add(full)
             }
         }
@@ -604,9 +602,13 @@ class MirrorShare(
                     if (update.requiresTextSnapshot) {
                         // xterm.js does not emulate image-protocol cursor movement. Re-anchor text
                         // only for a real placement change, never for scrolling/raster animation.
-                        // RIS + snapshot stays in the same FIFO lane as PaneOutput, so queued bytes
-                        // are cleared by the repaint instead of replaying below it.
-                        val repaint = "\u001bc" + snapshotText(entry.tab)
+                        // Repaint only the visible screen: retained browser scrollback stays intact
+                        // and the payload remains bounded by the pane dimensions.
+                        val repaint = TerminalSnapshotEncoder.encodeScreenRepaint(
+                            entry.tab.textBuffer.createSnapshot(),
+                            entry.tab.terminal.cursorX,
+                            entry.tab.terminal.cursorY,
+                        )
                         if (entry.textSnapshotLimiter.tryAcquire(
                                 id,
                                 estimatedBytes = repaint.length.toLong() * 2,

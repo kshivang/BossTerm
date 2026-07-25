@@ -161,7 +161,9 @@ class PaneGraphicsTrackerTest {
         buffer.scrollArea(scrollRegionTop = 1, dy = -1, scrollRegionBottom = 4)
 
         assertNull(tracker.pollUpdate())
-        assertEquals(1, tracker.fullMessage().cells.single().row)
+        val afterScroll = tracker.fullMessage()
+        assertEquals(1, afterScroll.cells.single().row)
+        assertEquals(1, afterScroll.historyLines)
     }
 
     @Test
@@ -314,6 +316,11 @@ class PaneGraphicsTrackerTest {
         val truncated = GraphicsOutputFilter(maxDiscardChars = 3)
         assertEquals("hello", truncated.filter("\u001bPqabchello").output)
 
+        val oscAborted = GraphicsOutputFilter(maxOscDiscardChars = 3)
+        assertEquals("hello", oscAborted.filter("\u001b]1337;File=abchello").output)
+        assertEquals("tail", GraphicsOutputFilter()
+            .filter("\u001b]1337;File=x:payload\u0000tail").output)
+
         val repeatedEscape = GraphicsOutputFilter()
         assertEquals("\u001bhello", repeatedEscape.filter("\u001b\u001bPqpayload\u009chello").output)
 
@@ -322,6 +329,24 @@ class PaneGraphicsTrackerTest {
         assertEquals(" tail", kittyPlacement.filter("$placeholder\u0301\u0302tail").output)
         assertEquals(" ", kittyPlacement.filter(placeholder).output)
         assertEquals("tail", kittyPlacement.filter("\u0301\u0302tail").output)
+    }
+
+    @Test
+    fun `graphics filter strips iterm multipart payload chunks`() {
+        val filter = GraphicsOutputFilter()
+
+        assertEquals(
+            "one",
+            filter.filter("\u001b]1337;MultipartFile=name=x\u0007one").output,
+        )
+        assertEquals(
+            "two",
+            filter.filter("\u001b]1337;FilePart=base64\u0007two").output,
+        )
+        assertEquals(
+            "three",
+            filter.filter("\u001b]1337;FileEnd\u0007three").output,
+        )
     }
 
     @Test

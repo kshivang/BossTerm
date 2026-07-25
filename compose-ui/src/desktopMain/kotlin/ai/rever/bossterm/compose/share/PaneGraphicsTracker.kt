@@ -6,11 +6,13 @@ import ai.rever.bossterm.terminal.model.image.ImageFormat
 import ai.rever.bossterm.terminal.model.image.TerminalImage
 import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
 import org.slf4j.LoggerFactory
+import java.lang.ref.SoftReference
 import java.lang.ref.WeakReference
+import java.security.MessageDigest
 import java.util.Base64
 
 internal const val PANE_GRAPHICS_CAPABILITY = "paneGraphicsV1"
-internal const val MAX_WEB_VIEWER_SCROLLBACK_LINES = 100_000
+internal const val MAX_WEB_VIEWER_SCROLLBACK_LINES = 20_000
 internal const val MAX_WEB_IMAGE_RASTER_BYTES = 8 * 1024 * 1024
 internal const val MAX_WEB_PANE_RASTER_BYTES = 16L * 1024 * 1024
 
@@ -54,7 +56,10 @@ internal class PaneGraphicsTracker(
             val trimmedRows = (viewerTrimCount - previousViewerTrimCount).coerceAtLeast(0L)
             if (trimmedRows == 0L) return null
             previousViewerTrimCount = viewerTrimCount
-            return shiftForHistoryTrim(trimmedRows)
+            val historyLines = textBuffer.createIncrementalSnapshot()
+                .historyLinesCount
+                .coerceAtMost(scrollbackLines)
+            return shiftForHistoryTrim(trimmedRows, historyLines)
         }
 
         val captured = capture()
@@ -162,6 +167,7 @@ internal class PaneGraphicsTracker(
             cells = cells,
             images = images,
             fingerprints = fingerprints,
+            historyLines = snapshot.historyLinesCount.coerceAtMost(scrollbackLines),
         )
     }
 
@@ -180,7 +186,7 @@ internal class PaneGraphicsTracker(
         removedImageIds = removed,
         requiredImageIds = captured.fingerprints.keys.map(Long::toString),
         cells = captured.cells,
-        historyLines = textBuffer.historyLinesCount.coerceAtMost(scrollbackLines),
+        historyLines = captured.historyLines,
     )
 
     private fun sharedImage(
@@ -211,19 +217,21 @@ internal class PaneGraphicsTracker(
         fingerprintCache[image.id]?.let { cached ->
             if (cached.image.get() === image) return cached.fingerprint
         }
-        var hash = FNV64_OFFSET xor image.format.ordinal.toLong()
-        for (byte in image.data) {
-            hash = (hash xor (byte.toLong() and 0xffL)) * FNV64_PRIME
-        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        digest.update(image.format.ordinal.toByte())
+        val hash = Base64.getUrlEncoder().withoutPadding().encodeToString(digest.digest(image.data))
         val fingerprint = ImageFingerprint(
-            contentHash = "${image.data.size.toString(36)}-${java.lang.Long.toUnsignedString(hash, 36)}",
+            contentHash = "${image.data.size.toString(36)}-$hash",
             rasterBytes = image.data.size.toLong(),
         )
         fingerprintCache[image.id] = CachedFingerprint(WeakReference(image), fingerprint)
         return fingerprint
     }
 
-    private fun shiftForHistoryTrim(trimmedRows: Long): PaneGraphicsUpdate {
+    private fun shiftForHistoryTrim(
+        trimmedRows: Long,
+        historyLines: Int,
+    ): PaneGraphicsUpdate {
         val delta = trimmedRows.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         val shiftedCells = previousCells.asSequence()
             .filter { it.row >= delta }
@@ -236,7 +244,12 @@ internal class PaneGraphicsTracker(
         previousImages = shiftedImages
         fingerprintCache.keys.retainAll(retainedIds)
         revision++
-        val captured = Captured(shiftedCells, emptyMap(), shiftedImages)
+        val captured = Captured(
+            cells = shiftedCells,
+            images = emptyMap(),
+            fingerprints = shiftedImages,
+            historyLines = historyLines,
+        )
         return PaneGraphicsUpdate(
             message = message(captured, full = false, images = emptyList(), removed = removed),
             requiresTextSnapshot = false,
@@ -275,6 +288,7 @@ internal class PaneGraphicsTracker(
         val cells: List<SharedImageCellRun>,
         val images: Map<Long, TerminalImage>,
         val fingerprints: Map<Long, ImageFingerprint>,
+        val historyLines: Int,
     )
 
     private data class ImageFingerprint(
@@ -289,8 +303,6 @@ internal class PaneGraphicsTracker(
 
     internal companion object {
         private val log = LoggerFactory.getLogger(PaneGraphicsTracker::class.java)
-        private const val FNV64_OFFSET = -3750763034362895579L
-        private const val FNV64_PRIME = 1099511628211L
         private const val GRAPHICS_JSON_OVERHEAD_BYTES = 64L * 1024
 
         /**
@@ -369,21 +381,30 @@ internal class PaneGraphicsTracker(
  */
 private object SharedRasterBase64Cache {
     private const val MAX_CACHED_CHARS = 32 * 1024 * 1024
-    private val values = object : LinkedHashMap<String, String>(16, 0.75f, true) {}
+    private data class CachedBase64(
+        val value: SoftReference<String>,
+        val chars: Int,
+    )
+
+    private val values = object : LinkedHashMap<String, CachedBase64>(16, 0.75f, true) {}
     private var cachedChars = 0
 
     @Synchronized
     fun encode(contentHash: String, data: ByteArray): String {
-        values[contentHash]?.let { return it }
+        values[contentHash]?.let { cached ->
+            cached.value.get()?.let { return it }
+            values.remove(contentHash)
+            cachedChars -= cached.chars
+        }
         val encoded = Base64.getEncoder().encodeToString(data)
         if (encoded.length > MAX_CACHED_CHARS) return encoded
         while (cachedChars + encoded.length > MAX_CACHED_CHARS && values.isNotEmpty()) {
             val iterator = values.entries.iterator()
             val oldest = iterator.next()
-            cachedChars -= oldest.value.length
+            cachedChars -= oldest.value.chars
             iterator.remove()
         }
-        values[contentHash] = encoded
+        values[contentHash] = CachedBase64(SoftReference(encoded), encoded.length)
         cachedChars += encoded.length
         return encoded
     }
@@ -404,6 +425,7 @@ internal data class FilteredGraphicsOutput(
  */
 internal class GraphicsOutputFilter(
     private val maxDiscardChars: Int = MAX_GRAPHICS_CONTROL_CHARS,
+    private val maxOscDiscardChars: Int = MAX_OSC_CONTROL_CHARS,
 ) {
     private enum class Mode { TEXT, ESCAPE, SIXEL_PREFIX, KITTY_PREFIX, ITERM_PREFIX, DISCARD_ST, DISCARD_OSC }
 
@@ -411,6 +433,7 @@ internal class GraphicsOutputFilter(
     private val prefix = StringBuilder()
     private var discardEscape = false
     private var discardChars = 0
+    private var discardLimit = maxDiscardChars
     private var stripLeadingKittyMarks = false
 
     @Synchronized
@@ -581,6 +604,7 @@ internal class GraphicsOutputFilter(
         prefix.clear()
         discardEscape = false
         discardChars = alreadyConsumedChars
+        discardLimit = if (nextMode == Mode.DISCARD_OSC) maxOscDiscardChars else maxDiscardChars
         mode = nextMode
     }
 
@@ -591,6 +615,10 @@ internal class GraphicsOutputFilter(
     }
 
     private fun discard(char: Char, acceptsBell: Boolean) {
+        if (mode == Mode.DISCARD_OSC && char == NUL) {
+            endDiscard()
+            return
+        }
         if (char == ST || (acceptsBell && char == BEL)) {
             endDiscard()
             return
@@ -613,7 +641,7 @@ internal class GraphicsOutputFilter(
             return
         }
         discardChars++
-        if (discardChars >= maxDiscardChars) endDiscard()
+        if (discardChars >= discardLimit) endDiscard()
     }
 
     private fun endDiscard() {
@@ -624,6 +652,7 @@ internal class GraphicsOutputFilter(
 
     private companion object {
         const val ESC = '\u001b'
+        const val NUL = '\u0000'
         const val BEL = '\u0007'
         const val CAN = '\u0018'
         const val SUB = '\u001a'
@@ -634,7 +663,14 @@ internal class GraphicsOutputFilter(
         const val MAX_SIXEL_PARAMETERS = 65
         // Mirrors RasterCodec.MAX_CONTROL_STRING_CHARS without exposing the decoder's internal API.
         const val MAX_GRAPHICS_CONTROL_CHARS = 70 * 1024 * 1024 + 64 * 1024
-        val ITERM_IMAGE_PREFIXES = listOf("1337;File=", "1337;MultipartFile=")
+        // Mirrors SystemCommandSequence's OSC bound.
+        const val MAX_OSC_CONTROL_CHARS = 50 * 1024 * 1024
+        val ITERM_IMAGE_PREFIXES = listOf(
+            "1337;File=",
+            "1337;MultipartFile=",
+            "1337;FilePart=",
+            "1337;FileEnd",
+        )
         val KITTY_PLACEHOLDER = String(Character.toChars(0x10EEEE))
     }
 }

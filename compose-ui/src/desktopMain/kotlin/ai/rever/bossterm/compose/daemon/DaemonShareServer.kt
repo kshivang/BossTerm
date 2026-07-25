@@ -692,15 +692,12 @@ class DaemonShareServer(
                     if (update != null) {
                         val core = attachment.core
                         if (update.requiresTextSnapshot) {
-                            // Keep the re-anchor in the pane-output lane: older output drains first,
-                            // then RIS clears it and the authoritative snapshot repaints. Sending
-                            // this on the priority control lane would replay queued output below the
-                            // snapshot and visibly duplicate it.
-                            val repaint = "\u001bc" + TerminalSnapshotEncoder.encode(
+                            // Keep the screen-only re-anchor in the pane-output lane so it remains
+                            // ordered with PTY output without rebuilding retained browser history.
+                            val repaint = TerminalSnapshotEncoder.encodeScreenRepaint(
                                 core.textBuffer.createSnapshot(),
                                 core.terminal.cursorX,
                                 core.terminal.cursorY,
-                                webViewerScrollbackLines(core.textBuffer),
                             )
                             if (attachment.textSnapshotLimiter.tryAcquire(
                                     core.id,

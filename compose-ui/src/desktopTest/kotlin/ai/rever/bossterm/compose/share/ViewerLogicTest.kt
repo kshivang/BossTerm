@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.share
 
+import org.junit.Assume.assumeTrue
 import java.nio.file.Files
 import kotlin.io.path.deleteIfExists
 import kotlin.test.Test
@@ -8,6 +9,7 @@ import kotlin.test.assertEquals
 class ViewerLogicTest {
     @Test
     fun `node harness exercises reconnect budget and captured row offset`() {
+        assumeTrue("Node.js is not available on PATH", nodeAvailable())
         val logic = checkNotNull(javaClass.classLoader.getResourceAsStream("share-viewer/viewer-logic.js"))
             .use { it.readBytes().decodeToString() }
         val harness = logic + "\n" + """
@@ -49,4 +51,12 @@ class ViewerLogicTest {
             script.deleteIfExists()
         }
     }
+
+    private fun nodeAvailable(): Boolean = runCatching {
+        val process = ProcessBuilder("node", "--version")
+            .redirectErrorStream(true)
+            .start()
+        process.inputStream.bufferedReader().use { it.readText() }
+        process.waitFor() == 0
+    }.getOrDefault(false)
 }

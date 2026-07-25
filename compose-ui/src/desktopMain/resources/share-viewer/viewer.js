@@ -1024,7 +1024,7 @@
   // PaneSnapshot replaces this compatibility fallback with the pane's real host history cap
   // before painting. Matching caps keep SharedImageCellRun absolute rows aligned after trims.
   var DEFAULT_WEB_VIEWER_SCROLLBACK_LINES = 10000;
-  var MAX_WEB_VIEWER_SCROLLBACK_LINES = 100000;
+  var MAX_WEB_VIEWER_SCROLLBACK_LINES = 20000;
   var ALLOWED_GRAPHICS_MIME_TYPES = {
     "image/png": true, "image/jpeg": true, "image/gif": true,
     "image/bmp": true, "image/webp": true

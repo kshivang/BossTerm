@@ -48,7 +48,7 @@ class ShareViewerAssetTest {
         assertTrue(paneSnapshot.contains("m.scrollbackLines"))
         assertTrue(paneSnapshot.contains("MAX_WEB_VIEWER_SCROLLBACK_LINES"))
         assertTrue(js.contains("DEFAULT_WEB_VIEWER_SCROLLBACK_LINES = 10000"))
-        assertTrue(js.contains("MAX_WEB_VIEWER_SCROLLBACK_LINES = 100000"))
+        assertTrue(js.contains("MAX_WEB_VIEWER_SCROLLBACK_LINES = 20000"))
         assertFalse(js.contains("WEB_VIEWER_SCROLLBACK_LINES = 5000"))
     }
 
@@ -79,6 +79,8 @@ class ShareViewerAssetTest {
         val html = resource("share-viewer/index.html")
 
         assertTrue(html.contains("default-src 'self'"))
+        assertTrue(html.contains("base-uri 'none'"))
+        assertTrue(html.contains("form-action 'none'"))
         assertTrue(html.contains("img-src 'self' data:"))
         assertTrue(html.contains("connect-src 'self' ws: wss:"))
         assertTrue(html.contains("MesloLGSNF-Regular.ttf?v=d97946186e97"))

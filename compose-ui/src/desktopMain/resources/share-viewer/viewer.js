@@ -9,6 +9,7 @@
 (function () {
   "use strict";
 
+  var viewerLogic = window.BossTermViewerLogic;
   var params = new URLSearchParams(location.search);
   var token = params.get("t");
 
@@ -991,11 +992,12 @@
     if (sessionEnded || reconnectTimer) return;
     if (reconnectStableTimer) clearTimeout(reconnectStableTimer);
     reconnectStableTimer = null;
-    if (reconnectAttempt >= MAX_AUTO_RECONNECTS) {
+    var decision = viewerLogic.nextReconnectAttempt(reconnectAttempt, MAX_AUTO_RECONNECTS);
+    if (!decision.retry) {
       showDisconnected();
       return;
     }
-    reconnectAttempt += 1;
+    reconnectAttempt = decision.attempt;
     var attempt = reconnectAttempt;
     showOverlay(
       "Reconnecting…",
@@ -1033,7 +1035,7 @@
 
   function newGraphicsState() {
     return { revision: null, cells: [], images: {}, pending: {}, bytes: 0, canvas: null, raf: 0,
-             historyLines: null,
+             historyLines: null, rowOffset: 0,
              rejected: {}, resyncPending: false, resyncAttempts: 0, resyncTimer: null,
              resyncDegraded: false };
   }
@@ -1166,8 +1168,6 @@
 
     var buffer = p.term.buffer.active;
     var viewportY = buffer.viewportY || 0;
-    var hostHistoryLines = typeof g.historyLines === "number" ? g.historyLines : buffer.baseY;
-    var rowOffset = buffer.baseY - hostHistoryLines;
     var cellW = rect.width / p.term.cols;
     var cellH = rect.height / p.term.rows;
     g.cells.forEach(function (run) {
@@ -1176,7 +1176,7 @@
       if (!image || !image.complete || !image.naturalWidth || !image.naturalHeight) return;
       // Anchor host absolute rows to xterm's current baseY. If best-effort output was dropped,
       // the overlay remains aligned to the live screen instead of drifting by the missing rows.
-      var visibleRow = run.row + rowOffset - viewportY;
+      var visibleRow = viewerLogic.visibleImageRow(run.row, g.rowOffset, viewportY);
       if (visibleRow < 0 || visibleRow >= p.term.rows) return;
       var anchorCol = run.col - run.cellX;
       var availableCols = Math.max(1, p.term.cols - anchorCol);
@@ -1184,15 +1184,14 @@
       var effectiveRows = Math.max(1, Math.round(Math.max(1, run.totalCellsY) *
         effectiveCols / Math.max(1, run.totalCellsX)));
       if (run.cellY < 0 || run.cellY >= effectiveRows) return;
-      var start = Math.max(0, -run.col, -run.cellX);
       var length = Math.min(
-        run.length - start,
-        p.term.cols - (run.col + start),
-        effectiveCols - (run.cellX + start)
+        run.length,
+        p.term.cols - run.col,
+        effectiveCols - run.cellX
       );
       if (length <= 0) return;
-      var sourceCellX = run.cellX + start;
-      var destCol = run.col + start;
+      var sourceCellX = run.cellX;
+      var destCol = run.col;
       var sx1 = Math.floor(sourceCellX * image.naturalWidth / effectiveCols);
       var sx2 = Math.floor((sourceCellX + length) * image.naturalWidth / effectiveCols);
       var sy1 = Math.floor(run.cellY * image.naturalHeight / effectiveRows);
@@ -1341,6 +1340,23 @@
       g.historyLines = m.historyLines;
     }
     g.revision = m.revision;
+    if (g.historyLines !== null) {
+      var appliedGraphicsRevision = g.revision;
+      g.rowOffset = viewerLogic.captureRowOffset(
+        p.term.buffer.active.baseY,
+        g.historyLines
+      );
+      // Capture once after all previously queued xterm writes have drained. Recomputing this from
+      // live baseY during every draw would pin old images to the viewport as ordinary output scrolls.
+      p.term.write("", function () {
+        if (g.revision !== appliedGraphicsRevision) return;
+        g.rowOffset = viewerLogic.captureRowOffset(
+          p.term.buffer.active.baseY,
+          g.historyLines
+        );
+        scheduleGraphicsDraw(p);
+      });
+    }
     var missing = Object.keys(required).some(function (id) {
       return !g.images[id] && !g.pending[id] && !g.rejected[id];
     });

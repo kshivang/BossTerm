@@ -38,6 +38,7 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -683,16 +684,14 @@ class DaemonShareServer(
                 attachment.graphicsSyncAgain.set(true)
                 return
             }
-            attachment.graphicsSyncJob = ws.launch {
+            val job = ws.launch(start = CoroutineStart.LAZY) {
                 try {
                     delay(GRAPHICS_SYNC_DEBOUNCE_MS)
                     if (synchronized(attachLock) { attachments[attachment.core.id] } !== attachment) return@launch
                     val update = attachment.graphics.pollUpdate()
                     if (update != null) {
                         val core = attachment.core
-                        if (update.requiresTextSnapshot &&
-                            attachment.textSnapshotLimiter.tryAcquire(core.id)
-                        ) {
+                        if (update.requiresTextSnapshot) {
                             // Keep the re-anchor in the pane-output lane: older output drains first,
                             // then RIS clears it and the authoritative snapshot repaints. Sending
                             // this on the priority control lane would replay queued output below the
@@ -703,11 +702,15 @@ class DaemonShareServer(
                                 core.terminal.cursorY,
                                 webViewerScrollbackLines(core.textBuffer),
                             )
-                            vc.outbox.sendOutput(core.id, repaint)
+                            if (attachment.textSnapshotLimiter.tryAcquire(
+                                    core.id,
+                                    estimatedBytes = repaint.length.toLong() * 2,
+                                )
+                            ) {
+                                vc.outbox.sendOutput(core.id, repaint)
+                            }
                         }
-                        vc.outbox.sendControl(
-                            FrameOutbox.Frame.Text(ShareProtocol.encodeServer(update.message))
-                        )
+                        enqueueGraphics(vc.outbox, update.message)
                     }
                     attachment.monitoringGraphics.set(attachment.graphics.hasVisibleGraphics())
                 } finally {
@@ -720,6 +723,8 @@ class DaemonShareServer(
                     }
                 }
             }
+            attachment.graphicsSyncJob = job
+            job.start()
         }
 
         fun beginLocked(core: TerminalSessionCore) {
@@ -768,7 +773,7 @@ class DaemonShareServer(
                     if (attachment.monitoringGraphics.get()) scheduleGraphicsSync(attachment)
                 }
             }
-            attachment = Attachment(core, tap, modelListener, graphics, graphicsOutputFilter)
+            attachment = Attachment(core, tap, modelListener, graphics)
             attachments[core.id] = attachment
             core.addRawOutputListener(tap)
             core.textBuffer.addModelListener(modelListener)
@@ -786,7 +791,7 @@ class DaemonShareServer(
             ))))
             if (vc.supportsPaneGraphics) {
                 val initialGraphics = graphics.fullMessage()
-                vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(initialGraphics)))
+                enqueueGraphics(vc.outbox, initialGraphics)
                 if (initialGraphics.requiredImageIds.isNotEmpty()) attachment.monitoringGraphics.set(true)
             }
             synchronized(preludeLock) {
@@ -918,9 +923,7 @@ class DaemonShareServer(
                             )
                         ) {
                             val full = tracker.fullMessage()
-                            vc.outbox.sendControl(
-                                FrameOutbox.Frame.Text(ShareProtocol.encodeServer(full))
-                            )
+                            enqueueGraphics(vc.outbox, full)
                         }
                     }
                 } else {
@@ -944,14 +947,29 @@ class DaemonShareServer(
         }
     }
 
+    private fun enqueueGraphics(
+        outbox: FrameOutbox,
+        message: ServerMessage.PaneGraphics,
+    ) {
+        val fullFrame = FrameOutbox.Frame.Text(ShareProtocol.encodeServer(message))
+        val recovery = message.copy(
+            revision = message.revision + 1,
+            full = false,
+            images = emptyList(),
+            removedImageIds = emptyList(),
+        )
+        outbox.sendRecoverableControl(
+            fullFrame,
+            FrameOutbox.Frame.Text(ShareProtocol.encodeServer(recovery)),
+        )
+    }
+
     /** Per-connection, per-session output, sizing, and authoritative web-graphics state. */
     private class Attachment(
         val core: TerminalSessionCore,
         val tap: (String) -> Unit,
         val modelListener: TerminalModelListener,
         val graphics: PaneGraphicsTracker,
-        /** Retains graphics-filter state across fragmented PTY chunks for this attachment. */
-        val graphicsOutputFilter: GraphicsOutputFilter,
     ) {
         val ready = AtomicBoolean(false)
         val monitoringGraphics = AtomicBoolean(false)

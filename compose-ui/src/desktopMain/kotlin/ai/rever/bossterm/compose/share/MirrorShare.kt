@@ -17,6 +17,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -26,6 +27,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import org.slf4j.LoggerFactory
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
@@ -89,7 +91,6 @@ class MirrorShare(
         val listener: (String) -> Unit,
         val modelListener: TerminalModelListener,
         val graphics: PaneGraphicsTracker,
-        val graphicsOutputFilter: GraphicsOutputFilter,
         val monitoringGraphics: AtomicBoolean = AtomicBoolean(false),
         val graphicsSyncPending: AtomicBoolean = AtomicBoolean(false),
         val graphicsSyncAgain: AtomicBoolean = AtomicBoolean(false),
@@ -567,7 +568,7 @@ class MirrorShare(
                             if (entry.monitoringGraphics.get()) scheduleGraphicsSync(id, entry)
                         }
                     }
-                    entry = TapEntry(tab, listener, modelListener, graphics, graphicsOutputFilter)
+                    entry = TapEntry(tab, listener, modelListener, graphics)
                     taps[id] = entry
                     tab.dataStream.addRawOutputListener(listener)
                     tab.textBuffer.addModelListener(modelListener)
@@ -593,22 +594,26 @@ class MirrorShare(
             entry.graphicsSyncAgain.set(true)
             return
         }
-        entry.graphicsSyncJob = coro.launch {
+        val job = coro.launch(start = CoroutineStart.LAZY) {
             try {
                 // Cap full-buffer graphics scans at 10 Hz while coalescing multipart transfers.
                 delay(GRAPHICS_SYNC_DEBOUNCE_MS)
                 if (synchronized(taps) { taps[id] } !== entry) return@launch
                 val update = entry.graphics.pollUpdate()
                 if (update != null) {
-                    if (update.requiresTextSnapshot && entry.textSnapshotLimiter.tryAcquire(id)) {
+                    if (update.requiresTextSnapshot) {
                         // xterm.js does not emulate image-protocol cursor movement. Re-anchor text
                         // only for a real placement change, never for scrolling/raster animation.
                         // RIS + snapshot stays in the same FIFO lane as PaneOutput, so queued bytes
                         // are cleared by the repaint instead of replaying below it.
-                        broadcastGraphics(ServerMessage.PaneOutput(
-                            id,
-                            "\u001bc" + snapshotText(entry.tab),
-                        ))
+                        val repaint = "\u001bc" + snapshotText(entry.tab)
+                        if (entry.textSnapshotLimiter.tryAcquire(
+                                id,
+                                estimatedBytes = repaint.length.toLong() * 2,
+                            )
+                        ) {
+                            broadcastGraphics(ServerMessage.PaneOutput(id, repaint))
+                        }
                     }
                     broadcastGraphics(update.message)
                 }
@@ -625,6 +630,8 @@ class MirrorShare(
                 }
             }
         }
+        entry.graphicsSyncJob = job
+        job.start()
     }
 
     private fun disposeTap(entry: TapEntry) {
@@ -873,14 +880,27 @@ internal class BoundedViewerOutbox(
     @Volatile private var closed = false
 
     fun trySend(text: String): Boolean {
-        if (closed || text.isEmpty() || text.length > capacityChars) return false
+        if (closed || text.isEmpty()) return false
+        if (text.length > capacityChars) {
+            log.warn(
+                "Dropping viewer frame of {} chars above the {}-char queue capacity",
+                text.length,
+                capacityChars,
+            )
+            return false
+        }
+        var droppedFrames = 0
         synchronized(lock) {
             if (closed) return false
             frames.addLast(text)
             queuedChars += text.length
             while ((queuedChars > capacityChars || frames.size > capacityFrames) && frames.size > 1) {
                 queuedChars -= frames.removeFirst().length
+                droppedFrames++
             }
+        }
+        if (droppedFrames > 0) {
+            log.warn("Dropped {} stale viewer frame(s) under back-pressure", droppedFrames)
         }
         wake.trySend(Unit)
         return true
@@ -906,6 +926,7 @@ internal class BoundedViewerOutbox(
     }
 
     private companion object {
+        val log = LoggerFactory.getLogger(BoundedViewerOutbox::class.java)
         const val DEFAULT_CAPACITY_CHARS = 32 * 1024 * 1024
         const val DEFAULT_CAPACITY_FRAMES = 2048
     }

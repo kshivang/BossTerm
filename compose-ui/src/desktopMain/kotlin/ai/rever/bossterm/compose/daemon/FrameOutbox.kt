@@ -102,30 +102,36 @@ internal class FrameOutbox(
 
     /** Enqueue a frame that must not be dropped (snapshot / list / lifecycle / resize). */
     fun sendControl(frame: Frame) {
-        if (closed) return
+        if (closed || trySendControlFrame(frame)) return
         val bytes = estimatedBytes(frame)
-        if (bytes > controlCapacityBytes) {
-            log.warn(
-                "Closing stalled outbox: one control frame needs {} bytes (capacity {})",
-                bytes,
-                controlCapacityBytes,
-            )
-            close()
-            return
-        }
-        if (!reserveControl(bytes)) {
-            log.warn(
-                "Closing stalled outbox: control backlog exceeds {} bytes",
-                controlCapacityBytes,
-            )
-            close()
-            return
-        }
-        if (control.trySend(frame).isFailure) {
-            controlBytes.addAndGet(-bytes)
-            log.warn("Closing stalled outbox: control frame capacity is saturated")
-            close() // saturated → unrecoverable client; drop it
-        }
+        log.warn(
+            "Closing stalled outbox: control frame/backlog needs {} bytes (capacity {})",
+            bytes,
+            controlCapacityBytes,
+        )
+        close()
+    }
+
+    /**
+     * Try a large but recoverable graphics frame. If it cannot fit, enqueue [recoveryFrame]
+     * instead; the lightweight revision gap/missing-image metadata makes the viewer request a full
+     * resync after the writer drains, without sacrificing the connection or its retry budget.
+     */
+    fun sendRecoverableControl(frame: Frame, recoveryFrame: Frame) {
+        if (closed || trySendControlFrame(frame)) return
+        log.warn(
+            "Dropping recoverable graphics frame ({} bytes); enqueueing resync metadata",
+            estimatedBytes(frame),
+        )
+        sendControl(recoveryFrame)
+    }
+
+    private fun trySendControlFrame(frame: Frame): Boolean {
+        val bytes = estimatedBytes(frame)
+        if (bytes > controlCapacityBytes || !reserveControl(bytes)) return false
+        if (control.trySend(frame).isSuccess) return true
+        controlBytes.addAndGet(-bytes)
+        return false
     }
 
     private fun reserveControl(bytes: Long): Boolean {

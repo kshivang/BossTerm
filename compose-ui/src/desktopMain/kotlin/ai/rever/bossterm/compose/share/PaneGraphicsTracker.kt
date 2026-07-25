@@ -5,6 +5,7 @@ import ai.rever.bossterm.terminal.model.image.ImageDataCache
 import ai.rever.bossterm.terminal.model.image.ImageFormat
 import ai.rever.bossterm.terminal.model.image.TerminalImage
 import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
+import org.slf4j.LoggerFactory
 import java.lang.ref.WeakReference
 import java.util.Base64
 
@@ -41,6 +42,7 @@ internal class PaneGraphicsTracker(
     private var previousImageCellRevision = textBuffer.imageCellRevision
     private var previousImageCacheRevision = imageDataCache.contentRevision
     private var previousViewerTrimCount = viewerTrimCount()
+    private var previousSkippedRasterIds: Set<Long> = emptySet()
 
     /** Capture and return a delta only when visible image data or placement changed. */
     @Synchronized
@@ -92,6 +94,11 @@ internal class PaneGraphicsTracker(
      */
     @Synchronized
     fun fullMessage(commit: Boolean = true): ServerMessage.PaneGraphics {
+        // Read tokens first. If a mutation races capture, committing these older tokens guarantees
+        // the next poll observes it and re-captures instead of marking stale content as current.
+        val cellRevision = textBuffer.imageCellRevision
+        val cacheRevision = imageDataCache.contentRevision
+        val trimCount = viewerTrimCount()
         val captured = capture()
         if (commit) {
             if (captured.cells != previousCells || captured.fingerprints != previousImages) {
@@ -99,9 +106,9 @@ internal class PaneGraphicsTracker(
             }
             previousCells = captured.cells
             previousImages = captured.fingerprints
-            previousImageCellRevision = textBuffer.imageCellRevision
-            previousImageCacheRevision = imageDataCache.contentRevision
-            previousViewerTrimCount = viewerTrimCount()
+            previousImageCellRevision = cellRevision
+            previousImageCacheRevision = cacheRevision
+            previousViewerTrimCount = trimCount
         }
         return message(captured, full = true, images = captured.images.values.toList(), removed = emptyList())
     }
@@ -120,7 +127,8 @@ internal class PaneGraphicsTracker(
         val snapshot = textBuffer.createIncrementalSnapshot()
         // Browsers cannot decode UNKNOWN/application-octet-stream rasters. Excluding them here
         // prevents shipping bytes that can only become a permanent missing-image placeholder.
-        val cachedImages = imageDataCache.snapshotImages().filterValues {
+        val allCachedImages = imageDataCache.snapshotImages()
+        val cachedImages = allCachedImages.filterValues {
             it.format != ImageFormat.UNKNOWN && it.data.size <= MAX_WEB_IMAGE_RASTER_BYTES
         }
         val allCells = cellRuns(snapshot, cachedImages.keys, scrollbackLines)
@@ -136,6 +144,18 @@ internal class PaneGraphicsTracker(
         }
         val cells = allCells.filter { it.imageId.toLong() in selectedIds }
         val images = cachedImages.filterKeys { it in selectedIds }
+        val skippedIds = (allCachedImages.keys - cachedImages.keys) +
+            (allCells.asSequence().map { it.imageId.toLong() }.toSet() - selectedIds)
+        if (skippedIds != previousSkippedRasterIds) {
+            if (skippedIds.isNotEmpty()) {
+                log.warn(
+                    "Pane {}: omitting {} browser raster(s) due to format/size budgets",
+                    paneId,
+                    skippedIds.size,
+                )
+            }
+            previousSkippedRasterIds = skippedIds
+        }
         val fingerprints = images.mapValues { (_, image) -> fingerprint(image) }
         fingerprintCache.keys.retainAll(images.keys)
         return Captured(
@@ -268,6 +288,7 @@ internal class PaneGraphicsTracker(
     )
 
     internal companion object {
+        private val log = LoggerFactory.getLogger(PaneGraphicsTracker::class.java)
         private const val FNV64_OFFSET = -3750763034362895579L
         private const val FNV64_PRIME = 1099511628211L
         private const val GRAPHICS_JSON_OVERHEAD_BYTES = 64L * 1024

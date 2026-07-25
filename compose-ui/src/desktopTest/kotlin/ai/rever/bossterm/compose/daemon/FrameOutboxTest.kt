@@ -255,6 +255,27 @@ class FrameOutboxTest {
     }
 
     @Test
+    fun `recoverable graphics overflow keeps the connection and queues resync metadata`() {
+        val outbox = FrameOutbox(controlCapacity = 100, controlCapacityBytes = 12)
+        outbox.sendControl(ctrl("12345")) // 10 UTF-16 bytes
+        outbox.sendRecoverableControl(
+            frame = ctrl("abcdef"), // another 12 bytes cannot fit
+            recoveryFrame = ctrl("r"), // 2-byte metadata frame does fit
+        )
+        outbox.sendOutput("pane", "still-connected")
+        outbox.close()
+
+        assertEquals(
+            listOf(
+                ctrl("12345"),
+                ctrl("r"),
+                FrameOutbox.Frame.Output("pane", "still-connected"),
+            ),
+            drainAll(outbox),
+        )
+    }
+
+    @Test
     fun `default control budget admits the largest legal raster frame`() {
         val maximumRawRasterBytes = 16L * 1024 * 1024
         val maximumBase64Chars = (maximumRawRasterBytes + 2) / 3 * 4

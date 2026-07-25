@@ -32,6 +32,7 @@ class ShareViewerAssetTest {
         assertTrue(js.contains("g.resyncAttempts >= MAX_GRAPHICS_RESYNCS"))
         assertTrue(js.contains("GRAPHICS_RESYNC_TIMEOUT_MS"))
         assertTrue(js.contains("RECONNECT_STABLE_MS"))
+        assertTrue(js.contains("viewerLogic.nextReconnectAttempt"))
         assertFalse(
             js.substringAfter("function handleConnectionLost").substringBefore("function deviceName")
                 .contains("reconnectAttempt = 0")
@@ -79,8 +80,7 @@ class ShareViewerAssetTest {
 
         assertTrue(html.contains("default-src 'self'"))
         assertTrue(html.contains("img-src 'self' data:"))
-        assertTrue(html.contains("connect-src 'self'"))
-        assertFalse(html.contains("connect-src 'self' ws: wss:"))
+        assertTrue(html.contains("connect-src 'self' ws: wss:"))
         assertTrue(html.contains("MesloLGSNF-Regular.ttf?v=d97946186e97"))
         assertFalse(resource("share-viewer/viewer.js").contains("document.fonts.load("))
     }
@@ -108,7 +108,8 @@ class ShareViewerAssetTest {
         val js = resource("share-viewer/viewer.js")
 
         assertTrue(js.contains("ALLOWED_GRAPHICS_MIME_TYPES[wire.mimeType]"))
-        assertTrue(js.contains("buffer.baseY - hostHistoryLines"))
+        assertTrue(js.contains("viewerLogic.captureRowOffset"))
+        assertTrue(js.contains("viewerLogic.visibleImageRow"))
         assertTrue(js.contains("g.historyLines = m.historyLines"))
     }
 }

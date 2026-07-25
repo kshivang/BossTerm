@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.daemon
 
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.selects.select
+import org.slf4j.LoggerFactory
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -72,6 +73,8 @@ internal class FrameOutbox(
     @Volatile var onOutputDropped: ((sessionId: String) -> Unit)? = null
 
     internal companion object {
+        private val log = LoggerFactory.getLogger(FrameOutbox::class.java)
+
         /** Max control frames drained before yielding to one output emission (fairness; see [drainTo]). */
         const val CONTROL_BURST = 64
 
@@ -79,8 +82,13 @@ internal class FrameOutbox(
          *  client, and dropped output is healed by [onOutputDropped]'s re-snapshot. */
         const val DEFAULT_OUTPUT_CAPACITY_CHARS = 4 * 1024 * 1024
 
-        /** Heap-oriented bound for large snapshots/graphics frames, independent of frame count. */
-        const val DEFAULT_CONTROL_CAPACITY_BYTES = 128L * 1024 * 1024
+        /**
+         * Heap-oriented bound for large snapshots/graphics frames, independent of frame count.
+         * A pane may own 50 MiB of encoded rasters; base64 expands that by 4/3 and the queued JVM
+         * String uses two bytes per char (~134 MiB before JSON), so 192 MiB admits every legal
+         * single full-graphics frame while still bounding a stalled connection.
+         */
+        const val DEFAULT_CONTROL_CAPACITY_BYTES = 192L * 1024 * 1024
 
         /** Secondary bound on queued output FRAMES: the char budget bounds payload heap, but each
          *  queued chunk also costs an object + deque slot, so a pathological stream of tiny chunks
@@ -96,14 +104,35 @@ internal class FrameOutbox(
     fun sendControl(frame: Frame) {
         if (closed) return
         val bytes = estimatedBytes(frame)
-        if (bytes > controlCapacityBytes || controlBytes.addAndGet(bytes) > controlCapacityBytes) {
-            controlBytes.addAndGet(-bytes)
+        if (bytes > controlCapacityBytes) {
+            log.warn(
+                "Closing stalled outbox: one control frame needs {} bytes (capacity {})",
+                bytes,
+                controlCapacityBytes,
+            )
+            close()
+            return
+        }
+        if (!reserveControl(bytes)) {
+            log.warn(
+                "Closing stalled outbox: control backlog exceeds {} bytes",
+                controlCapacityBytes,
+            )
             close()
             return
         }
         if (control.trySend(frame).isFailure) {
             controlBytes.addAndGet(-bytes)
+            log.warn("Closing stalled outbox: control frame capacity is saturated")
             close() // saturated → unrecoverable client; drop it
+        }
+    }
+
+    private fun reserveControl(bytes: Long): Boolean {
+        while (true) {
+            val current = controlBytes.get()
+            if (bytes > controlCapacityBytes - current) return false
+            if (controlBytes.compareAndSet(current, current + bytes)) return true
         }
     }
 
@@ -233,4 +262,5 @@ internal class FrameOutbox(
         runCatching { control.close() }
         runCatching { wake.close() }
     }
+
 }

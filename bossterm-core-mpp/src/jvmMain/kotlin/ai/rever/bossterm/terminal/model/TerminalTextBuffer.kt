@@ -32,7 +32,7 @@ class TerminalTextBuffer internal constructor(
   initialWidth: Int,
   initialHeight: Int,
   private val styleState: StyleState,
-  private val maxHistoryLinesCount: Int,
+  val maxHistoryLinesCount: Int,
   internal val textProcessing: TextProcessing?
 ) {
   // Public accessor for Java interop

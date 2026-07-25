@@ -24,7 +24,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
@@ -205,7 +204,9 @@ class MirrorShare(
         out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
-            out.add(ServerMessage.PaneSnapshot(id, snapshotText(tab), sz[0], sz[1]))
+            out.add(ServerMessage.PaneSnapshot(
+                id, snapshotText(tab), sz[0], sz[1], tab.textBuffer.maxHistoryLinesCount
+            ))
             if (includePaneGraphics) {
                 val entry = synchronized(taps) { taps[id] }
                 val tracker = entry?.graphics
@@ -572,7 +573,9 @@ class MirrorShare(
                     tab.dataStream.addRawOutputListener(listener)
                     tab.textBuffer.addModelListener(modelListener)
                     val sz = sig.sizes[id] ?: listOf(80, 24)
-                    broadcast(ServerMessage.PaneSnapshot(id, snapshotText(tab), sz[0], sz[1]))
+                    broadcast(ServerMessage.PaneSnapshot(
+                        id, snapshotText(tab), sz[0], sz[1], tab.textBuffer.maxHistoryLinesCount
+                    ))
                     if (hasGraphicsViewer) {
                         val initialGraphics = graphics.fullMessage()
                         if (initialGraphics.requiredImageIds.isNotEmpty()) entry.monitoringGraphics.set(true)
@@ -876,8 +879,8 @@ class MirrorShare(
 
 /**
  * A connected browser viewer. The host pushes pre-encoded JSON frames into [outbox];
- * the Ktor route drains it. Bounded + DROP_OLDEST so a slow viewer never stalls the
- * terminal — it just misses intermediate frames (the next snapshot heals it).
+ * the Ktor route drains it. The queue is bounded by both UTF-16 payload size and frame count, so a
+ * slow viewer never stalls the terminal or retains gigabytes of large graphics frames.
  */
 class ViewerConnection(
     val id: Int,
@@ -888,7 +891,7 @@ class ViewerConnection(
     /** True only for peers that render the host's normalized image-cell protocol. */
     val supportsPaneGraphics: Boolean = false,
 ) {
-    val outbox: Channel<String> = Channel(capacity = 2048, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    internal val outbox = BoundedViewerOutbox()
     internal val graphicsResyncLimiter = GraphicsResyncLimiter()
 
     /** A mid-session control request is awaiting the host's decision (dedupes re-requests). */
@@ -900,4 +903,59 @@ class ViewerConnection(
      * the same view link + key; without this each blip demoted it to view-only).
      */
     @Volatile var grantKey: String? = null
+}
+
+/**
+ * Desktop-hosted counterpart to the daemon's heap-bounded [FrameOutbox]. Frames are best effort,
+ * matching the old `DROP_OLDEST` channel semantics, but the real bound is characters rather than
+ * 2048 arbitrarily-sized Strings. A legal 50 MiB raster snapshot expands to ~70M base64 chars, so
+ * the default admits one such frame while bounding the aggregate queue to ~192 MiB of UTF-16.
+ */
+internal class BoundedViewerOutbox(
+    private val capacityChars: Int = DEFAULT_CAPACITY_CHARS,
+    private val capacityFrames: Int = DEFAULT_CAPACITY_FRAMES,
+) {
+    private val lock = Any()
+    private val frames = ArrayDeque<String>()
+    private var queuedChars = 0
+    private val wake = Channel<Unit>(Channel.CONFLATED)
+    @Volatile private var closed = false
+
+    fun trySend(text: String): Boolean {
+        if (closed || text.isEmpty() || text.length > capacityChars) return false
+        synchronized(lock) {
+            if (closed) return false
+            frames.addLast(text)
+            queuedChars += text.length
+            while ((queuedChars > capacityChars || frames.size > capacityFrames) && frames.size > 1) {
+                queuedChars -= frames.removeFirst().length
+            }
+        }
+        wake.trySend(Unit)
+        return true
+    }
+
+    suspend fun drainTo(emit: suspend (String) -> Unit) {
+        while (true) {
+            val next = synchronized(lock) {
+                frames.removeFirstOrNull()?.also { queuedChars -= it.length }
+            }
+            if (next != null) {
+                emit(next)
+                continue
+            }
+            if (closed) return
+            wake.receiveCatching()
+        }
+    }
+
+    fun close() {
+        closed = true
+        wake.close()
+    }
+
+    private companion object {
+        const val DEFAULT_CAPACITY_CHARS = 96 * 1024 * 1024
+        const val DEFAULT_CAPACITY_FRAMES = 2048
+    }
 }

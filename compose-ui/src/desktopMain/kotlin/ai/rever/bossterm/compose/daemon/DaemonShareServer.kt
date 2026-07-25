@@ -775,6 +775,7 @@ class DaemonShareServer(
                 core.id,
                 TerminalSnapshotEncoder.encode(core.textBuffer.createSnapshot(), core.terminal.cursorX, core.terminal.cursorY),
                 sz.columns, sz.rows,
+                core.textBuffer.maxHistoryLinesCount,
             ))))
             if (vc.supportsPaneGraphics) {
                 val initialGraphics = graphics.fullMessage()

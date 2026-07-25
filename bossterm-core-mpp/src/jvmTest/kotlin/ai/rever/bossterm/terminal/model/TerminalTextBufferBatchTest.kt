@@ -4,6 +4,7 @@ import ai.rever.bossterm.terminal.CursorShape
 import ai.rever.bossterm.terminal.TerminalDisplay
 import ai.rever.bossterm.terminal.emulator.mouse.MouseFormat
 import ai.rever.bossterm.terminal.emulator.mouse.MouseMode
+import ai.rever.bossterm.terminal.model.image.ImageCell
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -13,6 +14,19 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class TerminalTextBufferBatchTest {
+
+    @Test
+    fun removedLinesNoLongerPublishImageRevisionsToTheirFormerStorage() {
+        var changes = 0
+        val storage = CyclicBufferLinesStorage(maxCapacity = -1) { changes++ }
+        val line = TerminalLine()
+        storage.addToBottom(line)
+        storage.removeFromTop()
+
+        line.setImageCell(0, ImageCell(1, 0, 0, 1, 1))
+
+        assertEquals(0, changes)
+    }
 
     @Test
     fun imageCellRevisionChangesOnlyForImageContentOrLayout() {

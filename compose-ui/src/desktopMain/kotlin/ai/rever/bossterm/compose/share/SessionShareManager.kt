@@ -986,7 +986,7 @@ object SessionShareManager {
         vc.grantKey = accessKey // lets an approved mid-session upgrade persist into the grant
         val sc = serverCipher
         val writer = ws.launch {
-            for (text in vc.outbox) {
+            vc.outbox.drainTo { text ->
                 sc?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
             }
         }

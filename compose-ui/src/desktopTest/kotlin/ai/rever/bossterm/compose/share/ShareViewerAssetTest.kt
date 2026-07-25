@@ -33,6 +33,28 @@ class ShareViewerAssetTest {
     }
 
     @Test
+    fun `pane snapshots configure xterm with the host scrollback cap`() {
+        val js = resource("share-viewer/viewer.js")
+        val paneSnapshot = js.substringAfter("case \"paneSnapshot\": {")
+            .substringBefore("case \"paneOutput\":")
+
+        assertTrue(paneSnapshot.contains("m.scrollbackLines"))
+        assertTrue(paneSnapshot.contains("p.term.options.scrollback = Math.floor(m.scrollbackLines)"))
+        assertTrue(js.contains("DEFAULT_WEB_VIEWER_SCROLLBACK_LINES = 10000"))
+        assertFalse(js.contains("WEB_VIEWER_SCROLLBACK_LINES = 5000"))
+    }
+
+    @Test
+    fun `graphics text reanchors preserve the viewer scroll position`() {
+        val js = resource("share-viewer/viewer.js")
+        val paneOutput = js.substringAfter("case \"paneOutput\":")
+            .substringBefore("case \"paneGraphics\":")
+
+        assertTrue(paneOutput.contains("activeBuffer.baseY - activeBuffer.viewportY"))
+        assertTrue(paneOutput.contains("scrollToLine"))
+    }
+
+    @Test
     fun `graphics canvas and transparency stay lazy for text-only panes`() {
         val js = resource("share-viewer/viewer.js")
         val draw = js.substringAfter("function drawPaneGraphics").substringBefore("function requestGraphicsResync")

@@ -32,9 +32,12 @@ class ShareProtocolTest {
         assertTrue(out.contains("\"t\":\"paneOutput\""), "expected paneOutput discriminator in: $out")
         assertTrue(out.contains("\"paneId\":\"p1\""))
 
-        val snap = ShareProtocol.encodeServer(ServerMessage.PaneSnapshot("p1", "scrollback", 120, 40))
+        val snap = ShareProtocol.encodeServer(
+            ServerMessage.PaneSnapshot("p1", "scrollback", 120, 40, scrollbackLines = 12_345)
+        )
         assertTrue(snap.contains("\"t\":\"paneSnapshot\""))
         assertTrue(snap.contains("\"cols\":120") && snap.contains("\"rows\":40"))
+        assertTrue(snap.contains("\"scrollbackLines\":12345"))
 
         val resize = ShareProtocol.encodeServer(ServerMessage.PaneResize("p1", 80, 24))
         assertTrue(resize.contains("\"t\":\"paneResize\""))

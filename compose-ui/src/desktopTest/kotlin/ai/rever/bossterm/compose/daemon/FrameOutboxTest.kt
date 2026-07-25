@@ -253,4 +253,16 @@ class FrameOutboxTest {
             "a large-frame backlog must close at the byte bound even below the frame-count cap",
         )
     }
+
+    @Test
+    fun `default control budget admits the largest legal raster frame`() {
+        val maximumRawRasterBytes = 50L * 1024 * 1024
+        val maximumBase64Chars = (maximumRawRasterBytes + 2) / 3 * 4
+        val estimatedUtf16Bytes = maximumBase64Chars * 2
+
+        assertTrue(
+            FrameOutbox.DEFAULT_CONTROL_CAPACITY_BYTES > estimatedUtf16Bytes,
+            "the queue must not disconnect a viewer for one legal full-graphics frame",
+        )
+    }
 }

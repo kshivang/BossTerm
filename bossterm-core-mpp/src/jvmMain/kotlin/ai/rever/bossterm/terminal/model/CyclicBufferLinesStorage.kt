@@ -53,22 +53,25 @@ internal class CyclicBufferLinesStorage(
     line.setImageCellsChangedListener(onImageCellsChanged)
     lines.addLast(line)
     if (isCapacityLimited && lines.size > maxCapacity) {
-      lines.removeFirst()
+      lines.removeFirst().setImageCellsChangedListener(null)
     }
   }
 
   /** O(1) */
   override fun removeFromTop(): TerminalLine {
-    return lines.removeFirst()
+    return lines.removeFirst().also { it.setImageCellsChangedListener(null) }
   }
 
   /** O(1) */
   override fun removeFromBottom(): TerminalLine {
-    return lines.removeLast()
+    return lines.removeLast().also { it.setImageCellsChangedListener(null) }
   }
 
   /** O(size) */
-  override fun clear() = lines.clear()
+  override fun clear() {
+    lines.forEach { it.setImageCellsChangedListener(null) }
+    lines.clear()
+  }
 
   /**
    * O(min(index, size-index)) using ArrayDeque's efficient index operations.
@@ -94,6 +97,7 @@ internal class CyclicBufferLinesStorage(
       throw IndexOutOfBoundsException("Index: $index, Size: ${lines.size}")
     }
     return (lines as MutableList<TerminalLine>).removeAt(index)
+      .also { it.setImageCellsChangedListener(null) }
   }
 
   override fun iterator(): Iterator<TerminalLine> = lines.iterator()

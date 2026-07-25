@@ -106,10 +106,20 @@ sealed class ServerMessage {
         val sessionName: String? = null,
     ) : ServerMessage()
 
-    /** One-time initial paint for a pane: scrollback+screen as a raw escape/text blob. */
+    /**
+     * One-time initial paint for a pane: scrollback+screen as a raw escape/text blob.
+     * [scrollbackLines] is the pane's actual host history cap. The browser must use the same cap
+     * because inline-image rows are absolute buffer coordinates and both sides trim in lockstep.
+     */
     @Serializable
     @SerialName("paneSnapshot")
-    data class PaneSnapshot(val paneId: String, val data: String, val cols: Int, val rows: Int) : ServerMessage()
+    data class PaneSnapshot(
+        val paneId: String,
+        val data: String,
+        val cols: Int,
+        val rows: Int,
+        val scrollbackLines: Int = 10_000,
+    ) : ServerMessage()
 
     /** Incremental raw PTY output for a pane. */
     @Serializable
@@ -482,7 +492,7 @@ data class SharedTerminalImage(
     val id: String,
     val mimeType: String,
     val data: String,
-    /** Per-image-object change token; lets the browser retain unchanged decoded images. */
+    /** Stable content fingerprint; lets the browser retain unchanged decoded images across reconnects. */
     val contentHash: String,
 )
 
@@ -490,9 +500,8 @@ data class SharedTerminalImage(
  * A horizontally contiguous run of image cells. [row] is the zero-based absolute buffer index
  * (oldest retained history line = 0, followed by the screen). This stays stable when a screen line
  * first scrolls into growing history and matches xterm's `viewportY` coordinate system directly.
- * The viewer's scrollback limit intentionally matches
- * [ai.rever.bossterm.terminal.model.LinesStorage.DEFAULT_MAX_LINES_COUNT], while
- * [PaneGraphicsTracker] publishes cheap row shifts whenever capped history trims.
+ * [ServerMessage.PaneSnapshot.scrollbackLines] configures xterm with the pane's real history cap,
+ * while [PaneGraphicsTracker] publishes cheap row shifts whenever capped history trims.
  */
 @Serializable
 data class SharedImageCellRun(

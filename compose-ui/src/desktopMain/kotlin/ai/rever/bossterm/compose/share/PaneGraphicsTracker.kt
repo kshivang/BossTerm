@@ -5,8 +5,8 @@ import ai.rever.bossterm.terminal.model.image.ImageDataCache
 import ai.rever.bossterm.terminal.model.image.ImageFormat
 import ai.rever.bossterm.terminal.model.image.TerminalImage
 import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
+import java.lang.ref.WeakReference
 import java.util.Base64
-import java.util.IdentityHashMap
 
 internal const val PANE_GRAPHICS_CAPABILITY = "paneGraphicsV1"
 
@@ -29,9 +29,8 @@ internal class PaneGraphicsTracker(
 ) {
     private var revision = 0L
     private var previousCells: List<SharedImageCellRun> = emptyList()
-    private var previousImages: Map<Long, TerminalImage> = emptyMap()
-    private val hashes = IdentityHashMap<TerminalImage, String>()
-    private var nextContentToken = 0L
+    private var previousImages: Map<Long, ImageFingerprint> = emptyMap()
+    private val fingerprintCache = HashMap<Long, CachedFingerprint>()
     private var previousImageCellRevision = textBuffer.imageCellRevision
     private var previousImageCacheRevision = imageDataCache.contentRevision
     private var previousHistoryTrimCount = textBuffer.imageCellHistoryTrimCount
@@ -50,20 +49,22 @@ internal class PaneGraphicsTracker(
         }
 
         val captured = capture()
-        if (captured.cells == previousCells && sameImageObjects(captured.images, previousImages)) {
+        if (captured.cells == previousCells && captured.fingerprints == previousImages) {
             previousImageCellRevision = cellRevision
             previousImageCacheRevision = cacheRevision
             previousHistoryTrimCount = historyTrimCount
             return null
         }
 
-        val changed = captured.images.filter { (id, image) -> previousImages[id] !== image }
+        val changed = captured.images.filter { (id, _) ->
+            captured.fingerprints[id] != previousImages[id]
+        }
         val removed = previousImages.keys.filter { it !in captured.images }.map(Long::toString)
         val requiresTextSnapshot = captured.cells != previousCells &&
             captured.cells.isNotEmpty() &&
             !isUniformRowShift(previousCells, captured.cells)
         previousCells = captured.cells
-        previousImages = captured.images
+        previousImages = captured.fingerprints
         previousImageCellRevision = cellRevision
         previousImageCacheRevision = cacheRevision
         previousHistoryTrimCount = historyTrimCount
@@ -84,11 +85,11 @@ internal class PaneGraphicsTracker(
     fun fullMessage(commit: Boolean = true): ServerMessage.PaneGraphics {
         val captured = capture()
         if (commit) {
-            if (captured.cells != previousCells || !sameImageObjects(captured.images, previousImages)) {
+            if (captured.cells != previousCells || captured.fingerprints != previousImages) {
                 revision++
             }
             previousCells = captured.cells
-            previousImages = captured.images
+            previousImages = captured.fingerprints
             previousImageCellRevision = textBuffer.imageCellRevision
             previousImageCacheRevision = imageDataCache.contentRevision
             previousHistoryTrimCount = textBuffer.imageCellHistoryTrimCount
@@ -101,7 +102,7 @@ internal class PaneGraphicsTracker(
 
     /** Cheap upper bound used before accepting an explicit full-payload resync. */
     @Synchronized
-    fun estimatedRasterBytes(): Long = previousImages.values.sumOf { it.data.size.toLong() }
+    fun estimatedRasterBytes(): Long = previousImages.values.sumOf { it.rasterBytes }
 
     private fun capture(): Captured {
         val snapshot = textBuffer.createIncrementalSnapshot()
@@ -111,12 +112,12 @@ internal class PaneGraphicsTracker(
         val cells = cellRuns(snapshot, cachedImages.keys)
         val referenced = cells.asSequence().map { it.imageId.toLong() }.toSet()
         val images = cachedImages.filterKeys { it in referenced }
-        // IdentityHashMap is intentional (a replaced image may reuse an id), but it must not pin
-        // evicted TerminalImage objects and their ByteArrays for the lifetime of the share.
-        hashes.keys.removeIf { cached -> images.values.none { it === cached } }
+        val fingerprints = images.mapValues { (_, image) -> fingerprint(image) }
+        fingerprintCache.keys.retainAll(images.keys)
         return Captured(
             cells = cells,
             images = images,
+            fingerprints = fingerprints,
         )
     }
 
@@ -129,13 +130,18 @@ internal class PaneGraphicsTracker(
         paneId = paneId,
         revision = revision,
         full = full,
-        images = images.mapNotNull(::sharedImage),
+        images = images.mapNotNull { image ->
+            sharedImage(image, captured.fingerprints.getValue(image.id))
+        },
         removedImageIds = removed,
-        requiredImageIds = captured.images.keys.map(Long::toString),
+        requiredImageIds = captured.fingerprints.keys.map(Long::toString),
         cells = captured.cells,
     )
 
-    private fun sharedImage(image: TerminalImage): SharedTerminalImage? {
+    private fun sharedImage(
+        image: TerminalImage,
+        fingerprint: ImageFingerprint,
+    ): SharedTerminalImage? {
         val mimeType = when (image.format) {
             ImageFormat.PNG -> "image/png"
             ImageFormat.JPEG -> "image/jpeg"
@@ -148,10 +154,28 @@ internal class PaneGraphicsTracker(
             id = image.id.toString(),
             mimeType = mimeType,
             data = Base64.getEncoder().encodeToString(image.data),
-            contentHash = hashes.getOrPut(image) {
-                (++nextContentToken).toString(36)
-            },
+            contentHash = fingerprint.contentHash,
         )
+    }
+
+    /**
+     * Stable across tracker/connection lifetimes, unlike a local sequence number. The weak cache
+     * avoids hashing an unchanged raster on every capture without retaining evicted byte arrays.
+     */
+    private fun fingerprint(image: TerminalImage): ImageFingerprint {
+        fingerprintCache[image.id]?.let { cached ->
+            if (cached.image.get() === image) return cached.fingerprint
+        }
+        var hash = FNV64_OFFSET xor image.format.ordinal.toLong()
+        for (byte in image.data) {
+            hash = (hash xor (byte.toLong() and 0xffL)) * FNV64_PRIME
+        }
+        val fingerprint = ImageFingerprint(
+            contentHash = "${image.data.size.toString(36)}-${java.lang.Long.toUnsignedString(hash, 36)}",
+            rasterBytes = image.data.size.toLong(),
+        )
+        fingerprintCache[image.id] = CachedFingerprint(WeakReference(image), fingerprint)
+        return fingerprint
     }
 
     private fun shiftForHistoryTrim(trimmedRows: Long): PaneGraphicsUpdate {
@@ -165,17 +189,14 @@ internal class PaneGraphicsTracker(
         val removed = previousImages.keys.filter { it !in shiftedImages }.map(Long::toString)
         previousCells = shiftedCells
         previousImages = shiftedImages
-        hashes.keys.removeIf { cached -> shiftedImages.values.none { it === cached } }
+        fingerprintCache.keys.retainAll(retainedIds)
         revision++
-        val captured = Captured(shiftedCells, shiftedImages)
+        val captured = Captured(shiftedCells, emptyMap(), shiftedImages)
         return PaneGraphicsUpdate(
             message = message(captured, full = false, images = emptyList(), removed = removed),
             requiresTextSnapshot = false,
         )
     }
-
-    private fun sameImageObjects(a: Map<Long, TerminalImage>, b: Map<Long, TerminalImage>): Boolean =
-        a.size == b.size && a.all { (id, image) -> b[id] === image }
 
     private fun isUniformRowShift(
         before: List<SharedImageCellRun>,
@@ -200,9 +221,23 @@ internal class PaneGraphicsTracker(
     private data class Captured(
         val cells: List<SharedImageCellRun>,
         val images: Map<Long, TerminalImage>,
+        val fingerprints: Map<Long, ImageFingerprint>,
+    )
+
+    private data class ImageFingerprint(
+        val contentHash: String,
+        val rasterBytes: Long,
+    )
+
+    private data class CachedFingerprint(
+        val image: WeakReference<TerminalImage>,
+        val fingerprint: ImageFingerprint,
     )
 
     internal companion object {
+        private const val FNV64_OFFSET = -3750763034362895579L
+        private const val FNV64_PRIME = 1099511628211L
+
         /**
          * Compress adjacent cells from the same image row. Missing/evicted image ids are omitted:
          * a browser must never retain a placement whose raster bytes the host no longer owns.
@@ -284,15 +319,29 @@ internal data class FilteredGraphicsOutput(
  * discarded as they arrive, so a multi-megabyte raster is not sent twice. Prefix state crosses PTY
  * chunk boundaries without retaining the discarded payload.
  */
-internal class GraphicsOutputFilter {
+internal class GraphicsOutputFilter(
+    private val maxDiscardChars: Int = MAX_GRAPHICS_CONTROL_CHARS,
+) {
     private enum class Mode { TEXT, ESCAPE, SIXEL_PREFIX, KITTY_PREFIX, ITERM_PREFIX, DISCARD_ST, DISCARD_OSC }
 
     private var mode = Mode.TEXT
     private val prefix = StringBuilder()
     private var discardEscape = false
+    private var discardChars = 0
 
     @Synchronized
     fun filter(chunk: String): FilteredGraphicsOutput {
+        // Ordinary PTY output overwhelmingly contains no graphics introducer. Avoid the
+        // per-character state machine (and its allocation) on that hot path.
+        if (mode == Mode.TEXT &&
+            chunk.indexOf(ESC) < 0 &&
+            chunk.indexOf(DCS) < 0 &&
+            chunk.indexOf(OSC) < 0 &&
+            chunk.indexOf(APC) < 0 &&
+            !chunk.contains(KITTY_PLACEHOLDER)
+        ) {
+            return FilteredGraphicsOutput(chunk, detectedGraphics = false)
+        }
         var detected = chunk.contains(KITTY_PLACEHOLDER)
         val input = if (detected) chunk.replace(KITTY_PLACEHOLDER, " ") else chunk
         val output = StringBuilder(input.length)
@@ -348,7 +397,8 @@ internal class GraphicsOutputFilter {
                     prefix.append(char)
                     if (char == 'G') {
                         detected = true
-                        beginDiscard(Mode.DISCARD_ST)
+                        // BossEmulator's APC reader counts the Kitty `G` as the first body char.
+                        beginDiscard(Mode.DISCARD_ST, alreadyConsumedChars = 1)
                     } else {
                         flushPrefix(output)
                     }
@@ -379,9 +429,10 @@ internal class GraphicsOutputFilter {
         mode = nextMode
     }
 
-    private fun beginDiscard(nextMode: Mode) {
+    private fun beginDiscard(nextMode: Mode, alreadyConsumedChars: Int = 0) {
         prefix.clear()
         discardEscape = false
+        discardChars = alreadyConsumedChars
         mode = nextMode
     }
 
@@ -393,26 +444,48 @@ internal class GraphicsOutputFilter {
 
     private fun discard(char: Char, acceptsBell: Boolean) {
         if (char == ST || (acceptsBell && char == BEL)) {
-            discardEscape = false
-            mode = Mode.TEXT
+            endDiscard()
             return
         }
         if (discardEscape && char == '\\') {
-            discardEscape = false
-            mode = Mode.TEXT
+            endDiscard()
             return
         }
-        discardEscape = char == ESC
+        if (discardEscape) {
+            // BossEmulator consumes the byte after a stray ESC and aborts the control string.
+            endDiscard()
+            return
+        }
+        if (char == CAN || char == SUB) {
+            endDiscard()
+            return
+        }
+        if (char == ESC) {
+            discardEscape = true
+            return
+        }
+        discardChars++
+        if (discardChars >= maxDiscardChars) endDiscard()
+    }
+
+    private fun endDiscard() {
+        discardEscape = false
+        discardChars = 0
+        mode = Mode.TEXT
     }
 
     private companion object {
         const val ESC = '\u001b'
         const val BEL = '\u0007'
+        const val CAN = '\u0018'
+        const val SUB = '\u001a'
         const val DCS = '\u0090'
         const val OSC = '\u009d'
         const val APC = '\u009f'
         const val ST = '\u009c'
         const val MAX_SIXEL_PARAMETERS = 65
+        // Mirrors RasterCodec.MAX_CONTROL_STRING_CHARS without exposing the decoder's internal API.
+        const val MAX_GRAPHICS_CONTROL_CHARS = 70 * 1024 * 1024 + 64 * 1024
         val ITERM_IMAGE_PREFIXES = listOf("1337;File=", "1337;MultipartFile=")
         val KITTY_PLACEHOLDER = String(Character.toChars(0x10EEEE))
     }

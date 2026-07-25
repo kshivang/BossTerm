@@ -112,6 +112,31 @@ class PaneGraphicsTrackerTest {
     }
 
     @Test
+    fun `content fingerprint is stable across tracker lifetimes`() {
+        val buffer = TerminalTextBuffer(8, 4, StyleState())
+        buffer.getLine(3)
+        val cache = ImageDataCache()
+        val first = TerminalImage(
+            id = 55,
+            data = byteArrayOf(1, 2, 3),
+            format = ImageFormat.PNG,
+        )
+        cache.storeImage(first)
+        buffer.writeImageCellRow(0, 0, first.id, 0, 1, 1)
+
+        val firstHash = PaneGraphicsTracker("pane", buffer, cache)
+            .fullMessage().images.single().contentHash
+        val reconnectHash = PaneGraphicsTracker("pane", buffer, cache)
+            .fullMessage().images.single().contentHash
+        assertEquals(firstHash, reconnectHash)
+
+        cache.storeImage(first.copy(data = byteArrayOf(3, 2, 1)))
+        val replacedHash = PaneGraphicsTracker("pane", buffer, cache)
+            .fullMessage().images.single().contentHash
+        assertTrue(replacedHash != firstHash)
+    }
+
+    @Test
     fun `ordinary scrolling keeps absolute image rows stable and emits no graphics delta`() {
         val buffer = TerminalTextBuffer(8, 4, StyleState())
         buffer.getLine(3)
@@ -216,6 +241,21 @@ class PaneGraphicsTrackerTest {
         assertEquals("\u001bP\$qm\u001b\\", queryResult.output)
 
         assertEquals("ordinary output", sixel.filter("ordinary output").output)
+    }
+
+    @Test
+    fun `graphics filter recovers from emulator abort conditions`() {
+        val cancelled = GraphicsOutputFilter()
+        assertEquals("hello", cancelled.filter("\u001bPqpayload\u0018hello").output)
+
+        val substituted = GraphicsOutputFilter()
+        assertEquals("hello", substituted.filter("\u001bPqpayload\u001ahello").output)
+
+        val strayEscape = GraphicsOutputFilter()
+        assertEquals("hello", strayEscape.filter("\u001bPqpayload\u001bXhello").output)
+
+        val truncated = GraphicsOutputFilter(maxDiscardChars = 3)
+        assertEquals("hello", truncated.filter("\u001bPqabchello").output)
     }
 
     @Test

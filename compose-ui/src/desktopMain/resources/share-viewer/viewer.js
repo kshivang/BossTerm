@@ -1019,9 +1019,9 @@
   // ImageCell placement grid; this transparent canvas mirrors the native renderer cell-for-cell.
   var MAX_PANE_GRAPHICS_BYTES = 50 * 1024 * 1024; // matches each BossTerm terminal cache
   var MAX_VIEWER_GRAPHICS_BYTES = 128 * 1024 * 1024; // hard bound across all shared panes
-  // SharedImageCellRun rows use the host's absolute buffer index. Keep this equal to
-  // LinesStorage.DEFAULT_MAX_LINES_COUNT; PaneGraphicsTracker explicitly shifts rows on trims.
-  var WEB_VIEWER_SCROLLBACK_LINES = 5000;
+  // PaneSnapshot replaces this compatibility fallback with the pane's real host history cap
+  // before painting. Matching caps keep SharedImageCellRun absolute rows aligned after trims.
+  var DEFAULT_WEB_VIEWER_SCROLLBACK_LINES = 10000;
   var MAX_GRAPHICS_RESYNCS = 3;
   var GRAPHICS_RESYNC_TIMEOUT_MS = 3000;
   var viewerGraphicsBytes = 0;
@@ -1341,7 +1341,7 @@
     if (p) return p;
     var host = document.createElement("div");
     host.className = "termhost";
-    var opts = { cursorBlink: true, convertEol: false, scrollback: WEB_VIEWER_SCROLLBACK_LINES,
+    var opts = { cursorBlink: true, convertEol: false, scrollback: DEFAULT_WEB_VIEWER_SCROLLBACK_LINES,
                  allowTransparency: false,
                  fontFamily: DEFAULT_TERMINAL_FONT_FAMILY, fontSize: 13,
                  theme: { background: (theme && theme.background) || "#1e1e1e", foreground: "#f8f8f2" } };
@@ -2306,6 +2306,9 @@
       case "layout": hideOverlay(); onLayout(m); break;
       case "paneSnapshot": {
         var p = getPane(m.paneId);
+        if (typeof m.scrollbackLines === "number" && m.scrollbackLines >= 0) {
+          p.term.options.scrollback = Math.floor(m.scrollbackLines);
+        }
         if (m.cols && m.rows) p.term.resize(m.cols, m.rows);
         p.term.reset();
         if (m.data) p.term.write(m.data, function () { scheduleGraphicsDraw(p); });
@@ -2319,7 +2322,20 @@
       case "paneOutput":
         if (m.data) {
           var outputPane = getPane(m.paneId);
-          outputPane.term.write(m.data, function () { scheduleGraphicsDraw(outputPane); });
+          // A graphics placement re-anchor begins with RIS + a full text snapshot. Preserve how
+          // far the reader was scrolled from the bottom so an image-heavy TUI does not yank them
+          // back to live output on every re-anchor.
+          var activeBuffer = outputPane.term.buffer.active;
+          var restoreLinesFromBottom = m.data.indexOf("\u001bc") === 0
+            ? Math.max(0, activeBuffer.baseY - activeBuffer.viewportY)
+            : 0;
+          outputPane.term.write(m.data, function () {
+            if (restoreLinesFromBottom > 0) {
+              var updated = outputPane.term.buffer.active;
+              outputPane.term.scrollToLine(Math.max(0, updated.baseY - restoreLinesFromBottom));
+            }
+            scheduleGraphicsDraw(outputPane);
+          });
         }
         break;
       case "paneGraphics": applyPaneGraphics(m); break;

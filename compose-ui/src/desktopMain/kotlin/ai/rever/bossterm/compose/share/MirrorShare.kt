@@ -96,7 +96,7 @@ class MirrorShare(
         VoiceCallService(
             executor = GuiVoiceToolExecutor(
                 inScopeTabIds = { voiceScopeTabIds() },
-                anchorTabId = tabId,
+                anchorTabId = { tabId },
             ),
             scope = coro,
             // In-process: answer from the reactive flow instead of re-reading + re-parsing

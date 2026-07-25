@@ -133,6 +133,11 @@ compose.desktop {
                         <string>11.0</string>
                         <key>NSAppleEventsUsageDescription</key>
                         <string>BossTerm needs permission to send notifications when commands complete.</string>
+                        <!-- Boss Calling: the in-app voice call captures the mic. macOS denies
+                             capture outright without a usage description, so this string is what
+                             the system shows in its permission prompt. -->
+                        <key>NSMicrophoneUsageDescription</key>
+                        <string>BossTerm uses your microphone for Boss Calling, the in-app voice conversation with your terminal's AI agent.</string>
                         <key>NSUserNotificationAlertStyle</key>
                         <string>alert</string>
                         <key>CFBundleURLTypes</key>

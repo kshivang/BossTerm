@@ -28,13 +28,17 @@ import kotlinx.serialization.json.put
  *
  * The network MCP path resolves a caller's tab from its TCP connection (ProcessAncestry); that is
  * meaningless in-process, so every call gets an explicit `tab_id` — the model's, else
- * [defaultTabId] (the tab the viewer is looking at), else [anchorTabId] (the shared tab).
+ * [defaultTabId] (the tab the caller is looking at), else [anchorTabId].
  * `list_tabs` / `get_active_tab` are answered directly from [McpTerminalRegistry], filtered to
  * [inScopeTabIds], so the agent never sees tabs outside the share.
  */
 internal class GuiVoiceToolExecutor(
     private val inScopeTabIds: () -> Set<String>,
-    private val anchorTabId: String,
+    /**
+     * Fallback target when neither the model nor the caller names a tab. A provider, not a value:
+     * a share anchors on its own tab, while an in-app host call follows whichever tab is focused.
+     */
+    private val anchorTabId: () -> String?,
     private val registry: McpTerminalRegistry = McpTerminalRegistry,
 ) : VoiceToolExecutor {
 
@@ -69,7 +73,7 @@ internal class GuiVoiceToolExecutor(
             sb.append("- \"").append(tab.title.value).append("\" (tab_id ").append(tab.id).append(')')
             tab.workingDirectory.value?.let { sb.append(", cwd ").append(it) }
             if (active) sb.append(" [active]")
-            if (tab.id == (defaultTabId ?: anchorTabId)) sb.append(" ← the user is viewing this tab")
+            if (tab.id == (defaultTabId ?: anchorTabId())) sb.append(" ← the user is viewing this tab")
             sb.append('\n')
         }
         return sb.toString().trimEnd()
@@ -84,7 +88,8 @@ internal class GuiVoiceToolExecutor(
         // answered tools. [defaultTabId] comes from the viewer's own Focus/VoiceStart, and the
         // registry lookups behind get_active_tab span every window on the host, so checking only
         // the MCP path would let a viewer name a foreign tab and read back its title and cwd.
-        val targetTabId = args.stringArg("tab_id") ?: defaultTabId ?: anchorTabId
+        val targetTabId = args.stringArg("tab_id") ?: defaultTabId ?: anchorTabId()
+            ?: throw VoiceToolException("No terminal tab is available")
         if (targetTabId !in scope) {
             throw VoiceToolException("Tab $targetTabId is not part of this share")
         }
@@ -121,7 +126,7 @@ internal class GuiVoiceToolExecutor(
                 })
             }
         })
-        (defaultTabId ?: anchorTabId).let { put("viewingTabId", it) }
+        (defaultTabId ?: anchorTabId())?.let { put("viewingTabId", it) }
     }.toString()
 
     private fun tabInfoJson(tabId: String): String {

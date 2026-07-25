@@ -20,13 +20,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * Compact combined status strip for the top-right overlay: `● MCP | ● Sharing`.
- * Each segment's dot is color-coded (green = on/active, gray = off/idle) and is
- * clickable. Replaces the separate MCP pill + Sharing pill so status reads on one
- * line. Each segment is shown only when its own toggle is enabled.
+ * Compact combined status strip for the top-right overlay:
+ * `● MCP | ● Sharing | ● Call BossTerm`. Each segment's dot is color-coded (green = on/active,
+ * amber = busy, gray = off/idle) and is clickable. Replaces the separate pills so status reads on
+ * one line. Each segment is shown only when its own toggle is enabled.
  */
 private val ON = Color(0xFF4CAF50)
 private val OFF = Color(0xFF6B6B6B)
+private val BUSY = Color(0xFFE5A54B)
+private val LIVE_TALK = Color(0xFF4A90E2)
+
+/** What the Call BossTerm segment should show — derived from the in-app call state. */
+enum class CallSegmentState { Hidden, Ready, Connecting, Live, Speaking, Working, Failed }
 
 @Composable
 fun StatusStrip(
@@ -37,8 +42,11 @@ fun StatusStrip(
     sharingCount: Int,
     onSharingClick: () -> Unit,
     modifier: Modifier = Modifier,
+    call: CallSegmentState = CallSegmentState.Hidden,
+    onCallClick: () -> Unit = {},
 ) {
-    if (!showMcp && !showSharing) return
+    val showCall = call != CallSegmentState.Hidden
+    if (!showMcp && !showSharing && !showCall) return
     Surface(
         modifier = modifier,
         color = Color(0xFF2B2B2B),
@@ -59,6 +67,28 @@ fun StatusStrip(
             if (showSharing) {
                 val label = if (sharingCount > 1) "Sharing ($sharingCount)" else "Sharing"
                 Segment(dot = if (sharingCount > 0) ON else OFF, label = label, onClick = onSharingClick)
+            }
+            if ((showMcp || showSharing) && showCall) {
+                Text("|", color = Color(0xFF555555), fontSize = 12.sp)
+            }
+            if (showCall) {
+                Segment(
+                    dot = when (call) {
+                        CallSegmentState.Connecting, CallSegmentState.Working -> BUSY
+                        CallSegmentState.Speaking -> LIVE_TALK
+                        CallSegmentState.Live -> ON
+                        CallSegmentState.Failed -> Color(0xFFD9534F)
+                        else -> OFF
+                    },
+                    label = when (call) {
+                        CallSegmentState.Connecting -> "Calling…"
+                        CallSegmentState.Working -> "Call BossTerm · working"
+                        CallSegmentState.Speaking, CallSegmentState.Live -> "Call BossTerm · live"
+                        CallSegmentState.Failed -> "Call BossTerm · failed"
+                        else -> "Call BossTerm"
+                    },
+                    onClick = onCallClick,
+                )
             }
         }
     }

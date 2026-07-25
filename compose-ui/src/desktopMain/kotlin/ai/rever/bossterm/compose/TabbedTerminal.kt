@@ -80,6 +80,7 @@ import ai.rever.bossterm.compose.tabs.TabBar
 import ai.rever.bossterm.compose.tabs.TabBarHeight
 import ai.rever.bossterm.compose.tabs.TabController
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import ai.rever.bossterm.compose.voice.segmentState
 import ai.rever.bossterm.compose.ui.ProperTerminal
 
 /**
@@ -2104,6 +2105,13 @@ fun TabbedTerminal(
         // QR/links dialog if already shared). Shown per its own toggle.
         val showMcpStatus = settings.mcpShowStatusIndicator
         val showSharingStatus = settings.sessionSharingShowIndicator
+        // In-app voice call ("Call BossTerm"): the pill sits beside Sharing and drives the one call
+        // this app can have; the strip below it appears while that call is up.
+        val hostCallState by ai.rever.bossterm.compose.voice.HostVoiceCall.state.collectAsState()
+        val voiceKeyPresent by ai.rever.bossterm.compose.voice.VoiceAgentStorage.keyPresentFlow.collectAsState()
+        val callSegment = hostCallState.segmentState(
+            available = settings.voiceCallEnabled && voiceKeyPresent
+        )
         // The active tab's remote session while it's still view-only — drives the read-only
         // pill, stacked in this same column so it sits BELOW the MCP/Sharing pills.
         val activeRemoteSession = tabController.activeTab?.let { t -> state?.remoteSessions?.sessionForTab(t) }
@@ -2118,7 +2126,8 @@ fun TabbedTerminal(
             }
         } else null
         if (showMcpStatus || showSharingStatus || attachStatus != null || pendingShareRequests.isNotEmpty() ||
-            viewOnlyRemote != null || upstreamReadOnly != null) {
+            viewOnlyRemote != null || upstreamReadOnly != null ||
+            callSegment != ai.rever.bossterm.compose.share.CallSegmentState.Hidden) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -2187,7 +2196,19 @@ fun TabbedTerminal(
                             }
                         }
                     },
+                    call = callSegment,
+                    onCallClick = {
+                        // One click is the whole interaction: start when idle, end when live, and
+                        // clear a failure so the pill returns to Ready.
+                        when {
+                            hostCallState.phase == ai.rever.bossterm.compose.voice.HostCallPhase.Error ->
+                                ai.rever.bossterm.compose.voice.HostVoiceCall.dismissError()
+                            hostCallState.active -> ai.rever.bossterm.compose.voice.HostVoiceCall.end()
+                            else -> ai.rever.bossterm.compose.voice.HostVoiceCall.start()
+                        }
+                    },
                 )
+                ai.rever.bossterm.compose.voice.HostCallBar()
                 attachStatus?.let { status ->
                     AttachToast(status = status)
                 }

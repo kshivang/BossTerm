@@ -7,6 +7,7 @@ import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.theme.ColorPalette
 import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
+import ai.rever.bossterm.compose.notification.NotificationService
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.tabs.TerminalTab
@@ -114,7 +115,7 @@ class MirrorShare(
      */
     private fun notifyVoiceCall(started: Boolean) {
         runCatching {
-            ai.rever.bossterm.compose.notification.NotificationService.showNotification(
+            NotificationService.showNotification(
                 title = "BossTerm — Boss Calling",
                 message = if (started) {
                     "A viewer started a voice call on \"${sessionName.value}\" — the agent can read and run commands here"
@@ -223,6 +224,10 @@ class MirrorShare(
 
     fun removeViewer(vc: ViewerConnection) {
         if (viewers.remove(vc)) {
+            // A dropped connection can't hang up, so retire its call handle here or the token
+            // stays usable for its whole TTL.
+            voiceService.closeCall(vc.voiceCallToken)
+            vc.voiceCallToken = null
             vc.outbox.close()
             broadcast(ServerMessage.Presence(viewers.size))
             if (viewers.none { it.supportsPaneGraphics }) {
@@ -411,8 +416,13 @@ class MirrorShare(
                 }
                 return
             }
-            is ClientMessage.VoiceEnd -> return
+            is ClientMessage.VoiceEnd -> {
+                voiceService.closeCall(vc.voiceCallToken)
+                vc.voiceCallToken = null
+                return
+            }
             is ClientMessage.VoiceToolCall -> {
+                vc.voiceCallToken = msg.callToken ?: vc.voiceCallToken
                 voiceService.handleToolCall(msg, vc.canControl, vc.voiceTabId) { m ->
                     vc.outbox.trySend(ShareProtocol.encodeServer(m))
                 }
@@ -1003,6 +1013,9 @@ class ViewerConnection(
      * — the voice agent's default tool target. Null until the viewer reports one.
      */
     @Volatile var voiceTabId: String? = null
+
+    /** This connection's live call handle, so hanging up (or dropping) can retire exactly it. */
+    @Volatile var voiceCallToken: String? = null
 
     /** A mid-session control request is awaiting the host's decision (dedupes re-requests). */
     @Volatile var controlRequestPending = false

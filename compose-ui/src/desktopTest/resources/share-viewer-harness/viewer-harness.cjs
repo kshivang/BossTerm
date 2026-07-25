@@ -1013,7 +1013,8 @@ const scenarios = {
       !pc.dc.sent.some((s) => /response\.create/.test(s)),
       "response.create must not fire while the response is still open"
     );
-    socket.deliver({ t: "voiceToolResult", callId: "c2", resultJson: "{}" }); // stray/unknown id
+    // A result for an id we never forwarded must not bank a follow-up turn for later.
+    socket.deliver({ t: "voiceToolResult", callId: "never-sent", resultJson: "{}" });
     pc.dc.deliver({ type: "response.done", response: { output: [] } });
     assert.strictEqual(
       pc.dc.sent.filter((s) => /response\.create/.test(s)).length,

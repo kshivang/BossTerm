@@ -265,7 +265,21 @@ internal class VoiceCallService(
         true
     }
 
-    /** Invalidate every live call — the host revoked the feature mid-call. */
+    /**
+     * Retire ONE call: the viewer hung up, or its connection dropped. Without this a token stayed
+     * usable for its whole TTL, so a viewer that hung up (or was later demoted to view-only) kept a
+     * working handle for the read tools — which reach further back than the mirrored screen does.
+     */
+    fun closeCall(token: String?) {
+        if (token == null) return
+        val remaining = synchronized(liveCalls) {
+            liveCalls.remove(token)
+            liveCalls.size
+        }
+        if (remaining == 0) onCallActivity(false)
+    }
+
+    /** Invalidate every live call — the host revoked the feature, or the last viewer left. */
     fun closeCalls() {
         val had = synchronized(liveCalls) {
             val any = liveCalls.isNotEmpty()

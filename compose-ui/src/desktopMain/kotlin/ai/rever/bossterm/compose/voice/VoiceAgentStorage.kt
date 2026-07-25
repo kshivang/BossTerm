@@ -31,7 +31,16 @@ internal object VoiceAgentStorage {
     private val log = LoggerFactory.getLogger(VoiceAgentStorage::class.java)
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
-    private val _keyPresentFlow = MutableStateFlow(load()?.openaiApiKey?.isNotBlank() == true)
+    // Starts false and is corrected off-thread: reading + parsing the file in the initializer put a
+    // disk hit on whatever thread first touched this object — in practice the Compose thread, at
+    // first composition of the status strip.
+    private val _keyPresentFlow = MutableStateFlow(false)
+
+    init {
+        Thread({ _keyPresentFlow.value = keyPresent() }, "boss-voice-key-probe")
+            .apply { isDaemon = true }
+            .start()
+    }
 
     /**
      * Whether a non-blank key is currently stored. Updated by [save]/[clear] in THIS process;

@@ -2892,10 +2892,12 @@
       case "voiceToolResult":
         voiceDcSend({ type: "conversation.item.create",
           item: { type: "function_call_output", call_id: m.callId, output: m.resultJson } });
-        voice.outputsOwed += 1;
+        // Only a result for a call WE forwarded owes a follow-up turn; a stray or stale id would
+        // otherwise bank a spurious response.create for later.
         if (voice.pending[m.callId]) {
           delete voice.pending[m.callId];
           voice.pendingCount = Math.max(0, voice.pendingCount - 1);
+          voice.outputsOwed += 1;
         }
         updateVoiceBar();
         voiceMaybeRequestResponse();

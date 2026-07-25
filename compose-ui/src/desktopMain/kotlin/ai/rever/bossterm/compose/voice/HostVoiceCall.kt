@@ -4,6 +4,7 @@ import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.settings.SettingsManager
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,7 +28,12 @@ internal object HostVoiceCall {
     /** Live call state for the UI (pill + call bar). */
     val state: StateFlow<HostCallState> = _state.asStateFlow()
 
+    /** Mic loudness, kept off [state] so a 25 Hz meter can't recompose every state reader. */
+    private val _level = MutableStateFlow(0f)
+    val level: StateFlow<Float> = _level.asStateFlow()
+
     @Volatile private var controller: HostVoiceCallController? = null
+    @Volatile private var mirrorJob: Job? = null
 
     /** Whether a call is possible at all: the feature on, and a key stored. */
     fun available(): Boolean =
@@ -52,7 +58,13 @@ internal object HostVoiceCall {
             ),
         )
         controller = c
-        scope.launch { c.state.collect { _state.value = it } }
+        // One mirror per call: the previous controller's collector must go, or every start would
+        // add another live collector writing into the same flow.
+        mirrorJob?.cancel()
+        mirrorJob = scope.launch {
+            launch { c.state.collect { _state.value = it } }
+            launch { c.level.collect { _level.value = it } }
+        }
         c.start()
     }
 
@@ -61,14 +73,20 @@ internal object HostVoiceCall {
     fun end() {
         controller?.end()
         controller = null
+        mirrorJob?.cancel()
+        mirrorJob = null
         _state.value = HostCallState()
+        _level.value = 0f
     }
 
     /** Clear a failed call's error so the pill goes back to idle. */
     fun dismissError() {
         if (_state.value.phase == HostCallPhase.Error) {
             controller = null
+            mirrorJob?.cancel()
+            mirrorJob = null
             _state.value = HostCallState()
+            _level.value = 0f
         }
     }
 

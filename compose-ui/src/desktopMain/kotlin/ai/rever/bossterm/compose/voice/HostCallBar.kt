@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.voice
 
+import ai.rever.bossterm.compose.share.CallSegmentState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -63,7 +64,7 @@ internal fun HostCallBar(modifier: Modifier = Modifier) {
             }
 
             LevelMeter(
-                level = if (state.muted) 0f else state.level,
+                muted = state.muted,
                 color = when {
                     state.working -> Amber
                     state.speaking -> Blue
@@ -87,10 +88,14 @@ internal fun HostCallBar(modifier: Modifier = Modifier) {
     }
 }
 
-/** Twelve bars driven by the mic level, animated so the movement reads as speech rather than noise. */
+/**
+ * Twelve bars driven by the mic level. Collects [HostVoiceCall.level] HERE rather than reading it
+ * from the call state, so the 25 Hz stream only ever recomposes this meter.
+ */
 @Composable
-private fun LevelMeter(level: Float, color: Color) {
-    val animated by animateFloatAsState(targetValue = level.coerceIn(0f, 1f))
+private fun LevelMeter(muted: Boolean, color: Color) {
+    val level by HostVoiceCall.level.collectAsState()
+    val animated by animateFloatAsState(targetValue = if (muted) 0f else level.coerceIn(0f, 1f))
     Row(
         modifier = Modifier.height(16.dp).width(84.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -124,14 +129,20 @@ private fun BarButton(label: String, onClick: () -> Unit, tint: Color = Label) {
     }
 }
 
-/** Map call state onto the status strip's segment, so the pill and the bar never disagree. */
-internal fun HostCallState.segmentState(available: Boolean): ai.rever.bossterm.compose.share.CallSegmentState =
+/**
+ * Map call state onto the status strip's segment, so the pill and the bar never disagree.
+ *
+ * A host with the feature on but no key still gets a pill ([CallSegmentState.NeedsKey]) — clicking
+ * it collects the key and places the call, rather than hiding the feature until they find Settings.
+ */
+internal fun HostCallState.segmentState(enabled: Boolean, keyPresent: Boolean): CallSegmentState =
     when {
-        phase == HostCallPhase.Error -> ai.rever.bossterm.compose.share.CallSegmentState.Failed
-        phase == HostCallPhase.Connecting -> ai.rever.bossterm.compose.share.CallSegmentState.Connecting
-        phase == HostCallPhase.Live && working -> ai.rever.bossterm.compose.share.CallSegmentState.Working
-        phase == HostCallPhase.Live && speaking -> ai.rever.bossterm.compose.share.CallSegmentState.Speaking
-        phase == HostCallPhase.Live -> ai.rever.bossterm.compose.share.CallSegmentState.Live
-        available -> ai.rever.bossterm.compose.share.CallSegmentState.Ready
-        else -> ai.rever.bossterm.compose.share.CallSegmentState.Hidden
+        phase == HostCallPhase.Error -> CallSegmentState.Failed
+        phase == HostCallPhase.Connecting -> CallSegmentState.Connecting
+        phase == HostCallPhase.Live && working -> CallSegmentState.Working
+        phase == HostCallPhase.Live && speaking -> CallSegmentState.Speaking
+        phase == HostCallPhase.Live -> CallSegmentState.Live
+        !enabled -> CallSegmentState.Hidden
+        keyPresent -> CallSegmentState.Ready
+        else -> CallSegmentState.NeedsKey
     }

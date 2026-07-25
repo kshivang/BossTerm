@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -29,8 +30,6 @@ internal data class HostCallState(
     /** One or more tool calls are running. */
     val working: Boolean = false,
     val muted: Boolean = false,
-    /** 0..1 microphone loudness, for the level meter. */
-    val level: Float = 0f,
     /** What the agent is doing, for the bar's caption. */
     val activity: String? = null,
     /** Set with [HostCallPhase.Error]. */
@@ -65,6 +64,14 @@ internal class HostVoiceCallController(
     private val _state = MutableStateFlow(HostCallState())
     val state: StateFlow<HostCallState> = _state.asStateFlow()
 
+    /**
+     * Mic loudness, deliberately a SEPARATE flow from [state]: it updates ~25×/second for the whole
+     * call, and folding it into the snapshot made every state reader — including the composable that
+     * owns terminal rendering — recompose at that rate. Only the level meter collects this.
+     */
+    private val _level = MutableStateFlow(0f)
+    val level: StateFlow<Float> = _level.asStateFlow()
+
     // Tool-round bookkeeping, mirroring the viewer: a response.create while a response is still
     // generating is rejected (conversation_already_has_active_response), and one response can ask
     // for several tools — so exactly one follow-up turn per round, once all of them have answered.
@@ -77,15 +84,18 @@ internal class HostVoiceCallController(
     /** Start a call. No-op when one is already up. */
     fun start() {
         if (_state.value.active) return
-        val key = loadKey() ?: run {
-            fail("Add an OpenAI API key in Settings → Session Sharing → Boss Calling.")
-            return
-        }
+        // Same precedence as VoiceCallService.status(): the switch, then the key — otherwise a
+        // host with the feature off AND no key is told to add a key.
         if (!settings().voiceCallEnabled) {
             fail("Boss Calling is turned off in Settings.")
             return
         }
+        val key = loadKey() ?: run {
+            fail("Add an OpenAI API key in Settings → Session Sharing → Boss Calling.")
+            return
+        }
         _state.value = HostCallState(phase = HostCallPhase.Connecting)
+        _level.value = 0f
         synchronized(roundLock) {
             seenCalls.clear(); pendingCalls.clear(); responseOpen = false; outputsOwed = 0
         }
@@ -117,19 +127,19 @@ internal class HostVoiceCallController(
                             )
                         }
                     },
-                    onLevel = { level -> _state.value = _state.value.copy(level = level) },
+                    onLevel = { level -> _level.value = level },
                 )
             } catch (e: VoiceAudioException) {
                 fail(e.message ?: "No microphone available")
                 return@launch
             }
-            _state.value = _state.value.copy(phase = HostCallPhase.Live, activity = null)
+            _state.update { it.copy(phase = HostCallPhase.Live, activity = null) }
         }
     }
 
     fun toggleMute() {
         if (!_state.value.active) return
-        _state.value = _state.value.copy(muted = !_state.value.muted)
+        _state.update { it.copy(muted = !it.muted) }
     }
 
     /** End the call and release the mic + speaker. */
@@ -138,6 +148,7 @@ internal class HostVoiceCallController(
         runCatching { audio.stop() }
         runCatching { transport.close() }
         _state.value = HostCallState()
+        _level.value = 0f
         if (wasActive) log.info("Boss Calling: in-app call ended")
     }
 
@@ -145,6 +156,7 @@ internal class HostVoiceCallController(
         runCatching { audio.stop() }
         runCatching { transport.close() }
         _state.value = HostCallState(phase = HostCallPhase.Error, error = message)
+        _level.value = 0f
     }
 
     /** One server event. Runs on the transport's callback thread. */
@@ -156,17 +168,17 @@ internal class HostVoiceCallController(
             "response.output_audio.delta" -> {
                 val b64 = event["delta"]?.jsonPrimitive?.content ?: return
                 val pcm = runCatching { Base64.getDecoder().decode(b64) }.getOrNull() ?: return
-                if (!_state.value.speaking) _state.value = _state.value.copy(speaking = true)
+                _state.update { if (it.speaking) it else it.copy(speaking = true) }
                 audio.play(pcm)
             }
 
-            "response.output_audio.done" -> _state.value = _state.value.copy(speaking = false)
+            "response.output_audio.done" -> _state.update { it.copy(speaking = false) }
 
             // Barge-in: the user started talking, so drop whatever the agent still has queued
             // instead of letting the two of them talk over each other.
             "input_audio_buffer.speech_started" -> {
                 audio.flushPlayback()
-                _state.value = _state.value.copy(speaking = false)
+                _state.update { it.copy(speaking = false) }
             }
 
             "response.function_call_arguments.done" -> handleFunctionCall(
@@ -210,7 +222,7 @@ internal class HostVoiceCallController(
             pendingCalls.add(callId)
             responseOpen = true // a function call only exists inside a response
         }
-        _state.value = _state.value.copy(working = true, activity = describeTool(name, argsJson))
+        _state.update { it.copy(working = true, activity = describeTool(name, argsJson)) }
         scope.launch {
             val args = runCatching { json.parseToJsonElement(argsJson ?: "{}").jsonObject }
                 .getOrElse { JsonObject(emptyMap()) }
@@ -233,7 +245,7 @@ internal class HostVoiceCallController(
                 outputsOwed += 1
                 pendingCalls.isEmpty()
             }
-            if (done) _state.value = _state.value.copy(working = false, activity = null)
+            if (done) _state.update { it.copy(working = false, activity = null) }
             maybeRequestResponse()
         }
     }

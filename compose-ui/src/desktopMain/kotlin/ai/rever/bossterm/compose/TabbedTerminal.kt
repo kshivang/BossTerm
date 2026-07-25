@@ -62,6 +62,8 @@ import ai.rever.bossterm.compose.vcs.VersionControlMenuProvider
 import ai.rever.bossterm.compose.shell.ShellCustomizationMenuProvider
 import ai.rever.bossterm.compose.menu.MenuActions
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.util.loadTerminalFont
@@ -2107,11 +2109,20 @@ fun TabbedTerminal(
         val showSharingStatus = settings.sessionSharingShowIndicator
         // In-app voice call ("Call BossTerm"): the pill sits beside Sharing and drives the one call
         // this app can have; the strip below it appears while that call is up.
-        val hostCallState by ai.rever.bossterm.compose.voice.HostVoiceCall.state.collectAsState()
-        val voiceKeyPresent by ai.rever.bossterm.compose.voice.VoiceAgentStorage.keyPresentFlow.collectAsState()
-        val callSegment = hostCallState.segmentState(
-            available = settings.voiceCallEnabled && voiceKeyPresent
-        )
+        //
+        // Subscribed as a DERIVED, distinct-until-changed flow rather than the raw call state: this
+        // lambda owns the terminal rendering path, and the call state carries fields that change
+        // several times a second while a call is up. Only segment transitions belong here — the
+        // level meter collects its own flow inside HostCallBar.
+        val voiceEnabled = settings.voiceCallEnabled
+        val callSegment by remember(voiceEnabled) {
+            combine(
+                ai.rever.bossterm.compose.voice.HostVoiceCall.state,
+                ai.rever.bossterm.compose.voice.VoiceAgentStorage.keyPresentFlow,
+            ) { call, keyPresent -> call.segmentState(voiceEnabled, keyPresent) }
+                .distinctUntilChanged()
+        }.collectAsState(ai.rever.bossterm.compose.share.CallSegmentState.Hidden)
+        var voiceKeyPrompt by remember { mutableStateOf(false) }
         // The active tab's remote session while it's still view-only — drives the read-only
         // pill, stacked in this same column so it sits BELOW the MCP/Sharing pills.
         val activeRemoteSession = tabController.activeTab?.let { t -> state?.remoteSessions?.sessionForTab(t) }
@@ -2198,17 +2209,32 @@ fun TabbedTerminal(
                     },
                     call = callSegment,
                     onCallClick = {
-                        // One click is the whole interaction: start when idle, end when live, and
-                        // clear a failure so the pill returns to Ready.
-                        when {
-                            hostCallState.phase == ai.rever.bossterm.compose.voice.HostCallPhase.Error ->
+                        // One click is the whole interaction: ask for a key if there isn't one,
+                        // start when idle, end when live, clear a failure when it failed.
+                        when (callSegment) {
+                            ai.rever.bossterm.compose.share.CallSegmentState.NeedsKey ->
+                                voiceKeyPrompt = true
+                            ai.rever.bossterm.compose.share.CallSegmentState.Failed ->
                                 ai.rever.bossterm.compose.voice.HostVoiceCall.dismissError()
-                            hostCallState.active -> ai.rever.bossterm.compose.voice.HostVoiceCall.end()
+                            ai.rever.bossterm.compose.share.CallSegmentState.Connecting,
+                            ai.rever.bossterm.compose.share.CallSegmentState.Live,
+                            ai.rever.bossterm.compose.share.CallSegmentState.Speaking,
+                            ai.rever.bossterm.compose.share.CallSegmentState.Working ->
+                                ai.rever.bossterm.compose.voice.HostVoiceCall.end()
                             else -> ai.rever.bossterm.compose.voice.HostVoiceCall.start()
                         }
                     },
                 )
                 ai.rever.bossterm.compose.voice.HostCallBar()
+                if (voiceKeyPrompt) {
+                    ai.rever.bossterm.compose.voice.VoiceKeyDialog(
+                        onDismiss = { voiceKeyPrompt = false },
+                        onSaved = {
+                            voiceKeyPrompt = false
+                            ai.rever.bossterm.compose.voice.HostVoiceCall.start()
+                        },
+                    )
+                }
                 attachStatus?.let { status ->
                     AttachToast(status = status)
                 }

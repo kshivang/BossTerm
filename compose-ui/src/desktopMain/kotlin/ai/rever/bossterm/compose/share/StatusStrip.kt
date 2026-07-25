@@ -31,7 +31,12 @@ private val BUSY = Color(0xFFE5A54B)
 private val LIVE_TALK = Color(0xFF4A90E2)
 
 /** What the Call BossTerm segment should show — derived from the in-app call state. */
-enum class CallSegmentState { Hidden, Ready, Connecting, Live, Speaking, Working, Failed }
+enum class CallSegmentState {
+    Hidden,
+    /** Enabled but no API key yet — the pill still shows, and clicking it asks for one. */
+    NeedsKey,
+    Ready, Connecting, Live, Speaking, Working, Failed,
+}
 
 @Composable
 fun StatusStrip(
@@ -80,6 +85,8 @@ fun StatusStrip(
                         CallSegmentState.Failed -> Color(0xFFD9534F)
                         else -> OFF
                     },
+                    // NeedsKey deliberately reads the same as Ready: "set this up" is the click,
+                    // not a warning to stare at.
                     label = when (call) {
                         CallSegmentState.Connecting -> "Calling…"
                         CallSegmentState.Working -> "Call BossTerm · working"

@@ -154,6 +154,28 @@ class VoiceCallServiceTest {
         assertTrue((replies.single() as ServerMessage.VoiceToolResult).isError, "forged token → no tools")
     }
 
+    /**
+     * Hanging up (or dropping the socket) must retire the token. Before this, VoiceEnd was a no-op
+     * and a token stayed valid for its whole TTL — so a viewer that hung up, or was later demoted to
+     * view-only, kept a working handle for the read tools.
+     */
+    @Test
+    fun `a retired call's token stops working`() {
+        val svc = service()
+        val token = svc.openCall()
+        val replies = mutableListOf<ServerMessage>()
+
+        svc.closeCall(token)
+        svc.handleToolCall(
+            ClientMessage.VoiceToolCall("c1", "read_scrollback", "{}", callToken = token),
+            canControl = true, defaultTabId = "t1",
+        ) { replies.add(it) }
+        val refused = replies.single()
+        assertIs<ServerMessage.VoiceToolResult>(refused)
+        assertTrue(refused.isError)
+        assertTrue(refused.resultJson.contains("No active call"), refused.resultJson)
+    }
+
     /** The master switch is a kill switch: flipping it off must stop an agent already mid-call. */
     @Test
     fun `turning Boss Calling off stops tools on a call already in progress`() {

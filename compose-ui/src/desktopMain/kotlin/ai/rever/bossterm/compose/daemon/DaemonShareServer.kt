@@ -230,6 +230,7 @@ class DaemonShareServer(
         /** Last voiceStatus pushed, so [watchVoiceStatus] only broadcasts real changes. */
         @Volatile var lastVoiceStatus: ServerMessage.VoiceStatus? = null
         @Volatile var voiceWatchJob: Job? = null
+        val voiceWatchLock = Any()
 
         // Boss Calling: one service per share; its executor limits tool targets to this share's
         // scope. The daemon has no cross-process key flow — availability is re-checked from disk
@@ -706,7 +707,6 @@ class DaemonShareServer(
         send(themeMessage())
         send(mcpStatusMessage())
         send(def.voiceService.status())
-        watchVoiceStatus(def)
         send(layoutFor(def))
 
         val vc = DaemonShareConnection(
@@ -940,6 +940,9 @@ class DaemonShareServer(
         }
         def.broadcast(ServerMessage.Presence(def.viewerCount))
         publishState() // viewer count changed
+        // AFTER viewers.add: the poll loop's guard is `viewers.isNotEmpty()`, so arming it during
+        // the admit preamble made it exit immediately for a share's first (usually only) viewer.
+        watchVoiceStatus(def)
 
         send(ServerMessage.Control(granted = canControl))
 
@@ -1007,6 +1010,9 @@ class DaemonShareServer(
             }
             writer.cancel()
             if (def.viewers.remove(vc)) {
+                // Same as a hangup: a dropped viewer's call handle must not outlive its socket.
+                def.voiceService.closeCall(vc.voiceCallToken)
+                vc.voiceCallToken = null
                 runCatching { vc.outbox.close() }
                 def.broadcast(ServerMessage.Presence(def.viewerCount))
                 publishState()
@@ -1053,8 +1059,13 @@ class DaemonShareServer(
      * every few seconds, only while the share has viewers.
      */
     private fun watchVoiceStatus(def: ShareDef) {
-        if (def.voiceWatchJob?.isActive == true) return
-        def.voiceWatchJob = scope.launch {
+        synchronized(def.voiceWatchLock) {
+            if (def.voiceWatchJob?.isActive == true) return
+            def.voiceWatchJob = scope.launch { pollVoiceStatus(def) }
+        }
+    }
+
+    private suspend fun pollVoiceStatus(def: ShareDef) {
             try {
                 while (def.viewers.isNotEmpty()) {
                     val status = def.voiceService.status()
@@ -1068,9 +1079,11 @@ class DaemonShareServer(
                     delay(VOICE_STATUS_POLL_MS)
                 }
             } finally {
-                def.voiceWatchJob = null
+                // Only clear OUR handle: a concurrent admit may already have armed the next one.
+                synchronized(def.voiceWatchLock) {
+                    if (def.voiceWatchJob?.isActive != true) def.voiceWatchJob = null
+                }
             }
-        }
     }
 
     /**
@@ -1097,8 +1110,13 @@ class DaemonShareServer(
                 def.voiceService.handleStart(msg, vc.canControl, voiceReply)
                 return
             }
-            is ClientMessage.VoiceEnd -> return
+            is ClientMessage.VoiceEnd -> {
+                def.voiceService.closeCall(vc.voiceCallToken)
+                vc.voiceCallToken = null
+                return
+            }
             is ClientMessage.VoiceToolCall -> {
+                vc.voiceCallToken = msg.callToken ?: vc.voiceCallToken
                 def.voiceService.handleToolCall(msg, vc.canControl, vc.voiceTabId, voiceReply)
                 return
             }

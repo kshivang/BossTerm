@@ -33,6 +33,9 @@ internal class DaemonShareConnection(
      * default tool target. Null until the viewer reports one.
      */
     @Volatile var voiceTabId: String? = null
+
+    /** This connection's live call handle, so hanging up (or dropping) retires exactly it. */
+    @Volatile var voiceCallToken: String? = null
 }
 
 /**

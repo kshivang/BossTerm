@@ -125,7 +125,8 @@ private fun VoiceAvailabilityLine(settings: TerminalSettings) {
     val (text, color) = when {
         !settings.voiceCallEnabled -> "Off — viewers see no Call BossTerm button." to TextMuted
         !keyPresent -> "No API key yet — viewers see no Call BossTerm button until you add one below." to Danger
-        else -> "Ready — a viewer with control sees the Call BossTerm button." to AccentColor
+        // The viewer shows the button to every device; control is enforced when they click it.
+        else -> "Ready — viewers see the Call BossTerm button (calling needs control)." to AccentColor
     }
     Text(text = text, color = color, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp))
 }

@@ -1,6 +1,8 @@
 package ai.rever.bossterm.compose.voice
 
 import org.slf4j.LoggerFactory
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.DataLine
@@ -42,7 +44,17 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
     @Volatile private var capture: TargetDataLine? = null
     @Volatile private var playback: SourceDataLine? = null
     @Volatile private var captureThread: Thread? = null
+    @Volatile private var playbackThread: Thread? = null
     @Volatile private var running = false
+
+    /**
+     * Decoded audio waiting for the speaker. Playback is drained on its own thread because
+     * `SourceDataLine.write` blocks when the line is full, and [play] is called from the WebSocket
+     * callback thread — a backed-up speaker would otherwise stall event dispatch, including the
+     * `input_audio_buffer.speech_started` that triggers barge-in. Bounded so a stalled line drops
+     * audio instead of growing without limit.
+     */
+    private val playQueue = ArrayBlockingQueue<ByteArray>(PLAY_QUEUE_CHUNKS)
 
     override fun startCapture(onChunk: (ByteArray) -> Unit, onLevel: (Float) -> Unit) {
         val line = runCatching {
@@ -74,7 +86,23 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
     }
 
     override fun play(pcm: ByteArray) {
-        val line = playback ?: runCatching {
+        ensurePlayback() ?: return
+        // Never block the caller (the socket thread): drop the oldest chunk if the speaker is behind.
+        if (!playQueue.offer(pcm)) {
+            playQueue.poll()
+            playQueue.offer(pcm)
+        }
+    }
+
+    override fun flushPlayback() {
+        playQueue.clear()
+        runCatching { playback?.flush() }
+    }
+
+    /** Open the speaker line + its drain thread on first use. Null when there is no output device. */
+    private fun ensurePlayback(): SourceDataLine? {
+        playback?.let { return it }
+        val line = runCatching {
             val info = DataLine.Info(SourceDataLine::class.java, FORMAT)
             (AudioSystem.getLine(info) as SourceDataLine).also {
                 it.open(FORMAT, CHUNK_BYTES * 16)
@@ -82,21 +110,25 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
             }
         }.getOrElse {
             log.warn("Speaker unavailable: {}", it.message)
-            return
-        }.also { playback = it }
-        // write() blocks when the buffer is full, which is the back-pressure we want — but it runs
-        // on the socket's callback thread, so keep chunks small.
-        runCatching { line.write(pcm, 0, pcm.size) }
-    }
-
-    override fun flushPlayback() {
-        runCatching { playback?.flush() }
+            return null
+        }
+        playback = line
+        playbackThread = Thread({
+            while (running || playQueue.isNotEmpty()) {
+                val chunk = runCatching { playQueue.poll(200, TimeUnit.MILLISECONDS) }.getOrNull() ?: continue
+                runCatching { line.write(chunk, 0, chunk.size) }
+            }
+        }, "boss-voice-playback").apply { isDaemon = true; start() }
+        return line
     }
 
     override fun stop() {
         running = false
         captureThread?.interrupt()
         captureThread = null
+        playQueue.clear()
+        playbackThread?.interrupt()
+        playbackThread = null
         runCatching { capture?.stop(); capture?.close() }
         capture = null
         runCatching { playback?.flush(); playback?.stop(); playback?.close() }
@@ -123,6 +155,9 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
 
         /** ~40 ms per chunk: small enough that playback back-pressure stays responsive. */
         const val CHUNK_BYTES = 1920
+
+        /** ~4 s of queued speech; beyond that the speaker is hopelessly behind, so drop. */
+        const val PLAY_QUEUE_CHUNKS = 100
     }
 }
 

@@ -1,7 +1,11 @@
 package ai.rever.bossterm.compose.voice
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.net.URI
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.net.http.HttpClient
 import java.net.http.WebSocket
 import java.time.Duration
@@ -71,11 +75,18 @@ internal class JdkRealtimeTransport : RealtimeTransport {
                 onClosed(error?.javaClass?.simpleName)
             }
         }
-        socket = client.newWebSocketBuilder()
-            .header("Authorization", "Bearer $apiKey")
-            .connectTimeout(Duration.ofSeconds(15))
-            .buildAsync(URI.create("$REALTIME_WS_URL?model=$model"), listener)
-            .join()
+        // join() parks a thread for up to the connect timeout, so keep it off the caller's
+        // dispatcher. The model is URL-encoded: it comes from a dropdown today, but settings.json
+        // is user-editable and a stray character would throw URISyntaxException out of connect()
+        // instead of surfacing as a failed call.
+        val url = "$REALTIME_WS_URL?model=" + URLEncoder.encode(model, StandardCharsets.UTF_8)
+        socket = withContext(Dispatchers.IO) {
+            client.newWebSocketBuilder()
+                .header("Authorization", "Bearer $apiKey")
+                .connectTimeout(Duration.ofSeconds(15))
+                .buildAsync(URI.create(url), listener)
+                .join()
+        }
     }
 
     override fun send(json: String) {

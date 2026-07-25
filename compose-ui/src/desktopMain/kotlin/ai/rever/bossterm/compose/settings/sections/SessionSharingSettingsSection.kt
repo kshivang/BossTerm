@@ -89,6 +89,12 @@ fun SessionSharingSettingsSection(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        BossCallingSection(settings = settings, onSettingsChange = onSettingsChange)
+        // statusLine here too: Settings is where someone goes to ask why the viewer shows no
+        // Call BossTerm button, so it should answer that in place.
+        BossCallingSection(
+            settings = settings,
+            onSettingsChange = onSettingsChange,
+            statusLine = true,
+        )
     }
 }

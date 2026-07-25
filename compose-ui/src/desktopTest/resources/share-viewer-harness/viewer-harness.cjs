@@ -494,6 +494,63 @@ FakeWebSocket.CLOSED = 3;
  * BROWSER branch (no CommonJS `module` in scope) so it publishes window.BossTermViewerLogic exactly
  * as the served page does, and viewer.js must see the same globals a page would.
  */
+// ---------------------------------------------------------------- voice call fakes
+// Boss Calling needs a secure context, a mic, WebRTC and fetch. Scenarios opt in
+// (`voiceCapable: true`) so the default load still exercises the no-voice branch a plain-LAN
+// http:// share really takes.
+
+/** Real promises need a microtask turn to settle; the faked clock can't do that. */
+const flushPromises = () => new Promise((resolve) => setImmediate(resolve));
+
+class FakeMediaTrack {
+  constructor() { this.enabled = true; this.stopped = false; }
+  stop() { this.stopped = true; }
+}
+
+class FakeMediaStream {
+  constructor() { this.tracks = [new FakeMediaTrack()]; }
+  getAudioTracks() { return this.tracks; }
+  getTracks() { return this.tracks; }
+}
+
+class FakeDataChannel {
+  constructor(label) {
+    this.label = label; this.readyState = "connecting"; this.sent = []; this.closed = false;
+    this.onopen = null; this.onmessage = null;
+  }
+  send(data) { this.sent.push(data); }
+  close() { this.closed = true; this.readyState = "closed"; }
+  /** Test drivers: the channel coming up, and a server event arriving on it. */
+  open() { this.readyState = "open"; if (this.onopen) this.onopen(); }
+  deliver(event) { if (this.onmessage) this.onmessage({ data: JSON.stringify(event) }); }
+}
+
+class FakeRTCPeerConnection {
+  constructor() {
+    this.tracks = []; this.dc = null; this.closed = false; this.remote = null;
+    this.connectionState = "new"; this.ontrack = null; this.onconnectionstatechange = null;
+    FakeRTCPeerConnection.latest = this;
+  }
+  addTrack(track) { this.tracks.push(track); }
+  createDataChannel(label) { this.dc = new FakeDataChannel(label); return this.dc; }
+  createOffer() { return Promise.resolve({ type: "offer", sdp: "v=0 offer" }); }
+  setLocalDescription() { return Promise.resolve(); }
+  setRemoteDescription(desc) { this.remote = desc; return Promise.resolve(); }
+  close() { this.closed = true; this.connectionState = "closed"; }
+}
+FakeRTCPeerConnection.latest = null;
+
+const FakeFetch = {
+  calls: [],
+  install() {
+    FakeFetch.calls = [];
+    return (url, init) => {
+      FakeFetch.calls.push({ url: url, init: init });
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve("v=0 answer") });
+    };
+  },
+};
+
 function loadViewer(options) {
   const opts = options || {};
   installClock();
@@ -567,6 +624,20 @@ function loadViewer(options) {
   define("cancelAnimationFrame", fakeCancelAnimationFrame);
   define("addEventListener", () => {});
   define("removeEventListener", () => {});
+
+  if (opts.voiceCapable) {
+    FakeRTCPeerConnection.latest = null;
+    define("isSecureContext", true);
+    define("navigator", {
+      platform: "TestPhone", userAgent: "harness", clipboard: undefined,
+      mediaDevices: { getUserMedia: () => Promise.resolve(new FakeMediaStream()) },
+    });
+    define("RTCPeerConnection", FakeRTCPeerConnection);
+    define("fetch", FakeFetch.install());
+    // No AudioContext on purpose: the level meter must degrade to flat bars, never throw.
+    define("AudioContext", undefined);
+    define("webkitAudioContext", undefined);
+  }
 
   if (!opts.withoutViewerLogic) {
     vm.runInThisContext(readAsset("viewer-logic.js"), { filename: "viewer-logic.js" });
@@ -872,6 +943,88 @@ const scenarios = {
     assert.strictEqual(lastTerminal().options.scrollback, 20000, "the viewer cap must win over a huge host cap");
   },
 
+  async "Boss Calling lives in the bottom bar: Call → live strip with meter, Mute, End"() {
+    loadViewer({ voiceCapable: true });
+    const socket = connectPanes(["pane-1"]);
+    socket.deliver({ t: "control", granted: true });
+    const sentOfType = (t) => socket.sent.map(JSON.parse).filter((m) => m.t === t);
+
+    // The bar exists only when the host can actually take a call.
+    assert.ok(!el("voicebar").classList.contains("on"), "no bar before the host reports voice status");
+    socket.deliver({ t: "voiceStatus", available: false, reason: "no_key" });
+    assert.ok(!el("voicebar").classList.contains("on"), "a keyless host must not show the bar");
+    socket.deliver({ t: "voiceStatus", available: true });
+    assert.ok(el("voicebar").classList.contains("on"), "an available host must show the bottom bar");
+    assert.strictEqual(el("voicecallbtn").style.display, "inline-flex", "idle shows the Call button");
+    assert.ok(!el("voicecall").classList.contains("on"), "idle hides the in-call strip");
+
+    // Clicking Call takes the mic first, then asks the host to mint.
+    el("voicecallbtn").onclick();
+    await flushPromises();
+    assert.strictEqual(sentOfType("voiceStart").length, 1, "Call must request a session");
+    assert.strictEqual(el("voicecallbtn").style.display, "none", "the button yields to the strip");
+    assert.ok(el("voicecall").classList.contains("on"), "connecting already shows the strip");
+    assert.strictEqual(el("voicestate").textContent, "Connecting…");
+
+    // Minted session → SDP exchange → data channel opens.
+    socket.deliver({ t: "voiceSession", clientSecret: "ek_test", model: "gpt-realtime-2.1" });
+    await flushPromises();
+    assert.strictEqual(
+      FakeFetch.calls[0].url,
+      "https://api.openai.com/v1/realtime/calls",
+      "the GA SDP endpoint must be called with NO query string"
+    );
+    const pc = FakeRTCPeerConnection.latest;
+    assert.strictEqual(pc.dc.label, "oai-events", "the data channel name is part of the protocol");
+    pc.dc.open();
+    assert.strictEqual(el("voicestate").textContent, "Listening…", "a live call is listening");
+
+    // Mute, agent speech and tool runs are each visible in the strip.
+    el("voicemute").onclick();
+    assert.strictEqual(el("voicestate").textContent, "Muted");
+    assert.ok(el("voicecall").classList.contains("muted"), "the meter must show muted");
+    assert.strictEqual(pc.tracks[0].enabled, false, "muting must actually disable the mic track");
+    el("voicemute").onclick();
+    pc.dc.deliver({ type: "output_audio_buffer.started" });
+    assert.strictEqual(el("voicestate").textContent, "Agent speaking");
+    pc.dc.deliver({ type: "output_audio_buffer.stopped" });
+
+    // A tool call rides the share socket, and its result goes back on the data channel.
+    pc.dc.deliver({
+      type: "response.function_call_arguments.done",
+      call_id: "c1", name: "read_scrollback", arguments: "{\"lines\":20}",
+    });
+    assert.strictEqual(el("voicestate").textContent, "Working…");
+    assert.strictEqual(sentOfType("voiceToolCall")[0].callId, "c1", "the host executes it, not the browser");
+    socket.deliver({ t: "voiceToolResult", callId: "c1", resultJson: "{\"ok\":true}" });
+    assert.ok(
+      pc.dc.sent.some((s) => /function_call_output/.test(s)),
+      "the result must be handed back to the model"
+    );
+    assert.strictEqual(el("voicestate").textContent, "Listening…", "and the call resumes");
+
+    // End call tears down and restores the idle button.
+    el("voicehang").onclick();
+    assert.ok(!el("voicecall").classList.contains("on"), "ending hides the strip");
+    assert.strictEqual(el("voicecallbtn").style.display, "inline-flex", "and restores the Call button");
+    assert.ok(pc.closed, "the peer connection must be closed");
+    assert.ok(pc.tracks[0].stopped, "the mic must be released");
+    assert.strictEqual(sentOfType("voiceEnd").length, 1, "the host must be told the call ended");
+  },
+
+  "a share-socket drop mid-call ends the call instead of leaving the agent blind"() {
+    loadViewer({ voiceCapable: true });
+    const socket = connectPanes(["pane-1"]);
+    socket.deliver({ t: "control", granted: true });
+    socket.deliver({ t: "voiceStatus", available: true });
+    el("voicecallbtn").onclick();
+    return flushPromises().then(() => {
+      socket.drop(1006);
+      assert.ok(!el("voicecall").classList.contains("on"), "the call strip must go away with the socket");
+      assert.strictEqual(el("voicecallbtn").style.display, "inline-flex", "back to an idle Call button");
+    });
+  },
+
   "a viewer.js without viewer-logic.js fails visibly instead of throwing"() {
     loadViewer({ withoutViewerLogic: true });
     assert.strictEqual(FakeWebSocket.instances.length, 0, "it must not try to connect");
@@ -882,19 +1035,24 @@ const scenarios = {
   },
 };
 
+// Awaited, so a scenario that has to let promises settle (the WebRTC call flow) still reports its
+// assertion failures instead of losing them to an unhandled rejection. Sync scenarios are
+// unaffected — awaiting a non-promise just continues.
 let failures = 0;
-Object.keys(scenarios).forEach((name) => {
-  try {
-    scenarios[name]();
-    process.stdout.write("ok   " + name + "\n");
-  } catch (e) {
-    failures += 1;
-    process.stdout.write("FAIL " + name + "\n     " + (e && e.message) + "\n");
-    if (e && e.stack) process.stdout.write("     " + e.stack.split("\n").slice(1, 4).join("\n     ") + "\n");
+(async () => {
+  for (const name of Object.keys(scenarios)) {
+    try {
+      await scenarios[name]();
+      process.stdout.write("ok   " + name + "\n");
+    } catch (e) {
+      failures += 1;
+      process.stdout.write("FAIL " + name + "\n     " + (e && e.message) + "\n");
+      if (e && e.stack) process.stdout.write("     " + e.stack.split("\n").slice(1, 4).join("\n     ") + "\n");
+    }
   }
-});
 
-if (failures > 0) {
-  process.stdout.write(failures + " viewer scenario(s) failed\n");
-  process.exit(1);
-}
+  if (failures > 0) {
+    process.stdout.write(failures + " viewer scenario(s) failed\n");
+    process.exit(1);
+  }
+})();

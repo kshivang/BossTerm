@@ -46,19 +46,43 @@
     #mcppill { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
     #mcppill .dot { width: 7px; height: 7px; border-radius: 50%; background: #6b6b6b; display: inline-block; }
     #mcppill.on .dot { background: #4caf50; }
-    /* Boss Calling pill (voice agent) — dot mirrors call state; buttons appear while on a call */
-    #voicepill { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
-    #voicepill .dot { width: 7px; height: 7px; border-radius: 50%; background: #6b6b6b; display: inline-block; }
-    #voicepill.connecting .dot { background: #e5a54b; animation: voicepulse 1s ease-in-out infinite; }
-    #voicepill.live .dot { background: #4caf50; }
-    #voicepill.speaking .dot { background: #4a90e2; }
-    #voicepill.tool .dot { background: #e5a54b; }
-    #voicepill.disabled { opacity: .5; cursor: default; }
+    /* Boss Calling (voice agent) — a bottom bar, because calling is a mode you're IN, not a
+       toolbar toggle: idle it shows one Call button; on a call it becomes a strip with a live
+       level meter, what the agent is doing, Mute and End. Rides above #keybar (see
+       layoutForKeyboard) so the on-screen keys and the call controls never overlap. */
+    #voicebar { display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 29;
+                align-items: center; justify-content: center; gap: 8px; padding: 7px 10px;
+                background: #2b2b2b; border-top: 1px solid #404040; }
+    #voicebar.on { display: flex; }
+    #voicecallbtn { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+                    padding: 6px 16px; border-radius: 16px; border: 1px solid #4caf50;
+                    background: #1e1e1e; color: #ddd; font-size: 13px;
+                    -webkit-user-select: none; user-select: none; }
+    #voicecallbtn:active { background: #4caf50; color: #fff; }
+    #voicecallbtn.disabled { opacity: .5; cursor: default; border-color: #505050; }
+    #voicecallbtn .dot { width: 8px; height: 8px; border-radius: 50%; background: #4caf50; display: inline-block; }
+    #voicecallbtn.connecting { border-color: #e5a54b; }
+    #voicecallbtn.connecting .dot { background: #e5a54b; animation: voicepulse 1s ease-in-out infinite; }
     @keyframes voicepulse { 50% { opacity: .35; } }
-    #voicectl { display: none; gap: 4px; flex: 0 0 auto; }
-    #voicectl button { padding: 2px 8px; border-radius: 5px; border: 1px solid #404040; background: #1e1e1e;
-                       color: #ddd; font-size: 12px; cursor: pointer; -webkit-user-select: none; user-select: none; }
-    #voicectl button:active { background: #4a90e2; color: #fff; border-color: #4a90e2; }
+    /* in-call strip */
+    #voicecall { display: none; align-items: center; gap: 12px; width: 100%; max-width: 640px; }
+    #voicecall.on { display: flex; }
+    /* listening/speaking meter: bars driven by a WebAudio analyser (mic while you talk, the
+       agent's track while it answers), so silence is visibly different from a stalled call. */
+    #voicelevel { display: flex; align-items: center; gap: 3px; height: 24px; flex: 1 1 auto;
+                  min-width: 80px; }
+    #voicelevel i { flex: 1 1 0; max-width: 5px; min-height: 3px; height: 3px; border-radius: 2px;
+                    background: #4caf50; transition: height 70ms linear, background 200ms linear; }
+    #voicecall.speaking #voicelevel i { background: #4a90e2; }
+    #voicecall.tool #voicelevel i { background: #e5a54b; }
+    #voicecall.muted #voicelevel i { background: #6b6b6b; }
+    #voicestate { flex: 0 0 auto; font-size: 12px; color: #bbb; min-width: 96px; }
+    #voicecall button { flex: 0 0 auto; padding: 5px 12px; border-radius: 14px; border: 1px solid #505050;
+                        background: #1e1e1e; color: #ddd; font-size: 12px; cursor: pointer;
+                        -webkit-user-select: none; user-select: none; }
+    #voicecall button:active { background: #4a90e2; color: #fff; border-color: #4a90e2; }
+    #voicehang { border-color: #d9534f !important; color: #e88 !important; }
+    #voicehang:active { background: #d9534f !important; color: #fff !important; }
     /* transient call status line (tool running / errors), bottom-centered over the stage */
     #voicetoast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 18px; z-index: 35;
                   display: none; max-width: 80vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -212,11 +236,6 @@
     <!-- Control-centric items first (you act on them): request-control, MCP, zoom/fit. -->
     <span class="badge" id="viewonly">view only</span>
     <span class="badge" id="mcppill" style="display:none" title="Host MCP — click to manage"><span class="dot"></span>MCP</span>
-    <span class="badge" id="voicepill" style="display:none" title="Voice-call the session's AI agent"><span class="dot"></span><span id="voicelabel">Call</span></span>
-    <span id="voicectl">
-      <button id="voicemute" title="Mute microphone">Mute</button>
-      <button id="voicehang" title="End the call">End</button>
-    </span>
     <span id="zoom">
       <button id="splittabs" title="Show a split tab one pane at a time — switch panes via the sub-tab chips (on by default on phones)">⊞ Panes</button>
       <button id="zoomout" title="Zoom out">A&minus;</button>
@@ -234,6 +253,16 @@
     <div id="stage"></div>
   </div>
   <div id="viewpill"></div>
+  <!-- Boss Calling: idle = the Call button; on a call = level meter + status + Mute/End. -->
+  <div id="voicebar">
+    <span id="voicecallbtn" title="Voice-call the session's AI agent"><span class="dot"></span><span id="voicelabel">Call</span></span>
+    <span id="voicecall">
+      <span id="voicelevel"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <span id="voicestate">Connecting…</span>
+      <button id="voicemute" title="Mute your microphone">Mute</button>
+      <button id="voicehang" title="End the call">End call</button>
+    </span>
+  </div>
   <div id="keybar"></div>
   <div id="ctxmenu"></div>
   <div id="voicetoast"></div>

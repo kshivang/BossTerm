@@ -230,9 +230,12 @@
   var voice = { status: null, state: "idle", pc: null, dc: null, mic: null, muted: false, seenCalls: {},
                 watchdog: null, model: null };
   var voiceMicOk = !!(window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-  var voicePillEl = document.getElementById("voicepill");
+  var voiceBarEl = document.getElementById("voicebar");
+  var voiceCallBtnEl = document.getElementById("voicecallbtn");
   var voiceLabelEl = document.getElementById("voicelabel");
-  var voiceCtlEl = document.getElementById("voicectl");
+  var voiceCallEl = document.getElementById("voicecall");
+  var voiceLevelEl = document.getElementById("voicelevel");
+  var voiceStateEl = document.getElementById("voicestate");
   var voiceMuteEl = document.getElementById("voicemute");
   var voiceHangEl = document.getElementById("voicehang");
   var voiceToastEl = document.getElementById("voicetoast");
@@ -240,33 +243,44 @@
   var voiceToastTimer = null;
   function toast(text, ms) {
     voiceToastEl.textContent = text;
+    // Sit above the call bar rather than under it.
+    voiceToastEl.style.bottom = (voiceBarEl.classList.contains("on") ? voiceBarEl.offsetHeight + 12 : 18) + "px";
     voiceToastEl.style.display = "block";
     if (voiceToastTimer) clearTimeout(voiceToastTimer);
     voiceToastTimer = setTimeout(function () { voiceToastEl.style.display = "none"; }, ms || 4000);
   }
-  function updateVoicePill() {
-    if (!voice.status || !voice.status.available) {
-      voicePillEl.style.display = "none"; voiceCtlEl.style.display = "none"; return;
-    }
-    voicePillEl.style.display = "";
-    var cls = "badge", label = "Call";
-    if (!voiceMicOk && voice.state === "idle") {
-      cls += " disabled";
-      voicePillEl.title = "Voice calls need an https share link — open the remote (tunnel) link";
+  // One renderer for the whole bottom bar: which half shows, the call's state label, and the
+  // meter's colour class. Called on every state change (status, connect, speaking, tool, mute).
+  function updateVoiceBar() {
+    var available = !!(voice.status && voice.status.available);
+    voiceBarEl.classList.toggle("on", available);
+    if (!available) { voiceCallEl.classList.remove("on"); layoutForKeyboard(); return; }
+    var inCall = voice.state !== "idle";
+    voiceCallBtnEl.style.display = inCall ? "none" : "inline-flex";
+    voiceCallEl.classList.toggle("on", inCall);
+    if (!inCall) {
+      voiceCallBtnEl.className = voiceMicOk ? "" : "disabled";
+      voiceCallBtnEl.title = voiceMicOk
+        ? "Voice-call the session's AI agent"
+        : "Voice calls need an https share link — open the remote (tunnel) link";
+      voiceLabelEl.textContent = "Call";
     } else {
-      voicePillEl.title = "Voice-call the session's AI agent";
+      voiceCallBtnEl.className = "";
+      voiceCallEl.className = "on" +
+        (voice.state === "speaking" ? " speaking" : "") +
+        (voice.state === "tool" ? " tool" : "") +
+        (voice.muted ? " muted" : "");
+      voiceStateEl.textContent =
+        voice.state === "connecting" ? "Connecting…" :
+        voice.state === "tool" ? "Working…" :
+        voice.state === "speaking" ? "Agent speaking" :
+        voice.muted ? "Muted" : "Listening…";
+      voiceStateEl.title = voice.model ? "In a call with " + voice.model : "";
+      voiceMuteEl.textContent = voice.muted ? "Unmute" : "Mute";
     }
-    if (voice.state !== "idle" && voice.model) voicePillEl.title = "In a call with " + voice.model;
-    if (voice.state === "connecting") { cls += " connecting"; label = "Calling…"; }
-    else if (voice.state === "live") { cls += " live"; label = "Live"; }
-    else if (voice.state === "speaking") { cls += " speaking"; label = "Live"; }
-    else if (voice.state === "tool") { cls += " tool"; label = "Running…"; }
-    voicePillEl.className = cls;
-    voiceLabelEl.textContent = label;
-    voiceCtlEl.style.display = voice.state === "idle" ? "none" : "inline-flex";
-    voiceMuteEl.textContent = voice.muted ? "Unmute" : "Mute";
+    layoutForKeyboard(); // the bar changed height → re-reserve space at the bottom
   }
-  voicePillEl.onclick = function () {
+  voiceCallBtnEl.onclick = function () {
     if (!voice.status || !voice.status.available || voice.state !== "idle") return;
     if (!voiceMicOk) { toast("Voice calls need an https share link — open the remote (tunnel) link."); return; }
     if (viewOnlyGate()) return; // view-only → request-control prompt
@@ -277,7 +291,7 @@
       voice.muted = false;
       voice.state = "connecting";
       voice.seenCalls = {};
-      updateVoicePill();
+      updateVoiceBar();
       sendMsg({ t: "voiceStart", activeTabId: activeTabId });
       voice.watchdog = setTimeout(function () {
         if (voice.state === "connecting") {
@@ -293,11 +307,68 @@
     if (!voice.mic) return;
     voice.muted = !voice.muted;
     voice.mic.getAudioTracks().forEach(function (t) { t.enabled = !voice.muted; });
-    updateVoicePill();
+    updateVoiceBar();
   };
   voiceHangEl.onclick = function () { endCall(true); toast("Call ended."); };
+
+  // ---- level meter ----
+  // Real audio levels, not a canned animation: an AnalyserNode on the mic while you speak and on
+  // the agent's own track while it answers, so "it can't hear me" is visible at a glance. Absent
+  // WebAudio (or a browser that refuses the context) the bars just stay flat — never fatal.
+  var voiceMeter = { ctx: null, mic: null, remote: null, raf: null, buf: null };
+  function voiceMeterAttach(kind, stream) {
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC || !stream) return;
+      if (!voiceMeter.ctx) voiceMeter.ctx = new AC();
+      var an = voiceMeter.ctx.createAnalyser();
+      an.fftSize = 256;
+      an.smoothingTimeConstant = 0.7;
+      voiceMeter.ctx.createMediaStreamSource(stream).connect(an);
+      voiceMeter[kind] = an;
+      if (!voiceMeter.buf) voiceMeter.buf = new Uint8Array(an.frequencyBinCount);
+      voiceMeterRun();
+    } catch (e) {}
+  }
+  function voiceMeterFlat() {
+    var bars = voiceLevelEl.querySelectorAll("i");
+    for (var i = 0; i < bars.length; i++) bars[i].style.height = "3px";
+  }
+  function voiceMeterRun() {
+    if (voiceMeter.raf) return;
+    var tick = function () {
+      voiceMeter.raf = null;
+      if (voice.state === "idle") { voiceMeterFlat(); return; }
+      // While the agent talks, meter ITS track; otherwise the mic (flat when muted).
+      var an = voice.state === "speaking" ? (voiceMeter.remote || voiceMeter.mic)
+             : (voice.muted ? null : voiceMeter.mic);
+      var bars = voiceLevelEl.querySelectorAll("i");
+      if (an && voiceMeter.buf) {
+        an.getByteFrequencyData(voiceMeter.buf);
+        // Speech energy lives low in the spectrum, so only sample the bottom ~60% of the bins.
+        var span = Math.max(1, Math.floor(voiceMeter.buf.length * 0.6 / bars.length));
+        for (var i = 0; i < bars.length; i++) {
+          var sum = 0;
+          for (var j = 0; j < span; j++) sum += voiceMeter.buf[i * span + j] || 0;
+          bars[i].style.height = Math.max(3, Math.round(3 + (sum / span / 255) * 21)) + "px";
+        }
+      } else {
+        voiceMeterFlat();
+      }
+      voiceMeter.raf = requestAnimationFrame(tick);
+    };
+    voiceMeter.raf = requestAnimationFrame(tick);
+  }
+  function voiceMeterStop() {
+    if (voiceMeter.raf) { try { cancelAnimationFrame(voiceMeter.raf); } catch (e) {} voiceMeter.raf = null; }
+    if (voiceMeter.ctx) { try { voiceMeter.ctx.close(); } catch (e) {} }
+    voiceMeter.ctx = null; voiceMeter.mic = null; voiceMeter.remote = null; voiceMeter.buf = null;
+    voiceMeterFlat();
+  }
+
   function endCall(sendEnd) {
     if (voice.watchdog) { clearTimeout(voice.watchdog); voice.watchdog = null; }
+    voiceMeterStop();
     try { if (voice.dc) voice.dc.close(); } catch (e) {}
     try { if (voice.pc) voice.pc.close(); } catch (e) {}
     if (voice.mic) { try { voice.mic.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {} }
@@ -305,7 +376,7 @@
     voice.dc = null; voice.pc = null; voice.mic = null; voice.muted = false; voice.model = null;
     voice.state = "idle";
     if (sendEnd && wasLive) sendMsg({ t: "voiceEnd" });
-    updateVoicePill();
+    updateVoiceBar();
   }
   function voiceErrorText(m) {
     switch (m.code) {
@@ -338,7 +409,7 @@
     if (!callId || voice.seenCalls[callId]) return;
     voice.seenCalls[callId] = true;
     voice.state = "tool";
-    updateVoicePill();
+    updateVoiceBar();
     toast(voiceDescribeTool(name, argsJson));
     sendMsg({ t: "voiceToolCall", callId: callId, name: name, argsJson: argsJson || "{}" });
   }
@@ -354,13 +425,17 @@
     voice.pc = pc;
     voice.model = m.model || null; // host-chosen model, shown on the pill while in a call
     voice.mic.getAudioTracks().forEach(function (t) { pc.addTrack(t, voice.mic); });
+    voiceMeterAttach("mic", voice.mic);
     if (!voiceAudioEl) {
       voiceAudioEl = document.createElement("audio");
       voiceAudioEl.autoplay = true;
       voiceAudioEl.style.display = "none";
       document.body.appendChild(voiceAudioEl);
     }
-    pc.ontrack = function (e) { voiceAudioEl.srcObject = e.streams[0]; };
+    pc.ontrack = function (e) {
+      voiceAudioEl.srcObject = e.streams[0];
+      voiceMeterAttach("remote", e.streams[0]); // so the meter shows the agent talking too
+    };
     pc.onconnectionstatechange = function () {
       if (voice.pc !== pc) return; // a stale pc from an earlier call
       var st = pc.connectionState;
@@ -374,7 +449,7 @@
     dc.onopen = function () {
       if (voice.watchdog) { clearTimeout(voice.watchdog); voice.watchdog = null; }
       voice.state = "live";
-      updateVoicePill();
+      updateVoiceBar();
       toast("Connected — say something.");
     };
     dc.onmessage = function (ev) {
@@ -392,10 +467,10 @@
           break;
         }
         case "output_audio_buffer.started":
-          if (voice.state === "live") { voice.state = "speaking"; updateVoicePill(); }
+          if (voice.state === "live") { voice.state = "speaking"; updateVoiceBar(); }
           break;
         case "output_audio_buffer.stopped":
-          if (voice.state === "speaking") { voice.state = "live"; updateVoicePill(); }
+          if (voice.state === "speaking") { voice.state = "live"; updateVoiceBar(); }
           break;
         case "error":
           if (e.error && e.error.message) toast("Agent error: " + String(e.error.message).slice(0, 80));
@@ -576,9 +651,16 @@
     // Blur-safe (touches no textarea ancestor): keep the key bar riding the keyboard top and
     // reserve body padding. Uses the scroll-invariant kbH so it doesn't jitter, and is safe to
     // run on every event — including output-driven scroll events.
-    keybarEl.style.bottom = Math.max(0, Math.round(kbH) - appliedShiftPx) + "px";
-    bodyEl.style.paddingBottom = (keybarEl.style.display !== "none" && keybarEl.offsetHeight)
-      ? keybarEl.offsetHeight + "px" : "0px";
+    positionBottomBars(Math.max(0, Math.round(kbH) - appliedShiftPx));
+  }
+  // The two fixed bars stack: #keybar rides the keyboard top, the Boss Calling bar sits on top of
+  // it, and #body reserves both so the terminal is never hidden behind them.
+  function positionBottomBars(kbBottomPx) {
+    keybarEl.style.bottom = kbBottomPx + "px";
+    var keyH = (keybarEl.style.display !== "none" && keybarEl.offsetHeight) ? keybarEl.offsetHeight : 0;
+    voiceBarEl.style.bottom = (kbBottomPx + keyH) + "px";
+    var voiceH = voiceBarEl.classList.contains("on") ? voiceBarEl.offsetHeight : 0;
+    bodyEl.style.paddingBottom = (keyH + voiceH) + "px";
   }
   // While the keyboard is up, keep the cursor visible above it. Only pushes FURTHER up (never
   // reduces the shift) and only when the cursor sits below the visible fold — so the common
@@ -598,7 +680,7 @@
     var wasFocused = document.activeElement === activeTextarea();
     document.body.style.transform = "translateY(-" + want + "px)";
     if (wasFocused) { var ta = activeTextarea(); if (ta) try { ta.focus({ preventScroll: true }); } catch (e) {} }
-    keybarEl.style.bottom = Math.max(0, Math.round(kbH) - appliedShiftPx) + "px";
+    positionBottomBars(Math.max(0, Math.round(kbH) - appliedShiftPx));
   }
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", layoutForKeyboard);
@@ -2753,7 +2835,7 @@
       case "mcpStatus":
         mcp = m; updateMcpPill(); break;
       case "voiceStatus":
-        voice.status = m; updateVoicePill(); break;
+        voice.status = m; updateVoiceBar(); break;
       case "voiceSession":
         connectRealtime(m); break;
       case "voiceError":
@@ -2764,7 +2846,7 @@
         voiceDcSend({ type: "conversation.item.create",
           item: { type: "function_call_output", call_id: m.callId, output: m.resultJson } });
         voiceDcSend({ type: "response.create" });
-        if (voice.state === "tool") { voice.state = "live"; updateVoicePill(); }
+        if (voice.state === "tool") { voice.state = "live"; updateVoiceBar(); }
         if (m.isError) toast("Tool failed — the agent will explain.");
         break;
       case "control":

@@ -1,23 +1,14 @@
 package ai.rever.bossterm.compose.share
 
-import org.junit.Assume.assumeTrue
 import java.nio.file.Files
 import kotlin.io.path.deleteIfExists
 import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 class ViewerLogicTest {
     @Test
     fun `node harness exercises reconnect budget and captured row offset`() {
-        val hasNode = nodeAvailable()
-        if (System.getenv("CI").equals("true", ignoreCase = true)) {
-            assertTrue(hasNode, "Node.js is required for the web-viewer regression harness in CI")
-        } else {
-            assumeTrue("Node.js is not available on PATH", hasNode)
-        }
-        val logic = checkNotNull(javaClass.classLoader.getResourceAsStream("share-viewer/viewer-logic.js"))
-            .use { it.readBytes().decodeToString() }
+        NodeHarness.requireOrSkipNode()
+        val logic = NodeHarness.readResource("share-viewer/viewer-logic.js")
         val harness = logic + "\n" + """
                 const assert = require("assert");
                 const logic = module.exports;
@@ -107,21 +98,9 @@ class ViewerLogicTest {
         val script = Files.createTempFile("bossterm-viewer-logic-", ".cjs")
         try {
             Files.writeString(script, harness)
-            val process = ProcessBuilder("node", script.toString())
-                .redirectErrorStream(true)
-                .start()
-            val output = process.inputStream.bufferedReader().use { it.readText() }
-            assertEquals(0, process.waitFor(), output)
+            NodeHarness.run(script)
         } finally {
             script.deleteIfExists()
         }
     }
-
-    private fun nodeAvailable(): Boolean = runCatching {
-        val process = ProcessBuilder("node", "--version")
-            .redirectErrorStream(true)
-            .start()
-        process.inputStream.bufferedReader().use { it.readText() }
-        process.waitFor() == 0
-    }.getOrDefault(false)
 }

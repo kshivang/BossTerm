@@ -17,8 +17,14 @@ internal const val MAX_WEB_VIEWER_SCROLLBACK_LINES = 20_000
 internal const val MAX_WEB_IMAGE_RASTER_BYTES = 8 * 1024 * 1024
 internal const val MAX_WEB_PANE_RASTER_BYTES = 16L * 1024 * 1024
 
-internal fun webViewerScrollbackLines(textBuffer: TerminalTextBuffer): Int =
-    textBuffer.maxHistoryLinesCount.coerceIn(0, MAX_WEB_VIEWER_SCROLLBACK_LINES)
+internal fun webViewerScrollbackLines(textBuffer: TerminalTextBuffer): Int {
+    // LinesStorage treats a negative maxHistoryLinesCount as UNLIMITED. Clamping it as a number
+    // would hand the viewer zero scrollback (and drop every history-row image placement), so an
+    // unlimited host history maps to the browser cap instead.
+    val hostHistory = textBuffer.maxHistoryLinesCount
+    if (hostHistory < 0) return MAX_WEB_VIEWER_SCROLLBACK_LINES
+    return hostHistory.coerceAtMost(MAX_WEB_VIEWER_SCROLLBACK_LINES)
+}
 
 /** A graphics delta plus whether xterm's text/cursor state needs an authoritative re-anchor. */
 internal data class PaneGraphicsUpdate(
@@ -64,6 +70,7 @@ internal class PaneGraphicsTracker(
         }
 
         val captured = capture()
+        noteSkippedRasters(captured.skippedRasterIds)
         if (captured.cells == previousCells && captured.fingerprints == previousImages) {
             previousImageCellRevision = cellRevision
             previousImageCacheRevision = cacheRevision
@@ -107,6 +114,7 @@ internal class PaneGraphicsTracker(
         val trimCount = viewerTrimCount()
         val captured = capture()
         if (commit) {
+            noteSkippedRasters(captured.skippedRasterIds)
             if (captured.cells != previousCells || captured.fingerprints != previousImages) {
                 revision++
             }
@@ -143,6 +151,13 @@ internal class PaneGraphicsTracker(
         // Prefer the newest/screen-most images when the pane budget cannot retain everything.
         // [allCells] is oldest-history-first, so select in reverse and preserve its original order
         // only when emitting the filtered cell list below.
+        //
+        // The newest image can never LOSE this contest: MAX_WEB_IMAGE_RASTER_BYTES is half
+        // MAX_WEB_PANE_RASTER_BYTES, so the first candidate is always weighed against an empty
+        // budget (anything larger was already dropped by the per-image filter above). Past that,
+        // skipping — rather than stopping at — an image that doesn't fit lets a smaller, older
+        // raster use the space instead of wasting it, so more of the pane's history stays visible.
+        // Keep the two caps in that ratio, or the newest-wins property has to be re-established.
         for (run in allCells.asReversed()) {
             val id = run.imageId.toLong()
             if (id in selectedIds) continue
@@ -153,18 +168,6 @@ internal class PaneGraphicsTracker(
         }
         val cells = allCells.filter { it.imageId.toLong() in selectedIds }
         val images = cachedImages.filterKeys { it in selectedIds }
-        val skippedIds = (allCachedImages.keys - cachedImages.keys) +
-            (allCells.asSequence().map { it.imageId.toLong() }.toSet() - selectedIds)
-        if (skippedIds != previousSkippedRasterIds) {
-            if (skippedIds.isNotEmpty()) {
-                log.warn(
-                    "Pane {}: omitting {} browser raster(s) due to format/size budgets",
-                    paneId,
-                    skippedIds.size,
-                )
-            }
-            previousSkippedRasterIds = skippedIds
-        }
         val fingerprints = images.mapValues { (_, image) -> fingerprint(image) }
         fingerprintCache.keys.retainAll(images.keys)
         return Captured(
@@ -172,7 +175,26 @@ internal class PaneGraphicsTracker(
             images = images,
             fingerprints = fingerprints,
             historyLines = snapshot.historyLinesCount.coerceAtMost(scrollbackLines),
+            skippedRasterIds = (allCachedImages.keys - cachedImages.keys) +
+                (allCells.asSequence().map { it.imageId.toLong() }.toSet() - selectedIds),
         )
+    }
+
+    /**
+     * Log a change in the omitted-raster set ONCE. Called only from the paths that advance the
+     * shared baseline: a private, non-committing [fullMessage] must not consume the transition, or
+     * one viewer's resync would suppress the warning a later committing poll would have logged.
+     */
+    private fun noteSkippedRasters(skippedIds: Set<Long>) {
+        if (skippedIds == previousSkippedRasterIds) return
+        if (skippedIds.isNotEmpty()) {
+            log.warn(
+                "Pane {}: omitting {} browser raster(s) due to format/size budgets",
+                paneId,
+                skippedIds.size,
+            )
+        }
+        previousSkippedRasterIds = skippedIds
     }
 
     private fun message(
@@ -293,6 +315,7 @@ internal class PaneGraphicsTracker(
         val images: Map<Long, TerminalImage>,
         val fingerprints: Map<Long, ImageFingerprint>,
         val historyLines: Int,
+        val skippedRasterIds: Set<Long> = emptySet(),
     )
 
     private data class ImageFingerprint(
@@ -561,12 +584,14 @@ internal class GraphicsOutputFilter(
                     // Colored/TUI output contains ESC constantly. Enter the state machine only for
                     // an actual graphics control introducer, or a trailing ESC whose next byte is
                     // fragmented into the following PTY chunk.
-                    val next = chunk.getOrNull(index + 1)
-                    if (next == null || next == 'P' || next == '_' || next == ']') {
-                        return true
+                    when (chunk.getOrNull(index + 1)) {
+                        null, 'P', '_' -> return true
+                        ']' -> if (mayIntroduceImageOsc(chunk, index + 2)) return true
+                        else -> {}
                     }
                 }
-                DCS, OSC, APC -> return true
+                DCS, APC -> return true
+                OSC -> if (mayIntroduceImageOsc(chunk, index + 1)) return true
                 KITTY_PLACEHOLDER[0] -> {
                     if (chunk.startsWith(KITTY_PLACEHOLDER, index)) return true
                 }
@@ -575,6 +600,22 @@ internal class GraphicsOutputFilter(
         }
         return false
     }
+
+    /**
+     * Whether an OSC starting at [start] could still be an iTerm2 image sequence.
+     *
+     * Only iTerm2 image OSCs are filtered, and every one of [ITERM_IMAGE_PREFIXES] begins with
+     * [ITERM_IMAGE_OSC_PREFIX] — so a few characters rule out the shell-integration OSCs this
+     * repo tells users to emit on EVERY prompt (OSC 7 cwd, OSC 133 marks). Without this the
+     * per-character state machine would run on most prompt-bearing chunks. An OSC truncated
+     * before the decision still enters the machine, so prefix state crosses the chunk boundary.
+     */
+    private fun mayIntroduceImageOsc(chunk: String, start: Int): Boolean =
+        if (chunk.length - start < ITERM_IMAGE_OSC_PREFIX.length) {
+            ITERM_IMAGE_OSC_PREFIX.startsWith(chunk.substring(start)) // undecided at the boundary
+        } else {
+            chunk.startsWith(ITERM_IMAGE_OSC_PREFIX, start)
+        }
 
     /**
      * Kitty's Unicode placement placeholder is followed by combining marks that encode row/column.
@@ -653,12 +694,9 @@ internal class GraphicsOutputFilter(
             endDiscard()
             return
         }
-        if (discardEscape && char == '\\') {
-            endDiscard()
-            return
-        }
         if (discardEscape) {
-            // BossEmulator consumes the byte after a stray ESC and aborts the control string.
+            // Ends the string on `ESC \` (ST) and, for any other byte, matches BossEmulator —
+            // it consumes the byte after a stray ESC and aborts the control string either way.
             endDiscard()
             return
         }
@@ -695,11 +733,13 @@ internal class GraphicsOutputFilter(
         const val MAX_GRAPHICS_CONTROL_CHARS = 70 * 1024 * 1024 + 64 * 1024
         // Mirrors SystemCommandSequence's OSC bound.
         const val MAX_OSC_CONTROL_CHARS = 50 * 1024 * 1024
+        /** Shared discriminator of every entry in [ITERM_IMAGE_PREFIXES]; see [mayIntroduceImageOsc]. */
+        const val ITERM_IMAGE_OSC_PREFIX = "1337;"
         val ITERM_IMAGE_PREFIXES = listOf(
-            "1337;File=",
-            "1337;MultipartFile=",
-            "1337;FilePart=",
-            "1337;FileEnd",
+            "${ITERM_IMAGE_OSC_PREFIX}File=",
+            "${ITERM_IMAGE_OSC_PREFIX}MultipartFile=",
+            "${ITERM_IMAGE_OSC_PREFIX}FilePart=",
+            "${ITERM_IMAGE_OSC_PREFIX}FileEnd",
         )
         val KITTY_PLACEHOLDER = String(Character.toChars(0x10EEEE))
     }

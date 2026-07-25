@@ -296,6 +296,42 @@ class FrameOutboxTest {
     }
 
     @Test
+    fun `a snapshot backlog defers into the re-snapshot heal instead of closing`() {
+        // A window share beginning many panes at once queues more snapshot bytes than the writer has
+        // drained. The lane is momentarily full, but the connection is fine — the pane must be
+        // reported for a healing re-snapshot, not disconnected (which also burns a reconnect).
+        val outbox = FrameOutbox(controlCapacity = 100, controlCapacityBytes = 12)
+        val deferred = ConcurrentLinkedQueue<String>()
+        outbox.onOutputDropped = { deferred.add(it) }
+        outbox.sendSnapshot("pane-a", ctrl("12345")) // 10 UTF-16 bytes — fits
+        outbox.sendSnapshot("pane-b", ctrl("67")) // +4 bytes exceeds the aggregate ceiling
+        outbox.sendOutput("pane-a", "still-connected")
+        outbox.close()
+
+        assertEquals(listOf("pane-b"), deferred.toList(), "the deferred pane must be reported for a heal")
+        assertEquals(
+            listOf(
+                ctrl("12345"),
+                FrameOutbox.Frame.Output("pane-a", "still-connected"),
+            ),
+            drainAll(outbox),
+            "the connection survives a transient snapshot backlog",
+        )
+    }
+
+    @Test
+    fun `a snapshot too large for the whole ceiling is unrecoverable and closes`() {
+        val outbox = FrameOutbox(controlCapacity = 100, controlCapacityBytes = 12)
+        val deferred = ConcurrentLinkedQueue<String>()
+        outbox.onOutputDropped = { deferred.add(it) }
+        outbox.sendSnapshot("pane", ctrl("1234567")) // 14 bytes > the 12-byte ceiling: never fits
+        outbox.sendOutput("pane", "after-close")
+
+        assertTrue(deferred.isEmpty(), "an impossible frame must not schedule an endless heal loop")
+        assertEquals(emptyList<FrameOutbox.Frame>(), drainAll(outbox), "the outbox is closed")
+    }
+
+    @Test
     fun `default control budget admits the largest legal raster frame`() {
         val maximumRawRasterBytes = 16L * 1024 * 1024
         val maximumBase64Chars = (maximumRawRasterBytes + 2) / 3 * 4

@@ -286,6 +286,9 @@ class MirrorShare(
             ?: McpTerminalRegistry.findState(tabId)
             ?: inScopeStates().firstOrNull()
 
+    /** The tapped tab behind a pane id — [taps] is a plain HashMap, so never read it unlocked. */
+    private fun tappedTab(paneId: String): TerminalTab? = synchronized(taps) { taps[paneId]?.tab }
+
     fun handleClient(vc: ViewerConnection, msg: ClientMessage) {
         if (msg is ClientMessage.GraphicsResync) {
             if (vc.supportsPaneGraphics) {
@@ -337,7 +340,7 @@ class MirrorShare(
         // (our RemoteSession methods no-op silently if we're view-only on it).
         when (msg) {
             is ClientMessage.Input ->
-                (taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId])?.writeUserInput(msg.data)
+                (tappedTab(msg.paneId) ?: paneTabMap()[msg.paneId])?.writeUserInput(msg.data)
             is ClientMessage.CloseTab ->
                 upstreamSession(msg.tabId)?.closeFromChip(msg.tabId, msg.tabId)
                     ?: stateFor(msg.tabId)?.closeTab(msg.tabId)
@@ -385,7 +388,7 @@ class MirrorShare(
                 }
                 // Run the same launch command the host's AI menu would (honoring the
                 // user's per-assistant YOLO/auto-mode config), in the clicked pane.
-                val target = taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId]
+                val target = tappedTab(msg.paneId) ?: paneTabMap()[msg.paneId]
                 val assistant = AIAssistants.findById(msg.assistantId)
                 if (target != null && assistant != null) {
                     val cfg = SettingsManager.instance.settings.value.aiAssistantConfigs[msg.assistantId]
@@ -573,8 +576,12 @@ class MirrorShare(
     private fun reconcile(sig: WindowSig) {
         val paneMap = paneTabMap()
         if (paneMap.isEmpty()) { onEnded(); return }
-        val hasGraphicsViewer = viewers.any { it.supportsPaneGraphics }
         synchronized(taps) {
+            // Read INSIDE the lock: [addViewer] snapshots taps under the same lock, so either we
+            // already see its viewer (and send the initial frame) or it sees this new tap (and
+            // schedules its own sync). Reading outside would let a joining graphics viewer miss a
+            // pane created in the same instant.
+            val hasGraphicsViewer = viewers.any { it.supportsPaneGraphics }
             (taps.keys - paneMap.keys).toList().forEach { id ->
                 taps.remove(id)?.let(::disposeTap)
                 viewers.forEach { it.graphicsResyncLimiter.remove(id) }
@@ -585,18 +592,21 @@ class MirrorShare(
                     val graphicsOutputFilter = GraphicsOutputFilter()
                     lateinit var entry: TapEntry
                     val listener: (String) -> Unit = { d ->
-                        // Keep parser state coherent even with zero graphics viewers, so a viewer
-                        // joining mid-payload never receives raw raster bytes as terminal text.
+                        // Filter unconditionally: parser state must stay coherent even with zero
+                        // graphics viewers, so a viewer joining mid-payload never receives raw
+                        // raster bytes as terminal text. Broadcast through broadcastPaneOutput for
+                        // the same reason — it picks raw/filtered PER VIEWER off the live list, so a
+                        // viewer [addViewer] registers between here and the send still gets the
+                        // stream it can render. Branching on a `viewers.any { }` snapshot instead
+                        // would hand that viewer the whole unfiltered payload as terminal text.
+                        // (broadcastPaneOutput also encodes lazily per kind, so with no graphics
+                        // viewer it costs exactly one encodeServer call, same as `broadcast`.)
                         val filtered = graphicsOutputFilter.filter(d)
-                        if (viewers.any { it.supportsPaneGraphics }) {
-                            if (filtered.detectedGraphics) {
-                                entry.monitoringGraphics.set(true)
-                                scheduleGraphicsSync(id, entry)
-                            }
-                            broadcastPaneOutput(id, d, filtered.output)
-                        } else {
-                            broadcast(ServerMessage.PaneOutput(id, d))
+                        if (filtered.detectedGraphics) {
+                            entry.monitoringGraphics.set(true)
+                            scheduleGraphicsSync(id, entry) // no-ops while no viewer wants graphics
                         }
+                        broadcastPaneOutput(id, d, filtered.output)
                     }
                     val modelListener = object : TerminalModelListener {
                         override fun modelChanged() {

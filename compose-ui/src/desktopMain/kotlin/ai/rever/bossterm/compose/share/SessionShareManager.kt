@@ -776,7 +776,10 @@ object SessionShareManager {
                     routing {
                         webSocket("/ws/{token}") { serveViewer(this) }
                         installShareViewerFontRoutes()
-                        // Static web viewer (index.html + viewer.js + css). Share URL:
+                        // The shell is templated per request (its CSP names this request's own
+                        // WebSocket origin), so it owns "/" and "/index.html" outright.
+                        installShareViewerIndexRoute()
+                        // Static web viewer (viewer.js + css + vendor). Share URL:
                         // http://<host>:<port>/?t=<token>
                         // no-cache (revalidate, don't blindly reuse): the asset filenames aren't
                         // content-hashed, so without this a phone keeps running the viewer JS/HTML
@@ -784,8 +787,9 @@ object SessionShareManager {
                         // browser still caches but must revalidate each load — unchanged assets
                         // come back 304 (Ktor sets Last-Modified from the jar entry), so only a
                         // genuinely updated viewer is re-downloaded.
-                        staticResources("/", "share-viewer", index = "index.html") {
+                        staticResources("/", "share-viewer", index = null) {
                             cacheControl { listOf(CacheControl.NoCache(null)) }
+                            exclude { isShareViewerIndexResource(it.path) }
                         }
                     }
                 }

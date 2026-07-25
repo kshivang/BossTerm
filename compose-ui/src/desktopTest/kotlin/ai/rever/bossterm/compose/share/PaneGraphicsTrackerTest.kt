@@ -421,4 +421,77 @@ class PaneGraphicsTrackerTest {
 
         assertEquals(MAX_WEB_VIEWER_SCROLLBACK_LINES, webViewerScrollbackLines(buffer))
     }
+
+    @Test
+    fun `an unlimited host history maps to the browser cap, not to zero scrollback`() {
+        // LinesStorage documents a negative count as unlimited. Clamping it numerically would give
+        // an embedder-configured unlimited buffer a viewer with no scrollback at all — and no
+        // history-row image placements, since they are addressed relative to the retained window.
+        val unlimited = TerminalTextBuffer(
+            width = 8,
+            height = 2,
+            styleState = StyleState(),
+            maxHistoryLinesCount = -1,
+        )
+
+        assertEquals(MAX_WEB_VIEWER_SCROLLBACK_LINES, webViewerScrollbackLines(unlimited))
+    }
+
+    @Test
+    fun `the raster budget always keeps the newest image and fills the rest greedily`() {
+        val buffer = TerminalTextBuffer(8, 5, StyleState())
+        buffer.getLine(4)
+        val cache = ImageDataCache()
+        val mib = 1024 * 1024
+        // Oldest to newest: 6, 8, 8, 1 MiB against a 16 MiB pane budget. Selection runs newest-first,
+        // so the newest (1 MiB) is always admitted — the per-image cap is half the pane budget, so
+        // the first candidate cannot be too large for an empty budget. The second (8) fits at 9 MiB,
+        // the third (8) would overflow and is SKIPPED, and the oldest (6) then uses the space that
+        // would otherwise be wasted. Stopping at the first overflow instead would silently drop that
+        // last image for no gain, since the newest was never at risk.
+        listOf(6, 8, 8, 1).forEachIndexed { index, sizeMib ->
+            val image = TerminalImage(
+                id = 70L + index,
+                data = ByteArray(sizeMib * mib) { index.toByte() },
+                format = ImageFormat.PNG,
+            )
+            cache.storeImage(image)
+            buffer.writeImageCellRow(index, 0, image.id, 0, 1, 1)
+        }
+
+        val frame = PaneGraphicsTracker("pane", buffer, cache).fullMessage()
+
+        assertEquals(listOf("70", "72", "73"), frame.requiredImageIds.sorted())
+        assertTrue("73" in frame.requiredImageIds, "the newest image must never lose the budget")
+        assertEquals(listOf("70", "72", "73"), frame.cells.map { it.imageId }.sorted())
+    }
+
+    @Test
+    fun `shell integration OSC sequences skip the per-character state machine`() {
+        val filter = GraphicsOutputFilter()
+        // This repo's own shell-integration guide has users emit OSC 7 + OSC 133 on EVERY prompt, so
+        // these are the common case, not the rare one. assertSame proves the chunk came back
+        // untouched: the fast path neither copied it nor walked it character by character.
+        val osc7 = "\u001b]7;file:///Users/dev\u0007prompt> "
+        assertSame(osc7, filter.filter(osc7).output)
+        val osc133 = "\u001b]133;D;0\u0007\u001b]133;A\u0007prompt> "
+        assertSame(osc133, filter.filter(osc133).output)
+        val eightBitOsc = "\u009d0;a window title\u0007text"
+        assertSame(eightBitOsc, filter.filter(eightBitOsc).output)
+
+        // An iTerm2 OSC that is NOT an image transfer shares the 1337; discriminator, so it does
+        // enter the machine — but it must pass through byte for byte.
+        val userVar = "\u001b]1337;SetUserVar=k=dg==\u0007"
+        val userVarResult = filter.filter(userVar)
+        assertFalse(userVarResult.detectedGraphics)
+        assertEquals(userVar, userVarResult.output)
+
+        // …and a real image OSC is still stripped, including when the chunk boundary falls inside
+        // the discriminating prefix, where the filter has to carry state across chunks.
+        val split = GraphicsOutputFilter()
+        assertEquals("before", split.filter("before\u001b]13").output)
+        val tail = split.filter("37;File=name=x:AAAA\u0007after")
+        assertTrue(tail.detectedGraphics)
+        assertEquals("after", tail.output)
+    }
 }

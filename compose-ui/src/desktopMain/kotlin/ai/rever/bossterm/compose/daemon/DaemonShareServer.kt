@@ -20,6 +20,8 @@ import ai.rever.bossterm.compose.share.TabNode
 import ai.rever.bossterm.compose.share.TailscaleExposer
 import ai.rever.bossterm.compose.share.TerminalSnapshotEncoder
 import ai.rever.bossterm.compose.share.installShareViewerFontRoutes
+import ai.rever.bossterm.compose.share.installShareViewerIndexRoute
+import ai.rever.bossterm.compose.share.isShareViewerIndexResource
 import ai.rever.bossterm.compose.share.resyncSentinel
 import ai.rever.bossterm.compose.share.webViewerScrollbackLines
 import ai.rever.bossterm.compose.share.webTerminalFontFamily
@@ -472,11 +474,15 @@ class DaemonShareServer(
                     routing {
                         webSocket("/ws/{token}") { serveViewer(this) }
                         installShareViewerFontRoutes()
-                        // Static web viewer (index.html + viewer.js + css). Share URL:
+                        // The shell is templated per request (its CSP names this request's own
+                        // WebSocket origin), so it owns "/" and "/index.html" outright.
+                        installShareViewerIndexRoute()
+                        // Static web viewer (viewer.js + css + vendor). Share URL:
                         // http://<host>:<port>/?t=<token>. no-cache so a phone re-validates the
                         // viewer assets (filenames aren't content-hashed) — unchanged ones 304.
-                        staticResources("/", "share-viewer", index = "index.html") {
+                        staticResources("/", "share-viewer", index = null) {
                             cacheControl { listOf(CacheControl.NoCache(null)) }
+                            exclude { isShareViewerIndexResource(it.path) }
                         }
                     }
                 }
@@ -792,7 +798,10 @@ class DaemonShareServer(
             core.addRawOutputListener(tap)
             core.textBuffer.addModelListener(modelListener)
             // One-time styled initial paint (identical encoder to the attach server / MirrorShare).
-            vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(ServerMessage.PaneSnapshot(
+            // sendSnapshot, not sendControl: beginning every pane of a window/global share at once
+            // can outrun a slow writer, and that backlog must defer into the re-snapshot heal rather
+            // than close the connection (which would also burn one auto-reconnect attempt).
+            vc.outbox.sendSnapshot(core.id, FrameOutbox.Frame.Text(ShareProtocol.encodeServer(ServerMessage.PaneSnapshot(
                 core.id,
                 TerminalSnapshotEncoder.encode(
                     core.textBuffer.createSnapshot(),
@@ -849,11 +858,10 @@ class DaemonShareServer(
             vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(layoutFor(def))))
         }
 
-        val onChange: () -> Unit = { resync() }
-        host.addChangeListener(onChange)
-
-        // Heal a viewer whose incremental output was evicted under back-pressure (slow remote link):
-        // re-snapshot the affected pane after a quiet delay — same pattern as the attach server.
+        // Heal a viewer whose incremental output was evicted under back-pressure (slow remote link),
+        // or whose snapshot found the control backlog at its ceiling: re-snapshot the affected pane
+        // after a quiet delay — same pattern as the attach server. Wired BEFORE the change listener,
+        // since [beginLocked] can already defer a snapshot into this heal on the very first paint.
         val resnapshotPending = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         vc.outbox.onOutputDropped = { pid ->
             if (resnapshotPending.add(pid)) {
@@ -872,6 +880,9 @@ class DaemonShareServer(
                 }
             }
         }
+
+        val onChange: () -> Unit = { resync() }
+        host.addChangeListener(onChange)
 
         // Register the viewer UNDER [mutex] and verify the share is still live + under the viewer cap.
         // stopShare clears def.viewers under the lock, so adding outside it could orphan a viewer that

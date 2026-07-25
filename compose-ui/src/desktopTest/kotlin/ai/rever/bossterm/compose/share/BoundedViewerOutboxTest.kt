@@ -26,4 +26,17 @@ class BoundedViewerOutboxTest {
 
         assertFalse(outbox.trySend("123456"))
     }
+
+    @Test
+    fun `recoverable frame never evicts queued pane output`() = runBlocking {
+        val outbox = BoundedViewerOutbox(capacityChars = 10, capacityFrames = 10)
+        assertTrue(outbox.trySend("output"))
+        assertFalse(outbox.trySendWithoutEviction("graphic"))
+        outbox.close()
+
+        val drained = mutableListOf<String>()
+        outbox.drainTo { drained.add(it) }
+
+        assertEquals(listOf("output"), drained)
+    }
 }

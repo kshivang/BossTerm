@@ -10,9 +10,9 @@ import kotlinx.coroutines.launch
 /**
  * Coalesces authoritative pane repaints while their byte/rate limiter is closed.
  *
- * [admit] returns null when [data] may be sent now, or the delay before it should be retried.
- * Newer repaint data replaces older pending data, so a busy image TUI eventually receives the
- * latest text re-anchor without building an unbounded queue of obsolete screen paints.
+ * [admit] returns null when the captured data may be sent now, or the delay before it should be
+ * retried. The pending value is a capture function, not an encoded screen: every retry captures
+ * the latest terminal state so ordinary output cannot overtake a stale deferred repaint.
  */
 internal class DeferredPaneRepaint(
     private val scope: CoroutineScope,
@@ -20,13 +20,12 @@ internal class DeferredPaneRepaint(
     private val send: (data: String) -> Unit,
 ) {
     private val lock = Any()
-    private var pending: String? = null
+    private var pending: (() -> String)? = null
     private var worker: Job? = null
 
-    fun offer(data: String) {
-        if (data.isEmpty()) return
+    fun offer(capture: () -> String) {
         synchronized(lock) {
-            pending = data
+            pending = capture
             startWorkerLocked()
         }
     }
@@ -57,22 +56,26 @@ internal class DeferredPaneRepaint(
 
     private suspend fun drain() {
         while (scope.isActive) {
-            var sendNow: String? = null
-            var retryAfterMs = 0L
+            val capture = synchronized(lock) { pending } ?: return
+            val latestScreen = capture()
+            var sendNow = false
+            var retryAfterMs: Long? = null
             synchronized(lock) {
-                val latest = pending ?: return
-                val retry = admit(latest)
-                if (retry == null) {
-                    pending = null
-                    sendNow = latest
-                } else {
-                    retryAfterMs = retry.coerceAtLeast(1L)
+                // A newer placement arrived while this screen was being encoded. Discard the
+                // obsolete capture and immediately recapture through the latest supplier.
+                if (pending === capture) {
+                    val retry = admit(latestScreen)
+                    if (retry == null) {
+                        pending = null
+                        sendNow = true
+                    } else {
+                        retryAfterMs = retry.coerceAtLeast(1L)
+                    }
                 }
             }
-            if (sendNow != null) {
-                send(sendNow!!)
-            } else {
-                delay(retryAfterMs)
+            when {
+                sendNow -> send(latestScreen)
+                retryAfterMs != null -> delay(retryAfterMs!!)
             }
         }
     }

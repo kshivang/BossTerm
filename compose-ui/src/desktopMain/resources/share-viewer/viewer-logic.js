@@ -13,6 +13,10 @@
     return { retry: true, attempt: currentAttempt + 1 };
   }
 
+  function isTerminalWebSocketClose(code) {
+    return code === 1000 || code === 1003 || code === 1008;
+  }
+
   function captureRowOffset(xtermBaseY, hostHistoryLines) {
     return xtermBaseY - hostHistoryLines;
   }
@@ -32,6 +36,21 @@
 
   function scrollLineForDistance(updatedBaseY, linesFromBottom) {
     return Math.max(0, updatedBaseY - linesFromBottom);
+  }
+
+  function queuePaneRepaint(write, readBuffer, scrollToLine, data, complete) {
+    var restoreLinesFromBottom = 0;
+    // Queue both entries synchronously: later paneOutput writes must land after the repaint.
+    write("", function () {
+      var active = readBuffer();
+      restoreLinesFromBottom = scrollLinesFromBottom(active.baseY, active.viewportY);
+    });
+    write(data, function () {
+      if (restoreLinesFromBottom > 0) {
+        scrollToLine(scrollLineForDistance(readBuffer().baseY, restoreLinesFromBottom));
+      }
+      complete();
+    });
   }
 
   function graphicsMemoryFits(
@@ -54,11 +73,13 @@
 
   return {
     nextReconnectAttempt: nextReconnectAttempt,
+    isTerminalWebSocketClose: isTerminalWebSocketClose,
     captureRowOffset: captureRowOffset,
     visibleImageRow: visibleImageRow,
     visibleHostRowRange: visibleHostRowRange,
     scrollLinesFromBottom: scrollLinesFromBottom,
     scrollLineForDistance: scrollLineForDistance,
+    queuePaneRepaint: queuePaneRepaint,
     graphicsMemoryFits: graphicsMemoryFits,
     graphicsAttemptAfterDenied: graphicsAttemptAfterDenied
   };

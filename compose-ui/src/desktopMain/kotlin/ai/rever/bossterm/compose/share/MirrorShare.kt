@@ -200,7 +200,7 @@ class MirrorShare(
         viewer: ViewerConnection,
         message: ServerMessage.PaneGraphics,
     ) {
-        if (!viewer.outbox.trySend(ShareProtocol.encodeServer(message))) {
+        if (!viewer.outbox.trySendWithoutEviction(ShareProtocol.encodeServer(message))) {
             viewer.outbox.trySend(ShareProtocol.encodeServer(message.resyncSentinel()))
         }
     }
@@ -657,12 +657,13 @@ class MirrorShare(
                         // only for a real placement change, never for scrolling/raster animation.
                         // Repaint only the visible screen: retained browser scrollback stays intact
                         // and the payload remains bounded by the pane dimensions.
-                        val repaint = TerminalSnapshotEncoder.encodeScreenRepaint(
-                            entry.tab.textBuffer.createSnapshot(),
-                            entry.tab.terminal.cursorX,
-                            entry.tab.terminal.cursorY,
-                        )
-                        entry.repaintSender.offer(repaint)
+                        entry.repaintSender.offer {
+                            TerminalSnapshotEncoder.encodeScreenRepaint(
+                                entry.tab.textBuffer.createSnapshot(),
+                                entry.tab.terminal.cursorX,
+                                entry.tab.terminal.cursorY,
+                            )
+                        }
                     }
                     broadcastGraphics(update.message)
                 }
@@ -951,6 +952,26 @@ internal class BoundedViewerOutbox(
         }
         if (droppedFrames > 0) {
             log.warn("Dropped {} stale viewer frame(s) under back-pressure", droppedFrames)
+        }
+        wake.trySend(Unit)
+        return true
+    }
+
+    /**
+     * Enqueue a large recoverable frame only when it fits behind all existing output. Graphics
+     * must never evict pane text; callers fall back to a small resync sentinel on false.
+     */
+    fun trySendWithoutEviction(text: String): Boolean {
+        if (closed || text.isEmpty() || text.length > capacityChars) return false
+        synchronized(lock) {
+            if (closed ||
+                queuedChars + text.length > capacityChars ||
+                frames.size + 1 > capacityFrames
+            ) {
+                return false
+            }
+            frames.addLast(text)
+            queuedChars += text.length
         }
         wake.trySend(Unit)
         return true

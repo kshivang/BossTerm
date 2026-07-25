@@ -1019,8 +1019,11 @@
   // xterm.js 5 does not understand Kitty and cannot safely resolve file-backed Kitty transfers
   // from the host machine. BossTerm therefore sends normalized PNG/image bytes plus its exact
   // ImageCell placement grid; this transparent canvas mirrors the native renderer cell-for-cell.
-  var MAX_PANE_GRAPHICS_BYTES = 16 * 1024 * 1024; // matches the host's web-raster budget
-  var MAX_VIEWER_GRAPHICS_BYTES = 64 * 1024 * 1024; // hard bound across all shared panes
+  // The host separately caps encoded wire rasters at 16 MiB per pane. Browser memory also holds
+  // decoded RGBA, which can be much larger than PNG/JPEG bytes, so its bounded heap limits must
+  // leave room for normal compression ratios.
+  var MAX_PANE_GRAPHICS_BYTES = 96 * 1024 * 1024;
+  var MAX_VIEWER_GRAPHICS_BYTES = 192 * 1024 * 1024;
   // PaneSnapshot replaces this compatibility fallback with the pane's real host history cap
   // before painting. Matching caps keep SharedImageCellRun absolute rows aligned after trims.
   var DEFAULT_WEB_VIEWER_SCROLLBACK_LINES = 10000;
@@ -2401,7 +2404,22 @@
     // WebSocket failures emit error then close. Only close consumes a retry so the pair cannot
     // double-count one failure; error updates the status immediately while close schedules it.
     socket.onerror = function () { if (ws === socket) setStatus("down"); };
-    socket.onclose = function () { handleConnectionLost(socket); };
+    socket.onclose = function (ev) {
+      if (ws !== socket) return;
+      if (viewerLogic.isTerminalWebSocketClose(ev && ev.code)) {
+        disarmConnectionHealth();
+        ws = null;
+        sessionEnded = true;
+        setStatus("down");
+        showOverlay(
+          "Connection ended",
+          (ev && ev.reason) || "The shared session is unavailable or no longer accepts this link.",
+          false
+        );
+        return;
+      }
+      handleConnectionLost(socket);
+    };
   }
 
   function dispatch(m) {
@@ -2452,24 +2470,13 @@
       case "paneRepaint":
         if (m.data) {
           var repaintPane = getPane(m.paneId);
-          // Enter xterm's write queue before measuring so prior paneOutput frames are reflected in
-          // baseY/viewportY. The repaint remains ordered while preserving the reader's position.
-          repaintPane.term.write("", function () {
-            var activeBuffer = repaintPane.term.buffer.active;
-            var restoreLinesFromBottom = viewerLogic.scrollLinesFromBottom(
-              activeBuffer.baseY,
-              activeBuffer.viewportY
-            );
-            repaintPane.term.write(m.data, function () {
-              if (restoreLinesFromBottom > 0) {
-                var updated = repaintPane.term.buffer.active;
-                repaintPane.term.scrollToLine(
-                  viewerLogic.scrollLineForDistance(updated.baseY, restoreLinesFromBottom)
-                );
-              }
-              scheduleGraphicsDraw(repaintPane);
-            });
-          });
+          viewerLogic.queuePaneRepaint(
+            function (data, callback) { repaintPane.term.write(data, callback); },
+            function () { return repaintPane.term.buffer.active; },
+            function (line) { repaintPane.term.scrollToLine(line); },
+            m.data,
+            function () { scheduleGraphicsDraw(repaintPane); }
+          );
         }
         break;
       case "paneGraphics": applyPaneGraphics(m); break;

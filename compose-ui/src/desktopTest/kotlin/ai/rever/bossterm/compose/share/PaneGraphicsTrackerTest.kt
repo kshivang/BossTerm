@@ -245,6 +245,7 @@ class PaneGraphicsTrackerTest {
         val cappedFrame = PaneGraphicsTracker("pane", buffer, cache).fullMessage()
         assertEquals(2, cappedFrame.images.size)
         assertEquals(2, cappedFrame.cells.size)
+        assertEquals(listOf("92", "93"), cappedFrame.requiredImageIds.sorted())
     }
 
     @Test

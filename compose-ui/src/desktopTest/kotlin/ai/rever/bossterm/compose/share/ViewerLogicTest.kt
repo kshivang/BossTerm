@@ -38,6 +38,10 @@ class ViewerLogicTest {
                 assert.strictEqual(connections, 4);
                 assert.strictEqual(attempt, 3);
                 assert.strictEqual(prompts, 1);
+                assert.strictEqual(logic.isTerminalWebSocketClose(1000), true);
+                assert.strictEqual(logic.isTerminalWebSocketClose(1003), true);
+                assert.strictEqual(logic.isTerminalWebSocketClose(1008), true);
+                assert.strictEqual(logic.isTerminalWebSocketClose(1006), false);
 
                 // Capture correction once. Five later scrolls move the image five rows upward;
                 // recomputing from live baseY would incorrectly keep this at zero.
@@ -56,6 +60,27 @@ class ViewerLogicTest {
                 assert.strictEqual(logic.scrollLineForDistance(140, distance), 107);
                 assert.strictEqual(logic.scrollLineForDistance(20, distance), 0);
 
+                // Queue the probe and repaint synchronously. A later output frame must stay behind
+                // both, while the probe still measures after all earlier writes have drained.
+                const writes = [];
+                let activeBuffer = { baseY: 120, viewportY: 90 };
+                let restoredLine = null, repaintCompleted = false;
+                function queuedWrite(data, callback) { writes.push({ data, callback }); }
+                logic.queuePaneRepaint(
+                  queuedWrite,
+                  () => activeBuffer,
+                  line => { restoredLine = line; },
+                  "repaint",
+                  () => { repaintCompleted = true; }
+                );
+                queuedWrite("later-output", () => {});
+                assert.deepStrictEqual(writes.map(entry => entry.data), ["", "repaint", "later-output"]);
+                writes.shift().callback();
+                activeBuffer = { baseY: 125, viewportY: 95 };
+                writes.shift().callback();
+                assert.strictEqual(restoredLine, 95);
+                assert.strictEqual(repaintCompleted, true);
+
                 // Host-side throttle denials are acknowledgements and never consume the bounded
                 // timeout budget, even when repeated.
                 let graphicsAttempts = 1;
@@ -72,6 +97,10 @@ class ViewerLogicTest {
                 );
                 assert.strictEqual(
                   logic.graphicsMemoryFits(8 * MiB, 20 * MiB, 6 * MiB, 4 * MiB, 16 * MiB, 64 * MiB),
+                  true
+                );
+                assert.strictEqual(
+                  logic.graphicsMemoryFits(0, 0, 72 * MiB, 0, 96 * MiB, 192 * MiB),
                   true
                 );
             """.trimIndent()

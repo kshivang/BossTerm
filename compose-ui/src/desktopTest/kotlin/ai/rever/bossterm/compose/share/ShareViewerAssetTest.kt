@@ -62,8 +62,7 @@ class ShareViewerAssetTest {
             .substringBefore("case \"paneGraphics\":")
 
         assertFalse(paneOutput.contains("scrollToLine"))
-        assertTrue(paneRepaint.contains("scrollLinesFromBottom"))
-        assertTrue(paneRepaint.contains("scrollToLine"))
+        assertTrue(paneRepaint.contains("viewerLogic.queuePaneRepaint"))
     }
 
     @Test

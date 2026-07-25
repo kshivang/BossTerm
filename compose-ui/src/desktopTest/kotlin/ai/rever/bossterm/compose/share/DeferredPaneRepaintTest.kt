@@ -19,9 +19,10 @@ class DeferredPaneRepaintTest {
             send = sent::add,
         )
 
-        sender.offer("older screen")
+        var screen = "older screen"
+        sender.offer { screen }
         runCurrent()
-        sender.offer("latest screen")
+        screen = "latest screen"
         advanceTimeBy(100)
         runCurrent()
 
@@ -37,7 +38,7 @@ class DeferredPaneRepaintTest {
             send = sent::add,
         )
 
-        sender.offer("screen")
+        sender.offer { "screen" }
         runCurrent()
         sender.cancel()
         advanceTimeBy(200)

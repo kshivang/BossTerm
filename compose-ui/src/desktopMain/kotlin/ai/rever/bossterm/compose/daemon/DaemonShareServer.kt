@@ -700,12 +700,13 @@ class DaemonShareServer(
                         if (update.requiresTextSnapshot) {
                             // Keep the screen-only re-anchor in the pane-output lane so it remains
                             // ordered with PTY output without rebuilding retained browser history.
-                            val repaint = TerminalSnapshotEncoder.encodeScreenRepaint(
-                                core.textBuffer.createSnapshot(),
-                                core.terminal.cursorX,
-                                core.terminal.cursorY,
-                            )
-                            attachment.repaintSender.offer(repaint)
+                            attachment.repaintSender.offer {
+                                TerminalSnapshotEncoder.encodeScreenRepaint(
+                                    core.textBuffer.createSnapshot(),
+                                    core.terminal.cursorX,
+                                    core.terminal.cursorY,
+                                )
+                            }
                         }
                         enqueueGraphics(vc.outbox, update.message)
                     }

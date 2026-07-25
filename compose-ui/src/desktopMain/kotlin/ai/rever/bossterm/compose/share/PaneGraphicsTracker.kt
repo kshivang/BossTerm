@@ -140,7 +140,10 @@ internal class PaneGraphicsTracker(
         val allCells = cellRuns(snapshot, cachedImages.keys, scrollbackLines)
         val selectedIds = LinkedHashSet<Long>()
         var selectedBytes = 0L
-        for (run in allCells) {
+        // Prefer the newest/screen-most images when the pane budget cannot retain everything.
+        // [allCells] is oldest-history-first, so select in reverse and preserve its original order
+        // only when emitting the filtered cell list below.
+        for (run in allCells.asReversed()) {
             val id = run.imageId.toLong()
             if (id in selectedIds) continue
             val image = cachedImages[id] ?: continue
@@ -409,6 +412,7 @@ private object SharedRasterBase64Cache {
             cachedChars -= oldest.value.chars
             iterator.remove()
         }
+        if (values.isEmpty()) cachedChars = 0
         values[contentHash] = CachedBase64(contentHash, encoded, encoded.length, clearedValues)
         cachedChars += encoded.length
         return encoded

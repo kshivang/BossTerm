@@ -1,7 +1,5 @@
 package ai.rever.bossterm.compose.share
 
-import java.nio.file.Files
-import kotlin.io.path.deleteIfExists
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -9,13 +7,10 @@ class ViewerLogicTest {
     @Test
     fun `node harness exercises reconnect budget and captured row offset`() {
         val logic = checkNotNull(javaClass.classLoader.getResourceAsStream("share-viewer/viewer-logic.js"))
-            .use { it.readBytes() }
-        val module = Files.createTempFile("bossterm-viewer-logic-", ".js")
-        try {
-            Files.write(module, logic)
-            val harness = """
+            .use { it.readBytes().decodeToString() }
+        val harness = logic + "\n" + """
                 const assert = require("assert");
-                const logic = require(process.argv[1]);
+                const logic = module.exports;
 
                 // Fake-WebSocket close harness: initial connection + exactly three automatic
                 // reconnects, then one manual prompt.
@@ -40,13 +35,10 @@ class ViewerLogicTest {
                 assert.strictEqual(logic.visibleImageRow(100, offset, 95), 0);
                 assert.strictEqual(logic.visibleImageRow(100, offset, 100), -5);
             """.trimIndent()
-            val process = ProcessBuilder("node", "-e", harness, module.toString())
-                .redirectErrorStream(true)
-                .start()
-            val output = process.inputStream.bufferedReader().use { it.readText() }
-            assertEquals(0, process.waitFor(), output)
-        } finally {
-            module.deleteIfExists()
-        }
+        val process = ProcessBuilder("node", "-e", harness)
+            .redirectErrorStream(true)
+            .start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        assertEquals(0, process.waitFor(), output)
     }
 }

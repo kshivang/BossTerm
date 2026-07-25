@@ -539,3 +539,13 @@ data class SharedImageCellRun(
     val totalCellsX: Int,
     val totalCellsY: Int,
 )
+
+/** Lightweight fallback when a full graphics frame cannot enter a viewer's bounded outbox. */
+internal fun ServerMessage.PaneGraphics.resyncSentinel(): ServerMessage.PaneGraphics = copy(
+    full = false,
+    images = emptyList(),
+    removedImageIds = emptyList(),
+    requiredImageIds = emptyList(),
+    cells = emptyList(),
+    resyncRequired = true,
+)

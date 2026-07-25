@@ -21,6 +21,11 @@
     return absoluteRow + capturedOffset - viewportY;
   }
 
+  function visibleHostRowRange(viewportY, capturedOffset, terminalRows) {
+    var first = viewportY - capturedOffset;
+    return { first: first, last: first + Math.max(0, terminalRows - 1) };
+  }
+
   function scrollLinesFromBottom(baseY, viewportY) {
     return Math.max(0, baseY - viewportY);
   }
@@ -51,6 +56,7 @@
     nextReconnectAttempt: nextReconnectAttempt,
     captureRowOffset: captureRowOffset,
     visibleImageRow: visibleImageRow,
+    visibleHostRowRange: visibleHostRowRange,
     scrollLinesFromBottom: scrollLinesFromBottom,
     scrollLineForDistance: scrollLineForDistance,
     graphicsMemoryFits: graphicsMemoryFits,

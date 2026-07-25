@@ -72,6 +72,13 @@ class ShareProtocolTest {
 
         val denied = ServerMessage.GraphicsResyncDenied("p1", retryAfterMs = 750)
         assertEquals(denied, ShareProtocol.decodeServer(ShareProtocol.encodeServer(denied)))
+
+        val recovery = graphics.resyncSentinel()
+        assertEquals(graphics.revision, recovery.revision)
+        assertTrue(recovery.resyncRequired)
+        assertTrue(recovery.images.isEmpty())
+        assertTrue(recovery.requiredImageIds.isEmpty())
+        assertTrue(recovery.cells.isEmpty())
     }
 
     @Test

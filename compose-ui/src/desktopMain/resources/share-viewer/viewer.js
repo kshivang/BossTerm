@@ -1034,7 +1034,8 @@
   var viewerGraphicsBytes = 0;
 
   function newGraphicsState() {
-    return { revision: null, cells: [], images: {}, pending: {}, bytes: 0, canvas: null, raf: 0,
+    return { revision: null, cells: [], cellsByRow: {}, images: {}, pending: {},
+             bytes: 0, canvas: null, raf: 0,
              historyLines: null, rowOffset: 0,
              rejected: {}, resyncPending: false, resyncAttempts: 0, resyncTimer: null,
              resyncDegraded: false };
@@ -1048,7 +1049,8 @@
     Object.keys(g.pending).forEach(function (id) { removePendingGraphicsImage(g, id); });
     Object.keys(g.images).forEach(function (id) { removeGraphicsImage(g, id); });
     if (g.canvas && g.canvas.parentNode) g.canvas.parentNode.removeChild(g.canvas);
-    g.images = {}; g.pending = {}; g.cells = []; g.bytes = 0; g.canvas = null; g.raf = 0;
+    g.images = {}; g.pending = {}; g.cells = []; g.cellsByRow = {};
+    g.bytes = 0; g.canvas = null; g.raf = 0;
     g.resyncTimer = null;
     setPaneGraphicsMode(p, false);
   }
@@ -1087,6 +1089,16 @@
     var padding = data.length > 1 && data.charAt(data.length - 2) === "=" ? 2 :
       (data.charAt(data.length - 1) === "=" ? 1 : 0);
     return Math.max(0, Math.floor(data.length * 3 / 4) - padding);
+  }
+
+  function indexGraphicsCells(cells) {
+    var byRow = {};
+    cells.forEach(function (run) {
+      var row = String(run.row);
+      if (!byRow[row]) byRow[row] = [];
+      byRow[row].push(run);
+    });
+    return byRow;
   }
 
   function setPaneGraphicsMode(p, enabled) {
@@ -1175,37 +1187,40 @@
     var viewportY = buffer.viewportY || 0;
     var cellW = rect.width / p.term.cols;
     var cellH = rect.height / p.term.rows;
-    g.cells.forEach(function (run) {
-      var cached = g.images[String(run.imageId)];
-      var image = cached && cached.image;
-      if (!image || !image.complete || !image.naturalWidth || !image.naturalHeight) return;
-      // Anchor host absolute rows to xterm's current baseY. If best-effort output was dropped,
-      // the overlay remains aligned to the live screen instead of drifting by the missing rows.
-      var visibleRow = viewerLogic.visibleImageRow(run.row, g.rowOffset, viewportY);
-      if (visibleRow < 0 || visibleRow >= p.term.rows) return;
-      var anchorCol = run.col - run.cellX;
-      var availableCols = Math.max(1, p.term.cols - anchorCol);
-      var effectiveCols = Math.min(Math.max(1, run.totalCellsX), availableCols);
-      var effectiveRows = Math.max(1, Math.round(Math.max(1, run.totalCellsY) *
-        effectiveCols / Math.max(1, run.totalCellsX)));
-      if (run.cellY < 0 || run.cellY >= effectiveRows) return;
-      var length = Math.min(
-        run.length,
-        p.term.cols - run.col,
-        effectiveCols - run.cellX
-      );
-      if (length <= 0) return;
-      var sourceCellX = run.cellX;
-      var destCol = run.col;
-      var sx1 = Math.floor(sourceCellX * image.naturalWidth / effectiveCols);
-      var sx2 = Math.floor((sourceCellX + length) * image.naturalWidth / effectiveCols);
-      var sy1 = Math.floor(run.cellY * image.naturalHeight / effectiveRows);
-      var sy2 = Math.floor((run.cellY + 1) * image.naturalHeight / effectiveRows);
-      ctx.drawImage(
-        image, sx1, sy1, Math.max(1, sx2 - sx1), Math.max(1, sy2 - sy1),
-        destCol * cellW, visibleRow * cellH, length * cellW, cellH
-      );
-    });
+    var visibleRows = viewerLogic.visibleHostRowRange(viewportY, g.rowOffset, p.term.rows);
+    for (var row = visibleRows.first; row <= visibleRows.last; row += 1) {
+      (g.cellsByRow[String(row)] || []).forEach(function (run) {
+        var cached = g.images[String(run.imageId)];
+        var image = cached && cached.image;
+        if (!image || !image.complete || !image.naturalWidth || !image.naturalHeight) return;
+        // Anchor host absolute rows to xterm's current baseY. If best-effort output was dropped,
+        // the overlay remains aligned to the live screen instead of drifting by the missing rows.
+        var visibleRow = viewerLogic.visibleImageRow(run.row, g.rowOffset, viewportY);
+        if (visibleRow < 0 || visibleRow >= p.term.rows) return;
+        var anchorCol = run.col - run.cellX;
+        var availableCols = Math.max(1, p.term.cols - anchorCol);
+        var effectiveCols = Math.min(Math.max(1, run.totalCellsX), availableCols);
+        var effectiveRows = Math.max(1, Math.round(Math.max(1, run.totalCellsY) *
+          effectiveCols / Math.max(1, run.totalCellsX)));
+        if (run.cellY < 0 || run.cellY >= effectiveRows) return;
+        var length = Math.min(
+          run.length,
+          p.term.cols - run.col,
+          effectiveCols - run.cellX
+        );
+        if (length <= 0) return;
+        var sourceCellX = run.cellX;
+        var destCol = run.col;
+        var sx1 = Math.floor(sourceCellX * image.naturalWidth / effectiveCols);
+        var sx2 = Math.floor((sourceCellX + length) * image.naturalWidth / effectiveCols);
+        var sy1 = Math.floor(run.cellY * image.naturalHeight / effectiveRows);
+        var sy2 = Math.floor((run.cellY + 1) * image.naturalHeight / effectiveRows);
+        ctx.drawImage(
+          image, sx1, sy1, Math.max(1, sx2 - sx1), Math.max(1, sy2 - sy1),
+          destCol * cellW, visibleRow * cellH, length * cellW, cellH
+        );
+      });
+    }
   }
 
   function requestGraphicsResync(paneId, g) {
@@ -1384,6 +1399,7 @@
     });
     if (freedBudget) retryBudgetRejectedImages();
     g.cells = m.cells || [];
+    g.cellsByRow = indexGraphicsCells(g.cells);
     if (typeof m.historyLines === "number" && m.historyLines >= 0) {
       g.historyLines = m.historyLines;
     }

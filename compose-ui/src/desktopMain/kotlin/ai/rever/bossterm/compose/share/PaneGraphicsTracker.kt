@@ -403,8 +403,8 @@ private object SharedRasterBase64Cache {
         }
         val encoded = Base64.getEncoder().encodeToString(data)
         if (encoded.length > MAX_CACHED_CHARS) return encoded
+        val iterator = values.entries.iterator()
         while (cachedChars + encoded.length > MAX_CACHED_CHARS && values.isNotEmpty()) {
-            val iterator = values.entries.iterator()
             val oldest = iterator.next()
             cachedChars -= oldest.value.chars
             iterator.remove()
@@ -453,9 +453,10 @@ internal class GraphicsOutputFilter(
 
     @Synchronized
     fun filter(chunk: String): FilteredGraphicsOutput {
+        val startedInPlainText = mode == Mode.TEXT && !stripLeadingKittyMarks
         // Ordinary PTY output overwhelmingly contains no graphics introducer. Avoid the
         // per-character state machine (and its allocation) on that hot path.
-        if (mode == Mode.TEXT && !stripLeadingKittyMarks && !requiresFiltering(chunk)) {
+        if (startedInPlainText && !requiresFiltering(chunk)) {
             return FilteredGraphicsOutput(chunk, detectedGraphics = false)
         }
         val stripped = stripKittyUnicodePlacements(chunk)
@@ -544,14 +545,24 @@ internal class GraphicsOutputFilter(
                 Mode.DISCARD_OSC -> discard(char, acceptsBell = true)
             }
         }
-        return FilteredGraphicsOutput(output.toString(), detected)
+        val rendered = if (startedInPlainText && !detected && mode == Mode.TEXT) input else output.toString()
+        return FilteredGraphicsOutput(rendered, detected)
     }
 
     private fun requiresFiltering(chunk: String): Boolean {
         var index = 0
         while (index < chunk.length) {
             when (chunk[index]) {
-                ESC, DCS, OSC, APC -> return true
+                ESC -> {
+                    // Colored/TUI output contains ESC constantly. Enter the state machine only for
+                    // an actual graphics control introducer, or a trailing ESC whose next byte is
+                    // fragmented into the following PTY chunk.
+                    val next = chunk.getOrNull(index + 1)
+                    if (next == null || next == 'P' || next == '_' || next == ']') {
+                        return true
+                    }
+                }
+                DCS, OSC, APC -> return true
                 KITTY_PLACEHOLDER[0] -> {
                     if (chunk.startsWith(KITTY_PLACEHOLDER, index)) return true
                 }

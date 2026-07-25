@@ -6,6 +6,7 @@ import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.share.ClientMessage
 import ai.rever.bossterm.compose.share.CloudflaredExposer
+import ai.rever.bossterm.compose.share.DeferredPaneRepaint
 import ai.rever.bossterm.compose.share.GraphicsOutputFilter
 import ai.rever.bossterm.compose.share.GraphicsResyncLimiter
 import ai.rever.bossterm.compose.share.Kex
@@ -19,6 +20,7 @@ import ai.rever.bossterm.compose.share.TabNode
 import ai.rever.bossterm.compose.share.TailscaleExposer
 import ai.rever.bossterm.compose.share.TerminalSnapshotEncoder
 import ai.rever.bossterm.compose.share.installShareViewerFontRoutes
+import ai.rever.bossterm.compose.share.resyncSentinel
 import ai.rever.bossterm.compose.share.webViewerScrollbackLines
 import ai.rever.bossterm.compose.share.webTerminalFontFamily
 import ai.rever.bossterm.terminal.model.TerminalModelListener
@@ -703,13 +705,7 @@ class DaemonShareServer(
                                 core.terminal.cursorX,
                                 core.terminal.cursorY,
                             )
-                            if (attachment.textSnapshotLimiter.tryAcquire(
-                                    core.id,
-                                    estimatedBytes = repaint.length.toLong() * 2,
-                                )
-                            ) {
-                                vc.outbox.sendRepaint(core.id, repaint)
-                            }
+                            attachment.repaintSender.offer(repaint)
                         }
                         enqueueGraphics(vc.outbox, update.message)
                     }
@@ -775,6 +771,22 @@ class DaemonShareServer(
                 }
             }
             attachment = Attachment(core, tap, modelListener, graphics)
+            attachment.repaintSender = DeferredPaneRepaint(
+                scope = ws,
+                admit = { repaint ->
+                    val estimatedBytes = repaint.length.toLong() * 2
+                    if (attachment.textSnapshotLimiter.tryAcquire(core.id, estimatedBytes)) {
+                        null
+                    } else {
+                        attachment.textSnapshotLimiter.retryAfterMillis(core.id, estimatedBytes)
+                    }
+                },
+                send = { repaint ->
+                    if (synchronized(attachLock) { attachments[core.id] } === attachment) {
+                        vc.outbox.sendRepaint(core.id, repaint)
+                    }
+                },
+            )
             attachments[core.id] = attachment
             core.addRawOutputListener(tap)
             core.textBuffer.addModelListener(modelListener)
@@ -815,6 +827,7 @@ class DaemonShareServer(
                 a.core.removeRawOutputListener(a.tap)
                 a.core.textBuffer.removeModelListener(a.modelListener)
                 a.graphicsSyncJob?.cancel()
+                a.repaintSender.cancel()
                 a.sizeJob?.cancel()
                 vc.graphicsResyncLimiter.remove(id)
             }
@@ -963,14 +976,7 @@ class DaemonShareServer(
         message: ServerMessage.PaneGraphics,
     ) {
         val fullFrame = FrameOutbox.Frame.Text(ShareProtocol.encodeServer(message))
-        val recovery = message.copy(
-            full = false,
-            images = emptyList(),
-            removedImageIds = emptyList(),
-            requiredImageIds = emptyList(),
-            cells = emptyList(),
-            resyncRequired = true,
-        )
+        val recovery = message.resyncSentinel()
         outbox.sendRecoverableControl(
             fullFrame,
             FrameOutbox.Frame.Text(ShareProtocol.encodeServer(recovery)),
@@ -991,6 +997,7 @@ class DaemonShareServer(
         val textSnapshotLimiter = GraphicsResyncLimiter(1_000_000_000L)
         @Volatile var graphicsSyncJob: Job? = null
         @Volatile var sizeJob: Job? = null
+        lateinit var repaintSender: DeferredPaneRepaint
     }
 
     /**

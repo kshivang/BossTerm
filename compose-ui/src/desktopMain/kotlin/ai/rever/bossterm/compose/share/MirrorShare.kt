@@ -97,6 +97,7 @@ class MirrorShare(
         val textSnapshotLimiter: GraphicsResyncLimiter = GraphicsResyncLimiter(1_000_000_000L),
     ) {
         @Volatile var graphicsSyncJob: Job? = null
+        lateinit var repaintSender: DeferredPaneRepaint
     }
     private val taps = HashMap<String, TapEntry>()
 
@@ -163,7 +164,12 @@ class MirrorShare(
             vc.outbox.close()
             broadcast(ServerMessage.Presence(viewers.size))
             if (viewers.none { it.supportsPaneGraphics }) {
-                synchronized(taps) { taps.values.forEach { it.monitoringGraphics.set(false) } }
+                synchronized(taps) {
+                    taps.values.forEach {
+                        it.monitoringGraphics.set(false)
+                        it.repaintSender.cancel()
+                    }
+                }
             }
             // Last viewer gone → undo any "fit host to my screen" resize.
             if (viewers.isEmpty()) SessionShareManager.releaseEmbeddedFit(tabId)
@@ -178,8 +184,25 @@ class MirrorShare(
     }
 
     private fun broadcastGraphics(msg: ServerMessage) {
-        val text = ShareProtocol.encodeServer(msg)
-        for (v in viewers) if (v.supportsPaneGraphics) v.outbox.trySend(text)
+        if (msg is ServerMessage.PaneGraphics) {
+            for (viewer in viewers) {
+                if (viewer.supportsPaneGraphics) enqueueGraphics(viewer, msg)
+            }
+        } else {
+            val text = ShareProtocol.encodeServer(msg)
+            for (viewer in viewers) {
+                if (viewer.supportsPaneGraphics) viewer.outbox.trySend(text)
+            }
+        }
+    }
+
+    private fun enqueueGraphics(
+        viewer: ViewerConnection,
+        message: ServerMessage.PaneGraphics,
+    ) {
+        if (!viewer.outbox.trySend(ShareProtocol.encodeServer(message))) {
+            viewer.outbox.trySend(ShareProtocol.encodeServer(message.resyncSentinel()))
+        }
     }
 
     private fun broadcastPaneOutput(
@@ -270,7 +293,7 @@ class MirrorShare(
                 if (tracker != null) {
                     val estimatedBytes = tracker.estimatedWireBytes()
                     if (vc.graphicsResyncLimiter.tryAcquire(msg.paneId, estimatedBytes)) {
-                        vc.outbox.trySend(ShareProtocol.encodeServer(tracker.fullMessage(commit = false)))
+                        enqueueGraphics(vc, tracker.fullMessage(commit = false))
                     } else {
                         vc.outbox.trySend(ShareProtocol.encodeServer(ServerMessage.GraphicsResyncDenied(
                             msg.paneId,
@@ -581,6 +604,22 @@ class MirrorShare(
                         }
                     }
                     entry = TapEntry(tab, listener, modelListener, graphics)
+                    entry.repaintSender = DeferredPaneRepaint(
+                        scope = coro,
+                        admit = { repaint ->
+                            val estimatedBytes = repaint.length.toLong() * 2
+                            if (entry.textSnapshotLimiter.tryAcquire(id, estimatedBytes)) {
+                                null
+                            } else {
+                                entry.textSnapshotLimiter.retryAfterMillis(id, estimatedBytes)
+                            }
+                        },
+                        send = { repaint ->
+                            if (synchronized(taps) { taps[id] } === entry) {
+                                broadcastGraphics(ServerMessage.PaneRepaint(id, repaint))
+                            }
+                        },
+                    )
                     taps[id] = entry
                     tab.dataStream.addRawOutputListener(listener)
                     tab.textBuffer.addModelListener(modelListener)
@@ -623,13 +662,7 @@ class MirrorShare(
                             entry.tab.terminal.cursorX,
                             entry.tab.terminal.cursorY,
                         )
-                        if (entry.textSnapshotLimiter.tryAcquire(
-                                id,
-                                estimatedBytes = repaint.length.toLong() * 2,
-                            )
-                        ) {
-                            broadcastGraphics(ServerMessage.PaneRepaint(id, repaint))
-                        }
+                        entry.repaintSender.offer(repaint)
                     }
                     broadcastGraphics(update.message)
                 }
@@ -652,6 +685,7 @@ class MirrorShare(
 
     private fun disposeTap(entry: TapEntry) {
         entry.graphicsSyncJob?.cancel()
+        entry.repaintSender.cancel()
         runCatching { entry.tab.dataStream.removeRawOutputListener(entry.listener) }
         runCatching { entry.tab.textBuffer.removeModelListener(entry.modelListener) }
     }

@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.share
 
+import org.junit.Assume.assumeTrue
 import java.nio.file.Files
 import kotlin.io.path.deleteIfExists
 import kotlin.test.Test
@@ -9,7 +10,12 @@ import kotlin.test.assertTrue
 class ViewerLogicTest {
     @Test
     fun `node harness exercises reconnect budget and captured row offset`() {
-        assertTrue(nodeAvailable(), "Node.js is required to execute the web-viewer regression harness")
+        val hasNode = nodeAvailable()
+        if (System.getenv("CI").equals("true", ignoreCase = true)) {
+            assertTrue(hasNode, "Node.js is required for the web-viewer regression harness in CI")
+        } else {
+            assumeTrue("Node.js is not available on PATH", hasNode)
+        }
         val logic = checkNotNull(javaClass.classLoader.getResourceAsStream("share-viewer/viewer-logic.js"))
             .use { it.readBytes().decodeToString() }
         val harness = logic + "\n" + """
@@ -38,6 +44,10 @@ class ViewerLogicTest {
                 const offset = logic.captureRowOffset(95, 100);
                 assert.strictEqual(logic.visibleImageRow(100, offset, 95), 0);
                 assert.strictEqual(logic.visibleImageRow(100, offset, 100), -5);
+                assert.deepStrictEqual(logic.visibleHostRowRange(100, offset, 24), {
+                  first: 105,
+                  last: 128
+                });
 
                 // A paneRepaint preserves the reader's distance from the bottom and clamps after
                 // history trims instead of relying on an obsolete RIS prefix.

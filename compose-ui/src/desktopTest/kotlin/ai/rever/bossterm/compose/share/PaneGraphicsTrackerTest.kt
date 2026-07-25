@@ -299,7 +299,10 @@ class PaneGraphicsTrackerTest {
         assertFalse(queryResult.detectedGraphics)
         assertEquals("\u001bP\$qm\u001b\\", queryResult.output)
 
-        assertEquals("ordinary output", sixel.filter("ordinary output").output)
+        val ordinary = "ordinary output"
+        assertSame(ordinary, sixel.filter(ordinary).output)
+        val colored = "\u001b[31mred\u001b[0m"
+        assertSame(colored, sixel.filter(colored).output)
     }
 
     @Test

@@ -6,7 +6,10 @@ import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.share.ClientMessage
 import ai.rever.bossterm.compose.share.CloudflaredExposer
+import ai.rever.bossterm.compose.share.GraphicsSequenceDetector
 import ai.rever.bossterm.compose.share.Kex
+import ai.rever.bossterm.compose.share.PANE_GRAPHICS_CAPABILITY
+import ai.rever.bossterm.compose.share.PaneGraphicsTracker
 import ai.rever.bossterm.compose.share.PaneTreeNode
 import ai.rever.bossterm.compose.share.ServerMessage
 import ai.rever.bossterm.compose.share.SessionCrypto
@@ -14,6 +17,7 @@ import ai.rever.bossterm.compose.share.ShareProtocol
 import ai.rever.bossterm.compose.share.TabNode
 import ai.rever.bossterm.compose.share.TailscaleExposer
 import ai.rever.bossterm.compose.share.TerminalSnapshotEncoder
+import ai.rever.bossterm.terminal.model.TerminalModelListener
 import io.ktor.http.CacheControl
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
@@ -51,6 +55,7 @@ import java.net.ServerSocket
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -142,6 +147,8 @@ class DaemonShareServer(
         /** Delay before re-snapshotting a pane whose output was dropped under back-pressure —
          *  long enough to coalesce a burst of drops into one heal, short enough to feel instant. */
         const val RESNAPSHOT_DELAY_MS = 500L
+        /** One animation frame: coalesces multipart image transfers and row-by-row placements. */
+        const val GRAPHICS_SYNC_DEBOUNCE_MS = 16L
     }
 
     /** A granted device key: which share, its role, the client it was issued to, and its windows. */
@@ -653,13 +660,56 @@ class DaemonShareServer(
         send(mcpStatusMessage())
         send(layoutFor(def))
 
-        val vc = DaemonShareConnection(def.viewerSeq.incrementAndGet(), canControl,
-            hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})")
+        val vc = DaemonShareConnection(
+            def.viewerSeq.incrementAndGet(),
+            canControl,
+            hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})",
+            hello?.capabilities?.contains(PANE_GRAPHICS_CAPABILITY) == true,
+        )
 
         // Per-session attachment: the output tap + its size collector. Mutated from BOTH the change
         // listener (any thread) and this coroutine, so guarded by [attachLock].
         val attachments = HashMap<String, Attachment>()
         val attachLock = Any()
+
+        fun scheduleGraphicsSync(attachment: Attachment) {
+            if (!vc.supportsPaneGraphics || !attachment.ready.get()) return
+            if (!attachment.graphicsSyncPending.compareAndSet(false, true)) {
+                attachment.graphicsSyncAgain.set(true)
+                return
+            }
+            attachment.graphicsSyncJob = ws.launch {
+                delay(GRAPHICS_SYNC_DEBOUNCE_MS)
+                attachment.graphicsSyncPending.set(false)
+                if (synchronized(attachLock) { attachments[attachment.core.id] } !== attachment) return@launch
+                val update = attachment.graphics.pollUpdate()
+                if (update != null) {
+                    val core = attachment.core
+                    val currentSize = core.display.termSizeFlow.value
+                    // Control frames drain before raw output. Purge chunks already represented by
+                    // this authoritative paint so a Sixel/Kitty sequence cannot replay after it.
+                    vc.outbox.dropQueuedOutput(core.id)
+                    vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(
+                        ServerMessage.PaneSnapshot(
+                            core.id,
+                            TerminalSnapshotEncoder.encode(
+                                core.textBuffer.createSnapshot(),
+                                core.terminal.cursorX,
+                                core.terminal.cursorY,
+                            ),
+                            currentSize.columns,
+                            currentSize.rows,
+                        )
+                    )))
+                    vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(update)))
+                }
+                attachment.monitoringGraphics.set(attachment.graphics.hasVisibleGraphics())
+                if (attachment.graphicsSyncAgain.getAndSet(false)) {
+                    attachment.monitoringGraphics.set(true)
+                    scheduleGraphicsSync(attachment)
+                }
+            }
+        }
 
         fun beginLocked(core: TerminalSessionCore) {
             if (attachments.containsKey(core.id)) return
@@ -671,7 +721,14 @@ class DaemonShareServer(
             val preludeLock = Any()
             var prelude: ArrayList<String>? = ArrayList()
             var preludeChars = 0
+            val detector = GraphicsSequenceDetector()
+            val graphics = PaneGraphicsTracker(core.id, core.textBuffer, core.terminal.getImageDataCache())
+            lateinit var attachment: Attachment
             val tap: (String) -> Unit = { d ->
+                if (detector.inspect(d)) {
+                    attachment.monitoringGraphics.set(true)
+                    scheduleGraphicsSync(attachment)
+                }
                 val held = synchronized(preludeLock) {
                     val p = prelude
                     when {
@@ -688,13 +745,26 @@ class DaemonShareServer(
                 // bytes are protocol-equivalent, and a backlog collapses into few frames).
                 if (!held) vc.outbox.sendOutput(core.id, d)
             }
+            val modelListener = object : TerminalModelListener {
+                override fun modelChanged() {
+                    if (attachment.monitoringGraphics.get()) scheduleGraphicsSync(attachment)
+                }
+            }
+            attachment = Attachment(core, tap, modelListener, graphics, detector)
+            attachments[core.id] = attachment
             core.addRawOutputListener(tap)
+            core.textBuffer.addModelListener(modelListener)
             // One-time styled initial paint (identical encoder to the attach server / MirrorShare).
             vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(ServerMessage.PaneSnapshot(
                 core.id,
                 TerminalSnapshotEncoder.encode(core.textBuffer.createSnapshot(), core.terminal.cursorX, core.terminal.cursorY),
                 sz.columns, sz.rows,
             ))))
+            if (vc.supportsPaneGraphics) {
+                val initialGraphics = graphics.fullMessage()
+                vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(initialGraphics)))
+                if (initialGraphics.requiredImageIds.isNotEmpty()) attachment.monitoringGraphics.set(true)
+            }
             synchronized(preludeLock) {
                 prelude?.forEach { vc.outbox.sendOutput(core.id, it) }
                 prelude = null
@@ -705,13 +775,17 @@ class DaemonShareServer(
                     vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(ServerMessage.PaneResize(core.id, it.columns, it.rows))))
                 }
             }
-            attachments[core.id] = Attachment(core, tap, sizeJob)
+            attachment.sizeJob = sizeJob
+            attachment.ready.set(true)
+            if (attachment.monitoringGraphics.get()) scheduleGraphicsSync(attachment)
         }
         fun endLocked(id: String) {
             attachments.remove(id)?.let { a ->
                 // Remove the tap from the core directly — host.get(id) is null once a session exited.
                 a.core.removeRawOutputListener(a.tap)
-                a.sizeJob.cancel()
+                a.core.textBuffer.removeModelListener(a.modelListener)
+                a.graphicsSyncJob?.cancel()
+                a.sizeJob?.cancel()
             }
         }
 
@@ -810,7 +884,14 @@ class DaemonShareServer(
             synchronized(attachLock) { inScopeCores(def).forEach { beginLocked(it) } } // initial paint
             for (frame in ws.incoming) {
                 val msg = decodeIncoming(frame) ?: continue
-                handleClient(def, vc, msg)
+                if (msg is ClientMessage.GraphicsResync) {
+                    if (vc.supportsPaneGraphics) {
+                        synchronized(attachLock) { attachments[msg.paneId]?.graphics?.fullMessage() }
+                            ?.let { vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(it))) }
+                    }
+                } else {
+                    handleClient(def, vc, msg)
+                }
             }
         } catch (_: Throwable) {
             // client gone
@@ -829,8 +910,21 @@ class DaemonShareServer(
         }
     }
 
-    /** Per-connection, per-session attachment: the core, its raw-output tap + size-collector job. */
-    private class Attachment(val core: TerminalSessionCore, val tap: (String) -> Unit, val sizeJob: Job)
+    /** Per-connection, per-session output, sizing, and authoritative web-graphics state. */
+    private class Attachment(
+        val core: TerminalSessionCore,
+        val tap: (String) -> Unit,
+        val modelListener: TerminalModelListener,
+        val graphics: PaneGraphicsTracker,
+        @Suppress("unused") val detector: GraphicsSequenceDetector,
+    ) {
+        val ready = AtomicBoolean(false)
+        val monitoringGraphics = AtomicBoolean(false)
+        val graphicsSyncPending = AtomicBoolean(false)
+        val graphicsSyncAgain = AtomicBoolean(false)
+        @Volatile var graphicsSyncJob: Job? = null
+        @Volatile var sizeJob: Job? = null
+    }
 
     /**
      * Route a viewer message to the daemon (controller role only for mutating actions). A daemon

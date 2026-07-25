@@ -101,6 +101,24 @@ sealed class ServerMessage {
     @SerialName("paneResize")
     data class PaneResize(val paneId: String, val cols: Int, val rows: Int) : ServerMessage()
 
+    /**
+     * Authoritative inline-image state for one pane. The host decodes Sixel/Kitty (including
+     * host-local Kitty file transfers) and sends browser-safe raster data plus the exact cells
+     * occupied by each image. [cells] and [requiredImageIds] are always a complete placement
+     * snapshot; [images] is a delta unless [full] is true.
+     */
+    @Serializable
+    @SerialName("paneGraphics")
+    data class PaneGraphics(
+        val paneId: String,
+        val revision: Long,
+        val full: Boolean,
+        val images: List<SharedTerminalImage> = emptyList(),
+        val removedImageIds: List<String> = emptyList(),
+        val requiredImageIds: List<String> = emptyList(),
+        val cells: List<SharedImageCellRun> = emptyList(),
+    ) : ServerMessage()
+
     /** Number of connected viewers. */
     @Serializable
     @SerialName("presence")
@@ -271,7 +289,14 @@ sealed class ClientMessage {
         val name: String? = null,
         val clientId: String? = null,
         val key: String? = null,
+        /** Optional feature names understood by this peer (for example `paneGraphicsV1`). */
+        val capabilities: List<String> = emptyList(),
     ) : ClientMessage()
+
+    /** Ask the host for a full image-data + placement snapshot after a missed graphics delta. */
+    @Serializable
+    @SerialName("graphicsResync")
+    data class GraphicsResync(val paneId: String) : ClientMessage()
 
     /** Keystrokes for a specific pane. Honored only with controller role. */
     @Serializable
@@ -429,3 +454,31 @@ sealed class ClientMessage {
     @SerialName("attachMcp")
     data class AttachMcp(val target: String, val tabId: String? = null) : ClientMessage()
 }
+
+/** Browser-displayable image data referenced by [ServerMessage.PaneGraphics]. */
+@Serializable
+data class SharedTerminalImage(
+    /** String on the wire so JavaScript never loses a 64-bit terminal image id. */
+    val id: String,
+    val mimeType: String,
+    val data: String,
+    /** SHA-256 of the decoded bytes; lets the browser retain unchanged decoded images. */
+    val contentHash: String,
+)
+
+/**
+ * A horizontally contiguous run of image cells. [row] uses BossTerm buffer coordinates:
+ * negative values are scrollback, 0 is the top screen row. The browser maps it with xterm's
+ * current `baseY`, so deep scrollback truncation does not skew placement.
+ */
+@Serializable
+data class SharedImageCellRun(
+    val imageId: String,
+    val row: Int,
+    val col: Int,
+    val cellX: Int,
+    val cellY: Int,
+    val length: Int,
+    val totalCellsX: Int,
+    val totalCellsY: Int,
+)

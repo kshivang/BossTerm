@@ -25,6 +25,18 @@ class ShareProtocolTest {
 
         val presence = ShareProtocol.encodeServer(ServerMessage.Presence(3))
         assertTrue(presence.contains("\"viewers\":3"))
+
+        val graphics = ServerMessage.PaneGraphics(
+            paneId = "p1",
+            revision = 7,
+            full = true,
+            images = listOf(SharedTerminalImage("42", "image/png", "cG5n", "abc")),
+            requiredImageIds = listOf("42"),
+            cells = listOf(SharedImageCellRun("42", -1, 2, 0, 0, 3, 3, 2)),
+        )
+        val graphicsJson = ShareProtocol.encodeServer(graphics)
+        assertTrue(graphicsJson.contains("\"t\":\"paneGraphics\""))
+        assertEquals(graphics, ShareProtocol.decodeServer(graphicsJson))
     }
 
     @Test
@@ -52,9 +64,20 @@ class ShareProtocolTest {
 
     @Test
     fun `client messages decode by discriminator`() {
-        val hello = ShareProtocol.decodeClient("""{"t":"hello","name":"phone"}""")
+        val hello = ShareProtocol.decodeClient(
+            """{"t":"hello","name":"phone","capabilities":["paneGraphicsV1"]}"""
+        )
         assertIs<ClientMessage.Hello>(hello)
         assertEquals("phone", hello.name)
+        assertEquals(listOf("paneGraphicsV1"), hello.capabilities)
+
+        val legacyHello = ShareProtocol.decodeClient("""{"t":"hello","name":"old"}""")
+        assertIs<ClientMessage.Hello>(legacyHello)
+        assertTrue(legacyHello.capabilities.isEmpty())
+
+        val graphicsResync = ShareProtocol.decodeClient("""{"t":"graphicsResync","paneId":"p1"}""")
+        assertIs<ClientMessage.GraphicsResync>(graphicsResync)
+        assertEquals("p1", graphicsResync.paneId)
 
         val input = ShareProtocol.decodeClient("""{"t":"input","paneId":"p2","data":"ls\n"}""")
         assertIs<ClientMessage.Input>(input)

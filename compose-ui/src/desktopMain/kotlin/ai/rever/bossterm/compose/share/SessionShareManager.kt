@@ -971,11 +971,17 @@ object SessionShareManager {
             }
         }
 
+        val supportsPaneGraphics = hello?.capabilities?.contains(PANE_GRAPHICS_CAPABILITY) == true
+
         // Admit: Theme + Layout + a PaneSnapshot per pane, THEN register so the outbox
         // only carries output produced after the snapshot (avoids double-rendering).
-        share.initialMessages().forEach { send(it) }
+        share.initialMessages(includePaneGraphics = supportsPaneGraphics).forEach { send(it) }
         send(ServerMessage.Control(granted = canControl))
-        val vc = share.addViewer(canControl, hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})")
+        val vc = share.addViewer(
+            canControl,
+            hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})",
+            supportsPaneGraphics,
+        )
         vc.grantKey = accessKey // lets an approved mid-session upgrade persist into the grant
         val sc = serverCipher
         val writer = ws.launch {

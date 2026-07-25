@@ -14,6 +14,7 @@ import ai.rever.bossterm.compose.window.WindowManager
 import ai.rever.bossterm.terminal.TerminalColor
 import ai.rever.bossterm.terminal.TextStyle
 import ai.rever.bossterm.terminal.model.TerminalLine
+import ai.rever.bossterm.terminal.model.TerminalModelListener
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -25,12 +26,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /** Whether a share covers one tab (incl. its splits), the whole window (all tabs), or every window. */
@@ -85,7 +88,18 @@ class MirrorShare(
     private var observerJob: Job? = null
     private var mcpJob: Job? = null
 
-    private class TapEntry(val tab: TerminalTab, val listener: (String) -> Unit)
+    private class TapEntry(
+        val tab: TerminalTab,
+        val listener: (String) -> Unit,
+        val modelListener: TerminalModelListener,
+        val graphics: PaneGraphicsTracker,
+        val detector: GraphicsSequenceDetector,
+        val monitoringGraphics: AtomicBoolean = AtomicBoolean(false),
+        val graphicsSyncPending: AtomicBoolean = AtomicBoolean(false),
+        val graphicsSyncAgain: AtomicBoolean = AtomicBoolean(false),
+    ) {
+        @Volatile var graphicsSyncJob: Job? = null
+    }
     private val taps = HashMap<String, TapEntry>()
 
     fun start() {
@@ -116,7 +130,7 @@ class MirrorShare(
         observerJob?.cancel()
         mcpJob?.cancel()
         synchronized(taps) {
-            taps.values.forEach { e -> runCatching { e.tab.dataStream.removeRawOutputListener(e.listener) } }
+            taps.values.forEach(::disposeTap)
             taps.clear()
         }
         viewers.forEach { it.outbox.close() }
@@ -125,8 +139,12 @@ class MirrorShare(
     }
 
     // ---- viewers ----
-    fun addViewer(canControl: Boolean, name: String = "Viewer"): ViewerConnection {
-        val vc = ViewerConnection(viewerSeq.incrementAndGet(), canControl, name)
+    fun addViewer(
+        canControl: Boolean,
+        name: String = "Viewer",
+        supportsPaneGraphics: Boolean = false,
+    ): ViewerConnection {
+        val vc = ViewerConnection(viewerSeq.incrementAndGet(), canControl, name, supportsPaneGraphics)
         viewers.add(vc)
         broadcast(ServerMessage.Presence(viewers.size))
         return vc
@@ -148,8 +166,13 @@ class MirrorShare(
         for (v in viewers) v.outbox.trySend(text)
     }
 
+    private fun broadcastGraphics(msg: ServerMessage) {
+        val text = ShareProtocol.encodeServer(msg)
+        for (v in viewers) if (v.supportsPaneGraphics) v.outbox.trySend(text)
+    }
+
     /** Theme + Layout + a PaneSnapshot per pane, for a newly-connected viewer. */
-    fun initialMessages(): List<ServerMessage> {
+    fun initialMessages(includePaneGraphics: Boolean = false): List<ServerMessage> {
         val sig = computeSignature()
         val out = ArrayList<ServerMessage>()
         out.add(themeMessage())
@@ -158,6 +181,11 @@ class MirrorShare(
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
             out.add(ServerMessage.PaneSnapshot(id, snapshotText(tab), sz[0], sz[1]))
+            if (includePaneGraphics) {
+                val tracker = synchronized(taps) { taps[id]?.graphics }
+                    ?: PaneGraphicsTracker(id, tab.textBuffer, tab.terminal.getImageDataCache())
+                out.add(tracker.fullMessage())
+            }
         }
         return out
     }
@@ -197,6 +225,13 @@ class MirrorShare(
             ?: inScopeStates().firstOrNull()
 
     fun handleClient(vc: ViewerConnection, msg: ClientMessage) {
+        if (msg is ClientMessage.GraphicsResync) {
+            if (vc.supportsPaneGraphics) {
+                synchronized(taps) { taps[msg.paneId]?.graphics?.fullMessage() }
+                    ?.let { vc.outbox.trySend(ShareProtocol.encodeServer(it)) }
+            }
+            return
+        }
         if (msg is ClientMessage.RequestControl) {
             val upstream = upstreamSession(msg.tabId)
             if (upstream != null) {
@@ -416,6 +451,8 @@ class MirrorShare(
     }
 
     companion object {
+        private const val GRAPHICS_SYNC_DEBOUNCE_MS = 16L
+
         // MCP server name/label as the CLI attachers register it / as broadcast to viewers.
         // The embedder's BossTermMcpConfig is a Compose CompositionLocal (unavailable in this
         // non-Composable class), so BossTermMcpManager publishes the resolved values to the
@@ -466,20 +503,73 @@ class MirrorShare(
         if (paneMap.isEmpty()) { onEnded(); return }
         synchronized(taps) {
             (taps.keys - paneMap.keys).toList().forEach { id ->
-                taps.remove(id)?.let { e -> runCatching { e.tab.dataStream.removeRawOutputListener(e.listener) } }
+                taps.remove(id)?.let(::disposeTap)
             }
             for ((id, tab) in paneMap) {
                 if (id !in taps) {
-                    val listener: (String) -> Unit = { d -> broadcast(ServerMessage.PaneOutput(id, d)) }
-                    taps[id] = TapEntry(tab, listener)
+                    val graphics = PaneGraphicsTracker(id, tab.textBuffer, tab.terminal.getImageDataCache())
+                    val detector = GraphicsSequenceDetector()
+                    lateinit var entry: TapEntry
+                    val listener: (String) -> Unit = { d ->
+                        if (detector.inspect(d)) {
+                            entry.monitoringGraphics.set(true)
+                            scheduleGraphicsSync(id, entry)
+                        }
+                        broadcast(ServerMessage.PaneOutput(id, d))
+                    }
+                    val modelListener = object : TerminalModelListener {
+                        override fun modelChanged() {
+                            if (entry.monitoringGraphics.get()) scheduleGraphicsSync(id, entry)
+                        }
+                    }
+                    entry = TapEntry(tab, listener, modelListener, graphics, detector)
+                    taps[id] = entry
                     tab.dataStream.addRawOutputListener(listener)
+                    tab.textBuffer.addModelListener(modelListener)
                     val sz = sig.sizes[id] ?: listOf(80, 24)
                     broadcast(ServerMessage.PaneSnapshot(id, snapshotText(tab), sz[0], sz[1]))
+                    val initialGraphics = graphics.fullMessage()
+                    if (initialGraphics.requiredImageIds.isNotEmpty()) entry.monitoringGraphics.set(true)
+                    broadcastGraphics(initialGraphics)
                 }
             }
         }
         broadcast(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
         sig.sizes.forEach { (id, sz) -> broadcast(ServerMessage.PaneResize(id, sz[0], sz[1])) }
+    }
+
+    private fun scheduleGraphicsSync(id: String, entry: TapEntry) {
+        if (!entry.graphicsSyncPending.compareAndSet(false, true)) {
+            entry.graphicsSyncAgain.set(true)
+            return
+        }
+        entry.graphicsSyncJob = coro.launch {
+            // Coalesce multipart transfers and multiple ImageCell row writes into one browser paint.
+            delay(GRAPHICS_SYNC_DEBOUNCE_MS)
+            entry.graphicsSyncPending.set(false)
+            if (synchronized(taps) { taps[id] } !== entry) return@launch
+            val update = entry.graphics.pollUpdate()
+            if (update != null) {
+                val size = entry.tab.display.termSize.value
+                // xterm.js 5 does not emulate Sixel/Kitty cursor movement. Re-anchor its text and
+                // cursor before applying the authoritative image-cell overlay.
+                broadcastGraphics(ServerMessage.PaneSnapshot(
+                    id, snapshotText(entry.tab), size.columns, size.rows
+                ))
+                broadcastGraphics(update)
+            }
+            entry.monitoringGraphics.set(entry.graphics.hasVisibleGraphics())
+            if (entry.graphicsSyncAgain.getAndSet(false)) {
+                entry.monitoringGraphics.set(true)
+                scheduleGraphicsSync(id, entry)
+            }
+        }
+    }
+
+    private fun disposeTap(entry: TapEntry) {
+        entry.graphicsSyncJob?.cancel()
+        runCatching { entry.tab.dataStream.removeRawOutputListener(entry.listener) }
+        runCatching { entry.tab.textBuffer.removeModelListener(entry.modelListener) }
     }
 
     // ---- window-state signature (pure-serializable; drives distinctUntilChanged) ----
@@ -740,6 +830,8 @@ class ViewerConnection(
     @Volatile var canControl: Boolean,
     /** Device name from the viewer's Hello — shown in the control-request approval prompt. */
     val name: String = "Viewer",
+    /** True only for peers that render the host's normalized image-cell protocol. */
+    val supportsPaneGraphics: Boolean = false,
 ) {
     val outbox: Channel<String> = Channel(capacity = 2048, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 

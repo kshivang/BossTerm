@@ -662,28 +662,34 @@ class BossTerminal(
         // Store image data in cache
         val imageId = myImageDataCache.storeImage(image)
 
-        // Strategy: Write image cells row by row, scrolling as needed
-        // This ensures ALL image rows get ImageCell data, even those that scroll into history
+        // Strategy: Write image cells row by row, scrolling as needed. Batch the per-row
+        // notifications so native rendering and web-share observers see one complete placement.
         var currentBufferRow = bufferRow
-        for (cellY in 0 until dimensions.cellHeight) {
-            // If we're at or past the bottom of the screen, scroll first
-            if (currentBufferRow >= myTerminalHeight) {
-                scrollArea(myScrollRegionTop, scrollingRegionSize(), -1)
-                currentBufferRow = myTerminalHeight - 1  // Write to last row after scroll
-                bufferRow--  // Anchor moves up in buffer coordinates
+        terminalTextBuffer.beginBatch()
+        try {
+            for (cellY in 0 until dimensions.cellHeight) {
+                // If we're at or past the bottom of the screen, scroll first
+                if (currentBufferRow >= myTerminalHeight) {
+                    scrollArea(myScrollRegionTop, scrollingRegionSize(), -1)
+                    currentBufferRow = myTerminalHeight - 1  // Write to last row after scroll
+                    bufferRow--  // Anchor moves up in buffer coordinates
+                }
+
+                // Write this row of image cells
+                terminalTextBuffer.writeImageCellRow(
+                    row = currentBufferRow,
+                    startCol = anchorCol,
+                    imageId = imageId,
+                    cellY = cellY,
+                    cellWidth = dimensions.cellWidth,
+                    cellHeight = dimensions.cellHeight
+                )
+
+                currentBufferRow++
             }
-
-            // Write this row of image cells
-            terminalTextBuffer.writeImageCellRow(
-                row = currentBufferRow,
-                startCol = anchorCol,
-                imageId = imageId,
-                cellY = cellY,
-                cellWidth = dimensions.cellWidth,
-                cellHeight = dimensions.cellHeight
-            )
-
-            currentBufferRow++
+            terminalTextBuffer.imageCellRowsChanged(bufferRow)
+        } finally {
+            terminalTextBuffer.endBatch()
         }
 
         if (moveCursor) {

@@ -66,18 +66,18 @@
     });
   }
   // Frame = nonce(12) || AES-256-GCM(ciphertext||tag), AAD = 1 direction byte (0x00 c2s, 0x01 s2c).
-  function encryptFrame(text) {
+  function encryptFrame(text, state) {
     var iv = randBytes(12);
     return crypto.subtle.encrypt(
       { name: "AES-GCM", iv: iv, additionalData: new Uint8Array([0x00]), tagLength: 128 },
-      crypState.kc2s, enc.encode(text)
+      state.kc2s, enc.encode(text)
     ).then(function (ct) { return concatBytes(iv, new Uint8Array(ct)).buffer; });
   }
-  function decryptFrame(buf) {
+  function decryptFrame(buf, state) {
     var u = new Uint8Array(buf), iv = u.subarray(0, 12), body = u.subarray(12);
     return crypto.subtle.decrypt(
       { name: "AES-GCM", iv: iv, additionalData: new Uint8Array([0x01]), tagLength: 128 },
-      crypState.ks2c, body
+      state.ks2c, body
     ).then(function (pt) { return dec.decode(pt); });
   }
   // Show the verification code (first 8 hex of SHA-256 of the secret) so the user can compare
@@ -101,13 +101,15 @@
     return diff === 0;
   }
   var cryptoFailed = false;
-  function onCryptoFailure() {
+  function onCryptoFailure(socket) {
+    // A promise from a socket that already dropped must not poison its replacement.
+    if (socket && ws !== socket) return;
     if (cryptoFailed) return;
     cryptoFailed = true;
     sessionEnded = true; // terminal — don't let "Disconnected" overwrite it
     showOverlay("This link is missing its key",
       "Re-copy the full share link from BossTerm — it must include the part after #.", false);
-    try { ws.close(); } catch (e) {}
+    try { (socket || ws).close(); } catch (e) {}
   }
 
   var statusEl = document.getElementById("status");
@@ -252,12 +254,16 @@
   // rapid keystrokes can't be reordered by async encrypt resolution. Plaintext: send directly.
   function sendMsg(o) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    var socket = ws;
     if (canE2E) {
-      sendChain = sendChain.then(function () { return encryptFrame(JSON.stringify(o)); })
-        .then(function (buf) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(buf); })
-        .catch(function () { onCryptoFailure(); }); // never silently drop a keystroke
+      var state = crypState;
+      sendChain = sendChain.then(function () { return encryptFrame(JSON.stringify(o), state); })
+        .then(function (buf) {
+          if (ws === socket && socket.readyState === WebSocket.OPEN) socket.send(buf);
+        })
+        .catch(function () { onCryptoFailure(socket); }); // never silently drop a keystroke
     } else {
-      ws.send(JSON.stringify(o));
+      socket.send(JSON.stringify(o));
     }
   }
 
@@ -501,6 +507,7 @@
     requestAnimationFrame(function () {
       var sc = p.host.querySelector(".xterm-screen");
       if (sc) { var w = Math.ceil(sc.getBoundingClientRect().width); if (w > 0) p.host.style.width = w + "px"; }
+      scheduleGraphicsDraw(p);
     });
   }
   function softKeyboardUp() {
@@ -509,6 +516,7 @@
   }
   function onViewportChange() {
     relayoutSinglePane();
+    Object.keys(panes).forEach(function (id) { scheduleGraphicsDraw(panes[id]); });
     autoFitPending = true;
     maybeAutoFit();
   }
@@ -525,7 +533,10 @@
   function curFont() { return viewerFont || (theme && theme.fontSize) || 13; }
   function applyFont(px) {
     viewerFont = Math.max(6, Math.min(40, Math.round(px)));
-    Object.keys(panes).forEach(function (id) { try { panes[id].term.options.fontSize = viewerFont; } catch (e) {} });
+    Object.keys(panes).forEach(function (id) {
+      try { panes[id].term.options.fontSize = viewerFont; } catch (e) {}
+      scheduleGraphicsDraw(panes[id]);
+    });
     relayoutSinglePane();
   }
   // Fit the active pane's font so the whole width shows (zoom-out to fit).
@@ -913,9 +924,13 @@
   function hideOverlay() { overlayEl.style.display = "none"; }
 
   var sessionEnded = false;   // host denied/expired → don't offer a pointless reconnect
-  var disconnectShown = false; // de-dupe onerror + onclose firing together
-  // The link dropped (host stopped sharing, network blip, etc.): tell the user instead of
-  // just flipping the status dot red, and offer to reconnect (reload) or close.
+  var disconnectShown = false; // final prompt is shown at most once
+  var reconnectAttempt = 0;
+  var reconnectTimer = null;
+  var connectionWasHealthy = false; // a Layout arrived on this connection
+  var MAX_AUTO_RECONNECTS = 3;
+  // The automatic budget is exhausted: offer a manual retry (which reloads the page and gives
+  // it a fresh budget) or close. Terminal failures such as denial / bad E2E keys never get here.
   function showDisconnected() {
     setStatus("down");
     if (sessionEnded || disconnectShown) return;
@@ -925,12 +940,218 @@
       { label: "Close", onClick: function () {
           window.close(); // ignored for user-opened tabs — fall back to a hint
           showOverlay("Disconnected", "You can close this tab.", false, []);
-        } }
+      } }
     ]);
+  }
+  // Retry a transient drop before asking the user. A connection that rendered a Layout was
+  // healthy, so it receives a fresh three-attempt budget just like the native remote client.
+  function handleConnectionLost(socket) {
+    if (socket && ws !== socket) return; // stale event from a superseded connection
+    if (socket) ws = null;               // disarm its pending encrypt/decrypt callbacks
+    setStatus("down");
+    if (sessionEnded || reconnectTimer) return;
+    if (connectionWasHealthy) {
+      reconnectAttempt = 0;
+      connectionWasHealthy = false;
+    }
+    if (reconnectAttempt >= MAX_AUTO_RECONNECTS) {
+      showDisconnected();
+      return;
+    }
+    reconnectAttempt += 1;
+    var attempt = reconnectAttempt;
+    showOverlay(
+      "Reconnecting…",
+      "The connection was lost. Automatic attempt " + attempt + " of " + MAX_AUTO_RECONNECTS + ".",
+      true
+    );
+    reconnectTimer = setTimeout(function () {
+      reconnectTimer = null;
+      if (!sessionEnded) connectWebSocket();
+    }, attempt * 1500);
   }
 
   function deviceName() {
     return localStorage.getItem("bossterm.name") || navigator.platform || "browser";
+  }
+
+  // ---- host-decoded Sixel / Kitty graphics ----
+  // xterm.js 5 does not understand Kitty and cannot safely resolve file-backed Kitty transfers
+  // from the host machine. BossTerm therefore sends normalized PNG/image bytes plus its exact
+  // ImageCell placement grid; this transparent canvas mirrors the native renderer cell-for-cell.
+  var MAX_PANE_GRAPHICS_BYTES = 50 * 1024 * 1024; // matches each BossTerm terminal cache
+  var MAX_VIEWER_GRAPHICS_BYTES = 128 * 1024 * 1024; // hard bound across all shared panes
+  var viewerGraphicsBytes = 0;
+
+  function newGraphicsState() {
+    return { revision: null, cells: [], images: {}, bytes: 0, canvas: null, raf: 0,
+             rejected: {}, resyncPending: false };
+  }
+
+  function disposeGraphics(p) {
+    if (!p || !p.graphics) return;
+    var g = p.graphics;
+    if (g.raf) cancelAnimationFrame(g.raf);
+    Object.keys(g.images).forEach(function (id) { removeGraphicsImage(g, id); });
+    if (g.canvas && g.canvas.parentNode) g.canvas.parentNode.removeChild(g.canvas);
+    g.images = {}; g.cells = []; g.bytes = 0; g.canvas = null; g.raf = 0;
+  }
+
+  function removeGraphicsImage(g, id) {
+    var item = g.images[id];
+    if (!item) return;
+    if (item.image) { item.image.onload = null; item.image.onerror = null; }
+    g.bytes = Math.max(0, g.bytes - item.bytes);
+    viewerGraphicsBytes = Math.max(0, viewerGraphicsBytes - item.bytes);
+    delete g.images[id];
+  }
+
+  function base64Bytes(data) {
+    if (!data) return 0;
+    var padding = data.endsWith("==") ? 2 : (data.endsWith("=") ? 1 : 0);
+    return Math.max(0, Math.floor(data.length * 3 / 4) - padding);
+  }
+
+  function ensureGraphicsCanvas(p) {
+    var screen = p.host.querySelector(".xterm-screen");
+    if (!screen) return null;
+    var g = p.graphics;
+    if (!g.canvas) {
+      var canvas = document.createElement("canvas");
+      canvas.className = "bossterm-graphics";
+      canvas.setAttribute("aria-hidden", "true");
+      canvas.style.position = "absolute";
+      canvas.style.inset = "0";
+      canvas.style.pointerEvents = "none";
+      g.canvas = canvas;
+    }
+    if (g.canvas.parentNode !== screen) {
+      // Keep images below xterm's glyph/selection/cursor renderer. The terminal's default
+      // background is transparent; the term host supplies the opaque theme background.
+      screen.insertBefore(g.canvas, screen.querySelector("canvas"));
+    }
+    return g.canvas;
+  }
+
+  function scheduleGraphicsDraw(p) {
+    if (!p || !p.graphics || p.graphics.raf) return;
+    p.graphics.raf = requestAnimationFrame(function () {
+      p.graphics.raf = 0;
+      drawPaneGraphics(p);
+    });
+  }
+
+  function drawPaneGraphics(p) {
+    var g = p.graphics, canvas = ensureGraphicsCanvas(p);
+    if (!canvas) return;
+    var screen = p.host.querySelector(".xterm-screen");
+    var rect = screen && screen.getBoundingClientRect();
+    if (!rect || !(rect.width > 0) || !(rect.height > 0)) return;
+    var scale = window.devicePixelRatio || 1;
+    var pixelW = Math.max(1, Math.round(rect.width * scale));
+    var pixelH = Math.max(1, Math.round(rect.height * scale));
+    if (canvas.width !== pixelW) canvas.width = pixelW;
+    if (canvas.height !== pixelH) canvas.height = pixelH;
+    canvas.style.width = rect.width + "px";
+    canvas.style.height = rect.height + "px";
+    var ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+    if (!g.cells.length || !p.term.cols || !p.term.rows) return;
+
+    var buffer = p.term.buffer.active;
+    var baseY = buffer.baseY || 0;
+    var viewportY = buffer.viewportY || 0;
+    var cellW = rect.width / p.term.cols;
+    var cellH = rect.height / p.term.rows;
+    g.cells.forEach(function (run) {
+      var cached = g.images[String(run.imageId)];
+      var image = cached && cached.image;
+      if (!image || !image.complete || !image.naturalWidth || !image.naturalHeight) return;
+      var visibleRow = baseY + run.row - viewportY;
+      if (visibleRow < 0 || visibleRow >= p.term.rows) return;
+      var anchorCol = run.col - run.cellX;
+      var availableCols = Math.max(1, p.term.cols - anchorCol);
+      var effectiveCols = Math.min(Math.max(1, run.totalCellsX), availableCols);
+      var effectiveRows = Math.max(1, Math.round(Math.max(1, run.totalCellsY) *
+        effectiveCols / Math.max(1, run.totalCellsX)));
+      for (var i = 0; i < run.length; i++) {
+        var sourceCellX = run.cellX + i;
+        var destCol = run.col + i;
+        if (destCol < 0 || destCol >= p.term.cols ||
+            sourceCellX < 0 || sourceCellX >= effectiveCols ||
+            run.cellY < 0 || run.cellY >= effectiveRows) continue;
+        var sx1 = Math.floor(sourceCellX * image.naturalWidth / effectiveCols);
+        var sx2 = Math.floor((sourceCellX + 1) * image.naturalWidth / effectiveCols);
+        var sy1 = Math.floor(run.cellY * image.naturalHeight / effectiveRows);
+        var sy2 = Math.floor((run.cellY + 1) * image.naturalHeight / effectiveRows);
+        ctx.drawImage(
+          image, sx1, sy1, Math.max(1, sx2 - sx1), Math.max(1, sy2 - sy1),
+          destCol * cellW, visibleRow * cellH, cellW, cellH
+        );
+      }
+    });
+  }
+
+  function requestGraphicsResync(paneId, g) {
+    if (g.resyncPending) return;
+    g.resyncPending = true;
+    sendMsg({ t: "graphicsResync", paneId: paneId });
+  }
+
+  function applyPaneGraphics(m) {
+    var p = getPane(m.paneId), g = p.graphics;
+    var required = {};
+    (m.requiredImageIds || []).forEach(function (id) { required[String(id)] = true; });
+    var revisionGap = !m.full && g.revision !== null && m.revision !== g.revision + 1;
+
+    if (m.full) {
+      Object.keys(g.images).forEach(function (id) {
+        if (!required[id]) removeGraphicsImage(g, id);
+      });
+      Object.keys(g.rejected).forEach(function (id) {
+        if (!required[id]) delete g.rejected[id];
+      });
+      g.resyncPending = false;
+    }
+    (m.removedImageIds || []).forEach(function (id) {
+      id = String(id);
+      removeGraphicsImage(g, id);
+      delete g.rejected[id];
+    });
+    (m.images || []).forEach(function (wire) {
+      var id = String(wire.id), old = g.images[id];
+      if (old && old.hash === wire.contentHash) return;
+      if (old) removeGraphicsImage(g, id);
+      delete g.rejected[id];
+      var bytes = base64Bytes(wire.data);
+      // Host-side caches are bounded too. If aggregate pane state exceeds the browser budget,
+      // omit that raster (and remember the rejection) instead of retry-looping or growing forever.
+      if (bytes > MAX_PANE_GRAPHICS_BYTES || g.bytes + bytes > MAX_PANE_GRAPHICS_BYTES ||
+          viewerGraphicsBytes + bytes > MAX_VIEWER_GRAPHICS_BYTES) {
+        g.rejected[id] = true;
+        return;
+      }
+      var image = new Image();
+      var item = { image: image, hash: wire.contentHash, bytes: bytes };
+      g.images[id] = item;
+      g.bytes += bytes;
+      viewerGraphicsBytes += bytes;
+      image.onload = function () { scheduleGraphicsDraw(p); };
+      image.onerror = function () {
+        if (g.images[id] === item) removeGraphicsImage(g, id);
+        requestGraphicsResync(m.paneId, g);
+      };
+      image.src = "data:" + (wire.mimeType || "image/png") + ";base64," + wire.data;
+    });
+    g.cells = m.cells || [];
+    g.revision = m.revision;
+    var missing = Object.keys(required).some(function (id) {
+      return !g.images[id] && !g.rejected[id];
+    });
+    if (revisionGap || missing) requestGraphicsResync(m.paneId, g);
+    scheduleGraphicsDraw(p);
   }
 
   // ---- xterm pool ----
@@ -940,9 +1161,11 @@
     var host = document.createElement("div");
     host.className = "termhost";
     var opts = { cursorBlink: true, convertEol: false, scrollback: 5000,
+                 allowTransparency: true,
                  fontFamily: "Menlo, Monaco, monospace", fontSize: 13,
-                 theme: { background: "#1e1e1e", foreground: "#f8f8f2" } };
+                 theme: { background: "rgba(0,0,0,0)", foreground: "#f8f8f2" } };
     if (theme) applyThemeToOpts(opts);
+    host.style.background = (theme && theme.background) || "#1e1e1e";
     var term = new Terminal(opts);
     term.open(host);
     // GPU rendering (WebGL addon) — the DOM renderer rebuilds row nodes on every scroll
@@ -985,7 +1208,10 @@
       followRaf = requestAnimationFrame(function () { followRaf = 0; followCursor(); });
     });
     attachTouchScroll(host, term);
-    p = { term: term, host: host };
+    p = { term: term, host: host, graphics: newGraphicsState() };
+    term.onRender(function () { scheduleGraphicsDraw(p); });
+    term.onScroll(function () { scheduleGraphicsDraw(p); });
+    term.onResize(function () { scheduleGraphicsDraw(p); });
     panes[paneId] = p;
     return p;
   }
@@ -1066,7 +1292,7 @@
   function applyThemeToOpts(opts) {
     var a = theme.ansi || [];
     opts.theme = {
-      background: theme.background, foreground: theme.foreground, cursor: theme.cursor,
+      background: "rgba(0,0,0,0)", foreground: theme.foreground, cursor: theme.cursor,
       cursorAccent: theme.cursorAccent, selectionBackground: theme.selectionBackground,
       black: a[0], red: a[1], green: a[2], yellow: a[3], blue: a[4], magenta: a[5], cyan: a[6], white: a[7],
       brightBlack: a[8], brightRed: a[9], brightGreen: a[10], brightYellow: a[11],
@@ -1082,6 +1308,7 @@
       var o = {}; applyThemeToOpts(o);
       var t = panes[id].term;
       t.options.theme = o.theme;
+      panes[id].host.style.background = m.background || "#1e1e1e";
       if (o.fontFamily) t.options.fontFamily = o.fontFamily;
       if (o.fontSize) t.options.fontSize = o.fontSize;
     });
@@ -1092,6 +1319,7 @@
     }
     // The host theme may carry a fontSize; keep the viewer's chosen zoom if set.
     if (viewerFont) Object.keys(panes).forEach(function (id) { try { panes[id].term.options.fontSize = viewerFont; } catch (e) {} });
+    Object.keys(panes).forEach(function (id) { scheduleGraphicsDraw(panes[id]); });
     relayoutSinglePane();
   }
 
@@ -1744,6 +1972,7 @@
   }
 
   function onLayout(m) {
+    connectionWasHealthy = true;
     layout = m;
     tabBarOnLeft = !!m.tabBarOnLeft;
     summaryMode = !!m.summaryMode;
@@ -1755,7 +1984,11 @@
     var live = {};
     m.tabs.forEach(function (t) { collectPaneIds(t.tree, live); });
     Object.keys(panes).forEach(function (id) {
-      if (!live[id]) { try { panes[id].term.dispose(); } catch (e) {} delete panes[id]; }
+      if (!live[id]) {
+        disposeGraphics(panes[id]);
+        try { panes[id].term.dispose(); } catch (e) {}
+        delete panes[id];
+      }
     });
     renderTabBar();
     // Mid divider-drag, the host echoes ratio changes back as layouts — don't rebuild the
@@ -1778,53 +2011,97 @@
 
   // ---- websocket ----
   var wsProto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(wsProto + "://" + location.host + "/ws/" + encodeURIComponent(token));
-  if (canE2E) { ws.binaryType = "arraybuffer"; secretBytes = b64urlToBytes(secretB64); saltC = randBytes(16); }
-  var sentHello = false;
-  function sendHello() { sentHello = true; sendMsg({ t: "hello", name: deviceName(), clientId: clientId, key: loadKey() }); }
+  function connectWebSocket() {
+    // Every reconnect gets fresh ordered queues and E2E keys/salts. Pending work from the old
+    // socket captures that socket/state below and is ignored once [ws] points elsewhere.
+    crypState = { ready: false, kc2s: null, ks2c: null };
+    sendChain = Promise.resolve();
+    recvChain = Promise.resolve();
+    saltC = null;
+    var socket;
+    try {
+      socket = new WebSocket(wsProto + "://" + location.host + "/ws/" + encodeURIComponent(token));
+    } catch (e) {
+      ws = null;
+      handleConnectionLost(null);
+      return;
+    }
+    ws = socket;
+    var state = crypState;
+    var sentHello = false;
+    if (canE2E) {
+      socket.binaryType = "arraybuffer";
+      secretBytes = b64urlToBytes(secretB64);
+      saltC = randBytes(16);
+    }
+    var connectionSalt = saltC;
+    function sendHello() {
+      if (ws !== socket || sentHello) return;
+      sentHello = true;
+      sendMsg({
+        t: "hello",
+        name: deviceName(),
+        clientId: clientId,
+        key: loadKey(),
+        capabilities: ["paneGraphicsV1"]
+      });
+    }
 
-  ws.onopen = function () {
-    if (e2eMissing) { onCryptoFailure(); return; } // truncated link — don't downgrade to plaintext
-    setStatus("live");
-    // E2E: open with a plaintext Kex (our salt); the Hello waits until keys are derived from
-    // the host's reply. Plaintext: send the Hello immediately, as before.
-    if (canE2E) ws.send(JSON.stringify({ t: "kex", v: 1, salt: bytesToB64url(saltC) }));
-    else sendHello();
-  };
+    socket.onopen = function () {
+      if (ws !== socket) return;
+      if (e2eMissing) { onCryptoFailure(socket); return; } // truncated link — don't downgrade to plaintext
+      setStatus("live");
+      // E2E: open with a plaintext Kex (our salt); the Hello waits until keys are derived from
+      // the host's reply. Plaintext: send the Hello immediately, as before.
+      if (canE2E) socket.send(JSON.stringify({ t: "kex", v: 1, salt: bytesToB64url(connectionSalt) }));
+      else sendHello();
+    };
 
-  ws.onmessage = function (ev) {
-    // E2E handshake: the host's reply is a plaintext Kex (a string frame). Derive keys, verify
-    // its confirmation tag (wrong/missing #k ⇒ fail loudly), then send the encrypted Hello.
-    if (canE2E && !crypState.ready) {
-      if (typeof ev.data !== "string") return;
-      var k; try { k = JSON.parse(ev.data); } catch (e) { return; }
-      if (k.salt == null) return;
-      if (k.v && k.v !== 1) { // a newer host we can't speak to
-        sessionEnded = true;
-        showOverlay("Update BossTerm", "This session uses a newer encryption version than this viewer.", false);
-        try { ws.close(); } catch (e) {}
+    socket.onmessage = function (ev) {
+      if (ws !== socket) return;
+      // E2E handshake: the host's reply is a plaintext Kex (a string frame). Derive keys, verify
+      // its confirmation tag (wrong/missing #k ⇒ fail loudly), then send the encrypted Hello.
+      if (canE2E && !state.ready) {
+        if (typeof ev.data !== "string") return;
+        var k; try { k = JSON.parse(ev.data); } catch (e) { return; }
+        if (k.salt == null) return;
+        if (k.v && k.v !== 1) { // a newer host we can't speak to
+          sessionEnded = true;
+          showOverlay("Update BossTerm", "This session uses a newer encryption version than this viewer.", false);
+          try { socket.close(); } catch (e) {}
+          return;
+        }
+        deriveSessionKeys(secretBytes, connectionSalt, b64urlToBytes(k.salt)).then(function (keys) {
+          if (ws !== socket) return;
+          if (!constantTimeEq(keys.confirmB64, k.confirm)) { onCryptoFailure(socket); return; }
+          state.kc2s = keys.kc2s; state.ks2c = keys.ks2c; state.ready = true;
+          showE2EBadge();
+          sendHello();
+        }).catch(function () { onCryptoFailure(socket); });
         return;
       }
-      deriveSessionKeys(secretBytes, saltC, b64urlToBytes(k.salt)).then(function (keys) {
-        if (!constantTimeEq(keys.confirmB64, k.confirm)) { onCryptoFailure(); return; }
-        crypState.kc2s = keys.kc2s; crypState.ks2c = keys.ks2c; crypState.ready = true;
-        showE2EBadge();
-        if (!sentHello) sendHello();
-      }).catch(function () { onCryptoFailure(); });
-      return;
-    }
-    // E2E steady state: decrypt (ORDERED, so PaneOutput applies in order) then dispatch.
-    if (canE2E) {
-      recvChain = recvChain.then(function () { return decryptFrame(ev.data); })
-        .then(function (text) { var m; try { m = JSON.parse(text); } catch (e) { return; } dispatch(m); })
-        // A decrypt failure ends the session (onCryptoFailure closes the socket, so no further
-        // frames arrive); don't rethrow — that would leave a dangling unhandled rejection.
-        .catch(function () { onCryptoFailure(); });
-      return;
-    }
-    var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-    dispatch(m);
-  };
+      // E2E steady state: decrypt (ORDERED, so PaneOutput applies in order) then dispatch.
+      if (canE2E) {
+        recvChain = recvChain.then(function () { return decryptFrame(ev.data, state); })
+          .then(function (text) {
+            if (ws !== socket) return;
+            var m; try { m = JSON.parse(text); } catch (e) { return; }
+            dispatch(m);
+          })
+          // A decrypt failure ends the session (onCryptoFailure closes the socket, so no further
+          // frames arrive); don't rethrow — that would leave a dangling unhandled rejection.
+          .catch(function () { onCryptoFailure(socket); });
+        return;
+      }
+      var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+      dispatch(m);
+    };
+
+    // WebSocket failures emit error then close. Only close consumes a retry so the pair cannot
+    // double-count one failure; error updates the status immediately while close schedules it.
+    socket.onerror = function () { if (ws === socket) setStatus("down"); };
+    socket.onclose = function () { handleConnectionLost(socket); };
+  }
 
   function dispatch(m) {
     switch (m.t) {
@@ -1849,17 +2126,27 @@
         var p = getPane(m.paneId);
         if (m.cols && m.rows) p.term.resize(m.cols, m.rows);
         p.term.reset();
-        if (m.data) p.term.write(m.data);
+        if (m.data) p.term.write(m.data, function () { scheduleGraphicsDraw(p); });
+        else scheduleGraphicsDraw(p);
         relayoutSinglePane();
         updateDims();
         autoFitPending = true;
         maybeAutoFit();
         break;
       }
-      case "paneOutput": if (m.data) getPane(m.paneId).term.write(m.data); break;
+      case "paneOutput":
+        if (m.data) {
+          var outputPane = getPane(m.paneId);
+          outputPane.term.write(m.data, function () { scheduleGraphicsDraw(outputPane); });
+        }
+        break;
+      case "paneGraphics": applyPaneGraphics(m); break;
       case "paneResize":
         if (m.cols && m.rows) {
-          getPane(m.paneId).term.resize(m.cols, m.rows); relayoutSinglePane(); updateDims();
+          var resizedPane = getPane(m.paneId);
+          resizedPane.term.resize(m.cols, m.rows);
+          scheduleGraphicsDraw(resizedPane);
+          relayoutSinglePane(); updateDims();
           autoFitPending = true;
           maybeAutoFit();
         }
@@ -1907,6 +2194,5 @@
     }
   };
 
-  ws.onclose = showDisconnected;
-  ws.onerror = showDisconnected;
+  connectWebSocket();
 })();

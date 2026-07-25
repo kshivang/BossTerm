@@ -560,6 +560,17 @@ class TerminalTextBuffer internal constructor(
     }
   }
 
+  /** Publish one complete row-by-row image placement after its caller finishes writing it. */
+  internal fun imageCellRowsChanged(fromRow: Int) {
+    myLock.lock()
+    try {
+      fireModelChangeEvent()
+      changesMulticaster.linesChanged(fromIndex = fromRow)
+    } finally {
+      myLock.unlock()
+    }
+  }
+
   /**
    * Replace one text cell with one slice of a virtual image. Writing the blank
    * first gives transparent pixels the placeholder's current background and

@@ -14,6 +14,7 @@ import ai.rever.bossterm.compose.tabs.TerminalTab
 import ai.rever.bossterm.compose.voice.GuiVoiceToolExecutor
 import ai.rever.bossterm.compose.voice.VoiceAgentStorage
 import ai.rever.bossterm.compose.voice.VoiceCallService
+import ai.rever.bossterm.compose.voice.voiceCallTokenMatches
 import ai.rever.bossterm.compose.window.WindowManager
 import ai.rever.bossterm.terminal.model.TerminalModelListener
 import androidx.compose.runtime.getValue
@@ -427,22 +428,18 @@ class MirrorShare(
         when (msg) {
             is ClientMessage.Focus -> { rememberVoiceTab(vc, msg.tabId); return }
             is ClientMessage.VoiceStart -> {
-                // One connection holds at most one call: redialling without a clean voiceEnd used to
-                // orphan the previous token for the whole call-duration ceiling, and since openCall()
-                // refuses rather than evicts, eight redials wedged the share at too_many_calls.
-                voiceService.closeCall(vc.voiceCallToken)
-                vc.voiceCallToken = null
                 rememberVoiceTab(vc, msg.activeTabId)
                 voiceService.handleStart(
                     msg,
                     vc.canControl,
-                    onTokenReserved = { vc.voiceCallToken = it },
+                    // Retire the PREVIOUS call only now: this fires after the control/enabled/key
+                    // checks, so a view-only viewer (or a request while the feature is off) can no
+                    // longer end a live call just by asking. One connection still holds at most one.
+                    onTokenReserved = { fresh ->
+                        voiceService.closeCall(vc.voiceCallToken)
+                        vc.voiceCallToken = fresh
+                    },
                 ) { m ->
-                    // Record the token on the way OUT. Populating it from an inbound voiceToolCall
-                    // instead meant a call where the agent never used a tool left nothing to retire
-                    // on hangup — and an attacker could clobber the tracked value with one bogus
-                    // token, defeating the disconnect cleanup outright.
-                    if (m is ServerMessage.VoiceSession) vc.voiceCallToken = m.callToken
                     vc.outbox.sendControl(ShareProtocol.encodeServer(m))
                 }
                 return
@@ -458,7 +455,7 @@ class MirrorShare(
                 // drive the read tools without ever passing handleStart's control gate. Reported as
                 // stale_call, not not_controller: the realistic cause is a redial racing an old
                 // token, which shouldn't read to the user as a permissions problem.
-                if (msg.callToken == null || msg.callToken != vc.voiceCallToken) {
+                if (!voiceCallTokenMatches(vc.voiceCallToken, msg.callToken)) {
                     vc.outbox.sendControl(
                         ShareProtocol.encodeServer(ServerMessage.VoiceError(code = "stale_call"))
                     )

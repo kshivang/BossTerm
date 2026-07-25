@@ -189,6 +189,19 @@ class SettingsManager(private val customSettingsPath: String? = null) {
      * last persisted. Caller holds [saveLock] so the read→modify→write is atomic against other writers
      * in THIS process; cross-process atomicity comes from the unique-temp + rename in [writeToFileLocked].
      */
+    /**
+     * @suppress The file this manager persists to, for cross-process pollers.
+     *
+     * The GUI and the daemon hold independent in-memory copies with no reload-on-change (see the
+     * class KDoc), so a daemon-hosted feature that must honour a GUI-side toggle has to watch this
+     * file itself.
+     */
+    internal fun settingsFilePath(): File = settingsFile
+
+    /** @suppress Settings as they are on disk right now, or null when unreadable. */
+    internal fun readFromDisk(): TerminalSettings? =
+        runCatching { json.decodeFromString<TerminalSettings>(settingsFile.readText()) }.getOrNull()
+
     private fun currentOnDiskOrMemory(): TerminalSettings =
         runCatching { json.decodeFromString<TerminalSettings>(settingsFile.readText()) }.getOrNull() ?: _settings.value
 

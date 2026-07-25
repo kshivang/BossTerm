@@ -26,6 +26,17 @@ import java.util.concurrent.atomic.AtomicInteger
  * and for every write tool, targets limited to the share's scope (via [executor]), the API key
  * never serialized into any reply.
  */
+/**
+ * Whether a `voiceToolCall` may proceed on a connection.
+ *
+ * The token must be the one THIS connection was issued — not merely one live somewhere on the share,
+ * or a second viewer presenting it would drive the read tools without passing handleStart's control
+ * gate. Extracted from both servers' message handlers so the boundary is unit-testable: it lives
+ * outside [VoiceCallService], which is exactly how it could be lost in a refactor.
+ */
+internal fun voiceCallTokenMatches(issuedToThisConnection: String?, presented: String?): Boolean =
+    issuedToThisConnection != null && presented != null && presented == issuedToThisConnection
+
 internal class VoiceCallService(
     private val executor: VoiceToolExecutor,
     private val scope: CoroutineScope,
@@ -50,6 +61,11 @@ internal class VoiceCallService(
      * with several shares open must not multiply the ceiling. Injectable so tests get their own.
      */
     private val mintTimestamps: ArrayDeque<Long> = sharedMintTimestamps,
+    /**
+     * Live calls, likewise process-wide: MAX_LIVE_CALLS is a spend ceiling on the same single key, so
+     * per-share accounting let N shares run 8N concurrent billed sessions. Injectable for tests.
+     */
+    private val sharedCalls: LinkedHashMap<String, LiveCall>? = null,
 ) {
 
     private val log = LoggerFactory.getLogger(VoiceCallService::class.java)
@@ -62,14 +78,14 @@ internal class VoiceCallService(
      * Tokens for calls this host actually minted. A voiceToolCall must carry one, so the share
      * socket can't be used as a standing tool RPC by a viewer that never started a call.
      */
-    private val liveCalls = LinkedHashMap<String, LiveCall>()
+    private val liveCalls: LinkedHashMap<String, LiveCall> get() = sharedCalls ?: sharedLiveCalls
 
     /**
      * [announced] records whether the host was told this call STARTED. A reservation that never
      * became a call (the mint failed) must not fire the "call ended" notification — one bad key
      * otherwise produced an "ended" toast per attempt for a call that never began.
      */
-    private class LiveCall(val issuedAt: Long, var announced: Boolean = false)
+    internal class LiveCall(val issuedAt: Long, var announced: Boolean = false)
 
     /**
      * Current availability, for the viewer's Call button (sent on connect + on change).
@@ -397,6 +413,9 @@ internal class VoiceCallService(
     private companion object {
         /** Shared by every share in this process — see [mintTimestamps]. */
         val sharedMintTimestamps = ArrayDeque<Long>()
+
+        /** Shared by every share in this process — see [sharedCalls]. */
+        val sharedLiveCalls = LinkedHashMap<String, LiveCall>()
 
         const val MAX_IN_FLIGHT_TOOL_CALLS = 4
 

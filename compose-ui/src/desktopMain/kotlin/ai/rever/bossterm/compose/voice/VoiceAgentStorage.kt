@@ -68,6 +68,10 @@ internal object VoiceAgentStorage {
     fun keyStamp(file: File = defaultFile()): Long =
         if (file.isFile) file.lastModified() * 31 + file.length() else 0L
 
+    /** Stamp for an arbitrary file, for pollers that watch settings.json the same way. */
+    fun fileStamp(file: File): Long =
+        if (file.isFile) file.lastModified() * 31 + file.length() else 0L
+
     /**
      * How many consecutive unchanged stamps a poller should trust before re-reading anyway.
      * mtime granularity is 1 s on some filesystems, so swapping a key for one of the same length

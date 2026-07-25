@@ -338,7 +338,15 @@
     try {
       var AC = window.AudioContext || window.webkitAudioContext;
       if (!AC || !stream) return;
-      if (!voiceMeter.ctx) voiceMeter.ctx = new AC();
+      if (!voiceMeter.ctx) {
+        voiceMeter.ctx = new AC();
+        // Created from a socket message rather than a user gesture, so iOS Safari starts it
+        // suspended and the meter would sit flat for the whole call — the one affordance a phone
+        // caller has for "can it hear me?".
+        if (voiceMeter.ctx.state === "suspended") {
+          try { voiceMeter.ctx.resume(); } catch (e) {}
+        }
+      }
       var an = voiceMeter.ctx.createAnalyser();
       an.fftSize = 256;
       an.smoothingTimeConstant = 0.7;
@@ -394,6 +402,9 @@
     try { if (voice.dc) voice.dc.close(); } catch (e) {}
     try { if (voice.pc) voice.pc.close(); } catch (e) {}
     if (voice.mic) { try { voice.mic.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {} }
+    // Drop the remote stream too: the <audio> element is permanent, so holding srcObject would keep
+    // the ended call's stream referenced for the life of the page.
+    if (voiceAudioEl) { try { voiceAudioEl.srcObject = null; } catch (e) {} }
     var wasLive = voice.state !== "idle";
     voice.dc = null; voice.pc = null; voice.mic = null; voice.muted = false; voice.model = null;
     voice.callToken = null; voice.speaking = false;
@@ -501,6 +512,9 @@
   }
   function connectRealtime(m) {
     if (voice.state !== "connecting") return; // user hung up while the host was minting
+    // The mic resolves before voiceStart on every path the host drives today, but a voiceSession
+    // arriving while the permission prompt is still open would throw inside the message handler.
+    if (!voice.mic) return;
     var pc;
     try { pc = new RTCPeerConnection(); } catch (e) {
       toast("This browser doesn't support WebRTC calls."); endCall(true); return;

@@ -255,17 +255,22 @@ class HostVoiceCallControllerTest {
                 return """{"late":true}"""
             }
         }
-        val c = controller(transport, audio, slow)
+        // A 150ms tool timeout drives the REAL watchdog — no production test hook needed.
+        val c = HostVoiceCallController(
+            scope = CoroutineScope(Dispatchers.Default),
+            executor = slow,
+            transport = transport,
+            audio = audio,
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+            toolTimeoutMs = { 150L },
+        )
         c.start()
         assertTrue(await { c.state.value.phase == HostCallPhase.Live })
 
         transport.deliver(
             """{"type":"response.function_call_arguments.done","call_id":"slow","name":"read_scrollback","arguments":"{}"}"""
         )
-        assertTrue(await { c.state.value.working }, "the round is in flight")
-
-        // Answer as the watchdog would, then let the real executor finish.
-        c.timeOutForTest("slow")
         assertTrue(await { transport.outputsFor("slow") == 1 }, "the watchdog answered")
         gate.complete(Unit)
         Thread.sleep(300)

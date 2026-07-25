@@ -38,11 +38,6 @@ internal object HostVoiceCall {
     @Volatile private var mirrorJob: Job? = null
     @Volatile private var killSwitchJob: Job? = null
 
-    /** Whether a call is possible at all: the feature on, and a key stored. */
-    fun available(): Boolean =
-        SettingsManager.instance.settings.value.voiceCallEnabled &&
-            VoiceAgentStorage.keyPresentFlow.value
-
     /**
      * Start a call scoped to this host's own tabs, defaulting to whichever tab is focused.
      *

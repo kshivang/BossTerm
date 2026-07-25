@@ -54,9 +54,10 @@ class VoiceCallServiceTest {
         settings = { TerminalSettings.DEFAULT.copy(voiceCallEnabled = enabled) },
         loadKey = { key },
         sessionName = { "test-session" },
-        // Own budget: the production default is shared process-wide, which would let one test's
-        // mints rate-limit the next.
+        // Own budget AND own live-call map: both are shared process-wide in production (one key,
+        // one ceiling), which would let one test's calls rate-limit or fill up the next.
         mintTimestamps = ArrayDeque(),
+        sharedCalls = LinkedHashMap(),
     )
 
     @Test
@@ -81,6 +82,7 @@ class VoiceCallServiceTest {
                 settings = { TerminalSettings.DEFAULT },
                 loadKey = { null },
                 mintTimestamps = ArrayDeque(),
+                sharedCalls = LinkedHashMap(),
             ).status().reason,
         )
     }
@@ -97,6 +99,7 @@ class VoiceCallServiceTest {
             settings = { TerminalSettings.DEFAULT.copy(voiceCallShareEnabled = false) },
             loadKey = { "sk-test" },
             mintTimestamps = ArrayDeque(),
+            sharedCalls = LinkedHashMap(),
         )
         assertEquals("disabled", svc.status().reason, "viewers are told it's unavailable")
 
@@ -222,6 +225,7 @@ class VoiceCallServiceTest {
             settings = { TerminalSettings.DEFAULT.copy(voiceCallEnabled = enabled) },
             loadKey = { "sk-test" },
             mintTimestamps = ArrayDeque(),
+            sharedCalls = LinkedHashMap(),
         )
         val token = svc.openCall()
         enabled = false
@@ -250,6 +254,7 @@ class VoiceCallServiceTest {
             loadKey = { "sk-test" },
             nowMs = { clock },
             mintTimestamps = ArrayDeque(),
+            sharedCalls = LinkedHashMap(),
         )
         val replies = mutableListOf<ServerMessage>()
         svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { replies.add(it) }
@@ -286,6 +291,7 @@ class VoiceCallServiceTest {
             settings = { TerminalSettings.DEFAULT },
             loadKey = { "sk-test" },
             mintTimestamps = ArrayDeque(),
+            sharedCalls = LinkedHashMap(),
         )
         val token = svc.openCall()
         val replies = mutableListOf<ServerMessage>()
@@ -345,6 +351,7 @@ class VoiceCallServiceTest {
             settings = { TerminalSettings.DEFAULT },
             loadKey = { "sk-test" },
             mintTimestamps = ArrayDeque(),
+            sharedCalls = LinkedHashMap(),
         )
         val reply = CompletableDeferred<ServerMessage>()
         svc.handleToolCall(
@@ -380,6 +387,7 @@ class VoiceCallServiceTest {
             loadKey = { "sk-test" },
             onCallActivity = { started -> synchronized(activity) { activity.add(started) } },
             mintTimestamps = ArrayDeque(),
+            sharedCalls = LinkedHashMap(),
         )
 
         var reserved: String? = null
@@ -488,6 +496,7 @@ class VoiceCallServiceTest {
             loadKey = { "sk-test" },
             onCallActivity = { started -> synchronized(activity) { activity.add(started) } },
             mintTimestamps = ArrayDeque(),
+            sharedCalls = LinkedHashMap(),
         )
         val reply = CompletableDeferred<ServerMessage>()
         svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { reply.complete(it) }

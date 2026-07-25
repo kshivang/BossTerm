@@ -27,8 +27,10 @@ import ai.rever.bossterm.compose.share.webViewerScrollbackLines
 import ai.rever.bossterm.compose.share.webTerminalFontFamily
 import ai.rever.bossterm.compose.voice.DaemonVoiceToolExecutor
 import ai.rever.bossterm.compose.notification.NotificationService
+import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.voice.VoiceAgentStorage
 import ai.rever.bossterm.compose.voice.VoiceCallService
+import ai.rever.bossterm.compose.voice.voiceCallTokenMatches
 import ai.rever.bossterm.terminal.model.TerminalModelListener
 import io.ktor.http.CacheControl
 import io.ktor.server.application.install
@@ -242,6 +244,23 @@ class DaemonShareServer(
          * concurrently, and publishing the new stamp before the new value let a reader take the
          * fresh stamp and the stale cache.
          */
+        @Volatile private var settingsStamp: Long = -1L
+        @Volatile private var settingsCache: TerminalSettings? = null
+
+        /**
+         * [settings] re-read from disk whenever settings.json changes, so a GUI-side toggle reaches
+         * this daemon-hosted share. Falls back to the process's own copy if the file can't be parsed.
+         */
+        @Synchronized
+        fun freshSettings(): TerminalSettings {
+            val stamp = VoiceAgentStorage.fileStamp(SettingsManager.instance.settingsFilePath())
+            if (stamp != settingsStamp || settingsCache == null) {
+                settingsStamp = stamp
+                settingsCache = SettingsManager.instance.readFromDisk()
+            }
+            return settingsCache ?: settings()
+        }
+
         @Synchronized
         fun cachedKeyPresent(): Boolean {
             val stamp = VoiceAgentStorage.keyStamp()
@@ -269,10 +288,16 @@ class DaemonShareServer(
                     anchorSessionId = { sessionId ?: host.list().firstOrNull()?.id },
                 ),
                 scope = this@DaemonShareServer.scope,
-                settings = { settings() },
                 // Stamp-cached: the poller runs every few seconds, and re-decoding voice.json each
                 // tick was needless when mtime+size can say "unchanged".
                 keyPresent = { cachedKeyPresent() },
+                // The daemon is a SEPARATE PROCESS from the GUI and SettingsManager has no
+                // reload-on-change, so its in-memory copy is frozen at daemon start: flipping
+                // "Enable Boss Calling" or "Allow calls from share viewers" in the GUI would never
+                // reach a daemon-hosted share, leaving MAX_CALL_DURATION_MS as the real upper bound
+                // and only "Clear key" as a working revocation. Re-read settings.json on change,
+                // using the same mtime+size stamp trick as the key file.
+                settings = { freshSettings() },
                 sessionName = { name },
                 // The daemon is exactly the case where nobody is looking at a window, so the
                 // "remote hands arrived" signal matters more here, not less.
@@ -1162,20 +1187,20 @@ class DaemonShareServer(
         when (msg) {
             is ClientMessage.Focus -> { rememberVoiceTab(msg.tabId); return }
             is ClientMessage.VoiceStart -> {
-                // One connection holds at most one call: redialling without a clean voiceEnd used to
-                // orphan the previous token for its full 6h TTL, and since openCall() refuses rather
-                // than evicts, eight redials wedged the share at too_many_calls for that long.
-                def.voiceService.closeCall(vc.voiceCallToken)
-                vc.voiceCallToken = null
                 rememberVoiceTab(msg.activeTabId)
                 def.voiceService.handleStart(
                     msg,
                     vc.canControl,
-                    onTokenReserved = { vc.voiceCallToken = it },
+                    // Retire the PREVIOUS call only here: this fires after the control/enabled/key
+                    // checks, so a view-only viewer (or a request while the feature is off) can't end
+                    // a live call just by asking. One connection still holds at most one.
+                    onTokenReserved = { fresh ->
+                        def.voiceService.closeCall(vc.voiceCallToken)
+                        vc.voiceCallToken = fresh
+                    },
                 ) { m ->
                     // See MirrorShare: the token is captured from the host's own reply, never from
                     // an inbound message.
-                    if (m is ServerMessage.VoiceSession) vc.voiceCallToken = m.callToken
                     voiceReply(m)
                 }
                 return
@@ -1191,7 +1216,7 @@ class DaemonShareServer(
                 // drive the read tools without ever passing handleStart's control gate. Reported as
                 // stale_call, not not_controller: the realistic cause is a redial racing an old
                 // token, which shouldn't read to the user as a permissions problem.
-                if (msg.callToken == null || msg.callToken != vc.voiceCallToken) {
+                if (!voiceCallTokenMatches(vc.voiceCallToken, msg.callToken)) {
                     voiceReply(ServerMessage.VoiceError(code = "stale_call"))
                     return
                 }

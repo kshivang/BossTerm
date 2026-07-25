@@ -65,6 +65,15 @@ internal class HostVoiceCallController(
     private val loadKey: () -> String? = { VoiceAgentStorage.load()?.openaiApiKey?.takeIf { it.isNotBlank() } },
     /** Injected in tests so the ceilings can be exercised without waiting them out. */
     private val nowMs: () -> Long = { System.currentTimeMillis() },
+    /**
+     * How long to wait for a tool before answering on its behalf. Injected rather than exposing a
+     * "fire the watchdog now" hook in production code — an internal seam like that quietly becomes
+     * load-bearing. run_command has its own 600s clamp; reads get 120s because search_output over a
+     * large scrollback is legitimately slow.
+     */
+    private val toolTimeoutMs: (String) -> Long = { name ->
+        if (name == "run_command") 630_000L else 120_000L
+    },
 ) {
 
     private val log = LoggerFactory.getLogger(HostVoiceCallController::class.java)
@@ -249,6 +258,7 @@ internal class HostVoiceCallController(
         callJob = null
         runCatching { audio.stop() }
         runCatching { transport.close() }
+        runCatching { executor.dispose() } // releases this call's private MCP server
         if (wasActive) log.info("Boss Calling: in-app call ended")
     }
 
@@ -259,6 +269,7 @@ internal class HostVoiceCallController(
         callJob = null
         runCatching { audio.stop() }
         runCatching { transport.close() }
+        runCatching { executor.dispose() }
         _state.value = HostCallState(phase = HostCallPhase.Error, error = message)
         _level.value = 0f
     }
@@ -350,6 +361,10 @@ internal class HostVoiceCallController(
             pendingCalls.add(callId)
             responseOpen = true // a function call only exists inside a response
         }
+        // Grab the per-call job FIRST: claiming the slot and then bailing on a null job (reachable
+        // when a function-call event lands just after end()/fail() nulled it) leaked the slot and
+        // left the round pending.
+        val parent = callJob ?: return
         // Same ceiling as the share path: the MCP handlers behind these are not cheap, and an
         // unbounded fan-out onto Dispatchers.Default is exactly what the share path refuses.
         val admitted = inFlightTools.getAndUpdate { n ->
@@ -362,9 +377,7 @@ internal class HostVoiceCallController(
         }
         touchActivity()
         _state.update { it.copy(working = true, activity = describeTool(name, argsJson)) }
-        // Reads get 120s, not 45: search_output over a large scrollback is legitimately slow.
-        val timeoutMs = if (name == "run_command") 630_000L else 120_000L
-        val parent = callJob ?: return
+        val timeoutMs = toolTimeoutMs(name)
         scope.launch(parent) {
             val watchdog = scope.launch(parent) {
                 delay(timeoutMs)
@@ -419,9 +432,6 @@ internal class HostVoiceCallController(
         if (settled) _state.update { it.copy(working = false, activity = null) }
         maybeRequestResponse()
     }
-
-    /** Test seam: fire the watchdog for [callId] now instead of waiting out its timeout. */
-    internal fun timeOutForTest(callId: String) = toolTimedOut(callId, "test")
 
     /**
      * Answer a tool call the executor never returned from, so the round can't hang.

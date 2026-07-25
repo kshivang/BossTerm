@@ -74,7 +74,9 @@ internal fun BossCallingSection(
         if (showAgentOptions) {
             SettingsDropdown(
                 label = "Model",
-                options = listOf("gpt-realtime", "gpt-realtime-mini", "gpt-4o-realtime-preview"),
+                options = listOf(
+                    "gpt-realtime-2.1", "gpt-realtime-2.1-mini", "gpt-realtime-2", "gpt-realtime",
+                ),
                 selectedOption = settings.voiceCallModel,
                 onOptionSelected = { onSettingsChange(settings.copy(voiceCallModel = it)) },
                 description = "OpenAI Realtime model for the voice agent."

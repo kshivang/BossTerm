@@ -245,7 +245,8 @@ sealed class ServerMessage {
     /**
      * A minted OpenAI Realtime session for THIS viewer (reply to [ClientMessage.VoiceStart]).
      * [clientSecret] is the short-lived ephemeral secret (`ek_…`) — never the host's API key.
-     * The viewer needs [model] for the WebRTC SDP exchange (`/v1/realtime/calls?model=`).
+     * [model] is informational (the viewer shows it on the Call pill): the SDP exchange takes no
+     * URL parameters — the model is bound to the secret when the host mints it.
      */
     @Serializable
     @SerialName("voiceSession")

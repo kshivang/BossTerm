@@ -227,7 +227,8 @@
   // WebRTC directly to OpenAI (audio never rides the tunnel/share socket) and forwards the
   // agent's function calls to the host over THIS share socket (voiceToolCall → executed
   // against the shared session → voiceToolResult → back onto the data channel).
-  var voice = { status: null, state: "idle", pc: null, dc: null, mic: null, muted: false, seenCalls: {}, watchdog: null };
+  var voice = { status: null, state: "idle", pc: null, dc: null, mic: null, muted: false, seenCalls: {},
+                watchdog: null, model: null };
   var voiceMicOk = !!(window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
   var voicePillEl = document.getElementById("voicepill");
   var voiceLabelEl = document.getElementById("voicelabel");
@@ -255,6 +256,7 @@
     } else {
       voicePillEl.title = "Voice-call the session's AI agent";
     }
+    if (voice.state !== "idle" && voice.model) voicePillEl.title = "In a call with " + voice.model;
     if (voice.state === "connecting") { cls += " connecting"; label = "Calling…"; }
     else if (voice.state === "live") { cls += " live"; label = "Live"; }
     else if (voice.state === "speaking") { cls += " speaking"; label = "Live"; }
@@ -300,7 +302,7 @@
     try { if (voice.pc) voice.pc.close(); } catch (e) {}
     if (voice.mic) { try { voice.mic.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {} }
     var wasLive = voice.state !== "idle";
-    voice.dc = null; voice.pc = null; voice.mic = null; voice.muted = false;
+    voice.dc = null; voice.pc = null; voice.mic = null; voice.muted = false; voice.model = null;
     voice.state = "idle";
     if (sendEnd && wasLive) sendMsg({ t: "voiceEnd" });
     updateVoicePill();
@@ -350,6 +352,7 @@
       toast("This browser doesn't support WebRTC calls."); endCall(true); return;
     }
     voice.pc = pc;
+    voice.model = m.model || null; // host-chosen model, shown on the pill while in a call
     voice.mic.getAudioTracks().forEach(function (t) { pc.addTrack(t, voice.mic); });
     if (!voiceAudioEl) {
       voiceAudioEl = document.createElement("audio");
@@ -401,7 +404,9 @@
     };
     pc.createOffer().then(function (offer) {
       return pc.setLocalDescription(offer).then(function () {
-        return fetch("https://api.openai.com/v1/realtime/calls?model=" + encodeURIComponent(m.model), {
+        // No query string: the GA SDP endpoint rejects any URL parameter with an empty 400, and
+        // the model is already bound to the ephemeral secret the host minted.
+        return fetch("https://api.openai.com/v1/realtime/calls", {
           method: "POST",
           headers: { "Authorization": "Bearer " + m.clientSecret, "Content-Type": "application/sdp" },
           body: offer.sdp,

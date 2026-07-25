@@ -1,14 +1,30 @@
 package ai.rever.bossterm.compose.share
 
+import ai.rever.bossterm.compose.util.BUNDLED_FONT_NAME
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
-import kotlin.test.assertIs
 
 /** Round-trip + discriminator checks for the window/tab/pane sharing protocol (issue #276). */
 class ShareProtocolTest {
+
+    @Test
+    fun `web terminal font stack preserves configured font and bundled icon fallbacks`() {
+        val bundled = webTerminalFontFamily(null)
+        assertTrue(bundled.startsWith("\"BossTerm Nerd Font\""))
+        assertTrue(bundled.contains("\"Apple Color Emoji\""))
+        assertTrue(bundled.contains("\"BossTerm Symbols\""))
+        assertEquals(bundled, webTerminalFontFamily(BUNDLED_FONT_NAME))
+
+        val configured = webTerminalFontFamily("JetBrains Mono")
+        assertTrue(configured.startsWith("\"JetBrains Mono\", \"BossTerm Nerd Font\""))
+
+        val escaped = webTerminalFontFamily("Font \"Quoted\"")
+        assertTrue(escaped.startsWith("\"Font \\\"Quoted\\\"\", "))
+    }
 
     @Test
     fun `server messages encode with the t discriminator`() {

@@ -771,6 +771,9 @@ object SessionShareManager {
                     install(WebSockets)
                     routing {
                         webSocket("/ws/{token}") { serveViewer(this) }
+                        staticResources("/fonts", "fonts") {
+                            cacheControl { listOf(CacheControl.NoCache(null)) }
+                        }
                         // Static web viewer (index.html + viewer.js + css). Share URL:
                         // http://<host>:<port>/?t=<token>
                         // no-cache (revalidate, don't blindly reuse): the asset filenames aren't

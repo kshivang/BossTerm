@@ -17,6 +17,7 @@ import ai.rever.bossterm.compose.share.ShareProtocol
 import ai.rever.bossterm.compose.share.TabNode
 import ai.rever.bossterm.compose.share.TailscaleExposer
 import ai.rever.bossterm.compose.share.TerminalSnapshotEncoder
+import ai.rever.bossterm.compose.share.webTerminalFontFamily
 import ai.rever.bossterm.terminal.model.TerminalModelListener
 import io.ktor.http.CacheControl
 import io.ktor.server.application.install
@@ -460,6 +461,9 @@ class DaemonShareServer(
                     install(WebSockets)
                     routing {
                         webSocket("/ws/{token}") { serveViewer(this) }
+                        staticResources("/fonts", "fonts") {
+                            cacheControl { listOf(CacheControl.NoCache(null)) }
+                        }
                         // Static web viewer (index.html + viewer.js + css). Share URL:
                         // http://<host>:<port>/?t=<token>. no-cache so a phone re-validates the
                         // viewer assets (filenames aren't content-hashed) — unchanged ones 304.
@@ -1002,10 +1006,6 @@ class DaemonShareServer(
         val theme = ThemeManager.instance.currentTheme.value
         val palette = ColorPaletteManager.instance.currentPalette.value ?: ColorPalette.fromTheme(theme)
         val s = settings()
-        val font = s.fontName
-            ?.takeIf { it.isNotBlank() }
-            ?.let { "\"$it\", Menlo, Monaco, monospace" }
-            ?: "Menlo, Monaco, \"Courier New\", monospace"
         return ServerMessage.Theme(
             background = hexToCss(theme.background),
             foreground = hexToCss(theme.foreground),
@@ -1013,7 +1013,7 @@ class DaemonShareServer(
             cursorAccent = hexToCss(theme.cursorText),
             selectionBackground = hexToCss(theme.selection),
             ansi = (0..15).map { hexToCss(palette.getAnsiColorHex(it)) },
-            fontFamily = font,
+            fontFamily = webTerminalFontFamily(s.fontName),
             fontSize = s.fontSize.toInt(),
         )
     }

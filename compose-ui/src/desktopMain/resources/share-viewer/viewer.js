@@ -487,6 +487,33 @@
   var activeTabId = null;         // client-side selected tab
   var panes = {};                 // paneId -> { term, host(el) }
   var ws = null;
+  var DEFAULT_TERMINAL_FONT_FAMILY =
+    '"BossTerm Nerd Font", "Apple Color Emoji", "Segoe UI Emoji", ' +
+    '"Noto Color Emoji", "BossTerm Symbols", monospace';
+
+  // xterm's WebGL renderer caches glyphs. Trigger both bundled downloads eagerly and invalidate
+  // each terminal after they finish so a first frame rendered during the download cannot leave
+  // Nerd Font icons or emoji stuck as missing-glyph boxes.
+  if (document.fonts && typeof document.fonts.load === "function") {
+    Promise.all([
+      document.fonts.load('13px "BossTerm Nerd Font"'),
+      document.fonts.load('13px "BossTerm Symbols"'),
+    ]).then(function () {
+      Object.keys(panes).forEach(function (id) {
+        var p = panes[id], t = p.term;
+        try {
+          var family = t.options.fontFamily;
+          // Force xterm to remeasure cells as well as rebuilding the WebGL glyph atlas.
+          t.options.fontFamily = family + " ";
+          t.options.fontFamily = family;
+          t.clearTextureAtlas();
+          t.refresh(0, t.rows - 1);
+        } catch (e) {}
+        scheduleGraphicsDraw(p);
+      });
+      relayoutSinglePane();
+    }).catch(function () { /* system fallbacks remain available if a font cannot load */ });
+  }
   // Give the active single pane its NATURAL width so a wide host terminal scrolls
   // horizontally inside #stage. (xterm's own viewport is a y-scroll container that clips
   // x, so we can't get native horizontal scroll from it — instead we expose the full
@@ -1162,7 +1189,7 @@
     host.className = "termhost";
     var opts = { cursorBlink: true, convertEol: false, scrollback: 5000,
                  allowTransparency: true,
-                 fontFamily: "Menlo, Monaco, monospace", fontSize: 13,
+                 fontFamily: DEFAULT_TERMINAL_FONT_FAMILY, fontSize: 13,
                  theme: { background: "rgba(0,0,0,0)", foreground: "#f8f8f2" } };
     if (theme) applyThemeToOpts(opts);
     host.style.background = (theme && theme.background) || "#1e1e1e";

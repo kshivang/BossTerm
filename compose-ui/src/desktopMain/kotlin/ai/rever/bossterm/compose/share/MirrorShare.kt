@@ -786,10 +786,6 @@ class MirrorShare(
         val theme = ThemeManager.instance.currentTheme.value
         val palette = ColorPaletteManager.instance.currentPalette.value ?: ColorPalette.fromTheme(theme)
         val settings = SettingsManager.instance.settings.value
-        val font = settings.fontName
-            ?.takeIf { it.isNotBlank() }
-            ?.let { "\"$it\", Menlo, Monaco, monospace" }
-            ?: "Menlo, Monaco, \"Courier New\", monospace"
         return ServerMessage.Theme(
             background = hexToCss(theme.background),
             foreground = hexToCss(theme.foreground),
@@ -797,7 +793,7 @@ class MirrorShare(
             cursorAccent = hexToCss(theme.cursorText),
             selectionBackground = hexToCss(theme.selection),
             ansi = (0..15).map { hexToCss(palette.getAnsiColorHex(it)) },
-            fontFamily = font,
+            fontFamily = webTerminalFontFamily(settings.fontName),
             fontSize = settings.fontSize.toInt(),
         )
     }

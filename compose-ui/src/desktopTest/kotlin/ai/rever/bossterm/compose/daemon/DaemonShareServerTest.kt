@@ -95,6 +95,16 @@ class DaemonShareServerTest {
             // allowlisting (unlike the loopback-only MCP/attach servers). So it serves the viewer
             // regardless of Host; a foreign Host must NOT be rejected with the rebinding 403.
             assertEquals(200, httpStatus(port, "/", hostHeader = "127.0.0.1:$port"), "viewer index must be served")
+            assertEquals(
+                200,
+                httpStatus(port, "/fonts/MesloLGSNF-Regular.ttf", hostHeader = "127.0.0.1:$port"),
+                "the bundled Nerd Font must be served for terminal icons",
+            )
+            assertEquals(
+                200,
+                httpStatus(port, "/fonts/NotoSansSymbols2-Regular.ttf", hostHeader = "127.0.0.1:$port"),
+                "the bundled symbol fallback must be served",
+            )
             assertTrue(
                 httpStatus(port, "/", hostHeader = "evil.example.com") != 403,
                 "share server is token-gated, not Host-gated — must not 403 by Host",

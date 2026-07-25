@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.share
 
+import ai.rever.bossterm.compose.util.BUNDLED_FONT_NAME
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -48,6 +49,25 @@ object ShareProtocol {
     fun sha256Hex(s: String): String =
         java.security.MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
+}
+
+/**
+ * CSS font stack used by the browser viewer.
+ *
+ * A configured system font stays first when the viewing device also has it. BossTerm's bundled
+ * Nerd Font then provides the same private-use icons as the native renderer, platform emoji fonts
+ * cover color emoji, and the bundled Noto font supplies the remaining symbols.
+ */
+internal fun webTerminalFontFamily(fontName: String?): String {
+    val configured = fontName
+        ?.takeIf { it.isNotBlank() && it != BUNDLED_FONT_NAME }
+        ?.replace("\\", "\\\\")
+        ?.replace("\"", "\\\"")
+        ?.let { "\"$it\", " }
+        .orEmpty()
+    return configured +
+        "\"BossTerm Nerd Font\", \"Apple Color Emoji\", \"Segoe UI Emoji\", " +
+        "\"Noto Color Emoji\", \"BossTerm Symbols\", monospace"
 }
 
 /**

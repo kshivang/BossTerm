@@ -48,14 +48,18 @@ internal class DaemonVoiceToolExecutor(
         val scope = inScopeSessionIds()
         val viewing = defaultTabId ?: anchorSessionId()
 
-        when (name) {
-            "list_tabs" -> return listTabsJson(scope, viewing)
-            "get_active_tab" -> return tabInfoJson(viewing ?: throw VoiceToolException("No session available"))
-        }
-
+        // Scope-check first, for every tool: `viewing` is viewer-supplied (Focus / VoiceStart) and
+        // the lookups behind get_active_tab scan all of host.list(), so a check that only guarded
+        // the DaemonMcpTools path would still leak a foreign session's title and cwd.
         val target = args.stringArg("tab_id") ?: viewing
             ?: throw VoiceToolException("No session available")
         if (target !in scope) throw VoiceToolException("Tab $target is not part of this share")
+
+        when (name) {
+            "list_tabs" -> return listTabsJson(scope, target)
+            "get_active_tab" -> return tabInfoJson(target)
+        }
+
         val daemonArgs = buildJsonObject {
             args.forEach { (k, v) -> if (k != "tab_id") put(k, v) }
             put("session_id", target)

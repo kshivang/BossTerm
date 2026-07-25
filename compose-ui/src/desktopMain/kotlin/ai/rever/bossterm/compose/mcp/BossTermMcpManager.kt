@@ -156,6 +156,9 @@ class BossTermMcpManager(
         // non-Compose readers like MirrorShare (relaying a remote client's MCP
         // attach/toggle) instead of the Compose-only LocalBossTermMcpConfig.
         registry.setServerInfo(config.serverName, config.displayName ?: "BossTerm")
+        // Same reason, whole config: Boss Calling builds a private in-process tool surface and has
+        // to inherit this embedder's write policy and tool-name prefix.
+        registry.setMcpConfig(config)
     }
 
     /** Begin observing settings. Idempotent. Safe to call multiple times. */

@@ -20,6 +20,12 @@ import kotlinx.serialization.json.put
  * that exists regardless of whether the user's MCP endpoint is enabled. `createServer()` already
  * honors `disabledMcpTools`, so user tool-disables carry over to voice for free.
  *
+ * The server is built from the EMBEDDER's [BossTermMcpConfig] (published on
+ * [McpTerminalRegistry.mcpConfig]), not a fabricated one: an app that configured a deliberately
+ * read-only MCP surface (`allowWriteTools = false`) must not get run_command / send_input back
+ * through voice, and a `toolNamePrefix` has to be applied when resolving handlers or the surface
+ * would silently collapse to the two locally-answered tools.
+ *
  * The network MCP path resolves a caller's tab from its TCP connection (ProcessAncestry); that is
  * meaningless in-process, so every call gets an explicit `tab_id` — the model's, else
  * [defaultTabId] (the tab the viewer is looking at), else [anchorTabId] (the shared tab).
@@ -40,14 +46,18 @@ internal class GuiVoiceToolExecutor(
         val LOCAL_TOOLS = setOf("list_tabs", "get_active_tab")
     }
 
+    /** The embedder's config, or library defaults when no manager was ever constructed. */
+    private val mcpConfig: BossTermMcpConfig get() = registry.mcpConfig ?: BossTermMcpConfig()
+
     // Built lazily so no MCP machinery spins up until the first call actually starts.
-    private val server: Server by lazy {
-        BossTermMcpServer(config = BossTermMcpConfig(allowWriteTools = true)).createServer()
-    }
+    private val server: Server by lazy { BossTermMcpServer(config = mcpConfig).createServer() }
+
+    /** The registered handler name for a catalog tool (the embedder may prefix them). */
+    private fun handlerName(tool: String): String = mcpConfig.toolNamePrefix + tool
 
     override fun tools(): List<VoiceToolDef> {
         val registered = server.tools.keys
-        return VoiceToolCatalog.ALL.filter { it.name in LOCAL_TOOLS || it.name in registered }
+        return VoiceToolCatalog.ALL.filter { it.name in LOCAL_TOOLS || handlerName(it.name) in registered }
     }
 
     override fun contextSnapshot(defaultTabId: String?): String {
@@ -70,25 +80,31 @@ internal class GuiVoiceToolExecutor(
             ?: throw VoiceToolException("Unknown tool: $name")
         val scope = inScopeTabIds()
 
-        // Tab enumeration is answered locally so it can be scope-filtered (the MCP handler
-        // enumerates every window on the host).
-        when (name) {
-            "list_tabs" -> return listTabsJson(scope, defaultTabId)
-            "get_active_tab" -> return tabInfoJson(defaultTabId ?: anchorTabId)
-        }
-
+        // Resolve and scope-check the target BEFORE dispatching anywhere — including the locally
+        // answered tools. [defaultTabId] comes from the viewer's own Focus/VoiceStart, and the
+        // registry lookups behind get_active_tab span every window on the host, so checking only
+        // the MCP path would let a viewer name a foreign tab and read back its title and cwd.
         val targetTabId = args.stringArg("tab_id") ?: defaultTabId ?: anchorTabId
         if (targetTabId !in scope) {
             throw VoiceToolException("Tab $targetTabId is not part of this share")
         }
+
+        // Tab enumeration is answered locally so it can be scope-filtered (the MCP handler
+        // enumerates every window on the host).
+        when (name) {
+            "list_tabs" -> return listTabsJson(scope, targetTabId)
+            "get_active_tab" -> return tabInfoJson(targetTabId)
+        }
+
         val effectiveArgs = buildJsonObject {
             args.forEach { (k, v) -> if (k != "tab_id") put(k, v) }
             put("tab_id", targetTabId)
         }
-        val handler = server.tools[def.name]?.handler
+        val registeredName = handlerName(def.name)
+        val handler = server.tools[registeredName]?.handler
             ?: throw VoiceToolException("Tool not available on this host: $name")
         val result = withTimeoutOrNull(EXEC_TIMEOUT_MS) {
-            handler(CallToolRequest(CallToolRequestParams(name = def.name, arguments = effectiveArgs)))
+            handler(CallToolRequest(CallToolRequestParams(name = registeredName, arguments = effectiveArgs)))
         } ?: throw VoiceToolException("Tool $name timed out")
         return result.content.filterIsInstance<TextContent>().firstOrNull()?.text ?: "{}"
     }

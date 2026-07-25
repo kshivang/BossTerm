@@ -968,7 +968,9 @@ const scenarios = {
     assert.strictEqual(el("voicestate").textContent, "Connecting…");
 
     // Minted session → SDP exchange → data channel opens.
-    socket.deliver({ t: "voiceSession", clientSecret: "ek_test", model: "gpt-realtime-2.1" });
+    socket.deliver({
+      t: "voiceSession", clientSecret: "ek_test", model: "gpt-realtime-2.1", callToken: "call-tok-1",
+    });
     await flushPromises();
     assert.strictEqual(
       FakeFetch.calls[0].url,
@@ -989,6 +991,7 @@ const scenarios = {
     pc.dc.deliver({ type: "output_audio_buffer.started" });
     assert.strictEqual(el("voicestate").textContent, "Agent speaking");
     pc.dc.deliver({ type: "output_audio_buffer.stopped" });
+    assert.strictEqual(el("voicestate").textContent, "Listening…");
 
     // A tool call rides the share socket, and its result goes back on the data channel.
     pc.dc.deliver({
@@ -996,21 +999,52 @@ const scenarios = {
       call_id: "c1", name: "read_scrollback", arguments: "{\"lines\":20}",
     });
     assert.strictEqual(el("voicestate").textContent, "Working…");
-    assert.strictEqual(sentOfType("voiceToolCall")[0].callId, "c1", "the host executes it, not the browser");
+    const toolCall = sentOfType("voiceToolCall")[0];
+    assert.strictEqual(toolCall.callId, "c1", "the host executes it, not the browser");
+    assert.strictEqual(toolCall.callToken, "call-tok-1", "the call handle must be echoed or the host refuses");
     socket.deliver({ t: "voiceToolResult", callId: "c1", resultJson: "{\"ok\":true}" });
     assert.ok(
       pc.dc.sent.some((s) => /function_call_output/.test(s)),
       "the result must be handed back to the model"
     );
+    // The response is still generating: asking for another turn now earns
+    // conversation_already_has_active_response, so the follow-up must wait for response.done.
+    assert.ok(
+      !pc.dc.sent.some((s) => /response\.create/.test(s)),
+      "response.create must not fire while the response is still open"
+    );
+    socket.deliver({ t: "voiceToolResult", callId: "c2", resultJson: "{}" }); // stray/unknown id
+    pc.dc.deliver({ type: "response.done", response: { output: [] } });
+    assert.strictEqual(
+      pc.dc.sent.filter((s) => /response\.create/.test(s)).length,
+      1,
+      "exactly one follow-up turn per tool round, however many results arrived"
+    );
     assert.strictEqual(el("voicestate").textContent, "Listening…", "and the call resumes");
 
+    // The host's master switch is a kill switch, not just a hidden button.
+    socket.deliver({ t: "voiceStatus", available: false, reason: "disabled" });
+    assert.ok(!el("voicecall").classList.contains("on"), "revoking voice must end a live call");
+    assert.ok(!el("voicebar").classList.contains("on"), "and take the bar away");
+    socket.deliver({ t: "voiceStatus", available: true });
+
     // End call tears down and restores the idle button.
+    el("voicecallbtn").onclick();
+    await flushPromises();
+    socket.deliver({
+      t: "voiceSession", clientSecret: "ek_test2", model: "gpt-realtime-2.1", callToken: "call-tok-2",
+    });
+    await flushPromises();
+    FakeRTCPeerConnection.latest.dc.open();
+    const pc2 = FakeRTCPeerConnection.latest;
     el("voicehang").onclick();
     assert.ok(!el("voicecall").classList.contains("on"), "ending hides the strip");
     assert.strictEqual(el("voicecallbtn").style.display, "inline-flex", "and restores the Call button");
-    assert.ok(pc.closed, "the peer connection must be closed");
-    assert.ok(pc.tracks[0].stopped, "the mic must be released");
-    assert.strictEqual(sentOfType("voiceEnd").length, 1, "the host must be told the call ended");
+    assert.ok(pc2.closed, "the peer connection must be closed");
+    assert.ok(pc2.tracks[0].stopped, "the mic must be released");
+    assert.ok(pc.closed, "the revoked call's peer connection was closed too");
+    // Two calls ended in this scenario: the one the host revoked, and the one hung up here.
+    assert.strictEqual(sentOfType("voiceEnd").length, 2, "every ended call must tell the host");
   },
 
   "a share-socket drop mid-call ends the call instead of leaving the agent blind"() {

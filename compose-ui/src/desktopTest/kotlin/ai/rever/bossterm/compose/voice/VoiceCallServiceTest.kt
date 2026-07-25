@@ -95,10 +95,11 @@ class VoiceCallServiceTest {
     @Test
     fun `unknown tools and write tools without control come back as tool errors`() {
         val svc = service()
+        val token = svc.openCall()
         val replies = mutableListOf<ServerMessage>()
 
         svc.handleToolCall(
-            ClientMessage.VoiceToolCall("c1", "made_up_tool", "{}"),
+            ClientMessage.VoiceToolCall("c1", "made_up_tool", "{}", callToken = token),
             canControl = true, defaultTabId = "t1",
         ) { replies.add(it) }
         val unknown = replies.single()
@@ -108,7 +109,7 @@ class VoiceCallServiceTest {
 
         replies.clear()
         svc.handleToolCall(
-            ClientMessage.VoiceToolCall("c2", "run_command", """{"script":"ls"}"""),
+            ClientMessage.VoiceToolCall("c2", "run_command", """{"script":"ls"}""", callToken = token),
             canControl = false, defaultTabId = "t1",
         ) { replies.add(it) }
         val gated = replies.single()
@@ -121,7 +122,7 @@ class VoiceCallServiceTest {
         val svc = service()
         val reply = CompletableDeferred<ServerMessage>()
         svc.handleToolCall(
-            ClientMessage.VoiceToolCall("c3", "read_scrollback", """{"lines":50}"""),
+            ClientMessage.VoiceToolCall("c3", "read_scrollback", """{"lines":50}""", callToken = svc.openCall()),
             canControl = true, defaultTabId = "t1",
         ) { reply.complete(it) }
         val r = withTimeout(5000) { reply.await() }
@@ -129,6 +130,79 @@ class VoiceCallServiceTest {
         assertEquals("c3", r.callId)
         assertTrue(!r.isError)
         assertTrue(r.resultJson.contains("\"defaultTabId\":\"t1\""))
+    }
+
+    /**
+     * The share socket must not double as a standing tool RPC: without a token from a call this
+     * host actually minted, a viewer's voiceToolCall goes nowhere near the session.
+     */
+    @Test
+    fun `a tool call outside a live call is refused`() {
+        val svc = service()
+        val replies = mutableListOf<ServerMessage>()
+        svc.handleToolCall(
+            ClientMessage.VoiceToolCall("c1", "read_scrollback", "{}", callToken = null),
+            canControl = true, defaultTabId = "t1",
+        ) { replies.add(it) }
+        assertTrue((replies.single() as ServerMessage.VoiceToolResult).isError, "no token → no tools")
+
+        replies.clear()
+        svc.handleToolCall(
+            ClientMessage.VoiceToolCall("c2", "read_scrollback", "{}", callToken = "not-a-real-token"),
+            canControl = true, defaultTabId = "t1",
+        ) { replies.add(it) }
+        assertTrue((replies.single() as ServerMessage.VoiceToolResult).isError, "forged token → no tools")
+    }
+
+    /** The master switch is a kill switch: flipping it off must stop an agent already mid-call. */
+    @Test
+    fun `turning Boss Calling off stops tools on a call already in progress`() {
+        var enabled = true
+        val svc = VoiceCallService(
+            executor = FakeExecutor(),
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT.copy(voiceCallEnabled = enabled) },
+            loadKey = { "sk-test" },
+        )
+        val token = svc.openCall()
+        enabled = false
+        val replies = mutableListOf<ServerMessage>()
+        svc.handleToolCall(
+            ClientMessage.VoiceToolCall("c9", "read_scrollback", "{}", callToken = token),
+            canControl = true, defaultTabId = "t1",
+        ) { replies.add(it) }
+        val refused = replies.single()
+        assertIs<ServerMessage.VoiceToolResult>(refused)
+        assertTrue(refused.isError)
+        assertTrue(refused.resultJson.contains("turned off"), refused.resultJson)
+    }
+
+    /**
+     * Each mint is a billed request against the host's own key, so a spamming controller (or a
+     * reconnect loop) must be throttled before it reaches OpenAI.
+     */
+    @Test
+    fun `back-to-back voiceStart is rate limited`() {
+        var clock = 1_000L
+        val svc = VoiceCallService(
+            executor = FakeExecutor(),
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+            nowMs = { clock },
+        )
+        val replies = mutableListOf<ServerMessage>()
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { replies.add(it) }
+        // First one is admitted (it goes on to mint asynchronously — no error reply here).
+        assertTrue(replies.none { it is ServerMessage.VoiceError }, "the first mint must be allowed")
+
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { replies.add(it) }
+        assertEquals("rate_limited", (replies.last() as ServerMessage.VoiceError).code)
+
+        clock += 5_000 // past the minimum gap
+        replies.clear()
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { replies.add(it) }
+        assertTrue(replies.none { it is ServerMessage.VoiceError }, "a later attempt is allowed again")
     }
 
     @Test
@@ -147,7 +221,7 @@ class VoiceCallServiceTest {
         val r = withTimeout(5000) { reply.await() }
         assertIs<ServerMessage.VoiceSession>(r)
         assertEquals("ek_stub_1", r.clientSecret)
-        assertEquals(1_720_000_000_000, r.expiresAtMs)
+        assertTrue(r.callToken.isNotBlank(), "a minted call must hand the viewer a token to echo")
         // The user's API key must never ride a protocol message.
         assertTrue(!ai.rever.bossterm.compose.share.ShareProtocol.encodeServer(r).contains("sk-test"))
     }

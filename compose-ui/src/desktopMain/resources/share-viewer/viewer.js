@@ -227,8 +227,15 @@
   // WebRTC directly to OpenAI (audio never rides the tunnel/share socket) and forwards the
   // agent's function calls to the host over THIS share socket (voiceToolCall → executed
   // against the shared session → voiceToolResult → back onto the data channel).
-  var voice = { status: null, state: "idle", pc: null, dc: null, mic: null, muted: false, seenCalls: {},
-                watchdog: null, model: null };
+  // state is the CONNECTION lifecycle only ("idle" | "connecting" | "live"); what the agent is
+  // doing rides alongside it (speaking / pending tool calls), because those overlap — a tool can
+  // start while audio is still playing, and collapsing them into one field desynced the bar.
+  var voice = { status: null, state: "idle", pc: null, dc: null, mic: null, muted: false,
+                seenCalls: {}, watchdog: null, model: null, callToken: null,
+                speaking: false, pending: {}, pendingCount: 0,
+                responseOpen: false, outputsOwed: 0 };
+  // The meter's bars are static markup — query once instead of every animation frame.
+  var voiceBars = null;
   var voiceMicOk = !!(window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
   var voiceBarEl = document.getElementById("voicebar");
   var voiceCallBtnEl = document.getElementById("voicecallbtn");
@@ -266,14 +273,15 @@
       voiceLabelEl.textContent = "Call BossTerm";
     } else {
       voiceCallBtnEl.className = "";
+      var working = voice.pendingCount > 0;
       voiceCallEl.className = "on" +
-        (voice.state === "speaking" ? " speaking" : "") +
-        (voice.state === "tool" ? " tool" : "") +
+        (!working && voice.speaking ? " speaking" : "") +
+        (working ? " tool" : "") +
         (voice.muted ? " muted" : "");
       voiceStateEl.textContent =
         voice.state === "connecting" ? "Connecting…" :
-        voice.state === "tool" ? "Working…" :
-        voice.state === "speaking" ? "Agent speaking" :
+        working ? "Working…" :
+        voice.speaking ? "Agent speaking" :
         voice.muted ? "Muted" : "Listening…";
       voiceStateEl.title = voice.model ? "In a call with " + voice.model : "";
       voiceMuteEl.textContent = voice.muted ? "Unmute" : "Mute";
@@ -330,8 +338,12 @@
       voiceMeterRun();
     } catch (e) {}
   }
+  function voiceMeterBars() {
+    if (!voiceBars) voiceBars = voiceLevelEl.querySelectorAll("i");
+    return voiceBars;
+  }
   function voiceMeterFlat() {
-    var bars = voiceLevelEl.querySelectorAll("i");
+    var bars = voiceMeterBars();
     for (var i = 0; i < bars.length; i++) bars[i].style.height = "3px";
   }
   function voiceMeterRun() {
@@ -340,9 +352,9 @@
       voiceMeter.raf = null;
       if (voice.state === "idle") { voiceMeterFlat(); return; }
       // While the agent talks, meter ITS track; otherwise the mic (flat when muted).
-      var an = voice.state === "speaking" ? (voiceMeter.remote || voiceMeter.mic)
+      var an = voice.speaking ? (voiceMeter.remote || voiceMeter.mic)
              : (voice.muted ? null : voiceMeter.mic);
-      var bars = voiceLevelEl.querySelectorAll("i");
+      var bars = voiceMeterBars();
       if (an && voiceMeter.buf) {
         an.getByteFrequencyData(voiceMeter.buf);
         // Speech energy lives low in the spectrum, so only sample the bottom ~60% of the bins.
@@ -374,6 +386,8 @@
     if (voice.mic) { try { voice.mic.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {} }
     var wasLive = voice.state !== "idle";
     voice.dc = null; voice.pc = null; voice.mic = null; voice.muted = false; voice.model = null;
+    voice.callToken = null; voice.speaking = false;
+    voice.pending = {}; voice.pendingCount = 0; voice.responseOpen = false; voice.outputsOwed = 0;
     voice.state = "idle";
     if (sendEnd && wasLive) sendMsg({ t: "voiceEnd" });
     updateVoiceBar();
@@ -408,10 +422,28 @@
   function voiceHandleFunctionCall(callId, name, argsJson) {
     if (!callId || voice.seenCalls[callId]) return;
     voice.seenCalls[callId] = true;
-    voice.state = "tool";
+    voice.pending[callId] = true;
+    voice.pendingCount += 1;
+    voice.responseOpen = true; // a function call only exists inside a response
     updateVoiceBar();
     toast(voiceDescribeTool(name, argsJson));
-    sendMsg({ t: "voiceToolCall", callId: callId, name: name, argsJson: argsJson || "{}" });
+    sendMsg({
+      t: "voiceToolCall", callId: callId, name: name, argsJson: argsJson || "{}",
+      callToken: voice.callToken,
+    });
+  }
+  /**
+   * Ask for the follow-up turn exactly once per tool round.
+   *
+   * Realtime rejects a response.create while one is still generating
+   * (conversation_already_has_active_response), and it can request SEVERAL function calls in one
+   * response — so answering each result immediately would fire mid-response and once per call.
+   * Wait until the response has finished AND every call it asked for has come back.
+   */
+  function voiceMaybeRequestResponse() {
+    if (voice.responseOpen || voice.pendingCount > 0 || voice.outputsOwed === 0) return;
+    voice.outputsOwed = 0;
+    voiceDcSend({ type: "response.create" });
   }
   function voiceDcSend(o) {
     try { if (voice.dc && voice.dc.readyState === "open") voice.dc.send(JSON.stringify(o)); } catch (e) {}
@@ -423,7 +455,8 @@
       toast("This browser doesn't support WebRTC calls."); endCall(true); return;
     }
     voice.pc = pc;
-    voice.model = m.model || null; // host-chosen model, shown on the pill while in a call
+    voice.model = m.model || null; // host-chosen model, shown on the bar while in a call
+    voice.callToken = m.callToken || null; // proves to the host that this call was minted
     voice.mic.getAudioTracks().forEach(function (t) { pc.addTrack(t, voice.mic); });
     voiceMeterAttach("mic", voice.mic);
     if (!voiceAudioEl) {
@@ -455,6 +488,9 @@
     dc.onmessage = function (ev) {
       var e; try { e = JSON.parse(ev.data); } catch (x) { return; }
       switch (e.type) {
+        case "response.created":
+          voice.responseOpen = true;
+          break;
         case "response.function_call_arguments.done":
           voiceHandleFunctionCall(e.call_id, e.name, e.arguments);
           break;
@@ -464,13 +500,17 @@
             if (out[i].type === "function_call")
               voiceHandleFunctionCall(out[i].call_id, out[i].name, out[i].arguments);
           }
+          voice.responseOpen = false;
+          voiceMaybeRequestResponse(); // safe now: nothing is generating
           break;
         }
         case "output_audio_buffer.started":
-          if (voice.state === "live") { voice.state = "speaking"; updateVoiceBar(); }
+          voice.speaking = true;
+          updateVoiceBar();
           break;
         case "output_audio_buffer.stopped":
-          if (voice.state === "speaking") { voice.state = "live"; updateVoiceBar(); }
+          voice.speaking = false;
+          updateVoiceBar();
           break;
         case "error":
           if (e.error && e.error.message) toast("Agent error: " + String(e.error.message).slice(0, 80));
@@ -2835,7 +2875,14 @@
       case "mcpStatus":
         mcp = m; updateMcpPill(); break;
       case "voiceStatus":
-        voice.status = m; updateVoiceBar(); break;
+        voice.status = m;
+        // The host's master switch is a kill switch: don't just hide the bar under a live call.
+        if (!m.available && voice.state !== "idle") {
+          endCall(true);
+          toast("Boss Calling was turned off on the host — call ended.");
+        }
+        updateVoiceBar();
+        break;
       case "voiceSession":
         connectRealtime(m); break;
       case "voiceError":
@@ -2845,8 +2892,13 @@
       case "voiceToolResult":
         voiceDcSend({ type: "conversation.item.create",
           item: { type: "function_call_output", call_id: m.callId, output: m.resultJson } });
-        voiceDcSend({ type: "response.create" });
-        if (voice.state === "tool") { voice.state = "live"; updateVoiceBar(); }
+        voice.outputsOwed += 1;
+        if (voice.pending[m.callId]) {
+          delete voice.pending[m.callId];
+          voice.pendingCount = Math.max(0, voice.pendingCount - 1);
+        }
+        updateVoiceBar();
+        voiceMaybeRequestResponse();
         if (m.isError) toast("Tool failed — the agent will explain.");
         break;
       case "control":

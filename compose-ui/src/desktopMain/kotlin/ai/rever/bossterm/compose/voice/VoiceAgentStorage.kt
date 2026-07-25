@@ -51,25 +51,44 @@ internal object VoiceAgentStorage {
     /** Whether a non-blank key exists on disk right now (cheap stat + parse; daemon-safe). */
     fun keyPresent(file: File = defaultFile()): Boolean = load(file)?.openaiApiKey?.isNotBlank() == true
 
-    fun save(config: StoredVoiceConfig, file: File = defaultFile()) {
-        runCatching {
-            // Stage the temp in the target's OWN directory so the ATOMIC_MOVE stays on one
-            // filesystem (see AuthStorage.save for the bare-filename caveat).
-            val dir = file.absoluteFile.parentFile
+    /**
+     * Persist [config], returning whether it actually reached disk.
+     *
+     * The flow is only updated on success: a read-only home or a full disk used to log a warning
+     * and then flip the UI to "a key is set", which also made every share advertise
+     * `available: true` while `load()` still returned nothing — viewers got a Call button that
+     * could only fail. Callers should surface `false` rather than assume it worked.
+     */
+    fun save(config: StoredVoiceConfig, file: File = defaultFile()): Boolean {
+        // Stage the temp in the target's OWN directory so the ATOMIC_MOVE stays on one
+        // filesystem (see AuthStorage.save for the bare-filename caveat).
+        val dir = file.absoluteFile.parentFile
+        var tmp: File? = null
+        val ok = runCatching {
             dir?.mkdirs()
-            val tmp = newOwnerOnlyTempFile(dir)
-            tmp.writeText(json.encodeToString(StoredVoiceConfig.serializer(), config))
+            val staged = newOwnerOnlyTempFile(dir)
+            tmp = staged
+            staged.writeText(json.encodeToString(StoredVoiceConfig.serializer(), config))
             Files.move(
-                tmp.toPath(), file.toPath(),
+                staged.toPath(), file.toPath(),
                 StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING
             )
-        }.onFailure { log.warn("Could not persist voice config: {}", it.message) }
-        _keyPresentFlow.value = config.openaiApiKey.isNotBlank()
+        }.onFailure {
+            log.warn("Could not persist voice config: {}", it.message)
+            // Don't leave the key sitting in an orphaned temp file next to the real one.
+            runCatching { tmp?.delete() }
+        }.isSuccess
+        if (ok) _keyPresentFlow.value = config.openaiApiKey.isNotBlank()
+        return ok
     }
 
-    fun clear(file: File = defaultFile()) {
-        runCatching { Files.deleteIfExists(file.toPath()) }
-        _keyPresentFlow.value = false
+    /** Delete the stored key, returning whether the file is now gone. */
+    fun clear(file: File = defaultFile()): Boolean {
+        val ok = runCatching { Files.deleteIfExists(file.toPath()); !file.exists() }
+            .onFailure { log.warn("Could not remove voice config: {}", it.message) }
+            .getOrDefault(false)
+        if (ok) _keyPresentFlow.value = false
+        return ok
     }
 
     /**

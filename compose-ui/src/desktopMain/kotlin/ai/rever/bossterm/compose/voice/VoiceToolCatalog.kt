@@ -1,6 +1,8 @@
 package ai.rever.bossterm.compose.voice
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -121,9 +123,11 @@ object VoiceToolCatalog {
             parameters = objectSchema(required = listOf("signal")) {
                 putJsonObject("signal") {
                     put("type", "string")
-                    putJsonArray("enum") { add(kotlinx.serialization.json.JsonPrimitive("ctrl_c"))
-                        add(kotlinx.serialization.json.JsonPrimitive("ctrl_d"))
-                        add(kotlinx.serialization.json.JsonPrimitive("ctrl_z")) }
+                    putJsonArray("enum") {
+                        add(JsonPrimitive("ctrl_c"))
+                        add(JsonPrimitive("ctrl_d"))
+                        add(JsonPrimitive("ctrl_z"))
+                    }
                     put("description", "Which signal to send.")
                 }
                 putJsonObject("tab_id") { put("type", "string"); put("description", TAB_ID_DESC) }
@@ -146,12 +150,12 @@ object VoiceToolCatalog {
 
     private inline fun objectSchema(
         required: List<String> = emptyList(),
-        crossinline properties: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit,
+        crossinline properties: JsonObjectBuilder.() -> Unit,
     ): JsonObject = buildJsonObject {
         put("type", "object")
         putJsonObject("properties") { properties() }
         if (required.isNotEmpty()) {
-            putJsonArray("required") { required.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } }
+            putJsonArray("required") { required.forEach { add(JsonPrimitive(it)) } }
         }
     }
 }

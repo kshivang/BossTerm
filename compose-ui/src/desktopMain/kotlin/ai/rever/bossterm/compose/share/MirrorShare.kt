@@ -95,12 +95,48 @@ class MirrorShare(
     private val voiceService by lazy {
         VoiceCallService(
             executor = GuiVoiceToolExecutor(
-                inScopeTabIds = { inScopeStates().flatMap { st -> inScopeTabs(st).map { it.id } }.toSet() },
+                inScopeTabIds = { voiceScopeTabIds() },
                 anchorTabId = tabId,
             ),
             scope = coro,
+            // In-process: answer from the reactive flow instead of re-reading + re-parsing
+            // voice.json on every settings emission (status is recomputed per share).
+            keyPresent = { VoiceAgentStorage.keyPresentFlow.value },
             sessionName = { sessionName.value },
+            onCallActivity = ::notifyVoiceCall,
         )
+    }
+
+    /**
+     * A voice call is remote hands on this machine, and the feature ships enabled — so the host
+     * gets the same treatment as an approval request rather than only the terminal scrolling by
+     * itself. Same channel as [SessionShareManager.notifyApprovalRequest].
+     */
+    private fun notifyVoiceCall(started: Boolean) {
+        runCatching {
+            ai.rever.bossterm.compose.notification.NotificationService.showNotification(
+                title = "BossTerm — Boss Calling",
+                message = if (started) {
+                    "A viewer started a voice call on \"${sessionName.value}\" — the agent can read and run commands here"
+                } else {
+                    "The voice call on \"${sessionName.value}\" ended"
+                },
+                withSound = started,
+            )
+        }
+    }
+
+    /** The tabs this share covers — the only ids the voice agent may ever target. */
+    private fun voiceScopeTabIds(): Set<String> =
+        inScopeStates().flatMap { st -> inScopeTabs(st).map { it.id } }.toSet()
+
+    /**
+     * Remember which tab a viewer is looking at, but only if the share actually covers it: this is
+     * unvalidated viewer input that becomes the voice agent's default tool target, so a foreign id
+     * must never be stored (the executor re-checks, and this keeps it from getting that far).
+     */
+    private fun rememberVoiceTab(vc: ViewerConnection, tabId: String?) {
+        if (tabId != null && tabId in voiceScopeTabIds()) vc.voiceTabId = tabId
     }
 
     private class TapEntry(
@@ -367,9 +403,9 @@ class MirrorShare(
         // rides along: it tracks which tab the viewer is looking at — the voice agent's
         // default tool target.
         when (msg) {
-            is ClientMessage.Focus -> { vc.voiceTabId = msg.tabId; return }
+            is ClientMessage.Focus -> { rememberVoiceTab(vc, msg.tabId); return }
             is ClientMessage.VoiceStart -> {
-                msg.activeTabId?.let { vc.voiceTabId = it }
+                rememberVoiceTab(vc, msg.activeTabId)
                 voiceService.handleStart(msg, vc.canControl) { m ->
                     vc.outbox.trySend(ShareProtocol.encodeServer(m))
                 }

@@ -35,6 +35,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,6 +45,9 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The "Boss Calling (voice)" controls, shared by Settings → Session Sharing and the Share window.
@@ -136,6 +140,10 @@ private fun VoiceAvailabilityLine(settings: TerminalSettings) {
 private fun VoiceApiKeyField() {
     val keyPresent by VoiceAgentStorage.keyPresentFlow.collectAsState()
     var input by remember { mutableStateOf("") }
+    // Writing the key touches the filesystem (mkdirs + atomic move), so it goes off the UI thread;
+    // `error` surfaces a write that failed rather than letting the field claim a key is set.
+    var error by remember { mutableStateOf<String?>(null) }
+    val io = rememberCoroutineScope()
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -152,6 +160,9 @@ private fun VoiceApiKeyField() {
             fontSize = 11.sp,
             modifier = Modifier.padding(top = 2.dp)
         )
+        error?.let {
+            Text(text = it, color = Danger, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp))
+        }
         BasicTextField(
             value = input,
             onValueChange = { input = it },
@@ -191,8 +202,13 @@ private fun VoiceApiKeyField() {
                 onClick = {
                     val k = input.trim()
                     if (k.isNotEmpty()) {
-                        VoiceAgentStorage.save(StoredVoiceConfig(openaiApiKey = k))
-                        input = ""
+                        io.launch {
+                            val saved = withContext(Dispatchers.IO) {
+                                VoiceAgentStorage.save(StoredVoiceConfig(openaiApiKey = k))
+                            }
+                            error = if (saved) null else "Couldn't write ~/.bossterm/voice.json — key not saved."
+                            if (saved) input = ""
+                        }
                     }
                 },
                 enabled = input.isNotBlank(),
@@ -200,7 +216,13 @@ private fun VoiceApiKeyField() {
                 modifier = Modifier.height(36.dp),
             ) { Text("Save key", fontSize = 12.sp) }
             if (keyPresent) {
-                TextButton(onClick = { VoiceAgentStorage.clear(); input = "" }) {
+                TextButton(onClick = {
+                    io.launch {
+                        val cleared = withContext(Dispatchers.IO) { VoiceAgentStorage.clear() }
+                        error = if (cleared) null else "Couldn't remove ~/.bossterm/voice.json."
+                        input = ""
+                    }
+                }) {
                     Text("Clear key", color = Danger, fontSize = 12.sp)
                 }
             }

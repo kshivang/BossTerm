@@ -67,6 +67,45 @@ class DaemonVoiceToolExecutorTest {
         }
     }
 
+    /**
+     * `defaultTabId` is whatever the viewer last claimed to be looking at (Focus / VoiceStart), and
+     * the lookups behind `get_active_tab` scan every session on the host — so a scope check that
+     * only guarded the generic tool path let a viewer name a foreign session and read back its
+     * title and cwd. Every tool, including the locally-answered ones, must be scope-checked.
+     */
+    @Test
+    fun `get_active_tab cannot be pointed at a session outside the share`() {
+        if (ShellCustomizationUtils.isWindows()) return
+        val host = SessionHost(TerminalSettings.DEFAULT)
+        try {
+            val inScope = host.openSession(command = "/bin/cat")
+            val outOfScope = host.openSession(command = "/bin/cat")
+            val exec = executor(host, { setOf(inScope) }, { inScope })
+
+            // As the viewer's claimed "current tab"…
+            assertFailsWith<VoiceToolException> {
+                runBlocking { exec.execute("get_active_tab", buildJsonObject { }, defaultTabId = outOfScope) }
+            }
+            // …and named outright.
+            assertFailsWith<VoiceToolException> {
+                runBlocking {
+                    exec.execute("get_active_tab", buildJsonObject { put("tab_id", outOfScope) }, null)
+                }
+            }
+            // list_tabs must not treat it as the viewing tab either.
+            assertFailsWith<VoiceToolException> {
+                runBlocking { exec.execute("list_tabs", buildJsonObject { }, defaultTabId = outOfScope) }
+            }
+            // The in-scope session still answers normally.
+            assertTrue(
+                runBlocking { exec.execute("get_active_tab", buildJsonObject { }, defaultTabId = inScope) }
+                    .contains(inScope)
+            )
+        } finally {
+            host.shutdownAll()
+        }
+    }
+
     @Test
     fun `guiOnly tools are not advertised and are rejected`() {
         val host = SessionHost(TerminalSettings.DEFAULT)

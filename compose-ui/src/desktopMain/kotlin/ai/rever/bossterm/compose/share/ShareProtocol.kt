@@ -245,15 +245,17 @@ sealed class ServerMessage {
     /**
      * A minted OpenAI Realtime session for THIS viewer (reply to [ClientMessage.VoiceStart]).
      * [clientSecret] is the short-lived ephemeral secret (`ek_…`) — never the host's API key.
-     * [model] is informational (the viewer shows it on the Call pill): the SDP exchange takes no
-     * URL parameters — the model is bound to the secret when the host mints it.
+     * [model] is informational (the viewer shows it on the call bar): the SDP exchange takes no
+     * URL parameters — the model is bound to the secret when the host mints it. [callToken] is
+     * this call's handle, which the viewer must echo on every [ClientMessage.VoiceToolCall] so the
+     * share socket can't be driven as a tool RPC by a viewer that never started a call.
      */
     @Serializable
     @SerialName("voiceSession")
     data class VoiceSession(
         val clientSecret: String,
         val model: String,
-        val expiresAtMs: Long? = null,
+        val callToken: String,
     ) : ServerMessage()
 
     /**
@@ -577,7 +579,8 @@ sealed class ClientMessage {
      * The voice agent asked for a tool call: [name] + [argsJson] (the model's raw arguments
      * JSON) forwarded from the Realtime data channel. The host executes it against the shared
      * session and replies [ServerMessage.VoiceToolResult] echoing [callId]. Write tools
-     * require controller role; targets are limited to the share's scope.
+     * require controller role; targets are limited to the share's scope. [callToken] is the handle
+     * from [ServerMessage.VoiceSession] — a tool call without a live one is refused.
      */
     @Serializable
     @SerialName("voiceToolCall")
@@ -585,6 +588,7 @@ sealed class ClientMessage {
         val callId: String,
         val name: String,
         val argsJson: String,
+        val callToken: String? = null,
     ) : ClientMessage()
 }
 

@@ -324,10 +324,11 @@ class ShareProtocolTest {
         assertTrue(status.contains("\"available\":false") && status.contains("\"reason\":\"no_key\""))
 
         val session = ShareProtocol.encodeServer(
-            ServerMessage.VoiceSession(clientSecret = "ek_test", model = "gpt-realtime", expiresAtMs = 1_720_000_000_000)
+            ServerMessage.VoiceSession(clientSecret = "ek_test", model = "gpt-realtime", callToken = "call-1")
         )
         assertTrue(session.contains("\"t\":\"voiceSession\""), session)
         assertTrue(session.contains("\"clientSecret\":\"ek_test\"") && session.contains("\"model\":\"gpt-realtime\""))
+        assertTrue(session.contains("\"callToken\":\"call-1\""), "the viewer must get the call handle to echo")
 
         val err = ShareProtocol.encodeServer(ServerMessage.VoiceError(code = "unauthorized"))
         assertTrue(err.contains("\"t\":\"voiceError\"") && err.contains("\"code\":\"unauthorized\""), err)

@@ -138,6 +138,13 @@ class DaemonShareServer(
 
         const val MAX_PORT_FALLBACK = 10
         const val GRANT_TTL_MS = 24L * 60 * 60 * 1000
+
+        /**
+         * How often a daemon share re-checks Boss Calling availability for connected viewers.
+         * The daemon can't see the GUI's key flow across processes, so this is the only way a
+         * key added mid-session reaches an open browser tab. Cheap: one small-file stat.
+         */
+        const val VOICE_STATUS_POLL_MS = 5_000L
         // A Cloudflare quick tunnel serves an error page until cloudflared registers an edge
         // connection; spin a fresh one a couple of times before falling back to the LAN link.
         const val MAX_REFRESHES = 2
@@ -220,9 +227,13 @@ class DaemonShareServer(
         val viewers = CopyOnWriteArrayList<DaemonShareConnection>()
         val viewerSeq = AtomicInteger(0)
 
+        /** Last voiceStatus pushed, so [watchVoiceStatus] only broadcasts real changes. */
+        @Volatile var lastVoiceStatus: ServerMessage.VoiceStatus? = null
+        @Volatile var voiceWatchJob: Job? = null
+
         // Boss Calling: one service per share; its executor limits tool targets to this share's
         // scope. The daemon has no cross-process key flow — availability is re-checked from disk
-        // at admit time and on each voiceStart (VoiceAgentStorage stats the file).
+        // at admit time, on each voiceStart, and by [watchVoiceStatus] below.
         val voiceService: VoiceCallService by lazy {
             VoiceCallService(
                 executor = DaemonVoiceToolExecutor(
@@ -695,6 +706,7 @@ class DaemonShareServer(
         send(themeMessage())
         send(mcpStatusMessage())
         send(def.voiceService.status())
+        watchVoiceStatus(def)
         send(layoutFor(def))
 
         val vc = DaemonShareConnection(
@@ -1032,6 +1044,36 @@ class DaemonShareServer(
     }
 
     /**
+     * Keep browser viewers' Call button honest while they stay connected.
+     *
+     * The GUI gets this from a settings + key flow, but the daemon is a different process: the key
+     * file is written by the GUI and nothing pushes across. Without this, adding a key (or flipping
+     * the switch) while a viewer is connected needs a page reload before the button appears — or
+     * worse, leaves a button up after the host revoked the feature. One stat of a small JSON file
+     * every few seconds, only while the share has viewers.
+     */
+    private fun watchVoiceStatus(def: ShareDef) {
+        if (def.voiceWatchJob?.isActive == true) return
+        def.voiceWatchJob = scope.launch {
+            try {
+                while (def.viewers.isNotEmpty()) {
+                    val status = def.voiceService.status()
+                    if (status != def.lastVoiceStatus) {
+                        def.lastVoiceStatus = status
+                        def.broadcast(status)
+                        // Revoked mid-call: invalidate the call so its tool calls stop too, not
+                        // just the button.
+                        if (!status.available) def.voiceService.closeCalls()
+                    }
+                    delay(VOICE_STATUS_POLL_MS)
+                }
+            } finally {
+                def.voiceWatchJob = null
+            }
+        }
+    }
+
+    /**
      * Route a viewer message to the daemon (controller role only for mutating actions). A daemon
      * session is a flat single-pane PTY, so window/split/AI/rename/color/MCP verbs are NO-OPs here
      * (they only make sense for the GUI's window→tabs→panes model in MirrorShare).
@@ -1043,10 +1085,15 @@ class DaemonShareServer(
         val voiceReply: (ServerMessage) -> Unit = { m ->
             vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(m)))
         }
+        // Only remember a session this share actually covers: the id is unvalidated viewer input
+        // that becomes the agent's default tool target (the executor re-checks too).
+        fun rememberVoiceTab(id: String?) {
+            if (id != null && mutationInScope(def.scope, def.sessionId, id)) vc.voiceTabId = id
+        }
         when (msg) {
-            is ClientMessage.Focus -> { vc.voiceTabId = msg.tabId; return }
+            is ClientMessage.Focus -> { rememberVoiceTab(msg.tabId); return }
             is ClientMessage.VoiceStart -> {
-                msg.activeTabId?.let { vc.voiceTabId = it }
+                rememberVoiceTab(msg.activeTabId)
                 def.voiceService.handleStart(msg, vc.canControl, voiceReply)
                 return
             }

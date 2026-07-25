@@ -12,6 +12,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -28,19 +29,40 @@ internal class VoiceCallService(
     private val broker: VoiceSessionBroker = VoiceSessionBroker(),
     private val settings: () -> TerminalSettings = { SettingsManager.instance.settings.value },
     private val loadKey: () -> String? = { VoiceAgentStorage.load()?.openaiApiKey?.takeIf { it.isNotBlank() } },
+    /**
+     * Whether a key exists, for [status] only — separate from [loadKey] because status is
+     * recomputed on every settings emission per share, and the GUI can answer from the in-process
+     * flow instead of re-reading and re-parsing voice.json each time. The daemon has no such flow
+     * and falls back to the disk read.
+     */
+    private val keyPresent: () -> Boolean = { loadKey() != null },
     /** The host's display name for this shared session, for the agent's instructions. */
     private val sessionName: () -> String? = { null },
+    /** Injected in tests; wall-clock only feeds the mint rate limiter. */
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
+    /** Notified when a call is minted (true) or its tools stop being usable (false). */
+    private val onCallActivity: (Boolean) -> Unit = {},
 ) {
 
     private val log = LoggerFactory.getLogger(VoiceCallService::class.java)
     private val inFlightToolCalls = AtomicInteger(0)
 
-    /** Current availability, for the viewer's Call pill (sent on connect + on change). */
+    // Mint rate limiting: every voiceStart is a billed request against the host's own key, so a
+    // spamming (or reconnect-looping) controller must not be able to run it up.
+    private val mintTimestamps = ArrayDeque<Long>()
+
+    /**
+     * Tokens for calls this host actually minted. A voiceToolCall must carry one, so the share
+     * socket can't be used as a standing tool RPC by a viewer that never started a call.
+     */
+    private val liveCalls = LinkedHashMap<String, Long>()
+
+    /** Current availability, for the viewer's Call button (sent on connect + on change). */
     fun status(): ServerMessage.VoiceStatus {
         val s = settings()
         return when {
             !s.voiceCallEnabled -> ServerMessage.VoiceStatus(available = false, reason = "disabled")
-            loadKey() == null -> ServerMessage.VoiceStatus(available = false, reason = "no_key")
+            !keyPresent() -> ServerMessage.VoiceStatus(available = false, reason = "no_key")
             else -> ServerMessage.VoiceStatus(available = true)
         }
     }
@@ -66,6 +88,11 @@ internal class VoiceCallService(
             reply(ServerMessage.VoiceError(code = "no_key"))
             return
         }
+        if (!allowMint()) {
+            log.warn("Voice session mint refused: rate limit")
+            reply(ServerMessage.VoiceError(code = "rate_limited"))
+            return
+        }
         scope.launch {
             val tools = executor.tools()
             val result = broker.mint(
@@ -76,13 +103,16 @@ internal class VoiceCallService(
                 tools = VoiceToolCatalog.openAiToolsJson(tools),
             )
             when (result) {
-                is VoiceSessionBroker.MintResult.Ok -> reply(
-                    ServerMessage.VoiceSession(
-                        clientSecret = result.clientSecret,
-                        model = s.voiceCallModel,
-                        expiresAtMs = result.expiresAtMs,
+                is VoiceSessionBroker.MintResult.Ok -> {
+                    reply(
+                        ServerMessage.VoiceSession(
+                            clientSecret = result.clientSecret,
+                            model = s.voiceCallModel,
+                            callToken = openCall(),
+                        )
                     )
-                )
+                    onCallActivity(true)
+                }
                 is VoiceSessionBroker.MintResult.Unauthorized ->
                     reply(ServerMessage.VoiceError(code = "unauthorized"))
                 is VoiceSessionBroker.MintResult.Failed ->
@@ -102,6 +132,17 @@ internal class VoiceCallService(
         defaultTabId: String?,
         reply: (ServerMessage) -> Unit,
     ) {
+        // The master switch is a kill switch: re-read it here, not just at status/start, so
+        // turning Boss Calling off stops an agent that is already mid-call.
+        if (!settings().voiceCallEnabled) {
+            closeCalls()
+            reply(toolError(msg.callId, "Boss Calling was turned off on the host"))
+            return
+        }
+        if (!isLiveCall(msg.callToken)) {
+            reply(toolError(msg.callId, "No active call — start a call before using tools"))
+            return
+        }
         val def = executor.tools().firstOrNull { it.name == msg.name }
         if (def == null) {
             reply(toolError(msg.callId, "Unknown tool: ${msg.name}"))
@@ -111,13 +152,18 @@ internal class VoiceCallService(
             reply(toolError(msg.callId, "The caller does not have control of this session"))
             return
         }
-        if (inFlightToolCalls.get() >= MAX_IN_FLIGHT_TOOL_CALLS) {
+        // Claim the slot atomically — get()-then-increment let two concurrent socket messages both
+        // see room and push past the cap. getAndUpdate hands back the PREVIOUS count, so a value
+        // below the cap means this call is the one that took the slot.
+        val admitted = inFlightToolCalls.getAndUpdate { n ->
+            if (n >= MAX_IN_FLIGHT_TOOL_CALLS) n else n + 1
+        } < MAX_IN_FLIGHT_TOOL_CALLS
+        if (!admitted) {
             reply(toolError(msg.callId, "Too many tool calls in flight; wait for one to finish"))
             return
         }
         val args = runCatching { json.parseToJsonElement(msg.argsJson).jsonObject }
             .getOrElse { JsonObject(emptyMap()) }
-        inFlightToolCalls.incrementAndGet()
         scope.launch {
             try {
                 val resultJson = executor.execute(def.name, args, defaultTabId)
@@ -171,8 +217,79 @@ internal class VoiceCallService(
         }
     }
 
+    /**
+     * Whether another mint is allowed: a minimum gap plus a rolling window cap. Each mint is a
+     * billed `POST /v1/realtime/client_secrets` against the host's key, and nothing else in the
+     * path costs money, so this is the spend limiter — a reconnect loop or a viewer holding the
+     * button cannot run up the bill.
+     */
+    private fun allowMint(): Boolean = synchronized(mintTimestamps) {
+        val now = nowMs()
+        while (mintTimestamps.isNotEmpty() && now - mintTimestamps.first() > MINT_WINDOW_MS) {
+            mintTimestamps.removeFirst()
+        }
+        val lastMint = mintTimestamps.lastOrNull()
+        if (lastMint != null && now - lastMint < MINT_MIN_GAP_MS) return false
+        if (mintTimestamps.size >= MAX_MINTS_PER_WINDOW) return false
+        mintTimestamps.addLast(now)
+        true
+    }
+
+    /**
+     * Register a freshly minted call and hand back the token the viewer must echo on tool calls.
+     * Internal rather than private so tests can open a call without standing up a mint server.
+     */
+    internal fun openCall(): String = synchronized(liveCalls) {
+        val token = UUID.randomUUID().toString()
+        val now = nowMs()
+        liveCalls.entries.removeAll { now - it.value > CALL_TOKEN_TTL_MS }
+        while (liveCalls.size >= MAX_LIVE_CALLS) {
+            liveCalls.remove(liveCalls.keys.first())
+        }
+        liveCalls[token] = now
+        token
+    }
+
+    /**
+     * True for a token this host minted and that hasn't aged out. Tokens issued before this field
+     * existed (an older viewer) are rejected — a tool call with no call behind it has no business
+     * reaching the session.
+     */
+    private fun isLiveCall(token: String?): Boolean = synchronized(liveCalls) {
+        if (token == null) return false
+        val issued = liveCalls[token] ?: return false
+        if (nowMs() - issued > CALL_TOKEN_TTL_MS) {
+            liveCalls.remove(token)
+            return false
+        }
+        true
+    }
+
+    /** Invalidate every live call — the host revoked the feature mid-call. */
+    fun closeCalls() {
+        val had = synchronized(liveCalls) {
+            val any = liveCalls.isNotEmpty()
+            liveCalls.clear()
+            any
+        }
+        if (had) onCallActivity(false)
+    }
+
     private companion object {
         const val MAX_IN_FLIGHT_TOOL_CALLS = 4
+
+        /** Mint budget: no faster than one per gap, and no more than N per window. */
+        const val MINT_MIN_GAP_MS = 3_000L
+        const val MINT_WINDOW_MS = 10 * 60 * 1000L
+        const val MAX_MINTS_PER_WINDOW = 12
+
+        /**
+         * How long a call token stays usable. Generous — a call can legitimately run much longer
+         * than the 600s secret, which is only needed for the initial SDP handshake.
+         */
+        const val CALL_TOKEN_TTL_MS = 6 * 60 * 60 * 1000L
+        const val MAX_LIVE_CALLS = 8
+
         val json = Json { ignoreUnknownKeys = true }
     }
 }

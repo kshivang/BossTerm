@@ -17,7 +17,6 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
@@ -39,7 +38,7 @@ internal class VoiceSessionBroker(
     private val http: HttpClient get() = httpOverride ?: sharedClient
 
     sealed class MintResult {
-        data class Ok(val clientSecret: String, val expiresAtMs: Long?) : MintResult()
+        data class Ok(val clientSecret: String) : MintResult()
         data object Unauthorized : MintResult()
         data class Failed(val message: String) : MintResult()
     }
@@ -124,8 +123,9 @@ internal class VoiceSessionBroker(
         // Beta-shaped fallback, in case the account is still routed to the old response shape.
             ?: (root["client_secret"] as? JsonObject)?.stringField("value")
             ?: return MintResult.Failed("Mint response had no client secret")
-        val expiresAtSec = runCatching { root["expires_at"]?.jsonPrimitive?.long }.getOrNull()
-        return MintResult.Ok(secret, expiresAtSec?.let { it * 1000 })
+        // The secret's own expiry is deliberately not surfaced: it only has to survive the SDP
+        // handshake, and a call legitimately outlives it, so exposing it would only mislead.
+        return MintResult.Ok(secret)
     }
 
     private fun JsonObject.stringField(key: String): String? =

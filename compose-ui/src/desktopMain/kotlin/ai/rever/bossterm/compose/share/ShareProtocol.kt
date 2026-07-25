@@ -60,6 +60,7 @@ object ShareProtocol {
  */
 internal fun webTerminalFontFamily(fontName: String?): String {
     val configured = fontName
+        ?.filterNot { it.code < 0x20 || it.code == 0x7f }
         ?.takeIf { it.isNotBlank() && it != BUNDLED_FONT_NAME }
         ?.replace("\\", "\\\\")
         ?.replace("\"", "\\\"")
@@ -108,8 +109,8 @@ sealed class ServerMessage {
 
     /**
      * One-time initial paint for a pane: scrollback+screen as a raw escape/text blob.
-     * [scrollbackLines] is the pane's actual host history cap. The browser must use the same cap
-     * because inline-image rows are absolute buffer coordinates and both sides trim in lockstep.
+     * [scrollbackLines] is the web-safe history cap (at most 100k rows). Inline-image rows use this
+     * coordinate window even when the host retains more history, keeping phone memory bounded.
      */
     @Serializable
     @SerialName("paneSnapshot")
@@ -147,6 +148,8 @@ sealed class ServerMessage {
         val removedImageIds: List<String> = emptyList(),
         val requiredImageIds: List<String> = emptyList(),
         val cells: List<SharedImageCellRun> = emptyList(),
+        /** Host history rows retained for this viewer; anchors absolute rows to xterm's baseY. */
+        val historyLines: Int = -1,
     ) : ServerMessage()
 
     /** Number of connected viewers. */
@@ -500,8 +503,9 @@ data class SharedTerminalImage(
  * A horizontally contiguous run of image cells. [row] is the zero-based absolute buffer index
  * (oldest retained history line = 0, followed by the screen). This stays stable when a screen line
  * first scrolls into growing history and matches xterm's `viewportY` coordinate system directly.
- * [ServerMessage.PaneSnapshot.scrollbackLines] configures xterm with the pane's real history cap,
- * while [PaneGraphicsTracker] publishes cheap row shifts whenever capped history trims.
+ * [ServerMessage.PaneSnapshot.scrollbackLines] configures xterm with the web-safe history cap,
+ * while [PaneGraphicsTracker] translates a larger host history and publishes cheap row shifts
+ * whenever either side trims.
  */
 @Serializable
 data class SharedImageCellRun(

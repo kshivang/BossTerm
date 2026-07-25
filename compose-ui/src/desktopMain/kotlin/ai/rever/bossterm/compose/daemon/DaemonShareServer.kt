@@ -19,6 +19,7 @@ import ai.rever.bossterm.compose.share.TabNode
 import ai.rever.bossterm.compose.share.TailscaleExposer
 import ai.rever.bossterm.compose.share.TerminalSnapshotEncoder
 import ai.rever.bossterm.compose.share.installShareViewerFontRoutes
+import ai.rever.bossterm.compose.share.webViewerScrollbackLines
 import ai.rever.bossterm.compose.share.webTerminalFontFamily
 import ai.rever.bossterm.terminal.model.TerminalModelListener
 import io.ktor.http.CacheControl
@@ -700,6 +701,7 @@ class DaemonShareServer(
                                 core.textBuffer.createSnapshot(),
                                 core.terminal.cursorX,
                                 core.terminal.cursorY,
+                                webViewerScrollbackLines(core.textBuffer),
                             )
                             vc.outbox.sendOutput(core.id, repaint)
                         }
@@ -773,9 +775,14 @@ class DaemonShareServer(
             // One-time styled initial paint (identical encoder to the attach server / MirrorShare).
             vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(ServerMessage.PaneSnapshot(
                 core.id,
-                TerminalSnapshotEncoder.encode(core.textBuffer.createSnapshot(), core.terminal.cursorX, core.terminal.cursorY),
+                TerminalSnapshotEncoder.encode(
+                    core.textBuffer.createSnapshot(),
+                    core.terminal.cursorX,
+                    core.terminal.cursorY,
+                    webViewerScrollbackLines(core.textBuffer),
+                ),
                 sz.columns, sz.rows,
-                core.textBuffer.maxHistoryLinesCount,
+                webViewerScrollbackLines(core.textBuffer),
             ))))
             if (vc.supportsPaneGraphics) {
                 val initialGraphics = graphics.fullMessage()
@@ -907,7 +914,7 @@ class DaemonShareServer(
                         val tracker = synchronized(attachLock) { attachments[msg.paneId]?.graphics }
                         if (tracker != null && vc.graphicsResyncLimiter.tryAcquire(
                                 msg.paneId,
-                                tracker.estimatedRasterBytes(),
+                                tracker.estimatedWireBytes(),
                             )
                         ) {
                             val full = tracker.fullMessage()

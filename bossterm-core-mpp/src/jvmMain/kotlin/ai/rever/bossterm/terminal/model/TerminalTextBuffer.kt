@@ -575,7 +575,13 @@ class TerminalTextBuffer internal constructor(
     }
   }
 
-  /** Publish one complete row-by-row image placement after its caller finishes writing it. */
+  /**
+   * Publish one complete row-by-row image placement after its caller finishes writing it.
+   *
+   * Must remain inside the caller's beginBatch/endBatch scope: model notifications are deferred
+   * by the batch and delivered outside [myLock]. The lower-level linesChanged callback is
+   * synchronous under this lock, matching the existing text-buffer mutation contract.
+   */
   internal fun imageCellRowsChanged(fromRow: Int) {
     myLock.lock()
     try {
@@ -850,8 +856,9 @@ class TerminalTextBuffer internal constructor(
   }
 
   fun insertLines(y: Int, count: Int, scrollRegionBottom: Int) {
+    val movesImageCells = screenRangeHasImageCells(y, scrollRegionBottom - 1)
     screenLinesStorage.insertLines(y, count, scrollRegionBottom - 1, createFillerEntry())
-    imageCellRevisionCounter.incrementAndGet()
+    if (movesImageCells) imageCellRevisionCounter.incrementAndGet()
     fireModelChangeEvent()
     changesMulticaster.linesChanged(fromIndex = y)
   }
@@ -867,11 +874,20 @@ class TerminalTextBuffer internal constructor(
     scrollRegionBottom: Int,
     publishImageLayoutChange: Boolean,
   ): List<TerminalLine> {
+    val movesImageCells = publishImageLayoutChange &&
+      screenRangeHasImageCells(y, scrollRegionBottom - 1)
     val deletedLines = screenLinesStorage.deleteLines(y, count, scrollRegionBottom - 1, createFillerEntry())
-    if (publishImageLayoutChange) imageCellRevisionCounter.incrementAndGet()
+    if (movesImageCells) imageCellRevisionCounter.incrementAndGet()
     fireModelChangeEvent()
     changesMulticaster.linesChanged(fromIndex = y)
     return deletedLines
+  }
+
+  private fun screenRangeHasImageCells(fromRow: Int, toRow: Int): Boolean {
+    val start = fromRow.coerceAtLeast(0)
+    val end = toRow.coerceAtMost(screenLinesStorage.size - 1)
+    if (start > end) return false
+    return (start..end).any { screenLinesStorage[it].hasImageCells() }
   }
 
   fun clearLines(startRow: Int, endRow: Int) {

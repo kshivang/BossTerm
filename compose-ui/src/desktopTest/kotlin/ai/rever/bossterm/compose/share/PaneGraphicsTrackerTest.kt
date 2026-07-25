@@ -9,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class PaneGraphicsTrackerTest {
@@ -124,11 +125,14 @@ class PaneGraphicsTrackerTest {
         cache.storeImage(first)
         buffer.writeImageCellRow(0, 0, first.id, 0, 1, 1)
 
-        val firstHash = PaneGraphicsTracker("pane", buffer, cache)
-            .fullMessage().images.single().contentHash
-        val reconnectHash = PaneGraphicsTracker("pane", buffer, cache)
-            .fullMessage().images.single().contentHash
+        val firstWire = PaneGraphicsTracker("pane", buffer, cache)
+            .fullMessage().images.single()
+        val reconnectWire = PaneGraphicsTracker("pane", buffer, cache)
+            .fullMessage().images.single()
+        val firstHash = firstWire.contentHash
+        val reconnectHash = reconnectWire.contentHash
         assertEquals(firstHash, reconnectHash)
+        assertSame(firstWire.data, reconnectWire.data, "base64 must be shared across viewer trackers")
 
         cache.storeImage(first.copy(data = byteArrayOf(3, 2, 1)))
         val replacedHash = PaneGraphicsTracker("pane", buffer, cache)
@@ -186,6 +190,59 @@ class PaneGraphicsTrackerTest {
         assertTrue(trimmed.message.images.isEmpty(), "a row trim must not resend raster bytes")
         assertEquals(listOf("8"), trimmed.message.removedImageIds)
         assertTrue(trimmed.message.cells.isEmpty())
+    }
+
+    @Test
+    fun `web history cap shifts rows before the larger host history trims`() {
+        val buffer = TerminalTextBuffer(8, 2, StyleState(), maxHistoryLinesCount = 3)
+        buffer.getLine(1)
+        val cache = ImageDataCache()
+        val image = TerminalImage(id = 81, data = byteArrayOf(1), format = ImageFormat.PNG)
+        cache.storeImage(image)
+        buffer.writeImageCellRow(0, 0, image.id, 0, 1, 1)
+        val tracker = PaneGraphicsTracker("pane", buffer, cache, scrollbackLines = 1)
+        tracker.fullMessage()
+
+        buffer.scrollArea(scrollRegionTop = 1, dy = -1, scrollRegionBottom = 2)
+        assertNull(tracker.pollUpdate(), "the first retained history row keeps its absolute position")
+
+        buffer.scrollArea(scrollRegionTop = 1, dy = -1, scrollRegionBottom = 2)
+        val shifted = tracker.pollUpdate()!!
+        assertEquals(listOf("81"), shifted.message.removedImageIds)
+        assertTrue(shifted.message.cells.isEmpty())
+        assertEquals(1, shifted.message.historyLines)
+    }
+
+    @Test
+    fun `web raster budget skips oversized and excess images`() {
+        val buffer = TerminalTextBuffer(8, 4, StyleState())
+        buffer.getLine(3)
+        val cache = ImageDataCache()
+        val oversized = TerminalImage(
+            id = 90,
+            data = ByteArray(MAX_WEB_IMAGE_RASTER_BYTES + 1),
+            format = ImageFormat.PNG,
+        )
+        cache.storeImage(oversized)
+        buffer.writeImageCellRow(0, 0, oversized.id, 0, 1, 1)
+        val oversizedFrame = PaneGraphicsTracker("pane", buffer, cache).fullMessage()
+        assertTrue(oversizedFrame.images.isEmpty())
+        assertTrue(oversizedFrame.cells.isEmpty())
+
+        buffer.clearImageCells(oversized.id)
+        cache.removeImage(oversized.id)
+        repeat(3) { index ->
+            val image = TerminalImage(
+                id = 91L + index,
+                data = ByteArray(6 * 1024 * 1024) { index.toByte() },
+                format = ImageFormat.PNG,
+            )
+            cache.storeImage(image)
+            buffer.writeImageCellRow(index, 0, image.id, 0, 1, 1)
+        }
+        val cappedFrame = PaneGraphicsTracker("pane", buffer, cache).fullMessage()
+        assertEquals(2, cappedFrame.images.size)
+        assertEquals(2, cappedFrame.cells.size)
     }
 
     @Test
@@ -256,6 +313,15 @@ class PaneGraphicsTrackerTest {
 
         val truncated = GraphicsOutputFilter(maxDiscardChars = 3)
         assertEquals("hello", truncated.filter("\u001bPqabchello").output)
+
+        val repeatedEscape = GraphicsOutputFilter()
+        assertEquals("\u001bhello", repeatedEscape.filter("\u001b\u001bPqpayload\u009chello").output)
+
+        val kittyPlacement = GraphicsOutputFilter()
+        val placeholder = String(Character.toChars(0x10EEEE))
+        assertEquals(" tail", kittyPlacement.filter("$placeholder\u0301\u0302tail").output)
+        assertEquals(" ", kittyPlacement.filter(placeholder).output)
+        assertEquals("tail", kittyPlacement.filter("\u0301\u0302tail").output)
     }
 
     @Test
@@ -279,5 +345,33 @@ class PaneGraphicsTrackerTest {
         assertTrue(limiter.tryAcquire("pane", estimatedBytes = 60, nowNanos = 1_000))
         assertFalse(limiter.tryAcquire("pane", estimatedBytes = 41, nowNanos = 1_001))
         assertTrue(limiter.tryAcquire("pane", estimatedBytes = 100, nowNanos = 2_000))
+    }
+
+    @Test
+    fun `denied resync does not advance the rolling window`() {
+        val limiter = GraphicsResyncLimiter(
+            minimumIntervalNanos = 0,
+            maximumBytesPerWindow = 100,
+            windowNanos = 1_000,
+        )
+        assertTrue(limiter.tryAcquire("pane", estimatedBytes = 60, nowNanos = 1_000))
+        assertFalse(limiter.tryAcquire("pane", estimatedBytes = 101, nowNanos = 2_000))
+        assertTrue(limiter.tryAcquire("pane", estimatedBytes = 60, nowNanos = 2_500))
+        assertFalse(
+            limiter.tryAcquire("pane", estimatedBytes = 60, nowNanos = 3_001),
+            "the denied request must not have started a new window at t=2000",
+        )
+    }
+
+    @Test
+    fun `web scrollback cap matches the supported settings ceiling`() {
+        val buffer = TerminalTextBuffer(
+            width = 8,
+            height = 2,
+            styleState = StyleState(),
+            maxHistoryLinesCount = 500_000,
+        )
+
+        assertEquals(MAX_WEB_VIEWER_SCROLLBACK_LINES, webViewerScrollbackLines(buffer))
     }
 }

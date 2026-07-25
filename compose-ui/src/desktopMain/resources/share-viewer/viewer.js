@@ -1017,17 +1017,23 @@
   // xterm.js 5 does not understand Kitty and cannot safely resolve file-backed Kitty transfers
   // from the host machine. BossTerm therefore sends normalized PNG/image bytes plus its exact
   // ImageCell placement grid; this transparent canvas mirrors the native renderer cell-for-cell.
-  var MAX_PANE_GRAPHICS_BYTES = 50 * 1024 * 1024; // matches each BossTerm terminal cache
-  var MAX_VIEWER_GRAPHICS_BYTES = 128 * 1024 * 1024; // hard bound across all shared panes
+  var MAX_PANE_GRAPHICS_BYTES = 16 * 1024 * 1024; // matches the host's web-raster budget
+  var MAX_VIEWER_GRAPHICS_BYTES = 64 * 1024 * 1024; // hard bound across all shared panes
   // PaneSnapshot replaces this compatibility fallback with the pane's real host history cap
   // before painting. Matching caps keep SharedImageCellRun absolute rows aligned after trims.
   var DEFAULT_WEB_VIEWER_SCROLLBACK_LINES = 10000;
+  var MAX_WEB_VIEWER_SCROLLBACK_LINES = 100000;
+  var ALLOWED_GRAPHICS_MIME_TYPES = {
+    "image/png": true, "image/jpeg": true, "image/gif": true,
+    "image/bmp": true, "image/webp": true
+  };
   var MAX_GRAPHICS_RESYNCS = 3;
   var GRAPHICS_RESYNC_TIMEOUT_MS = 3000;
   var viewerGraphicsBytes = 0;
 
   function newGraphicsState() {
     return { revision: null, cells: [], images: {}, pending: {}, bytes: 0, canvas: null, raf: 0,
+             historyLines: null,
              rejected: {}, resyncPending: false, resyncAttempts: 0, resyncTimer: null,
              resyncDegraded: false };
   }
@@ -1160,13 +1166,17 @@
 
     var buffer = p.term.buffer.active;
     var viewportY = buffer.viewportY || 0;
+    var hostHistoryLines = typeof g.historyLines === "number" ? g.historyLines : buffer.baseY;
+    var rowOffset = buffer.baseY - hostHistoryLines;
     var cellW = rect.width / p.term.cols;
     var cellH = rect.height / p.term.rows;
     g.cells.forEach(function (run) {
       var cached = g.images[String(run.imageId)];
       var image = cached && cached.image;
       if (!image || !image.complete || !image.naturalWidth || !image.naturalHeight) return;
-      var visibleRow = run.row - viewportY;
+      // Anchor host absolute rows to xterm's current baseY. If best-effort output was dropped,
+      // the overlay remains aligned to the live screen instead of drifting by the missing rows.
+      var visibleRow = run.row + rowOffset - viewportY;
       if (visibleRow < 0 || visibleRow >= p.term.rows) return;
       var anchorCol = run.col - run.cellX;
       var availableCols = Math.max(1, p.term.cols - anchorCol);
@@ -1322,10 +1332,14 @@
         retryBudgetRejectedImages();
         scheduleGraphicsDraw(p);
       };
-      image.src = "data:" + (wire.mimeType || "image/png") + ";base64," + wire.data;
+      var mimeType = ALLOWED_GRAPHICS_MIME_TYPES[wire.mimeType] ? wire.mimeType : "image/png";
+      image.src = "data:" + mimeType + ";base64," + wire.data;
     });
     if (freedBudget) retryBudgetRejectedImages();
     g.cells = m.cells || [];
+    if (typeof m.historyLines === "number" && m.historyLines >= 0) {
+      g.historyLines = m.historyLines;
+    }
     g.revision = m.revision;
     var missing = Object.keys(required).some(function (id) {
       return !g.images[id] && !g.pending[id] && !g.rejected[id];
@@ -2307,7 +2321,10 @@
       case "paneSnapshot": {
         var p = getPane(m.paneId);
         if (typeof m.scrollbackLines === "number" && m.scrollbackLines >= 0) {
-          p.term.options.scrollback = Math.floor(m.scrollbackLines);
+          p.term.options.scrollback = Math.min(
+            MAX_WEB_VIEWER_SCROLLBACK_LINES,
+            Math.floor(m.scrollbackLines)
+          );
         }
         if (m.cols && m.rows) p.term.resize(m.cols, m.rows);
         p.term.reset();

@@ -14,9 +14,14 @@ import ai.rever.bossterm.terminal.model.TerminalLine
  */
 object TerminalSnapshotEncoder {
 
-    fun encode(snapshot: BufferSnapshot, cursorX: Int, cursorY: Int): String {
+    fun encode(
+        snapshot: BufferSnapshot,
+        cursorX: Int,
+        cursorY: Int,
+        maxHistoryLines: Int = Int.MAX_VALUE,
+    ): String {
         val sb = StringBuilder()
-        var row = -snapshot.historyLinesCount
+        var row = -snapshot.historyLinesCount.coerceAtMost(maxHistoryLines.coerceAtLeast(0))
         while (row < snapshot.height) {
             appendStyledLine(sb, snapshot.getLine(row))
             if (row < snapshot.height - 1) sb.append("\r\n")

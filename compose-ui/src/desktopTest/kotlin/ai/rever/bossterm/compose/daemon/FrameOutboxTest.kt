@@ -256,7 +256,7 @@ class FrameOutboxTest {
 
     @Test
     fun `default control budget admits the largest legal raster frame`() {
-        val maximumRawRasterBytes = 50L * 1024 * 1024
+        val maximumRawRasterBytes = 16L * 1024 * 1024
         val maximumBase64Chars = (maximumRawRasterBytes + 2) / 3 * 4
         val estimatedUtf16Bytes = maximumBase64Chars * 2
 

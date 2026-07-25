@@ -29,6 +29,24 @@ class TerminalTextBufferBatchTest {
     }
 
     @Test
+    fun screenLineKeepsImageRevisionListenerWhenMovedToHistory() {
+        val buffer = TerminalTextBuffer(
+            width = 8,
+            height = 2,
+            styleState = StyleState(),
+            maxHistoryLinesCount = 10,
+        )
+        buffer.getLine(1)
+        buffer.writeImagePlaceholderCell(0, 0, 42, 0, 0, 1, 1)
+        buffer.scrollArea(scrollRegionTop = 1, dy = -1, scrollRegionBottom = 2)
+        val afterMove = buffer.imageCellRevision
+
+        assertTrue(buffer.getLine(-1).clearAllImageCells())
+
+        assertTrue(buffer.imageCellRevision > afterMove)
+    }
+
+    @Test
     fun imageCellRevisionChangesOnlyForImageContentOrLayout() {
         val buffer = TerminalTextBuffer(width = 8, height = 2, styleState = StyleState())
         buffer.getLine(1)
@@ -43,6 +61,21 @@ class TerminalTextBufferBatchTest {
 
         buffer.eraseCharacters(0, 1, 0)
         assertTrue(buffer.imageCellRevision > afterImage, "overwriting an image cell publishes a revision")
+    }
+
+    @Test
+    fun lineInsertionOnlyRevisesGraphicsWhenItMovesImageCells() {
+        val buffer = TerminalTextBuffer(width = 8, height = 3, styleState = StyleState())
+        buffer.getLine(2)
+        val initial = buffer.imageCellRevision
+
+        buffer.insertLines(y = 0, count = 1, scrollRegionBottom = 3)
+        assertEquals(initial, buffer.imageCellRevision)
+
+        buffer.writeImagePlaceholderCell(1, 0, 42, 0, 0, 1, 1)
+        val afterImage = buffer.imageCellRevision
+        buffer.insertLines(y = 0, count = 1, scrollRegionBottom = 3)
+        assertTrue(buffer.imageCellRevision > afterImage)
     }
 
     @Test

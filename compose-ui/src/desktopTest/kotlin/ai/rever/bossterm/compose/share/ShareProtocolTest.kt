@@ -24,6 +24,9 @@ class ShareProtocolTest {
 
         val escaped = webTerminalFontFamily("Font \"Quoted\"")
         assertTrue(escaped.startsWith("\"Font \\\"Quoted\\\"\", "))
+
+        val controlsRemoved = webTerminalFontFamily("Unsafe\nFont\u0000")
+        assertTrue(controlsRemoved.startsWith("\"UnsafeFont\", "))
     }
 
     @Test

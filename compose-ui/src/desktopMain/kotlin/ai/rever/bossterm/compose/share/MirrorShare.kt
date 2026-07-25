@@ -11,9 +11,6 @@ import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import ai.rever.bossterm.compose.window.WindowManager
-import ai.rever.bossterm.terminal.TerminalColor
-import ai.rever.bossterm.terminal.TextStyle
-import ai.rever.bossterm.terminal.model.TerminalLine
 import ai.rever.bossterm.terminal.model.TerminalModelListener
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -205,7 +202,7 @@ class MirrorShare(
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
             out.add(ServerMessage.PaneSnapshot(
-                id, snapshotText(tab), sz[0], sz[1], tab.textBuffer.maxHistoryLinesCount
+                id, snapshotText(tab), sz[0], sz[1], webViewerScrollbackLines(tab.textBuffer)
             ))
             if (includePaneGraphics) {
                 val entry = synchronized(taps) { taps[id] }
@@ -263,7 +260,7 @@ class MirrorShare(
                 val tracker = synchronized(taps) { taps[msg.paneId]?.graphics }
                 if (tracker != null && vc.graphicsResyncLimiter.tryAcquire(
                         msg.paneId,
-                        tracker.estimatedRasterBytes(),
+                        tracker.estimatedWireBytes(),
                     )
                 ) {
                     vc.outbox.trySend(ShareProtocol.encodeServer(tracker.fullMessage(commit = false)))
@@ -552,8 +549,10 @@ class MirrorShare(
                     val graphicsOutputFilter = GraphicsOutputFilter()
                     lateinit var entry: TapEntry
                     val listener: (String) -> Unit = { d ->
+                        // Keep parser state coherent even with zero graphics viewers, so a viewer
+                        // joining mid-payload never receives raw raster bytes as terminal text.
+                        val filtered = graphicsOutputFilter.filter(d)
                         if (viewers.any { it.supportsPaneGraphics }) {
-                            val filtered = graphicsOutputFilter.filter(d)
                             if (filtered.detectedGraphics) {
                                 entry.monitoringGraphics.set(true)
                                 scheduleGraphicsSync(id, entry)
@@ -574,7 +573,7 @@ class MirrorShare(
                     tab.textBuffer.addModelListener(modelListener)
                     val sz = sig.sizes[id] ?: listOf(80, 24)
                     broadcast(ServerMessage.PaneSnapshot(
-                        id, snapshotText(tab), sz[0], sz[1], tab.textBuffer.maxHistoryLinesCount
+                        id, snapshotText(tab), sz[0], sz[1], webViewerScrollbackLines(tab.textBuffer)
                     ))
                     if (hasGraphicsViewer) {
                         val initialGraphics = graphics.fullMessage()
@@ -787,60 +786,12 @@ class MirrorShare(
      */
     private fun snapshotText(tab: TerminalTab): String {
         val snap = tab.textBuffer.createSnapshot()
-        val sb = StringBuilder()
-        var row = -snap.historyLinesCount
-        while (row < snap.height) {
-            appendStyledLine(sb, snap.getLine(row))
-            if (row < snap.height - 1) sb.append("\r\n")
-            row++
-        }
-        sb.append("[0m") // reset trailing style
-        // Park the cursor at its real screen position (1-based row;col) — otherwise xterm.js
-        // leaves it on the bottom row after we write the full-height blob (scrollback + screen).
-        val cy = tab.terminal.cursorY.coerceIn(1, snap.height)
-        val cx = tab.terminal.cursorX.coerceAtLeast(1)
-        sb.append("[$cy;${cx}H")
-        return sb.toString()
-    }
-
-    /** Append one buffer line as SGR-prefixed styled runs, trimming invisible trailing padding. */
-    private fun appendStyledLine(sb: StringBuilder, line: TerminalLine) {
-        // Collect runs, stopping at the first NUL entry (trailing unfilled cells), like TerminalLine.text.
-        val runs = ArrayList<TerminalLine.TextEntry>()
-        for (e in line.entries) {
-            if (e == null) continue
-            if (e.isNul) break
-            runs.add(e)
-        }
-        // Drop trailing runs that are blank with no background — invisible padding (old .trimEnd()).
-        var end = runs.size
-        while (end > 0 && runs[end - 1].let { it.text.toString().isBlank() && it.style.background == null }) end--
-        for (i in 0 until end) {
-            sb.append(ansiForStyle(runs[i].style)).append(runs[i].text.toString())
-        }
-    }
-
-    /** SGR escape that resets then applies [style]'s colors + attributes (256-color / truecolor). */
-    private fun ansiForStyle(style: TextStyle): String {
-        val codes = ArrayList<String>()
-        codes.add("0") // reset first so each run is self-contained
-        if (style.hasOption(TextStyle.Option.BOLD)) codes.add("1")
-        if (style.hasOption(TextStyle.Option.DIM)) codes.add("2")
-        if (style.hasOption(TextStyle.Option.ITALIC)) codes.add("3")
-        if (style.hasOption(TextStyle.Option.UNDERLINED)) codes.add("4")
-        if (style.hasOption(TextStyle.Option.SLOW_BLINK)) codes.add("5")
-        if (style.hasOption(TextStyle.Option.RAPID_BLINK)) codes.add("6")
-        if (style.hasOption(TextStyle.Option.INVERSE)) codes.add("7")
-        if (style.hasOption(TextStyle.Option.HIDDEN)) codes.add("8")
-        style.foreground?.let { codes.add(sgrColor(it, fg = true)) }
-        style.background?.let { codes.add(sgrColor(it, fg = false)) }
-        return "[" + codes.joinToString(";") + "m"
-    }
-
-    private fun sgrColor(c: TerminalColor, fg: Boolean): String {
-        val base = if (fg) "38" else "48"
-        return if (c.isIndexed) "$base;5;${c.colorIndex}"
-        else c.toColor().let { "$base;2;${it.red};${it.green};${it.blue}" }
+        return TerminalSnapshotEncoder.encode(
+            snap,
+            tab.terminal.cursorX,
+            tab.terminal.cursorY,
+            webViewerScrollbackLines(tab.textBuffer),
+        )
     }
 
     // ---- theme (host palette → CSS) ----
@@ -908,8 +859,8 @@ class ViewerConnection(
 /**
  * Desktop-hosted counterpart to the daemon's heap-bounded [FrameOutbox]. Frames are best effort,
  * matching the old `DROP_OLDEST` channel semantics, but the real bound is characters rather than
- * 2048 arbitrarily-sized Strings. A legal 50 MiB raster snapshot expands to ~70M base64 chars, so
- * the default admits one such frame while bounding the aggregate queue to ~192 MiB of UTF-16.
+ * 2048 arbitrarily-sized Strings. A legal 16 MiB web-raster snapshot expands to ~22M base64 chars,
+ * so the default admits one such frame while bounding the aggregate queue to ~64 MiB of UTF-16.
  */
 internal class BoundedViewerOutbox(
     private val capacityChars: Int = DEFAULT_CAPACITY_CHARS,
@@ -955,7 +906,7 @@ internal class BoundedViewerOutbox(
     }
 
     private companion object {
-        const val DEFAULT_CAPACITY_CHARS = 96 * 1024 * 1024
+        const val DEFAULT_CAPACITY_CHARS = 32 * 1024 * 1024
         const val DEFAULT_CAPACITY_FRAMES = 2048
     }
 }

@@ -84,11 +84,11 @@ internal class FrameOutbox(
 
         /**
          * Heap-oriented bound for large snapshots/graphics frames, independent of frame count.
-         * A pane may own 50 MiB of encoded rasters; base64 expands that by 4/3 and the queued JVM
-         * String uses two bytes per char (~134 MiB before JSON), so 192 MiB admits every legal
-         * single full-graphics frame while still bounding a stalled connection.
+         * The web-share path forwards at most 16 MiB of rasters per pane; base64 expands that by
+         * 4/3 and the queued JVM String uses two bytes per char (~43 MiB before JSON). 64 MiB
+         * admits one legal full-graphics frame while bounding a stalled connection.
          */
-        const val DEFAULT_CONTROL_CAPACITY_BYTES = 192L * 1024 * 1024
+        const val DEFAULT_CONTROL_CAPACITY_BYTES = 64L * 1024 * 1024
 
         /** Secondary bound on queued output FRAMES: the char budget bounds payload heap, but each
          *  queued chunk also costs an object + deque slot, so a pathological stream of tiny chunks
@@ -262,5 +262,4 @@ internal class FrameOutbox(
         runCatching { control.close() }
         runCatching { wake.close() }
     }
-
 }

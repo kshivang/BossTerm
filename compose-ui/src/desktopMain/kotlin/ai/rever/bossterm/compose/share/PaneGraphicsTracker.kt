@@ -9,6 +9,12 @@ import java.lang.ref.WeakReference
 import java.util.Base64
 
 internal const val PANE_GRAPHICS_CAPABILITY = "paneGraphicsV1"
+internal const val MAX_WEB_VIEWER_SCROLLBACK_LINES = 100_000
+internal const val MAX_WEB_IMAGE_RASTER_BYTES = 8 * 1024 * 1024
+internal const val MAX_WEB_PANE_RASTER_BYTES = 16L * 1024 * 1024
+
+internal fun webViewerScrollbackLines(textBuffer: TerminalTextBuffer): Int =
+    textBuffer.maxHistoryLinesCount.coerceIn(0, MAX_WEB_VIEWER_SCROLLBACK_LINES)
 
 /** A graphics delta plus whether xterm's text/cursor state needs an authoritative re-anchor. */
 internal data class PaneGraphicsUpdate(
@@ -26,6 +32,7 @@ internal class PaneGraphicsTracker(
     private val paneId: String,
     private val textBuffer: TerminalTextBuffer,
     private val imageDataCache: ImageDataCache,
+    private val scrollbackLines: Int = webViewerScrollbackLines(textBuffer),
 ) {
     private var revision = 0L
     private var previousCells: List<SharedImageCellRun> = emptyList()
@@ -33,18 +40,18 @@ internal class PaneGraphicsTracker(
     private val fingerprintCache = HashMap<Long, CachedFingerprint>()
     private var previousImageCellRevision = textBuffer.imageCellRevision
     private var previousImageCacheRevision = imageDataCache.contentRevision
-    private var previousHistoryTrimCount = textBuffer.imageCellHistoryTrimCount
+    private var previousViewerTrimCount = viewerTrimCount()
 
     /** Capture and return a delta only when visible image data or placement changed. */
     @Synchronized
     fun pollUpdate(): PaneGraphicsUpdate? {
         val cellRevision = textBuffer.imageCellRevision
         val cacheRevision = imageDataCache.contentRevision
-        val historyTrimCount = textBuffer.imageCellHistoryTrimCount
+        val viewerTrimCount = viewerTrimCount()
         if (cellRevision == previousImageCellRevision && cacheRevision == previousImageCacheRevision) {
-            val trimmedRows = (historyTrimCount - previousHistoryTrimCount).coerceAtLeast(0L)
+            val trimmedRows = (viewerTrimCount - previousViewerTrimCount).coerceAtLeast(0L)
             if (trimmedRows == 0L) return null
-            previousHistoryTrimCount = historyTrimCount
+            previousViewerTrimCount = viewerTrimCount
             return shiftForHistoryTrim(trimmedRows)
         }
 
@@ -52,7 +59,7 @@ internal class PaneGraphicsTracker(
         if (captured.cells == previousCells && captured.fingerprints == previousImages) {
             previousImageCellRevision = cellRevision
             previousImageCacheRevision = cacheRevision
-            previousHistoryTrimCount = historyTrimCount
+            previousViewerTrimCount = viewerTrimCount
             return null
         }
 
@@ -67,7 +74,7 @@ internal class PaneGraphicsTracker(
         previousImages = captured.fingerprints
         previousImageCellRevision = cellRevision
         previousImageCacheRevision = cacheRevision
-        previousHistoryTrimCount = historyTrimCount
+        previousViewerTrimCount = viewerTrimCount
         revision++
         return PaneGraphicsUpdate(
             message = message(captured, full = false, images = changed.values.toList(), removed = removed),
@@ -80,6 +87,8 @@ internal class PaneGraphicsTracker(
      *
      * [commit] advances the shared delta baseline. MirrorShare uses `false` for a full frame sent
      * to only one viewer, so other viewers do not observe an artificial revision gap.
+     * Consequently, a private full frame's revision may describe the shared baseline rather than
+     * its newer complete placements; `full=true` makes those placements authoritative regardless.
      */
     @Synchronized
     fun fullMessage(commit: Boolean = true): ServerMessage.PaneGraphics {
@@ -92,7 +101,7 @@ internal class PaneGraphicsTracker(
             previousImages = captured.fingerprints
             previousImageCellRevision = textBuffer.imageCellRevision
             previousImageCacheRevision = imageDataCache.contentRevision
-            previousHistoryTrimCount = textBuffer.imageCellHistoryTrimCount
+            previousViewerTrimCount = viewerTrimCount()
         }
         return message(captured, full = true, images = captured.images.values.toList(), removed = emptyList())
     }
@@ -100,18 +109,33 @@ internal class PaneGraphicsTracker(
     @Synchronized
     fun hasVisibleGraphics(): Boolean = previousCells.isNotEmpty()
 
-    /** Cheap upper bound used before accepting an explicit full-payload resync. */
+    /** Heap-oriented wire estimate used before accepting an explicit full-payload resync. */
     @Synchronized
-    fun estimatedRasterBytes(): Long = previousImages.values.sumOf { it.rasterBytes }
+    fun estimatedWireBytes(): Long =
+        previousImages.values.sumOf { fingerprint ->
+            ((fingerprint.rasterBytes + 2) / 3 * 4) * 2
+        } + GRAPHICS_JSON_OVERHEAD_BYTES
 
     private fun capture(): Captured {
         val snapshot = textBuffer.createIncrementalSnapshot()
         // Browsers cannot decode UNKNOWN/application-octet-stream rasters. Excluding them here
         // prevents shipping bytes that can only become a permanent missing-image placeholder.
-        val cachedImages = imageDataCache.snapshotImages().filterValues { it.format != ImageFormat.UNKNOWN }
-        val cells = cellRuns(snapshot, cachedImages.keys)
-        val referenced = cells.asSequence().map { it.imageId.toLong() }.toSet()
-        val images = cachedImages.filterKeys { it in referenced }
+        val cachedImages = imageDataCache.snapshotImages().filterValues {
+            it.format != ImageFormat.UNKNOWN && it.data.size <= MAX_WEB_IMAGE_RASTER_BYTES
+        }
+        val allCells = cellRuns(snapshot, cachedImages.keys, scrollbackLines)
+        val selectedIds = LinkedHashSet<Long>()
+        var selectedBytes = 0L
+        for (run in allCells) {
+            val id = run.imageId.toLong()
+            if (id in selectedIds) continue
+            val image = cachedImages[id] ?: continue
+            if (selectedBytes + image.data.size > MAX_WEB_PANE_RASTER_BYTES) continue
+            selectedIds.add(id)
+            selectedBytes += image.data.size
+        }
+        val cells = allCells.filter { it.imageId.toLong() in selectedIds }
+        val images = cachedImages.filterKeys { it in selectedIds }
         val fingerprints = images.mapValues { (_, image) -> fingerprint(image) }
         fingerprintCache.keys.retainAll(images.keys)
         return Captured(
@@ -136,6 +160,7 @@ internal class PaneGraphicsTracker(
         removedImageIds = removed,
         requiredImageIds = captured.fingerprints.keys.map(Long::toString),
         cells = captured.cells,
+        historyLines = textBuffer.historyLinesCount.coerceAtMost(scrollbackLines),
     )
 
     private fun sharedImage(
@@ -153,7 +178,7 @@ internal class PaneGraphicsTracker(
         return SharedTerminalImage(
             id = image.id.toString(),
             mimeType = mimeType,
-            data = Base64.getEncoder().encodeToString(image.data),
+            data = SharedRasterBase64Cache.encode(fingerprint.contentHash, image.data),
             contentHash = fingerprint.contentHash,
         )
     }
@@ -198,6 +223,14 @@ internal class PaneGraphicsTracker(
         )
     }
 
+    /**
+     * Counts both real host evictions and rows hidden by the stricter browser history cap. Their
+     * sum advances once for every oldest row xterm trims, even while the larger host history grows.
+     */
+    private fun viewerTrimCount(): Long =
+        textBuffer.imageCellHistoryTrimCount +
+            (textBuffer.historyLinesCount - scrollbackLines).coerceAtLeast(0).toLong()
+
     private fun isUniformRowShift(
         before: List<SharedImageCellRun>,
         after: List<SharedImageCellRun>,
@@ -237,6 +270,7 @@ internal class PaneGraphicsTracker(
     internal companion object {
         private const val FNV64_OFFSET = -3750763034362895579L
         private const val FNV64_PRIME = 1099511628211L
+        private const val GRAPHICS_JSON_OVERHEAD_BYTES = 64L * 1024
 
         /**
          * Compress adjacent cells from the same image row. Missing/evicted image ids are omitted:
@@ -245,9 +279,11 @@ internal class PaneGraphicsTracker(
         fun cellRuns(
             snapshot: VersionedBufferSnapshot,
             availableImageIds: Set<Long>,
+            historyLimit: Int = Int.MAX_VALUE,
         ): List<SharedImageCellRun> {
             val result = ArrayList<SharedImageCellRun>()
-            for (row in -snapshot.historyLinesCount until snapshot.height) {
+            val retainedHistoryLines = snapshot.historyLinesCount.coerceAtMost(historyLimit)
+            for (row in -retainedHistoryLines until snapshot.height) {
                 val cells = snapshot.getLine(row).getAllImageCells()
                 if (cells.isEmpty()) continue
                 val orderedCells = if (cells.size > 1) cells.toSortedMap() else cells
@@ -266,7 +302,7 @@ internal class PaneGraphicsTracker(
                             imageId = imageId.toString(),
                             // Absolute buffer index is stable when a screen line first scrolls into
                             // history: historyCount grows while the line's relative row drops.
-                            row = snapshot.historyLinesCount + row,
+                            row = retainedHistoryLines + row,
                             col = runCol,
                             cellX = runCellX,
                             cellY = runCellY,
@@ -306,6 +342,32 @@ internal class PaneGraphicsTracker(
     }
 }
 
+/**
+ * Reuses the expensive base64 String across viewers and resyncs. The access-ordered cache is
+ * globally char-bounded (~64 MiB UTF-16) and keyed by the stable content fingerprint.
+ */
+private object SharedRasterBase64Cache {
+    private const val MAX_CACHED_CHARS = 32 * 1024 * 1024
+    private val values = object : LinkedHashMap<String, String>(16, 0.75f, true) {}
+    private var cachedChars = 0
+
+    @Synchronized
+    fun encode(contentHash: String, data: ByteArray): String {
+        values[contentHash]?.let { return it }
+        val encoded = Base64.getEncoder().encodeToString(data)
+        if (encoded.length > MAX_CACHED_CHARS) return encoded
+        while (cachedChars + encoded.length > MAX_CACHED_CHARS && values.isNotEmpty()) {
+            val iterator = values.entries.iterator()
+            val oldest = iterator.next()
+            cachedChars -= oldest.value.length
+            iterator.remove()
+        }
+        values[contentHash] = encoded
+        cachedChars += encoded.length
+        return encoded
+    }
+}
+
 internal data class FilteredGraphicsOutput(
     val output: String,
     val detectedGraphics: Boolean,
@@ -328,22 +390,18 @@ internal class GraphicsOutputFilter(
     private val prefix = StringBuilder()
     private var discardEscape = false
     private var discardChars = 0
+    private var stripLeadingKittyMarks = false
 
     @Synchronized
     fun filter(chunk: String): FilteredGraphicsOutput {
         // Ordinary PTY output overwhelmingly contains no graphics introducer. Avoid the
         // per-character state machine (and its allocation) on that hot path.
-        if (mode == Mode.TEXT &&
-            chunk.indexOf(ESC) < 0 &&
-            chunk.indexOf(DCS) < 0 &&
-            chunk.indexOf(OSC) < 0 &&
-            chunk.indexOf(APC) < 0 &&
-            !chunk.contains(KITTY_PLACEHOLDER)
-        ) {
+        if (mode == Mode.TEXT && !stripLeadingKittyMarks && !requiresFiltering(chunk)) {
             return FilteredGraphicsOutput(chunk, detectedGraphics = false)
         }
-        var detected = chunk.contains(KITTY_PLACEHOLDER)
-        val input = if (detected) chunk.replace(KITTY_PLACEHOLDER, " ") else chunk
+        val stripped = stripKittyUnicodePlacements(chunk)
+        var detected = stripped.second
+        val input = stripped.first
         val output = StringBuilder(input.length)
 
         for (char in input) {
@@ -361,6 +419,13 @@ internal class GraphicsOutputFilter(
                 }
 
                 Mode.ESCAPE -> when (char) {
+                    ESC -> {
+                        // Preserve the first unrelated ESC while keeping the second as a possible
+                        // fragmented graphics introducer (`ESC ESC P q ...`).
+                        output.append(prefix)
+                        prefix.clear()
+                        prefix.append(char)
+                    }
                     'P' -> {
                         prefix.append(char)
                         mode = Mode.SIXEL_PREFIX
@@ -421,6 +486,68 @@ internal class GraphicsOutputFilter(
             }
         }
         return FilteredGraphicsOutput(output.toString(), detected)
+    }
+
+    private fun requiresFiltering(chunk: String): Boolean {
+        var index = 0
+        while (index < chunk.length) {
+            when (chunk[index]) {
+                ESC, DCS, OSC, APC -> return true
+                KITTY_PLACEHOLDER[0] -> {
+                    if (chunk.startsWith(KITTY_PLACEHOLDER, index)) return true
+                }
+            }
+            index++
+        }
+        return false
+    }
+
+    /**
+     * Kitty's Unicode placement placeholder is followed by combining marks that encode row/column.
+     * xterm cannot render that protocol, so remove the marks with the placeholder, including when
+     * the placeholder and its marks are split across PTY chunks.
+     */
+    private fun stripKittyUnicodePlacements(chunk: String): Pair<String, Boolean> {
+        var index = 0
+        var modified = false
+        var detected = false
+        val output = StringBuilder(chunk.length)
+        if (stripLeadingKittyMarks) {
+            if (chunk.isEmpty()) return chunk to false
+            while (index < chunk.length) {
+                val codePoint = chunk.codePointAt(index)
+                if (!isCombiningMark(codePoint)) break
+                index += Character.charCount(codePoint)
+                modified = true
+            }
+            stripLeadingKittyMarks = false
+            if (index == chunk.length) stripLeadingKittyMarks = true
+        }
+        while (index < chunk.length) {
+            val placeholder = chunk.indexOf(KITTY_PLACEHOLDER, index)
+            if (placeholder < 0) {
+                output.append(chunk, index, chunk.length)
+                break
+            }
+            modified = true
+            detected = true
+            output.append(chunk, index, placeholder).append(' ')
+            index = placeholder + KITTY_PLACEHOLDER.length
+            while (index < chunk.length) {
+                val codePoint = chunk.codePointAt(index)
+                if (!isCombiningMark(codePoint)) break
+                index += Character.charCount(codePoint)
+            }
+            if (index == chunk.length) stripLeadingKittyMarks = true
+        }
+        return (if (modified) output.toString() else chunk) to detected
+    }
+
+    private fun isCombiningMark(codePoint: Int): Boolean = when (Character.getType(codePoint)) {
+        Character.NON_SPACING_MARK.toInt(),
+        Character.COMBINING_SPACING_MARK.toInt(),
+        Character.ENCLOSING_MARK.toInt() -> true
+        else -> false
     }
 
     private fun beginPrefix(char: Char, nextMode: Mode) {
@@ -514,13 +641,12 @@ internal class GraphicsResyncLimiter(
         val entry = entries[paneId]
         if (entry != null && nowNanos - entry.lastNanos < minimumIntervalNanos) return false
         val active = entry ?: Entry(nowNanos, nowNanos, 0)
-        if (nowNanos - active.windowStartNanos >= windowNanos) {
-            active.windowStartNanos = nowNanos
-            active.bytesInWindow = 0
-        }
-        if (estimatedBytes > maximumBytesPerWindow - active.bytesInWindow) return false
+        val startsNewWindow = nowNanos - active.windowStartNanos >= windowNanos
+        val admittedWindowBytes = if (startsNewWindow) 0 else active.bytesInWindow
+        if (estimatedBytes > maximumBytesPerWindow - admittedWindowBytes) return false
+        if (startsNewWindow) active.windowStartNanos = nowNanos
         active.lastNanos = nowNanos
-        active.bytesInWindow += estimatedBytes
+        active.bytesInWindow = admittedWindowBytes + estimatedBytes
         entries[paneId] = active
         return true
     }

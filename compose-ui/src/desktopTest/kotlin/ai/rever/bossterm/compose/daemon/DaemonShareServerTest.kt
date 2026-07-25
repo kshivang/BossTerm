@@ -106,9 +106,14 @@ class DaemonShareServerTest {
                 "the bundled symbol fallback must be served",
             )
             assertEquals(
+                200,
+                httpStatus(port, "/fonts/MesloLGSNF-NOTICE.txt", hostHeader = "127.0.0.1:$port"),
+                "the bundled Nerd Font attribution must travel with the font",
+            )
+            assertEquals(
                 404,
                 httpStatus(port, "/fonts/not-public.txt", hostHeader = "127.0.0.1:$port"),
-                "the font route must expose only the two explicit viewer assets",
+                "the font route must expose only the explicit viewer assets and notices",
             )
             assertTrue(
                 httpStatus(port, "/", hostHeader = "evil.example.com") != 403,

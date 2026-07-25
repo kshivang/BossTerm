@@ -414,6 +414,8 @@
         return "You need control of this session to call — request control first.";
       case "rate_limited":
         return "Too many call attempts — wait a moment and try again.";
+      case "stale_call":
+        return "That call is no longer active — start a new one.";
       case "too_many_calls":
         return "This session already has as many voice calls as it allows.";
       default:
@@ -2941,15 +2943,16 @@
         if (voice.state !== "idle" && !(m.code === "rate_limited" && voice.dc)) endCall(false);
         break;
       case "voiceToolResult":
-        voiceDcSend({ type: "conversation.item.create",
-          item: { type: "function_call_output", call_id: m.callId, output: m.resultJson } });
-        // Only a result for a call WE forwarded owes a follow-up turn; a stray or stale id would
-        // otherwise bank a spurious response.create for later.
+        // Claim FIRST, then send. Only a call still pending may be answered: voiceToolTimedOut may
+        // already have supplied an output for this id, and a second function_call_output for one
+        // call_id is a protocol error — which also lands with no turn requested for it.
         if (voice.pending[m.callId]) {
           delete voice.pending[m.callId];
           if (voice.timers[m.callId]) { clearTimeout(voice.timers[m.callId]); delete voice.timers[m.callId]; }
           voice.pendingCount = Math.max(0, voice.pendingCount - 1);
           voice.outputsOwed += 1;
+          voiceDcSend({ type: "conversation.item.create",
+            item: { type: "function_call_output", call_id: m.callId, output: m.resultJson } });
         }
         updateVoiceBar();
         voiceMaybeRequestResponse();

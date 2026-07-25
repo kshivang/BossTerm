@@ -451,10 +451,12 @@ class MirrorShare(
             is ClientMessage.VoiceToolCall -> {
                 // Defence in depth: the token must be the one THIS connection was issued, not merely
                 // one live somewhere on the share — otherwise another viewer presenting it would
-                // drive the read tools without ever passing handleStart's control gate.
+                // drive the read tools without ever passing handleStart's control gate. Reported as
+                // stale_call, not not_controller: the realistic cause is a redial racing an old
+                // token, which shouldn't read to the user as a permissions problem.
                 if (msg.callToken == null || msg.callToken != vc.voiceCallToken) {
                     vc.outbox.sendControl(
-                        ShareProtocol.encodeServer(ServerMessage.VoiceError(code = "not_controller"))
+                        ShareProtocol.encodeServer(ServerMessage.VoiceError(code = "stale_call"))
                     )
                     return
                 }

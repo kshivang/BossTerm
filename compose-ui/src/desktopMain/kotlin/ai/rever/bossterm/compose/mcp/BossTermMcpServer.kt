@@ -205,17 +205,6 @@ class BossTermMcpServer(
     }
 
     /**
-     * Sync the live server's exposed tool set to match [disabled]. Adds back any
-     * available tool not in the set; removes any tool that is. No-op if no server
-     * has been built yet.
-     *
-     * Safe to call from any thread; the body runs under [toolsLock] so concurrent
-     * callers (the manage_tools MCP handler and the settings watcher in
-     * BossTermMcpManager) are serialized. Without this, the containsKey →
-     * addTool/removeTool sequence could double-register a tool against the SDK's
-     * non-thread-safe Server.tools map.
-     */
-    /**
      * Signal that the live [Server] this wrapper was bound to has been torn down
      * (engine stop or app shutdown). Subsequent [applyDisabledSet] calls become
      * no-ops. The wrapper itself is not reusable after this — a new instance is
@@ -243,6 +232,17 @@ class BossTermMcpServer(
     fun handlerFor(name: String): (suspend (io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest) -> io.modelcontextprotocol.kotlin.sdk.types.CallToolResult)? =
         synchronized(toolsLock) { serverRef?.tools?.get(name)?.handler }
 
+    /**
+     * Sync the live server's exposed tool set to match [disabled]. Adds back any
+     * available tool not in the set; removes any tool that is. No-op if no server
+     * has been built yet.
+     *
+     * Safe to call from any thread; the body runs under [toolsLock] so concurrent
+     * callers (the manage_tools MCP handler and the settings watcher in
+     * BossTermMcpManager) are serialized. Without this, the containsKey →
+     * addTool/removeTool sequence could double-register a tool against the SDK's
+     * non-thread-safe Server.tools map.
+     */
     fun applyDisabledSet(disabled: Set<String>) {
         synchronized(toolsLock) {
             // Read the ref inside the lock so a concurrent detachServer() can't

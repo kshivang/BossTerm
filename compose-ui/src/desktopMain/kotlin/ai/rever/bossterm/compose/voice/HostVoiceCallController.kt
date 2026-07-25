@@ -60,6 +60,8 @@ internal class HostVoiceCallController(
     private val audio: VoiceAudioIo = JavaSoundVoiceAudioIo(),
     private val settings: () -> TerminalSettings = { SettingsManager.instance.settings.value },
     private val loadKey: () -> String? = { VoiceAgentStorage.load()?.openaiApiKey?.takeIf { it.isNotBlank() } },
+    /** Injected in tests so the ceilings can be exercised without waiting them out. */
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
 ) {
 
     private val log = LoggerFactory.getLogger(HostVoiceCallController::class.java)
@@ -91,6 +93,17 @@ internal class HostVoiceCallController(
      * again and the mic stayed hot for the rest of the process.
      */
     @Volatile private var startJob: Job? = null
+
+    /**
+     * Enforces the same ceilings the share path has ([VoiceCallService.MAX_CALL_DURATION_MS] and
+     * friends): a hard cap, plus an idle cut-off. This surface holds the microphone AND bills the
+     * host's account for the whole session, so "an abandoned call can't bill all day" applies at
+     * least as strongly here.
+     */
+    @Volatile private var limitJob: Job? = null
+
+    /** Last moment the call did anything — agent audio, user speech, or a tool call. */
+    @Volatile private var lastActivityMs = 0L
 
     /** Start a call. No-op when one is already up. */
     fun start() {
@@ -158,7 +171,41 @@ internal class HostVoiceCallController(
                 return@launch
             }
             _state.update { it.copy(phase = HostCallPhase.Live, activity = null) }
+            startLimits()
         }
+    }
+
+    /** Hard cap + idle cut-off, checked on a slow tick so neither needs a precise timer. */
+    private fun startLimits() {
+        val startedAt = nowMs()
+        touchActivity()
+        limitJob?.cancel()
+        limitJob = scope.launch {
+            while (_state.value.active) {
+                delay(LIMIT_TICK_MS)
+                val now = nowMs()
+                if (now - startedAt >= MAX_CALL_DURATION_MS) {
+                    log.info("Boss Calling: ending in-app call at the {} min ceiling", MAX_CALL_DURATION_MS / 60_000)
+                    endWith("Call ended — reached the ${MAX_CALL_DURATION_MS / 60_000} minute limit.")
+                    return@launch
+                }
+                if (now - lastActivityMs >= IDLE_TIMEOUT_MS) {
+                    log.info("Boss Calling: ending idle in-app call")
+                    endWith("Call ended — nothing happened for ${IDLE_TIMEOUT_MS / 60_000} minutes.")
+                    return@launch
+                }
+            }
+        }
+    }
+
+    private fun touchActivity() {
+        lastActivityMs = nowMs()
+    }
+
+    /** End the call and leave the reason on the bar, rather than vanishing silently. */
+    private fun endWith(message: String) {
+        end()
+        _state.value = HostCallState(phase = HostCallPhase.Error, error = message)
     }
 
     fun toggleMute() {
@@ -169,6 +216,8 @@ internal class HostVoiceCallController(
     /** End the call and release the mic + speaker. */
     fun end() {
         val wasActive = _state.value.active
+        limitJob?.cancel()
+        limitJob = null
         // State FIRST: transport.close() triggers the socket's onClose, and with the state still
         // "active" that callback would flip a deliberately-ended call to Error.
         _state.value = HostCallState()
@@ -198,6 +247,7 @@ internal class HostVoiceCallController(
             "response.output_audio.delta" -> {
                 val b64 = event["delta"]?.jsonPrimitive?.content ?: return
                 val pcm = runCatching { Base64.getDecoder().decode(b64) }.getOrNull() ?: return
+                touchActivity()
                 _state.update { if (it.speaking) it else it.copy(speaking = true) }
                 audio.play(pcm)
             }
@@ -207,6 +257,7 @@ internal class HostVoiceCallController(
             // Barge-in: the user started talking, so drop whatever the agent still has queued
             // instead of letting the two of them talk over each other.
             "input_audio_buffer.speech_started" -> {
+                touchActivity()
                 audio.flushPlayback()
                 _state.update { it.copy(speaking = false) }
             }
@@ -273,6 +324,7 @@ internal class HostVoiceCallController(
             pendingCalls.add(callId)
             responseOpen = true // a function call only exists inside a response
         }
+        touchActivity()
         _state.update { it.copy(working = true, activity = describeTool(name, argsJson)) }
         // run_command has its own 600s clamp; reads should be near-instant.
         // Reads get 120s, not 45: search_output over a large scrollback is legitimately slow.
@@ -435,8 +487,17 @@ internal class HostVoiceCallController(
         }
     }
 
-    private companion object {
+    internal companion object {
         val json = Json { ignoreUnknownKeys = true }
+
+        /** Hard ceiling on one in-app call, mirroring the share path's. */
+        const val MAX_CALL_DURATION_MS = 60 * 60 * 1000L
+
+        /** No agent audio, user speech or tool call for this long → hang up. */
+        const val IDLE_TIMEOUT_MS = 10 * 60 * 1000L
+
+        /** Coarse tick: neither ceiling needs second-level precision. */
+        const val LIMIT_TICK_MS = 5_000L
 
         /** `error.code` values that end a call rather than one turn of it. */
         val FATAL_ERROR_CODES = setOf(

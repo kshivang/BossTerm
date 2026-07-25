@@ -4,14 +4,19 @@
   <meta charset="utf-8" />
   <!-- Allow pinch-zoom + pan so wide/tall terminals are navigable on phones. -->
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <!-- api.openai.com is the Boss Calling SDP exchange (POST /v1/realtime/calls), filled in per
-       request when a key is configured (see installShareViewerIndexRoute). Keyed on the KEY, not on
-       the enable toggle: the policy is baked at page load, and the toggle can flip mid-session
-       (which would block a call with no recovery but a reload) whereas a key appearing is a
-       once-ever event. A viewer of a keyless host gets no OpenAI origin at all. Audio itself is
-       WebRTC, not connect-src. -->
+  <!-- api.openai.com is the Boss Calling SDP exchange (POST /v1/realtime/calls), named
+       UNCONDITIONALLY on purpose.
+       Both narrower alternatives are worse, because CSP is baked at page load while availability is
+       pushed live over the socket:
+         - gating on the enable toggle breaks a call started after the host flips it on;
+         - gating on a key existing breaks every page loaded before the key was added — the viewer
+           then receives voiceStatus available=true, shows the button, and the host mints a real
+           (billed) secret before the SDP fetch is blocked, reporting it as a network problem with
+           no fix but a reload (and, on a daemon share, a restart).
+       The residual risk is one fixed, well-known origin reachable from a page whose script-src is
+       'self' with no unsafe-eval. Audio itself is WebRTC, not connect-src. -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; base-uri 'none'; form-action 'none'; connect-src 'self' __BOSSTERM_WS_ORIGINS__ __BOSSTERM_VOICE_ORIGIN__; img-src 'self' data:; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+        content="default-src 'self'; base-uri 'none'; form-action 'none'; connect-src 'self' __BOSSTERM_WS_ORIGINS__ https://api.openai.com; img-src 'self' data:; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
   <title>BossTerm — shared session</title>
   <!-- xterm.js vendored locally (works fully offline on a LAN). MIT licensed. -->
   <!-- Bundled font notices: fonts/MesloLGSNF-NOTICE.txt and fonts/NotoSansSymbols2-OFL.txt -->

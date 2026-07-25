@@ -96,6 +96,7 @@ class HostVoiceCallControllerTest {
         executor: VoiceToolExecutor = FakeExecutor(),
         key: String? = "sk-test",
         enabled: Boolean = true,
+        clock: () -> Long = { System.currentTimeMillis() },
     ) = HostVoiceCallController(
         scope = CoroutineScope(Dispatchers.Default),
         executor = executor,
@@ -103,6 +104,7 @@ class HostVoiceCallControllerTest {
         audio = audio,
         settings = { TerminalSettings.DEFAULT.copy(voiceCallEnabled = enabled) },
         loadKey = { key },
+        nowMs = clock,
     )
 
     /**
@@ -349,6 +351,45 @@ class HostVoiceCallControllerTest {
         assertEquals(HostCallPhase.Idle, c.state.value.phase, "a cancelled connect must not go Live")
         assertFalse(audio.capturing, "the mic must never open for an abandoned call")
         assertTrue(slowConnect.closed)
+    }
+
+    /**
+     * The in-app surface holds the microphone AND bills the host's account for the whole session, so
+     * it carries the same ceilings as the share path rather than running until someone notices.
+     */
+    @Test
+    fun `an idle in-app call hangs up on its own`() {
+        var clock = 1_000L
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val c = controller(transport, audio, clock = { clock })
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+
+        clock += HostVoiceCallController.IDLE_TIMEOUT_MS + 1
+        assertTrue(await { c.state.value.phase == HostCallPhase.Error }, "an idle call must end itself")
+        assertTrue(c.state.value.error?.contains("nothing happened") == true, c.state.value.error ?: "")
+        assertTrue(audio.stopped, "and release the microphone")
+    }
+
+    @Test
+    fun `a long in-app call stops at the duration ceiling`() {
+        var clock = 1_000L
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val c = controller(transport, audio, clock = { clock })
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+
+        // Keep it busy so the idle cut-off can't be what ends it.
+        repeat(4) {
+            clock += HostVoiceCallController.MAX_CALL_DURATION_MS / 4
+            transport.deliver("""{"type":"input_audio_buffer.speech_started"}""")
+            Thread.sleep(30)
+        }
+        clock += HostVoiceCallController.LIMIT_TICK_MS
+        assertTrue(await { c.state.value.phase == HostCallPhase.Error }, "the ceiling must end it")
+        assertTrue(c.state.value.error?.contains("minute limit") == true, c.state.value.error ?: "")
     }
 
     @Test

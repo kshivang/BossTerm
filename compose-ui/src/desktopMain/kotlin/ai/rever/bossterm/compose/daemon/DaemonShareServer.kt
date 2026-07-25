@@ -29,6 +29,7 @@ import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticResources
+import io.ktor.server.plugins.defaultheaders.DefaultHeaders
 import io.ktor.server.plugins.origin
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
@@ -463,6 +464,9 @@ class DaemonShareServer(
             try {
                 val started = embeddedServer(CIO, host = host, port = port) {
                     install(WebSockets)
+                    install(DefaultHeaders) {
+                        header("X-Frame-Options", "DENY")
+                    }
                     routing {
                         webSocket("/ws/{token}") { serveViewer(this) }
                         installShareViewerFontRoutes()
@@ -704,7 +708,7 @@ class DaemonShareServer(
                                     estimatedBytes = repaint.length.toLong() * 2,
                                 )
                             ) {
-                                vc.outbox.sendOutput(core.id, repaint)
+                                vc.outbox.sendRepaint(core.id, repaint)
                             }
                         }
                         enqueueGraphics(vc.outbox, update.message)
@@ -889,8 +893,12 @@ class DaemonShareServer(
                 vc.outbox.drainTo { f ->
                     val text = when (f) {
                         is FrameOutbox.Frame.Text -> f.text
-                        // Coalesced pane bytes → one PaneOutput, encoded here at drain time.
-                        is FrameOutbox.Frame.Output -> ShareProtocol.encodeServer(ServerMessage.PaneOutput(f.sessionId, f.data))
+                        // Ordered pane bytes are encoded here at drain time; repaint barriers stay
+                        // distinct so the browser can preserve its scroll position.
+                        is FrameOutbox.Frame.Output -> ShareProtocol.encodeServer(
+                            if (f.repaint) ServerMessage.PaneRepaint(f.sessionId, f.data)
+                            else ServerMessage.PaneOutput(f.sessionId, f.data)
+                        )
                         is FrameOutbox.Frame.Binary -> {
                             // Never enqueued on the share path — loud skip so a future mis-wiring
                             // surfaces instead of silently dropping a frame.
@@ -914,13 +922,19 @@ class DaemonShareServer(
                 if (msg is ClientMessage.GraphicsResync) {
                     if (vc.supportsPaneGraphics) {
                         val tracker = synchronized(attachLock) { attachments[msg.paneId]?.graphics }
-                        if (tracker != null && vc.graphicsResyncLimiter.tryAcquire(
-                                msg.paneId,
-                                tracker.estimatedWireBytes(),
-                            )
-                        ) {
-                            val full = tracker.fullMessage()
-                            enqueueGraphics(vc.outbox, full)
+                        if (tracker != null) {
+                            val estimatedBytes = tracker.estimatedWireBytes()
+                            if (vc.graphicsResyncLimiter.tryAcquire(msg.paneId, estimatedBytes)) {
+                                val full = tracker.fullMessage()
+                                enqueueGraphics(vc.outbox, full)
+                            } else {
+                                vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(
+                                    ServerMessage.GraphicsResyncDenied(
+                                        msg.paneId,
+                                        vc.graphicsResyncLimiter.retryAfterMillis(msg.paneId, estimatedBytes),
+                                    )
+                                )))
+                            }
                         }
                     }
                 } else {
@@ -950,10 +964,12 @@ class DaemonShareServer(
     ) {
         val fullFrame = FrameOutbox.Frame.Text(ShareProtocol.encodeServer(message))
         val recovery = message.copy(
-            revision = message.revision + 1,
             full = false,
             images = emptyList(),
             removedImageIds = emptyList(),
+            requiredImageIds = emptyList(),
+            cells = emptyList(),
+            resyncRequired = true,
         )
         outbox.sendRecoverableControl(
             fullFrame,

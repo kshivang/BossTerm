@@ -144,6 +144,16 @@ class MirrorShare(
     ): ViewerConnection {
         val vc = ViewerConnection(viewerSeq.incrementAndGet(), canControl, name, supportsPaneGraphics)
         viewers.add(vc)
+        if (supportsPaneGraphics) {
+            // A graphics mutation may have landed after this viewer's initial full frames were
+            // captured but before admission. Poll every pane once after registration so even a
+            // quiet pane closes that window without registering early and replaying text twice.
+            val entries = synchronized(taps) { taps.toList() }
+            entries.forEach { (id, entry) ->
+                entry.monitoringGraphics.set(true)
+                scheduleGraphicsSync(id, entry)
+            }
+        }
         broadcast(ServerMessage.Presence(viewers.size))
         return vc
     }
@@ -210,7 +220,7 @@ class MirrorShare(
                 // The first graphics-capable viewer establishes the shared baseline. A later
                 // viewer gets a private full frame without advancing revisions for existing peers.
                 val full = entry.graphics.fullMessage(
-                    commit = viewers.count { it.supportsPaneGraphics } <= 1
+                    commit = viewers.none { it.supportsPaneGraphics }
                 )
                 if (full.requiredImageIds.isNotEmpty()) entry.monitoringGraphics.set(true)
                 out.add(full)
@@ -257,12 +267,16 @@ class MirrorShare(
         if (msg is ClientMessage.GraphicsResync) {
             if (vc.supportsPaneGraphics) {
                 val tracker = synchronized(taps) { taps[msg.paneId]?.graphics }
-                if (tracker != null && vc.graphicsResyncLimiter.tryAcquire(
-                        msg.paneId,
-                        tracker.estimatedWireBytes(),
-                    )
-                ) {
-                    vc.outbox.trySend(ShareProtocol.encodeServer(tracker.fullMessage(commit = false)))
+                if (tracker != null) {
+                    val estimatedBytes = tracker.estimatedWireBytes()
+                    if (vc.graphicsResyncLimiter.tryAcquire(msg.paneId, estimatedBytes)) {
+                        vc.outbox.trySend(ShareProtocol.encodeServer(tracker.fullMessage(commit = false)))
+                    } else {
+                        vc.outbox.trySend(ShareProtocol.encodeServer(ServerMessage.GraphicsResyncDenied(
+                            msg.paneId,
+                            vc.graphicsResyncLimiter.retryAfterMillis(msg.paneId, estimatedBytes),
+                        )))
+                    }
                 }
             }
             return
@@ -614,7 +628,7 @@ class MirrorShare(
                                 estimatedBytes = repaint.length.toLong() * 2,
                             )
                         ) {
-                            broadcastGraphics(ServerMessage.PaneOutput(id, repaint))
+                            broadcastGraphics(ServerMessage.PaneRepaint(id, repaint))
                         }
                     }
                     broadcastGraphics(update.message)

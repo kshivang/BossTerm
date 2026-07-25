@@ -6,6 +6,7 @@ import ai.rever.bossterm.terminal.model.image.ImageFormat
 import ai.rever.bossterm.terminal.model.image.TerminalImage
 import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
 import org.slf4j.LoggerFactory
+import java.lang.ref.ReferenceQueue
 import java.lang.ref.SoftReference
 import java.lang.ref.WeakReference
 import java.security.MessageDigest
@@ -381,18 +382,22 @@ internal class PaneGraphicsTracker(
  */
 private object SharedRasterBase64Cache {
     private const val MAX_CACHED_CHARS = 32 * 1024 * 1024
-    private data class CachedBase64(
-        val value: SoftReference<String>,
+    private class CachedBase64(
+        val key: String,
+        value: String,
         val chars: Int,
-    )
+        queue: ReferenceQueue<String>,
+    ) : SoftReference<String>(value, queue)
 
     private val values = object : LinkedHashMap<String, CachedBase64>(16, 0.75f, true) {}
+    private val clearedValues = ReferenceQueue<String>()
     private var cachedChars = 0
 
     @Synchronized
     fun encode(contentHash: String, data: ByteArray): String {
+        drainClearedValues()
         values[contentHash]?.let { cached ->
-            cached.value.get()?.let { return it }
+            cached.get()?.let { return it }
             values.remove(contentHash)
             cachedChars -= cached.chars
         }
@@ -404,9 +409,19 @@ private object SharedRasterBase64Cache {
             cachedChars -= oldest.value.chars
             iterator.remove()
         }
-        values[contentHash] = CachedBase64(SoftReference(encoded), encoded.length)
+        values[contentHash] = CachedBase64(contentHash, encoded, encoded.length, clearedValues)
         cachedChars += encoded.length
         return encoded
+    }
+
+    private fun drainClearedValues() {
+        while (true) {
+            val cleared = clearedValues.poll() as? CachedBase64 ?: return
+            if (values[cleared.key] === cleared) {
+                values.remove(cleared.key)
+                cachedChars -= cleared.chars
+            }
+        }
     }
 }
 
@@ -706,6 +721,30 @@ internal class GraphicsResyncLimiter(
         active.bytesInWindow = admittedWindowBytes + estimatedBytes
         entries[paneId] = active
         return true
+    }
+
+    /**
+     * Delay until the same request can pass both the per-pane interval and rolling byte budget.
+     * Intended for an explicit denial response, so clients can retry without spending a timeout.
+     */
+    @Synchronized
+    fun retryAfterMillis(
+        paneId: String,
+        estimatedBytes: Long = 0,
+        nowNanos: Long = System.nanoTime(),
+    ): Long {
+        val entry = entries[paneId]
+        val intervalRemaining = entry?.let {
+            (minimumIntervalNanos - (nowNanos - it.lastNanos)).coerceAtLeast(0)
+        } ?: 0
+        val windowRemaining = when {
+            estimatedBytes > maximumBytesPerWindow -> windowNanos
+            entry == null || nowNanos - entry.windowStartNanos >= windowNanos -> 0
+            estimatedBytes <= maximumBytesPerWindow - entry.bytesInWindow -> 0
+            else -> (windowNanos - (nowNanos - entry.windowStartNanos)).coerceAtLeast(0)
+        }
+        val remaining = maxOf(intervalRemaining, windowRemaining)
+        return ((remaining + 999_999L) / 1_000_000L).coerceAtLeast(1L)
     }
 
     @Synchronized

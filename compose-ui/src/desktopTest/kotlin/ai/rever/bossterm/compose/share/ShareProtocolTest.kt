@@ -35,6 +35,9 @@ class ShareProtocolTest {
         assertTrue(out.contains("\"t\":\"paneOutput\""), "expected paneOutput discriminator in: $out")
         assertTrue(out.contains("\"paneId\":\"p1\""))
 
+        val repaint = ShareProtocol.encodeServer(ServerMessage.PaneRepaint("p1", "screen"))
+        assertTrue(repaint.contains("\"t\":\"paneRepaint\""))
+
         val snap = ShareProtocol.encodeServer(
             ServerMessage.PaneSnapshot("p1", "scrollback", 120, 40, scrollbackLines = 12_345)
         )
@@ -55,10 +58,20 @@ class ShareProtocolTest {
             images = listOf(SharedTerminalImage("42", "image/png", "cG5n", "abc")),
             requiredImageIds = listOf("42"),
             cells = listOf(SharedImageCellRun("42", 4, 2, 0, 0, 3, 3, 2)),
+            resyncRequired = true,
         )
         val graphicsJson = ShareProtocol.encodeServer(graphics)
         assertTrue(graphicsJson.contains("\"t\":\"paneGraphics\""))
         assertEquals(graphics, ShareProtocol.decodeServer(graphicsJson))
+
+        val legacyGraphics = ShareProtocol.decodeServer(
+            """{"t":"paneGraphics","paneId":"p1","revision":1,"full":false}"""
+        )
+        assertIs<ServerMessage.PaneGraphics>(legacyGraphics)
+        assertEquals(false, legacyGraphics.resyncRequired)
+
+        val denied = ServerMessage.GraphicsResyncDenied("p1", retryAfterMs = 750)
+        assertEquals(denied, ShareProtocol.decodeServer(ShareProtocol.encodeServer(denied)))
     }
 
     @Test
@@ -233,6 +246,10 @@ class ShareProtocolTest {
         val out = ShareProtocol.decodeServer("""{"t":"paneOutput","paneId":"p1","data":"hi"}""")
         assertIs<ServerMessage.PaneOutput>(out)
         assertEquals("hi", out.data)
+
+        val repaint = ShareProtocol.decodeServer("""{"t":"paneRepaint","paneId":"p1","data":"screen"}""")
+        assertIs<ServerMessage.PaneRepaint>(repaint)
+        assertEquals("screen", repaint.data)
 
         // encodeClient is the client write path (handshake).
         val hello = ShareProtocol.encodeClient(ClientMessage.Hello(name = "dev", clientId = "c1", key = null))

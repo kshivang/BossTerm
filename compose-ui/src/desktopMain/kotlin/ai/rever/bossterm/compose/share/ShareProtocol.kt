@@ -109,7 +109,7 @@ sealed class ServerMessage {
 
     /**
      * One-time initial paint for a pane: scrollback+screen as a raw escape/text blob.
-     * [scrollbackLines] is the web-safe history cap (at most 100k rows). Inline-image rows use this
+     * [scrollbackLines] is the web-safe history cap (at most 20k rows). Inline-image rows use this
      * coordinate window even when the host retains more history, keeping phone memory bounded.
      */
     @Serializable
@@ -126,6 +126,14 @@ sealed class ServerMessage {
     @Serializable
     @SerialName("paneOutput")
     data class PaneOutput(val paneId: String, val data: String) : ServerMessage()
+
+    /**
+     * Authoritative visible-screen repaint that remains ordered with incremental pane output.
+     * Web viewers preserve their current distance from the bottom while applying it.
+     */
+    @Serializable
+    @SerialName("paneRepaint")
+    data class PaneRepaint(val paneId: String, val data: String) : ServerMessage()
 
     /** A pane's terminal dimensions changed. */
     @Serializable
@@ -150,6 +158,19 @@ sealed class ServerMessage {
         val cells: List<SharedImageCellRun> = emptyList(),
         /** Host history rows retained for this viewer; anchors absolute rows to xterm's baseY. */
         val historyLines: Int = -1,
+        /**
+         * The full frame could not be queued. The viewer must request another full frame without
+         * treating this sentinel as a new graphics revision.
+         */
+        val resyncRequired: Boolean = false,
+    ) : ServerMessage()
+
+    /** A graphics resync was throttled; retrying it after [retryAfterMs] does not spend an attempt. */
+    @Serializable
+    @SerialName("graphicsResyncDenied")
+    data class GraphicsResyncDenied(
+        val paneId: String,
+        val retryAfterMs: Long,
     ) : ServerMessage()
 
     /** Number of connected viewers. */

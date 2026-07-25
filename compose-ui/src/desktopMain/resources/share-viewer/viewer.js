@@ -1072,9 +1072,14 @@
   }
 
   function graphicsMemoryFits(g, addedBytes, replacedBytes) {
-    return addedBytes <= MAX_PANE_GRAPHICS_BYTES &&
-      g.bytes + addedBytes - (replacedBytes || 0) <= MAX_PANE_GRAPHICS_BYTES &&
-      viewerGraphicsBytes + addedBytes - (replacedBytes || 0) <= MAX_VIEWER_GRAPHICS_BYTES;
+    return viewerLogic.graphicsMemoryFits(
+      g.bytes,
+      viewerGraphicsBytes,
+      addedBytes,
+      replacedBytes,
+      MAX_PANE_GRAPHICS_BYTES,
+      MAX_VIEWER_GRAPHICS_BYTES
+    );
   }
 
   function base64Bytes(data) {
@@ -1222,6 +1227,29 @@
     }, GRAPHICS_RESYNC_TIMEOUT_MS * g.resyncAttempts);
   }
 
+  function handleGraphicsResyncDenied(m) {
+    var p = panes[m.paneId];
+    if (!p) return;
+    var g = p.graphics;
+    if (g.resyncTimer) clearTimeout(g.resyncTimer);
+    g.resyncTimer = null;
+    // A host throttle is an acknowledgement, not a failed transport attempt. Give the attempt
+    // back and keep one pending retry so repeated denials cannot force permanent degradation.
+    g.resyncAttempts = viewerLogic.graphicsAttemptAfterDenied(
+      g.resyncAttempts,
+      g.resyncPending
+    );
+    g.resyncPending = true;
+    var retryAfterMs = Number(m.retryAfterMs);
+    if (!isFinite(retryAfterMs)) retryAfterMs = GRAPHICS_RESYNC_TIMEOUT_MS;
+    retryAfterMs = Math.max(1, Math.min(60000, Math.floor(retryAfterMs)));
+    g.resyncTimer = setTimeout(function () {
+      g.resyncTimer = null;
+      g.resyncPending = false;
+      requestGraphicsResync(m.paneId, g);
+    }, retryAfterMs);
+  }
+
   function resetGraphicsResync(g) {
     if (g.resyncTimer) clearTimeout(g.resyncTimer);
     g.resyncTimer = null;
@@ -1238,7 +1266,13 @@
       var g = panes[paneId].graphics, cleared = false;
       Object.keys(g.rejected).forEach(function (id) {
         if (paneId === skipPaneId && id === skipImageId) return;
-        if (g.rejected[id].reason === "budget") {
+        var rejected = g.rejected[id];
+        var current = g.images[id];
+        var replacedBytes = current && current.hash === rejected.replacedHash
+          ? current.bytes
+          : 0;
+        if (rejected.reason === "budget" &&
+            graphicsMemoryFits(g, rejected.requiredBytes || 0, replacedBytes)) {
           delete g.rejected[id];
           cleared = true;
         }
@@ -1253,6 +1287,10 @@
     var p = panes[m.paneId];
     if (!p) return;
     var g = p.graphics;
+    if (m.resyncRequired) {
+      requestGraphicsResync(m.paneId, g);
+      return;
+    }
     var required = {};
     (m.requiredImageIds || []).forEach(function (id) { required[String(id)] = true; });
     var revisionGap = !m.full && g.revision !== null && m.revision !== g.revision + 1;
@@ -1294,7 +1332,12 @@
       // The pending encoded source and decoded RGBA backing store both count against the bound.
       // Keep the old decoded raster live until the replacement has decoded successfully.
       if (!graphicsMemoryFits(g, bytes, old ? old.bytes : 0)) {
-        g.rejected[id] = { reason: "budget", hash: wire.contentHash };
+        g.rejected[id] = {
+          reason: "budget",
+          hash: wire.contentHash,
+          requiredBytes: bytes,
+          replacedHash: old ? old.hash : null
+        };
         return;
       }
       var image = new Image();
@@ -1307,7 +1350,12 @@
         var decodedBytes = image.naturalWidth * image.naturalHeight * 4;
         if (!graphicsMemoryFits(g, decodedBytes, old ? old.bytes : 0)) {
           removePendingGraphicsImage(g, id);
-          g.rejected[id] = { reason: "budget", hash: wire.contentHash };
+          g.rejected[id] = {
+            reason: "budget",
+            hash: wire.contentHash,
+            requiredBytes: bytes + decodedBytes,
+            replacedHash: old ? old.hash : null
+          };
           retryBudgetRejectedImages(m.paneId, id);
           scheduleGraphicsDraw(p);
           return;
@@ -1499,6 +1547,33 @@
     host.addEventListener("touchcancel", function () { axis = null; vel = 0; unmarkTouchScrollSoon(); }, { passive: true, capture: true });
   }
 
+  var themeColorProbe = document.createElement("span");
+
+  function safeCssColor(value, fallback) {
+    if (typeof value !== "string") return fallback;
+    themeColorProbe.style.color = "";
+    themeColorProbe.style.color = value;
+    return themeColorProbe.style.color ? value : fallback;
+  }
+
+  function validatedTheme(m) {
+    m = m || {};
+    var next = {
+      background: safeCssColor(m.background, "#1e1e1e"),
+      foreground: safeCssColor(m.foreground, "#f8f8f2"),
+      cursor: safeCssColor(m.cursor, "#f8f8f2"),
+      cursorAccent: safeCssColor(m.cursorAccent, "#1e1e1e"),
+      selectionBackground: safeCssColor(m.selectionBackground, "rgba(255,255,255,0.25)"),
+      ansi: [],
+      fontFamily: typeof m.fontFamily === "string" ? m.fontFamily : DEFAULT_TERMINAL_FONT_FAMILY,
+      fontSize: isFinite(Number(m.fontSize))
+        ? Math.max(8, Math.min(72, Math.floor(Number(m.fontSize))))
+        : 13
+    };
+    var ansi = Array.isArray(m.ansi) ? m.ansi : [];
+    for (var i = 0; i < 16; i += 1) next.ansi[i] = safeCssColor(ansi[i], undefined);
+    return next;
+  }
 
   function applyThemeToOpts(opts) {
     var a = theme.ansi || [];
@@ -1514,21 +1589,19 @@
   }
 
   function applyTheme(m) {
-    theme = m;
+    theme = validatedTheme(m);
     Object.keys(panes).forEach(function (id) {
       var o = {}; applyThemeToOpts(o);
       var t = panes[id].term;
       if (panes[id].graphicsTransparent) o.theme.background = "rgba(0,0,0,0)";
       t.options.theme = o.theme;
-      panes[id].host.style.background = m.background || "#1e1e1e";
+      panes[id].host.style.background = theme.background;
       if (o.fontFamily) t.options.fontFamily = o.fontFamily;
       if (o.fontSize) t.options.fontSize = o.fontSize;
     });
-    if (m.background) {
-      document.documentElement.style.background = m.background;
-      document.body.style.background = m.background;
-      stageEl.style.background = m.background;
-    }
+    document.documentElement.style.background = theme.background;
+    document.body.style.background = theme.background;
+    stageEl.style.background = theme.background;
     // The host theme may carry a fontSize; keep the viewer's chosen zoom if set.
     if (viewerFont) Object.keys(panes).forEach(function (id) { try { panes[id].term.options.fontSize = viewerFont; } catch (e) {} });
     Object.keys(panes).forEach(function (id) { scheduleGraphicsDraw(panes[id]); });
@@ -2355,23 +2428,36 @@
       case "paneOutput":
         if (m.data) {
           var outputPane = getPane(m.paneId);
-          // A graphics placement re-anchor begins with RIS + a full text snapshot. Preserve how
-          // far the reader was scrolled from the bottom so an image-heavy TUI does not yank them
-          // back to live output on every re-anchor.
-          var activeBuffer = outputPane.term.buffer.active;
-          var restoreLinesFromBottom = m.data.indexOf("\u001bc") === 0
-            ? Math.max(0, activeBuffer.baseY - activeBuffer.viewportY)
-            : 0;
           outputPane.term.write(m.data, function () {
-            if (restoreLinesFromBottom > 0) {
-              var updated = outputPane.term.buffer.active;
-              outputPane.term.scrollToLine(Math.max(0, updated.baseY - restoreLinesFromBottom));
-            }
             scheduleGraphicsDraw(outputPane);
           });
         }
         break;
+      case "paneRepaint":
+        if (m.data) {
+          var repaintPane = getPane(m.paneId);
+          // Enter xterm's write queue before measuring so prior paneOutput frames are reflected in
+          // baseY/viewportY. The repaint remains ordered while preserving the reader's position.
+          repaintPane.term.write("", function () {
+            var activeBuffer = repaintPane.term.buffer.active;
+            var restoreLinesFromBottom = viewerLogic.scrollLinesFromBottom(
+              activeBuffer.baseY,
+              activeBuffer.viewportY
+            );
+            repaintPane.term.write(m.data, function () {
+              if (restoreLinesFromBottom > 0) {
+                var updated = repaintPane.term.buffer.active;
+                repaintPane.term.scrollToLine(
+                  viewerLogic.scrollLineForDistance(updated.baseY, restoreLinesFromBottom)
+                );
+              }
+              scheduleGraphicsDraw(repaintPane);
+            });
+          });
+        }
+        break;
       case "paneGraphics": applyPaneGraphics(m); break;
+      case "graphicsResyncDenied": handleGraphicsResyncDenied(m); break;
       case "paneResize":
         if (m.cols && m.rows) {
           var resizedPane = getPane(m.paneId);

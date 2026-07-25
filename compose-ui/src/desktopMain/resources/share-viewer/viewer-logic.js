@@ -21,9 +21,39 @@
     return absoluteRow + capturedOffset - viewportY;
   }
 
+  function scrollLinesFromBottom(baseY, viewportY) {
+    return Math.max(0, baseY - viewportY);
+  }
+
+  function scrollLineForDistance(updatedBaseY, linesFromBottom) {
+    return Math.max(0, updatedBaseY - linesFromBottom);
+  }
+
+  function graphicsMemoryFits(
+    paneBytes,
+    viewerBytes,
+    addedBytes,
+    replacedBytes,
+    paneLimit,
+    viewerLimit
+  ) {
+    var replaced = replacedBytes || 0;
+    return addedBytes <= paneLimit &&
+      paneBytes + addedBytes - replaced <= paneLimit &&
+      viewerBytes + addedBytes - replaced <= viewerLimit;
+  }
+
+  function graphicsAttemptAfterDenied(attempts, requestPending) {
+    return requestPending && attempts > 0 ? attempts - 1 : attempts;
+  }
+
   return {
     nextReconnectAttempt: nextReconnectAttempt,
     captureRowOffset: captureRowOffset,
-    visibleImageRow: visibleImageRow
+    visibleImageRow: visibleImageRow,
+    scrollLinesFromBottom: scrollLinesFromBottom,
+    scrollLineForDistance: scrollLineForDistance,
+    graphicsMemoryFits: graphicsMemoryFits,
+    graphicsAttemptAfterDenied: graphicsAttemptAfterDenied
   };
 }));

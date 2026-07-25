@@ -104,6 +104,26 @@ class FrameOutboxTest {
     }
 
     @Test
+    fun `repaint is an ordered barrier between pane output frames`() {
+        val outbox = FrameOutbox()
+        outbox.sendOutput("pane", "before-1")
+        outbox.sendOutput("pane", "before-2")
+        outbox.sendRepaint("pane", "screen")
+        outbox.sendOutput("pane", "after-1")
+        outbox.sendOutput("pane", "after-2")
+        outbox.close()
+
+        assertEquals(
+            listOf(
+                FrameOutbox.Frame.Output("pane", "before-1before-2"),
+                FrameOutbox.Frame.Output("pane", "screen", repaint = true),
+                FrameOutbox.Frame.Output("pane", "after-1after-2"),
+            ),
+            drainAll(outbox),
+        )
+    }
+
+    @Test
     fun `a control backlog does not starve output (fairness cap)`() {
         val outbox = FrameOutbox(controlCapacity = 4096)
         val controlCount = FrameOutbox.CONTROL_BURST * 3

@@ -143,6 +143,7 @@ kotlin {
                 implementation("io.ktor:ktor-server-content-negotiation:3.2.3")
                 // Session sharing (issue #276): WebSocket endpoint for the web viewer.
                 implementation("io.ktor:ktor-server-websockets:3.2.3")
+                implementation("io.ktor:ktor-server-default-headers:3.2.3")
                 // QR code for the share dialog (pure-Java, no Android deps).
                 implementation("com.google.zxing:core:3.5.3")
             }

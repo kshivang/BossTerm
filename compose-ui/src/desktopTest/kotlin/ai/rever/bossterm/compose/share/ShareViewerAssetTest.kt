@@ -31,6 +31,7 @@ class ShareViewerAssetTest {
 
         assertTrue(js.contains("g.resyncAttempts >= MAX_GRAPHICS_RESYNCS"))
         assertTrue(js.contains("GRAPHICS_RESYNC_TIMEOUT_MS"))
+        assertTrue(js.contains("graphicsAttemptAfterDenied"))
         assertTrue(js.contains("RECONNECT_STABLE_MS"))
         assertTrue(js.contains("viewerLogic.nextReconnectAttempt"))
         assertFalse(
@@ -56,10 +57,13 @@ class ShareViewerAssetTest {
     fun `graphics text reanchors preserve the viewer scroll position`() {
         val js = resource("share-viewer/viewer.js")
         val paneOutput = js.substringAfter("case \"paneOutput\":")
+            .substringBefore("case \"paneRepaint\":")
+        val paneRepaint = js.substringAfter("case \"paneRepaint\":")
             .substringBefore("case \"paneGraphics\":")
 
-        assertTrue(paneOutput.contains("activeBuffer.baseY - activeBuffer.viewportY"))
-        assertTrue(paneOutput.contains("scrollToLine"))
+        assertFalse(paneOutput.contains("scrollToLine"))
+        assertTrue(paneRepaint.contains("scrollLinesFromBottom"))
+        assertTrue(paneRepaint.contains("scrollToLine"))
     }
 
     @Test
@@ -82,9 +86,21 @@ class ShareViewerAssetTest {
         assertTrue(html.contains("base-uri 'none'"))
         assertTrue(html.contains("form-action 'none'"))
         assertTrue(html.contains("img-src 'self' data:"))
-        assertTrue(html.contains("connect-src 'self' ws: wss:"))
+        assertTrue(html.contains("connect-src 'self'"))
+        assertFalse(html.contains("connect-src 'self' ws: wss:"))
         assertTrue(html.contains("MesloLGSNF-Regular.ttf?v=d97946186e97"))
         assertFalse(resource("share-viewer/viewer.js").contains("document.fonts.load("))
+    }
+
+    @Test
+    fun `viewer validates host colors and impossible raster retries`() {
+        val js = resource("share-viewer/viewer.js")
+
+        assertTrue(js.contains("safeCssColor"))
+        assertTrue(js.contains("validatedTheme(m)"))
+        assertTrue(js.contains("rejected.requiredBytes"))
+        assertTrue(js.contains("graphicsMemoryFits(g, rejected.requiredBytes"))
+        assertTrue(js.contains("if (m.resyncRequired)"))
     }
 
     @Test

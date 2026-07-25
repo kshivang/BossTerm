@@ -39,8 +39,15 @@ internal class FrameOutbox(
         /** A pre-encoded binary control frame (snapshot). */
         class Binary(val bytes: ByteArray) : Frame
 
-        /** Coalesced incremental output for one session; encoded to a binary frame at send time. */
-        data class Output(val sessionId: String, val data: String) : Frame
+        /**
+         * Ordered pane bytes encoded at send time. Repaints are queue barriers and remain distinct
+         * from surrounding incremental output so the viewer can preserve its scroll position.
+         */
+        data class Output(
+            val sessionId: String,
+            val data: String,
+            val repaint: Boolean = false,
+        ) : Frame
     }
 
     // Control frames must not be DROPPED, but the lane is still BOUNDED: a wedged client (socket
@@ -114,8 +121,8 @@ internal class FrameOutbox(
 
     /**
      * Try a large but recoverable graphics frame. If it cannot fit, enqueue [recoveryFrame]
-     * instead; the lightweight revision gap/missing-image metadata makes the viewer request a full
-     * resync after the writer drains, without sacrificing the connection or its retry budget.
+     * instead; the lightweight resync-required sentinel makes the viewer request a full frame
+     * after the writer drains, without inventing a revision or sacrificing the connection.
      */
     fun sendRecoverableControl(frame: Frame, recoveryFrame: Frame) {
         if (closed || trySendControlFrame(frame)) return
@@ -154,10 +161,19 @@ internal class FrameOutbox(
 
     /** Enqueue incremental output that may be dropped under back-pressure. */
     fun sendOutput(sessionId: String, data: String) {
+        enqueueOutput(sessionId, data, repaint = false)
+    }
+
+    /** Enqueue an authoritative screen repaint in the same ordered lane as pane output. */
+    fun sendRepaint(sessionId: String, data: String) {
+        enqueueOutput(sessionId, data, repaint = true)
+    }
+
+    private fun enqueueOutput(sessionId: String, data: String, repaint: Boolean) {
         if (closed || data.isEmpty()) return
         var dropped: MutableSet<String>? = null
         synchronized(outputLock) {
-            outputQueue.addLast(Frame.Output(sessionId, data))
+            outputQueue.addLast(Frame.Output(sessionId, data, repaint))
             outputChars += data.length
             // Evict oldest-first past either bound (chars for payload heap, frames for object
             // count), but always keep the newest chunk — a single over-budget chunk must still go
@@ -196,11 +212,13 @@ internal class FrameOutbox(
     private fun takeCoalesced(): Frame.Output? = synchronized(outputLock) {
         val first = outputQueue.removeFirstOrNull() ?: return null
         outputChars -= first.data.length
-        if (outputQueue.firstOrNull()?.sessionId != first.sessionId) return first
+        if (first.repaint) return first
+        val queuedNext = outputQueue.firstOrNull()
+        if (queuedNext?.sessionId != first.sessionId || queuedNext.repaint) return first
         val sb = StringBuilder(first.data)
         while (sb.length < MAX_COALESCED_CHARS) {
             val next = outputQueue.firstOrNull() ?: break
-            if (next.sessionId != first.sessionId) break
+            if (next.sessionId != first.sessionId || next.repaint) break
             outputQueue.removeFirst()
             outputChars -= next.data.length
             sb.append(next.data)

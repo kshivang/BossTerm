@@ -373,6 +373,24 @@ class PaneGraphicsTrackerTest {
     }
 
     @Test
+    fun `graphics resync limiter reports when a denied request can retry`() {
+        val limiter = GraphicsResyncLimiter(
+            minimumIntervalNanos = 500_000_000,
+            maximumBytesPerWindow = 100,
+            windowNanos = 2_000_000_000,
+        )
+        assertTrue(limiter.tryAcquire("pane", estimatedBytes = 60, nowNanos = 1_000_000_000))
+        assertEquals(
+            500,
+            limiter.retryAfterMillis("pane", estimatedBytes = 20, nowNanos = 1_000_000_000),
+        )
+        assertEquals(
+            2_000,
+            limiter.retryAfterMillis("pane", estimatedBytes = 41, nowNanos = 1_000_000_000),
+        )
+    }
+
+    @Test
     fun `denied resync does not advance the rolling window`() {
         val limiter = GraphicsResyncLimiter(
             minimumIntervalNanos = 0,

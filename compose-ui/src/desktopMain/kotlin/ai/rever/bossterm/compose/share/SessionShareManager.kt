@@ -10,6 +10,7 @@ import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticResources
+import io.ktor.server.plugins.defaultheaders.DefaultHeaders
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
@@ -769,6 +770,9 @@ object SessionShareManager {
             try {
                 val started = embeddedServer(CIO, host = host, port = port) {
                     install(WebSockets)
+                    install(DefaultHeaders) {
+                        header("X-Frame-Options", "DENY")
+                    }
                     routing {
                         webSocket("/ws/{token}") { serveViewer(this) }
                         installShareViewerFontRoutes()
@@ -974,10 +978,11 @@ object SessionShareManager {
 
         val supportsPaneGraphics = hello?.capabilities?.contains(PANE_GRAPHICS_CAPABILITY) == true
 
-        // Register before encoding the snapshots. Output produced during encoding is queued in the
-        // viewer outbox, whose writer starts only after the direct initial frames have been sent.
-        // This preserves ordering while ensuring graphics changes in the admission window schedule
-        // a follow-up update instead of being dropped on an otherwise quiet pane.
+        // Capture before registration. Registering first queues output that the authoritative
+        // snapshot may already contain, deterministically replaying it below the snapshot. Once
+        // registered, addViewer schedules a graphics poll for every pane to close the graphics
+        // admission window even when the pane goes quiet.
+        val initialMessages = share.initialMessages(includePaneGraphics = supportsPaneGraphics)
         val vc = share.addViewer(
             canControl,
             hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})",
@@ -985,7 +990,7 @@ object SessionShareManager {
         )
         vc.grantKey = accessKey // lets an approved mid-session upgrade persist into the grant
         try {
-            share.initialMessages(includePaneGraphics = supportsPaneGraphics).forEach { send(it) }
+            initialMessages.forEach { send(it) }
             send(ServerMessage.Control(granted = canControl))
             val sc = serverCipher
             val writer = ws.launch {

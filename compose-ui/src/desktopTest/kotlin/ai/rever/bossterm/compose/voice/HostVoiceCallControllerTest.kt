@@ -40,7 +40,11 @@ class HostVoiceCallControllerTest {
             this.events = events
         }
 
-        override fun send(json: String) { sent.add(json) }
+        val evictableFlags = mutableListOf<Boolean>()
+        override fun send(json: String, evictable: Boolean) {
+            sent.add(json)
+            evictableFlags.add(evictable)
+        }
         override fun close() { closed = true }
 
         fun deliver(json: String) = events?.invoke(json)
@@ -52,7 +56,7 @@ class HostVoiceCallControllerTest {
         var capturing = false
         var stopped = false
         var flushes = 0
-        val played = mutableListOf<ByteArray>()
+        val played: MutableList<ByteArray> = java.util.concurrent.CopyOnWriteArrayList()
         private var onChunk: ((ByteArray) -> Unit)? = null
 
         override fun startCapture(onChunk: (ByteArray) -> Unit, onLevel: (Float) -> Unit) {
@@ -69,7 +73,10 @@ class HostVoiceCallControllerTest {
     }
 
     private class FakeExecutor : VoiceToolExecutor {
-        val calls = mutableListOf<String>()
+        // Thread-safe on purpose: a round can run four tools at once, and an unsynchronized
+        // ArrayList silently LOST entries under that concurrency — which read as "the tool didn't
+        // run" and cost a while to tell apart from a real scheduling bug.
+        val calls: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
         override fun tools(): List<VoiceToolDef> = VoiceToolCatalog.ALL.filter { !it.guiOnly }
         override fun contextSnapshot(defaultTabId: String?): String = "- \"zsh\" (tab_id t1) [active]"
         override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?): String {
@@ -93,7 +100,13 @@ class HostVoiceCallControllerTest {
         loadKey = { key },
     )
 
-    private fun await(timeoutMs: Long = 4000, predicate: () -> Boolean): Boolean {
+    /**
+     * These are "eventually" assertions on work handed to background coroutines, so the window has
+     * to survive a fully-loaded machine: at 4s they passed in isolation and failed in the full suite,
+     * which is a flaky test rather than a real signal. A generous ceiling costs time only on a
+     * genuine failure.
+     */
+    private fun await(timeoutMs: Long = 15_000, predicate: () -> Boolean): Boolean {
         val deadline = System.nanoTime() + timeoutMs * 1_000_000
         while (System.nanoTime() < deadline) {
             if (runCatching { predicate() }.getOrDefault(false)) return true
@@ -150,6 +163,12 @@ class HostVoiceCallControllerTest {
         assertTrue(await { transport.sentOfType("input_audio_buffer.append").isNotEmpty() })
         val appended = transport.sentOfType("input_audio_buffer.append").first()["audio"]!!.jsonPrimitive.content
         assertTrue(Base64.getDecoder().decode(appended).contentEquals(byteArrayOf(1, 2, 3, 4)))
+
+        // Mic frames must be the droppable ones; a queued function_call_output must not be.
+        val appendIndex = transport.sent.indexOfFirst { it.contains("input_audio_buffer.append") }
+        assertTrue(transport.evictableFlags[appendIndex], "mic audio is evictable")
+        val sessionIndex = transport.sent.indexOfFirst { it.contains("session.update") }
+        assertFalse(transport.evictableFlags[sessionIndex], "protocol frames are guaranteed")
 
         c.toggleMute()
         assertTrue(c.state.value.muted)
@@ -268,7 +287,7 @@ class HostVoiceCallControllerTest {
             ) {
                 gate.await() // park mid-connect, like a slow network
             }
-            override fun send(json: String) {}
+            override fun send(json: String, evictable: Boolean) {}
             override fun close() { closed = true }
         }
         val audio = FakeAudio()

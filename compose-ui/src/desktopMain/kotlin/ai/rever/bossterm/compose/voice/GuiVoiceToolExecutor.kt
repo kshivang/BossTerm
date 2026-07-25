@@ -3,7 +3,6 @@ package ai.rever.bossterm.compose.voice
 import ai.rever.bossterm.compose.mcp.BossTermMcpConfig
 import ai.rever.bossterm.compose.mcp.BossTermMcpServer
 import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
-import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequestParams
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
@@ -57,7 +56,9 @@ internal class GuiVoiceToolExecutor(
 
     // Built lazily so no MCP machinery spins up until the first call actually starts.
     private val wrapper: BossTermMcpServer by lazy { BossTermMcpServer(config = mcpConfig) }
-    private val serverInstance: Server by lazy { wrapper.createServer() }
+    // createServer()'s return value is deliberately unused: the wrapper owns the map, and every
+    // read goes through its locked accessors.
+    private val serverInstance: Any by lazy { wrapper.createServer() }
     @Volatile private var appliedDisabled: Set<String>? = null
 
     /**
@@ -68,21 +69,23 @@ internal class GuiVoiceToolExecutor(
      * first voice call. That matters because `manage_tools` exists to toggle them at runtime:
      * disabling run_command mid-session left it callable by voice until the app restarted.
      */
-    private fun server(): Server {
-        val server = serverInstance
+    private fun server(): BossTermMcpServer {
+        serverInstance // force construction on first use
         val disabled = settings().disabledMcpTools.toSet()
         if (disabled != appliedDisabled) {
             appliedDisabled = disabled
             runCatching { wrapper.applyDisabledSet(disabled) }
         }
-        return server
+        return wrapper
     }
 
     /** The registered handler name for a catalog tool (the embedder may prefix them). */
     private fun handlerName(tool: String): String = mcpConfig.toolNamePrefix + tool
 
     override fun tools(): List<VoiceToolDef> {
-        val registered = server().tools.keys
+        // Via the wrapper, not the raw SDK map: it is not thread-safe and this runs concurrently
+        // with applyDisabledSet and with up to four in-flight tool calls.
+        val registered = server().toolNames()
         return VoiceToolCatalog.ALL.filter { it.name in LOCAL_TOOLS || handlerName(it.name) in registered }
     }
 
@@ -144,7 +147,7 @@ internal class GuiVoiceToolExecutor(
             put("tab_id", targetTabId)
         }
         val registeredName = handlerName(def.name)
-        val handler = server().tools[registeredName]?.handler
+        val handler = server().handlerFor(registeredName)
             ?: throw VoiceToolException("Tool not available on this host: $name")
         val result = withTimeoutOrNull(EXEC_TIMEOUT_MS) {
             handler(CallToolRequest(CallToolRequestParams(name = registeredName, arguments = effectiveArgs)))

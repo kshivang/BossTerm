@@ -31,6 +31,16 @@ internal fun Route.installShareViewerFontRoutes() {
 /** Placeholder inside the shell's `connect-src`, filled in per request by [respondShareViewerIndex]. */
 internal const val WS_ORIGIN_PLACEHOLDER = "__BOSSTERM_WS_ORIGINS__"
 
+/**
+ * Placeholder for Boss Calling's SDP origin, filled in only when a key is configured — a viewer of a
+ * host that never set one gets no remote origin in its policy at all.
+ */
+internal const val VOICE_ORIGIN_PLACEHOLDER = "__BOSSTERM_VOICE_ORIGIN__"
+
+/** The single origin a voice call needs, or empty when this host can't place one. */
+internal fun voiceCspSource(keyConfigured: Boolean): String =
+    if (keyConfigured) "https://api.openai.com" else ""
+
 /** Bare `host` / `host:port` / `[v6]:port` — anything else can't go in a CSP directive. */
 private val SAFE_HTTP_AUTHORITY =
     Regex("""(?:[A-Za-z0-9._\-]+|\[[0-9A-Fa-f:.]+])(?::\d{1,5})?""")
@@ -69,10 +79,12 @@ private suspend fun ApplicationCall.respondShareViewerIndex() {
     // it cheap, and the per-request CSP is never reused across a different Host.
     response.headers.append(HttpHeaders.CacheControl, "no-cache")
     respondText(
-        ShareViewerIndex.template.replace(
-            WS_ORIGIN_PLACEHOLDER,
-            webSocketCspSources(request.headers[HttpHeaders.Host]),
-        ),
+        ShareViewerIndex.template
+            .replace(WS_ORIGIN_PLACEHOLDER, webSocketCspSources(request.headers[HttpHeaders.Host]))
+            .replace(
+                VOICE_ORIGIN_PLACEHOLDER,
+                voiceCspSource(ai.rever.bossterm.compose.voice.VoiceAgentStorage.keyPresentFlow.value),
+            ),
         ContentType.Text.Html.withCharset(Charsets.UTF_8),
     )
 }

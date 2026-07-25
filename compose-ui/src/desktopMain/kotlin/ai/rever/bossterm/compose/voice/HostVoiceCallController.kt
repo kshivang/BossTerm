@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.voice
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -139,7 +140,8 @@ internal class HostVoiceCallController(
                                 buildJsonObject {
                                     put("type", "input_audio_buffer.append")
                                     put("audio", Base64.getEncoder().encodeToString(chunk))
-                                }.toString()
+                                }.toString(),
+                                evictable = true, // audio may be dropped; protocol frames may not
                             )
                         }
                     },
@@ -243,7 +245,10 @@ internal class HostVoiceCallController(
                 // session config names the offending `session.*` param, and auth/quota failures come
                 // with a code. Anything else is a per-turn hiccup — but surface it in the bar rather
                 // than only logging it, or a call that keeps failing just looks like silence.
-                val fatal = param?.startsWith("session.") == true || code in FATAL_ERROR_CODES
+                val type = field("type")
+                val fatal = param?.startsWith("session.") == true ||
+                    code in FATAL_ERROR_CODES ||
+                    type in FATAL_ERROR_TYPES
                 if (fatal) {
                     fail(message ?: "The call was rejected (${code ?: param ?: "unknown"})")
                 } else if (message != null) {
@@ -256,15 +261,23 @@ internal class HostVoiceCallController(
     private fun handleFunctionCall(callId: String?, name: String?, argsJson: String?) {
         if (callId == null || name == null) return
         synchronized(roundLock) {
+            // Trimmed so a long call can't grow it without bound; anything pending is preserved.
+            if (seenCalls.size > 400) seenCalls.retainAll(pendingCalls)
             if (!seenCalls.add(callId)) return
             pendingCalls.add(callId)
             responseOpen = true // a function call only exists inside a response
         }
         _state.update { it.copy(working = true, activity = describeTool(name, argsJson)) }
+        // run_command has its own 600s clamp; reads should be near-instant.
+        val timeoutMs = if (name == "run_command") 630_000L else 45_000L
         scope.launch {
+            val watchdog = scope.launch {
+                delay(timeoutMs)
+                toolTimedOut(callId, name)
+            }
             val args = runCatching { json.parseToJsonElement(argsJson ?: "{}").jsonObject }
                 .getOrElse { JsonObject(emptyMap()) }
-            val result = runCatching { executor.execute(name, args, defaultTabId = null) }
+            val result = runCatching { clampToolResult(name, executor.execute(name, args, defaultTabId = null)) }
                 .getOrElse { e ->
                     buildJsonObject { put("error", e.message ?: e.javaClass.simpleName) }.toString()
                 }
@@ -278,14 +291,44 @@ internal class HostVoiceCallController(
                     }
                 }.toString()
             )
+            watchdog.cancel()
             val done = synchronized(roundLock) {
-                pendingCalls.remove(callId)
+                if (!pendingCalls.remove(callId)) return@launch // the watchdog already answered
                 outputsOwed += 1
                 pendingCalls.isEmpty()
             }
             if (done) _state.update { it.copy(working = false, activity = null) }
             maybeRequestResponse()
         }
+    }
+
+    /**
+     * Answer a tool call the executor never returned from, so the round can't hang.
+     *
+     * The browser path has had this since a lost reply could pin it at "Working…"; the in-app path
+     * had no watchdog at all, so a wedged tool left the call silent with no recovery but End call.
+     */
+    private fun toolTimedOut(callId: String, tool: String) {
+        val settled = synchronized(roundLock) {
+            if (!pendingCalls.remove(callId)) return
+            outputsOwed += 1
+            pendingCalls.isEmpty()
+        }
+        log.warn("Voice tool {} did not answer in time", tool)
+        transport.send(
+            buildJsonObject {
+                put("type", "conversation.item.create")
+                putJsonObject("item") {
+                    put("type", "function_call_output")
+                    put("call_id", callId)
+                    put("output", buildJsonObject {
+                        put("error", "This tool did not answer in time.")
+                    }.toString())
+                }
+            }.toString()
+        )
+        if (settled) _state.update { it.copy(working = false, activity = null) }
+        maybeRequestResponse()
     }
 
     /** Ask for the follow-up turn exactly once per round — see [responseOpen]/[outputsOwed]. */
@@ -382,12 +425,15 @@ internal class HostVoiceCallController(
     private companion object {
         val json = Json { ignoreUnknownKeys = true }
 
-        /** Errors that end a call rather than one turn of it. */
+        /** `error.code` values that end a call rather than one turn of it. */
         val FATAL_ERROR_CODES = setOf(
             "invalid_api_key",
             "insufficient_quota",
             "session_expired",
-            "invalid_request_error",
         )
+
+        /** `error.type` values with the same meaning — kept separate because they are a different
+         *  field in OpenAI's envelope and mixing them misclassifies whichever one moves. */
+        val FATAL_ERROR_TYPES = setOf("invalid_request_error")
     }
 }

@@ -227,6 +227,22 @@ class BossTermMcpServer(
         }
     }
 
+    /**
+     * The registered tool names, read under [toolsLock].
+     *
+     * The SDK's `Server.tools` map is not thread-safe and every mutation here is serialized; callers
+     * that iterate it themselves (Boss Calling's in-process executor, with up to four concurrent
+     * tool calls) could hit a ConcurrentModificationException when a `manage_tools` toggle lands
+     * mid-iteration.
+     */
+    fun toolNames(): Set<String> = synchronized(toolsLock) {
+        serverRef?.tools?.keys?.toSet().orEmpty()
+    }
+
+    /** The handler registered for [name], resolved under [toolsLock]. Null when not registered. */
+    fun handlerFor(name: String): (suspend (io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest) -> io.modelcontextprotocol.kotlin.sdk.types.CallToolResult)? =
+        synchronized(toolsLock) { serverRef?.tools?.get(name)?.handler }
+
     fun applyDisabledSet(disabled: Set<String>) {
         synchronized(toolsLock) {
             // Read the ref inside the lock so a concurrent detachServer() can't

@@ -38,6 +38,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -58,12 +59,14 @@ internal fun VoiceKeyDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
 
+    // NonCancellable: this scope dies with the composition, and a half-done key write that reports
+    // nothing (with `saving` stuck true on a dialog that has already gone) is worse than a slow one.
     fun save() {
         val key = input.trim()
         if (key.isEmpty() || saving) return
         saving = true
         io.launch {
-            val ok = withContext(Dispatchers.IO) {
+            val ok = withContext(Dispatchers.IO + NonCancellable) {
                 VoiceAgentStorage.save(StoredVoiceConfig(openaiApiKey = key))
             }
             saving = false

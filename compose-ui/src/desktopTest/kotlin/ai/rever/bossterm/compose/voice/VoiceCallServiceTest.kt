@@ -392,6 +392,33 @@ class VoiceCallServiceTest {
         assertTrue(r.message?.contains("proj_secretname") != true, "account detail must stay host-side")
     }
 
+    /**
+     * A reservation that never became a call must not report one ending: onCallActivity(true) only
+     * fires on a successful mint, so firing (false) on the failure path gave the host an "ended"
+     * notification per bad-key attempt for a call that never started.
+     */
+    @Test
+    fun `a failed mint reports no call activity at all`() = testApplication {
+        routing {
+            post("/v1/realtime/client_secrets") { call.respond(HttpStatusCode.Unauthorized) }
+        }
+        val activity = mutableListOf<Boolean>()
+        val svc = VoiceCallService(
+            executor = FakeExecutor(),
+            scope = CoroutineScope(Dispatchers.Default),
+            broker = VoiceSessionBroker(baseUrl = "", httpOverride = client),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+            onCallActivity = { started -> synchronized(activity) { activity.add(started) } },
+            mintTimestamps = ArrayDeque(),
+        )
+        val reply = CompletableDeferred<ServerMessage>()
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { reply.complete(it) }
+        withTimeout(5000) { reply.await() }
+        Thread.sleep(150) // let any stray callback land
+        assertTrue(synchronized(activity) { activity.isEmpty() }, "saw $activity")
+    }
+
     @Test
     fun `mint 401 replies unauthorized`() = testApplication {
         routing {

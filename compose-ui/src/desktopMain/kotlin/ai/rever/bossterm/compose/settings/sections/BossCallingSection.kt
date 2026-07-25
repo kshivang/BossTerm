@@ -46,6 +46,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -214,7 +215,7 @@ private fun VoiceApiKeyField() {
                     val k = input.trim()
                     if (k.isNotEmpty()) {
                         io.launch {
-                            val saved = withContext(Dispatchers.IO) {
+                            val saved = withContext(Dispatchers.IO + NonCancellable) {
                                 VoiceAgentStorage.save(StoredVoiceConfig(openaiApiKey = k))
                             }
                             error = if (saved) null else "Couldn't write ~/.bossterm/voice.json — key not saved."
@@ -229,7 +230,7 @@ private fun VoiceApiKeyField() {
             if (keyPresent) {
                 TextButton(onClick = {
                     io.launch {
-                        val cleared = withContext(Dispatchers.IO) { VoiceAgentStorage.clear() }
+                        val cleared = withContext(Dispatchers.IO + NonCancellable) { VoiceAgentStorage.clear() }
                         error = if (cleared) null else "Couldn't remove ~/.bossterm/voice.json."
                         input = ""
                     }

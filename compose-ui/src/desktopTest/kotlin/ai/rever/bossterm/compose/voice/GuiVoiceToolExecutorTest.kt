@@ -91,6 +91,40 @@ class GuiVoiceToolExecutorTest {
         }
     }
 
+    /**
+     * The arg allowlist is a security control, not tidiness: run_command's real MCP schema also
+     * accepts `panel`, and `panel: "new_tab"` would run the command in a tab the share doesn't
+     * mirror. Only keys the voice catalog advertises may reach a handler.
+     */
+    @Test
+    fun `arguments outside the advertised schema are dropped`() {
+        val declared = VoiceToolCatalog.declaredParameters(
+            VoiceToolCatalog.ALL.first { it.name == "run_command" }
+        )
+        assertTrue("script" in declared, "the advertised keys survive: $declared")
+        assertTrue("timeout_ms" in declared, declared.toString())
+        assertFalse("panel" in declared, "panel is NOT advertised, so it must never be forwarded")
+        assertFalse("working_dir" in declared, declared.toString())
+        assertFalse("split_ratio" in declared, declared.toString())
+
+        // And the executor really does filter on it rather than passing the map through: an
+        // out-of-scope target is still refused even when extra keys ride along.
+        val exec = executor(scope = setOf("t1"))
+        assertFailsWith<VoiceToolException> {
+            runBlocking {
+                exec.execute(
+                    "run_command",
+                    buildJsonObject {
+                        put("script", "echo hi")
+                        put("panel", "new_tab")
+                        put("tab_id", "foreign")
+                    },
+                    null,
+                )
+            }
+        }
+    }
+
     /** An unknown tool never reaches a handler. */
     @Test
     fun `an unadvertised tool is rejected`() {

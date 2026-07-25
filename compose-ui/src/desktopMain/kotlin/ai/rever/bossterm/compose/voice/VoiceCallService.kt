@@ -60,7 +60,14 @@ internal class VoiceCallService(
      * Tokens for calls this host actually minted. A voiceToolCall must carry one, so the share
      * socket can't be used as a standing tool RPC by a viewer that never started a call.
      */
-    private val liveCalls = LinkedHashMap<String, Long>()
+    private val liveCalls = LinkedHashMap<String, LiveCall>()
+
+    /**
+     * [announced] records whether the host was told this call STARTED. A reservation that never
+     * became a call (the mint failed) must not fire the "call ended" notification — one bad key
+     * otherwise produced an "ended" toast per attempt for a call that never began.
+     */
+    private class LiveCall(val issuedAt: Long, var announced: Boolean = false)
 
     /**
      * Current availability, for the viewer's Call button (sent on connect + on change).
@@ -141,7 +148,7 @@ internal class VoiceCallService(
                             callToken = token,
                         )
                     )
-                    onCallActivity(true)
+                    announceCall(token)
                 }
                 is VoiceSessionBroker.MintResult.Unauthorized -> {
                     closeCall(token) // the reservation didn't become a call
@@ -208,7 +215,7 @@ internal class VoiceCallService(
         val job = scope.launch {
             bodyRan = true
             try {
-                val resultJson = clampResult(def.name, executor.execute(def.name, args, defaultTabId))
+                val resultJson = clampToolResult(def.name, executor.execute(def.name, args, defaultTabId))
                 reply(ServerMessage.VoiceToolResult(callId = msg.callId, resultJson = resultJson))
             } catch (e: VoiceToolException) {
                 reply(toolError(msg.callId, e.message ?: "Tool call rejected"))
@@ -220,25 +227,6 @@ internal class VoiceCallService(
             }
         }
         job.invokeOnCompletion { if (!bodyRan) inFlightToolCalls.decrementAndGet() }
-    }
-
-    /**
-     * Bound a tool result before it crosses the wire.
-     *
-     * The GUI handlers self-clip, but the daemon's read_scrollback doesn't — `{"lines": 1000000}`
-     * builds the whole buffer into one JSON string. Host-side that can overflow the outbox and drop
-     * the viewer mid-call; viewer-side an oversized SCTP message throws AFTER the round was settled,
-     * so the agent would narrate a result the model never received. Clamping here covers both.
-     */
-    private fun clampResult(tool: String, resultJson: String): String {
-        if (resultJson.length <= MAX_RESULT_CHARS) return resultJson
-        log.warn("Voice tool {} returned {} chars; truncating", tool, resultJson.length)
-        return buildJsonObject {
-            put("truncated", true)
-            put("originalLength", resultJson.length)
-            put("note", "The result was too large to send; ask for less (fewer lines, a tighter pattern).")
-            put("head", resultJson.take(MAX_RESULT_CHARS / 2))
-        }.toString()
     }
 
     private fun toolError(callId: String, message: String): ServerMessage.VoiceToolResult =
@@ -303,13 +291,19 @@ internal class VoiceCallService(
      */
     internal fun openCall(): String? = synchronized(liveCalls) {
         val now = nowMs()
-        liveCalls.entries.removeAll { now - it.value > CALL_TOKEN_TTL_MS }
+        liveCalls.entries.removeAll { now - it.value.issuedAt > MAX_CALL_DURATION_MS }
         // Refuse rather than evict: dropping the oldest token left that caller's audio running while
         // every tool answered "No active call", with no way back but hanging up and redialling.
         if (liveCalls.size >= MAX_LIVE_CALLS) return@synchronized null
         val token = UUID.randomUUID().toString()
-        liveCalls[token] = now
+        liveCalls[token] = LiveCall(now)
         token
+    }
+
+    /** Mark a reserved call as one the host was told about (so retiring it reports "ended"). */
+    private fun announceCall(token: String) {
+        synchronized(liveCalls) { liveCalls[token]?.announced = true }
+        onCallActivity(true)
     }
 
     /**
@@ -319,8 +313,12 @@ internal class VoiceCallService(
      */
     private fun isLiveCall(token: String?): Boolean = synchronized(liveCalls) {
         if (token == null) return false
-        val issued = liveCalls[token] ?: return false
-        if (nowMs() - issued > CALL_TOKEN_TTL_MS) {
+        val call = liveCalls[token] ?: return false
+        // The duration ceiling lives here: nothing else bounds how long a call runs, and the whole
+        // session bills to the host. Past it the tools stop answering. NOTE the audio session itself
+        // is browser↔OpenAI, so the host cannot hang that up — a viewer ignoring `voiceStatus` keeps
+        // hearing the agent; it just loses every tool.
+        if (nowMs() - call.issuedAt > MAX_CALL_DURATION_MS) {
             liveCalls.remove(token)
             return false
         }
@@ -334,21 +332,22 @@ internal class VoiceCallService(
      */
     fun closeCall(token: String?) {
         if (token == null) return
-        val remaining = synchronized(liveCalls) {
-            liveCalls.remove(token)
-            liveCalls.size
+        val (wasAnnounced, remaining) = synchronized(liveCalls) {
+            val removed = liveCalls.remove(token)
+            (removed?.announced == true) to liveCalls.size
         }
-        if (remaining == 0) onCallActivity(false)
+        // Only report an end for a call whose start was reported.
+        if (wasAnnounced && remaining == 0) onCallActivity(false)
     }
 
     /** Invalidate every live call — the host revoked the feature, or the last viewer left. */
     fun closeCalls() {
-        val had = synchronized(liveCalls) {
-            val any = liveCalls.isNotEmpty()
+        val hadAnnounced = synchronized(liveCalls) {
+            val any = liveCalls.values.any { it.announced }
             liveCalls.clear()
             any
         }
-        if (had) onCallActivity(false)
+        if (hadAnnounced) onCallActivity(false)
     }
 
     private companion object {
@@ -357,22 +356,17 @@ internal class VoiceCallService(
 
         const val MAX_IN_FLIGHT_TOOL_CALLS = 4
 
-        /**
-         * Cap on one tool result. Comfortably above a 200-line scrollback read, well under both the
-         * outbox budget and any SCTP message limit.
-         */
-        const val MAX_RESULT_CHARS = 128 * 1024
-
         /** Mint budget: no faster than one per gap, and no more than N per window. */
         const val MINT_MIN_GAP_MS = 3_000L
         const val MINT_WINDOW_MS = 10 * 60 * 1000L
         const val MAX_MINTS_PER_WINDOW = 12
 
         /**
-         * How long a call token stays usable. Generous — a call can legitimately run much longer
-         * than the 600s secret, which is only needed for the initial SDP handshake.
+         * Hard ceiling on one call. The mint budget bounds how OFTEN calls start; this bounds how
+         * long one runs, which is what actually accrues cost on the host's account. Generous enough
+         * for real work, finite so an abandoned call can't bill all day.
          */
-        const val CALL_TOKEN_TTL_MS = 6 * 60 * 60 * 1000L
+        const val MAX_CALL_DURATION_MS = 60 * 60 * 1000L
         const val MAX_LIVE_CALLS = 8
 
         val json = Json { ignoreUnknownKeys = true }

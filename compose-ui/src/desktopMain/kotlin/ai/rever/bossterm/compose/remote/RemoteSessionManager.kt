@@ -513,6 +513,7 @@ class RemoteSession internal constructor(
                 s.dataStream.append("[3J[2J[H" + msg.data)
             }
             is ServerMessage.PaneOutput -> sessionByPane[msg.paneId]?.dataStream?.append(msg.data)
+            is ServerMessage.PaneRepaint -> sessionByPane[msg.paneId]?.dataStream?.append(msg.data)
             is ServerMessage.PaneResize -> {
                 val s = sessionByPane[msg.paneId] ?: return
                 if (msg.cols >= 2 && msg.rows >= 2) s.terminal.resize(TermSize(msg.cols, msg.rows), RequestOrigin.User)

@@ -1,0 +1,42 @@
+MesloLGS NF Regular — third-party font notice
+
+The bundled font identifies itself as:
+  Meslo LG S Regular 1.210 (2013-01-06)
+  Patched with the Nerd Fonts Patcher
+
+Original Meslo LG copyright notices embedded in the font:
+  Copyright 2009 Apple Inc.
+  Copyright 2006 Tavmjong Bah.
+
+Meslo LG is licensed under the Apache License, Version 2.0. A complete copy is
+included at the repository root as LICENSE-APACHE-2.0.txt.
+
+Nerd Fonts project attribution:
+  Copyright (c) 2014 Ryan L McIntyre
+  https://github.com/ryanoasis/nerd-fonts
+
+Nerd Fonts' original patcher/source code is MIT licensed. Its patched fonts and
+glyph sources retain their respective upstream licenses. The current license and
+glyph-source audit is maintained at:
+  https://github.com/ryanoasis/nerd-fonts/blob/master/LICENSE
+  https://github.com/ryanoasis/nerd-fonts/blob/master/license-audit.md
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

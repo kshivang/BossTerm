@@ -4,10 +4,27 @@
   <meta charset="utf-8" />
   <!-- Allow pinch-zoom + pan so wide/tall terminals are navigable on phones. -->
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; base-uri 'none'; form-action 'none'; connect-src 'self' __BOSSTERM_WS_ORIGINS__; img-src 'self' data:; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
   <title>BossTerm — shared session</title>
   <!-- xterm.js vendored locally (works fully offline on a LAN). MIT licensed. -->
+  <!-- Bundled font notices: fonts/MesloLGSNF-NOTICE.txt and fonts/NotoSansSymbols2-OFL.txt -->
   <link rel="stylesheet" href="vendor/xterm.css" />
   <style>
+    @font-face {
+      font-family: "BossTerm Nerd Font";
+      src: url("fonts/MesloLGSNF-Regular.ttf?v=d97946186e97") format("truetype");
+      font-style: normal;
+      font-weight: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "BossTerm Symbols";
+      src: url("fonts/NotoSansSymbols2-Regular.ttf?v=630846d528db") format("truetype");
+      font-style: normal;
+      font-weight: normal;
+      font-display: swap;
+    }
     :root { color-scheme: dark; }
     html, body { margin: 0; height: 100%; background: #1e1e1e; color: #ddd;
                  font-family: -apple-system, Menlo, monospace; overflow: hidden;
@@ -208,6 +225,7 @@
   <script src="vendor/addon-webgl.js"></script>
   <!-- Clickable URLs (vendored @xterm/addon-web-links). Optional — viewer.js no-ops if absent. -->
   <script src="vendor/addon-web-links.js"></script>
+  <script src="viewer-logic.js"></script>
   <script src="viewer.js"></script>
 </body>
 </html>

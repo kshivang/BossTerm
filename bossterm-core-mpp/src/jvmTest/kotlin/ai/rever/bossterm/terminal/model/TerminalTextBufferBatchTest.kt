@@ -4,6 +4,7 @@ import ai.rever.bossterm.terminal.CursorShape
 import ai.rever.bossterm.terminal.TerminalDisplay
 import ai.rever.bossterm.terminal.emulator.mouse.MouseFormat
 import ai.rever.bossterm.terminal.emulator.mouse.MouseMode
+import ai.rever.bossterm.terminal.model.image.ImageCell
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -13,6 +14,69 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class TerminalTextBufferBatchTest {
+
+    @Test
+    fun removedLinesNoLongerPublishImageRevisionsToTheirFormerStorage() {
+        var changes = 0
+        val storage = CyclicBufferLinesStorage(maxCapacity = -1) { changes++ }
+        val line = TerminalLine()
+        storage.addToBottom(line)
+        storage.removeFromTop()
+
+        line.setImageCell(0, ImageCell(1, 0, 0, 1, 1))
+
+        assertEquals(0, changes)
+    }
+
+    @Test
+    fun screenLineKeepsImageRevisionListenerWhenMovedToHistory() {
+        val buffer = TerminalTextBuffer(
+            width = 8,
+            height = 2,
+            styleState = StyleState(),
+            maxHistoryLinesCount = 10,
+        )
+        buffer.getLine(1)
+        buffer.writeImagePlaceholderCell(0, 0, 42, 0, 0, 1, 1)
+        buffer.scrollArea(scrollRegionTop = 1, dy = -1, scrollRegionBottom = 2)
+        val afterMove = buffer.imageCellRevision
+
+        assertTrue(buffer.getLine(-1).clearAllImageCells())
+
+        assertTrue(buffer.imageCellRevision > afterMove)
+    }
+
+    @Test
+    fun imageCellRevisionChangesOnlyForImageContentOrLayout() {
+        val buffer = TerminalTextBuffer(width = 8, height = 2, styleState = StyleState())
+        buffer.getLine(1)
+        val initial = buffer.imageCellRevision
+
+        buffer.writeImagePlaceholderCell(0, 0, 42, 0, 0, 1, 1)
+        val afterImage = buffer.imageCellRevision
+        assertTrue(afterImage > initial)
+
+        buffer.eraseCharacters(0, 1, 1)
+        assertEquals(afterImage, buffer.imageCellRevision, "ordinary text on another row stays O(1)")
+
+        buffer.eraseCharacters(0, 1, 0)
+        assertTrue(buffer.imageCellRevision > afterImage, "overwriting an image cell publishes a revision")
+    }
+
+    @Test
+    fun lineInsertionOnlyRevisesGraphicsWhenItMovesImageCells() {
+        val buffer = TerminalTextBuffer(width = 8, height = 3, styleState = StyleState())
+        buffer.getLine(2)
+        val initial = buffer.imageCellRevision
+
+        buffer.insertLines(y = 0, count = 1, scrollRegionBottom = 3)
+        assertEquals(initial, buffer.imageCellRevision)
+
+        buffer.writeImagePlaceholderCell(1, 0, 42, 0, 0, 1, 1)
+        val afterImage = buffer.imageCellRevision
+        buffer.insertLines(y = 0, count = 1, scrollRegionBottom = 3)
+        assertTrue(buffer.imageCellRevision > afterImage)
+    }
 
     @Test
     fun modelListenerRunsOutsideBatchStateLock() {

@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.share
 
+import ai.rever.bossterm.compose.util.BUNDLED_FONT_NAME
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -51,6 +52,26 @@ object ShareProtocol {
 }
 
 /**
+ * CSS font stack used by the browser viewer.
+ *
+ * A configured system font stays first when the viewing device also has it. BossTerm's bundled
+ * Nerd Font then provides the same private-use icons as the native renderer, platform emoji fonts
+ * cover color emoji, and the bundled Noto font supplies the remaining symbols.
+ */
+internal fun webTerminalFontFamily(fontName: String?): String {
+    val configured = fontName
+        ?.filterNot { it.code < 0x20 || it.code == 0x7f }
+        ?.takeIf { it.isNotBlank() && it != BUNDLED_FONT_NAME }
+        ?.replace("\\", "\\\\")
+        ?.replace("\"", "\\\"")
+        ?.let { "\"$it\", " }
+        .orEmpty()
+    return configured +
+        "\"BossTerm Nerd Font\", \"Apple Color Emoji\", \"Segoe UI Emoji\", " +
+        "\"Noto Color Emoji\", \"BossTerm Symbols\", monospace"
+}
+
+/**
  * E2E key-exchange frame ([SessionCrypto]). [v] = protocol version; [salt] = this side's 16-byte
  * HKDF salt (base64url); [confirm] = the host's key-confirmation tag (base64url), null on the
  * client's opening frame. Plaintext — it carries no secret (salts are public; the key lives only
@@ -86,20 +107,71 @@ sealed class ServerMessage {
         val sessionName: String? = null,
     ) : ServerMessage()
 
-    /** One-time initial paint for a pane: scrollback+screen as a raw escape/text blob. */
+    /**
+     * One-time initial paint for a pane: scrollback+screen as a raw escape/text blob.
+     * [scrollbackLines] is the web-safe history cap (at most 20k rows). Inline-image rows use this
+     * coordinate window even when the host retains more history, keeping phone memory bounded.
+     */
     @Serializable
     @SerialName("paneSnapshot")
-    data class PaneSnapshot(val paneId: String, val data: String, val cols: Int, val rows: Int) : ServerMessage()
+    data class PaneSnapshot(
+        val paneId: String,
+        val data: String,
+        val cols: Int,
+        val rows: Int,
+        val scrollbackLines: Int = 10_000,
+    ) : ServerMessage()
 
     /** Incremental raw PTY output for a pane. */
     @Serializable
     @SerialName("paneOutput")
     data class PaneOutput(val paneId: String, val data: String) : ServerMessage()
 
+    /**
+     * Authoritative visible-screen repaint that remains ordered with incremental pane output.
+     * Web viewers preserve their current distance from the bottom while applying it.
+     */
+    @Serializable
+    @SerialName("paneRepaint")
+    data class PaneRepaint(val paneId: String, val data: String) : ServerMessage()
+
     /** A pane's terminal dimensions changed. */
     @Serializable
     @SerialName("paneResize")
     data class PaneResize(val paneId: String, val cols: Int, val rows: Int) : ServerMessage()
+
+    /**
+     * Authoritative inline-image state for one pane. The host decodes Sixel/Kitty (including
+     * host-local Kitty file transfers) and sends browser-safe raster data plus the exact cells
+     * occupied by each image. [cells] and [requiredImageIds] are always a complete placement
+     * snapshot; [images] is a delta unless [full] is true.
+     */
+    @Serializable
+    @SerialName("paneGraphics")
+    data class PaneGraphics(
+        val paneId: String,
+        val revision: Long,
+        val full: Boolean,
+        val images: List<SharedTerminalImage> = emptyList(),
+        val removedImageIds: List<String> = emptyList(),
+        val requiredImageIds: List<String> = emptyList(),
+        val cells: List<SharedImageCellRun> = emptyList(),
+        /** Host history rows retained for this viewer; anchors absolute rows to xterm's baseY. */
+        val historyLines: Int = -1,
+        /**
+         * The full frame could not be queued. The viewer must request another full frame without
+         * treating this sentinel as a new graphics revision.
+         */
+        val resyncRequired: Boolean = false,
+    ) : ServerMessage()
+
+    /** A graphics resync was throttled; retrying it after [retryAfterMs] does not spend an attempt. */
+    @Serializable
+    @SerialName("graphicsResyncDenied")
+    data class GraphicsResyncDenied(
+        val paneId: String,
+        val retryAfterMs: Long,
+    ) : ServerMessage()
 
     /** Number of connected viewers. */
     @Serializable
@@ -271,7 +343,14 @@ sealed class ClientMessage {
         val name: String? = null,
         val clientId: String? = null,
         val key: String? = null,
+        /** Optional feature names understood by this peer (for example `paneGraphicsV1`). */
+        val capabilities: List<String> = emptyList(),
     ) : ClientMessage()
+
+    /** Ask the host for a full image-data + placement snapshot after a missed graphics delta. */
+    @Serializable
+    @SerialName("graphicsResync")
+    data class GraphicsResync(val paneId: String) : ClientMessage()
 
     /** Keystrokes for a specific pane. Honored only with controller role. */
     @Serializable
@@ -429,3 +508,44 @@ sealed class ClientMessage {
     @SerialName("attachMcp")
     data class AttachMcp(val target: String, val tabId: String? = null) : ClientMessage()
 }
+
+/** Browser-displayable image data referenced by [ServerMessage.PaneGraphics]. */
+@Serializable
+data class SharedTerminalImage(
+    /** String on the wire so JavaScript never loses a 64-bit terminal image id. */
+    val id: String,
+    val mimeType: String,
+    val data: String,
+    /** Stable content fingerprint; lets the browser retain unchanged decoded images across reconnects. */
+    val contentHash: String,
+)
+
+/**
+ * A horizontally contiguous run of image cells. [row] is the zero-based absolute buffer index
+ * (oldest retained history line = 0, followed by the screen). This stays stable when a screen line
+ * first scrolls into growing history and matches xterm's `viewportY` coordinate system directly.
+ * [ServerMessage.PaneSnapshot.scrollbackLines] configures xterm with the web-safe history cap,
+ * while [PaneGraphicsTracker] translates a larger host history and publishes cheap row shifts
+ * whenever either side trims.
+ */
+@Serializable
+data class SharedImageCellRun(
+    val imageId: String,
+    val row: Int,
+    val col: Int,
+    val cellX: Int,
+    val cellY: Int,
+    val length: Int,
+    val totalCellsX: Int,
+    val totalCellsY: Int,
+)
+
+/** Lightweight fallback when a full graphics frame cannot enter a viewer's bounded outbox. */
+internal fun ServerMessage.PaneGraphics.resyncSentinel(): ServerMessage.PaneGraphics = copy(
+    full = false,
+    images = emptyList(),
+    removedImageIds = emptyList(),
+    requiredImageIds = emptyList(),
+    cells = emptyList(),
+    resyncRequired = true,
+)

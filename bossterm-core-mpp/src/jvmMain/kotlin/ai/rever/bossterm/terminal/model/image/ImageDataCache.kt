@@ -25,8 +25,13 @@ class ImageDataCache(
     private val images = ConcurrentHashMap<Long, TerminalImage>()
     private val accessOrder = ConcurrentHashMap<Long, Long>() // id -> access timestamp
     private val accessCounter = AtomicLong(0)
+    private val contentRevisionCounter = AtomicLong(0)
     @Volatile
     private var totalBytes: Long = 0
+
+    /** O(1) token changed whenever browser-visible raster objects may have changed. */
+    val contentRevision: Long
+        get() = contentRevisionCounter.get()
 
     /**
      * Store image data. Returns imageId for reference from ImageAnchorCell.
@@ -44,6 +49,7 @@ class ImageDataCache(
         images[image.id] = image
         accessOrder[image.id] = accessCounter.incrementAndGet()
         totalBytes += image.data.size
+        contentRevisionCounter.incrementAndGet()
         LOG.debug("Stored image id={}, size={} bytes, total images={}",
             image.id, image.data.size, images.size)
         return image.id
@@ -83,6 +89,7 @@ class ImageDataCache(
         totalBytes -= image.data.size
         accessOrder.remove(imageId)
         onImageRemoved(imageId)
+        contentRevisionCounter.incrementAndGet()
         LOG.debug("Removed image id={}, remaining images={}", imageId, images.size)
         return true
     }
@@ -97,6 +104,7 @@ class ImageDataCache(
         accessOrder.clear()
         totalBytes = 0
         removedImageIds.forEach(onImageRemoved)
+        if (removedImageIds.isNotEmpty()) contentRevisionCounter.incrementAndGet()
         LOG.debug("Cleared all images")
     }
 

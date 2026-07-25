@@ -104,6 +104,26 @@ class FrameOutboxTest {
     }
 
     @Test
+    fun `repaint is an ordered barrier between pane output frames`() {
+        val outbox = FrameOutbox()
+        outbox.sendOutput("pane", "before-1")
+        outbox.sendOutput("pane", "before-2")
+        outbox.sendRepaint("pane", "screen")
+        outbox.sendOutput("pane", "after-1")
+        outbox.sendOutput("pane", "after-2")
+        outbox.close()
+
+        assertEquals(
+            listOf(
+                FrameOutbox.Frame.Output("pane", "before-1before-2"),
+                FrameOutbox.Frame.Output("pane", "screen", repaint = true),
+                FrameOutbox.Frame.Output("pane", "after-1after-2"),
+            ),
+            drainAll(outbox),
+        )
+    }
+
+    @Test
     fun `a control backlog does not starve output (fairness cap)`() {
         val outbox = FrameOutbox(controlCapacity = 4096)
         val controlCount = FrameOutbox.CONTROL_BURST * 3
@@ -237,6 +257,89 @@ class FrameOutboxTest {
             (0 until cap).map { ctrl("c$it") },
             drainAll(outbox),
             "only the pre-overflow buffered frames survive",
+        )
+    }
+
+    @Test
+    fun `control lane is also bounded by payload bytes`() {
+        val outbox = FrameOutbox(controlCapacity = 100, controlCapacityBytes = 12)
+        outbox.sendControl(ctrl("12345")) // 10 UTF-16 bytes
+        outbox.sendControl(ctrl("67")) // exceeds the 12-byte aggregate cap and closes
+        outbox.sendControl(ctrl("after-close"))
+
+        assertEquals(
+            listOf(ctrl("12345")),
+            drainAll(outbox),
+            "a large-frame backlog must close at the byte bound even below the frame-count cap",
+        )
+    }
+
+    @Test
+    fun `recoverable graphics overflow keeps the connection and queues resync metadata`() {
+        val outbox = FrameOutbox(controlCapacity = 100, controlCapacityBytes = 12)
+        outbox.sendControl(ctrl("12345")) // 10 UTF-16 bytes
+        outbox.sendRecoverableControl(
+            frame = ctrl("abcdef"), // another 12 bytes cannot fit
+            recoveryFrame = ctrl("r"), // 2-byte metadata frame does fit
+        )
+        outbox.sendOutput("pane", "still-connected")
+        outbox.close()
+
+        assertEquals(
+            listOf(
+                ctrl("12345"),
+                ctrl("r"),
+                FrameOutbox.Frame.Output("pane", "still-connected"),
+            ),
+            drainAll(outbox),
+        )
+    }
+
+    @Test
+    fun `a snapshot backlog defers into the re-snapshot heal instead of closing`() {
+        // A window share beginning many panes at once queues more snapshot bytes than the writer has
+        // drained. The lane is momentarily full, but the connection is fine — the pane must be
+        // reported for a healing re-snapshot, not disconnected (which also burns a reconnect).
+        val outbox = FrameOutbox(controlCapacity = 100, controlCapacityBytes = 12)
+        val deferred = ConcurrentLinkedQueue<String>()
+        outbox.onOutputDropped = { deferred.add(it) }
+        outbox.sendSnapshot("pane-a", ctrl("12345")) // 10 UTF-16 bytes — fits
+        outbox.sendSnapshot("pane-b", ctrl("67")) // +4 bytes exceeds the aggregate ceiling
+        outbox.sendOutput("pane-a", "still-connected")
+        outbox.close()
+
+        assertEquals(listOf("pane-b"), deferred.toList(), "the deferred pane must be reported for a heal")
+        assertEquals(
+            listOf(
+                ctrl("12345"),
+                FrameOutbox.Frame.Output("pane-a", "still-connected"),
+            ),
+            drainAll(outbox),
+            "the connection survives a transient snapshot backlog",
+        )
+    }
+
+    @Test
+    fun `a snapshot too large for the whole ceiling is unrecoverable and closes`() {
+        val outbox = FrameOutbox(controlCapacity = 100, controlCapacityBytes = 12)
+        val deferred = ConcurrentLinkedQueue<String>()
+        outbox.onOutputDropped = { deferred.add(it) }
+        outbox.sendSnapshot("pane", ctrl("1234567")) // 14 bytes > the 12-byte ceiling: never fits
+        outbox.sendOutput("pane", "after-close")
+
+        assertTrue(deferred.isEmpty(), "an impossible frame must not schedule an endless heal loop")
+        assertEquals(emptyList<FrameOutbox.Frame>(), drainAll(outbox), "the outbox is closed")
+    }
+
+    @Test
+    fun `default control budget admits the largest legal raster frame`() {
+        val maximumRawRasterBytes = 16L * 1024 * 1024
+        val maximumBase64Chars = (maximumRawRasterBytes + 2) / 3 * 4
+        val estimatedUtf16Bytes = maximumBase64Chars * 2
+
+        assertTrue(
+            FrameOutbox.DEFAULT_CONTROL_CAPACITY_BYTES > estimatedUtf16Bytes,
+            "the queue must not disconnect a viewer for one legal full-graphics frame",
         )
     }
 }

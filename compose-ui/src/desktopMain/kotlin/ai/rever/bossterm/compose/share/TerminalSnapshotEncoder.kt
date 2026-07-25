@@ -14,9 +14,14 @@ import ai.rever.bossterm.terminal.model.TerminalLine
  */
 object TerminalSnapshotEncoder {
 
-    fun encode(snapshot: BufferSnapshot, cursorX: Int, cursorY: Int): String {
+    fun encode(
+        snapshot: BufferSnapshot,
+        cursorX: Int,
+        cursorY: Int,
+        maxHistoryLines: Int = Int.MAX_VALUE,
+    ): String {
         val sb = StringBuilder()
-        var row = -snapshot.historyLinesCount
+        var row = -snapshot.historyLinesCount.coerceAtMost(maxHistoryLines.coerceAtLeast(0))
         while (row < snapshot.height) {
             appendStyledLine(sb, snapshot.getLine(row))
             if (row < snapshot.height - 1) sb.append("\r\n")
@@ -28,6 +33,29 @@ object TerminalSnapshotEncoder {
         val cy = cursorY.coerceIn(1, snapshot.height)
         val cx = cursorX.coerceAtLeast(1)
         sb.append("[$cy;${cx}H")
+        return sb.toString()
+    }
+
+    /**
+     * Repaint only the visible screen without resetting terminal modes or retained scrollback.
+     *
+     * Graphics placement changes need text/cursor re-anchoring, but a full RIS + [encode] makes
+     * xterm rebuild every retained history row. Absolute cursor addressing and per-line erasure
+     * make this payload O(screen size) and leave a scrolled-up viewer's history intact.
+     */
+    fun encodeScreenRepaint(
+        snapshot: BufferSnapshot,
+        cursorX: Int,
+        cursorY: Int,
+    ): String {
+        val sb = StringBuilder()
+        for (row in 0 until snapshot.height) {
+            sb.append("\u001b[0m\u001b[").append(row + 1).append(";1H\u001b[2K")
+            appendStyledLine(sb, snapshot.getLine(row))
+        }
+        val cy = cursorY.coerceIn(1, snapshot.height)
+        val cx = cursorX.coerceAtLeast(1)
+        sb.append("\u001b[0m\u001b[$cy;${cx}H")
         return sb.toString()
     }
 

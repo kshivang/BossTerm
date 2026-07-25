@@ -11,26 +11,27 @@ import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import ai.rever.bossterm.compose.window.WindowManager
-import ai.rever.bossterm.terminal.TerminalColor
-import ai.rever.bossterm.terminal.TextStyle
-import ai.rever.bossterm.terminal.model.TerminalLine
+import ai.rever.bossterm.terminal.model.TerminalModelListener
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import org.slf4j.LoggerFactory
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /** Whether a share covers one tab (incl. its splits), the whole window (all tabs), or every window. */
@@ -85,7 +86,19 @@ class MirrorShare(
     private var observerJob: Job? = null
     private var mcpJob: Job? = null
 
-    private class TapEntry(val tab: TerminalTab, val listener: (String) -> Unit)
+    private class TapEntry(
+        val tab: TerminalTab,
+        val listener: (String) -> Unit,
+        val modelListener: TerminalModelListener,
+        val graphics: PaneGraphicsTracker,
+        val monitoringGraphics: AtomicBoolean = AtomicBoolean(false),
+        val graphicsSyncPending: AtomicBoolean = AtomicBoolean(false),
+        val graphicsSyncAgain: AtomicBoolean = AtomicBoolean(false),
+        val textSnapshotLimiter: GraphicsResyncLimiter = GraphicsResyncLimiter(1_000_000_000L),
+    ) {
+        @Volatile var graphicsSyncJob: Job? = null
+        lateinit var repaintSender: DeferredPaneRepaint
+    }
     private val taps = HashMap<String, TapEntry>()
 
     fun start() {
@@ -116,7 +129,7 @@ class MirrorShare(
         observerJob?.cancel()
         mcpJob?.cancel()
         synchronized(taps) {
-            taps.values.forEach { e -> runCatching { e.tab.dataStream.removeRawOutputListener(e.listener) } }
+            taps.values.forEach(::disposeTap)
             taps.clear()
         }
         viewers.forEach { it.outbox.close() }
@@ -125,9 +138,23 @@ class MirrorShare(
     }
 
     // ---- viewers ----
-    fun addViewer(canControl: Boolean, name: String = "Viewer"): ViewerConnection {
-        val vc = ViewerConnection(viewerSeq.incrementAndGet(), canControl, name)
+    fun addViewer(
+        canControl: Boolean,
+        name: String = "Viewer",
+        supportsPaneGraphics: Boolean = false,
+    ): ViewerConnection {
+        val vc = ViewerConnection(viewerSeq.incrementAndGet(), canControl, name, supportsPaneGraphics)
         viewers.add(vc)
+        if (supportsPaneGraphics) {
+            // A graphics mutation may have landed after this viewer's initial full frames were
+            // captured but before admission. Poll every pane once after registration so even a
+            // quiet pane closes that window without registering early and replaying text twice.
+            val entries = synchronized(taps) { taps.toList() }
+            entries.forEach { (id, entry) ->
+                entry.monitoringGraphics.set(true)
+                scheduleGraphicsSync(id, entry)
+            }
+        }
         broadcast(ServerMessage.Presence(viewers.size))
         return vc
     }
@@ -136,6 +163,14 @@ class MirrorShare(
         if (viewers.remove(vc)) {
             vc.outbox.close()
             broadcast(ServerMessage.Presence(viewers.size))
+            if (viewers.none { it.supportsPaneGraphics }) {
+                synchronized(taps) {
+                    taps.values.forEach {
+                        it.monitoringGraphics.set(false)
+                        it.repaintSender.cancel()
+                    }
+                }
+            }
             // Last viewer gone → undo any "fit host to my screen" resize.
             if (viewers.isEmpty()) SessionShareManager.releaseEmbeddedFit(tabId)
         }
@@ -148,8 +183,51 @@ class MirrorShare(
         for (v in viewers) v.outbox.trySend(text)
     }
 
+    private fun broadcastGraphics(msg: ServerMessage) {
+        if (msg is ServerMessage.PaneGraphics) {
+            for (viewer in viewers) {
+                if (viewer.supportsPaneGraphics) enqueueGraphics(viewer, msg)
+            }
+        } else {
+            val text = ShareProtocol.encodeServer(msg)
+            for (viewer in viewers) {
+                if (viewer.supportsPaneGraphics) viewer.outbox.trySend(text)
+            }
+        }
+    }
+
+    private fun enqueueGraphics(
+        viewer: ViewerConnection,
+        message: ServerMessage.PaneGraphics,
+    ) {
+        if (!viewer.outbox.trySendWithoutEviction(ShareProtocol.encodeServer(message))) {
+            viewer.outbox.trySend(ShareProtocol.encodeServer(message.resyncSentinel()))
+        }
+    }
+
+    private fun broadcastPaneOutput(
+        paneId: String,
+        raw: String,
+        filtered: String,
+    ) {
+        var rawFrame: String? = null
+        var filteredFrame: String? = null
+        for (viewer in viewers) {
+            val data = if (viewer.supportsPaneGraphics) filtered else raw
+            if (data.isEmpty()) continue
+            val frame = if (viewer.supportsPaneGraphics) {
+                filteredFrame ?: ShareProtocol.encodeServer(ServerMessage.PaneOutput(paneId, data))
+                    .also { filteredFrame = it }
+            } else {
+                rawFrame ?: ShareProtocol.encodeServer(ServerMessage.PaneOutput(paneId, data))
+                    .also { rawFrame = it }
+            }
+            viewer.outbox.trySend(frame)
+        }
+    }
+
     /** Theme + Layout + a PaneSnapshot per pane, for a newly-connected viewer. */
-    fun initialMessages(): List<ServerMessage> {
+    fun initialMessages(includePaneGraphics: Boolean = false): List<ServerMessage> {
         val sig = computeSignature()
         val out = ArrayList<ServerMessage>()
         out.add(themeMessage())
@@ -157,7 +235,19 @@ class MirrorShare(
         out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
-            out.add(ServerMessage.PaneSnapshot(id, snapshotText(tab), sz[0], sz[1]))
+            out.add(ServerMessage.PaneSnapshot(
+                id, snapshotText(tab), sz[0], sz[1], webViewerScrollbackLines(tab.textBuffer)
+            ))
+            if (includePaneGraphics) {
+                val entry = synchronized(taps) { taps[id] } ?: continue
+                // The first graphics-capable viewer establishes the shared baseline. A later
+                // viewer gets a private full frame without advancing revisions for existing peers.
+                val full = entry.graphics.fullMessage(
+                    commit = viewers.none { it.supportsPaneGraphics }
+                )
+                if (full.requiredImageIds.isNotEmpty()) entry.monitoringGraphics.set(true)
+                out.add(full)
+            }
         }
         return out
     }
@@ -196,7 +286,27 @@ class MirrorShare(
             ?: McpTerminalRegistry.findState(tabId)
             ?: inScopeStates().firstOrNull()
 
+    /** The tapped tab behind a pane id — [taps] is a plain HashMap, so never read it unlocked. */
+    private fun tappedTab(paneId: String): TerminalTab? = synchronized(taps) { taps[paneId]?.tab }
+
     fun handleClient(vc: ViewerConnection, msg: ClientMessage) {
+        if (msg is ClientMessage.GraphicsResync) {
+            if (vc.supportsPaneGraphics) {
+                val tracker = synchronized(taps) { taps[msg.paneId]?.graphics }
+                if (tracker != null) {
+                    val estimatedBytes = tracker.estimatedWireBytes()
+                    if (vc.graphicsResyncLimiter.tryAcquire(msg.paneId, estimatedBytes)) {
+                        enqueueGraphics(vc, tracker.fullMessage(commit = false))
+                    } else {
+                        vc.outbox.trySend(ShareProtocol.encodeServer(ServerMessage.GraphicsResyncDenied(
+                            msg.paneId,
+                            vc.graphicsResyncLimiter.retryAfterMillis(msg.paneId, estimatedBytes),
+                        )))
+                    }
+                }
+            }
+            return
+        }
         if (msg is ClientMessage.RequestControl) {
             val upstream = upstreamSession(msg.tabId)
             if (upstream != null) {
@@ -230,7 +340,7 @@ class MirrorShare(
         // (our RemoteSession methods no-op silently if we're view-only on it).
         when (msg) {
             is ClientMessage.Input ->
-                (taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId])?.writeUserInput(msg.data)
+                (tappedTab(msg.paneId) ?: paneTabMap()[msg.paneId])?.writeUserInput(msg.data)
             is ClientMessage.CloseTab ->
                 upstreamSession(msg.tabId)?.closeFromChip(msg.tabId, msg.tabId)
                     ?: stateFor(msg.tabId)?.closeTab(msg.tabId)
@@ -278,7 +388,7 @@ class MirrorShare(
                 }
                 // Run the same launch command the host's AI menu would (honoring the
                 // user's per-assistant YOLO/auto-mode config), in the clicked pane.
-                val target = taps[msg.paneId]?.tab ?: paneTabMap()[msg.paneId]
+                val target = tappedTab(msg.paneId) ?: paneTabMap()[msg.paneId]
                 val assistant = AIAssistants.findById(msg.assistantId)
                 if (target != null && assistant != null) {
                     val cfg = SettingsManager.instance.settings.value.aiAssistantConfigs[msg.assistantId]
@@ -416,6 +526,8 @@ class MirrorShare(
     }
 
     companion object {
+        private const val GRAPHICS_SYNC_DEBOUNCE_MS = 100L
+
         // MCP server name/label as the CLI attachers register it / as broadcast to viewers.
         // The embedder's BossTermMcpConfig is a Compose CompositionLocal (unavailable in this
         // non-Composable class), so BossTermMcpManager publishes the resolved values to the
@@ -465,21 +577,128 @@ class MirrorShare(
         val paneMap = paneTabMap()
         if (paneMap.isEmpty()) { onEnded(); return }
         synchronized(taps) {
+            // Read INSIDE the lock: [addViewer] snapshots taps under the same lock, so either we
+            // already see its viewer (and send the initial frame) or it sees this new tap (and
+            // schedules its own sync). Reading outside would let a joining graphics viewer miss a
+            // pane created in the same instant.
+            val hasGraphicsViewer = viewers.any { it.supportsPaneGraphics }
             (taps.keys - paneMap.keys).toList().forEach { id ->
-                taps.remove(id)?.let { e -> runCatching { e.tab.dataStream.removeRawOutputListener(e.listener) } }
+                taps.remove(id)?.let(::disposeTap)
+                viewers.forEach { it.graphicsResyncLimiter.remove(id) }
             }
             for ((id, tab) in paneMap) {
                 if (id !in taps) {
-                    val listener: (String) -> Unit = { d -> broadcast(ServerMessage.PaneOutput(id, d)) }
-                    taps[id] = TapEntry(tab, listener)
+                    val graphics = PaneGraphicsTracker(id, tab.textBuffer, tab.terminal.getImageDataCache())
+                    val graphicsOutputFilter = GraphicsOutputFilter()
+                    lateinit var entry: TapEntry
+                    val listener: (String) -> Unit = { d ->
+                        // Filter unconditionally: parser state must stay coherent even with zero
+                        // graphics viewers, so a viewer joining mid-payload never receives raw
+                        // raster bytes as terminal text. Broadcast through broadcastPaneOutput for
+                        // the same reason — it picks raw/filtered PER VIEWER off the live list, so a
+                        // viewer [addViewer] registers between here and the send still gets the
+                        // stream it can render. Branching on a `viewers.any { }` snapshot instead
+                        // would hand that viewer the whole unfiltered payload as terminal text.
+                        // (broadcastPaneOutput also encodes lazily per kind, so with no graphics
+                        // viewer it costs exactly one encodeServer call, same as `broadcast`.)
+                        val filtered = graphicsOutputFilter.filter(d)
+                        if (filtered.detectedGraphics) {
+                            entry.monitoringGraphics.set(true)
+                            scheduleGraphicsSync(id, entry) // no-ops while no viewer wants graphics
+                        }
+                        broadcastPaneOutput(id, d, filtered.output)
+                    }
+                    val modelListener = object : TerminalModelListener {
+                        override fun modelChanged() {
+                            if (entry.monitoringGraphics.get()) scheduleGraphicsSync(id, entry)
+                        }
+                    }
+                    entry = TapEntry(tab, listener, modelListener, graphics)
+                    entry.repaintSender = DeferredPaneRepaint(
+                        scope = coro,
+                        admit = { repaint ->
+                            val estimatedBytes = repaint.length.toLong() * 2
+                            if (entry.textSnapshotLimiter.tryAcquire(id, estimatedBytes)) {
+                                null
+                            } else {
+                                entry.textSnapshotLimiter.retryAfterMillis(id, estimatedBytes)
+                            }
+                        },
+                        send = { repaint ->
+                            if (synchronized(taps) { taps[id] } === entry) {
+                                broadcastGraphics(ServerMessage.PaneRepaint(id, repaint))
+                            }
+                        },
+                    )
+                    taps[id] = entry
                     tab.dataStream.addRawOutputListener(listener)
+                    tab.textBuffer.addModelListener(modelListener)
                     val sz = sig.sizes[id] ?: listOf(80, 24)
-                    broadcast(ServerMessage.PaneSnapshot(id, snapshotText(tab), sz[0], sz[1]))
+                    broadcast(ServerMessage.PaneSnapshot(
+                        id, snapshotText(tab), sz[0], sz[1], webViewerScrollbackLines(tab.textBuffer)
+                    ))
+                    if (hasGraphicsViewer) {
+                        val initialGraphics = graphics.fullMessage()
+                        if (initialGraphics.requiredImageIds.isNotEmpty()) entry.monitoringGraphics.set(true)
+                        broadcastGraphics(initialGraphics)
+                    }
                 }
             }
         }
         broadcast(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
         sig.sizes.forEach { (id, sz) -> broadcast(ServerMessage.PaneResize(id, sz[0], sz[1])) }
+    }
+
+    private fun scheduleGraphicsSync(id: String, entry: TapEntry) {
+        if (viewers.none { it.supportsPaneGraphics }) return
+        if (!entry.graphicsSyncPending.compareAndSet(false, true)) {
+            entry.graphicsSyncAgain.set(true)
+            return
+        }
+        val job = coro.launch(start = CoroutineStart.LAZY) {
+            try {
+                // Cap full-buffer graphics scans at 10 Hz while coalescing multipart transfers.
+                delay(GRAPHICS_SYNC_DEBOUNCE_MS)
+                if (synchronized(taps) { taps[id] } !== entry) return@launch
+                val update = entry.graphics.pollUpdate()
+                if (update != null) {
+                    if (update.requiresTextSnapshot) {
+                        // xterm.js does not emulate image-protocol cursor movement. Re-anchor text
+                        // only for a real placement change, never for scrolling/raster animation.
+                        // Repaint only the visible screen: retained browser scrollback stays intact
+                        // and the payload remains bounded by the pane dimensions.
+                        entry.repaintSender.offer {
+                            TerminalSnapshotEncoder.encodeScreenRepaint(
+                                entry.tab.textBuffer.createSnapshot(),
+                                entry.tab.terminal.cursorX,
+                                entry.tab.terminal.cursorY,
+                            )
+                        }
+                    }
+                    broadcastGraphics(update.message)
+                }
+                entry.monitoringGraphics.set(entry.graphics.hasVisibleGraphics())
+            } finally {
+                // Keep the pending flag set through capture + sends. A concurrent model change is
+                // represented by graphicsSyncAgain and cannot launch an overlapping poll.
+                entry.graphicsSyncPending.set(false)
+                if (entry.graphicsSyncAgain.getAndSet(false) &&
+                    synchronized(taps) { taps[id] } === entry
+                ) {
+                    entry.monitoringGraphics.set(true)
+                    scheduleGraphicsSync(id, entry)
+                }
+            }
+        }
+        entry.graphicsSyncJob = job
+        job.start()
+    }
+
+    private fun disposeTap(entry: TapEntry) {
+        entry.graphicsSyncJob?.cancel()
+        entry.repaintSender.cancel()
+        runCatching { entry.tab.dataStream.removeRawOutputListener(entry.listener) }
+        runCatching { entry.tab.textBuffer.removeModelListener(entry.modelListener) }
     }
 
     // ---- window-state signature (pure-serializable; drives distinctUntilChanged) ----
@@ -635,60 +854,12 @@ class MirrorShare(
      */
     private fun snapshotText(tab: TerminalTab): String {
         val snap = tab.textBuffer.createSnapshot()
-        val sb = StringBuilder()
-        var row = -snap.historyLinesCount
-        while (row < snap.height) {
-            appendStyledLine(sb, snap.getLine(row))
-            if (row < snap.height - 1) sb.append("\r\n")
-            row++
-        }
-        sb.append("[0m") // reset trailing style
-        // Park the cursor at its real screen position (1-based row;col) — otherwise xterm.js
-        // leaves it on the bottom row after we write the full-height blob (scrollback + screen).
-        val cy = tab.terminal.cursorY.coerceIn(1, snap.height)
-        val cx = tab.terminal.cursorX.coerceAtLeast(1)
-        sb.append("[$cy;${cx}H")
-        return sb.toString()
-    }
-
-    /** Append one buffer line as SGR-prefixed styled runs, trimming invisible trailing padding. */
-    private fun appendStyledLine(sb: StringBuilder, line: TerminalLine) {
-        // Collect runs, stopping at the first NUL entry (trailing unfilled cells), like TerminalLine.text.
-        val runs = ArrayList<TerminalLine.TextEntry>()
-        for (e in line.entries) {
-            if (e == null) continue
-            if (e.isNul) break
-            runs.add(e)
-        }
-        // Drop trailing runs that are blank with no background — invisible padding (old .trimEnd()).
-        var end = runs.size
-        while (end > 0 && runs[end - 1].let { it.text.toString().isBlank() && it.style.background == null }) end--
-        for (i in 0 until end) {
-            sb.append(ansiForStyle(runs[i].style)).append(runs[i].text.toString())
-        }
-    }
-
-    /** SGR escape that resets then applies [style]'s colors + attributes (256-color / truecolor). */
-    private fun ansiForStyle(style: TextStyle): String {
-        val codes = ArrayList<String>()
-        codes.add("0") // reset first so each run is self-contained
-        if (style.hasOption(TextStyle.Option.BOLD)) codes.add("1")
-        if (style.hasOption(TextStyle.Option.DIM)) codes.add("2")
-        if (style.hasOption(TextStyle.Option.ITALIC)) codes.add("3")
-        if (style.hasOption(TextStyle.Option.UNDERLINED)) codes.add("4")
-        if (style.hasOption(TextStyle.Option.SLOW_BLINK)) codes.add("5")
-        if (style.hasOption(TextStyle.Option.RAPID_BLINK)) codes.add("6")
-        if (style.hasOption(TextStyle.Option.INVERSE)) codes.add("7")
-        if (style.hasOption(TextStyle.Option.HIDDEN)) codes.add("8")
-        style.foreground?.let { codes.add(sgrColor(it, fg = true)) }
-        style.background?.let { codes.add(sgrColor(it, fg = false)) }
-        return "[" + codes.joinToString(";") + "m"
-    }
-
-    private fun sgrColor(c: TerminalColor, fg: Boolean): String {
-        val base = if (fg) "38" else "48"
-        return if (c.isIndexed) "$base;5;${c.colorIndex}"
-        else c.toColor().let { "$base;2;${it.red};${it.green};${it.blue}" }
+        return TerminalSnapshotEncoder.encode(
+            snap,
+            tab.terminal.cursorX,
+            tab.terminal.cursorY,
+            webViewerScrollbackLines(tab.textBuffer),
+        )
     }
 
     // ---- theme (host palette → CSS) ----
@@ -696,10 +867,6 @@ class MirrorShare(
         val theme = ThemeManager.instance.currentTheme.value
         val palette = ColorPaletteManager.instance.currentPalette.value ?: ColorPalette.fromTheme(theme)
         val settings = SettingsManager.instance.settings.value
-        val font = settings.fontName
-            ?.takeIf { it.isNotBlank() }
-            ?.let { "\"$it\", Menlo, Monaco, monospace" }
-            ?: "Menlo, Monaco, \"Courier New\", monospace"
         return ServerMessage.Theme(
             background = hexToCss(theme.background),
             foreground = hexToCss(theme.foreground),
@@ -707,7 +874,7 @@ class MirrorShare(
             cursorAccent = hexToCss(theme.cursorText),
             selectionBackground = hexToCss(theme.selection),
             ansi = (0..15).map { hexToCss(palette.getAnsiColorHex(it)) },
-            fontFamily = font,
+            fontFamily = webTerminalFontFamily(settings.fontName),
             fontSize = settings.fontSize.toInt(),
         )
     }
@@ -731,8 +898,8 @@ class MirrorShare(
 
 /**
  * A connected browser viewer. The host pushes pre-encoded JSON frames into [outbox];
- * the Ktor route drains it. Bounded + DROP_OLDEST so a slow viewer never stalls the
- * terminal — it just misses intermediate frames (the next snapshot heals it).
+ * the Ktor route drains it. The queue is bounded by both UTF-16 payload size and frame count, so a
+ * slow viewer never stalls the terminal or retains gigabytes of large graphics frames.
  */
 class ViewerConnection(
     val id: Int,
@@ -740,8 +907,11 @@ class ViewerConnection(
     @Volatile var canControl: Boolean,
     /** Device name from the viewer's Hello — shown in the control-request approval prompt. */
     val name: String = "Viewer",
+    /** True only for peers that render the host's normalized image-cell protocol. */
+    val supportsPaneGraphics: Boolean = false,
 ) {
-    val outbox: Channel<String> = Channel(capacity = 2048, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    internal val outbox = BoundedViewerOutbox()
+    internal val graphicsResyncLimiter = GraphicsResyncLimiter()
 
     /** A mid-session control request is awaiting the host's decision (dedupes re-requests). */
     @Volatile var controlRequestPending = false
@@ -752,4 +922,93 @@ class ViewerConnection(
      * the same view link + key; without this each blip demoted it to view-only).
      */
     @Volatile var grantKey: String? = null
+}
+
+/**
+ * Desktop-hosted counterpart to the daemon's heap-bounded [FrameOutbox]. Frames are best effort,
+ * matching the old `DROP_OLDEST` channel semantics, but the real bound is characters rather than
+ * 2048 arbitrarily-sized Strings. A legal 16 MiB web-raster snapshot expands to ~22M base64 chars,
+ * so the default admits one such frame while bounding the aggregate queue to ~64 MiB of UTF-16.
+ */
+internal class BoundedViewerOutbox(
+    private val capacityChars: Int = DEFAULT_CAPACITY_CHARS,
+    private val capacityFrames: Int = DEFAULT_CAPACITY_FRAMES,
+) {
+    private val lock = Any()
+    private val frames = ArrayDeque<String>()
+    private var queuedChars = 0
+    private val wake = Channel<Unit>(Channel.CONFLATED)
+    @Volatile private var closed = false
+
+    fun trySend(text: String): Boolean {
+        if (closed || text.isEmpty()) return false
+        if (text.length > capacityChars) {
+            log.warn(
+                "Dropping viewer frame of {} chars above the {}-char queue capacity",
+                text.length,
+                capacityChars,
+            )
+            return false
+        }
+        var droppedFrames = 0
+        synchronized(lock) {
+            if (closed) return false
+            frames.addLast(text)
+            queuedChars += text.length
+            while ((queuedChars > capacityChars || frames.size > capacityFrames) && frames.size > 1) {
+                queuedChars -= frames.removeFirst().length
+                droppedFrames++
+            }
+        }
+        if (droppedFrames > 0) {
+            log.warn("Dropped {} stale viewer frame(s) under back-pressure", droppedFrames)
+        }
+        wake.trySend(Unit)
+        return true
+    }
+
+    /**
+     * Enqueue a large recoverable frame only when it fits behind all existing output. Graphics
+     * must never evict pane text; callers fall back to a small resync sentinel on false.
+     */
+    fun trySendWithoutEviction(text: String): Boolean {
+        if (closed || text.isEmpty() || text.length > capacityChars) return false
+        synchronized(lock) {
+            if (closed ||
+                queuedChars + text.length > capacityChars ||
+                frames.size + 1 > capacityFrames
+            ) {
+                return false
+            }
+            frames.addLast(text)
+            queuedChars += text.length
+        }
+        wake.trySend(Unit)
+        return true
+    }
+
+    suspend fun drainTo(emit: suspend (String) -> Unit) {
+        while (true) {
+            val next = synchronized(lock) {
+                frames.removeFirstOrNull()?.also { queuedChars -= it.length }
+            }
+            if (next != null) {
+                emit(next)
+                continue
+            }
+            if (closed) return
+            wake.receiveCatching()
+        }
+    }
+
+    fun close() {
+        closed = true
+        wake.close()
+    }
+
+    private companion object {
+        val log = LoggerFactory.getLogger(BoundedViewerOutbox::class.java)
+        const val DEFAULT_CAPACITY_CHARS = 32 * 1024 * 1024
+        const val DEFAULT_CAPACITY_FRAMES = 2048
+    }
 }

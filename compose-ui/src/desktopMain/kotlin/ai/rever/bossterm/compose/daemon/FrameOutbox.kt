@@ -2,13 +2,16 @@ package ai.rever.bossterm.compose.daemon
 
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.selects.select
+import org.slf4j.LoggerFactory
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * A per-connection send queue with TWO lanes, drained by ONE writer coroutine:
  *
- *  - [sendControl] — **guaranteed delivery** (bounded channel). Full-paint snapshots, session/layout
- *    lists, lifecycle (closed), and resizes go here: dropping one corrupts the mirror until the next
- *    resync, so they must never be evicted.
+ *  - [sendControl] — **guaranteed delivery** (bounded channel). Session/layout lists, lifecycle
+ *    (closed), and resizes go here: dropping one corrupts the mirror until the next resync, so they
+ *    must never be evicted. [sendSnapshot] and [sendRecoverableControl] share the lane but trade a
+ *    momentarily-full backlog for a deferred heal / resync sentinel instead of the connection.
  *  - [sendOutput] — **best-effort** (char-bounded deque, drop-oldest). Incremental PTY output goes
  *    here: a stalled client must never back-pressure the PTY, so the oldest output is dropped under
  *    load. Each drop reports the affected session via [onOutputDropped], so the connection can
@@ -27,6 +30,7 @@ import kotlinx.coroutines.selects.select
 internal class FrameOutbox(
     outputCapacityChars: Int = DEFAULT_OUTPUT_CAPACITY_CHARS,
     controlCapacity: Int = 1024,
+    private val controlCapacityBytes: Long = DEFAULT_CONTROL_CAPACITY_BYTES,
 ) {
     /** What [drainTo] hands the socket writer. */
     sealed interface Frame {
@@ -36,8 +40,15 @@ internal class FrameOutbox(
         /** A pre-encoded binary control frame (snapshot). */
         class Binary(val bytes: ByteArray) : Frame
 
-        /** Coalesced incremental output for one session; encoded to a binary frame at send time. */
-        data class Output(val sessionId: String, val data: String) : Frame
+        /**
+         * Ordered pane bytes encoded at send time. Repaints are queue barriers and remain distinct
+         * from surrounding incremental output so the viewer can preserve its scroll position.
+         */
+        data class Output(
+            val sessionId: String,
+            val data: String,
+            val repaint: Boolean = false,
+        ) : Frame
     }
 
     // Control frames must not be DROPPED, but the lane is still BOUNDED: a wedged client (socket
@@ -47,6 +58,7 @@ internal class FrameOutbox(
     // the GUI reconnects to a fresh snapshot. (Reconnects are paced by DaemonSessionBridge's
     // exponential backoff, so a persistently-wedged client settles into slow retries.)
     private val control = Channel<Frame>(capacity = controlCapacity)
+    private val controlBytes = AtomicLong()
 
     // Output lane: a plain deque under a lock (not a Channel) so eviction can report WHICH session
     // lost data ([onOutputDropped]) and so [takeCoalesced] can peek/merge same-session runs.
@@ -69,12 +81,22 @@ internal class FrameOutbox(
     @Volatile var onOutputDropped: ((sessionId: String) -> Unit)? = null
 
     internal companion object {
+        private val log = LoggerFactory.getLogger(FrameOutbox::class.java)
+
         /** Max control frames drained before yielding to one output emission (fairness; see [drainTo]). */
         const val CONTROL_BURST = 64
 
         /** Output-lane budget. ~8MB of UTF-16 heap; a backlog beyond this means a badly stalled
          *  client, and dropped output is healed by [onOutputDropped]'s re-snapshot. */
         const val DEFAULT_OUTPUT_CAPACITY_CHARS = 4 * 1024 * 1024
+
+        /**
+         * Heap-oriented bound for large snapshots/graphics frames, independent of frame count.
+         * The web-share path forwards at most 16 MiB of rasters per pane; base64 expands that by
+         * 4/3 and the queued JVM String uses two bytes per char (~43 MiB before JSON). 64 MiB
+         * admits one legal full-graphics frame while bounding a stalled connection.
+         */
+        const val DEFAULT_CONTROL_CAPACITY_BYTES = 64L * 1024 * 1024
 
         /** Secondary bound on queued output FRAMES: the char budget bounds payload heap, but each
          *  queued chunk also costs an object + deque slot, so a pathological stream of tiny chunks
@@ -86,18 +108,104 @@ internal class FrameOutbox(
         const val MAX_COALESCED_CHARS = 256 * 1024
     }
 
-    /** Enqueue a frame that must not be dropped (snapshot / list / lifecycle / resize). */
+    /** Enqueue a frame that must not be dropped (list / lifecycle / resize). */
     fun sendControl(frame: Frame) {
-        if (closed) return
-        if (control.trySend(frame).isFailure) close() // saturated → unrecoverable client; drop it
+        if (closed || trySendControlFrame(frame)) return
+        val bytes = estimatedBytes(frame)
+        log.warn(
+            "Closing stalled outbox: control frame/backlog needs {} bytes (capacity {})",
+            bytes,
+            controlCapacityBytes,
+        )
+        close()
+    }
+
+    /**
+     * Enqueue a full-paint snapshot for [sessionId] — guaranteed while the lane has room, but a
+     * merely-BACKLOGGED lane must not cost the connection.
+     *
+     * [controlCapacityBytes] bounds the whole queued control backlog, and a window/global share
+     * beginning every pane at once (each with a full styled scrollback) can queue snapshot bytes
+     * faster than a slow link drains them. That backlog is transient, so report the session as
+     * dropped instead of closing: the connection's [onOutputDropped] heal re-snapshots it once the
+     * writer has caught up. Only a single frame too large to EVER fit the ceiling is unrecoverable.
+     */
+    fun sendSnapshot(sessionId: String, frame: Frame) {
+        if (closed || trySendControlFrame(frame)) return
+        val bytes = estimatedBytes(frame)
+        if (bytes > controlCapacityBytes) {
+            log.warn(
+                "Closing stalled outbox: snapshot frame needs {} bytes (capacity {})",
+                bytes,
+                controlCapacityBytes,
+            )
+            close()
+            return
+        }
+        log.warn(
+            "Deferring {} snapshot ({} bytes): control backlog is at the {}-byte ceiling",
+            sessionId,
+            bytes,
+            controlCapacityBytes,
+        )
+        onOutputDropped?.invoke(sessionId)
+    }
+
+    /**
+     * Try a large but recoverable graphics frame. If it cannot fit, enqueue [recoveryFrame]
+     * instead; the lightweight resync-required sentinel makes the viewer request a full frame
+     * after the writer drains, without inventing a revision or sacrificing the connection.
+     */
+    fun sendRecoverableControl(frame: Frame, recoveryFrame: Frame) {
+        if (closed || trySendControlFrame(frame)) return
+        log.warn(
+            "Dropping recoverable graphics frame ({} bytes); enqueueing resync metadata",
+            estimatedBytes(frame),
+        )
+        sendControl(recoveryFrame)
+    }
+
+    private fun trySendControlFrame(frame: Frame): Boolean {
+        val bytes = estimatedBytes(frame)
+        if (bytes > controlCapacityBytes || !reserveControl(bytes)) return false
+        if (control.trySend(frame).isSuccess) return true
+        controlBytes.addAndGet(-bytes)
+        return false
+    }
+
+    private fun reserveControl(bytes: Long): Boolean {
+        while (true) {
+            val current = controlBytes.get()
+            if (bytes > controlCapacityBytes - current) return false
+            if (controlBytes.compareAndSet(current, current + bytes)) return true
+        }
+    }
+
+    private fun estimatedBytes(frame: Frame): Long = when (frame) {
+        is Frame.Text -> frame.text.length.toLong() * 2
+        is Frame.Binary -> frame.bytes.size.toLong()
+        is Frame.Output -> frame.data.length.toLong() * 2
+    }
+
+    private fun releaseControl(frame: Frame) {
+        controlBytes.addAndGet(-estimatedBytes(frame))
     }
 
     /** Enqueue incremental output that may be dropped under back-pressure. */
     fun sendOutput(sessionId: String, data: String) {
+        enqueueOutput(sessionId, data, repaint = false)
+    }
+
+    /** Enqueue an authoritative screen repaint in the same ordered lane as pane output. */
+    fun sendRepaint(sessionId: String, data: String) {
+        enqueueOutput(sessionId, data, repaint = true)
+    }
+
+    private fun enqueueOutput(sessionId: String, data: String, repaint: Boolean) {
         if (closed || data.isEmpty()) return
         var dropped: MutableSet<String>? = null
         synchronized(outputLock) {
-            outputQueue.addLast(Frame.Output(sessionId, data))
+            outputQueue.addLast(Frame.Output(sessionId, data, repaint))
             outputChars += data.length
             // Evict oldest-first past either bound (chars for payload heap, frames for object
             // count), but always keep the newest chunk — a single over-budget chunk must still go
@@ -136,11 +244,13 @@ internal class FrameOutbox(
     private fun takeCoalesced(): Frame.Output? = synchronized(outputLock) {
         val first = outputQueue.removeFirstOrNull() ?: return null
         outputChars -= first.data.length
-        if (outputQueue.firstOrNull()?.sessionId != first.sessionId) return first
+        if (first.repaint) return first
+        val queuedNext = outputQueue.firstOrNull()
+        if (queuedNext?.sessionId != first.sessionId || queuedNext.repaint) return first
         val sb = StringBuilder(first.data)
         while (sb.length < MAX_COALESCED_CHARS) {
             val next = outputQueue.firstOrNull() ?: break
-            if (next.sessionId != first.sessionId) break
+            if (next.sessionId != first.sessionId || next.repaint) break
             outputQueue.removeFirst()
             outputChars -= next.data.length
             sb.append(next.data)
@@ -163,7 +273,13 @@ internal class FrameOutbox(
             while (burst < CONTROL_BURST) {
                 val r = control.tryReceive()
                 when {
-                    r.isSuccess -> { emit(r.getOrThrow()); drainedControl = true; burst++ }
+                    r.isSuccess -> {
+                        val frame = r.getOrThrow()
+                        releaseControl(frame)
+                        emit(frame)
+                        drainedControl = true
+                        burst++
+                    }
                     r.isClosed -> { controlClosed = true; break }
                     else -> break // control lane empty
                 }
@@ -177,7 +293,16 @@ internal class FrameOutbox(
             if (controlClosed || closed) return
             // 5) Suspend until a control frame or an output wake (or close).
             val ended = select<Boolean> {
-                control.onReceiveCatching { r -> if (r.isClosed) true else { emit(r.getOrThrow()); false } }
+                control.onReceiveCatching { r ->
+                    if (r.isClosed) {
+                        true
+                    } else {
+                        val frame = r.getOrThrow()
+                        releaseControl(frame)
+                        emit(frame)
+                        false
+                    }
+                }
                 // A wake signal (or wake-close) just re-runs the loop, which sweeps both lanes.
                 wake.onReceiveCatching { false }
             }

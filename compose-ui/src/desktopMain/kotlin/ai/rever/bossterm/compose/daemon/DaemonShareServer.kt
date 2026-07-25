@@ -6,7 +6,12 @@ import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.share.ClientMessage
 import ai.rever.bossterm.compose.share.CloudflaredExposer
+import ai.rever.bossterm.compose.share.DeferredPaneRepaint
+import ai.rever.bossterm.compose.share.GraphicsOutputFilter
+import ai.rever.bossterm.compose.share.GraphicsResyncLimiter
 import ai.rever.bossterm.compose.share.Kex
+import ai.rever.bossterm.compose.share.PANE_GRAPHICS_CAPABILITY
+import ai.rever.bossterm.compose.share.PaneGraphicsTracker
 import ai.rever.bossterm.compose.share.PaneTreeNode
 import ai.rever.bossterm.compose.share.ServerMessage
 import ai.rever.bossterm.compose.share.SessionCrypto
@@ -14,6 +19,13 @@ import ai.rever.bossterm.compose.share.ShareProtocol
 import ai.rever.bossterm.compose.share.TabNode
 import ai.rever.bossterm.compose.share.TailscaleExposer
 import ai.rever.bossterm.compose.share.TerminalSnapshotEncoder
+import ai.rever.bossterm.compose.share.installShareViewerFontRoutes
+import ai.rever.bossterm.compose.share.installShareViewerIndexRoute
+import ai.rever.bossterm.compose.share.isShareViewerIndexResource
+import ai.rever.bossterm.compose.share.resyncSentinel
+import ai.rever.bossterm.compose.share.webViewerScrollbackLines
+import ai.rever.bossterm.compose.share.webTerminalFontFamily
+import ai.rever.bossterm.terminal.model.TerminalModelListener
 import io.ktor.http.CacheControl
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
@@ -21,6 +33,7 @@ import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticResources
+import io.ktor.server.plugins.defaultheaders.DefaultHeaders
 import io.ktor.server.plugins.origin
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
@@ -30,6 +43,7 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -51,6 +65,7 @@ import java.net.ServerSocket
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -142,6 +157,8 @@ class DaemonShareServer(
         /** Delay before re-snapshotting a pane whose output was dropped under back-pressure —
          *  long enough to coalesce a burst of drops into one heal, short enough to feel instant. */
         const val RESNAPSHOT_DELAY_MS = 500L
+        /** Caps full-buffer graphics scans at 10 Hz while coalescing multipart transfers. */
+        const val GRAPHICS_SYNC_DEBOUNCE_MS = 100L
     }
 
     /** A granted device key: which share, its role, the client it was issued to, and its windows. */
@@ -451,13 +468,21 @@ class DaemonShareServer(
             try {
                 val started = embeddedServer(CIO, host = host, port = port) {
                     install(WebSockets)
+                    install(DefaultHeaders) {
+                        header("X-Frame-Options", "DENY")
+                    }
                     routing {
                         webSocket("/ws/{token}") { serveViewer(this) }
-                        // Static web viewer (index.html + viewer.js + css). Share URL:
+                        installShareViewerFontRoutes()
+                        // The shell is templated per request (its CSP names this request's own
+                        // WebSocket origin), so it owns "/" and "/index.html" outright.
+                        installShareViewerIndexRoute()
+                        // Static web viewer (viewer.js + css + vendor). Share URL:
                         // http://<host>:<port>/?t=<token>. no-cache so a phone re-validates the
                         // viewer assets (filenames aren't content-hashed) — unchanged ones 304.
-                        staticResources("/", "share-viewer", index = "index.html") {
+                        staticResources("/", "share-viewer", index = null) {
                             cacheControl { listOf(CacheControl.NoCache(null)) }
+                            exclude { isShareViewerIndexResource(it.path) }
                         }
                     }
                 }
@@ -653,13 +678,58 @@ class DaemonShareServer(
         send(mcpStatusMessage())
         send(layoutFor(def))
 
-        val vc = DaemonShareConnection(def.viewerSeq.incrementAndGet(), canControl,
-            hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})")
+        val vc = DaemonShareConnection(
+            def.viewerSeq.incrementAndGet(),
+            canControl,
+            hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})",
+            hello?.capabilities?.contains(PANE_GRAPHICS_CAPABILITY) == true,
+        )
 
         // Per-session attachment: the output tap + its size collector. Mutated from BOTH the change
         // listener (any thread) and this coroutine, so guarded by [attachLock].
         val attachments = HashMap<String, Attachment>()
         val attachLock = Any()
+
+        fun scheduleGraphicsSync(attachment: Attachment) {
+            if (!vc.supportsPaneGraphics || !attachment.ready.get()) return
+            if (!attachment.graphicsSyncPending.compareAndSet(false, true)) {
+                attachment.graphicsSyncAgain.set(true)
+                return
+            }
+            val job = ws.launch(start = CoroutineStart.LAZY) {
+                try {
+                    delay(GRAPHICS_SYNC_DEBOUNCE_MS)
+                    if (synchronized(attachLock) { attachments[attachment.core.id] } !== attachment) return@launch
+                    val update = attachment.graphics.pollUpdate()
+                    if (update != null) {
+                        val core = attachment.core
+                        if (update.requiresTextSnapshot) {
+                            // Keep the screen-only re-anchor in the pane-output lane so it remains
+                            // ordered with PTY output without rebuilding retained browser history.
+                            attachment.repaintSender.offer {
+                                TerminalSnapshotEncoder.encodeScreenRepaint(
+                                    core.textBuffer.createSnapshot(),
+                                    core.terminal.cursorX,
+                                    core.terminal.cursorY,
+                                )
+                            }
+                        }
+                        enqueueGraphics(vc.outbox, update.message)
+                    }
+                    attachment.monitoringGraphics.set(attachment.graphics.hasVisibleGraphics())
+                } finally {
+                    attachment.graphicsSyncPending.set(false)
+                    if (attachment.graphicsSyncAgain.getAndSet(false) &&
+                        synchronized(attachLock) { attachments[attachment.core.id] } === attachment
+                    ) {
+                        attachment.monitoringGraphics.set(true)
+                        scheduleGraphicsSync(attachment)
+                    }
+                }
+            }
+            attachment.graphicsSyncJob = job
+            job.start()
+        }
 
         fun beginLocked(core: TerminalSessionCore) {
             if (attachments.containsKey(core.id)) return
@@ -671,30 +741,82 @@ class DaemonShareServer(
             val preludeLock = Any()
             var prelude: ArrayList<String>? = ArrayList()
             var preludeChars = 0
+            val graphicsOutputFilter = GraphicsOutputFilter()
+            val graphics = PaneGraphicsTracker(core.id, core.textBuffer, core.terminal.getImageDataCache())
+            lateinit var attachment: Attachment
             val tap: (String) -> Unit = { d ->
+                val output = if (vc.supportsPaneGraphics) {
+                    val filtered = graphicsOutputFilter.filter(d)
+                    if (filtered.detectedGraphics) {
+                        attachment.monitoringGraphics.set(true)
+                        scheduleGraphicsSync(attachment)
+                    }
+                    filtered.output
+                } else {
+                    d
+                }
                 val held = synchronized(preludeLock) {
                     val p = prelude
                     when {
                         p == null -> false // snapshot already enqueued → send live
+                        output.isEmpty() -> true // filtered graphics payload: retain no empty chunks
                         // Cap the buffer (bounds heap if a session floods output during a slow
                         // large-scrollback encode — the one path that bypasses outbox backpressure).
                         // Past the cap, drop; a small gap heals on the next resync.
-                        preludeChars + d.length > MAX_PRELUDE_CHARS -> true
-                        else -> { p.add(d); preludeChars += d.length; true }
+                        preludeChars + output.length > MAX_PRELUDE_CHARS -> true
+                        else -> { p.add(output); preludeChars += output.length; true }
                     }
                 }
                 // Raw chunk, not a pre-encoded PaneOutput: the writer encodes at drain time, so the
                 // outbox can coalesce queued same-pane chunks into ONE PaneOutput (concatenated pane
                 // bytes are protocol-equivalent, and a backlog collapses into few frames).
-                if (!held) vc.outbox.sendOutput(core.id, d)
+                if (!held) vc.outbox.sendOutput(core.id, output)
             }
+            val modelListener = object : TerminalModelListener {
+                override fun modelChanged() {
+                    if (attachment.monitoringGraphics.get()) scheduleGraphicsSync(attachment)
+                }
+            }
+            attachment = Attachment(core, tap, modelListener, graphics)
+            attachment.repaintSender = DeferredPaneRepaint(
+                scope = ws,
+                admit = { repaint ->
+                    val estimatedBytes = repaint.length.toLong() * 2
+                    if (attachment.textSnapshotLimiter.tryAcquire(core.id, estimatedBytes)) {
+                        null
+                    } else {
+                        attachment.textSnapshotLimiter.retryAfterMillis(core.id, estimatedBytes)
+                    }
+                },
+                send = { repaint ->
+                    if (synchronized(attachLock) { attachments[core.id] } === attachment) {
+                        vc.outbox.sendRepaint(core.id, repaint)
+                    }
+                },
+            )
+            attachments[core.id] = attachment
             core.addRawOutputListener(tap)
+            core.textBuffer.addModelListener(modelListener)
             // One-time styled initial paint (identical encoder to the attach server / MirrorShare).
-            vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(ServerMessage.PaneSnapshot(
+            // sendSnapshot, not sendControl: beginning every pane of a window/global share at once
+            // can outrun a slow writer, and that backlog must defer into the re-snapshot heal rather
+            // than close the connection (which would also burn one auto-reconnect attempt).
+            vc.outbox.sendSnapshot(core.id, FrameOutbox.Frame.Text(ShareProtocol.encodeServer(ServerMessage.PaneSnapshot(
                 core.id,
-                TerminalSnapshotEncoder.encode(core.textBuffer.createSnapshot(), core.terminal.cursorX, core.terminal.cursorY),
+                TerminalSnapshotEncoder.encode(
+                    core.textBuffer.createSnapshot(),
+                    core.terminal.cursorX,
+                    core.terminal.cursorY,
+                    webViewerScrollbackLines(core.textBuffer),
+                ),
                 sz.columns, sz.rows,
+                webViewerScrollbackLines(core.textBuffer),
             ))))
+            if (vc.supportsPaneGraphics) {
+                val initialGraphics = graphics.fullMessage()
+                enqueueGraphics(vc.outbox, initialGraphics)
+                if (initialGraphics.requiredImageIds.isNotEmpty()) attachment.monitoringGraphics.set(true)
+            }
             synchronized(preludeLock) {
                 prelude?.forEach { vc.outbox.sendOutput(core.id, it) }
                 prelude = null
@@ -705,13 +827,19 @@ class DaemonShareServer(
                     vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(ServerMessage.PaneResize(core.id, it.columns, it.rows))))
                 }
             }
-            attachments[core.id] = Attachment(core, tap, sizeJob)
+            attachment.sizeJob = sizeJob
+            attachment.ready.set(true)
+            if (attachment.monitoringGraphics.get()) scheduleGraphicsSync(attachment)
         }
         fun endLocked(id: String) {
             attachments.remove(id)?.let { a ->
                 // Remove the tap from the core directly — host.get(id) is null once a session exited.
                 a.core.removeRawOutputListener(a.tap)
-                a.sizeJob.cancel()
+                a.core.textBuffer.removeModelListener(a.modelListener)
+                a.graphicsSyncJob?.cancel()
+                a.repaintSender.cancel()
+                a.sizeJob?.cancel()
+                vc.graphicsResyncLimiter.remove(id)
             }
         }
 
@@ -730,11 +858,10 @@ class DaemonShareServer(
             vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(layoutFor(def))))
         }
 
-        val onChange: () -> Unit = { resync() }
-        host.addChangeListener(onChange)
-
-        // Heal a viewer whose incremental output was evicted under back-pressure (slow remote link):
-        // re-snapshot the affected pane after a quiet delay — same pattern as the attach server.
+        // Heal a viewer whose incremental output was evicted under back-pressure (slow remote link),
+        // or whose snapshot found the control backlog at its ceiling: re-snapshot the affected pane
+        // after a quiet delay — same pattern as the attach server. Wired BEFORE the change listener,
+        // since [beginLocked] can already defer a snapshot into this heal on the very first paint.
         val resnapshotPending = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         vc.outbox.onOutputDropped = { pid ->
             if (resnapshotPending.add(pid)) {
@@ -753,6 +880,9 @@ class DaemonShareServer(
                 }
             }
         }
+
+        val onChange: () -> Unit = { resync() }
+        host.addChangeListener(onChange)
 
         // Register the viewer UNDER [mutex] and verify the share is still live + under the viewer cap.
         // stopShare clears def.viewers under the lock, so adding outside it could orphan a viewer that
@@ -788,8 +918,12 @@ class DaemonShareServer(
                 vc.outbox.drainTo { f ->
                     val text = when (f) {
                         is FrameOutbox.Frame.Text -> f.text
-                        // Coalesced pane bytes → one PaneOutput, encoded here at drain time.
-                        is FrameOutbox.Frame.Output -> ShareProtocol.encodeServer(ServerMessage.PaneOutput(f.sessionId, f.data))
+                        // Ordered pane bytes are encoded here at drain time; repaint barriers stay
+                        // distinct so the browser can preserve its scroll position.
+                        is FrameOutbox.Frame.Output -> ShareProtocol.encodeServer(
+                            if (f.repaint) ServerMessage.PaneRepaint(f.sessionId, f.data)
+                            else ServerMessage.PaneOutput(f.sessionId, f.data)
+                        )
                         is FrameOutbox.Frame.Binary -> {
                             // Never enqueued on the share path — loud skip so a future mis-wiring
                             // surfaces instead of silently dropping a frame.
@@ -810,7 +944,27 @@ class DaemonShareServer(
             synchronized(attachLock) { inScopeCores(def).forEach { beginLocked(it) } } // initial paint
             for (frame in ws.incoming) {
                 val msg = decodeIncoming(frame) ?: continue
-                handleClient(def, vc, msg)
+                if (msg is ClientMessage.GraphicsResync) {
+                    if (vc.supportsPaneGraphics) {
+                        val tracker = synchronized(attachLock) { attachments[msg.paneId]?.graphics }
+                        if (tracker != null) {
+                            val estimatedBytes = tracker.estimatedWireBytes()
+                            if (vc.graphicsResyncLimiter.tryAcquire(msg.paneId, estimatedBytes)) {
+                                val full = tracker.fullMessage()
+                                enqueueGraphics(vc.outbox, full)
+                            } else {
+                                vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(
+                                    ServerMessage.GraphicsResyncDenied(
+                                        msg.paneId,
+                                        vc.graphicsResyncLimiter.retryAfterMillis(msg.paneId, estimatedBytes),
+                                    )
+                                )))
+                            }
+                        }
+                    }
+                } else {
+                    handleClient(def, vc, msg)
+                }
             }
         } catch (_: Throwable) {
             // client gone
@@ -829,8 +983,34 @@ class DaemonShareServer(
         }
     }
 
-    /** Per-connection, per-session attachment: the core, its raw-output tap + size-collector job. */
-    private class Attachment(val core: TerminalSessionCore, val tap: (String) -> Unit, val sizeJob: Job)
+    private fun enqueueGraphics(
+        outbox: FrameOutbox,
+        message: ServerMessage.PaneGraphics,
+    ) {
+        val fullFrame = FrameOutbox.Frame.Text(ShareProtocol.encodeServer(message))
+        val recovery = message.resyncSentinel()
+        outbox.sendRecoverableControl(
+            fullFrame,
+            FrameOutbox.Frame.Text(ShareProtocol.encodeServer(recovery)),
+        )
+    }
+
+    /** Per-connection, per-session output, sizing, and authoritative web-graphics state. */
+    private class Attachment(
+        val core: TerminalSessionCore,
+        val tap: (String) -> Unit,
+        val modelListener: TerminalModelListener,
+        val graphics: PaneGraphicsTracker,
+    ) {
+        val ready = AtomicBoolean(false)
+        val monitoringGraphics = AtomicBoolean(false)
+        val graphicsSyncPending = AtomicBoolean(false)
+        val graphicsSyncAgain = AtomicBoolean(false)
+        val textSnapshotLimiter = GraphicsResyncLimiter(1_000_000_000L)
+        @Volatile var graphicsSyncJob: Job? = null
+        @Volatile var sizeJob: Job? = null
+        lateinit var repaintSender: DeferredPaneRepaint
+    }
 
     /**
      * Route a viewer message to the daemon (controller role only for mutating actions). A daemon
@@ -908,10 +1088,6 @@ class DaemonShareServer(
         val theme = ThemeManager.instance.currentTheme.value
         val palette = ColorPaletteManager.instance.currentPalette.value ?: ColorPalette.fromTheme(theme)
         val s = settings()
-        val font = s.fontName
-            ?.takeIf { it.isNotBlank() }
-            ?.let { "\"$it\", Menlo, Monaco, monospace" }
-            ?: "Menlo, Monaco, \"Courier New\", monospace"
         return ServerMessage.Theme(
             background = hexToCss(theme.background),
             foreground = hexToCss(theme.foreground),
@@ -919,7 +1095,7 @@ class DaemonShareServer(
             cursorAccent = hexToCss(theme.cursorText),
             selectionBackground = hexToCss(theme.selection),
             ansi = (0..15).map { hexToCss(palette.getAnsiColorHex(it)) },
-            fontFamily = font,
+            fontFamily = webTerminalFontFamily(s.fontName),
             fontSize = s.fontSize.toInt(),
         )
     }

@@ -10,6 +10,7 @@ import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticResources
+import io.ktor.server.plugins.defaultheaders.DefaultHeaders
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
@@ -769,9 +770,16 @@ object SessionShareManager {
             try {
                 val started = embeddedServer(CIO, host = host, port = port) {
                     install(WebSockets)
+                    install(DefaultHeaders) {
+                        header("X-Frame-Options", "DENY")
+                    }
                     routing {
                         webSocket("/ws/{token}") { serveViewer(this) }
-                        // Static web viewer (index.html + viewer.js + css). Share URL:
+                        installShareViewerFontRoutes()
+                        // The shell is templated per request (its CSP names this request's own
+                        // WebSocket origin), so it owns "/" and "/index.html" outright.
+                        installShareViewerIndexRoute()
+                        // Static web viewer (viewer.js + css + vendor). Share URL:
                         // http://<host>:<port>/?t=<token>
                         // no-cache (revalidate, don't blindly reuse): the asset filenames aren't
                         // content-hashed, so without this a phone keeps running the viewer JS/HTML
@@ -779,8 +787,9 @@ object SessionShareManager {
                         // browser still caches but must revalidate each load — unchanged assets
                         // come back 304 (Ktor sets Last-Modified from the jar entry), so only a
                         // genuinely updated viewer is re-downloaded.
-                        staticResources("/", "share-viewer", index = "index.html") {
+                        staticResources("/", "share-viewer", index = null) {
                             cacheControl { listOf(CacheControl.NoCache(null)) }
+                            exclude { isShareViewerIndexResource(it.path) }
                         }
                     }
                 }
@@ -971,27 +980,39 @@ object SessionShareManager {
             }
         }
 
-        // Admit: Theme + Layout + a PaneSnapshot per pane, THEN register so the outbox
-        // only carries output produced after the snapshot (avoids double-rendering).
-        share.initialMessages().forEach { send(it) }
-        send(ServerMessage.Control(granted = canControl))
-        val vc = share.addViewer(canControl, hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})")
+        val supportsPaneGraphics = hello?.capabilities?.contains(PANE_GRAPHICS_CAPABILITY) == true
+
+        // Capture before registration. Registering first queues output that the authoritative
+        // snapshot may already contain, deterministically replaying it below the snapshot. Once
+        // registered, addViewer schedules a graphics poll for every pane to close the graphics
+        // admission window even when the pane goes quiet.
+        val initialMessages = share.initialMessages(includePaneGraphics = supportsPaneGraphics)
+        val vc = share.addViewer(
+            canControl,
+            hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})",
+            supportsPaneGraphics,
+        )
         vc.grantKey = accessKey // lets an approved mid-session upgrade persist into the grant
-        val sc = serverCipher
-        val writer = ws.launch {
-            for (text in vc.outbox) {
-                sc?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
-            }
-        }
         try {
-            for (frame in ws.incoming) {
-                val msg = decodeIncoming(frame)
-                if (msg != null) share.handleClient(vc, msg)  // input gated by role inside
+            initialMessages.forEach { send(it) }
+            send(ServerMessage.Control(granted = canControl))
+            val sc = serverCipher
+            val writer = ws.launch {
+                vc.outbox.drainTo { text ->
+                    sc?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
+                }
             }
-        } catch (_: Throwable) {
-            // client gone
+            try {
+                for (frame in ws.incoming) {
+                    val msg = decodeIncoming(frame)
+                    if (msg != null) share.handleClient(vc, msg)  // input gated by role inside
+                }
+            } catch (_: Throwable) {
+                // client gone
+            } finally {
+                writer.cancel()
+            }
         } finally {
-            writer.cancel()
             share.removeViewer(vc)
         }
     }

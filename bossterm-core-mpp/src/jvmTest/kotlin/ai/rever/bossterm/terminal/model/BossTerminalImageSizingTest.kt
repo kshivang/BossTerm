@@ -51,6 +51,21 @@ class BossTerminalImageSizingTest {
     }
 
     @Test
+    fun inlineImagePublishesOneCompleteModelChange() {
+        val terminal = createTerminal()
+        var modelChanges = 0
+        terminal.terminalTextBuffer.addModelListener(object : TerminalModelListener {
+            override fun modelChanged() {
+                modelChanges++
+            }
+        })
+
+        terminal.processInlineImage(autoImage())
+
+        assertEquals(1, modelChanges)
+    }
+
+    @Test
     fun unicodePlaceholderWritesOneMovableImageCell() {
         val terminal = createTerminal()
         val image = autoImage(width = 40, height = 100).copy(

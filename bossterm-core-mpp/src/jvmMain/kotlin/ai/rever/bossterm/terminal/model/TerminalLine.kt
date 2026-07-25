@@ -54,6 +54,19 @@ class TerminalLine {
      * Each cell stores which portion of image it renders - cells reflow like text.
      */
     private var myImageCells: MutableMap<Int, ImageCell>? = null
+    private var imageCellsChangedListener: (() -> Unit)? = null
+
+    /**
+     * Installed by [TerminalTextBuffer]'s line storage. Keeping the callback on the line makes
+     * text overwrites observable without rescanning the whole scrollback for image-cell changes.
+     */
+    internal fun setImageCellsChangedListener(listener: (() -> Unit)?) {
+        imageCellsChangedListener = listener
+    }
+
+    private fun imageCellsChanged() {
+        imageCellsChangedListener?.invoke()
+    }
 
     /**
      * Get the current snapshot version for copy-on-write optimization.
@@ -93,8 +106,9 @@ class TerminalLine {
      */
     fun setImageCell(col: Int, cell: ImageCell) {
         if (myImageCells == null) myImageCells = mutableMapOf()
-        myImageCells!![col] = cell
+        if (myImageCells!!.put(col, cell) == cell) return
         incrementSnapshotVersion()
+        imageCellsChanged()
     }
 
     /**
@@ -103,11 +117,14 @@ class TerminalLine {
      */
     fun clearImageCellsInRange(startCol: Int, endCol: Int) {
         val cells = myImageCells ?: return
+        var changed = false
         for (col in startCol until endCol) {
-            cells.remove(col)
+            if (cells.remove(col) != null) changed = true
         }
+        if (!changed) return
         if (cells.isEmpty()) myImageCells = null
         incrementSnapshotVersion()
+        imageCellsChanged()
     }
 
     /**
@@ -117,6 +134,7 @@ class TerminalLine {
         if (myImageCells == null) return false
         myImageCells = null
         incrementSnapshotVersion()
+        imageCellsChanged()
         return true
     }
 
@@ -126,6 +144,7 @@ class TerminalLine {
         if (!cells.entries.removeIf { it.value.imageId == imageId }) return false
         if (cells.isEmpty()) myImageCells = null
         incrementSnapshotVersion()
+        imageCellsChanged()
         return true
     }
 
@@ -135,6 +154,7 @@ class TerminalLine {
         if (!cells.entries.removeIf { it.value.imageId !in retainedImageIds }) return false
         if (cells.isEmpty()) myImageCells = null
         incrementSnapshotVersion()
+        imageCellsChanged()
         return true
     }
 
@@ -199,11 +219,13 @@ class TerminalLine {
     }
 
     fun clear(filler: TextEntry) {
+        val clearedImageCells = myImageCells != null
         myTextEntries.clear()
         myTextEntries.add(filler)
         myRequiresVisualColumnMapping = filler.text.requiresVisualColumnMapping()
         myImageCells = null  // Clear all image cells
         incrementSnapshotVersion()
+        if (clearedImageCells) imageCellsChanged()
     }
 
     fun writeString(x: Int, str: CharBuffer, style: TextStyle) {

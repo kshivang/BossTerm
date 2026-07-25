@@ -1,14 +1,33 @@
 package ai.rever.bossterm.compose.share
 
+import ai.rever.bossterm.compose.util.BUNDLED_FONT_NAME
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
-import kotlin.test.assertIs
 
 /** Round-trip + discriminator checks for the window/tab/pane sharing protocol (issue #276). */
 class ShareProtocolTest {
+
+    @Test
+    fun `web terminal font stack preserves configured font and bundled icon fallbacks`() {
+        val bundled = webTerminalFontFamily(null)
+        assertTrue(bundled.startsWith("\"BossTerm Nerd Font\""))
+        assertTrue(bundled.contains("\"Apple Color Emoji\""))
+        assertTrue(bundled.contains("\"BossTerm Symbols\""))
+        assertEquals(bundled, webTerminalFontFamily(BUNDLED_FONT_NAME))
+
+        val configured = webTerminalFontFamily("JetBrains Mono")
+        assertTrue(configured.startsWith("\"JetBrains Mono\", \"BossTerm Nerd Font\""))
+
+        val escaped = webTerminalFontFamily("Font \"Quoted\"")
+        assertTrue(escaped.startsWith("\"Font \\\"Quoted\\\"\", "))
+
+        val controlsRemoved = webTerminalFontFamily("Unsafe\nFont\u0000")
+        assertTrue(controlsRemoved.startsWith("\"UnsafeFont\", "))
+    }
 
     @Test
     fun `server messages encode with the t discriminator`() {
@@ -16,15 +35,50 @@ class ShareProtocolTest {
         assertTrue(out.contains("\"t\":\"paneOutput\""), "expected paneOutput discriminator in: $out")
         assertTrue(out.contains("\"paneId\":\"p1\""))
 
-        val snap = ShareProtocol.encodeServer(ServerMessage.PaneSnapshot("p1", "scrollback", 120, 40))
+        val repaint = ShareProtocol.encodeServer(ServerMessage.PaneRepaint("p1", "screen"))
+        assertTrue(repaint.contains("\"t\":\"paneRepaint\""))
+
+        val snap = ShareProtocol.encodeServer(
+            ServerMessage.PaneSnapshot("p1", "scrollback", 120, 40, scrollbackLines = 12_345)
+        )
         assertTrue(snap.contains("\"t\":\"paneSnapshot\""))
         assertTrue(snap.contains("\"cols\":120") && snap.contains("\"rows\":40"))
+        assertTrue(snap.contains("\"scrollbackLines\":12345"))
 
         val resize = ShareProtocol.encodeServer(ServerMessage.PaneResize("p1", 80, 24))
         assertTrue(resize.contains("\"t\":\"paneResize\""))
 
         val presence = ShareProtocol.encodeServer(ServerMessage.Presence(3))
         assertTrue(presence.contains("\"viewers\":3"))
+
+        val graphics = ServerMessage.PaneGraphics(
+            paneId = "p1",
+            revision = 7,
+            full = true,
+            images = listOf(SharedTerminalImage("42", "image/png", "cG5n", "abc")),
+            requiredImageIds = listOf("42"),
+            cells = listOf(SharedImageCellRun("42", 4, 2, 0, 0, 3, 3, 2)),
+            resyncRequired = true,
+        )
+        val graphicsJson = ShareProtocol.encodeServer(graphics)
+        assertTrue(graphicsJson.contains("\"t\":\"paneGraphics\""))
+        assertEquals(graphics, ShareProtocol.decodeServer(graphicsJson))
+
+        val legacyGraphics = ShareProtocol.decodeServer(
+            """{"t":"paneGraphics","paneId":"p1","revision":1,"full":false}"""
+        )
+        assertIs<ServerMessage.PaneGraphics>(legacyGraphics)
+        assertEquals(false, legacyGraphics.resyncRequired)
+
+        val denied = ServerMessage.GraphicsResyncDenied("p1", retryAfterMs = 750)
+        assertEquals(denied, ShareProtocol.decodeServer(ShareProtocol.encodeServer(denied)))
+
+        val recovery = graphics.resyncSentinel()
+        assertEquals(graphics.revision, recovery.revision)
+        assertTrue(recovery.resyncRequired)
+        assertTrue(recovery.images.isEmpty())
+        assertTrue(recovery.requiredImageIds.isEmpty())
+        assertTrue(recovery.cells.isEmpty())
     }
 
     @Test
@@ -52,9 +106,20 @@ class ShareProtocolTest {
 
     @Test
     fun `client messages decode by discriminator`() {
-        val hello = ShareProtocol.decodeClient("""{"t":"hello","name":"phone"}""")
+        val hello = ShareProtocol.decodeClient(
+            """{"t":"hello","name":"phone","capabilities":["paneGraphicsV1"]}"""
+        )
         assertIs<ClientMessage.Hello>(hello)
         assertEquals("phone", hello.name)
+        assertEquals(listOf("paneGraphicsV1"), hello.capabilities)
+
+        val legacyHello = ShareProtocol.decodeClient("""{"t":"hello","name":"old"}""")
+        assertIs<ClientMessage.Hello>(legacyHello)
+        assertTrue(legacyHello.capabilities.isEmpty())
+
+        val graphicsResync = ShareProtocol.decodeClient("""{"t":"graphicsResync","paneId":"p1"}""")
+        assertIs<ClientMessage.GraphicsResync>(graphicsResync)
+        assertEquals("p1", graphicsResync.paneId)
 
         val input = ShareProtocol.decodeClient("""{"t":"input","paneId":"p2","data":"ls\n"}""")
         assertIs<ClientMessage.Input>(input)
@@ -188,6 +253,10 @@ class ShareProtocolTest {
         val out = ShareProtocol.decodeServer("""{"t":"paneOutput","paneId":"p1","data":"hi"}""")
         assertIs<ServerMessage.PaneOutput>(out)
         assertEquals("hi", out.data)
+
+        val repaint = ShareProtocol.decodeServer("""{"t":"paneRepaint","paneId":"p1","data":"screen"}""")
+        assertIs<ServerMessage.PaneRepaint>(repaint)
+        assertEquals("screen", repaint.data)
 
         // encodeClient is the client write path (handshake).
         val hello = ShareProtocol.encodeClient(ClientMessage.Hello(name = "dev", clientId = "c1", key = null))

@@ -32,6 +32,10 @@ import kotlin.test.assertTrue
  */
 class VoiceCallServiceTest {
 
+    /** Mirrors VoiceCallService.MAX_LIVE_CALLS; kept local so the production constant stays private. */
+    private val MAX_LIVE_CALLS_FOR_TEST = 8
+
+
     private class FakeExecutor : VoiceToolExecutor {
         override fun tools(): List<VoiceToolDef> = VoiceToolCatalog.ALL
         override fun contextSnapshot(defaultTabId: String?): String = "- \"zsh\" (tab_id t1) [active]"
@@ -350,6 +354,51 @@ class VoiceCallServiceTest {
         val r = withTimeout(5000) { reply.await() } as ServerMessage.VoiceToolResult
         assertTrue(r.resultJson.length < 200_000, "must be clamped, was ${r.resultJson.length}")
         assertTrue(r.resultJson.contains("\"truncated\":true"), r.resultJson.take(120))
+    }
+
+    /**
+     * A viewer that drops while the mint is in flight must get its reservation back. The token is
+     * handed to the caller at RESERVATION time for exactly this reason: waiting for the
+     * VoiceSession reply meant a mid-mint disconnect leaked the slot for the whole duration
+     * ceiling, and eight of those wedge the share at too_many_calls.
+     */
+    @Test
+    fun `a disconnect during the mint returns the slot and announces nothing`() = testApplication {
+        val release = CompletableDeferred<Unit>()
+        routing {
+            post("/v1/realtime/client_secrets") {
+                release.await() // hold the mint open, like a slow network
+                call.respondText("""{"value":"ek_stub"}""", ContentType.Application.Json)
+            }
+        }
+        val activity = mutableListOf<Boolean>()
+        val svc = VoiceCallService(
+            executor = FakeExecutor(),
+            scope = CoroutineScope(Dispatchers.Default),
+            broker = VoiceSessionBroker(baseUrl = "", httpOverride = client),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+            onCallActivity = { started -> synchronized(activity) { activity.add(started) } },
+            mintTimestamps = ArrayDeque(),
+        )
+
+        var reserved: String? = null
+        svc.handleStart(
+            ClientMessage.VoiceStart(),
+            canControl = true,
+            onTokenReserved = { reserved = it },
+        ) {}
+        assertTrue(reserved != null, "the slot is reserved before the mint, not after it")
+
+        // The viewer goes away; the server retires what it reserved for that connection.
+        svc.closeCall(reserved)
+        release.complete(Unit)
+        Thread.sleep(200)
+
+        // The reservation is back: a fresh call can be opened without hitting the cap...
+        repeat(MAX_LIVE_CALLS_FOR_TEST) { assertTrue(svc.openCall() != null, "slot ${'$'}it should be free") }
+        // ...and nothing was ever announced, since no call actually started.
+        assertTrue(synchronized(activity) { activity.none { it } }, "saw ${'$'}activity")
     }
 
     /** Tokens age out, so a call handle can't be replayed indefinitely. */

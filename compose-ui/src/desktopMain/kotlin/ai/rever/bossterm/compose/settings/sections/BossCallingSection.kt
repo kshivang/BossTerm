@@ -96,8 +96,9 @@ internal fun BossCallingSection(
                 checked = settings.voiceShowStatusIndicator,
                 onCheckedChange = { onSettingsChange(settings.copy(voiceShowStatusIndicator = it)) },
                 description = "Show the \"Call BossTerm\" segment in the tab-bar status strip, " +
-                        "alongside the MCP and Sharing indicators. Turning it off doesn't disable " +
-                        "calling — the share viewer's button is unaffected."
+                        "alongside the MCP and Sharing indicators. It is also how you START a call " +
+                        "from this window, so turning it off leaves calling available only to share " +
+                        "viewers."
             )
             SettingsDropdown(
                 label = "Model",

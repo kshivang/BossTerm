@@ -13,6 +13,7 @@ import java.util.Base64
 import javax.imageio.ImageIO
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
@@ -229,7 +230,7 @@ class BossTermMcpServer(
     }
 
     /** The handler registered for [name], resolved under [toolsLock]. Null when not registered. */
-    fun handlerFor(name: String): (suspend (io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest) -> io.modelcontextprotocol.kotlin.sdk.types.CallToolResult)? =
+    fun handlerFor(name: String): (suspend (CallToolRequest) -> CallToolResult)? =
         synchronized(toolsLock) { serverRef?.tools?.get(name)?.handler }
 
     /**

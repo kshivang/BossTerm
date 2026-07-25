@@ -104,7 +104,18 @@ internal class VoiceCallService(
      * servers call this from their WS receive loop. The caller records `msg.activeTabId` on
      * its connection and passes it back as `defaultTabId` on subsequent tool calls.
      */
-    fun handleStart(msg: ClientMessage.VoiceStart, canControl: Boolean, reply: (ServerMessage) -> Unit) {
+    fun handleStart(
+        msg: ClientMessage.VoiceStart,
+        canControl: Boolean,
+        /**
+         * Called synchronously the moment a slot is reserved, BEFORE the mint. The caller records it
+         * on the connection so a viewer that disconnects mid-mint still has its reservation retired
+         * — waiting for the VoiceSession reply meant a drop during the mint leaked the slot for the
+         * whole call-duration ceiling, and eight of those wedge the share.
+         */
+        onTokenReserved: (String) -> Unit = {},
+        reply: (ServerMessage) -> Unit,
+    ) {
         if (!canControl) {
             reply(ServerMessage.VoiceError(code = "not_controller"))
             return
@@ -128,6 +139,7 @@ internal class VoiceCallService(
             reply(ServerMessage.VoiceError(code = "too_many_calls"))
             return
         }
+        onTokenReserved(token)
         if (!allowMint()) {
             log.warn("Voice session mint refused: rate limit")
             closeCall(token) // hand the slot back; this call never happened
@@ -146,6 +158,14 @@ internal class VoiceCallService(
             )
             when (result) {
                 is VoiceSessionBroker.MintResult.Ok -> {
+                    // The caller may have gone while we were minting (its reservation retired by
+                    // VoiceEnd or a disconnect). Announcing then would report a call that doesn't
+                    // exist — an unpaired "started" with no "ended" — and hand a secret to nobody.
+                    // The mint is already billed either way; that cost is unavoidable.
+                    if (!isLiveCall(token)) {
+                        log.info("Voice session minted for a caller that already went away; discarding")
+                        return@launch
+                    }
                     reply(
                         ServerMessage.VoiceSession(
                             clientSecret = result.clientSecret,
@@ -348,12 +368,11 @@ internal class VoiceCallService(
      */
     fun closeCall(token: String?) {
         if (token == null) return
-        val (wasAnnounced, remaining) = synchronized(liveCalls) {
-            val removed = liveCalls.remove(token)
-            (removed?.announced == true) to liveCalls.size
-        }
-        // Only report an end for a call whose start was reported.
-        if (wasAnnounced && remaining == 0) onCallActivity(false)
+        val wasAnnounced = synchronized(liveCalls) { liveCalls.remove(token)?.announced == true }
+        // Per call, not "when the last one goes": with two calls live on a share, hanging one up
+        // used to produce no signal at all — and this notification is the counterpart of "call
+        // started", which is doing security work.
+        if (wasAnnounced) onCallActivity(false)
     }
 
     /** Invalidate every live call — the host revoked the feature, or the last viewer left. */

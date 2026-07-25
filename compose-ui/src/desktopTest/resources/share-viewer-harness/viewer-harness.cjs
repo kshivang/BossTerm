@@ -1048,6 +1048,44 @@ const scenarios = {
     assert.strictEqual(sentOfType("voiceEnd").length, 2, "every ended call must tell the host");
   },
 
+  /**
+   * The viewer answers a tool call itself when the host is too slow. A host reply arriving after
+   * that must NOT produce a second function_call_output for the same call_id — a protocol error
+   * that also lands with no turn requested for it.
+   */
+  async "a host result arriving after the viewer's tool timeout is not sent twice"() {
+    loadViewer({ voiceCapable: true });
+    const socket = connectPanes(["pane-1"]);
+    socket.deliver({ t: "control", granted: true });
+    socket.deliver({ t: "voiceStatus", available: true });
+    el("voicecallbtn").onclick();
+    await flushPromises();
+    socket.deliver({
+      t: "voiceSession", clientSecret: "ek", model: "gpt-realtime-2.1", callToken: "tok",
+    });
+    await flushPromises();
+    const pc = FakeRTCPeerConnection.latest;
+    pc.dc.open();
+
+    pc.dc.deliver({
+      type: "response.function_call_arguments.done",
+      call_id: "slow", name: "read_scrollback", arguments: "{}",
+    });
+    const outputsFor = (id) => pc.dc.sent.filter((s) => {
+      const m = JSON.parse(s);
+      return m.type === "conversation.item.create" && m.item && m.item.call_id === id;
+    }).length;
+    assert.strictEqual(outputsFor("slow"), 0, "nothing answered yet");
+
+    // Let the read timeout elapse — the viewer answers on the host's behalf.
+    advance(130000);
+    assert.strictEqual(outputsFor("slow"), 1, "the viewer's timeout answered it");
+
+    // The real reply turns up afterwards.
+    socket.deliver({ t: "voiceToolResult", callId: "slow", resultJson: "{\"late\":true}" });
+    assert.strictEqual(outputsFor("slow"), 1, "a late result must not answer a second time");
+  },
+
   "a share-socket drop mid-call ends the call instead of leaving the agent blind"() {
     loadViewer({ voiceCapable: true });
     const socket = connectPanes(["pane-1"]);

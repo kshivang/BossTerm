@@ -174,10 +174,16 @@ internal class JdkRealtimeTransport : RealtimeTransport {
     override fun close() {
         closeRequested = true
         open = false
+        // Wait briefly for the writer to fall out of its loop. It may already be inside a
+        // sendText().join() that neither `open = false` nor interrupt() can retract, and a reusable
+        // transport means the next connect() would otherwise overlap that window.
+        writer?.let { w ->
+            w.interrupt()
+            runCatching { w.join(WRITER_SHUTDOWN_MS) }
+        }
         // A truncated final fragment would otherwise corrupt the first event of the next connect —
         // reachable, since the controller keeps one transport for its whole lifetime.
         pending.setLength(0)
-        writer?.interrupt()
         writer = null
         outgoing.clear()
         outgoingAudio.clear()
@@ -194,6 +200,9 @@ internal class JdkRealtimeTransport : RealtimeTransport {
 
     private companion object {
         const val REALTIME_WS_URL = "wss://api.openai.com/v1/realtime"
+
+        /** How long close() waits for the writer to unwind before abandoning it. */
+        const val WRITER_SHUTDOWN_MS = 500L
 
         /** Protocol frames in flight; small because they are answered promptly. */
         const val OUTGOING_CAPACITY = 64

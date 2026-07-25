@@ -100,6 +100,8 @@ internal object HostVoiceCall {
             controller = null
             mirrorJob?.cancel()
             mirrorJob = null
+            killSwitchJob?.cancel()
+            killSwitchJob = null
             _state.value = HostCallState()
             _level.value = 0f
         }

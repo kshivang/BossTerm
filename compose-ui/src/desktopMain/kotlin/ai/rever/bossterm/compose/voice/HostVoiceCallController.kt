@@ -3,6 +3,8 @@ package ai.rever.bossterm.compose.voice
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableJob
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -21,6 +23,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicInteger
 
 /** What the host window shows while a call is up. */
 internal enum class HostCallPhase { Idle, Connecting, Live, Error }
@@ -105,6 +108,16 @@ internal class HostVoiceCallController(
     /** Last moment the call did anything — agent audio, user speech, or a tool call. */
     @Volatile private var lastActivityMs = 0L
 
+    /**
+     * Parent of everything this call launches — tool coroutines and their watchdogs. Cancelled by
+     * [end]/[fail], so hanging up during a run_command doesn't leave it executing against the
+     * terminal with a 630s watchdog parked behind it.
+     */
+    @Volatile private var callJob: CompletableJob? = null
+
+    /** In-flight tool calls, capped like the share path's MAX_IN_FLIGHT_TOOL_CALLS. */
+    private val inFlightTools = AtomicInteger(0)
+
     /** Start a call. No-op when one is already up. */
     fun start() {
         if (_state.value.active) return
@@ -120,6 +133,8 @@ internal class HostVoiceCallController(
         }
         _state.value = HostCallState(phase = HostCallPhase.Connecting)
         _level.value = 0f
+        callJob = SupervisorJob()
+        inFlightTools.set(0)
         synchronized(roundLock) {
             seenCalls.clear(); pendingCalls.clear(); responseOpen = false; outputsOwed = 0
         }
@@ -224,6 +239,9 @@ internal class HostVoiceCallController(
         _level.value = 0f
         startJob?.cancel()
         startJob = null
+        // Takes the tool coroutines and their watchdogs with it.
+        callJob?.cancel()
+        callJob = null
         runCatching { audio.stop() }
         runCatching { transport.close() }
         if (wasActive) log.info("Boss Calling: in-app call ended")
@@ -232,6 +250,8 @@ internal class HostVoiceCallController(
     private fun fail(message: String) {
         startJob?.cancel()
         startJob = null
+        callJob?.cancel()
+        callJob = null
         runCatching { audio.stop() }
         runCatching { transport.close() }
         _state.value = HostCallState(phase = HostCallPhase.Error, error = message)
@@ -324,13 +344,23 @@ internal class HostVoiceCallController(
             pendingCalls.add(callId)
             responseOpen = true // a function call only exists inside a response
         }
+        // Same ceiling as the share path: the MCP handlers behind these are not cheap, and an
+        // unbounded fan-out onto Dispatchers.Default is exactly what the share path refuses.
+        val admitted = inFlightTools.getAndUpdate { n ->
+            if (n >= MAX_IN_FLIGHT_TOOLS) n else n + 1
+        } < MAX_IN_FLIGHT_TOOLS
+        if (!admitted) {
+            log.warn("Voice tool {} refused: {} already in flight", name, MAX_IN_FLIGHT_TOOLS)
+            answerWithError(callId, "Too many tool calls in flight; wait for one to finish.")
+            return
+        }
         touchActivity()
         _state.update { it.copy(working = true, activity = describeTool(name, argsJson)) }
-        // run_command has its own 600s clamp; reads should be near-instant.
         // Reads get 120s, not 45: search_output over a large scrollback is legitimately slow.
         val timeoutMs = if (name == "run_command") 630_000L else 120_000L
-        scope.launch {
-            val watchdog = scope.launch {
+        val parent = callJob ?: return
+        scope.launch(parent) {
+            val watchdog = scope.launch(parent) {
                 delay(timeoutMs)
                 toolTimedOut(callId, name)
             }
@@ -360,8 +390,32 @@ internal class HostVoiceCallController(
             )
             if (done) _state.update { it.copy(working = false, activity = null) }
             maybeRequestResponse()
-        }
+        }.also { job -> job.invokeOnCompletion { inFlightTools.decrementAndGet() } }
     }
+
+    /** Answer a call we refused outright, so the round doesn't hang waiting for it. */
+    private fun answerWithError(callId: String, message: String) {
+        val settled = synchronized(roundLock) {
+            if (!pendingCalls.remove(callId)) return
+            outputsOwed += 1
+            pendingCalls.isEmpty()
+        }
+        transport.send(
+            buildJsonObject {
+                put("type", "conversation.item.create")
+                putJsonObject("item") {
+                    put("type", "function_call_output")
+                    put("call_id", callId)
+                    put("output", buildJsonObject { put("error", message) }.toString())
+                }
+            }.toString()
+        )
+        if (settled) _state.update { it.copy(working = false, activity = null) }
+        maybeRequestResponse()
+    }
+
+    /** Test seam: fire the watchdog for [callId] now instead of waiting out its timeout. */
+    internal fun timeOutForTest(callId: String) = toolTimedOut(callId, "test")
 
     /**
      * Answer a tool call the executor never returned from, so the round can't hang.
@@ -369,8 +423,6 @@ internal class HostVoiceCallController(
      * The browser path has had this since a lost reply could pin it at "Working…"; the in-app path
      * had no watchdog at all, so a wedged tool left the call silent with no recovery but End call.
      */
-    /** Test seam: fire the watchdog for [callId] now instead of waiting out its timeout. */
-    internal fun timeOutForTest(callId: String) = toolTimedOut(callId, "test")
 
     private fun toolTimedOut(callId: String, tool: String) {
         // Claim first, same as the success path, so exactly one of the two answers this call.
@@ -498,6 +550,9 @@ internal class HostVoiceCallController(
 
         /** Coarse tick: neither ceiling needs second-level precision. */
         const val LIMIT_TICK_MS = 5_000L
+
+        /** Concurrent tool calls, matching [VoiceCallService]'s cap. */
+        const val MAX_IN_FLIGHT_TOOLS = 4
 
         /** `error.code` values that end a call rather than one turn of it. */
         val FATAL_ERROR_CODES = setOf(

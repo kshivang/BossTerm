@@ -1168,7 +1168,11 @@ class DaemonShareServer(
                 def.voiceService.closeCall(vc.voiceCallToken)
                 vc.voiceCallToken = null
                 rememberVoiceTab(msg.activeTabId)
-                def.voiceService.handleStart(msg, vc.canControl) { m ->
+                def.voiceService.handleStart(
+                    msg,
+                    vc.canControl,
+                    onTokenReserved = { vc.voiceCallToken = it },
+                ) { m ->
                     // See MirrorShare: the token is captured from the host's own reply, never from
                     // an inbound message.
                     if (m is ServerMessage.VoiceSession) vc.voiceCallToken = m.callToken

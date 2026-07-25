@@ -433,7 +433,11 @@ class MirrorShare(
                 voiceService.closeCall(vc.voiceCallToken)
                 vc.voiceCallToken = null
                 rememberVoiceTab(vc, msg.activeTabId)
-                voiceService.handleStart(msg, vc.canControl) { m ->
+                voiceService.handleStart(
+                    msg,
+                    vc.canControl,
+                    onTokenReserved = { vc.voiceCallToken = it },
+                ) { m ->
                     // Record the token on the way OUT. Populating it from an inbound voiceToolCall
                     // instead meant a call where the agent never used a tool left nothing to retire
                     // on hangup — and an attacker could clobber the tracked value with one bogus

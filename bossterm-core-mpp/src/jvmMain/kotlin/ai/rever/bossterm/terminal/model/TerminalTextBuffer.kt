@@ -14,6 +14,7 @@ import ai.rever.bossterm.terminal.util.CharUtils
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.Lock
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.math.max
@@ -40,6 +41,17 @@ class TerminalTextBuffer internal constructor(
     private set
   var height: Int = initialHeight
     private set
+
+  private val imageCellRevisionCounter = AtomicLong()
+  private val imageCellHistoryTrimCounter = AtomicLong()
+
+  /** O(1) token changed whenever image-cell contents or non-trivial layout changes. */
+  val imageCellRevision: Long
+    get() = imageCellRevisionCounter.get()
+
+  /** Number of oldest rows discarded after scrollback reached its capacity. */
+  val imageCellHistoryTrimCount: Long
+    get() = imageCellHistoryTrimCounter.get()
 
   var historyLinesStorage: LinesStorage = createHistoryLinesStorage()
     private set
@@ -117,11 +129,11 @@ class TerminalTextBuffer internal constructor(
   )
 
   private fun createScreenLinesStorage(): LinesStorage {
-    return CyclicBufferLinesStorage(-1)
+    return CyclicBufferLinesStorage(-1, imageCellRevisionCounter::incrementAndGet)
   }
 
   private fun createHistoryLinesStorage(): LinesStorage {
-    return CyclicBufferLinesStorage(maxHistoryLinesCount)
+    return CyclicBufferLinesStorage(maxHistoryLinesCount, imageCellRevisionCounter::incrementAndGet)
   }
 
 
@@ -258,6 +270,8 @@ class TerminalTextBuffer internal constructor(
     width = newWidth
     height = newHeight
 
+    // Reflow and height changes can move image-bearing line objects without mutating the cells.
+    imageCellRevisionCounter.incrementAndGet()
     fireModelChangeEvent()
     // Return result with both cursor positions
     val newSavedCursorPos = if (newSavedCursorX != null && newSavedCursorY != null) {
@@ -450,6 +464,7 @@ class TerminalTextBuffer internal constructor(
 
   fun addLine(line: TerminalLine) {
     screenLinesStorage.addToBottom(line)
+    if (line.hasImageCells()) imageCellRevisionCounter.incrementAndGet()
     fireModelChangeEvent()
     changesMulticaster.linesChanged(fromIndex = screenLinesStorage.size - 1)
   }
@@ -668,7 +683,15 @@ class TerminalTextBuffer internal constructor(
       insertLines(scrollRegionTop - 1, dy, scrollRegionBottom)
     }
     else {
-      val deletedLines = deleteLines(scrollRegionTop - 1, -dy, scrollRegionBottom)
+      // A top-of-screen upward scroll preserves absolute buffer indices until history trims.
+      // Avoid a general layout revision on that hot path; [addLinesToHistory] publishes the
+      // cheaper trim count once capped history starts discarding its oldest rows.
+      val deletedLines = deleteLines(
+        scrollRegionTop - 1,
+        -dy,
+        scrollRegionBottom,
+        publishImageLayoutChange = scrollRegionTop != 1 || scrollRegionBottom != height,
+      )
       if (scrollRegionTop == 1) {
         addLinesToHistory(deletedLines)
       }
@@ -822,18 +845,30 @@ class TerminalTextBuffer internal constructor(
         }
       }
     }
+    imageCellRevisionCounter.incrementAndGet()
     fireModelChangeEvent()
   }
 
   fun insertLines(y: Int, count: Int, scrollRegionBottom: Int) {
     screenLinesStorage.insertLines(y, count, scrollRegionBottom - 1, createFillerEntry())
+    imageCellRevisionCounter.incrementAndGet()
     fireModelChangeEvent()
     changesMulticaster.linesChanged(fromIndex = y)
   }
 
   // returns deleted lines
   fun deleteLines(y: Int, count: Int, scrollRegionBottom: Int): List<TerminalLine> {
+    return deleteLines(y, count, scrollRegionBottom, publishImageLayoutChange = true)
+  }
+
+  private fun deleteLines(
+    y: Int,
+    count: Int,
+    scrollRegionBottom: Int,
+    publishImageLayoutChange: Boolean,
+  ): List<TerminalLine> {
     val deletedLines = screenLinesStorage.deleteLines(y, count, scrollRegionBottom - 1, createFillerEntry())
+    if (publishImageLayoutChange) imageCellRevisionCounter.incrementAndGet()
     fireModelChangeEvent()
     changesMulticaster.linesChanged(fromIndex = y)
     return deletedLines
@@ -888,6 +923,7 @@ class TerminalTextBuffer internal constructor(
   fun clearScreenAndHistoryBuffers() {
     screenLinesStorage.clear()
     historyLinesStorage.clear()
+    imageCellRevisionCounter.incrementAndGet()
     fireModelChangeEvent()
     changesMulticaster.historyCleared()
     changesMulticaster.linesChanged(fromIndex = 0)
@@ -895,6 +931,7 @@ class TerminalTextBuffer internal constructor(
 
   fun clearScreenBuffer() {
     screenLinesStorage.clear()
+    imageCellRevisionCounter.incrementAndGet()
     fireModelChangeEvent()
     changesMulticaster.linesChanged(fromIndex = 0)
   }
@@ -927,6 +964,7 @@ class TerminalTextBuffer internal constructor(
     modify {
       val lineCount = historyLinesStorage.size
       historyLinesStorage.clear()
+      imageCellRevisionCounter.incrementAndGet()
       if (lineCount > 0) {
         fireHistoryBufferLineCountChanged()
       }
@@ -986,6 +1024,7 @@ class TerminalTextBuffer internal constructor(
     }
 
     historyLinesStorage.addAllToBottom(linesToAdd)
+    imageCellHistoryTrimCounter.addAndGet(discardedLinesCount.toLong())
 
     if (linesToDiscard.isNotEmpty()) {
       changesMulticaster.linesDiscardedFromHistory(linesToDiscard)

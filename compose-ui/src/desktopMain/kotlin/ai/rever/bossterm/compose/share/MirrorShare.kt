@@ -93,10 +93,11 @@ class MirrorShare(
         val listener: (String) -> Unit,
         val modelListener: TerminalModelListener,
         val graphics: PaneGraphicsTracker,
-        val detector: GraphicsSequenceDetector,
+        val graphicsOutputFilter: GraphicsOutputFilter,
         val monitoringGraphics: AtomicBoolean = AtomicBoolean(false),
         val graphicsSyncPending: AtomicBoolean = AtomicBoolean(false),
         val graphicsSyncAgain: AtomicBoolean = AtomicBoolean(false),
+        val textSnapshotLimiter: GraphicsResyncLimiter = GraphicsResyncLimiter(1_000_000_000L),
     ) {
         @Volatile var graphicsSyncJob: Job? = null
     }
@@ -174,6 +175,27 @@ class MirrorShare(
         for (v in viewers) if (v.supportsPaneGraphics) v.outbox.trySend(text)
     }
 
+    private fun broadcastPaneOutput(
+        paneId: String,
+        raw: String,
+        filtered: String,
+    ) {
+        var rawFrame: String? = null
+        var filteredFrame: String? = null
+        for (viewer in viewers) {
+            val data = if (viewer.supportsPaneGraphics) filtered else raw
+            if (data.isEmpty()) continue
+            val frame = if (viewer.supportsPaneGraphics) {
+                filteredFrame ?: ShareProtocol.encodeServer(ServerMessage.PaneOutput(paneId, data))
+                    .also { filteredFrame = it }
+            } else {
+                rawFrame ?: ShareProtocol.encodeServer(ServerMessage.PaneOutput(paneId, data))
+                    .also { rawFrame = it }
+            }
+            viewer.outbox.trySend(frame)
+        }
+    }
+
     /** Theme + Layout + a PaneSnapshot per pane, for a newly-connected viewer. */
     fun initialMessages(includePaneGraphics: Boolean = false): List<ServerMessage> {
         val sig = computeSignature()
@@ -238,7 +260,11 @@ class MirrorShare(
         if (msg is ClientMessage.GraphicsResync) {
             if (vc.supportsPaneGraphics) {
                 val tracker = synchronized(taps) { taps[msg.paneId]?.graphics }
-                if (tracker != null && vc.graphicsResyncLimiter.tryAcquire(msg.paneId)) {
+                if (tracker != null && vc.graphicsResyncLimiter.tryAcquire(
+                        msg.paneId,
+                        tracker.estimatedRasterBytes(),
+                    )
+                ) {
                     vc.outbox.trySend(ShareProtocol.encodeServer(tracker.fullMessage(commit = false)))
                 }
             }
@@ -517,25 +543,31 @@ class MirrorShare(
         synchronized(taps) {
             (taps.keys - paneMap.keys).toList().forEach { id ->
                 taps.remove(id)?.let(::disposeTap)
+                viewers.forEach { it.graphicsResyncLimiter.remove(id) }
             }
             for ((id, tab) in paneMap) {
                 if (id !in taps) {
                     val graphics = PaneGraphicsTracker(id, tab.textBuffer, tab.terminal.getImageDataCache())
-                    val detector = GraphicsSequenceDetector()
+                    val graphicsOutputFilter = GraphicsOutputFilter()
                     lateinit var entry: TapEntry
                     val listener: (String) -> Unit = { d ->
-                        if (detector.inspect(d) && viewers.any { it.supportsPaneGraphics }) {
-                            entry.monitoringGraphics.set(true)
-                            scheduleGraphicsSync(id, entry)
+                        if (viewers.any { it.supportsPaneGraphics }) {
+                            val filtered = graphicsOutputFilter.filter(d)
+                            if (filtered.detectedGraphics) {
+                                entry.monitoringGraphics.set(true)
+                                scheduleGraphicsSync(id, entry)
+                            }
+                            broadcastPaneOutput(id, d, filtered.output)
+                        } else {
+                            broadcast(ServerMessage.PaneOutput(id, d))
                         }
-                        broadcast(ServerMessage.PaneOutput(id, d))
                     }
                     val modelListener = object : TerminalModelListener {
                         override fun modelChanged() {
                             if (entry.monitoringGraphics.get()) scheduleGraphicsSync(id, entry)
                         }
                     }
-                    entry = TapEntry(tab, listener, modelListener, graphics, detector)
+                    entry = TapEntry(tab, listener, modelListener, graphics, graphicsOutputFilter)
                     taps[id] = entry
                     tab.dataStream.addRawOutputListener(listener)
                     tab.textBuffer.addModelListener(modelListener)
@@ -566,12 +598,14 @@ class MirrorShare(
                 if (synchronized(taps) { taps[id] } !== entry) return@launch
                 val update = entry.graphics.pollUpdate()
                 if (update != null) {
-                    if (update.requiresTextSnapshot) {
-                        val size = entry.tab.display.termSize.value
+                    if (update.requiresTextSnapshot && entry.textSnapshotLimiter.tryAcquire(id)) {
                         // xterm.js does not emulate image-protocol cursor movement. Re-anchor text
-                        // only for a real placement/raster change, never for ordinary scrolling.
-                        broadcastGraphics(ServerMessage.PaneSnapshot(
-                            id, snapshotText(entry.tab), size.columns, size.rows
+                        // only for a real placement change, never for scrolling/raster animation.
+                        // RIS + snapshot stays in the same FIFO lane as PaneOutput, so queued bytes
+                        // are cleared by the repaint instead of replaying below it.
+                        broadcastGraphics(ServerMessage.PaneOutput(
+                            id,
+                            "\u001bc" + snapshotText(entry.tab),
                         ))
                     }
                     broadcastGraphics(update.message)

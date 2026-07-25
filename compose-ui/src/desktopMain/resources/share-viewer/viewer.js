@@ -491,28 +491,30 @@
     '"BossTerm Nerd Font", "Apple Color Emoji", "Segoe UI Emoji", ' +
     '"Noto Color Emoji", "BossTerm Symbols", monospace';
 
-  // xterm's WebGL renderer caches glyphs. Trigger both bundled downloads eagerly and invalidate
-  // each terminal after they finish so a first frame rendered during the download cannot leave
-  // Nerd Font icons or emoji stuck as missing-glyph boxes.
-  if (document.fonts && typeof document.fonts.load === "function") {
-    Promise.all([
-      document.fonts.load('13px "BossTerm Nerd Font"'),
-      document.fonts.load('13px "BossTerm Symbols"'),
-    ]).then(function () {
-      Object.keys(panes).forEach(function (id) {
-        var p = panes[id], t = p.term;
-        try {
+  // xterm's WebGL renderer caches glyphs. Let CSS fetch the primary/fallback faces only when
+  // content needs them, then invalidate the atlas so icons do not remain missing-glyph boxes.
+  function refreshTerminalFonts(remeasure) {
+    Object.keys(panes).forEach(function (id) {
+      var p = panes[id], t = p.term;
+      try {
+        if (remeasure) {
           var family = t.options.fontFamily;
-          // Force xterm to remeasure cells as well as rebuilding the WebGL glyph atlas.
           t.options.fontFamily = family + " ";
           t.options.fontFamily = family;
-          t.clearTextureAtlas();
-          t.refresh(0, t.rows - 1);
-        } catch (e) {}
-        scheduleGraphicsDraw(p);
-      });
-      relayoutSinglePane();
-    }).catch(function () { /* system fallbacks remain available if a font cannot load */ });
+        }
+        t.clearTextureAtlas();
+        t.refresh(0, t.rows - 1);
+      } catch (e) {}
+      scheduleGraphicsDraw(p);
+    });
+    relayoutSinglePane();
+  }
+  if (document.fonts) {
+    document.fonts.ready.then(function () { refreshTerminalFonts(true); })
+      .catch(function () { /* system fallbacks remain available if a font cannot load */ });
+    if (typeof document.fonts.addEventListener === "function") {
+      document.fonts.addEventListener("loadingdone", function () { refreshTerminalFonts(false); });
+    }
   }
   // Give the active single pane its NATURAL width so a wide host terminal scrolls
   // horizontally inside #stage. (xterm's own viewport is a y-scroll container that clips
@@ -1017,13 +1019,17 @@
   // ImageCell placement grid; this transparent canvas mirrors the native renderer cell-for-cell.
   var MAX_PANE_GRAPHICS_BYTES = 50 * 1024 * 1024; // matches each BossTerm terminal cache
   var MAX_VIEWER_GRAPHICS_BYTES = 128 * 1024 * 1024; // hard bound across all shared panes
+  // SharedImageCellRun rows use the host's absolute buffer index. Keep this equal to
+  // LinesStorage.DEFAULT_MAX_LINES_COUNT; PaneGraphicsTracker explicitly shifts rows on trims.
+  var WEB_VIEWER_SCROLLBACK_LINES = 5000;
   var MAX_GRAPHICS_RESYNCS = 3;
   var GRAPHICS_RESYNC_TIMEOUT_MS = 3000;
   var viewerGraphicsBytes = 0;
 
   function newGraphicsState() {
-    return { revision: null, cells: [], images: {}, bytes: 0, canvas: null, raf: 0,
-             required: {}, rejected: {}, resyncPending: false, resyncAttempts: 0, resyncTimer: null };
+    return { revision: null, cells: [], images: {}, pending: {}, bytes: 0, canvas: null, raf: 0,
+             rejected: {}, resyncPending: false, resyncAttempts: 0, resyncTimer: null,
+             resyncDegraded: false };
   }
 
   function disposeGraphics(p) {
@@ -1031,9 +1037,11 @@
     var g = p.graphics;
     if (g.raf) cancelAnimationFrame(g.raf);
     if (g.resyncTimer) clearTimeout(g.resyncTimer);
+    Object.keys(g.pending).forEach(function (id) { removePendingGraphicsImage(g, id); });
     Object.keys(g.images).forEach(function (id) { removeGraphicsImage(g, id); });
     if (g.canvas && g.canvas.parentNode) g.canvas.parentNode.removeChild(g.canvas);
-    g.images = {}; g.cells = []; g.bytes = 0; g.canvas = null; g.raf = 0; g.resyncTimer = null;
+    g.images = {}; g.pending = {}; g.cells = []; g.bytes = 0; g.canvas = null; g.raf = 0;
+    g.resyncTimer = null;
     setPaneGraphicsMode(p, false);
   }
 
@@ -1044,6 +1052,21 @@
     g.bytes = Math.max(0, g.bytes - item.bytes);
     viewerGraphicsBytes = Math.max(0, viewerGraphicsBytes - item.bytes);
     delete g.images[id];
+  }
+
+  function removePendingGraphicsImage(g, id) {
+    var item = g.pending[id];
+    if (!item) return;
+    if (item.image) { item.image.onload = null; item.image.onerror = null; }
+    g.bytes = Math.max(0, g.bytes - item.bytes);
+    viewerGraphicsBytes = Math.max(0, viewerGraphicsBytes - item.bytes);
+    delete g.pending[id];
+  }
+
+  function graphicsMemoryFits(g, addedBytes, replacedBytes) {
+    return addedBytes <= MAX_PANE_GRAPHICS_BYTES &&
+      g.bytes + addedBytes - (replacedBytes || 0) <= MAX_PANE_GRAPHICS_BYTES &&
+      viewerGraphicsBytes + addedBytes - (replacedBytes || 0) <= MAX_VIEWER_GRAPHICS_BYTES;
   }
 
   function base64Bytes(data) {
@@ -1108,6 +1131,9 @@
       return image && image.complete && image.naturalWidth && image.naturalHeight;
     });
     if (!g.cells.length || !hasDrawableImage) {
+      // Keep the last decoded frame visible while a replacement raster is in flight. Clearing
+      // here would flash the terminal background and rebuild xterm's texture atlas twice.
+      if (g.canvas && Object.keys(g.pending).length) return;
       if (g.canvas && g.canvas.parentNode) g.canvas.parentNode.removeChild(g.canvas);
       g.canvas = null;
       setPaneGraphicsMode(p, false);
@@ -1147,26 +1173,36 @@
       var effectiveCols = Math.min(Math.max(1, run.totalCellsX), availableCols);
       var effectiveRows = Math.max(1, Math.round(Math.max(1, run.totalCellsY) *
         effectiveCols / Math.max(1, run.totalCellsX)));
-      for (var i = 0; i < run.length; i++) {
-        var sourceCellX = run.cellX + i;
-        var destCol = run.col + i;
-        if (destCol < 0 || destCol >= p.term.cols ||
-            sourceCellX < 0 || sourceCellX >= effectiveCols ||
-            run.cellY < 0 || run.cellY >= effectiveRows) continue;
-        var sx1 = Math.floor(sourceCellX * image.naturalWidth / effectiveCols);
-        var sx2 = Math.floor((sourceCellX + 1) * image.naturalWidth / effectiveCols);
-        var sy1 = Math.floor(run.cellY * image.naturalHeight / effectiveRows);
-        var sy2 = Math.floor((run.cellY + 1) * image.naturalHeight / effectiveRows);
-        ctx.drawImage(
-          image, sx1, sy1, Math.max(1, sx2 - sx1), Math.max(1, sy2 - sy1),
-          destCol * cellW, visibleRow * cellH, cellW, cellH
-        );
-      }
+      if (run.cellY < 0 || run.cellY >= effectiveRows) return;
+      var start = Math.max(0, -run.col, -run.cellX);
+      var length = Math.min(
+        run.length - start,
+        p.term.cols - (run.col + start),
+        effectiveCols - (run.cellX + start)
+      );
+      if (length <= 0) return;
+      var sourceCellX = run.cellX + start;
+      var destCol = run.col + start;
+      var sx1 = Math.floor(sourceCellX * image.naturalWidth / effectiveCols);
+      var sx2 = Math.floor((sourceCellX + length) * image.naturalWidth / effectiveCols);
+      var sy1 = Math.floor(run.cellY * image.naturalHeight / effectiveRows);
+      var sy2 = Math.floor((run.cellY + 1) * image.naturalHeight / effectiveRows);
+      ctx.drawImage(
+        image, sx1, sy1, Math.max(1, sx2 - sx1), Math.max(1, sy2 - sy1),
+        destCol * cellW, visibleRow * cellH, length * cellW, cellH
+      );
     });
   }
 
   function requestGraphicsResync(paneId, g) {
-    if (g.resyncPending || g.resyncAttempts >= MAX_GRAPHICS_RESYNCS) return;
+    if (g.resyncPending) return;
+    if (g.resyncAttempts >= MAX_GRAPHICS_RESYNCS) {
+      if (!g.resyncDegraded) {
+        g.resyncDegraded = true;
+        statusEl.title = "Terminal graphics are temporarily out of sync; live output is unaffected.";
+      }
+      return;
+    }
     g.resyncPending = true;
     g.resyncAttempts += 1;
     sendMsg({ t: "graphicsResync", paneId: paneId });
@@ -1174,13 +1210,25 @@
       g.resyncTimer = null;
       g.resyncPending = false;
       requestGraphicsResync(paneId, g);
-    }, GRAPHICS_RESYNC_TIMEOUT_MS);
+    }, GRAPHICS_RESYNC_TIMEOUT_MS * g.resyncAttempts);
   }
 
-  function retryBudgetRejectedImages() {
+  function resetGraphicsResync(g) {
+    if (g.resyncTimer) clearTimeout(g.resyncTimer);
+    g.resyncTimer = null;
+    g.resyncPending = false;
+    g.resyncAttempts = 0;
+    if (g.resyncDegraded) {
+      g.resyncDegraded = false;
+      statusEl.title = "";
+    }
+  }
+
+  function retryBudgetRejectedImages(skipPaneId, skipImageId) {
     Object.keys(panes).forEach(function (paneId) {
       var g = panes[paneId].graphics, cleared = false;
       Object.keys(g.rejected).forEach(function (id) {
+        if (paneId === skipPaneId && id === skipImageId) return;
         if (g.rejected[id].reason === "budget") {
           delete g.rejected[id];
           cleared = true;
@@ -1198,7 +1246,6 @@
     var g = p.graphics;
     var required = {};
     (m.requiredImageIds || []).forEach(function (id) { required[String(id)] = true; });
-    g.required = required;
     var revisionGap = !m.full && g.revision !== null && m.revision !== g.revision + 1;
     var freedBudget = false;
 
@@ -1209,44 +1256,65 @@
           removeGraphicsImage(g, id);
         }
       });
+      Object.keys(g.pending).forEach(function (id) {
+        if (!required[id]) {
+          freedBudget = true;
+          removePendingGraphicsImage(g, id);
+        }
+      });
       Object.keys(g.rejected).forEach(function (id) {
         if (!required[id]) delete g.rejected[id];
       });
-      if (g.resyncTimer) clearTimeout(g.resyncTimer);
-      g.resyncTimer = null;
-      g.resyncPending = false;
-      g.resyncAttempts = 0;
     }
     (m.removedImageIds || []).forEach(function (id) {
       id = String(id);
-      if (g.images[id]) freedBudget = true;
+      if (g.images[id] || g.pending[id]) freedBudget = true;
       removeGraphicsImage(g, id);
+      removePendingGraphicsImage(g, id);
       delete g.rejected[id];
     });
     (m.images || []).forEach(function (wire) {
-      var id = String(wire.id), old = g.images[id];
+      var id = String(wire.id), old = g.images[id], pending = g.pending[id];
       if (old && old.hash === wire.contentHash) return;
-      if (old) removeGraphicsImage(g, id);
+      if (pending && pending.hash === wire.contentHash) return;
       var rejected = g.rejected[id];
       if (rejected && rejected.reason === "decode" && rejected.hash === wire.contentHash) return;
+      if (pending) removePendingGraphicsImage(g, id);
       delete g.rejected[id];
       var bytes = base64Bytes(wire.data);
-      // Host-side caches are bounded too. If aggregate pane state exceeds the browser budget,
-      // omit that raster (and remember the rejection) instead of retry-looping or growing forever.
-      if (bytes > MAX_PANE_GRAPHICS_BYTES || g.bytes + bytes > MAX_PANE_GRAPHICS_BYTES ||
-          viewerGraphicsBytes + bytes > MAX_VIEWER_GRAPHICS_BYTES) {
+      // The pending encoded source and decoded RGBA backing store both count against the bound.
+      // Keep the old decoded raster live until the replacement has decoded successfully.
+      if (!graphicsMemoryFits(g, bytes, old ? old.bytes : 0)) {
         g.rejected[id] = { reason: "budget", hash: wire.contentHash };
         return;
       }
       var image = new Image();
       var item = { image: image, hash: wire.contentHash, bytes: bytes };
-      g.images[id] = item;
+      g.pending[id] = item;
       g.bytes += bytes;
       viewerGraphicsBytes += bytes;
-      image.onload = function () { scheduleGraphicsDraw(p); };
+      image.onload = function () {
+        if (g.pending[id] !== item) return;
+        var decodedBytes = image.naturalWidth * image.naturalHeight * 4;
+        if (!graphicsMemoryFits(g, decodedBytes, old ? old.bytes : 0)) {
+          removePendingGraphicsImage(g, id);
+          g.rejected[id] = { reason: "budget", hash: wire.contentHash };
+          retryBudgetRejectedImages(m.paneId, id);
+          scheduleGraphicsDraw(p);
+          return;
+        }
+        if (g.images[id] === old) removeGraphicsImage(g, id);
+        removePendingGraphicsImage(g, id);
+        item.bytes = bytes + decodedBytes;
+        g.images[id] = item;
+        g.bytes += item.bytes;
+        viewerGraphicsBytes += item.bytes;
+        if (old && old.bytes > item.bytes) retryBudgetRejectedImages(m.paneId, id);
+        scheduleGraphicsDraw(p);
+      };
       image.onerror = function () {
-        if (g.images[id] === item) {
-          removeGraphicsImage(g, id);
+        if (g.pending[id] === item) {
+          removePendingGraphicsImage(g, id);
           // The same bytes will not become decodable after a full-state resend. Keep the rejected
           // hash until the host replaces or removes it, avoiding an infinite full-payload loop.
           g.rejected[id] = { reason: "decode", hash: wire.contentHash };
@@ -1260,9 +1328,10 @@
     g.cells = m.cells || [];
     g.revision = m.revision;
     var missing = Object.keys(required).some(function (id) {
-      return !g.images[id] && !g.rejected[id];
+      return !g.images[id] && !g.pending[id] && !g.rejected[id];
     });
     if (revisionGap || missing) requestGraphicsResync(m.paneId, g);
+    else resetGraphicsResync(g);
     scheduleGraphicsDraw(p);
   }
 
@@ -1272,7 +1341,7 @@
     if (p) return p;
     var host = document.createElement("div");
     host.className = "termhost";
-    var opts = { cursorBlink: true, convertEol: false, scrollback: 5000,
+    var opts = { cursorBlink: true, convertEol: false, scrollback: WEB_VIEWER_SCROLLBACK_LINES,
                  allowTransparency: false,
                  fontFamily: DEFAULT_TERMINAL_FONT_FAMILY, fontSize: 13,
                  theme: { background: (theme && theme.background) || "#1e1e1e", foreground: "#f8f8f2" } };

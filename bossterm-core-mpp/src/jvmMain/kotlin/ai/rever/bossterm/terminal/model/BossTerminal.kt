@@ -662,8 +662,8 @@ class BossTerminal(
         // Store image data in cache
         val imageId = myImageDataCache.storeImage(image)
 
-        // Strategy: Write image cells row by row, scrolling as needed. Batch the per-row
-        // notifications so native rendering and web-share observers see one complete placement.
+        // Strategy: Write image cells row by row, scrolling as needed. Batch TerminalModelListener
+        // notifications so web-share and snapshot consumers see one complete placement.
         var currentBufferRow = bufferRow
         terminalTextBuffer.beginBatch()
         try {

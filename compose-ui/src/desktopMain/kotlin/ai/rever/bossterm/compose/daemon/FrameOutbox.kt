@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.daemon
 
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.selects.select
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * A per-connection send queue with TWO lanes, drained by ONE writer coroutine:
@@ -27,6 +28,7 @@ import kotlinx.coroutines.selects.select
 internal class FrameOutbox(
     outputCapacityChars: Int = DEFAULT_OUTPUT_CAPACITY_CHARS,
     controlCapacity: Int = 1024,
+    private val controlCapacityBytes: Long = DEFAULT_CONTROL_CAPACITY_BYTES,
 ) {
     /** What [drainTo] hands the socket writer. */
     sealed interface Frame {
@@ -47,6 +49,7 @@ internal class FrameOutbox(
     // the GUI reconnects to a fresh snapshot. (Reconnects are paced by DaemonSessionBridge's
     // exponential backoff, so a persistently-wedged client settles into slow retries.)
     private val control = Channel<Frame>(capacity = controlCapacity)
+    private val controlBytes = AtomicLong()
 
     // Output lane: a plain deque under a lock (not a Channel) so eviction can report WHICH session
     // lost data ([onOutputDropped]) and so [takeCoalesced] can peek/merge same-session runs.
@@ -76,6 +79,9 @@ internal class FrameOutbox(
          *  client, and dropped output is healed by [onOutputDropped]'s re-snapshot. */
         const val DEFAULT_OUTPUT_CAPACITY_CHARS = 4 * 1024 * 1024
 
+        /** Heap-oriented bound for large snapshots/graphics frames, independent of frame count. */
+        const val DEFAULT_CONTROL_CAPACITY_BYTES = 128L * 1024 * 1024
+
         /** Secondary bound on queued output FRAMES: the char budget bounds payload heap, but each
          *  queued chunk also costs an object + deque slot, so a pathological stream of tiny chunks
          *  could hold millions of objects while staying under the char budget. Evicts oldest-first
@@ -89,7 +95,26 @@ internal class FrameOutbox(
     /** Enqueue a frame that must not be dropped (snapshot / list / lifecycle / resize). */
     fun sendControl(frame: Frame) {
         if (closed) return
-        if (control.trySend(frame).isFailure) close() // saturated → unrecoverable client; drop it
+        val bytes = estimatedBytes(frame)
+        if (bytes > controlCapacityBytes || controlBytes.addAndGet(bytes) > controlCapacityBytes) {
+            controlBytes.addAndGet(-bytes)
+            close()
+            return
+        }
+        if (control.trySend(frame).isFailure) {
+            controlBytes.addAndGet(-bytes)
+            close() // saturated → unrecoverable client; drop it
+        }
+    }
+
+    private fun estimatedBytes(frame: Frame): Long = when (frame) {
+        is Frame.Text -> frame.text.length.toLong() * 2
+        is Frame.Binary -> frame.bytes.size.toLong()
+        is Frame.Output -> frame.data.length.toLong() * 2
+    }
+
+    private fun releaseControl(frame: Frame) {
+        controlBytes.addAndGet(-estimatedBytes(frame))
     }
 
     /** Enqueue incremental output that may be dropped under back-pressure. */
@@ -163,7 +188,13 @@ internal class FrameOutbox(
             while (burst < CONTROL_BURST) {
                 val r = control.tryReceive()
                 when {
-                    r.isSuccess -> { emit(r.getOrThrow()); drainedControl = true; burst++ }
+                    r.isSuccess -> {
+                        val frame = r.getOrThrow()
+                        releaseControl(frame)
+                        emit(frame)
+                        drainedControl = true
+                        burst++
+                    }
                     r.isClosed -> { controlClosed = true; break }
                     else -> break // control lane empty
                 }
@@ -177,7 +208,16 @@ internal class FrameOutbox(
             if (controlClosed || closed) return
             // 5) Suspend until a control frame or an output wake (or close).
             val ended = select<Boolean> {
-                control.onReceiveCatching { r -> if (r.isClosed) true else { emit(r.getOrThrow()); false } }
+                control.onReceiveCatching { r ->
+                    if (r.isClosed) {
+                        true
+                    } else {
+                        val frame = r.getOrThrow()
+                        releaseControl(frame)
+                        emit(frame)
+                        false
+                    }
+                }
                 // A wake signal (or wake-close) just re-runs the loop, which sweeps both lanes.
                 wake.onReceiveCatching { false }
             }

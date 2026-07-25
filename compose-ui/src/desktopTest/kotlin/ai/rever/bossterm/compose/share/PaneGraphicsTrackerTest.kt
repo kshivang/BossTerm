@@ -81,6 +81,37 @@ class PaneGraphicsTrackerTest {
     }
 
     @Test
+    fun `cache replacement sends one raster delta without a text reanchor`() {
+        val buffer = TerminalTextBuffer(8, 4, StyleState())
+        buffer.getLine(3)
+        val cache = ImageDataCache()
+        val first = TerminalImage(
+            id = 5,
+            data = byteArrayOf(1),
+            format = ImageFormat.PNG,
+            intrinsicWidth = 1,
+            intrinsicHeight = 1,
+        )
+        cache.storeImage(first)
+        buffer.writeImageCellRow(0, 0, first.id, 0, 1, 1)
+        val tracker = PaneGraphicsTracker("pane", buffer, cache)
+        val firstFull = tracker.fullMessage()
+
+        cache.storeImage(TerminalImage(
+            id = 5,
+            data = byteArrayOf(2),
+            format = ImageFormat.PNG,
+            intrinsicWidth = 1,
+            intrinsicHeight = 1,
+        ))
+        val replacement = tracker.pollUpdate()!!
+
+        assertFalse(replacement.requiresTextSnapshot)
+        assertEquals(1, replacement.message.images.size)
+        assertTrue(replacement.message.images.single().contentHash != firstFull.images.single().contentHash)
+    }
+
+    @Test
     fun `ordinary scrolling keeps absolute image rows stable and emits no graphics delta`() {
         val buffer = TerminalTextBuffer(8, 4, StyleState())
         buffer.getLine(3)
@@ -102,6 +133,34 @@ class PaneGraphicsTrackerTest {
 
         assertNull(tracker.pollUpdate())
         assertEquals(1, tracker.fullMessage().cells.single().row)
+    }
+
+    @Test
+    fun `capped history trim shifts placements without a full raster resend`() {
+        val buffer = TerminalTextBuffer(8, 2, StyleState(), maxHistoryLinesCount = 1)
+        buffer.getLine(1)
+        val cache = ImageDataCache()
+        val image = TerminalImage(
+            id = 8,
+            data = byteArrayOf(1),
+            format = ImageFormat.PNG,
+            intrinsicWidth = 1,
+            intrinsicHeight = 1,
+        )
+        cache.storeImage(image)
+        buffer.writeImageCellRow(0, 0, image.id, 0, 1, 1)
+        val tracker = PaneGraphicsTracker("pane", buffer, cache)
+        tracker.fullMessage()
+
+        buffer.scrollArea(scrollRegionTop = 1, dy = -1, scrollRegionBottom = 2)
+        assertNull(tracker.pollUpdate(), "moving into uncapped history preserves the absolute row")
+
+        buffer.scrollArea(scrollRegionTop = 1, dy = -1, scrollRegionBottom = 2)
+        val trimmed = tracker.pollUpdate()!!
+        assertFalse(trimmed.requiresTextSnapshot)
+        assertTrue(trimmed.message.images.isEmpty(), "a row trim must not resend raster bytes")
+        assertEquals(listOf("8"), trimmed.message.removedImageIds)
+        assertTrue(trimmed.message.cells.isEmpty())
     }
 
     @Test
@@ -127,25 +186,36 @@ class PaneGraphicsTrackerTest {
     }
 
     @Test
-    fun `sequence detector recognizes fragmented Sixel Kitty and placeholders`() {
-        val sixel = GraphicsSequenceDetector()
-        assertFalse(sixel.inspect("\u001b"))
-        assertFalse(sixel.inspect("P0;"))
-        assertTrue(sixel.inspect("0qpayload"))
+    fun `graphics filter strips fragmented payloads and preserves ordinary output`() {
+        val sixel = GraphicsOutputFilter()
+        assertEquals("", sixel.filter("\u001b").output)
+        assertEquals("", sixel.filter("P0;").output)
+        val sixelEnd = sixel.filter("0qpayload\u001b\\tail")
+        assertTrue(sixelEnd.detectedGraphics)
+        assertEquals("tail", sixelEnd.output)
 
-        val kitty = GraphicsSequenceDetector()
-        assertFalse(kitty.inspect("\u001b_"))
-        assertTrue(kitty.inspect("Ga=t;payload"))
+        val kitty = GraphicsOutputFilter()
+        assertEquals("", kitty.filter("\u001b_").output)
+        val kittyEnd = kitty.filter("Ga=t;payload\u009ctail")
+        assertTrue(kittyEnd.detectedGraphics)
+        assertEquals("tail", kittyEnd.output)
 
-        val placeholder = GraphicsSequenceDetector()
-        assertTrue(placeholder.inspect(String(Character.toChars(0x10EEEE))))
+        val iterm = GraphicsOutputFilter()
+        val itermEnd = iterm.filter("\u001b]1337;File=name=x:base64\u0007tail")
+        assertTrue(itermEnd.detectedGraphics)
+        assertEquals("tail", itermEnd.output)
 
-        val query = GraphicsSequenceDetector()
-        assertFalse(query.inspect("\u001bP\$qm\u001b\\"))
+        val placeholder = GraphicsOutputFilter()
+        val placeholderResult = placeholder.filter(String(Character.toChars(0x10EEEE)))
+        assertTrue(placeholderResult.detectedGraphics)
+        assertEquals(" ", placeholderResult.output)
 
-        val oneShot = GraphicsSequenceDetector()
-        assertTrue(oneShot.inspect("\u001bP0;0qpayload"))
-        assertFalse(oneShot.inspect("ordinary output"))
+        val query = GraphicsOutputFilter()
+        val queryResult = query.filter("\u001bP\$qm\u001b\\")
+        assertFalse(queryResult.detectedGraphics)
+        assertEquals("\u001bP\$qm\u001b\\", queryResult.output)
+
+        assertEquals("ordinary output", sixel.filter("ordinary output").output)
     }
 
     @Test
@@ -155,5 +225,19 @@ class PaneGraphicsTrackerTest {
         assertFalse(limiter.tryAcquire("a", nowNanos = 1_499))
         assertTrue(limiter.tryAcquire("b", nowNanos = 1_499))
         assertTrue(limiter.tryAcquire("a", nowNanos = 1_500))
+        limiter.remove("a")
+        assertTrue(limiter.tryAcquire("a", nowNanos = 1_501))
+    }
+
+    @Test
+    fun `graphics resync limiter also enforces a rolling byte budget`() {
+        val limiter = GraphicsResyncLimiter(
+            minimumIntervalNanos = 0,
+            maximumBytesPerWindow = 100,
+            windowNanos = 1_000,
+        )
+        assertTrue(limiter.tryAcquire("pane", estimatedBytes = 60, nowNanos = 1_000))
+        assertFalse(limiter.tryAcquire("pane", estimatedBytes = 41, nowNanos = 1_001))
+        assertTrue(limiter.tryAcquire("pane", estimatedBytes = 100, nowNanos = 2_000))
     }
 }

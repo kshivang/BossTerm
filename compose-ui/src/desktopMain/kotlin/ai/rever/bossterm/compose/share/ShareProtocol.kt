@@ -482,7 +482,7 @@ data class SharedTerminalImage(
     val id: String,
     val mimeType: String,
     val data: String,
-    /** SHA-256 of the decoded bytes; lets the browser retain unchanged decoded images. */
+    /** Per-image-object change token; lets the browser retain unchanged decoded images. */
     val contentHash: String,
 )
 
@@ -490,6 +490,9 @@ data class SharedTerminalImage(
  * A horizontally contiguous run of image cells. [row] is the zero-based absolute buffer index
  * (oldest retained history line = 0, followed by the screen). This stays stable when a screen line
  * first scrolls into growing history and matches xterm's `viewportY` coordinate system directly.
+ * The viewer's scrollback limit intentionally matches
+ * [ai.rever.bossterm.terminal.model.LinesStorage.DEFAULT_MAX_LINES_COUNT], while
+ * [PaneGraphicsTracker] publishes cheap row shifts whenever capped history trims.
  */
 @Serializable
 data class SharedImageCellRun(

@@ -239,4 +239,18 @@ class FrameOutboxTest {
             "only the pre-overflow buffered frames survive",
         )
     }
+
+    @Test
+    fun `control lane is also bounded by payload bytes`() {
+        val outbox = FrameOutbox(controlCapacity = 100, controlCapacityBytes = 12)
+        outbox.sendControl(ctrl("12345")) // 10 UTF-16 bytes
+        outbox.sendControl(ctrl("67")) // exceeds the 12-byte aggregate cap and closes
+        outbox.sendControl(ctrl("after-close"))
+
+        assertEquals(
+            listOf(ctrl("12345")),
+            drainAll(outbox),
+            "a large-frame backlog must close at the byte bound even below the frame-count cap",
+        )
+    }
 }

@@ -15,6 +15,23 @@ import kotlin.test.assertTrue
 class TerminalTextBufferBatchTest {
 
     @Test
+    fun imageCellRevisionChangesOnlyForImageContentOrLayout() {
+        val buffer = TerminalTextBuffer(width = 8, height = 2, styleState = StyleState())
+        buffer.getLine(1)
+        val initial = buffer.imageCellRevision
+
+        buffer.writeImagePlaceholderCell(0, 0, 42, 0, 0, 1, 1)
+        val afterImage = buffer.imageCellRevision
+        assertTrue(afterImage > initial)
+
+        buffer.eraseCharacters(0, 1, 1)
+        assertEquals(afterImage, buffer.imageCellRevision, "ordinary text on another row stays O(1)")
+
+        buffer.eraseCharacters(0, 1, 0)
+        assertTrue(buffer.imageCellRevision > afterImage, "overwriting an image cell publishes a revision")
+    }
+
+    @Test
     fun modelListenerRunsOutsideBatchStateLock() {
         val buffer = TerminalTextBuffer(width = 8, height = 2, styleState = StyleState())
         buffer.getLine(0)

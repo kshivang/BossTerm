@@ -3,7 +3,10 @@ package ai.rever.bossterm.terminal.model
 /**
  * @param maxCapacity maximum number of stored lines; -1 means no restriction
  */
-internal class CyclicBufferLinesStorage(private val maxCapacity: Int) : LinesStorage {
+internal class CyclicBufferLinesStorage(
+  private val maxCapacity: Int,
+  private val onImageCellsChanged: (() -> Unit)? = null,
+) : LinesStorage {
 
   private val lines: ArrayDeque<TerminalLine> = ArrayDeque()
 
@@ -38,6 +41,7 @@ internal class CyclicBufferLinesStorage(private val maxCapacity: Int) : LinesSto
     if (isCapacityLimited && lines.size == maxCapacity) {
       return
     }
+    line.setImageCellsChangedListener(onImageCellsChanged)
     lines.addFirst(line)
   }
 
@@ -46,6 +50,7 @@ internal class CyclicBufferLinesStorage(private val maxCapacity: Int) : LinesSto
    * The worst case is when we need to extend the internal storage of the array deque.
    */
   override fun addToBottom(line: TerminalLine) {
+    line.setImageCellsChangedListener(onImageCellsChanged)
     lines.addLast(line)
     if (isCapacityLimited && lines.size > maxCapacity) {
       lines.removeFirst()
@@ -76,6 +81,7 @@ internal class CyclicBufferLinesStorage(private val maxCapacity: Int) : LinesSto
     if (index < 0 || index > lines.size) {
       throw IndexOutOfBoundsException("Index: $index, Size: ${lines.size}")
     }
+    line.setImageCellsChangedListener(onImageCellsChanged)
     // ArrayDeque implements MutableList, so add(index, element) is available
     (lines as MutableList<TerminalLine>).add(index, line)
   }

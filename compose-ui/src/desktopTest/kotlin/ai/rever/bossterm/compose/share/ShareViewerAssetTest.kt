@@ -38,6 +38,8 @@ class ShareViewerAssetTest {
         val draw = js.substringAfter("function drawPaneGraphics").substringBefore("function requestGraphicsResync")
 
         assertTrue(draw.indexOf("if (!g.cells.length") < draw.indexOf("ensureGraphicsCanvas(p)"))
+        assertFalse(draw.contains("for (var i = 0; i < run.length"))
+        assertTrue(draw.contains("Object.keys(g.pending).length"))
         assertTrue(js.contains("allowTransparency: false"))
         assertTrue(js.contains("setPaneGraphicsMode(p, true)"))
     }
@@ -48,6 +50,9 @@ class ShareViewerAssetTest {
 
         assertTrue(html.contains("default-src 'self'"))
         assertTrue(html.contains("img-src 'self' data:"))
-        assertTrue(html.contains("connect-src 'self' ws: wss:"))
+        assertTrue(html.contains("connect-src 'self'"))
+        assertFalse(html.contains("connect-src 'self' ws: wss:"))
+        assertTrue(html.contains("MesloLGSNF-Regular.ttf?v=d97946186e97"))
+        assertFalse(resource("share-viewer/viewer.js").contains("document.fonts.load("))
     }
 }

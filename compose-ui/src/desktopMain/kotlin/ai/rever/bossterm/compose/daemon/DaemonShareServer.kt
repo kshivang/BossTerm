@@ -6,7 +6,8 @@ import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.share.ClientMessage
 import ai.rever.bossterm.compose.share.CloudflaredExposer
-import ai.rever.bossterm.compose.share.GraphicsSequenceDetector
+import ai.rever.bossterm.compose.share.GraphicsOutputFilter
+import ai.rever.bossterm.compose.share.GraphicsResyncLimiter
 import ai.rever.bossterm.compose.share.Kex
 import ai.rever.bossterm.compose.share.PANE_GRAPHICS_CAPABILITY
 import ai.rever.bossterm.compose.share.PaneGraphicsTracker
@@ -17,10 +18,10 @@ import ai.rever.bossterm.compose.share.ShareProtocol
 import ai.rever.bossterm.compose.share.TabNode
 import ai.rever.bossterm.compose.share.TailscaleExposer
 import ai.rever.bossterm.compose.share.TerminalSnapshotEncoder
+import ai.rever.bossterm.compose.share.installShareViewerFontRoutes
 import ai.rever.bossterm.compose.share.webTerminalFontFamily
 import ai.rever.bossterm.terminal.model.TerminalModelListener
 import io.ktor.http.CacheControl
-import io.ktor.http.HttpHeaders
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
@@ -28,8 +29,6 @@ import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticResources
 import io.ktor.server.plugins.origin
-import io.ktor.server.response.respondResource
-import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
@@ -464,14 +463,7 @@ class DaemonShareServer(
                     install(WebSockets)
                     routing {
                         webSocket("/ws/{token}") { serveViewer(this) }
-                        get("/fonts/MesloLGSNF-Regular.ttf") {
-                            call.response.headers.append(HttpHeaders.CacheControl, "no-cache")
-                            call.respondResource("fonts/MesloLGSNF-Regular.ttf")
-                        }
-                        get("/fonts/NotoSansSymbols2-Regular.ttf") {
-                            call.response.headers.append(HttpHeaders.CacheControl, "no-cache")
-                            call.respondResource("fonts/NotoSansSymbols2-Regular.ttf")
-                        }
+                        installShareViewerFontRoutes()
                         // Static web viewer (index.html + viewer.js + css). Share URL:
                         // http://<host>:<port>/?t=<token>. no-cache so a phone re-validates the
                         // viewer assets (filenames aren't content-hashed) — unchanged ones 304.
@@ -697,23 +689,19 @@ class DaemonShareServer(
                     val update = attachment.graphics.pollUpdate()
                     if (update != null) {
                         val core = attachment.core
-                        if (update.requiresTextSnapshot) {
-                            val currentSize = core.display.termSizeFlow.value
-                            // Control frames outrank queued raw output. Keep that output instead of
-                            // purging it: replaying a small overlap is preferable to dropping bytes
-                            // the emulator had not interpreted when this snapshot was captured.
-                            vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(
-                                ServerMessage.PaneSnapshot(
-                                    core.id,
-                                    TerminalSnapshotEncoder.encode(
-                                        core.textBuffer.createSnapshot(),
-                                        core.terminal.cursorX,
-                                        core.terminal.cursorY,
-                                    ),
-                                    currentSize.columns,
-                                    currentSize.rows,
-                                )
-                            )))
+                        if (update.requiresTextSnapshot &&
+                            attachment.textSnapshotLimiter.tryAcquire(core.id)
+                        ) {
+                            // Keep the re-anchor in the pane-output lane: older output drains first,
+                            // then RIS clears it and the authoritative snapshot repaints. Sending
+                            // this on the priority control lane would replay queued output below the
+                            // snapshot and visibly duplicate it.
+                            val repaint = "\u001bc" + TerminalSnapshotEncoder.encode(
+                                core.textBuffer.createSnapshot(),
+                                core.terminal.cursorX,
+                                core.terminal.cursorY,
+                            )
+                            vc.outbox.sendOutput(core.id, repaint)
                         }
                         vc.outbox.sendControl(
                             FrameOutbox.Frame.Text(ShareProtocol.encodeServer(update.message))
@@ -742,36 +730,43 @@ class DaemonShareServer(
             val preludeLock = Any()
             var prelude: ArrayList<String>? = ArrayList()
             var preludeChars = 0
-            val detector = GraphicsSequenceDetector()
+            val graphicsOutputFilter = GraphicsOutputFilter()
             val graphics = PaneGraphicsTracker(core.id, core.textBuffer, core.terminal.getImageDataCache())
             lateinit var attachment: Attachment
             val tap: (String) -> Unit = { d ->
-                if (detector.inspect(d)) {
-                    attachment.monitoringGraphics.set(true)
-                    scheduleGraphicsSync(attachment)
+                val output = if (vc.supportsPaneGraphics) {
+                    val filtered = graphicsOutputFilter.filter(d)
+                    if (filtered.detectedGraphics) {
+                        attachment.monitoringGraphics.set(true)
+                        scheduleGraphicsSync(attachment)
+                    }
+                    filtered.output
+                } else {
+                    d
                 }
                 val held = synchronized(preludeLock) {
                     val p = prelude
                     when {
                         p == null -> false // snapshot already enqueued → send live
+                        output.isEmpty() -> true // filtered graphics payload: retain no empty chunks
                         // Cap the buffer (bounds heap if a session floods output during a slow
                         // large-scrollback encode — the one path that bypasses outbox backpressure).
                         // Past the cap, drop; a small gap heals on the next resync.
-                        preludeChars + d.length > MAX_PRELUDE_CHARS -> true
-                        else -> { p.add(d); preludeChars += d.length; true }
+                        preludeChars + output.length > MAX_PRELUDE_CHARS -> true
+                        else -> { p.add(output); preludeChars += output.length; true }
                     }
                 }
                 // Raw chunk, not a pre-encoded PaneOutput: the writer encodes at drain time, so the
                 // outbox can coalesce queued same-pane chunks into ONE PaneOutput (concatenated pane
                 // bytes are protocol-equivalent, and a backlog collapses into few frames).
-                if (!held) vc.outbox.sendOutput(core.id, d)
+                if (!held) vc.outbox.sendOutput(core.id, output)
             }
             val modelListener = object : TerminalModelListener {
                 override fun modelChanged() {
                     if (attachment.monitoringGraphics.get()) scheduleGraphicsSync(attachment)
                 }
             }
-            attachment = Attachment(core, tap, modelListener, graphics, detector)
+            attachment = Attachment(core, tap, modelListener, graphics, graphicsOutputFilter)
             attachments[core.id] = attachment
             core.addRawOutputListener(tap)
             core.textBuffer.addModelListener(modelListener)
@@ -807,6 +802,7 @@ class DaemonShareServer(
                 a.core.textBuffer.removeModelListener(a.modelListener)
                 a.graphicsSyncJob?.cancel()
                 a.sizeJob?.cancel()
+                vc.graphicsResyncLimiter.remove(id)
             }
         }
 
@@ -908,7 +904,11 @@ class DaemonShareServer(
                 if (msg is ClientMessage.GraphicsResync) {
                     if (vc.supportsPaneGraphics) {
                         val tracker = synchronized(attachLock) { attachments[msg.paneId]?.graphics }
-                        if (tracker != null && vc.graphicsResyncLimiter.tryAcquire(msg.paneId)) {
+                        if (tracker != null && vc.graphicsResyncLimiter.tryAcquire(
+                                msg.paneId,
+                                tracker.estimatedRasterBytes(),
+                            )
+                        ) {
                             val full = tracker.fullMessage()
                             vc.outbox.sendControl(
                                 FrameOutbox.Frame.Text(ShareProtocol.encodeServer(full))
@@ -942,13 +942,14 @@ class DaemonShareServer(
         val tap: (String) -> Unit,
         val modelListener: TerminalModelListener,
         val graphics: PaneGraphicsTracker,
-        /** Retains detector state across fragmented PTY chunks for this attachment's lifetime. */
-        val detector: GraphicsSequenceDetector,
+        /** Retains graphics-filter state across fragmented PTY chunks for this attachment. */
+        val graphicsOutputFilter: GraphicsOutputFilter,
     ) {
         val ready = AtomicBoolean(false)
         val monitoringGraphics = AtomicBoolean(false)
         val graphicsSyncPending = AtomicBoolean(false)
         val graphicsSyncAgain = AtomicBoolean(false)
+        val textSnapshotLimiter = GraphicsResyncLimiter(1_000_000_000L)
         @Volatile var graphicsSyncJob: Job? = null
         @Volatile var sizeJob: Job? = null
     }

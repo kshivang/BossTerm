@@ -4,15 +4,12 @@ import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import io.ktor.http.CacheControl
-import io.ktor.http.HttpHeaders
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticResources
-import io.ktor.server.response.respondResource
-import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
@@ -774,14 +771,7 @@ object SessionShareManager {
                     install(WebSockets)
                     routing {
                         webSocket("/ws/{token}") { serveViewer(this) }
-                        get("/fonts/MesloLGSNF-Regular.ttf") {
-                            call.response.headers.append(HttpHeaders.CacheControl, "no-cache")
-                            call.respondResource("fonts/MesloLGSNF-Regular.ttf")
-                        }
-                        get("/fonts/NotoSansSymbols2-Regular.ttf") {
-                            call.response.headers.append(HttpHeaders.CacheControl, "no-cache")
-                            call.respondResource("fonts/NotoSansSymbols2-Regular.ttf")
-                        }
+                        installShareViewerFontRoutes()
                         // Static web viewer (index.html + viewer.js + css). Share URL:
                         // http://<host>:<port>/?t=<token>
                         // no-cache (revalidate, don't blindly reuse): the asset filenames aren't

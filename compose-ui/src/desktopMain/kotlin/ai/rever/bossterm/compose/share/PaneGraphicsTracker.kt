@@ -5,7 +5,6 @@ import ai.rever.bossterm.terminal.model.image.ImageDataCache
 import ai.rever.bossterm.terminal.model.image.ImageFormat
 import ai.rever.bossterm.terminal.model.image.TerminalImage
 import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
-import java.security.MessageDigest
 import java.util.Base64
 import java.util.IdentityHashMap
 
@@ -32,19 +31,42 @@ internal class PaneGraphicsTracker(
     private var previousCells: List<SharedImageCellRun> = emptyList()
     private var previousImages: Map<Long, TerminalImage> = emptyMap()
     private val hashes = IdentityHashMap<TerminalImage, String>()
+    private var nextContentToken = 0L
+    private var previousImageCellRevision = textBuffer.imageCellRevision
+    private var previousImageCacheRevision = imageDataCache.contentRevision
+    private var previousHistoryTrimCount = textBuffer.imageCellHistoryTrimCount
 
     /** Capture and return a delta only when visible image data or placement changed. */
     @Synchronized
     fun pollUpdate(): PaneGraphicsUpdate? {
+        val cellRevision = textBuffer.imageCellRevision
+        val cacheRevision = imageDataCache.contentRevision
+        val historyTrimCount = textBuffer.imageCellHistoryTrimCount
+        if (cellRevision == previousImageCellRevision && cacheRevision == previousImageCacheRevision) {
+            val trimmedRows = (historyTrimCount - previousHistoryTrimCount).coerceAtLeast(0L)
+            if (trimmedRows == 0L) return null
+            previousHistoryTrimCount = historyTrimCount
+            return shiftForHistoryTrim(trimmedRows)
+        }
+
         val captured = capture()
-        if (captured.cells == previousCells && sameImageObjects(captured.images, previousImages)) return null
+        if (captured.cells == previousCells && sameImageObjects(captured.images, previousImages)) {
+            previousImageCellRevision = cellRevision
+            previousImageCacheRevision = cacheRevision
+            previousHistoryTrimCount = historyTrimCount
+            return null
+        }
 
         val changed = captured.images.filter { (id, image) -> previousImages[id] !== image }
         val removed = previousImages.keys.filter { it !in captured.images }.map(Long::toString)
-        val requiresTextSnapshot = changed.isNotEmpty() ||
-            (captured.cells.isNotEmpty() && !isUniformRowShift(previousCells, captured.cells))
+        val requiresTextSnapshot = captured.cells != previousCells &&
+            captured.cells.isNotEmpty() &&
+            !isUniformRowShift(previousCells, captured.cells)
         previousCells = captured.cells
         previousImages = captured.images
+        previousImageCellRevision = cellRevision
+        previousImageCacheRevision = cacheRevision
+        previousHistoryTrimCount = historyTrimCount
         revision++
         return PaneGraphicsUpdate(
             message = message(captured, full = false, images = changed.values.toList(), removed = removed),
@@ -67,12 +89,19 @@ internal class PaneGraphicsTracker(
             }
             previousCells = captured.cells
             previousImages = captured.images
+            previousImageCellRevision = textBuffer.imageCellRevision
+            previousImageCacheRevision = imageDataCache.contentRevision
+            previousHistoryTrimCount = textBuffer.imageCellHistoryTrimCount
         }
         return message(captured, full = true, images = captured.images.values.toList(), removed = emptyList())
     }
 
     @Synchronized
     fun hasVisibleGraphics(): Boolean = previousCells.isNotEmpty()
+
+    /** Cheap upper bound used before accepting an explicit full-payload resync. */
+    @Synchronized
+    fun estimatedRasterBytes(): Long = previousImages.values.sumOf { it.data.size.toLong() }
 
     private fun capture(): Captured {
         val snapshot = textBuffer.createIncrementalSnapshot()
@@ -100,28 +129,50 @@ internal class PaneGraphicsTracker(
         paneId = paneId,
         revision = revision,
         full = full,
-        images = images.map(::sharedImage),
+        images = images.mapNotNull(::sharedImage),
         removedImageIds = removed,
         requiredImageIds = captured.images.keys.map(Long::toString),
         cells = captured.cells,
     )
 
-    private fun sharedImage(image: TerminalImage): SharedTerminalImage = SharedTerminalImage(
-        id = image.id.toString(),
-        mimeType = when (image.format) {
+    private fun sharedImage(image: TerminalImage): SharedTerminalImage? {
+        val mimeType = when (image.format) {
             ImageFormat.PNG -> "image/png"
             ImageFormat.JPEG -> "image/jpeg"
             ImageFormat.GIF -> "image/gif"
             ImageFormat.BMP -> "image/bmp"
             ImageFormat.WEBP -> "image/webp"
-            ImageFormat.UNKNOWN -> error("unknown image formats are filtered before browser sharing")
-        },
-        data = Base64.getEncoder().encodeToString(image.data),
-        contentHash = hashes.getOrPut(image) {
-            MessageDigest.getInstance("SHA-256").digest(image.data)
-                .joinToString("") { "%02x".format(it) }
-        },
-    )
+            ImageFormat.UNKNOWN -> return null
+        }
+        return SharedTerminalImage(
+            id = image.id.toString(),
+            mimeType = mimeType,
+            data = Base64.getEncoder().encodeToString(image.data),
+            contentHash = hashes.getOrPut(image) {
+                (++nextContentToken).toString(36)
+            },
+        )
+    }
+
+    private fun shiftForHistoryTrim(trimmedRows: Long): PaneGraphicsUpdate {
+        val delta = trimmedRows.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val shiftedCells = previousCells.asSequence()
+            .filter { it.row >= delta }
+            .map { it.copy(row = it.row - delta) }
+            .toList()
+        val retainedIds = shiftedCells.asSequence().map { it.imageId.toLong() }.toSet()
+        val shiftedImages = previousImages.filterKeys { it in retainedIds }
+        val removed = previousImages.keys.filter { it !in shiftedImages }.map(Long::toString)
+        previousCells = shiftedCells
+        previousImages = shiftedImages
+        hashes.keys.removeIf { cached -> shiftedImages.values.none { it === cached } }
+        revision++
+        val captured = Captured(shiftedCells, shiftedImages)
+        return PaneGraphicsUpdate(
+            message = message(captured, full = false, images = emptyList(), removed = removed),
+            requiresTextSnapshot = false,
+        )
+    }
 
     private fun sameImageObjects(a: Map<Long, TerminalImage>, b: Map<Long, TerminalImage>): Boolean =
         a.size == b.size && a.all { (id, image) -> b[id] === image }
@@ -220,35 +271,149 @@ internal class PaneGraphicsTracker(
     }
 }
 
+internal data class FilteredGraphicsOutput(
+    val output: String,
+    val detectedGraphics: Boolean,
+)
+
 /**
- * Stateful prefix detector because PTY reads may split `ESC P` / `ESC _ G` across chunks.
- * It only arms expensive graphics snapshots for Sixel, Kitty, iTerm2 images, or Kitty's
- * Unicode placeholder — ordinary ANSI output does not trigger a full-buffer scan.
+ * Streaming filter for image-protocol payloads that xterm.js cannot render.
+ *
+ * Non-graphics viewers still receive the original PTY stream. Graphics-capable browsers receive
+ * ordinary text/ANSI verbatim while Sixel DCS, Kitty APC, and iTerm2 image OSC payloads are
+ * discarded as they arrive, so a multi-megabyte raster is not sent twice. Prefix state crosses PTY
+ * chunk boundaries without retaining the discarded payload.
  */
-internal class GraphicsSequenceDetector {
-    private var tail = ""
+internal class GraphicsOutputFilter {
+    private enum class Mode { TEXT, ESCAPE, SIXEL_PREFIX, KITTY_PREFIX, ITERM_PREFIX, DISCARD_ST, DISCARD_OSC }
+
+    private var mode = Mode.TEXT
+    private val prefix = StringBuilder()
+    private var discardEscape = false
 
     @Synchronized
-    fun inspect(chunk: String): Boolean {
-        val candidate = tail + chunk
-        val detected = SIXEL.containsMatchIn(candidate) ||
-            candidate.contains("\u001b_G") ||
-            candidate.contains("\u009fG") ||
-            candidate.contains("\u001b]1337;File") ||
-            candidate.contains("\u001b]1337;MultipartFile") ||
-            candidate.contains(KITTY_PLACEHOLDER)
-        tail = if (detected) {
-            ""
-        } else {
-            candidate.takeLast(96).let { suffix ->
-                if (suffix.firstOrNull()?.isLowSurrogate() == true) suffix.drop(1) else suffix
+    fun filter(chunk: String): FilteredGraphicsOutput {
+        var detected = chunk.contains(KITTY_PLACEHOLDER)
+        val input = if (detected) chunk.replace(KITTY_PLACEHOLDER, " ") else chunk
+        val output = StringBuilder(input.length)
+
+        for (char in input) {
+            when (mode) {
+                Mode.TEXT -> when (char) {
+                    ESC -> {
+                        prefix.clear()
+                        prefix.append(char)
+                        mode = Mode.ESCAPE
+                    }
+                    DCS -> beginPrefix(char, Mode.SIXEL_PREFIX)
+                    APC -> beginPrefix(char, Mode.KITTY_PREFIX)
+                    OSC -> beginPrefix(char, Mode.ITERM_PREFIX)
+                    else -> output.append(char)
+                }
+
+                Mode.ESCAPE -> when (char) {
+                    'P' -> {
+                        prefix.append(char)
+                        mode = Mode.SIXEL_PREFIX
+                    }
+                    '_' -> {
+                        prefix.append(char)
+                        mode = Mode.KITTY_PREFIX
+                    }
+                    ']' -> {
+                        prefix.append(char)
+                        mode = Mode.ITERM_PREFIX
+                    }
+                    else -> {
+                        output.append(prefix).append(char)
+                        prefix.clear()
+                        mode = Mode.TEXT
+                    }
+                }
+
+                Mode.SIXEL_PREFIX -> {
+                    prefix.append(char)
+                    val parameters = prefix.substring(if (prefix[0] == ESC) 2 else 1)
+                    when {
+                        char == 'q' && parameters.dropLast(1).all { it.isDigit() || it == ';' } -> {
+                            detected = true
+                            beginDiscard(Mode.DISCARD_ST)
+                        }
+                        parameters.length > MAX_SIXEL_PARAMETERS ||
+                            parameters.any { it != 'q' && !it.isDigit() && it != ';' } -> flushPrefix(output)
+                    }
+                }
+
+                Mode.KITTY_PREFIX -> {
+                    prefix.append(char)
+                    if (char == 'G') {
+                        detected = true
+                        beginDiscard(Mode.DISCARD_ST)
+                    } else {
+                        flushPrefix(output)
+                    }
+                }
+
+                Mode.ITERM_PREFIX -> {
+                    prefix.append(char)
+                    val value = prefix.substring(if (prefix[0] == ESC) 2 else 1)
+                    when {
+                        ITERM_IMAGE_PREFIXES.any { it == value } -> {
+                            detected = true
+                            beginDiscard(Mode.DISCARD_OSC)
+                        }
+                        ITERM_IMAGE_PREFIXES.none { it.startsWith(value) } -> flushPrefix(output)
+                    }
+                }
+
+                Mode.DISCARD_ST -> discard(char, acceptsBell = false)
+                Mode.DISCARD_OSC -> discard(char, acceptsBell = true)
             }
         }
-        return detected
+        return FilteredGraphicsOutput(output.toString(), detected)
+    }
+
+    private fun beginPrefix(char: Char, nextMode: Mode) {
+        prefix.clear()
+        prefix.append(char)
+        mode = nextMode
+    }
+
+    private fun beginDiscard(nextMode: Mode) {
+        prefix.clear()
+        discardEscape = false
+        mode = nextMode
+    }
+
+    private fun flushPrefix(output: StringBuilder) {
+        output.append(prefix)
+        prefix.clear()
+        mode = Mode.TEXT
+    }
+
+    private fun discard(char: Char, acceptsBell: Boolean) {
+        if (char == ST || (acceptsBell && char == BEL)) {
+            discardEscape = false
+            mode = Mode.TEXT
+            return
+        }
+        if (discardEscape && char == '\\') {
+            discardEscape = false
+            mode = Mode.TEXT
+            return
+        }
+        discardEscape = char == ESC
     }
 
     private companion object {
-        val SIXEL = Regex("(?:\\u001bP|\\u0090)[0-9;]{0,64}q")
+        const val ESC = '\u001b'
+        const val BEL = '\u0007'
+        const val DCS = '\u0090'
+        const val OSC = '\u009d'
+        const val APC = '\u009f'
+        const val ST = '\u009c'
+        const val MAX_SIXEL_PARAMETERS = 65
+        val ITERM_IMAGE_PREFIXES = listOf("1337;File=", "1337;MultipartFile=")
         val KITTY_PLACEHOLDER = String(Character.toChars(0x10EEEE))
     }
 }
@@ -256,14 +421,39 @@ internal class GraphicsSequenceDetector {
 /** Per-connection, per-pane throttle for expensive full graphics resyncs. */
 internal class GraphicsResyncLimiter(
     private val minimumIntervalNanos: Long = 500_000_000L,
+    private val maximumBytesPerWindow: Long = 64L * 1024 * 1024,
+    private val windowNanos: Long = 60_000_000_000L,
 ) {
-    private val lastByPane = HashMap<String, Long>()
+    private data class Entry(
+        var lastNanos: Long,
+        var windowStartNanos: Long,
+        var bytesInWindow: Long,
+    )
+
+    private val entries = HashMap<String, Entry>()
 
     @Synchronized
-    fun tryAcquire(paneId: String, nowNanos: Long = System.nanoTime()): Boolean {
-        val previous = lastByPane[paneId]
-        if (previous != null && nowNanos - previous < minimumIntervalNanos) return false
-        lastByPane[paneId] = nowNanos
+    fun tryAcquire(
+        paneId: String,
+        estimatedBytes: Long = 0,
+        nowNanos: Long = System.nanoTime(),
+    ): Boolean {
+        val entry = entries[paneId]
+        if (entry != null && nowNanos - entry.lastNanos < minimumIntervalNanos) return false
+        val active = entry ?: Entry(nowNanos, nowNanos, 0)
+        if (nowNanos - active.windowStartNanos >= windowNanos) {
+            active.windowStartNanos = nowNanos
+            active.bytesInWindow = 0
+        }
+        if (estimatedBytes > maximumBytesPerWindow - active.bytesInWindow) return false
+        active.lastNanos = nowNanos
+        active.bytesInWindow += estimatedBytes
+        entries[paneId] = active
         return true
+    }
+
+    @Synchronized
+    fun remove(paneId: String) {
+        entries.remove(paneId)
     }
 }

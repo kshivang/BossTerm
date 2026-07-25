@@ -124,6 +124,13 @@ class HostVoiceCallControllerTest {
             "semantic_vad",
             audioCfg["input"]!!.jsonObject["turn_detection"]!!.jsonObject["type"]!!.jsonPrimitive.content,
         )
+        // Both directions need an explicit rate: the guide's example omits it on the output side
+        // and the session is rejected with
+        // "Missing required parameter: 'session.audio.output.format.rate'".
+        val outFormat = audioCfg["output"]!!.jsonObject["format"]!!.jsonObject
+        assertEquals("audio/pcm", outFormat["type"]!!.jsonPrimitive.content)
+        assertEquals(24_000, outFormat["rate"]!!.jsonPrimitive.content.toInt(), "output rate is required")
+        assertEquals("marin", audioCfg["output"]!!.jsonObject["voice"]!!.jsonPrimitive.content)
         assertTrue(session["tools"]!!.toString().contains("read_scrollback"), "tools must be advertised")
         assertTrue(await { c.state.value.phase == HostCallPhase.Live }, "the call goes live once audio starts")
         assertTrue(audio.capturing)

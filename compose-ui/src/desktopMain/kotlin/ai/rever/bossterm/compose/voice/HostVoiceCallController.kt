@@ -263,7 +263,13 @@ internal class HostVoiceCallController(
                         putJsonObject("turn_detection") { put("type", "semantic_vad") }
                     }
                     putJsonObject("output") {
-                        putJsonObject("format") { put("type", "audio/pcm") }
+                        // `rate` is required here too — the docs' example omits it on the output
+                        // side, and the session is rejected with
+                        // "Missing required parameter: 'session.audio.output.format.rate'".
+                        putJsonObject("format") {
+                            put("type", "audio/pcm")
+                            put("rate", 24_000)
+                        }
                         put("voice", s.voiceCallVoice)
                     }
                 }

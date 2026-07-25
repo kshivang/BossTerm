@@ -46,6 +46,8 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
     @Volatile private var captureThread: Thread? = null
     @Volatile private var playbackThread: Thread? = null
     @Volatile private var running = false
+    /** Set once the speaker line has failed to open, so we stop probing hardware per chunk. */
+    @Volatile private var playbackUnavailable = false
 
     /**
      * Decoded audio waiting for the speaker. Playback is drained on its own thread because
@@ -102,6 +104,7 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
     /** Open the speaker line + its drain thread on first use. Null when there is no output device. */
     private fun ensurePlayback(): SourceDataLine? {
         playback?.let { return it }
+        if (playbackUnavailable) return null
         val line = runCatching {
             val info = DataLine.Info(SourceDataLine::class.java, FORMAT)
             (AudioSystem.getLine(info) as SourceDataLine).also {
@@ -110,6 +113,7 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
             }
         }.getOrElse {
             log.warn("Speaker unavailable: {}", it.message)
+            playbackUnavailable = true
             return null
         }
         playback = line
@@ -128,6 +132,7 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
 
     override fun stop() {
         running = false
+        playbackUnavailable = false
         captureThread?.interrupt()
         captureThread = null
         playQueue.clear()

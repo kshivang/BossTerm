@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.voice
 
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.json.JsonObject
@@ -247,6 +248,48 @@ class HostVoiceCallControllerTest {
         c.start()
         assertEquals(HostCallPhase.Error, c.state.value.phase)
         assertEquals(null, off.connectedModel, "disabled → never connect")
+    }
+
+    /**
+     * The bar offers End call during "Connecting…", and the connect coroutine used to be unstored —
+     * so it resumed after teardown, opened the mic, and flipped the state to Live with nothing left
+     * holding a reference to stop it. The mic then stayed hot for the whole process.
+     */
+    @Test
+    fun `ending while still connecting never leaves the mic open`() {
+        val slowConnect = object : RealtimeTransport {
+            val gate = CompletableDeferred<Unit>()
+            var closed = false
+            override suspend fun connect(
+                model: String,
+                apiKey: String,
+                events: (String) -> Unit,
+                onClosed: (String?) -> Unit,
+            ) {
+                gate.await() // park mid-connect, like a slow network
+            }
+            override fun send(json: String) {}
+            override fun close() { closed = true }
+        }
+        val audio = FakeAudio()
+        val c = HostVoiceCallController(
+            scope = CoroutineScope(Dispatchers.Default),
+            executor = FakeExecutor(),
+            transport = slowConnect,
+            audio = audio,
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+        )
+        c.start()
+        assertEquals(HostCallPhase.Connecting, c.state.value.phase)
+
+        c.end() // hang up before the socket is even up
+        slowConnect.gate.complete(Unit) // now let connect() finish
+        Thread.sleep(250)
+
+        assertEquals(HostCallPhase.Idle, c.state.value.phase, "a cancelled connect must not go Live")
+        assertFalse(audio.capturing, "the mic must never open for an abandoned call")
+        assertTrue(slowConnect.closed)
     }
 
     @Test

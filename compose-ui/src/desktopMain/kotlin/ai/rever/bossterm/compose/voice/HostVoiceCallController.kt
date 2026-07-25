@@ -2,7 +2,9 @@ package ai.rever.bossterm.compose.voice
 
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -81,6 +83,14 @@ internal class HostVoiceCallController(
     private var outputsOwed = 0
     private val roundLock = Any()
 
+    /**
+     * The connect coroutine. Stored so [end]/[fail] can cancel it: it was previously unstored, so
+     * ending during "Connecting…" (which the bar offers) let it resume afterwards, open the mic, and
+     * flip the state to Live — with the owner already dropped, nothing could ever stop that capture
+     * again and the mic stayed hot for the rest of the process.
+     */
+    @Volatile private var startJob: Job? = null
+
     /** Start a call. No-op when one is already up. */
     fun start() {
         if (_state.value.active) return
@@ -99,7 +109,7 @@ internal class HostVoiceCallController(
         synchronized(roundLock) {
             seenCalls.clear(); pendingCalls.clear(); responseOpen = false; outputsOwed = 0
         }
-        scope.launch {
+        startJob = scope.launch {
             val s = settings()
             try {
                 transport.connect(
@@ -110,10 +120,16 @@ internal class HostVoiceCallController(
                         if (_state.value.active) fail(reason?.let { "Connection closed ($it)" } ?: "Connection closed")
                     },
                 )
+            } catch (e: CancellationException) {
+                // A hangup during connect cancels this job — that is a clean teardown, not a
+                // failure. Catching it as an Exception below would surface "Couldn't reach OpenAI".
+                throw e
             } catch (e: Exception) {
                 fail("Couldn't reach OpenAI (${e.javaClass.simpleName})")
                 return@launch
             }
+            // Re-check after every suspension point: the user may have hung up while we waited.
+            if (_state.value.phase != HostCallPhase.Connecting) return@launch
             transport.send(sessionUpdate(s).toString())
             try {
                 audio.startCapture(
@@ -133,6 +149,12 @@ internal class HostVoiceCallController(
                 fail(e.message ?: "No microphone available")
                 return@launch
             }
+            // Only Connecting may become Live; anything else means this call was already torn down
+            // and the capture we just started has to go with it.
+            if (_state.value.phase != HostCallPhase.Connecting) {
+                runCatching { audio.stop() }
+                return@launch
+            }
             _state.update { it.copy(phase = HostCallPhase.Live, activity = null) }
         }
     }
@@ -145,6 +167,8 @@ internal class HostVoiceCallController(
     /** End the call and release the mic + speaker. */
     fun end() {
         val wasActive = _state.value.active
+        startJob?.cancel()
+        startJob = null
         runCatching { audio.stop() }
         runCatching { transport.close() }
         _state.value = HostCallState()
@@ -153,6 +177,8 @@ internal class HostVoiceCallController(
     }
 
     private fun fail(message: String) {
+        startJob?.cancel()
+        startJob = null
         runCatching { audio.stop() }
         runCatching { transport.close() }
         _state.value = HostCallState(phase = HostCallPhase.Error, error = message)

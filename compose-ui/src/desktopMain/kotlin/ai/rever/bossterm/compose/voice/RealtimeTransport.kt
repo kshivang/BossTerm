@@ -10,7 +10,7 @@ import java.net.http.HttpClient
 import java.net.http.WebSocket
 import java.time.Duration
 import java.util.concurrent.CompletionStage
-import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 
 /**
@@ -57,7 +57,7 @@ internal class JdkRealtimeTransport : RealtimeTransport {
      * can't hear me" with nothing but a class name in the log. One consumer that waits for each
      * future removes the collision entirely.
      */
-    private val outgoing = LinkedBlockingQueue<String>()
+    private val outgoing = ArrayBlockingQueue<String>(OUTGOING_CAPACITY)
     @Volatile private var writer: Thread? = null
     @Volatile private var open = false
 
@@ -109,7 +109,9 @@ internal class JdkRealtimeTransport : RealtimeTransport {
                 val ws = socket ?: break
                 // join() per frame is the point: the next sendText may not start until this one
                 // completes.
-                runCatching { ws.sendText(json, true).join() }
+                // Bounded wait: a wedged socket must not park the writer forever (and interrupting
+                // a thread inside CompletableFuture.join() would not release it).
+                runCatching { ws.sendText(json, true).orTimeout(15, TimeUnit.SECONDS).join() }
                     .onFailure { log.warn("Voice send failed: {}", it.javaClass.simpleName) }
             }
         }, "boss-voice-ws-writer").apply { isDaemon = true; start() }
@@ -117,7 +119,13 @@ internal class JdkRealtimeTransport : RealtimeTransport {
 
     override fun send(json: String) {
         if (!open) return
-        outgoing.offer(json)
+        // Bounded, and drops the OLDEST when full — the same policy as playback. A stalled socket
+        // otherwise accumulated base64 mic frames at ~25/s without limit, and stale audio is worth
+        // less than a bounded queue.
+        if (!outgoing.offer(json)) {
+            outgoing.poll()
+            outgoing.offer(json)
+        }
     }
 
     override fun close() {
@@ -138,6 +146,9 @@ internal class JdkRealtimeTransport : RealtimeTransport {
 
     private companion object {
         const val REALTIME_WS_URL = "wss://api.openai.com/v1/realtime"
+
+        /** ~10s of mic frames; beyond that the socket is stalled and old audio is worthless. */
+        const val OUTGOING_CAPACITY = 256
 
         /**
          * One client for the process. A per-connect client is never closed (HttpClient only became

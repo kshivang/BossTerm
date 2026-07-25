@@ -414,6 +414,11 @@ class MirrorShare(
             is ClientMessage.VoiceStart -> {
                 rememberVoiceTab(vc, msg.activeTabId)
                 voiceService.handleStart(msg, vc.canControl) { m ->
+                    // Record the token on the way OUT. Populating it from an inbound voiceToolCall
+                    // instead meant a call where the agent never used a tool left nothing to retire
+                    // on hangup — and an attacker could clobber the tracked value with one bogus
+                    // token, defeating the disconnect cleanup outright.
+                    if (m is ServerMessage.VoiceSession) vc.voiceCallToken = m.callToken
                     vc.outbox.sendControl(ShareProtocol.encodeServer(m))
                 }
                 return
@@ -424,7 +429,6 @@ class MirrorShare(
                 return
             }
             is ClientMessage.VoiceToolCall -> {
-                vc.voiceCallToken = msg.callToken ?: vc.voiceCallToken
                 voiceService.handleToolCall(msg, vc.canControl, vc.voiceTabId) { m ->
                     // Control lane: a tool result dropped under output back-pressure would leave
                     // the agent waiting on a reply that never comes.

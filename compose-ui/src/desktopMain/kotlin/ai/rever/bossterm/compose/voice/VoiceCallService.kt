@@ -42,6 +42,11 @@ internal class VoiceCallService(
     private val nowMs: () -> Long = { System.currentTimeMillis() },
     /** Notified when a call is minted (true) or its tools stop being usable (false). */
     private val onCallActivity: (Boolean) -> Unit = {},
+    /**
+     * Mint timestamps, shared process-wide by default: the budget protects ONE API key, so a host
+     * with several shares open must not multiply the ceiling. Injectable so tests get their own.
+     */
+    private val mintTimestamps: ArrayDeque<Long> = sharedMintTimestamps,
 ) {
 
     private val log = LoggerFactory.getLogger(VoiceCallService::class.java)
@@ -49,7 +54,6 @@ internal class VoiceCallService(
 
     // Mint rate limiting: every voiceStart is a billed request against the host's own key, so a
     // spamming (or reconnect-looping) controller must not be able to run it up.
-    private val mintTimestamps = ArrayDeque<Long>()
 
     /**
      * Tokens for calls this host actually minted. A voiceToolCall must carry one, so the share
@@ -170,7 +174,11 @@ internal class VoiceCallService(
         }
         val args = runCatching { json.parseToJsonElement(msg.argsJson).jsonObject }
             .getOrElse { JsonObject(emptyMap()) }
-        scope.launch {
+        // If [scope] is already cancelled the body never runs, so the claimed slot would leak;
+        // release it from the completion handler in that case.
+        var bodyRan = false
+        val job = scope.launch {
+            bodyRan = true
             try {
                 val resultJson = executor.execute(def.name, args, defaultTabId)
                 reply(ServerMessage.VoiceToolResult(callId = msg.callId, resultJson = resultJson))
@@ -183,6 +191,7 @@ internal class VoiceCallService(
                 inFlightToolCalls.decrementAndGet()
             }
         }
+        job.invokeOnCompletion { if (!bodyRan) inFlightToolCalls.decrementAndGet() }
     }
 
     private fun toolError(callId: String, message: String): ServerMessage.VoiceToolResult =
@@ -296,6 +305,9 @@ internal class VoiceCallService(
     }
 
     private companion object {
+        /** Shared by every share in this process — see [mintTimestamps]. */
+        val sharedMintTimestamps = ArrayDeque<Long>()
+
         const val MAX_IN_FLIGHT_TOOL_CALLS = 4
 
         /** Mint budget: no faster than one per gap, and no more than N per window. */

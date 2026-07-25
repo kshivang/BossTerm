@@ -45,6 +45,9 @@ class VoiceCallServiceTest {
         settings = { TerminalSettings.DEFAULT.copy(voiceCallEnabled = enabled) },
         loadKey = { key },
         sessionName = { "test-session" },
+        // Own budget: the production default is shared process-wide, which would let one test's
+        // mints rate-limit the next.
+        mintTimestamps = ArrayDeque(),
     )
 
     @Test
@@ -68,6 +71,7 @@ class VoiceCallServiceTest {
                 scope = CoroutineScope(Dispatchers.Default),
                 settings = { TerminalSettings.DEFAULT },
                 loadKey = { null },
+                mintTimestamps = ArrayDeque(),
             ).status().reason,
         )
     }
@@ -185,6 +189,7 @@ class VoiceCallServiceTest {
             scope = CoroutineScope(Dispatchers.Default),
             settings = { TerminalSettings.DEFAULT.copy(voiceCallEnabled = enabled) },
             loadKey = { "sk-test" },
+            mintTimestamps = ArrayDeque(),
         )
         val token = svc.openCall()
         enabled = false
@@ -212,6 +217,7 @@ class VoiceCallServiceTest {
             settings = { TerminalSettings.DEFAULT },
             loadKey = { "sk-test" },
             nowMs = { clock },
+            mintTimestamps = ArrayDeque(),
         )
         val replies = mutableListOf<ServerMessage>()
         svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { replies.add(it) }
@@ -247,6 +253,7 @@ class VoiceCallServiceTest {
             scope = CoroutineScope(Dispatchers.Default),
             settings = { TerminalSettings.DEFAULT },
             loadKey = { "sk-test" },
+            mintTimestamps = ArrayDeque(),
         )
         val token = svc.openCall()
         val replies = mutableListOf<ServerMessage>()

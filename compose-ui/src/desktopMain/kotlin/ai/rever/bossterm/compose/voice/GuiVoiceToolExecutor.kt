@@ -40,6 +40,8 @@ internal class GuiVoiceToolExecutor(
      */
     private val anchorTabId: () -> String?,
     private val registry: McpTerminalRegistry = McpTerminalRegistry,
+    private val settings: () -> ai.rever.bossterm.compose.settings.TerminalSettings =
+        { ai.rever.bossterm.compose.settings.SettingsManager.instance.settings.value },
 ) : VoiceToolExecutor {
 
     private companion object {
@@ -54,13 +56,33 @@ internal class GuiVoiceToolExecutor(
     private val mcpConfig: BossTermMcpConfig get() = registry.mcpConfig ?: BossTermMcpConfig()
 
     // Built lazily so no MCP machinery spins up until the first call actually starts.
-    private val server: Server by lazy { BossTermMcpServer(config = mcpConfig).createServer() }
+    private val wrapper: BossTermMcpServer by lazy { BossTermMcpServer(config = mcpConfig) }
+    private val serverInstance: Server by lazy { wrapper.createServer() }
+    @Volatile private var appliedDisabled: Set<String>? = null
+
+    /**
+     * The private server with the user's CURRENT tool disables applied.
+     *
+     * `createServer()` reads `disabledMcpTools` once, and only [BossTermMcpManager] drives
+     * `applyDisabledSet` on its own instance — so this one froze the disables as they stood at the
+     * first voice call. That matters because `manage_tools` exists to toggle them at runtime:
+     * disabling run_command mid-session left it callable by voice until the app restarted.
+     */
+    private fun server(): Server {
+        val server = serverInstance
+        val disabled = settings().disabledMcpTools.toSet()
+        if (disabled != appliedDisabled) {
+            appliedDisabled = disabled
+            runCatching { wrapper.applyDisabledSet(disabled) }
+        }
+        return server
+    }
 
     /** The registered handler name for a catalog tool (the embedder may prefix them). */
     private fun handlerName(tool: String): String = mcpConfig.toolNamePrefix + tool
 
     override fun tools(): List<VoiceToolDef> {
-        val registered = server.tools.keys
+        val registered = server().tools.keys
         return VoiceToolCatalog.ALL.filter { it.name in LOCAL_TOOLS || handlerName(it.name) in registered }
     }
 
@@ -111,12 +133,18 @@ internal class GuiVoiceToolExecutor(
 
         val targetTabId = fallback ?: throw VoiceToolException("No terminal tab is available")
 
+        // Pass through ONLY the keys this tool advertises. The underlying MCP schemas are wider
+        // than the voice catalog — run_command also takes panel/working_dir/split_ratio — and
+        // `panel: "new_tab"` would run the command in a tab the share doesn't mirror, undercutting
+        // the "targets are limited to the share" guarantee even though a controller could open a tab
+        // by other means.
+        val allowed = declaredParameters(def)
         val effectiveArgs = buildJsonObject {
-            args.forEach { (k, v) -> if (k != "tab_id") put(k, v) }
+            args.forEach { (k, v) -> if (k != "tab_id" && k in allowed) put(k, v) }
             put("tab_id", targetTabId)
         }
         val registeredName = handlerName(def.name)
-        val handler = server.tools[registeredName]?.handler
+        val handler = server().tools[registeredName]?.handler
             ?: throw VoiceToolException("Tool not available on this host: $name")
         val result = withTimeoutOrNull(EXEC_TIMEOUT_MS) {
             handler(CallToolRequest(CallToolRequestParams(name = registeredName, arguments = effectiveArgs)))
@@ -150,6 +178,12 @@ internal class GuiVoiceToolExecutor(
             put("isActive", registry.findState(tab.id)?.activeTabId == tab.id)
         }.toString()
     }
+
+    /** The property names declared in a catalog tool's own JSON schema. */
+    private fun declaredParameters(def: VoiceToolDef): Set<String> =
+        runCatching {
+            (def.parameters["properties"] as? JsonObject)?.keys?.toSet()
+        }.getOrNull().orEmpty()
 
     private fun JsonObject.stringArg(key: String): String? =
         (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content

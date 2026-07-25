@@ -60,6 +60,8 @@ internal class DaemonVoiceToolExecutor(
             ?: anchorSessionId()?.takeIf { it in scope }
 
         when (name) {
+            // Needs no target at all — the agent's first orienting call must never fail just because
+            // nothing is focused yet (the GUI executor behaves the same way).
             "list_tabs" -> return listTabsJson(scope, target)
             "get_active_tab" -> return tabInfoJson(target ?: throw VoiceToolException("No session available"))
         }

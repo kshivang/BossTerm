@@ -231,12 +231,18 @@ class DaemonShareServer(
 
         @Volatile private var keyStamp: Long = -1L
         @Volatile private var keyPresentCache: Boolean = false
+        @Volatile private var keyStampTicks: Int = 0
 
-        /** [VoiceAgentStorage.keyPresent], re-read only when the file's mtime/size moved. */
+        /**
+         * [VoiceAgentStorage.keyPresent], re-read when the file's mtime/size moved — and every
+         * [VoiceAgentStorage.STAMP_TRUST_TICKS] ticks regardless, since a same-length replacement
+         * inside one second is invisible to the stamp on a coarse-mtime filesystem.
+         */
         fun cachedKeyPresent(): Boolean {
             val stamp = VoiceAgentStorage.keyStamp()
-            if (stamp != keyStamp) {
+            if (stamp != keyStamp || ++keyStampTicks >= VoiceAgentStorage.STAMP_TRUST_TICKS) {
                 keyStamp = stamp
+                keyStampTicks = 0
                 keyPresentCache = VoiceAgentStorage.keyPresent()
             }
             return keyPresentCache
@@ -1147,7 +1153,12 @@ class DaemonShareServer(
             is ClientMessage.Focus -> { rememberVoiceTab(msg.tabId); return }
             is ClientMessage.VoiceStart -> {
                 rememberVoiceTab(msg.activeTabId)
-                def.voiceService.handleStart(msg, vc.canControl, voiceReply)
+                def.voiceService.handleStart(msg, vc.canControl) { m ->
+                    // See MirrorShare: the token is captured from the host's own reply, never from
+                    // an inbound message.
+                    if (m is ServerMessage.VoiceSession) vc.voiceCallToken = m.callToken
+                    voiceReply(m)
+                }
                 return
             }
             is ClientMessage.VoiceEnd -> {
@@ -1156,7 +1167,6 @@ class DaemonShareServer(
                 return
             }
             is ClientMessage.VoiceToolCall -> {
-                vc.voiceCallToken = msg.callToken ?: vc.voiceCallToken
                 def.voiceService.handleToolCall(msg, vc.canControl, vc.voiceTabId, voiceReply)
                 return
             }

@@ -487,12 +487,14 @@
     voice.pending[callId] = true;
     voice.pendingCount += 1;
     // A reply that never arrives would otherwise pin the call at "Working…" with the agent mute
-    // and no way out but End call. Answer ourselves so it can say so out loud. run_command gets a
-    // long leash (its own host-side clamp is 600s); reads should be near-instant.
+    // and no way out but End call. Answer ourselves so it can say so out loud.
+    //
+    // This is the OUTERMOST rung of the deadline ladder — a pure backstop for a host that never
+    // replies at all. It must stay strictly longer than the host's own budget, or the two race over
+    // who answers a tool finishing on the boundary. The ladder and its reasoning live in
+    // VoiceToolTimeouts.kt (viewerMs); these numbers are a mirror of it, not an independent choice.
     voice.timers[callId] = setTimeout(function () {
       voiceToolTimedOut(callId);
-      // search_output over a large scrollback with an expensive regex can legitimately take a
-      // while, so reads get 120s rather than 45.
     }, name === "run_command" ? 630000 : 120000);
     voice.responseOpen = true; // a function call only exists inside a response
     voiceTouch();

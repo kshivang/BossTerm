@@ -572,16 +572,8 @@ internal class VoiceCallService(
          */
         const val MAX_IN_FLIGHT_TOOL_CALLS = 4
 
-        /**
-         * How long a tool may run before its slot is reclaimed.
-         *
-         * Deliberately SHORTER than the viewer's watchdog (630s / 120s), so the host is the side
-         * that decides and the viewer is a pure backstop. Set equal, a tool finishing on the
-         * boundary was a coin flip over which side answered it — handled and tested, but a tie is
-         * harder to reason about than an order. run_command still owns its own 600s clamp inside
-         * this budget.
-         */
-        fun toolBudgetMs(tool: String): Long = if (tool == "run_command") 615_000L else 110_000L
+        /** See [VoiceToolTimeouts] — the whole deadline ladder, and why the order matters. */
+        fun toolBudgetMs(tool: String): Long = VoiceToolTimeouts.hostMs(tool)
 
         /** OpenAI call ids are ~30 chars; this is generous and bounds what we echo back. */
         const val MAX_CALL_ID_CHARS = 200
@@ -589,20 +581,39 @@ internal class VoiceCallService(
         /** Arguments for the curated tools are small; run_command's script is the largest by far. */
         const val MAX_ARGS_CHARS = 32 * 1024
 
-        /** Mint budget: no faster than one per gap, and no more than N per window. */
+        /**
+         * Mint budget: no faster than one per gap, and no more than N per window.
+         *
+         * This is the ONLY hard limit on what a remote caller can cost, because a minted session
+         * outlives every other ceiling here (see [MAX_CALL_DURATION_MS]) — so it is deliberately
+         * tighter than "enough for any plausible user". Twelve per ten minutes allowed ~70 billable
+         * sessions an hour, none of them revocable; six still lets someone with a flaky connection
+         * redial roughly every 100 seconds indefinitely, which is well past what dialling a phone
+         * looks like.
+         */
         const val MINT_MIN_GAP_MS = 3_000L
         const val MINT_WINDOW_MS = 10 * 60 * 1000L
-        const val MAX_MINTS_PER_WINDOW = 12
+        const val MAX_MINTS_PER_WINDOW = 6
 
         /**
-         * Hard ceiling on one REMOTE call. Deliberately shorter than the in-app one
-         * ([HostVoiceCallController.MAX_CALL_DURATION_MS], 60 min): the host cannot hang up the audio
-         * on this surface at all — it is browser↔OpenAI — so an abandoned tab bills for the whole
-         * ceiling, ×8 concurrent, and the caller here is the less trusted of the two. The viewer also
-         * hangs up on its own after a period of silence; this is the backstop for a client that
-         * doesn't.
+         * Hard ceiling on one REMOTE call — of TOOL ACCESS, not of spending. Read that literally:
+         *
+         * this retires the call token, which is what the tools authorise against. The audio session
+         * is browser↔OpenAI and the host is not a party to it, so nothing here — not this ceiling,
+         * not [closeCalls], not the master switch — can hang it up. The STOCK viewer cooperates (it
+         * ends the call on `voiceStatus available:false` and on its own idle timeout), so for an
+         * honest client revocation does stop the billing; for a client that ignores `voiceStatus`,
+         * the session it already established keeps running and keeps billing, deaf and blind but
+         * paid for.
+         *
+         * The real bound on what an unfriendly control-link holder can spend is therefore
+         * [MAX_MINTS_PER_WINDOW] × session length, NOT this constant. Shorter than the in-app
+         * ceiling ([HostVoiceCallController.MAX_CALL_DURATION_MS], 60 min) because that surface's
+         * caller is the person at the keyboard and the host really can hang that one up.
          */
         const val MAX_CALL_DURATION_MS = 30 * 60 * 1000L
+
+        /** Concurrent calls holding tool access on one key. Same caveat as [MAX_CALL_DURATION_MS]. */
         const val MAX_LIVE_CALLS = 8
 
         val json = Json { ignoreUnknownKeys = true }

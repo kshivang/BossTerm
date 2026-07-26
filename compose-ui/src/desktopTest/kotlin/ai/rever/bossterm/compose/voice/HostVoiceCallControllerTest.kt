@@ -69,11 +69,20 @@ class HostVoiceCallControllerTest {
         val played: MutableList<ByteArray> = java.util.concurrent.CopyOnWriteArrayList()
         private var onChunk: ((ByteArray) -> Unit)? = null
 
-        override fun startCapture(onChunk: (ByteArray) -> Unit, onLevel: (Float) -> Unit) {
+        private var onEnded: ((String) -> Unit)? = null
+        override fun startCapture(
+            onChunk: (ByteArray) -> Unit,
+            onLevel: (Float) -> Unit,
+            onEnded: (String) -> Unit,
+        ) {
             capturing = true
             this.onChunk = onChunk
+            this.onEnded = onEnded
             onLevel(0.5f)
         }
+
+        /** Pretend the capture line died on its own (unplugged headset, device stolen). */
+        fun loseCapture(reason: String) = onEnded?.invoke(reason)
         /** Mirrors the real line: muted means the capture line is STOPPED, not merely ignored. */
         var lineMuted = false
         override fun setCaptureMuted(muted: Boolean) { lineMuted = muted }
@@ -496,6 +505,98 @@ class HostVoiceCallControllerTest {
         assertTrue(c.state.value.error?.contains("turned off") == true, c.state.value.error ?: "")
         assertTrue(await { audio.stopped }, "and the microphone must be released")
         assertTrue(transport.closed, "with the billed socket closed too")
+    }
+
+    /**
+     * The owner's release signal, driven through the REAL terminal paths.
+     *
+     * This replaces a helper that inferred "the call ended itself" from the state flow, and the
+     * inference did not work: `endWith` writes Idle (inside end()) and then Error back-to-back on one
+     * thread, and a conflating StateFlow hands a collector on another dispatcher only the Error — so
+     * the ceiling path, the very case it was written for, never fired. The old test drove the helper
+     * with hand-written intermediate states, which is exactly why it passed. Assert the event.
+     */
+    @Test
+    fun `every way a call can end reports terminal exactly once`() {
+        // 1. the user hangs up
+        run {
+            val ended = java.util.concurrent.atomic.AtomicInteger(0)
+            val c = terminalController(FakeTransport(), FakeAudio()) { ended.incrementAndGet() }
+            c.start()
+            assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+            c.end()
+            assertEquals(1, ended.get(), "end() reports terminal")
+            c.end()
+            assertEquals(1, ended.get(), "and only once")
+        }
+        // 2. a ceiling fires (endWith → end() then Error — the conflated pair)
+        run {
+            var clock = 1_000L
+            val ended = java.util.concurrent.atomic.AtomicInteger(0)
+            val audio = FakeAudio()
+            val c = HostVoiceCallController(
+                scope = CoroutineScope(Dispatchers.Default),
+                executor = FakeExecutor(),
+                transport = FakeTransport(),
+                audio = audio,
+                settings = { TerminalSettings.DEFAULT },
+                loadKey = { "sk-test" },
+                nowMs = { clock },
+                onTerminal = { ended.incrementAndGet() },
+            )
+            c.start()
+            assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+            clock += HostVoiceCallController.IDLE_TIMEOUT_MS + 1
+            assertTrue(await { c.state.value.phase == HostCallPhase.Error }, "the idle ceiling fires")
+            assertTrue(await { ended.get() == 1 }, "a self-ended call must tell its owner")
+        }
+        // 3. it fails outright
+        run {
+            val ended = java.util.concurrent.atomic.AtomicInteger(0)
+            val c = terminalController(FakeTransport(), FakeAudio(), key = null) { ended.incrementAndGet() }
+            c.start()
+            assertTrue(await { c.state.value.phase == HostCallPhase.Error })
+            assertTrue(await { ended.get() == 1 }, "a failed call releases its owner too")
+        }
+    }
+
+    private fun terminalController(
+        transport: FakeTransport,
+        audio: FakeAudio,
+        key: String? = "sk-test",
+        onTerminal: () -> Unit,
+    ) = HostVoiceCallController(
+        scope = CoroutineScope(Dispatchers.Default),
+        executor = FakeExecutor(),
+        transport = transport,
+        audio = audio,
+        settings = { TerminalSettings.DEFAULT },
+        loadKey = { key },
+        onTerminal = onTerminal,
+    )
+
+    /**
+     * Losing the microphone mid-call — headset unplugged, another app grabs the device — used to be
+     * silent: the capture thread exited, the bar went on saying "Listening…" with the meter frozen,
+     * and the call kept billing while the agent could no longer hear anything.
+     */
+    @Test
+    fun `losing the microphone ends the call instead of going deaf`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val c = controller(transport, audio)
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+
+        audio.loseCapture("The microphone stopped working")
+
+        assertTrue(await { c.state.value.phase == HostCallPhase.Error }, "the call must not stay 'Live'")
+        assertTrue(
+            c.state.value.error?.contains("microphone") == true,
+            "and must say what happened: ${c.state.value.error}",
+        )
+        assertTrue(audio.stopped, "the audio lines are released")
+        assertTrue(transport.closed, "and the billed socket is closed")
     }
 
     @Test

@@ -70,12 +70,20 @@ internal class HostVoiceCallController(
     /**
      * How long to wait for a tool before answering on its behalf. Injected rather than exposing a
      * "fire the watchdog now" hook in production code — an internal seam like that quietly becomes
-     * load-bearing. run_command has its own 600s clamp; reads get 120s because search_output over a
-     * large scrollback is legitimately slow.
+     * load-bearing. The values, and the ladder they sit in, are [VoiceToolTimeouts].
      */
-    private val toolTimeoutMs: (String) -> Long = { name ->
-        if (name == "run_command") 630_000L else 120_000L
-    },
+    private val toolTimeoutMs: (String) -> Long = { name -> VoiceToolTimeouts.inAppMs(name) },
+    /**
+     * Called once when this call reaches a terminal state, however it got there — the user hung up,
+     * a ceiling fired, or it failed.
+     *
+     * An explicit event because the owner cannot reliably infer one from [state]: `endWith` writes
+     * Idle (inside [end]) and then Error back-to-back on one thread, and a conflating StateFlow
+     * hands a collector on another dispatcher only the Error — so "saw it go Idle" never fired for
+     * the ceiling path it was written for. Inferring a lifecycle from a conflating flow is the wrong
+     * shape; this is the event the owner actually wants.
+     */
+    private val onTerminal: () -> Unit = {},
 ) {
 
     private val log = LoggerFactory.getLogger(HostVoiceCallController::class.java)
@@ -139,6 +147,13 @@ internal class HostVoiceCallController(
      */
     private val toolJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
 
+    /** Fires [onTerminal] exactly once per call — end(), fail() and endWith() all funnel here. */
+    private val terminalReported = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun reportTerminal() {
+        if (terminalReported.compareAndSet(false, true)) runCatching { onTerminal() }
+    }
+
     /** Start a call. No-op when one is already up. */
     fun start() {
         if (_state.value.active) return
@@ -150,6 +165,7 @@ internal class HostVoiceCallController(
         }
         _state.value = HostCallState(phase = HostCallPhase.Connecting)
         _level.value = 0f
+        terminalReported.set(false)
         callJob = SupervisorJob()
         inFlightTools.set(0)
         synchronized(roundLock) {
@@ -217,6 +233,9 @@ internal class HostVoiceCallController(
                         }
                     },
                     onLevel = { level -> _level.value = level },
+                    // Losing the mic used to be silent: the bar kept saying "Listening…" with the
+                    // meter frozen while the call billed on, deaf. End it and say so instead.
+                    onEnded = { reason -> endWith("$reason — call ended.") },
                 )
             } catch (e: CancellationException) {
                 throw e
@@ -318,6 +337,7 @@ internal class HostVoiceCallController(
         runCatching { transport.close() }
         runCatching { executor.dispose() } // releases this call's private MCP server
         if (wasActive) log.info("Boss Calling: in-app call ended")
+        reportTerminal()
     }
 
     private fun fail(message: String) {
@@ -330,6 +350,7 @@ internal class HostVoiceCallController(
         runCatching { executor.dispose() }
         _state.value = HostCallState(phase = HostCallPhase.Error, error = message)
         _level.value = 0f
+        reportTerminal()
     }
 
     /** One server event. Runs on the transport's callback thread. */

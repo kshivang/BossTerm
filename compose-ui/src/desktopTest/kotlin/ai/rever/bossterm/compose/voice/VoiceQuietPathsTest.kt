@@ -1,11 +1,6 @@
 package ai.rever.bossterm.compose.voice
 
 import ai.rever.bossterm.compose.share.CallSegmentState
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -173,58 +168,4 @@ class VoiceQuietPathsTest {
         assertTrue(broker.errorDetail("<html>gateway timeout</html>").contains("gateway timeout"))
     }
 
-    // ---- the in-app owner's release rule (HostVoiceCall) ----
-
-    /**
-     * The collector is launched BEFORE the controller starts, and a StateFlow replays its current
-     * value — which for a fresh controller is Idle. Releasing on Idle alone meant that when the
-     * collector's dispatch won the race, the owner dropped its reference just before the call came
-     * up: mic open, socket billing, and a bar showing "Live" whose End button resolved to null.
-     */
-    @Test
-    fun `the initial Idle of a not-yet-started call is not a self-ended call`() = runBlocking {
-        val states = MutableStateFlow(HostCallState())
-        var released = 0
-        val seen = mutableListOf<HostCallPhase>()
-        val job = CoroutineScope(Dispatchers.Default).launch {
-            mirrorUntilSelfEnded(states, onState = { seen.add(it.phase) }, onSelfEnded = { released++ })
-        }
-        awaitTrue { seen.isNotEmpty() }
-        assertEquals(0, released, "the replayed Idle predates start(); nothing has ended")
-
-        // The call comes up, then ends itself (a ceiling, or fail()).
-        states.value = HostCallState(phase = HostCallPhase.Connecting)
-        states.value = HostCallState(phase = HostCallPhase.Live)
-        awaitTrue { seen.contains(HostCallPhase.Live) }
-        assertEquals(0, released, "a live call has not ended")
-
-        states.value = HostCallState()
-        assertTrue(awaitTrue { released == 1 }, "a call that WAS up and went Idle is a self-end")
-        job.cancel()
-    }
-
-    @Test
-    fun `a call that only ever errors is not reported as self-ended`() = runBlocking {
-        val states = MutableStateFlow(HostCallState())
-        var released = 0
-        val seen = mutableListOf<HostCallPhase>()
-        val job = CoroutineScope(Dispatchers.Default).launch {
-            mirrorUntilSelfEnded(states, onState = { seen.add(it.phase) }, onSelfEnded = { released++ })
-        }
-        states.value = HostCallState(phase = HostCallPhase.Connecting)
-        states.value = HostCallState(phase = HostCallPhase.Error, error = "boom")
-        awaitTrue { seen.contains(HostCallPhase.Error) }
-        // Error is not Idle: the bar keeps a Dismiss, and the owner keeps the controller until then.
-        assertEquals(0, released)
-        job.cancel()
-    }
-
-    private fun awaitTrue(timeoutMs: Long = 5_000, predicate: () -> Boolean): Boolean {
-        val deadline = System.nanoTime() + timeoutMs * 1_000_000
-        while (System.nanoTime() < deadline) {
-            if (runCatching { predicate() }.getOrDefault(false)) return true
-            Thread.sleep(10)
-        }
-        return false
-    }
 }

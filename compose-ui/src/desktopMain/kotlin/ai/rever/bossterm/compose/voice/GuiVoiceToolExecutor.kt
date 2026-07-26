@@ -45,8 +45,8 @@ internal class GuiVoiceToolExecutor(
 ) : VoiceToolExecutor {
 
     private companion object {
-        /** Safety net over handler execution; above run_command's own 600s clamp. */
-        const val EXEC_TIMEOUT_MS = 610_000L
+        /** Safety net over handler execution — the innermost rung of [VoiceToolTimeouts]. */
+        fun execTimeoutMs(tool: String): Long = VoiceToolTimeouts.execMs(tool)
 
         /** Tools answered directly from the registry (scope-filtered), not via an MCP handler. */
         val LOCAL_TOOLS = setOf("list_tabs", "get_active_tab")
@@ -164,7 +164,9 @@ internal class GuiVoiceToolExecutor(
         val registeredName = handlerName(def.name)
         val handler = server().handlerFor(registeredName)
             ?: throw VoiceToolException("Tool not available on this host: $name")
-        val result = withTimeoutOrNull(EXEC_TIMEOUT_MS) {
+        // Per-tool, not a flat ceiling: a single 610s net over the 120s read watchdog is how four
+        // wedged reads used to hold every in-flight slot for eight minutes after being answered.
+        val result = withTimeoutOrNull(execTimeoutMs(def.name)) {
             handler(CallToolRequest(CallToolRequestParams(name = registeredName, arguments = effectiveArgs)))
         } ?: throw VoiceToolException("Tool $name timed out")
         return result.content.filterIsInstance<TextContent>().firstOrNull()?.text ?: "{}"

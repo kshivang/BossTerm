@@ -20,8 +20,20 @@ import kotlin.math.sqrt
  */
 internal interface VoiceAudioIo {
 
-    /** Begin capturing; [onChunk] receives raw PCM16 frames, [onLevel] a 0..1 loudness estimate. */
-    fun startCapture(onChunk: (ByteArray) -> Unit, onLevel: (Float) -> Unit)
+    /**
+     * Begin capturing; [onChunk] receives raw PCM16 frames, [onLevel] a 0..1 loudness estimate.
+     *
+     * [onEnded] fires if capture stops on its OWN — the headset was unplugged, another app took the
+     * device, the mixer hiccuped. Without it, losing the microphone mid-call was silent and
+     * unrecoverable: the capture thread exited, the UI went on saying "Listening…" with the meter
+     * frozen at its last value, and the call kept being billed for the rest of its ceiling while the
+     * agent could no longer hear anything. Not called for a [stop] the caller asked for.
+     */
+    fun startCapture(
+        onChunk: (ByteArray) -> Unit,
+        onLevel: (Float) -> Unit,
+        onEnded: (String) -> Unit = {},
+    )
 
     /**
      * Mute/unmute the microphone at the LINE, not just at the send.
@@ -47,8 +59,43 @@ internal interface VoiceAudioIo {
     fun stop()
 }
 
+/**
+ * Loudness of one PCM16 chunk, 0..1. Top-level and testable: this is the number behind "can it hear
+ * me?", and the meter reading nothing is indistinguishable from a muted mic to the person watching.
+ */
+internal fun pcm16Rms(pcm: ByteArray): Float {
+    if (pcm.size < 2) return 0f
+    var sum = 0.0
+    var i = 0
+    val samples = pcm.size / 2
+    while (i + 1 < pcm.size) {
+        val sample = ((pcm[i + 1].toInt() shl 8) or (pcm[i].toInt() and 0xFF)).toShort().toInt()
+        sum += (sample.toDouble() / Short.MAX_VALUE) * (sample.toDouble() / Short.MAX_VALUE)
+        i += 2
+    }
+    // Speech sits well below full scale, so scale up before clamping or the meter barely moves.
+    return min(1f, (sqrt(sum / samples) * 3.0).toFloat())
+}
+
 /** The real thing: `javax.sound.sampled` lines on their own threads. */
-internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
+internal class JavaSoundVoiceAudioIo(
+    /**
+     * How the capture line is obtained. MUST return a line that is already open and STARTED — the
+     * loop below reads from it immediately.
+     *
+     * Injected so the capture LOOP is testable without a mixer — CI has none, and both of its
+     * branches have been bugs: a muted line's empty read was treated as device death (killing
+     * capture for the rest of the call), and real device death was reported nowhere at all.
+     */
+    private val openCaptureLine: () -> TargetDataLine = {
+        val info = DataLine.Info(TargetDataLine::class.java, FORMAT)
+        check(AudioSystem.isLineSupported(info)) { "no 24kHz PCM16 capture line" }
+        (AudioSystem.getLine(info) as TargetDataLine).also {
+            it.open(FORMAT, CHUNK_BYTES * 8)
+            it.start()
+        }
+    },
+) : VoiceAudioIo {
 
     private val log = LoggerFactory.getLogger(JavaSoundVoiceAudioIo::class.java)
 
@@ -86,16 +133,13 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
      */
     private val playQueue = ArrayBlockingQueue<ByteArray>(PLAY_QUEUE_CHUNKS)
 
-    override fun startCapture(onChunk: (ByteArray) -> Unit, onLevel: (Float) -> Unit) {
+    override fun startCapture(
+        onChunk: (ByteArray) -> Unit,
+        onLevel: (Float) -> Unit,
+        onEnded: (String) -> Unit,
+    ) {
         check(!disposed) { "this VoiceAudioIo has already been stopped" }
-        val line = runCatching {
-            val info = DataLine.Info(TargetDataLine::class.java, FORMAT)
-            check(AudioSystem.isLineSupported(info)) { "no 24kHz PCM16 capture line" }
-            (AudioSystem.getLine(info) as TargetDataLine).also {
-                it.open(FORMAT, CHUNK_BYTES * 8)
-                it.start()
-            }
-        }.getOrElse {
+        val line = runCatching { openCaptureLine() }.getOrElse {
             log.warn("Microphone unavailable: {}", it.message)
             throw VoiceAudioException("No microphone available (${it.message})")
         }
@@ -110,13 +154,20 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
             val buf = ByteArray(CHUNK_BYTES)
             while (running) {
                 val n = runCatching { line.read(buf, 0, buf.size) }.getOrDefault(-1)
-                if (n <= 0) {
-                    // A STOPPED line (i.e. muted) legitimately hands back nothing; treating that as
-                    // death would end capture for good and leave unmute silent. Only an unmuted zero
-                    // means the device actually went away.
-                    if (captureMuted && running) {
-                        runCatching { Thread.sleep(MUTED_IDLE_MS) }
-                        continue
+                // ZERO is not death. A stopped line — which is what mute does — hands back nothing,
+                // and so does a line with no samples ready; ending capture on that killed the mic for
+                // the rest of the call and presented as "Unmute did nothing". Only a NEGATIVE read
+                // (or a throw, mapped to -1 above) means the device is gone: unplugged headset,
+                // another app taking it, a closed line.
+                if (n == 0) {
+                    runCatching { Thread.sleep(IDLE_READ_MS) }
+                    continue
+                }
+                if (n < 0) {
+                    // Deliberate teardown is not a loss — stop() clears `running` before interrupting.
+                    if (running) {
+                        log.warn("Voice capture ended unexpectedly (read returned {})", n)
+                        runCatching { onEnded("The microphone stopped working") }
                     }
                     break
                 }
@@ -127,7 +178,7 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
                     continue
                 }
                 val chunk = buf.copyOf(n)
-                onLevel(rms(chunk))
+                onLevel(pcm16Rms(chunk))
                 runCatching { onChunk(chunk) }
             }
         }, "boss-voice-capture").apply { isDaemon = true; start() }
@@ -210,20 +261,6 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
         playback = null
     }
 
-    private fun rms(pcm: ByteArray): Float {
-        if (pcm.size < 2) return 0f
-        var sum = 0.0
-        var i = 0
-        val samples = pcm.size / 2
-        while (i + 1 < pcm.size) {
-            val sample = ((pcm[i + 1].toInt() shl 8) or (pcm[i].toInt() and 0xFF)).toShort().toInt()
-            sum += (sample.toDouble() / Short.MAX_VALUE) * (sample.toDouble() / Short.MAX_VALUE)
-            i += 2
-        }
-        // Speech sits well below full scale, so scale up before clamping or the meter barely moves.
-        return min(1f, (sqrt(sum / samples) * 3.0).toFloat())
-    }
-
     internal companion object {
         /** The Realtime API's PCM contract: 24 kHz, 16-bit signed little-endian, mono. */
         val FORMAT = AudioFormat(24_000f, 16, 1, true, false)
@@ -234,8 +271,8 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
         /** ~4 s of queued speech; beyond that the speaker is hopelessly behind, so drop. */
         const val PLAY_QUEUE_CHUNKS = 100
 
-        /** How long the capture loop parks per turn while the line is stopped for mute. */
-        const val MUTED_IDLE_MS = 50L
+        /** How long the capture loop parks when a read yields nothing (muted, or no samples yet). */
+        const val IDLE_READ_MS = 20L
     }
 }
 

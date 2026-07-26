@@ -43,6 +43,44 @@ class DaemonVoiceToolExecutorTest {
         }
     }
 
+    /**
+     * The `target == null` guard after the orienting-tools `when` is LIVE, not dead: that `when` has
+     * no `else`, so every other tool falls through to it. Reported as unreachable in review, which is
+     * the sort of thing that gets "cleaned up" — so it is pinned here. Without it, a targetless call
+     * would put a null session_id into the daemon args instead of telling the agent why it failed.
+     */
+    @Test
+    fun `a tool that needs a target says so when there is none`() {
+        if (ShellCustomizationUtils.isWindows()) return
+        val host = SessionHost(TerminalSettings.DEFAULT)
+        try {
+            // A share whose sessions have all gone: nothing in scope, no anchor.
+            val exec = executor(host, { emptySet() }, { null })
+
+            // Only the tools this surface actually advertises — the daemon drops the guiOnly ones.
+            val targeted = VoiceToolCatalog.ALL
+                .filter { !it.guiOnly && it.name != "list_tabs" && it.name != "get_active_tab" }
+                .map { it.name }
+            assertTrue(targeted.isNotEmpty(), "the daemon surface must have some targeted tools")
+            for (tool in targeted) {
+                val e = assertFailsWith<VoiceToolException>("$tool must refuse without a target") {
+                    runBlocking {
+                        exec.execute(
+                            tool,
+                            buildJsonObject { put("text", "x"); put("signal", "ctrl_c") },
+                            null,
+                        )
+                    }
+                }
+                assertTrue(e.message?.contains("No session") == true, "$tool: ${e.message}")
+            }
+            // list_tabs is the exception on purpose — the agent's first orienting call must work.
+            assertTrue(runBlocking { exec.execute("list_tabs", buildJsonObject { }, null) }.isNotEmpty())
+        } finally {
+            host.shutdownAll()
+        }
+    }
+
     @Test
     fun `out-of-scope sessions are rejected and filtered`() {
         if (ShellCustomizationUtils.isWindows()) return

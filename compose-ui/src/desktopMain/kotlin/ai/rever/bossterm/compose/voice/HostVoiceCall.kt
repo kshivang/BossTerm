@@ -48,13 +48,18 @@ internal object HostVoiceCall {
     fun start() {
         val existing = controller
         if (existing != null && existing.state.value.active) return
+        // `created` so the terminal callback can name the controller it belongs to: the release must
+        // be a no-op for a call this object has already moved on from.
+        var created: HostVoiceCallController? = null
         val c = HostVoiceCallController(
             scope = scope,
             executor = GuiVoiceToolExecutor(
                 inScopeTabIds = { McpTerminalRegistry.allTabs().map { it.id }.toSet() },
                 anchorTabId = { activeTabId() },
             ),
+            onTerminal = { created?.let { releaseIfCurrent(it) } },
         )
+        created = c
         controller = c
         killSwitchJob?.cancel()
         killSwitchJob = null
@@ -63,23 +68,7 @@ internal object HostVoiceCall {
         mirrorJob?.cancel()
         mirrorJob = scope.launch {
             launch { c.level.collect { _level.value = it } }
-            launch {
-                mirrorUntilSelfEnded(
-                    states = c.state,
-                    onState = { _state.value = it },
-                    // A call that ends itself (a ceiling via endWith reaching Idle) releases the
-                    // controller and the collectors too, or this object keeps them until the next
-                    // start()/end() despite documenting that it owns exactly one call. A FAILED call
-                    // deliberately does not: Error keeps its Dismiss, and dismissError() clears it.
-                    onSelfEnded = {
-                        if (controller === c) {
-                            controller = null
-                            killSwitchJob?.cancel()
-                            killSwitchJob = null
-                        }
-                    },
-                )
-            }
+            launch { c.state.collect { _state.value = it } }
         }
         c.start()
         // AFTER start(), deliberately. The master switch is a kill switch on this surface too — the
@@ -115,6 +104,21 @@ internal object HostVoiceCall {
         if (ending != null) scope.launch(Dispatchers.IO) { ending.end() }
     }
 
+    /**
+     * Drop [ended] if it is still the call we own — a call that finished on its own (a ceiling, or a
+     * failure) must release the controller and the kill-switch collector, or this object keeps them
+     * until the next start()/end() despite documenting that it owns exactly one call.
+     *
+     * Internal for tests: the object itself builds a real MCP-backed executor, so this rule is only
+     * reachable in a test through the seam it is called from.
+     */
+    internal fun releaseIfCurrent(ended: HostVoiceCallController) {
+        if (controller !== ended) return
+        controller = null
+        killSwitchJob?.cancel()
+        killSwitchJob = null
+    }
+
     /** Clear a failed call's error so the pill goes back to idle. */
     fun dismissError() {
         if (_state.value.phase == HostCallPhase.Error) {
@@ -132,30 +136,4 @@ internal object HostVoiceCall {
     private fun activeTabId(): String? =
         McpTerminalRegistry.primaryState()?.activeTabId
             ?: McpTerminalRegistry.allTabs().firstOrNull()?.id
-}
-
-/**
- * Mirror a controller's state, reporting only a call that ENDED ITSELF.
- *
- * Split out of [HostVoiceCall.start] to be testable: the object it lives on builds a real MCP-backed
- * executor, so the rule below could not otherwise be exercised — and the rule is subtle.
- *
- * A [StateFlow] replays its current value to each new collector, and a fresh controller's current
- * value is `Idle` — `start()` has not run yet, because the collector is launched first and dispatched
- * to another thread. Releasing on `Idle` alone therefore raced the start: when the collector won,
- * the owner dropped its reference a moment before the call came up, leaving the mic open and the
- * Realtime socket billing behind a bar whose End button resolved to null. Only a call observed
- * ACTIVE can subsequently have ended itself.
- */
-internal suspend fun mirrorUntilSelfEnded(
-    states: StateFlow<HostCallState>,
-    onState: (HostCallState) -> Unit,
-    onSelfEnded: () -> Unit,
-) {
-    var sawActive = false
-    states.collect { state ->
-        onState(state)
-        if (state.active) sawActive = true
-        if (sawActive && state.phase == HostCallPhase.Idle) onSelfEnded()
-    }
 }

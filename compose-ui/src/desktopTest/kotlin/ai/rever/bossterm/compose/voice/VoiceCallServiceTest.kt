@@ -292,14 +292,41 @@ class VoiceCallServiceTest {
         assertFalse(insecure.available, "no Call button for a connection that cannot hold a secret")
         assertEquals("insecure_transport", insecure.reason)
 
-        // A guest still learns nothing about host configuration — but availability is not secret.
+        // A guest gets this one even with withReason = false. `withReason` redacts HOST
+        // CONFIGURATION; insecure_transport describes the guest's OWN connection, which they already
+        // know about and are the only party who can fix. Redacting it left them with no bar and no
+        // explanation — the silence the reason field exists to prevent.
         val guest = svc.status(withReason = false, confidential = false)
         assertFalse(guest.available)
-        assertEquals(null, guest.reason)
+        assertEquals("insecure_transport", guest.reason)
 
         // And the same host, asked by an E2E connection, is available. Same service, same settings:
         // the difference is entirely per-connection, which is why one broadcast status was wrong.
         assertTrue(svc.status(withReason = true, confidential = true).available)
+    }
+
+    /**
+     * The redaction line: host configuration is secret from a guest, their own connection is not.
+     *
+     * Getting this wrong in the safe direction still hurts — `not_controller` was unreachable for a
+     * while precisely because withReason (canControl) and !callable (!canControl) are mutually
+     * exclusive, so the branch added to explain that state could never fire.
+     */
+    @Test
+    fun `only host-configuration reasons are redacted from a guest`() {
+        // Host configuration: a guest is told unavailable, never why.
+        assertEquals(null, service(key = null).status(withReason = false, confidential = true).reason)
+        assertEquals(null, service(enabled = false).status(withReason = false, confidential = true).reason)
+
+        // Their own connection and their own role: always told.
+        assertEquals(
+            "insecure_transport",
+            service().status(withReason = false, confidential = false).reason,
+        )
+        assertEquals(
+            "not_controller",
+            service().status(withReason = false, confidential = true, callable = false).reason,
+        )
     }
 
     /** A host problem outranks the transport: fix the key first, then the link. */

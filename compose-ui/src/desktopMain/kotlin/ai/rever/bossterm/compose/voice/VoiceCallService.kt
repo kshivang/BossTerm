@@ -156,7 +156,14 @@ internal class VoiceCallService(
         }
         return ServerMessage.VoiceStatus(
             available = reason == null,
-            reason = reason?.takeIf { withReason },
+            // `withReason` redacts HOST CONFIGURATION — whether a key exists, whether the feature is
+            // on. Two of these reasons are not that: they describe the asking CONNECTION, which the
+            // viewer already knows about itself and can act on. Redacting those told a view-only
+            // daemon viewer `available:false, reason:null`, i.e. no bar and no explanation — the
+            // exact silence `callable` was added to prevent. (`withReason` is canControl and
+            // not_controller needs !callable == !canControl, so the two were mutually exclusive:
+            // that branch could never fire at all.)
+            reason = reason?.takeIf { withReason || it in SELF_DESCRIBING_REASONS },
         )
     }
 
@@ -761,6 +768,12 @@ internal class VoiceCallService(
          */
         /** How often a service with live calls checks whether any have aged out. */
         const val EXPIRY_SWEEP_MS = 30_000L
+
+        /**
+         * Reasons that describe the ASKING CONNECTION rather than the host's configuration, and so
+         * are told to every viewer: they leak nothing a viewer does not already know about itself.
+         */
+        val SELF_DESCRIBING_REASONS = setOf("insecure_transport", "not_controller")
 
         const val MINT_MIN_GAP_MS = 3_000L
         const val MINT_WINDOW_MS = 10 * 60 * 1000L

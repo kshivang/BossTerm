@@ -1145,6 +1145,14 @@ class DaemonShareServer(
             while (def.viewers.isNotEmpty()) {
                 // The host-wide answer, for change detection and the kill decision only.
                 val hostStatus = def.voiceService.status(withReason = true, confidential = true)
+                // Seeded on the first tick rather than pushed: admit already sent this exact status
+                // seconds ago, and lastVoiceStatus starting null made every share emit a duplicate
+                // control frame.
+                if (def.lastVoiceStatus == null) {
+                    def.lastVoiceStatus = hostStatus
+                    delay(VOICE_STATUS_POLL_MS)
+                    continue
+                }
                 if (hostStatus != def.lastVoiceStatus) {
                     def.lastVoiceStatus = hostStatus
                     // Per viewer, because both inputs are: the reason is host configuration that

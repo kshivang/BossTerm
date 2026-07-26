@@ -273,7 +273,14 @@
         voiceCallBtnEl.style.display = "inline-flex";
         voiceCallBtnEl.className = "disabled";
         voiceCallBtnEl.title = voiceErrorText({ code: reason });
-        voiceLabelEl.textContent = reason === "no_key" ? "Voice not set up" : "Voice off";
+        // insecure_transport is the one reason on this list the VIEWER can fix. Labelling it
+        // "Voice off" says the host switched the feature off — wrong, and unactionable — leaving the
+        // real explanation in a hover tooltip, on a bar built for a phone.
+        voiceLabelEl.textContent =
+          reason === "no_key" ? "Voice not set up"
+          : reason === "insecure_transport" ? "Reopen the full link"
+          : reason === "not_controller" ? "Needs control"
+          : "Voice off";
       } else {
         voiceBarEl.classList.remove("on");
       }

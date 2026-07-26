@@ -32,6 +32,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import org.slf4j.LoggerFactory
 import java.security.SecureRandom
@@ -102,6 +103,14 @@ class MirrorShare(
             inScopeTabIds = { voiceScopeTabIds() },
             anchorTabId = { tabId },
         )
+    }
+
+    /** Emits immediately, then every [periodMs] — the third input to the voice-status collector. */
+    private fun tickerFlow(periodMs: Long) = flow {
+        while (true) {
+            emit(Unit)
+            delay(periodMs)
+        }
     }
 
     /** Cross-process key presence, on the same stamp cache the daemon uses. See [voiceService]. */
@@ -202,9 +211,18 @@ class MirrorShare(
             combine(
                 SettingsManager.instance.settings,
                 VoiceAgentStorage.keyPresentFlow,
+                // A slow tick, because the other two sources are BOTH in-process. keyOnDisk exists
+                // for the key deleted by hand or cleared from a second BossTerm — neither of which
+                // moves a flow — and without something calling status() it never fired for the case
+                // it was added for. Worse than the stale button: closeCalls() is only reached from
+                // this collector, so a call in progress kept its tool bridge for the rest of
+                // MAX_CALL_DURATION_MS after the key was gone. The daemon's poller has always had
+                // this; the GUI's not having it was invisible because both call the same status().
+                // distinctUntilChanged absorbs the no-op ticks, so the cost is keyOnDisk's two stats.
+                tickerFlow(VOICE_REVOCATION_POLL_MS),
                 // The host-wide answer, used only to decide whether anything changed and whether to
                 // kill live calls. What each viewer is TOLD is computed per viewer below.
-            ) { _, _ -> voiceService.status(withReason = true, confidential = true) }
+            ) { _, _, _ -> voiceService.status(withReason = true, confidential = true) }
                 .distinctUntilChanged()
                 .collect { hostStatus ->
                     // Server-side kill, same as DaemonShareServer's poller: the viewer ends its own
@@ -362,8 +380,15 @@ class MirrorShare(
     fun initialMessages(
         includePaneGraphics: Boolean = false,
         canControl: Boolean = false,
-        /** Whether this connection completed the E2E handshake — see [ViewerConnection.confidential]. */
-        confidential: Boolean = true,
+        /**
+         * Whether this connection completed the E2E handshake — see [ViewerConnection.confidential].
+         *
+         * No default, matching status() and handleStart, which it feeds. Those two have written-out
+         * arguments for why a default of `true` here is fail-open; leaving one on the function that
+         * calls them is how the next caller inherits it. (addViewer defaults the same concept to
+         * false, which is the safe direction but makes the disagreement worse to read.)
+         */
+        confidential: Boolean,
     ): List<ServerMessage> {
         val sig = computeSignature()
         val out = ArrayList<ServerMessage>()
@@ -730,6 +755,13 @@ class MirrorShare(
 
     companion object {
         private const val GRAPHICS_SYNC_DEBOUNCE_MS = 100L
+
+        /**
+         * How often a GUI share re-evaluates voice availability from disk.
+         * Matches DaemonShareServer.VOICE_STATUS_POLL_MS — the two surfaces should revoke at the
+         * same speed, and the daemon only had it because it had nothing in-process to listen to.
+         */
+        private const val VOICE_REVOCATION_POLL_MS = 5_000L
 
         // MCP server name/label as the CLI attachers register it / as broadcast to viewers.
         // The embedder's BossTermMcpConfig is a Compose CompositionLocal (unavailable in this

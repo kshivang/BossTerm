@@ -847,8 +847,14 @@ internal class HostVoiceCallController(
         /** How often the drain watcher checks the speaker queue. */
         const val DRAIN_POLL_MS = 60L
 
-        /** Ceiling on that wait, so a wedged speaker cannot pin the bar on "Speaking". */
-        const val MAX_DRAIN_WAIT_MS = 8_000L
+        /**
+         * Ceiling on that wait, so a wedged speaker cannot pin the bar on "Speaking".
+         *
+         * Sized against the play queue (60s), not plucked: at 8s a long reply cleared "Speaking"
+         * while the agent was still audibly talking, because the API delivers a whole answer in a
+         * couple of seconds and the speaker drains it in real time.
+         */
+        const val MAX_DRAIN_WAIT_MS = 65_000L
 
         /** Coarse tick: neither ceiling needs second-level precision. */
         const val LIMIT_TICK_MS = 5_000L

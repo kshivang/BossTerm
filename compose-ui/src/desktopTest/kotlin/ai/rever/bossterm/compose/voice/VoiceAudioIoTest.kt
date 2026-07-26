@@ -223,30 +223,58 @@ class VoiceAudioIoTest {
     }
 
     /**
-     * The queue is bounded by DURATION, not entry count.
+     * The queue is bounded by DURATION, not entry count — but the bound is a safety net, not a
+     * budget.
      *
      * It was 100 entries documented as "~4s of speech", which only held if every entry were one
-     * 40ms frame — but play() enqueues whatever a server-chosen delta decodes to, so the real
-     * ceiling was unpredictable, and queuedPlaybackMs was a poor answer to "is Boss still audible".
+     * 40ms frame; play() enqueues whatever a server-chosen delta decodes to. Making the number
+     * literally four seconds then broke playback, because the producer is faster than real time by
+     * design. So this asserts the two things that actually matter: it is bounded, and the bound is
+     * far above any real reply.
      */
     @Test
-    fun `the play queue is bounded by seconds of audio, not by entry count`() {
+    fun `the play queue is bounded, generously`() {
         val line = FakeLine()
         val speaker = FakeSpeaker()
         val audio = audioFor(line, speaker)
         audio.startCapture(onChunk = {}, onLevel = {})
-        // Nothing drains while the speaker is blocked on its first write.
-        audio.flushPlayback()
+        audio.setCaptureMuted(true) // hold the drain so this measures the QUEUE
 
-        // One second per delta, which is what a server-sized chunk can look like — nothing like the
-        // 40ms frame the old entry count assumed.
         val oneSecond = ByteArray(JavaSoundVoiceAudioIo.BYTES_PER_SECOND)
-        repeat(20) { audio.play(oneSecond) }
+        repeat(200) { audio.play(oneSecond) } // far more than any plausible answer
+
+        val queuedMs = audio.queuedPlaybackMs()
+        assertTrue(queuedMs <= 62_000, "unbounded growth would be a leak; saw ${queuedMs}ms")
+        assertTrue(
+            queuedMs >= 30_000,
+            "the bound must not chop real replies — a 30s answer has to fit; saw ${queuedMs}ms",
+        )
+    }
+
+    /**
+     * A whole reply must survive the queue.
+     *
+     * The Realtime API streams a response's audio as fast as it generates it while the speaker
+     * drains in real time, so the queue routinely holds most of an answer. A four-second bound
+     * dropped the middle of every longer reply chunk by chunk — the caller heard the start, then
+     * jumps, with unrelated audio spliced together.
+     */
+    @Test
+    fun `a thirty-second reply is not chopped to fit the queue`() {
+        val line = FakeLine()
+        val speaker = FakeSpeaker()
+        val audio = audioFor(line, speaker)
+        audio.startCapture(onChunk = {}, onLevel = {})
+        // Block the drain so this measures the QUEUE, not how fast the fake speaker consumes.
+        audio.setCaptureMuted(true)
+
+        val oneSecond = ByteArray(JavaSoundVoiceAudioIo.BYTES_PER_SECOND)
+        repeat(30) { audio.play(oneSecond) }
 
         val queuedMs = audio.queuedPlaybackMs()
         assertTrue(
-            queuedMs <= 4_200,
-            "20s of audio must not sit in a queue documented as ~4s; saw ${queuedMs}ms",
+            queuedMs >= 20_000,
+            "a 30s answer must not be trimmed to a few seconds; only ${queuedMs}ms survived",
         )
     }
 

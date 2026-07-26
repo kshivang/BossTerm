@@ -173,6 +173,9 @@ internal class JavaSoundVoiceAudioIo(
      */
     private val playQueue = ArrayBlockingQueue<ByteArray>(PLAY_QUEUE_CHUNKS)
 
+    /** One warning per call: a chopped reply must be diagnosable without flooding the log. */
+    private val droppedWarned = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /** Bytes currently in [playQueue] — see [PLAY_QUEUE_BYTES]. */
     private val queuedBytes = java.util.concurrent.atomic.AtomicInteger(0)
 
@@ -252,11 +255,21 @@ internal class JavaSoundVoiceAudioIo(
     override fun play(pcm: ByteArray) {
         if (disposed) return
         ensurePlayback() ?: return
-        // Never block the caller (the socket thread): drop the OLDEST audio until this fits, by
-        // duration rather than entry count.
+        // Never block the caller (the socket thread): drop the OLDEST audio until this fits.
+        // Reaching here means the speaker is not keeping up with real time, which should not happen
+        // — so say so once, rather than silently chopping the agent's speech.
+        var dropped = 0
         while (queuedBytes.get() + pcm.size > PLAY_QUEUE_BYTES || playQueue.remainingCapacity() == 0) {
-            val dropped = playQueue.poll() ?: break
-            queuedBytes.addAndGet(-dropped.size)
+            val gone = playQueue.poll() ?: break
+            queuedBytes.addAndGet(-gone.size)
+            dropped += gone.size
+        }
+        if (dropped > 0 && droppedWarned.compareAndSet(false, true)) {
+            log.warn(
+                "Voice playback fell behind: dropped {}ms of agent audio at the {}s queue bound",
+                bytesToMs(dropped),
+                PLAY_QUEUE_BYTES / BYTES_PER_SECOND,
+            )
         }
         if (playQueue.offer(pcm)) queuedBytes.addAndGet(pcm.size)
     }
@@ -344,20 +357,26 @@ internal class JavaSoundVoiceAudioIo(
         /** ~40 ms per chunk: small enough that playback back-pressure stays responsive. */
         const val CHUNK_BYTES = 1920
 
-        /**
-         * Queue bound, in BYTES rather than entries.
-         *
-         * It used to be 100 entries, documented as "~4s of queued speech" — true only if every entry
-         * were one CHUNK_BYTES frame. But play() enqueues whatever a response.output_audio.delta
-         * base64-decodes to, and that size is chosen by the server: the real backlog ceiling was
-         * unpredictable and the comment was wrong. It also made queuedPlaybackMs a poor answer to
-         * "is Boss still audible", which is what clearSpeakingWhenAudible asks it.
-         *
-         * [BYTES_PER_SECOND] is the format's own rate: 24 kHz, 16-bit, mono.
-         */
+        /** The format's own rate: 24 kHz, 16-bit, mono. */
         const val BYTES_PER_SECOND = 24_000 * 2
 
-        const val PLAY_QUEUE_BYTES = 4 * BYTES_PER_SECOND
+        /**
+         * Queue bound, in BYTES rather than entries — and sized for a WHOLE REPLY, not a few seconds.
+         *
+         * The producer is faster than the consumer BY DESIGN: the Realtime API streams a response's
+         * audio as fast as it generates it, while the speaker drains in real time. A thirty-second
+         * answer arrives in a couple of seconds and waits here to be heard.
+         *
+         * A four-second bound — what this was, briefly — therefore dropped the middle of every reply
+         * longer than four seconds, chunk by chunk, to make room for the next: the caller hears the
+         * start, then jumps, with unrelated audio spliced together. The 100-ENTRY limit it replaced
+         * was wrong to describe as "~4s", but with server-sized deltas it was generous enough never
+         * to bite in practice. Fixing the description by making the number true made the bug real.
+         *
+         * Sixty seconds is ~2.9 MB, and exists only so a genuinely stalled line cannot grow without
+         * limit. In normal use it is never reached — if it is, [play] says so.
+         */
+        const val PLAY_QUEUE_BYTES = 60 * BYTES_PER_SECOND
 
         /** Entry cap as a backstop, so a flood of tiny deltas cannot grow the deque without bound. */
         const val PLAY_QUEUE_CHUNKS = 512

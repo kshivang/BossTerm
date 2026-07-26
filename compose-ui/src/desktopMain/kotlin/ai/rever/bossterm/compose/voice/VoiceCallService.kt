@@ -106,13 +106,24 @@ internal class VoiceCallService(
      * knowing. Controllers get it because it's actionable for them; the host has
      * `VoiceAvailabilityLine` for the same diagnosis.
      */
-    fun status(withReason: Boolean = true): ServerMessage.VoiceStatus {
+    fun status(
+        withReason: Boolean = true,
+        /**
+         * Whether the asking connection completed the E2E handshake.
+         *
+         * Reported here as well as enforced in [handleStart] so a non-E2E viewer sees WHY up front
+         * instead of a Call button that can only ever come back `insecure_transport`. The gate that
+         * matters is still the one at start; this is the same fact, said earlier.
+         */
+        confidential: Boolean = true,
+    ): ServerMessage.VoiceStatus {
         val s = settings()
         val reason = when {
             // This service only ever serves REMOTE viewers, so both gates apply: the feature switch
             // and the share-surface switch.
             !s.voiceCallEnabled || !s.voiceCallShareEnabled -> "disabled"
             !keyPresent() -> "no_key"
+            !confidential -> "insecure_transport"
             else -> null
         }
         return ServerMessage.VoiceStatus(

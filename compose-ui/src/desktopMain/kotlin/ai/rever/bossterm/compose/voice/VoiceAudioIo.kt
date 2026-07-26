@@ -86,6 +86,11 @@ internal fun pcm16Rms(pcm: ByteArray): Float {
     return min(1f, (sqrt(sum / samples) * SPEECH_METER_GAIN).toFloat())
 }
 
+/** Run a mixer call whose failure must not stop the ones after it. */
+private inline fun quietly(block: () -> Unit) {
+    runCatching(block)
+}
+
 /** The real thing: `javax.sound.sampled` lines on their own threads. */
 internal class JavaSoundVoiceAudioIo(
     /**
@@ -101,6 +106,21 @@ internal class JavaSoundVoiceAudioIo(
         check(AudioSystem.isLineSupported(info)) { "no 24kHz PCM16 capture line" }
         (AudioSystem.getLine(info) as TargetDataLine).also {
             it.open(FORMAT, CHUNK_BYTES * 8)
+            it.start()
+        }
+    },
+    /**
+     * How the speaker line is obtained. MUST return an open, started line.
+     *
+     * Injectable for the same reason as [openCaptureLine]: the playback path — ensurePlayback's
+     * one-shot construction, the drain loop, play()'s drop-oldest, and flushPlayback for barge-in —
+     * had no direct test because the line came straight from AudioSystem. Two of the bugs this class
+     * has had lived exactly there, which is not a coincidence.
+     */
+    private val openPlaybackLine: () -> SourceDataLine = {
+        val info = DataLine.Info(SourceDataLine::class.java, FORMAT)
+        (AudioSystem.getLine(info) as SourceDataLine).also {
+            it.open(FORMAT, CHUNK_BYTES * 16)
             it.start()
         }
     },
@@ -229,16 +249,18 @@ internal class JavaSoundVoiceAudioIo(
     }
 
     /** Open the speaker line + its drain thread on first use. Null when there is no output device. */
+    /**
+     * @Synchronized with [stop]. play() runs on the JDK WebSocket reader thread while stop() runs on
+     * IO, and opening a line takes real milliseconds — long enough for this to pass the `disposed`
+     * check, stop() to run to completion, and this to then set `running = true` again and start a
+     * drain thread nothing will ever stop. The `disposed` latch closes the SEQUENTIAL ordering its
+     * KDoc describes; it cannot close a concurrent one, and these really are two threads.
+     */
+    @Synchronized
     private fun ensurePlayback(): SourceDataLine? {
         playback?.let { return it }
         if (playbackUnavailable || disposed) return null
-        val line = runCatching {
-            val info = DataLine.Info(SourceDataLine::class.java, FORMAT)
-            (AudioSystem.getLine(info) as SourceDataLine).also {
-                it.open(FORMAT, CHUNK_BYTES * 16)
-                it.start()
-            }
-        }.getOrElse {
+        val line = runCatching { openPlaybackLine() }.getOrElse {
             log.warn("Speaker unavailable: {}", it.message)
             playbackUnavailable = true
             return null
@@ -257,6 +279,7 @@ internal class JavaSoundVoiceAudioIo(
         return line
     }
 
+    @Synchronized
     override fun stop() {
         disposed = true
         running = false
@@ -267,9 +290,17 @@ internal class JavaSoundVoiceAudioIo(
         playQueue.clear()
         playbackThread?.interrupt()
         playbackThread = null
-        runCatching { capture?.stop(); capture?.close() }
+        // ONE runCatching per call. Grouped, a throwing capture.stop() skipped close() and left the
+        // TargetDataLine open — the OS microphone indicator lit after the call ended, with no second
+        // chance because `disposed` is latched and this object serves exactly one call. The rest of
+        // the file already assumes mixer calls can throw (setCaptureMuted wraps its stop/start for
+        // precisely that reason); this was the one place that assumed they could not.
+        quietly { capture?.stop() }
+        quietly { capture?.close() }
         capture = null
-        runCatching { playback?.flush(); playback?.stop(); playback?.close() }
+        quietly { playback?.flush() }
+        quietly { playback?.stop() }
+        quietly { playback?.close() }
         playback = null
     }
 

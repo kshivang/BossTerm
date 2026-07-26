@@ -328,12 +328,17 @@ class MirrorShare(
      * Theme + Layout + a PaneSnapshot per pane, for a newly-connected viewer. [canControl] gates the
      * voice-status reason, which is host configuration (see [VoiceCallService.status]).
      */
-    fun initialMessages(includePaneGraphics: Boolean = false, canControl: Boolean = false): List<ServerMessage> {
+    fun initialMessages(
+        includePaneGraphics: Boolean = false,
+        canControl: Boolean = false,
+        /** Whether this connection completed the E2E handshake — see [ViewerConnection.confidential]. */
+        confidential: Boolean = true,
+    ): List<ServerMessage> {
         val sig = computeSignature()
         val out = ArrayList<ServerMessage>()
         out.add(themeMessage())
         out.add(mcpStatusMessage())
-        out.add(voiceService.status(withReason = canControl))
+        out.add(voiceService.status(withReason = canControl, confidential = confidential))
         out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
@@ -431,6 +436,15 @@ class MirrorShare(
                         // come back WITH control instead of silently demoting to view-only.
                         vc.grantKey?.let { SessionShareManager.upgradeGrantToControl(it) }
                         vc.outbox.trySend(ShareProtocol.encodeServer(ServerMessage.Control(granted = true)))
+                        // Re-send voiceStatus WITH the reason. It is sent once at admit, redacted
+                        // for a view-only viewer, and the voiceJob collector only pushes on a change
+                        // to the underlying status — so a promoted controller kept `reason: null`
+                        // indefinitely. On a keyless host that means no bar at all instead of "Voice
+                        // not set up": the exact undiagnosable-from-the-far-end case reason exists
+                        // for, on the viewer who can now actually act on it.
+                        vc.outbox.trySend(
+                            ShareProtocol.encodeServer(voiceService.status(withReason = true, confidential = vc.confidential))
+                        )
                     }
                 }
             }

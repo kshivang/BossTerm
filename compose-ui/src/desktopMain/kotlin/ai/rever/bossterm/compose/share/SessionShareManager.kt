@@ -989,6 +989,7 @@ object SessionShareManager {
         val initialMessages = share.initialMessages(
             includePaneGraphics = supportsPaneGraphics,
             canControl = canControl,
+            confidential = serverCipher != null,
         )
         val vc = share.addViewer(
             canControl,

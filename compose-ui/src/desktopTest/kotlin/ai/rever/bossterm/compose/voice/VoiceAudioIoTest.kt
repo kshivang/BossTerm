@@ -1,5 +1,8 @@
 package ai.rever.bossterm.compose.voice
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -7,6 +10,7 @@ import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.Control
 import javax.sound.sampled.Line
 import javax.sound.sampled.LineListener
+import javax.sound.sampled.SourceDataLine
 import javax.sound.sampled.TargetDataLine
 import kotlin.math.abs
 import kotlin.test.AfterTest
@@ -32,6 +36,9 @@ class VoiceAudioIoTest {
         val startStopCalls = ConcurrentLinkedQueue<String>()
         @Volatile var dead = false
         val reads = AtomicInteger(0)
+        @Volatile var closed = false
+        /** Mixer calls really can throw; stop() used to skip close() when one did. */
+        @Volatile var throwOnStop = false
 
         /**
          * Faithful to [TargetDataLine]: a live line BLOCKS until samples are available, a stopped
@@ -55,11 +62,15 @@ class VoiceAudioIoTest {
         }
 
         override fun start() { started.set(true); startStopCalls.add("start") }
-        override fun stop() { started.set(false); startStopCalls.add("stop") }
+        override fun stop() {
+            startStopCalls.add("stop")
+            if (throwOnStop) throw IllegalStateException("mixer says no")
+            started.set(false)
+        }
         override fun open(format: AudioFormat, bufferSize: Int) {}
         override fun open(format: AudioFormat) {}
         override fun open() {}
-        override fun close() {}
+        override fun close() { closed = true }
         override fun drain() {}
         override fun flush() { chunks.clear() }
         override fun available(): Int = chunks.size
@@ -71,7 +82,7 @@ class VoiceAudioIoTest {
         override fun getLevel(): Float = 0f
         override fun isActive(): Boolean = started.get()
         override fun isRunning(): Boolean = started.get()
-        override fun isOpen(): Boolean = true
+        override fun isOpen(): Boolean = !closed
         override fun getLineInfo(): Line.Info = Line.Info(TargetDataLine::class.java)
         override fun addLineListener(listener: LineListener?) {}
         override fun removeLineListener(listener: LineListener?) {}
@@ -82,9 +93,56 @@ class VoiceAudioIoTest {
 
     private var io: JavaSoundVoiceAudioIo? = null
 
-    /** The factory contract is "already open and started" — the real one opens and starts the line. */
-    private fun audioFor(line: FakeLine) =
-        JavaSoundVoiceAudioIo { line.also { it.start() } }.also { io = it }
+    /**
+     * The factory contract is "already open and started" — the real one opens and starts the line.
+     * Named arguments, not a trailing lambda: there are two factories now, and a trailing lambda
+     * binds to the LAST parameter.
+     */
+    private fun audioFor(line: FakeLine, speaker: FakeSpeaker = FakeSpeaker()) =
+        JavaSoundVoiceAudioIo(
+            openCaptureLine = { line.also { it.start() } },
+            openPlaybackLine = { speaker.also { it.start() } },
+        ).also { io = it }
+
+    /** A [SourceDataLine] that records what was written and can be made to fail on demand. */
+    private class FakeSpeaker : SourceDataLine {
+        val written = ConcurrentLinkedQueue<ByteArray>()
+        val started = AtomicBoolean(false)
+        @Volatile var flushes = 0
+        @Volatile var closed = false
+        /** Mixer calls really can throw; stop() used to skip close() when one did. */
+        @Volatile var throwOnFlush = false
+        @Volatile var throwOnStop = false
+
+        override fun write(b: ByteArray, off: Int, len: Int): Int {
+            written.add(b.copyOfRange(off, off + len))
+            return len
+        }
+        override fun open(format: AudioFormat, bufferSize: Int) {}
+        override fun open(format: AudioFormat) {}
+        override fun open() {}
+        override fun close() { closed = true }
+        override fun start() { started.set(true) }
+        override fun stop() { if (throwOnStop) throw IllegalStateException("mixer says no"); started.set(false) }
+        override fun drain() {}
+        override fun flush() { if (throwOnFlush) throw IllegalStateException("mixer says no"); flushes++ }
+        override fun available(): Int = 0
+        override fun getBufferSize(): Int = 4096
+        override fun getFormat(): AudioFormat = JavaSoundVoiceAudioIo.FORMAT
+        override fun getFramePosition(): Int = 0
+        override fun getLongFramePosition(): Long = 0
+        override fun getMicrosecondPosition(): Long = 0
+        override fun getLevel(): Float = 0f
+        override fun isActive(): Boolean = started.get()
+        override fun isRunning(): Boolean = started.get()
+        override fun isOpen(): Boolean = !closed
+        override fun getLineInfo(): Line.Info = Line.Info(SourceDataLine::class.java)
+        override fun addLineListener(listener: LineListener?) {}
+        override fun removeLineListener(listener: LineListener?) {}
+        override fun getControls(): Array<Control> = emptyArray()
+        override fun getControl(type: Control.Type?): Control = throw IllegalArgumentException()
+        override fun isControlSupported(type: Control.Type?): Boolean = false
+    }
 
     @AfterTest
     fun tearDown() {
@@ -213,4 +271,80 @@ class VoiceAudioIoTest {
         assertEquals(0f, pcm16Rms(ByteArray(1)), "an odd trailing byte must not index past the end")
         assertEquals(0f, pcm16Rms(ByteArray(0)))
     }
+
+    // ---- playback: the path where both of this class's leaks lived ----
+
+    @Test
+    fun `audio reaches the speaker and barge-in drops what is queued`() {
+        val line = FakeLine()
+        val speaker = FakeSpeaker()
+        val audio = audioFor(line, speaker)
+        audio.startCapture(onChunk = {}, onLevel = {})
+
+        audio.play(ByteArray(8) { 1 })
+        assertTrue(await { speaker.written.isNotEmpty() }, "the agent is audible")
+
+        // Barge-in: the user starts talking, so whatever is still queued must not play over them.
+        audio.play(ByteArray(8) { 2 })
+        audio.flushPlayback()
+        assertTrue(speaker.flushes > 0, "the line itself is flushed, not just our queue")
+    }
+
+    /**
+     * A throwing mixer call must not take the ones after it with it. Grouped in one runCatching, a
+     * failing capture.stop() skipped close() and left the microphone line open — the OS indicator
+     * lit after the call ended, with no second chance because `disposed` is latched.
+     */
+    @Test
+    fun `a throwing mixer call still closes both lines`() {
+        val line = FakeLine()
+        val speaker = FakeSpeaker()
+        line.throwOnStop = true
+        speaker.throwOnFlush = true
+        val audio = audioFor(line, speaker)
+        audio.startCapture(onChunk = {}, onLevel = {})
+        audio.play(ByteArray(4))
+        assertTrue(await { speaker.written.isNotEmpty() })
+
+        audio.stop()
+
+        assertTrue(line.closed, "the capture line must close even though stop() threw")
+        assertTrue(speaker.closed, "and the speaker even though flush() threw")
+    }
+
+    /**
+     * play() runs on the WebSocket reader thread while stop() runs on IO. Opening a line takes real
+     * milliseconds — long enough to pass the `disposed` check, have stop() complete, and then set
+     * `running = true` again behind it, leaving a drain thread nothing can stop.
+     */
+    @Test
+    fun `a play racing teardown cannot resurrect the drain loop`() {
+        repeat(200) {
+            val line = FakeLine()
+            val speaker = FakeSpeaker()
+            val audio = audioFor(line, speaker)
+            audio.startCapture(onChunk = {}, onLevel = {})
+
+            val pool = Executors.newFixedThreadPool(2)
+            try {
+                val go = CountDownLatch(1)
+                val p = pool.submit { go.await(); audio.play(ByteArray(4)) }
+                val q = pool.submit { go.await(); audio.stop() }
+                go.countDown()
+                p.get(5, TimeUnit.SECONDS)
+                q.get(5, TimeUnit.SECONDS)
+            } finally {
+                pool.shutdownNow()
+            }
+
+            // Whatever the interleaving, teardown wins: nothing is left started.
+            assertTrue(
+                await(2_000) { !threadAlive("boss-voice-playback") },
+                "a drain thread outlived stop() on iteration $it",
+            )
+        }
+    }
+
+    private fun threadAlive(name: String): Boolean =
+        Thread.getAllStackTraces().keys.any { it.name == name && it.isAlive }
 }

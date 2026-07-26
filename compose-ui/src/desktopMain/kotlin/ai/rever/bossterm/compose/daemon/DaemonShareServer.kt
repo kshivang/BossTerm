@@ -755,7 +755,7 @@ class DaemonShareServer(
         // taps/collectors so the outbox only carries output produced AFTER the snapshot (no double paint).
         send(themeMessage())
         send(mcpStatusMessage())
-        send(def.voiceService.status(withReason = canControl))
+        send(def.voiceService.status(withReason = canControl, confidential = serverCipher != null))
         send(layoutFor(def))
 
         val vc = DaemonShareConnection(

@@ -214,6 +214,31 @@ class VoiceCrossLanguageContractTest {
         )
     }
 
+    /**
+     * The viewer's call-id maps must not inherit from Object.prototype.
+     *
+     * A plain object makes a call_id of "constructor" / "toString" / "__proto__" read as truthy on
+     * its FIRST sighting, so the call is dropped and the round hangs until the watchdog. The Kotlin
+     * mirror uses a HashSet and never had the problem — the asymmetry this class exists to catch.
+     *
+     * Scoped to `voice.` on purpose: the graphics state has its own unrelated `pending`, and a
+     * bare-field-name version of this failed on that instead. A test that names the wrong file is
+     * worse than no test.
+     */
+    @Test
+    fun `the viewer's call-id maps are prototype-safe`() {
+        for (field in listOf("seenCalls", "pending", "timers")) {
+            val assignments = Regex("""voice\.$field\s*=\s*(\{\}|Object\.create\(null\))""")
+                .findAll(viewerJs).map { it.groupValues[1] }.toList()
+            assertTrue(
+                assignments.all { it == "Object.create(null)" },
+                "voice.$field must never be a plain {} — a prototype key would drop a call: $assignments",
+            )
+        }
+        assertTrue(viewerJs.contains("seenCalls: Object.create(null)"), "the initializer too")
+        assertTrue(viewerJs.contains("timers: Object.create(null)"), "including timers")
+    }
+
     private companion object {
         /** (tool, argsJson, rendered caption) — short and long for each truncating tool. */
         val CAPTION_FIXTURES = listOf(

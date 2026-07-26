@@ -231,8 +231,8 @@
   // doing rides alongside it (speaking / pending tool calls), because those overlap — a tool can
   // start while audio is still playing, and collapsing them into one field desynced the bar.
   var voice = { status: null, state: "idle", pc: null, dc: null, mic: null, muted: false,
-                seenCalls: {}, watchdog: null, model: null, callToken: null,
-                speaking: false, pending: {}, pendingCount: 0, timers: {},
+                seenCalls: Object.create(null), watchdog: null, model: null, callToken: null,
+                speaking: false, pending: Object.create(null), pendingCount: 0, timers: Object.create(null),
                 responseOpen: false, outputsOwed: 0, lastActivity: 0, idleTimer: null };
   // The meter's bars are static markup — query once instead of every animation frame.
   var voiceBars = null;
@@ -324,7 +324,7 @@
     // call the first one had just established.
     voice.state = "connecting";
     voice.muted = false;
-    voice.seenCalls = {};
+    voice.seenCalls = Object.create(null);
     updateVoiceBar();
     // Mic inside the click gesture (permission prompt), so no minted secret is wasted on a
     // denied microphone.
@@ -493,8 +493,13 @@
     voice.dc = null; voice.pc = null; voice.mic = null; voice.muted = false; voice.model = null;
     voice.callToken = null; voice.speaking = false;
     Object.keys(voice.timers).forEach(function (id) { clearTimeout(voice.timers[id]); });
-    voice.timers = {};
-    voice.pending = {}; voice.pendingCount = 0; voice.responseOpen = false; voice.outputsOwed = 0;
+    voice.timers = Object.create(null);
+    // Object.create(null) everywhere these are (re)set: a plain object inherits from
+    // Object.prototype, so a call_id of "constructor" / "toString" / "__proto__" reads as truthy on
+    // its FIRST sighting — voiceHandleFunctionCall would drop the call and hang the round until the
+    // watchdog. Realtime ids are call_… today, so this is defence rather than a live bug; the Kotlin
+    // mirror uses a HashSet and never had it.
+    voice.pending = Object.create(null); voice.pendingCount = 0; voice.responseOpen = false; voice.outputsOwed = 0;
     voice.state = "idle";
     if (sendEnd && wasLive) sendMsg({ t: "voiceEnd" });
     updateVoiceBar();

@@ -414,7 +414,10 @@ internal class VoiceCallService(
         // The executor still has the last word inside the coroutine below.
         val def = VoiceToolCatalog.ALL.firstOrNull { it.name == msg.name }
         if (def == null) {
-            reply(toolError(msg.callId, "Unknown tool: ${msg.name}"))
+            // Bounded like callId and argsJson above. A multi-megabyte `name` echoed verbatim into a
+            // control frame does not grow memory — sendControl's ceiling closes the connection
+            // instead — but the caller then sees a DISCONNECT where a tool error belongs.
+            reply(toolError(msg.callId, "Unknown tool: ${msg.name.take(MAX_TOOL_NAME_CHARS)}"))
             return
         }
         if (def.write && !canControl) {
@@ -482,8 +485,6 @@ internal class VoiceCallService(
                 releaseSlotOnce(slotReleased)
             }
         }
-        job.invokeOnCompletion { if (!bodyRan.get()) releaseSlotOnce(slotReleased) }
-
         // A DEADLINE on the slot, independent of the coroutine.
         //
         // withTimeout is cooperative: it can only fire at a suspension point, and an MCP handler
@@ -497,7 +498,7 @@ internal class VoiceCallService(
         //
         // So the cap stops trusting the handler to finish. The thread stays pinned (nothing here can
         // fix that from outside), but capacity comes back.
-        scope.launch {
+        val reclaim = scope.launch {
             delay(toolBudgetMs(def.name) + SLOT_RECLAIM_GRACE_MS)
             if (slotReleased.compareAndSet(false, true)) {
                 log.warn(
@@ -506,6 +507,13 @@ internal class VoiceCallService(
                 )
                 inFlightToolCalls.decrementAndGet()
             }
+        }
+        job.invokeOnCompletion {
+            if (!bodyRan.get()) releaseSlotOnce(slotReleased)
+            // Cancelled on success, or every run_command parks a coroutine for its full 615s budget.
+            // The CAS already makes a late fire a no-op, so this is about not keeping twenty timers
+            // alive for ten minutes each on a busy call.
+            reclaim.cancel()
         }
     }
 
@@ -815,6 +823,9 @@ internal class VoiceCallService(
          * the unit is the share rather than the key.
          */
         const val MAX_IN_FLIGHT_TOOL_CALLS = 4
+
+        /** Catalog names are short; this only bounds what an unknown one echoes back. */
+        const val MAX_TOOL_NAME_CHARS = 120
 
         /** OpenAI call ids are ~30 chars; this is generous and bounds what we echo back. */
         const val MAX_CALL_ID_CHARS = 200

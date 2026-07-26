@@ -85,7 +85,7 @@ internal class DaemonVoiceToolExecutor(
         // one there made `isActive` describe a session the caller isn't viewing.
         val named = args.stringArg("tab_id")
         if (named != null && named !in scope) {
-            throw VoiceToolException("Tab $named is not part of this share")
+            throw VoiceToolException("Tab ${named.take(120)} is not part of this share")
         }
         val requested = named?.takeIf { "tab_id" in VoiceToolCatalog.declaredParameters(def) }
         val target = requested

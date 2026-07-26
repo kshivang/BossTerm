@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.security.SecureRandom
 import java.util.Base64
@@ -105,11 +106,23 @@ class MirrorShare(
         )
     }
 
-    /** Emits immediately, then every [periodMs] — the third input to the voice-status collector. */
-    private fun tickerFlow(periodMs: Long) = flow {
+    /**
+     * Ticks only while Boss Calling is ON, and does its disk read on IO.
+     *
+     * Two corrections to the plain ticker this replaced. It ran for the life of EVERY share whether
+     * the feature was on or not, forcing a voice.json read+parse every twelfth tick on a path that
+     * cannot change anything while the switch is off. And it ran on `coro`, i.e.
+     * Dispatchers.Default — while VoiceAgentStorage spawns a probe thread specifically to keep that
+     * read off a shared pool, and BossCallingSection wraps the identical call in
+     * withContext(Dispatchers.IO). Same call, three different opinions; now two.
+     */
+    private fun revocationTicks() = flow {
         while (true) {
-            emit(Unit)
-            delay(periodMs)
+            if (SettingsManager.instance.settings.value.voiceCallEnabled) {
+                withContext(Dispatchers.IO) { keyOnDisk.get() }
+                emit(Unit)
+            }
+            delay(VOICE_REVOCATION_POLL_MS)
         }
     }
 
@@ -141,6 +154,8 @@ class MirrorShare(
             // Either source saying yes is enough. The flow is instant after an in-process save; the
             // stamp cache catches everything else for two stats.
             keyPresent = { VoiceAgentStorage.keyPresentFlow.value || keyOnDisk.get() == true },
+            // Reads voice.json when its stamp moved. The FLOW answer is free and usually enough;
+            // this is the cross-process half — see keyOnDisk.
             sessionName = { sessionName.value },
             onCallActivity = { started -> RemoteVoiceCalls.onActivity(sessionName.value, started) },
             onCallExpired = { token ->
@@ -219,7 +234,7 @@ class MirrorShare(
                 // MAX_CALL_DURATION_MS after the key was gone. The daemon's poller has always had
                 // this; the GUI's not having it was invisible because both call the same status().
                 // distinctUntilChanged absorbs the no-op ticks, so the cost is keyOnDisk's two stats.
-                tickerFlow(VOICE_REVOCATION_POLL_MS),
+                revocationTicks(),
                 // The host-wide answer, used only to decide whether anything changed and whether to
                 // kill live calls. What each viewer is TOLD is computed per viewer below.
             ) { _, _, _ -> voiceService.status(withReason = true, confidential = true) }

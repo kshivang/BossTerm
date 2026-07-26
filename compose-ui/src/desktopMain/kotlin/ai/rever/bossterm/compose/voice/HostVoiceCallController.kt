@@ -430,8 +430,14 @@ internal class HostVoiceCallController(
         _state.value = HostCallState(phase = HostCallPhase.Error, error = message)
         _level.value = 0f
         reportTerminal()
+        // Captured NOW, not read when the coroutine gets a slot. start() is written to be
+        // re-entrant (fresh audio, cleared round state, reset terminal latch), so a redial before
+        // this runs would have had the old teardown stop the NEW call's capture line and close the
+        // reusable transport out from under it. Unreachable while HostVoiceCall always builds a
+        // fresh controller — which is exactly the kind of guarantee that stops being true quietly.
+        val dyingAudio = audio
         scope.launch(Dispatchers.IO) {
-            runCatching { audio.stop() }
+            runCatching { dyingAudio.stop() }
             runCatching { transport.close() }
             runCatching { executor.dispose() }
         }
@@ -603,9 +609,19 @@ internal class HostVoiceCallController(
             maybeRequestResponse()
         }
         toolJobs[callId] = job
+        val reclaim = scope.launch(parent) {
+            delay(timeoutMs + SLOT_RECLAIM_GRACE_MS)
+            if (slotReleased.compareAndSet(false, true)) {
+                log.warn("Voice tool {} never returned; reclaiming its slot", name)
+                inFlightTools.decrementAndGet()
+            }
+        }
+
         job.invokeOnCompletion {
             releaseSlotOnce(slotReleased)
             toolJobs.remove(callId)
+            // See the share path: without this every run_command parks a timer for 635s.
+            reclaim.cancel()
         }
 
         // Same reclaim as the share path: invokeOnCompletion needs the job to COMPLETE, and a
@@ -613,13 +629,6 @@ internal class HostVoiceCallController(
         // lets cancellation land — so the watchdog answers the model, toolJobs[callId].cancel()
         // returns without stopping anything, and the slot is gone for good. Four of those and the
         // cap that protects the host becomes the outage it was written to prevent.
-        scope.launch(parent) {
-            delay(timeoutMs + SLOT_RECLAIM_GRACE_MS)
-            if (slotReleased.compareAndSet(false, true)) {
-                log.warn("Voice tool {} never returned; reclaiming its slot", name)
-                inFlightTools.decrementAndGet()
-            }
-        }
     }
 
     private fun releaseSlotOnce(released: java.util.concurrent.atomic.AtomicBoolean) {

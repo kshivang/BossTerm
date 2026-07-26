@@ -233,7 +233,7 @@ sealed class ServerMessage {
     /**
      * Whether the host can take a voice call (the "Call" pill): Boss Calling is enabled AND an
      * OpenAI key is configured. Sent on connect and whenever it changes. [reason] is a machine
-     * code for the unavailable case ("disabled" | "no_key") — for a settings hint, never shown raw.
+     * code for the unavailable case (`disabled` | `no_key` | `insecure_transport` | `not_controller`) — for a settings hint, never shown raw.
      */
     @Serializable
     @SerialName("voiceStatus")

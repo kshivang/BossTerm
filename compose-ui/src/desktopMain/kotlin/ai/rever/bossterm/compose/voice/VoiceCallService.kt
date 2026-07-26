@@ -19,14 +19,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Boss Calling glue shared by both share servers ([ai.rever.bossterm.compose.share.MirrorShare]
- * and [ai.rever.bossterm.compose.daemon.DaemonShareServer]): answers the viewer's voice messages
- * — mint an ephemeral Realtime session on `voiceStart`, execute agent tool calls on
- * `voiceToolCall` — enforcing the policy in one place: controller role required to start a call
- * and for every write tool, targets limited to the share's scope (via [executor]), the API key
- * never serialized into any reply.
- */
-/**
  * Whether a `voiceToolCall` may proceed on a connection.
  *
  * The token must be the one THIS connection was issued — not merely one live somewhere on the share,
@@ -37,6 +29,14 @@ import java.util.concurrent.atomic.AtomicInteger
 internal fun voiceCallTokenMatches(issuedToThisConnection: String?, presented: String?): Boolean =
     issuedToThisConnection != null && presented != null && presented == issuedToThisConnection
 
+/**
+ * Boss Calling glue shared by both share servers ([ai.rever.bossterm.compose.share.MirrorShare]
+ * and [ai.rever.bossterm.compose.daemon.DaemonShareServer]): answers the viewer's voice messages
+ * — mint an ephemeral Realtime session on `voiceStart`, execute agent tool calls on
+ * `voiceToolCall` — enforcing the policy in one place: controller role required to start a call
+ * and for every write tool, targets limited to the share's scope (via [executor]), the API key
+ * never serialized into any reply.
+ */
 internal class VoiceCallService(
     private val executor: VoiceToolExecutor,
     private val scope: CoroutineScope,
@@ -85,7 +85,16 @@ internal class VoiceCallService(
      * became a call (the mint failed) must not fire the "call ended" notification — one bad key
      * otherwise produced an "ended" toast per attempt for a call that never began.
      */
-    internal class LiveCall(val issuedAt: Long, var announced: Boolean = false)
+    internal class LiveCall(
+        val issuedAt: Long,
+        /**
+         * Which service issued this call. The map is process-wide (one key, one spend ceiling), so
+         * per-share teardown has to clear only its own entries — clearing the map stopped OTHER
+         * shares' calls, leaving their audio running while every tool answered "No active call".
+         */
+        val owner: Any,
+        var announced: Boolean = false,
+    )
 
     /**
      * Current availability, for the viewer's Call button (sent on connect + on change).
@@ -120,12 +129,18 @@ internal class VoiceCallService(
         msg: ClientMessage.VoiceStart,
         canControl: Boolean,
         /**
-         * Called synchronously the moment a slot is reserved, BEFORE the mint. The caller records it
-         * on the connection so a viewer that disconnects mid-mint still has its reservation retired
-         * — waiting for the VoiceSession reply meant a drop during the mint leaked the slot for the
-         * whole call-duration ceiling, and eight of those wedge the share.
+         * Called with this connection's token as it changes: the new token the moment a slot is
+         * reserved (BEFORE the mint, so a viewer that drops mid-mint still has its reservation
+         * retired), or null when a reservation is handed back. The caller records it on the
+         * connection.
          */
-        onTokenReserved: (String) -> Unit = {},
+        onCallTokenChanged: (String?) -> Unit = {},
+        /**
+         * Retire whatever call this connection already had. Invoked after validation and BEFORE the
+         * new reservation, so a redial at capacity reclaims its own slot instead of being refused —
+         * which is what "one connection holds at most one call" is supposed to guarantee.
+         */
+        retirePreviousCall: () -> Unit = {},
         reply: (ServerMessage) -> Unit,
     ) {
         if (!canControl) {
@@ -142,6 +157,7 @@ internal class VoiceCallService(
             reply(ServerMessage.VoiceError(code = "no_key"))
             return
         }
+        retirePreviousCall()
         // Slot first, budget second: a too_many_calls refusal costs nothing at OpenAI, so it must
         // not consume one of the mints the budget is there to ration (8 refusals used to leave only
         // 4 real mints in the window).
@@ -151,10 +167,11 @@ internal class VoiceCallService(
             reply(ServerMessage.VoiceError(code = "too_many_calls"))
             return
         }
-        onTokenReserved(token)
+        onCallTokenChanged(token)
         if (!allowMint()) {
             log.warn("Voice session mint refused: rate limit")
             closeCall(token) // hand the slot back; this call never happened
+            onCallTokenChanged(null) // …and don't leave the connection pointing at a dead token
             reply(ServerMessage.VoiceError(code = "rate_limited"))
             return
         }
@@ -171,6 +188,7 @@ internal class VoiceCallService(
             } catch (e: Exception) {
                 log.warn("Voice tool surface unavailable: {}", e.javaClass.simpleName)
                 closeCall(token)
+                onCallTokenChanged(null)
                 reply(ServerMessage.VoiceError(code = "mint_failed", message = "Tools unavailable"))
                 return@launch
             }
@@ -189,6 +207,7 @@ internal class VoiceCallService(
                     // The mint is already billed either way; that cost is unavoidable.
                     if (!isLiveCall(token)) {
                         log.info("Voice session minted for a caller that already went away; discarding")
+                        onCallTokenChanged(null)
                         return@launch
                     }
                     reply(
@@ -202,10 +221,12 @@ internal class VoiceCallService(
                 }
                 is VoiceSessionBroker.MintResult.Unauthorized -> {
                     closeCall(token) // the reservation didn't become a call
+                    onCallTokenChanged(null)
                     reply(ServerMessage.VoiceError(code = "unauthorized"))
                 }
                 is VoiceSessionBroker.MintResult.Failed -> {
                     closeCall(token)
+                    onCallTokenChanged(null)
                     reply(ServerMessage.VoiceError(code = "mint_failed", message = result.message))
                 }
             }
@@ -357,7 +378,7 @@ internal class VoiceCallService(
         // every tool answered "No active call", with no way back but hanging up and redialling.
         if (liveCalls.size >= MAX_LIVE_CALLS) return@synchronized null
         val token = UUID.randomUUID().toString()
-        liveCalls[token] = LiveCall(now)
+        liveCalls[token] = LiveCall(issuedAt = now, owner = this)
         token
     }
 
@@ -375,6 +396,9 @@ internal class VoiceCallService(
     private fun isLiveCall(token: String?): Boolean = synchronized(liveCalls) {
         if (token == null) return false
         val call = liveCalls[token] ?: return false
+        // Ownership as well as liveness: a token issued for another share must not drive this one's
+        // tools just because both read the same process-wide map.
+        if (call.owner !== this) return false
         // The duration ceiling lives here: nothing else bounds how long a call runs, and the whole
         // session bills to the host. Past it the tools stop answering. NOTE the audio session itself
         // is browser↔OpenAI, so the host cannot hang that up — a viewer ignoring `voiceStatus` keeps
@@ -393,7 +417,15 @@ internal class VoiceCallService(
      */
     fun closeCall(token: String?) {
         if (token == null) return
-        val wasAnnounced = synchronized(liveCalls) { liveCalls.remove(token)?.announced == true }
+        val wasAnnounced = synchronized(liveCalls) {
+            // Only retire our own: another share's token isn't ours to end.
+            val call = liveCalls[token]
+            if (call == null || call.owner !== this) false
+            else {
+                liveCalls.remove(token)
+                call.announced
+            }
+        }
         // Per call, not "when the last one goes": with two calls live on a share, hanging one up
         // used to produce no signal at all — and this notification is the counterpart of "call
         // started", which is doing security work.
@@ -401,11 +433,16 @@ internal class VoiceCallService(
     }
 
     /** Invalidate every live call — the host revoked the feature, or the last viewer left. */
+    /**
+     * Invalidate the calls THIS service issued — the host revoked the feature, or the share stopped.
+     * Deliberately not `liveCalls.clear()`: the map is process-wide, and clearing it took other
+     * shares' live calls down with it.
+     */
     fun closeCalls() {
         val hadAnnounced = synchronized(liveCalls) {
-            val any = liveCalls.values.any { it.announced }
-            liveCalls.clear()
-            any
+            val mine = liveCalls.filterValues { it.owner === this }
+            mine.keys.forEach { liveCalls.remove(it) }
+            mine.values.any { it.announced }
         }
         if (hadAnnounced) onCallActivity(false)
     }

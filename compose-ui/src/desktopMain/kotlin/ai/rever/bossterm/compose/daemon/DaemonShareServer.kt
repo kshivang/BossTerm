@@ -246,6 +246,7 @@ class DaemonShareServer(
          */
         @Volatile private var settingsStamp: Long = -1L
         @Volatile private var settingsCache: TerminalSettings? = null
+        @Volatile private var settingsStampTicks: Int = 0
 
         /**
          * [settings] re-read from disk whenever settings.json changes, so a GUI-side toggle reaches
@@ -254,8 +255,15 @@ class DaemonShareServer(
         @Synchronized
         fun freshSettings(): TerminalSettings {
             val stamp = VoiceAgentStorage.fileStamp(SettingsManager.instance.settingsFilePath())
-            if (stamp != settingsStamp || settingsCache == null) {
+            // Same escape hatch as the key cache: mtime granularity is 1s, so two booleans flipped in
+            // one write whose lengths cancel out would be invisible to mtime+size — and this now
+            // gates the kill switch on daemon shares.
+            if (stamp != settingsStamp ||
+                settingsCache == null ||
+                ++settingsStampTicks >= VoiceAgentStorage.STAMP_TRUST_TICKS
+            ) {
                 settingsStamp = stamp
+                settingsStampTicks = 0
                 settingsCache = SettingsManager.instance.readFromDisk()
             }
             return settingsCache ?: settings()
@@ -381,7 +389,13 @@ class DaemonShareServer(
             shares.remove(def)
             grants.values.removeIf { it.shareToken == def.viewToken }
             failPendingFor(def.viewToken)
-            def.viewers.forEach { runCatching { it.outbox.close() } }
+            def.viewers.forEach {
+                // Retire its call token: an abandoned one holds a now process-wide MAX_LIVE_CALLS
+                // slot for the full ceiling, and the host never gets the "ended" half of the pair.
+                def.voiceService.closeCall(it.voiceCallToken)
+                it.voiceCallToken = null
+                runCatching { it.outbox.close() }
+            }
             def.viewers.clear()
             val op = def.claimRemoteOp() // supersede any in-flight establish so it self-cleans
             val port = boundPort // capture BEFORE stopEngineLocked() may null it (else serve/funnel teardown is skipped)
@@ -1191,13 +1205,14 @@ class DaemonShareServer(
                 def.voiceService.handleStart(
                     msg,
                     vc.canControl,
-                    // Retire the PREVIOUS call only here: this fires after the control/enabled/key
-                    // checks, so a view-only viewer (or a request while the feature is off) can't end
-                    // a live call just by asking. One connection still holds at most one.
-                    onTokenReserved = { fresh ->
+                    // Retire the previous call BEFORE reserving (so a redial reclaims its own slot),
+                    // and only after the control/enabled/key checks — a view-only viewer must not be
+                    // able to end a live call just by asking.
+                    retirePreviousCall = {
                         def.voiceService.closeCall(vc.voiceCallToken)
-                        vc.voiceCallToken = fresh
+                        vc.voiceCallToken = null
                     },
+                    onCallTokenChanged = { token -> vc.voiceCallToken = token },
                 ) { m ->
                     // See MirrorShare: the token is captured from the host's own reply, never from
                     // an inbound message.

@@ -204,8 +204,15 @@ class MirrorShare(
         observerJob?.cancel()
         mcpJob?.cancel()
         voiceJob?.cancel()
-        // Tearing down the share ends any call riding it — including the host-side "ended" signal.
-        runCatching { voiceService.closeCalls() }
+        // Retire the calls riding THIS share (and nothing else — the live-call map is process-wide,
+        // so clearing it would take other shares' calls down with it).
+        runCatching {
+            viewers.forEach { vc ->
+                voiceService.closeCall(vc.voiceCallToken)
+                vc.voiceCallToken = null
+            }
+            voiceService.closeCalls() // belt and braces: now scoped to this service's own entries
+        }
         synchronized(taps) {
             taps.values.forEach(::disposeTap)
             taps.clear()
@@ -432,13 +439,14 @@ class MirrorShare(
                 voiceService.handleStart(
                     msg,
                     vc.canControl,
-                    // Retire the PREVIOUS call only now: this fires after the control/enabled/key
-                    // checks, so a view-only viewer (or a request while the feature is off) can no
-                    // longer end a live call just by asking. One connection still holds at most one.
-                    onTokenReserved = { fresh ->
+                    // Retire the previous call BEFORE reserving (so a redial reclaims its own slot),
+                    // and only after the control/enabled/key checks — a view-only viewer must not be
+                    // able to end a live call just by asking.
+                    retirePreviousCall = {
                         voiceService.closeCall(vc.voiceCallToken)
-                        vc.voiceCallToken = fresh
+                        vc.voiceCallToken = null
                     },
+                    onCallTokenChanged = { token -> vc.voiceCallToken = token },
                 ) { m ->
                     vc.outbox.sendControl(ShareProtocol.encodeServer(m))
                 }

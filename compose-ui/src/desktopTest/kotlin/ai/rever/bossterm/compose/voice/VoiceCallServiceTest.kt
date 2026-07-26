@@ -394,12 +394,13 @@ class VoiceCallServiceTest {
         svc.handleStart(
             ClientMessage.VoiceStart(),
             canControl = true,
-            onTokenReserved = { reserved = it },
+            onCallTokenChanged = { reserved = it },
         ) {}
         assertTrue(reserved != null, "the slot is reserved before the mint, not after it")
+        val reservedToken = reserved
 
         // The viewer goes away; the server retires what it reserved for that connection.
-        svc.closeCall(reserved)
+        svc.closeCall(reservedToken)
         release.complete(Unit)
         Thread.sleep(200)
 
@@ -407,6 +408,73 @@ class VoiceCallServiceTest {
         repeat(MAX_LIVE_CALLS_FOR_TEST) { assertTrue(svc.openCall() != null, "slot ${'$'}it should be free") }
         // ...and nothing was ever announced, since no call actually started.
         assertTrue(synchronized(activity) { activity.none { it } }, "saw ${'$'}activity")
+    }
+
+    /**
+     * The live-call map is process-wide (one key, one spend ceiling) — but per-share teardown must
+     * only touch its OWN calls. Clearing the whole map stopped other shares' calls dead: their audio
+     * kept running while every tool answered "No active call".
+     */
+    @Test
+    fun `stopping one share leaves another share's call alone`() {
+        // One shared map, two services — production wiring, two open shares.
+        val shared = LinkedHashMap<String, VoiceCallService.LiveCall>()
+        fun serviceOn(map: LinkedHashMap<String, VoiceCallService.LiveCall>) = VoiceCallService(
+            executor = FakeExecutor(),
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+            mintTimestamps = ArrayDeque(),
+            sharedCalls = map,
+        )
+        val shareA = serviceOn(shared)
+        val shareB = serviceOn(shared)
+        val tokenA = shareA.openCall()!!
+        val tokenB = shareB.openCall()!!
+
+        shareA.closeCalls() // share A stops
+
+        // B's call still works…
+        val replies = mutableListOf<ServerMessage>()
+        shareB.handleToolCall(
+            ClientMessage.VoiceToolCall("c1", "read_scrollback", "{}", callToken = tokenB),
+            canControl = true, defaultTabId = "t1",
+        ) { replies.add(it) }
+        assertTrue(
+            replies.isEmpty() || !(replies.first() as ServerMessage.VoiceToolResult).isError,
+            "share B's call must survive share A stopping: $replies",
+        )
+        // …and A's is gone.
+        replies.clear()
+        shareA.handleToolCall(
+            ClientMessage.VoiceToolCall("c2", "read_scrollback", "{}", callToken = tokenA),
+            canControl = true, defaultTabId = "t1",
+        ) { replies.add(it) }
+        assertTrue((replies.single() as ServerMessage.VoiceToolResult).isError, "A's own call is retired")
+    }
+
+    /** A token issued for one share must not drive another's tools, even sharing one map. */
+    @Test
+    fun `a token from another share is refused`() {
+        val shared = LinkedHashMap<String, VoiceCallService.LiveCall>()
+        fun serviceOn() = VoiceCallService(
+            executor = FakeExecutor(),
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+            mintTimestamps = ArrayDeque(),
+            sharedCalls = shared,
+        )
+        val shareA = serviceOn()
+        val shareB = serviceOn()
+        val tokenA = shareA.openCall()!!
+
+        val replies = mutableListOf<ServerMessage>()
+        shareB.handleToolCall(
+            ClientMessage.VoiceToolCall("c1", "read_scrollback", "{}", callToken = tokenA),
+            canControl = true, defaultTabId = "t1",
+        ) { replies.add(it) }
+        assertTrue((replies.single() as ServerMessage.VoiceToolResult).isError, "wrong share's token")
     }
 
     /** Tokens age out, so a call handle can't be replayed indefinitely. */

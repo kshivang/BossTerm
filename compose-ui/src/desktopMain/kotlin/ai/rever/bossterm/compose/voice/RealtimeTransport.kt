@@ -85,6 +85,18 @@ internal class JdkRealtimeTransport : RealtimeTransport {
     /** Set by [close]; makes a connect that is still in flight abort its socket instead of keeping it. */
     @Volatile private var closeRequested = false
 
+    /**
+     * Bumped per connect, and captured by each writer thread.
+     *
+     * `open` alone wasn't enough: close() can time out joining a writer parked inside
+     * `sendText(...).join()` (which neither the interrupt nor `open = false` retracts), null the
+     * handle, and return. A later connect() would then set `open = true` and start writer #2 while
+     * #1 was still alive — and #1, on finishing its send, would re-read the shared flag, pick up the
+     * NEW socket and send on it. Two concurrent sendText calls is exactly the collision the
+     * single-consumer queue exists to prevent, failing the same silent way.
+     */
+    @Volatile private var generation = 0
+
     override suspend fun connect(
         model: String,
         apiKey: String,
@@ -142,8 +154,9 @@ internal class JdkRealtimeTransport : RealtimeTransport {
         }
         socket = ws
         open = true
+        val gen = ++generation
         writer = Thread({
-            while (open) {
+            while (open && generation == gen) {
                 // Protocol frames first, then audio: a backlog of mic chunks must not delay a
                 // function_call_output.
                 val json = outgoing.poll()

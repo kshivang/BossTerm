@@ -362,9 +362,13 @@ internal class HostVoiceCallController(
             responseOpen = true // a function call only exists inside a response
         }
         // Grab the per-call job FIRST: claiming the slot and then bailing on a null job (reachable
-        // when a function-call event lands just after end()/fail() nulled it) leaked the slot and
-        // left the round pending.
-        val parent = callJob ?: return
+        // when a function-call event lands just after end()/fail() nulled it) leaked the slot. Also
+        // undo the pending-round bookkeeping done above, or the round stays pending forever — the
+        // call is torn down either way, but leaving inconsistent state invites a later bug.
+        val parent = callJob ?: run {
+            synchronized(roundLock) { pendingCalls.remove(callId); seenCalls.remove(callId) }
+            return
+        }
         // Same ceiling as the share path: the MCP handlers behind these are not cheap, and an
         // unbounded fan-out onto Dispatchers.Default is exactly what the share path refuses.
         val admitted = inFlightTools.getAndUpdate { n ->

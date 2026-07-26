@@ -70,6 +70,7 @@ import kotlinx.serialization.json.putJsonObject
  *   - `send_input`          — write raw text to a tab's stdin (queued).
  *   - `send_signal`         — send ctrl_c / ctrl_d / ctrl_z to a tab (queued).
  *   - `run_in_panel`        — open a new tab / split pane and run a script in it.
+ *   - `close_panel`         — close a split pane, or a whole tab (never a window's last tab).
  *
  * Threading: tool handlers run on whatever coroutine context the MCP
  * transport dispatches them on. All operations performed here are either
@@ -127,6 +128,7 @@ class BossTermMcpServer(
         "send_input" to ::registerSendInput,
         "send_signal" to ::registerSendSignal,
         "run_in_panel" to ::registerRunInPanel,
+        "close_panel" to ::registerClosePanel,
         "run_command" to ::registerRunCommand,
         "show_image" to ::registerShowImage
     )
@@ -932,6 +934,90 @@ class BossTermMcpServer(
                 )
             tab.writeRawBytes(bytes)
             successJson(json.encodeToString(OkResult.serializer(), OkResult(ok = true)))
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Tool: close_panel
+    // -----------------------------------------------------------------
+
+    /**
+     * The inverse of [registerRunInPanel] — close a split, or a whole tab.
+     *
+     * One tool rather than two because the caller's intent differs only by scope, and the ids come
+     * from the same place ([registerListPanes]). `pane_id` present means "just this split"; absent
+     * means the tab and everything in it.
+     *
+     * Refuses a window's LAST tab. `TabController.closeTab` calls `onLastTabClosed()` there, whose own
+     * comment is "exit application" — so an agent tidying up would quit BossTerm, and over voice it
+     * would kill the call that asked. A tool whose worst outcome is "the app vanished" needs the
+     * refusal in the tool, not in a prompt that may or may not be followed.
+     */
+    private fun registerClosePanel(server: Server) {
+        server.addTool(
+            name = toolName("close_panel"),
+            description = describe(
+                "close_panel",
+                "Close a split pane, or a whole tab. With `pane_id`, closes just that split and " +
+                        "leaves the rest of the tab open; without it, closes the tab and every pane " +
+                        "in it. This kills whatever is running there and cannot be undone, so check " +
+                        "with list_panes / read_scrollback first if something might be mid-task. " +
+                        "Refuses to close a window's last remaining tab, because that quits the app."
+            ),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("tab_id") {
+                        put("type", "string")
+                        put("description", "Stable tab id (see list_tabs).")
+                    }
+                    putJsonObject("pane_id") {
+                        put("type", "string")
+                        put(
+                            "description",
+                            "Optional split pane to close (see list_panes). Omit to close the " +
+                                    "whole tab, including all of its panes."
+                        )
+                    }
+                },
+                required = listOf("tab_id")
+            )
+        ) { request ->
+            val args = request.arguments
+            val tabId = args.requireString("tab_id")
+                ?: return@addTool errorResult("Missing required argument: tab_id")
+            val paneId = args.requireString("pane_id")
+            val state = registry.findState(tabId)
+                ?: return@addTool errorResult("Unknown tab_id: $tabId")
+
+            if (paneId != null) {
+                val split = state.splitStates[tabId]
+                // Deliberately an error rather than silently closing the tab: list_panes reports a
+                // split-less tab as one pane whose id EQUALS the tab id, so an agent reading that and
+                // passing it back here is asking to close a split it believes exists. Treating that as
+                // "close the tab" would destroy every pane on a misunderstanding.
+                if (split == null || split.isSinglePane) {
+                    return@addTool errorResult(
+                        "Tab '$tabId' has no split panes. Omit pane_id to close the whole tab."
+                    )
+                }
+                if (split.getAllPanes().none { it.id == paneId }) {
+                    return@addTool errorResult("Unknown pane_id '$paneId' in tab '$tabId'")
+                }
+                if (!split.closePane(paneId)) {
+                    return@addTool errorResult("Failed to close pane '$paneId' in tab '$tabId'")
+                }
+                registry.clearScratchPane(tabId, paneId)
+                val payload = ClosePanelResult(ok = true, closed = "pane", tabId = tabId, paneId = paneId)
+                return@addTool successJson(json.encodeToString(ClosePanelResult.serializer(), payload))
+            }
+
+            lastTabRefusal(tabId, state.tabs.size)?.let { return@addTool errorResult(it) }
+            if (!state.closeTab(tabId)) {
+                return@addTool errorResult("Failed to close tab '$tabId'")
+            }
+            registry.clearScratchPane(tabId)
+            val payload = ClosePanelResult(ok = true, closed = "tab", tabId = tabId, paneId = null)
+            successJson(json.encodeToString(ClosePanelResult.serializer(), payload))
         }
     }
 
@@ -2440,6 +2526,15 @@ class BossTermMcpServer(
     )
 
     @Serializable
+    data class ClosePanelResult(
+        val ok: Boolean,
+        /** "pane" or "tab" — which of the two was actually closed. */
+        val closed: String,
+        val tabId: String,
+        val paneId: String?
+    )
+
+    @Serializable
     data class ShowImageResult(
         val ok: Boolean,
         val tabId: String,
@@ -2599,11 +2694,31 @@ class BossTermMcpServer(
             "read_debug_console"
         )
 
+        /**
+         * Why `close_panel` must not close this tab, or null if it may.
+         *
+         * A pure function so the rule can actually be tested: closing the real thing needs a live
+         * window, and `TabbedTerminalState.createTab` returns null with no PTY available, so a test
+         * that went through the handler could only ever assert the unknown-tab path.
+         *
+         * The rule exists because `TabController.closeTab` reaches `onLastTabClosed()` on a window's
+         * final tab — its own comment says "exit application". An agent asked to tidy up would quit
+         * BossTerm, and over voice it would kill the call that asked.
+         */
+        internal fun lastTabRefusal(tabId: String, tabCount: Int): String? =
+            if (tabCount <= 1) {
+                "Tab '$tabId' is the only tab in its window, and closing it would quit BossTerm. " +
+                    "Close a split with pane_id, or leave this tab open."
+            } else {
+                null
+            }
+
         /** Unprefixed built-in write tool names, in display order. */
         val BUILT_IN_WRITE_TOOLS: List<String> = listOf(
             "send_input",
             "send_signal",
             "run_in_panel",
+            "close_panel",
             "run_command",
             "show_image"
         )

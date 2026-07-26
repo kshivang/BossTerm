@@ -119,5 +119,15 @@ private fun builtInRules(names: Set<String>, confirmationWording: String): Strin
         "- For destructive commands (rm, kill, force-push, reset --hard), say the exact " +
             "command and get $confirmationWording confirmation first."
     )
+    if ("close_panel" in names) {
+        // Its own rule rather than another item in the list above, because the thing at risk is not a
+        // file — it is whatever the user had running in that pane, and unlike `rm` there is no
+        // recovering it. Naming the tab is the part that matters: "close that one" is easy to mishear.
+        appendLine(
+            "- close_panel kills whatever is running in the pane or tab it closes, with no undo. Name " +
+                "which one you mean and get $confirmationWording confirmation first, and check " +
+                "list_panes or read_scrollback if something might be mid-task."
+        )
+    }
     append("- Keep replies short. This is a voice conversation.")
 }

@@ -60,7 +60,11 @@ internal class VoiceSessionBroker(
         val body = buildJsonObject {
             putJsonObject("expires_after") {
                 put("anchor", "created_at")
-                put("seconds", 600)
+                // 60s, not 600: this secret only has to survive the SDP handshake, which the viewer
+                // starts immediately on receiving it. It is the one credential that leaves the host,
+                // so the window in which a leaked (or replayed) one can open sessions billed to the
+                // host's key should be the smallest that still works.
+                put("seconds", 60)
             }
             putJsonObject("session") {
                 put("type", "realtime")

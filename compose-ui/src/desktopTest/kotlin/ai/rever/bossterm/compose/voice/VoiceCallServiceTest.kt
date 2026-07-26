@@ -145,6 +145,62 @@ class VoiceCallServiceTest {
         )
     }
 
+    /**
+     * A call closed between the mint completing and the announcement must not report a start.
+     *
+     * isLiveCall() and announceCall() are two separate acquisitions of the same lock, and a
+     * closeCall from the socket receive loop (voiceEnd, or the viewer dropping) can land between
+     * them. The close correctly reports nothing — announced was still false — and the announcement
+     * then fired anyway, incrementing a counter with nothing left to decrement it. RemoteVoiceCalls
+     * would read "on a call" for the rest of the process, on the signal the host is meant to trust.
+     */
+    @Test
+    fun `a call closed before its announcement never reports a start`() {
+        val activity = mutableListOf<Boolean>()
+        val svc = VoiceCallService(
+            executor = FakeExecutor(),
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+            onCallActivity = { started -> synchronized(activity) { activity.add(started) } },
+            mintTimestamps = ArrayDeque(),
+            sharedCalls = LinkedHashMap(),
+        )
+        val token = svc.openCall()
+        assertNotNull(token)
+
+        // The viewer hangs up while the mint is still in flight.
+        svc.closeCall(token)
+        assertEquals(emptyList(), synchronized(activity) { activity.toList() }, "nothing announced yet")
+
+        // The mint completes and tries to announce a call that is gone.
+        svc.announceCallForTest(token)
+        assertEquals(
+            emptyList(),
+            synchronized(activity) { activity.toList() },
+            "an unpaired start would pin the host's remote-call indicator forever",
+        )
+    }
+
+    @Test
+    fun `a live call still announces exactly once`() {
+        val activity = mutableListOf<Boolean>()
+        val svc = VoiceCallService(
+            executor = FakeExecutor(),
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+            onCallActivity = { started -> synchronized(activity) { activity.add(started) } },
+            mintTimestamps = ArrayDeque(),
+            sharedCalls = LinkedHashMap(),
+        )
+        val token = assertNotNull(svc.openCall())
+        svc.announceCallForTest(token)
+        assertEquals(listOf(true), synchronized(activity) { activity.toList() })
+        svc.closeCall(token)
+        assertEquals(listOf(true, false), synchronized(activity) { activity.toList() }, "and pairs")
+    }
+
     @Test
     fun `voiceStart without control is refused server-side`() {
         val replies = mutableListOf<ServerMessage>()

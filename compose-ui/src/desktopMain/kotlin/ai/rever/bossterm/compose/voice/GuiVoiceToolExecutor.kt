@@ -41,6 +41,18 @@ internal class GuiVoiceToolExecutor(
      * a share anchors on its own tab, while an in-app host call follows whichever tab is focused.
      */
     private val anchorTabId: () -> String?,
+    /**
+     * Whether this surface may run commands in the pane the user is LOOKING at (when idle), rather
+     * than run_command's scratch split.
+     *
+     * True for the in-app call, false for a share. The argument for the focused pane is about the
+     * machine's OWNER: they asked out loud for something in the terminal in front of them, and
+     * watching a split open underneath with the result over there is not what they asked for. That
+     * story does not transfer to a guest on a link. The OSC 133 guard only rules out a command
+     * already RUNNING — it cannot tell that the host is mid-thought at their own prompt — so a
+     * remote caller keeps the scratch pane and stays out of the way.
+     */
+    private val mayUseFocusedPane: Boolean = false,
     private val registry: McpTerminalRegistry = McpTerminalRegistry,
     private val settings: () -> TerminalSettings = { SettingsManager.instance.settings.value },
 ) : VoiceToolExecutor {
@@ -101,7 +113,15 @@ internal class GuiVoiceToolExecutor(
         // Via the wrapper, not the raw SDK map: it is not thread-safe and this runs concurrently
         // with applyDisabledSet and with up to four in-flight tool calls.
         val registered = server().toolNames()
-        return VoiceToolCatalog.ALL.filter { it.name in LOCAL_TOOLS || handlerName(it.name) in registered }
+        // LOCAL_TOOLS are answered from the registry rather than through a handler, so they skipped
+        // the disabled check that the class KDoc claims carries over "for free" — a user who turned
+        // list_tabs off via manage_tools still had it callable by voice, still listing every in-scope
+        // tab's title and cwd. Read-only and scope-filtered, but the invariant was stated and untrue.
+        val disabled = settings().disabledMcpTools.toSet()
+        return VoiceToolCatalog.ALL.filter {
+            if (it.name in LOCAL_TOOLS) handlerName(it.name) !in disabled && it.name !in disabled
+            else handlerName(it.name) in registered
+        }
     }
 
     /**
@@ -117,6 +137,7 @@ internal class GuiVoiceToolExecutor(
      * busy from idle, and run_command needs OSC 133 anyway.
      */
     private fun idleFocusedPaneId(tabId: String): String? {
+        if (!mayUseFocusedPane) return null // a remote caller never takes the host's pane
         if (!settings().voiceRunInFocusedPane) return null
         val state = registry.findState(tabId) ?: return null
         val session = state.findSession(tabId, paneId = null) ?: return null
@@ -185,6 +206,11 @@ internal class GuiVoiceToolExecutor(
 
         // Tab enumeration is answered locally so it can be scope-filtered (the MCP handler
         // enumerates every window on the host), and needs no target at all.
+        // Resolved against tools(), so a disabled local tool is refused here too rather than being
+        // answered by the short-circuit below.
+        if (def.name in LOCAL_TOOLS && tools().none { it.name == def.name }) {
+            throw VoiceToolException("Tool not available on this host: $name")
+        }
         when (name) {
             "list_tabs" -> return listTabsJson(scope, fallback)
             "get_active_tab" -> return tabInfoJson(

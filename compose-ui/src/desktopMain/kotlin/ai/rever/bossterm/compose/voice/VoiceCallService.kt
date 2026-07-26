@@ -504,10 +504,35 @@ internal class VoiceCallService(
         return token
     }
 
-    /** Mark a reserved call as one the host was told about (so retiring it reports "ended"). */
+    /**
+     * Mark a reserved call as one the host was told about (so retiring it reports "ended"), and tell
+     * them — but ONLY if the entry is still there to mark.
+     *
+     * The mint coroutine checks isLiveCall(token) and then calls this: two separate acquisitions of
+     * the same lock. A closeCall from the socket receive loop (the viewer's voiceEnd, or its
+     * connection dropping) or a closeCalls from the status poller can land in that window. The close
+     * then sees announced == false and correctly reports nothing — and this went on to announce a
+     * start for a call that no longer exists, with no end ever to follow it.
+     *
+     * The unpaired increment sticks: RemoteVoiceCalls has nothing to decrement it, so the Sharing
+     * pill reads "on a call" for the rest of the process — on the counter whose entire purpose is
+     * being a signal the host can trust.
+     */
+    /**
+     * The announcement step alone, for tests that need to interleave it with a close.
+     *
+     * The race it guards lives BETWEEN two lock acquisitions, so driving it through handleStart would
+     * mean racing a real mint — this names the step instead.
+     */
+    internal fun announceCallForTest(token: String) = announceCall(token)
+
     private fun announceCall(token: String) {
-        synchronized(liveCalls) { liveCalls[token]?.announced = true }
-        onCallActivity(true)
+        val marked = synchronized(liveCalls) {
+            val call = liveCalls[token] ?: return@synchronized false
+            call.announced = true
+            true
+        }
+        if (marked) onCallActivity(true)
     }
 
     /**

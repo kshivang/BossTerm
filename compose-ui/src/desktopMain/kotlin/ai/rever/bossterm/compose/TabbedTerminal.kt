@@ -2158,6 +2158,8 @@ fun TabbedTerminal(
         } else null
         if (showMcpStatus || showSharingStatus || attachStatus != null || pendingShareRequests.isNotEmpty() ||
             viewOnlyRemote != null || upstreamReadOnly != null ||
+            // A remote call shows the strip even with every indicator switched off — see StatusStrip.
+            remoteVoiceCalls > 0 ||
             callSegment != CallSegmentState.Hidden) {
             Column(
                 modifier = Modifier

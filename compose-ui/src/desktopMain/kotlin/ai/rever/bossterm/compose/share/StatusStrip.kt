@@ -76,10 +76,14 @@ fun StatusStrip(
             if (showMcp) {
                 Segment(dot = if (mcpOn) ON else OFF, label = "MCP", onClick = onMcpClick)
             }
-            if (showMcp && showSharing) {
+            if (showMcp && (showSharing || remoteCalls > 0)) {
                 Text("|", color = Color(0xFF555555), fontSize = 12.sp)
             }
-            if (showSharing) {
+            // A live remote call forces the segment on. Rendering it only inside `showSharing`
+            // restored exactly the no-signal state RemoteVoiceCalls exists to close: a cosmetic
+            // opt-out (sessionSharingShowIndicator) would hide the fact that someone else's agent is
+            // running commands here.
+            if (showSharing || remoteCalls > 0) {
                 val label = when {
                     // A remote call outranks the viewer count: "someone is talking to an agent that
                     // can run commands here" is the more urgent fact about this share.
@@ -95,7 +99,7 @@ fun StatusStrip(
                 }
                 Segment(dot = dot, label = label, onClick = onSharingClick)
             }
-            if ((showMcp || showSharing) && showCall) {
+            if ((showMcp || showSharing || remoteCalls > 0) && showCall) {
                 Text("|", color = Color(0xFF555555), fontSize = 12.sp)
             }
             if (showCall) {

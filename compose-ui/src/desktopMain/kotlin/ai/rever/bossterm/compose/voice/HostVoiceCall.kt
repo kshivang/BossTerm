@@ -60,6 +60,9 @@ internal object HostVoiceCall {
             executor = GuiVoiceToolExecutor(
                 inScopeTabIds = { McpTerminalRegistry.allTabs().map { it.id }.toSet() },
                 anchorTabId = { activeTabId() },
+                // The caller IS the person at the keyboard, so their commands belong in the pane
+                // they are looking at. A share's executor deliberately leaves this false.
+                mayUseFocusedPane = true,
             ),
             onTerminal = { created?.let { releaseIfCurrent(it) } },
         )

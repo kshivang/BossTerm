@@ -2,6 +2,8 @@ package ai.rever.bossterm.compose.voice
 
 import ai.rever.bossterm.compose.daemon.DaemonMcpTools
 import ai.rever.bossterm.compose.daemon.SessionHost
+import ai.rever.bossterm.compose.settings.SettingsManager
+import ai.rever.bossterm.compose.settings.TerminalSettings
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -22,11 +24,22 @@ internal class DaemonVoiceToolExecutor(
     private val inScopeSessionIds: () -> Set<String>,
     /** Provider, not a value: an ALL-scoped share's fallback session changes as sessions come and go. */
     private val anchorSessionId: () -> String?,
+    private val settings: () -> TerminalSettings = { SettingsManager.instance.settings.value },
 ) : VoiceToolExecutor {
 
     private val tools = DaemonMcpTools(host)
 
-    override fun tools(): List<VoiceToolDef> = VoiceToolCatalog.ALL.filter { !it.guiOnly }
+    /**
+     * The daemon's smaller surface, minus anything the user disabled.
+     *
+     * The daemon answers every one of these itself rather than through an MCP handler, so nothing
+     * else applies `disabledMcpTools` on this path — the GUI executor inherits it from
+     * `createServer()`, and this one had no equivalent.
+     */
+    override fun tools(): List<VoiceToolDef> {
+        val disabled = settings().disabledMcpTools.toSet()
+        return VoiceToolCatalog.ALL.filter { !it.guiOnly && it.name !in disabled }
+    }
 
     override fun contextSnapshot(defaultTabId: String?): String {
         val scope = inScopeSessionIds()

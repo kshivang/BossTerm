@@ -37,9 +37,11 @@ internal object VoiceContextSnapshot {
         if (raw.isNullOrEmpty()) return ""
         val flattened = buildString(raw.length) {
             for (ch in raw) {
-                // Covers CR/LF/TAB/ESC and the C1 range: anything that could break the line
-                // structure or start an escape sequence.
-                append(if (ch.isISOControl() || ch == '') ' ' else ch)
+                // isISOControl covers U+0000-U+001F and U+007F-U+009F: CR, LF, TAB, ESC and the
+                // whole C1 range - everything that could break the line structure or open an escape
+                // sequence. (An earlier version put a redundant literal beside this and claimed ESC
+                // was outside the range. It is U+001B; it is not.)
+                append(if (ch.isISOControl()) ' ' else ch)
             }
         }
         val collapsed = flattened.replace(WHITESPACE_RUN, " ").trim()
@@ -67,8 +69,14 @@ internal object VoiceContextSnapshot {
         }
     }
 
-    private val WHITESPACE_RUN = Regex("\\s+")
+    /**
+     * Whitespace to collapse, including the two Unicode line separators.
+     *
+     * U+2028 and U+2029 are the gap: not control characters, so isISOControl misses them, and Java's
+     * ASCII-only \s misses them too - yet plenty of renderers and models treat them as line breaks.
+     * For a function whose job is stopping terminal-controlled text from impersonating the structure
+     * around it, they belong here.
+     */
+    private val WHITESPACE_RUN = Regex("[\\s\\u2028\\u2029]+")
 
-    /** Not covered by isISOControl() on every platform; an OSC-set title should never contain it. */
-    private const val ESC = '\u001b'
 }

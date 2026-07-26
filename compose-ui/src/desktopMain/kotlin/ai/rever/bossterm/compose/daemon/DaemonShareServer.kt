@@ -1123,18 +1123,24 @@ class DaemonShareServer(
     private suspend fun pollVoiceStatus(def: ShareDef, self: () -> Job) {
         try {
             while (def.viewers.isNotEmpty()) {
-                val status = def.voiceService.status()
-                if (status != def.lastVoiceStatus) {
-                    def.lastVoiceStatus = status
-                    // Per-viewer: the reason is host configuration, for controllers only.
-                    val redacted = status.copy(reason = null)
+                // The host-wide answer, for change detection and the kill decision only.
+                val hostStatus = def.voiceService.status(withReason = true, confidential = true)
+                if (hostStatus != def.lastVoiceStatus) {
+                    def.lastVoiceStatus = hostStatus
+                    // Per viewer, because both inputs are: the reason is host configuration that
+                    // only a controller may see, and `available` depends on whether THAT connection
+                    // completed the E2E handshake. See MirrorShare's collector for the bug this
+                    // fixes — a broadcast status flipped a non-E2E viewer to available.
                     for (viewer in def.viewers) {
-                        val msg = if (viewer.canControl) status else redacted
+                        val msg = def.voiceService.status(
+                            withReason = viewer.canControl,
+                            confidential = viewer.confidential,
+                        )
                         viewer.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(msg)))
                     }
                     // Revoked mid-call: invalidate the call so its tool calls stop too, not just
                     // the button.
-                    if (!status.available) def.voiceService.closeCalls()
+                    if (!hostStatus.available) def.voiceService.closeCalls()
                 }
                 delay(VOICE_STATUS_POLL_MS)
             }

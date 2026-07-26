@@ -179,17 +179,25 @@ class MirrorShare(
             combine(
                 SettingsManager.instance.settings,
                 VoiceAgentStorage.keyPresentFlow,
-            ) { _, _ -> voiceService.status() }
+                // The host-wide answer, used only to decide whether anything changed and whether to
+                // kill live calls. What each viewer is TOLD is computed per viewer below.
+            ) { _, _ -> voiceService.status(withReason = true, confidential = true) }
                 .distinctUntilChanged()
-                .collect { status ->
+                .collect { hostStatus ->
                     // Server-side kill, same as DaemonShareServer's poller: the viewer ends its own
                     // call on this push, but a viewer that ignores it is exactly why the server
                     // check exists.
-                    if (!status.available) voiceService.closeCalls()
-                    // Per-viewer, not broadcast: only a controller may see WHY voice is unavailable.
-                    val redacted = status.copy(reason = null)
+                    if (!hostStatus.available) voiceService.closeCalls()
+                    // Per viewer, because BOTH inputs are per viewer: only a controller may see WHY
+                    // voice is unavailable, and `available` itself depends on whether THAT connection
+                    // is E2E. Broadcasting one status meant a plain-ws viewer, correctly refused at
+                    // admit, flipped to available on the next settings change — with a Call button
+                    // that could only ever come back insecure_transport.
                     for (vc in viewers) {
-                        val msg = if (vc.canControl) status else redacted
+                        val msg = voiceService.status(
+                            withReason = vc.canControl,
+                            confidential = vc.confidential,
+                        )
                         vc.outbox.sendControl(ShareProtocol.encodeServer(msg))
                     }
                 }

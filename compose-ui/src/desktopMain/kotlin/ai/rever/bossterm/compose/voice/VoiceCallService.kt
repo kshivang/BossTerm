@@ -107,15 +107,22 @@ internal class VoiceCallService(
      * `VoiceAvailabilityLine` for the same diagnosis.
      */
     fun status(
-        withReason: Boolean = true,
+        /** Whether the asking viewer may be told WHY — host configuration, not a guest's business. */
+        withReason: Boolean,
         /**
          * Whether the asking connection completed the E2E handshake.
          *
          * Reported here as well as enforced in [handleStart] so a non-E2E viewer sees WHY up front
          * instead of a Call button that can only ever come back `insecure_transport`. The gate that
          * matters is still the one at start; this is the same fact, said earlier.
+         *
+         * NEITHER parameter has a default, deliberately. Both are PER-VIEWER, and a default meant a
+         * call site could silently inherit "yes, confidential" — which is exactly what happened on
+         * the two push paths: they were correct at admit and then broadcast one shared status on the
+         * next settings change, flipping a plain-ws viewer to available with a button that could
+         * only fail. Required arguments turn that into a compile error at every site.
          */
-        confidential: Boolean = true,
+        confidential: Boolean,
     ): ServerMessage.VoiceStatus {
         val s = settings()
         val reason = when {

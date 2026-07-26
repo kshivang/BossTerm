@@ -85,9 +85,9 @@ class VoiceCallServiceTest {
 
     @Test
     fun `status reflects enabled + key presence`() {
-        assertEquals(ServerMessage.VoiceStatus(available = true), service().status())
-        assertEquals("disabled", service(enabled = false).status().reason)
-        assertEquals("no_key", service(key = null).status().reason)
+        assertEquals(ServerMessage.VoiceStatus(available = true), service().status(withReason = true, confidential = true))
+        assertEquals("disabled", service(enabled = false).status(withReason = true, confidential = true).reason)
+        assertEquals("no_key", service(key = null).status(withReason = true, confidential = true).reason)
     }
 
     /**
@@ -106,7 +106,7 @@ class VoiceCallServiceTest {
                 loadKey = { null },
                 mintTimestamps = ArrayDeque(),
                 sharedCalls = LinkedHashMap(),
-            ).status().reason,
+            ).status(withReason = true, confidential = true).reason,
         )
     }
 
@@ -124,7 +124,7 @@ class VoiceCallServiceTest {
             mintTimestamps = ArrayDeque(),
             sharedCalls = LinkedHashMap(),
         )
-        assertEquals("disabled", svc.status().reason, "viewers are told it's unavailable")
+        assertEquals("disabled", svc.status(withReason = true, confidential = true).reason, "viewers are told it's unavailable")
 
         val replies = mutableListOf<ServerMessage>()
         svc.handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = true) { replies.add(it) }
@@ -223,17 +223,17 @@ class VoiceCallServiceTest {
     @Test
     fun `a view-only viewer is told availability but never why`() {
         val keyless = service(key = null)
-        assertEquals("no_key", keyless.status(withReason = true).reason, "a controller can act on it")
-        assertEquals(null, keyless.status(withReason = false).reason, "a guest learns only that it is off")
-        assertFalse(keyless.status(withReason = false).available, "availability itself is not secret")
+        assertEquals("no_key", keyless.status(withReason = true, confidential = true).reason, "a controller can act on it")
+        assertEquals(null, keyless.status(withReason = false, confidential = true).reason, "a guest learns only that it is off")
+        assertFalse(keyless.status(withReason = false, confidential = true).available, "availability itself is not secret")
 
         val off = service(enabled = false)
-        assertEquals("disabled", off.status(withReason = true).reason)
-        assertEquals(null, off.status(withReason = false).reason)
+        assertEquals("disabled", off.status(withReason = true, confidential = true).reason)
+        assertEquals(null, off.status(withReason = false, confidential = true).reason)
 
         // And an available host has nothing to redact either way.
-        assertEquals(null, service().status(withReason = true).reason)
-        assertEquals(null, service().status(withReason = false).reason)
+        assertEquals(null, service().status(withReason = true, confidential = true).reason)
+        assertEquals(null, service().status(withReason = false, confidential = true).reason)
     }
 
     /**
@@ -274,6 +274,39 @@ class VoiceCallServiceTest {
             )
         }
         failing.close()
+    }
+
+    /**
+     * A non-E2E viewer is told so, and stays told.
+     *
+     * The gate at handleStart never wavered, but the STATUS the viewer sees is what decides whether
+     * a Call button appears — and it is per-connection on two axes (the reason is for controllers
+     * only; `available` depends on this connection's cipher). Both push paths used to compute one
+     * status and broadcast it, so a plain-ws viewer refused at admit flipped to available on the
+     * next settings change, with a button that could only ever come back insecure_transport.
+     */
+    @Test
+    fun `an unencrypted connection is told why, whatever else is true of the host`() {
+        val svc = service()
+        val insecure = svc.status(withReason = true, confidential = false)
+        assertFalse(insecure.available, "no Call button for a connection that cannot hold a secret")
+        assertEquals("insecure_transport", insecure.reason)
+
+        // A guest still learns nothing about host configuration — but availability is not secret.
+        val guest = svc.status(withReason = false, confidential = false)
+        assertFalse(guest.available)
+        assertEquals(null, guest.reason)
+
+        // And the same host, asked by an E2E connection, is available. Same service, same settings:
+        // the difference is entirely per-connection, which is why one broadcast status was wrong.
+        assertTrue(svc.status(withReason = true, confidential = true).available)
+    }
+
+    /** A host problem outranks the transport: fix the key first, then the link. */
+    @Test
+    fun `a keyless host reports the key, not the transport`() {
+        val keyless = service(key = null)
+        assertEquals("no_key", keyless.status(withReason = true, confidential = false).reason)
     }
 
     @Test

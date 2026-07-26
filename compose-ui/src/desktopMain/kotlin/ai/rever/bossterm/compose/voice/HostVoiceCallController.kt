@@ -261,7 +261,16 @@ internal class HostVoiceCallController(
                 fail("Boss Calling was turned off.")
                 return@launch
             }
-            _state.update { it.copy(phase = HostCallPhase.Live, activity = null) }
+            // Compare-and-set, not a bare copy. end() can land between the guard above and here —
+            // it writes a fresh Idle state, stops audio and closes the transport, and cancelling
+            // startJob cannot interrupt a non-suspending update() — so the copy would promote that
+            // Idle back to Live and arm startLimits against a call whose mic and socket are gone.
+            // The bar would read "Listening…" on a dead call.
+            _state.update {
+                if (it.phase != HostCallPhase.Connecting) it
+                else it.copy(phase = HostCallPhase.Live, activity = null)
+            }
+            if (_state.value.phase != HostCallPhase.Live) return@launch
             startLimits()
         }
     }

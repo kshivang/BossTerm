@@ -599,6 +599,49 @@ class HostVoiceCallControllerTest {
         assertTrue(transport.closed, "and the billed socket is closed")
     }
 
+    /**
+     * Hanging up during connect must not be undone by the transition that follows it.
+     *
+     * end() writes a fresh Idle state, and cancelling startJob cannot interrupt a non-suspending
+     * update() — so a bare `copy(phase = Live)` promoted that Idle back to Live and armed the
+     * ceilings against a call whose mic and socket were already gone. The bar would read
+     * "Listening…" on a dead call.
+     *
+     * Driven through the injected `settings` lambda rather than by sleeping: the last thing the
+     * connect path does before the transition is re-read the master switch, so ending from inside
+     * that read lands end() exactly in the window. A timing-based version of this test passed
+     * against the unfixed code — the window is a couple of instructions wide.
+     */
+    @Test
+    fun `ending during connect is not undone by the transition to Live`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        var holder: HostVoiceCallController? = null
+        val endedInWindow = java.util.concurrent.atomic.AtomicBoolean(false)
+        val c = HostVoiceCallController(
+            scope = CoroutineScope(Dispatchers.Default),
+            executor = FakeExecutor(),
+            transport = transport,
+            audio = audio,
+            settings = {
+                // The re-check is the first settings() read after the mic opens — i.e. precisely
+                // between the guard and the state transition.
+                if (audio.capturing && endedInWindow.compareAndSet(false, true)) holder?.end()
+                TerminalSettings.DEFAULT
+            },
+            loadKey = { "sk-test" },
+        )
+        holder = c
+        c.start()
+
+        assertTrue(await { endedInWindow.get() }, "the test never reached the window it exists for")
+        assertFalse(
+            await(1_500) { c.state.value.phase == HostCallPhase.Live },
+            "a call ended during connect must never reach Live; it did",
+        )
+        assertTrue(await { !audio.capturing }, "and must not be left holding the mic")
+    }
+
     @Test
     fun `a long in-app call stops at the duration ceiling`() {
         var clock = 1_000L

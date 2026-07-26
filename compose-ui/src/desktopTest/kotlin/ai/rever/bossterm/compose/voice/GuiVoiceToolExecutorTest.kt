@@ -106,6 +106,11 @@ class GuiVoiceToolExecutorTest {
         assertFalse("panel" in declared, "panel is NOT advertised, so it must never be forwarded")
         assertFalse("working_dir" in declared, declared.toString())
         assertFalse("split_ratio" in declared, declared.toString())
+        // pane_id matters most of all now that the executor SETS it (targeting the focused pane when
+        // idle). That is a host decision about a tab already scope-checked; if the model could pass
+        // one, an injected instruction could aim a command at a pane the user is not watching —
+        // exactly the main-shell hijack the MCP handler's own comments warn about.
+        assertFalse("pane_id" in declared, "pane_id must be host-chosen, never model-supplied")
 
         // And the executor really does filter on it rather than passing the map through: an
         // out-of-scope target is still refused even when extra keys ride along.

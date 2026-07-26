@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.voice
 
+import ai.rever.bossterm.compose.blocks.BlockState
 import ai.rever.bossterm.compose.mcp.BossTermMcpConfig
 import ai.rever.bossterm.compose.mcp.BossTermMcpServer
 import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
@@ -100,6 +101,28 @@ internal class GuiVoiceToolExecutor(
         return VoiceToolCatalog.ALL.filter { it.name in LOCAL_TOOLS || handlerName(it.name) in registered }
     }
 
+    /**
+     * The focused pane of [tabId], but only when nothing is running in it.
+     *
+     * "Nothing running" is OSC 133's answer, not a guess: [CommandBlockTracker] opens a block on
+     * command start and closes it on exit, so a trailing RUNNING block means the user (or a previous
+     * tool call) has something in flight there. Typing into that would interleave with a live
+     * program — a build, a REPL, an ssh session, `less` — so those fall back to the scratch pane,
+     * which is what this tool did unconditionally before.
+     *
+     * A pane with no tracker and no blocks returns null too: absent shell integration we cannot tell
+     * busy from idle, and run_command needs OSC 133 anyway.
+     */
+    private fun idleFocusedPaneId(tabId: String): String? {
+        if (!settings().voiceRunInFocusedPane) return null
+        val state = registry.findState(tabId) ?: return null
+        val session = state.findSession(tabId, paneId = null) ?: return null
+        val blocks = session.commandBlockTracker?.blocks?.value ?: return null
+        if (blocks.isEmpty()) return null // no evidence shell integration is reporting
+        if (blocks.last().state == BlockState.RUNNING) return null
+        return session.id
+    }
+
     override fun dispose() {
         // Only if it was ever built: touching the lazy here would construct one just to drop it.
         if (appliedDisabled != null || built) runCatching { wrapper.detachServer() }
@@ -169,6 +192,21 @@ internal class GuiVoiceToolExecutor(
         val effectiveArgs = buildJsonObject {
             args.forEach { (k, v) -> if (k != "tab_id" && k in allowed) put(k, v) }
             put("tab_id", targetTabId)
+            // Run in the pane the user is actually looking at, when it is safe to.
+            //
+            // Left alone, run_command's "reuse" mode creates a dedicated scratch pane on first use
+            // (mcpRunCommandDefaultPanel, a horizontal split) so an agent's output can't interleave
+            // with what someone is typing. That is right for a background MCP client and wrong for a
+            // voice call: asking out loud to "cd into Development/Boss" and watching a split open
+            // underneath you, with the cd applied over there, is not what was asked for.
+            //
+            // The pane id comes from the HOST, never the model — `pane_id` is not in the voice
+            // catalog's declared parameters, so this cannot be steered by an injected instruction to
+            // point at some other pane. It only ever resolves to the focused pane of a tab already
+            // scope-checked above.
+            if (def.name == "run_command") {
+                idleFocusedPaneId(targetTabId)?.let { put("pane_id", it) }
+            }
         }
         val registeredName = handlerName(def.name)
         val handler = server().handlerFor(registeredName)

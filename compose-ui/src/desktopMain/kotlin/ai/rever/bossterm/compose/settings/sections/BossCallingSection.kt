@@ -118,6 +118,15 @@ internal fun BossCallingSection(
                 onOptionSelected = { onSettingsChange(settings.copy(voiceCallModel = it)) },
                 description = "OpenAI Realtime model for the voice agent."
             )
+            SettingsToggle(
+                label = "Run commands in the focused terminal",
+                checked = settings.voiceRunInFocusedPane,
+                onCheckedChange = { onSettingsChange(settings.copy(voiceRunInFocusedPane = it)) },
+                description = "Let the agent run shell commands in the pane you're looking at, the " +
+                        "way you would type them yourself. When something is already running there, " +
+                        "it falls back to a separate split so it can't interrupt you. Turn this off " +
+                        "to keep every agent command in its own split.",
+            )
             SettingsDropdown(
                 label = "Voice",
                 options = listOf("marin", "cedar", "alloy", "echo", "sage", "verse"),
@@ -126,7 +135,68 @@ internal fun BossCallingSection(
                 description = "The agent's speaking voice."
             )
         }
+        if (showAgentOptions) {
+            VoiceAgentInstructionsField(
+                value = settings.voiceAgentExtraInstructions,
+                onChange = { onSettingsChange(settings.copy(voiceAgentExtraInstructions = it)) },
+            )
+        }
         VoiceApiKeyField(keyPresentOverride)
+    }
+}
+
+/**
+ * Free-text added to the agent's rules on both surfaces.
+ *
+ * Deliberately additive rather than a full prompt editor: the built-in rules encode which tools this
+ * surface actually has (they branch on the advertised set), so replacing them wholesale from a text
+ * box would let someone send the agent after tools that are not there. An embedder that genuinely
+ * needs that has [ai.rever.bossterm.compose.voice.VoiceAgentCustomization.rulesOverride].
+ */
+@Composable
+private fun VoiceAgentInstructionsField(value: String, onChange: (String) -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(SurfaceColor)
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Text(text = "Extra instructions for the agent", color = TextPrimary, fontSize = 13.sp)
+        Text(
+            text = "Added to what the agent already knows about your terminal. Good for what this " +
+                    "machine is FOR — the stack you work in, conventions to follow, things to avoid.",
+            color = TextMuted,
+            fontSize = 11.sp,
+            modifier = Modifier.padding(top = 2.dp)
+        )
+        BasicTextField(
+            value = value,
+            onValueChange = onChange,
+            singleLine = false,
+            maxLines = 4,
+            textStyle = TextStyle(color = TextPrimary, fontSize = 13.sp),
+            cursorBrush = SolidColor(AccentColor),
+            decorationBox = { innerTextField ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(BackgroundColor, RoundedCornerShape(4.dp))
+                        .border(1.dp, BorderColor, RoundedCornerShape(4.dp))
+                        .padding(horizontal = 8.dp, vertical = 8.dp)
+                ) {
+                    if (value.isEmpty()) {
+                        Text(
+                            text = "e.g. This is a Kotlin/Compose repo — prefer ./gradlew over raw java.",
+                            color = TextMuted,
+                            fontSize = 13.sp
+                        )
+                    }
+                    innerTextField()
+                }
+            },
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+        )
     }
 }
 

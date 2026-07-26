@@ -422,6 +422,7 @@ internal class VoiceCallService(
 
     private fun buildInstructions(activeTabId: String?, tools: List<VoiceToolDef>): String {
         val names = tools.map { it.name }.toSet()
+        val extra = runCatching { settings().voiceAgentExtraInstructions }.getOrNull()
         val snapshot = runCatching { executor.contextSnapshot(activeTabId) }.getOrDefault("")
         return buildString {
             appendLine("You are Boss, a voice assistant inside a shared BossTerm terminal session.")
@@ -432,7 +433,7 @@ internal class VoiceCallService(
             appendLine(snapshot.ifBlank { "- (no tabs visible)" })
             appendLine("Default all tool calls to the tab the user is viewing (omit tab_id).")
             appendLine()
-            append(voiceAgentRules(names, confirmationWording = "verbal"))
+            append(voiceAgentRules(names, "verbal", userExtra = extra))
         }
     }
 

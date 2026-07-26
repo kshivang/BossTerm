@@ -623,6 +623,7 @@ internal class HostVoiceCallController(
      */
     private fun hostInstructions(tools: List<VoiceToolDef>): String {
         val names = tools.map { it.name }.toSet()
+        val extra = runCatching { settings().voiceAgentExtraInstructions }.getOrNull()
         val snapshot = runCatching { executor.contextSnapshot(null) }.getOrDefault("")
         return buildString {
             appendLine("You are Boss, a voice assistant built into the user's own BossTerm terminal.")
@@ -632,7 +633,7 @@ internal class HostVoiceCallController(
             appendLine(snapshot.ifBlank { "- (no tabs visible)" })
             appendLine("Default tool calls to the tab they are viewing (omit tab_id).")
             appendLine()
-            append(voiceAgentRules(names, confirmationWording = "spoken"))
+            append(voiceAgentRules(names, "spoken", userExtra = extra))
         }
     }
 

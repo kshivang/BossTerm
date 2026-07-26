@@ -16,7 +16,25 @@ internal fun voiceAgentRules(
     names: Set<String>,
     /** "verbal" for a remote caller, "spoken" for the host — the only wording that varies. */
     confirmationWording: String,
-): String = buildString {
+    /** The user's own additions (`TerminalSettings.voiceAgentExtraInstructions`). */
+    userExtra: String? = null,
+): String {
+    val core = VoiceAgentCustomization.rulesOverride?.invoke(names, confirmationWording)
+        ?: builtInRules(names, confirmationWording)
+    // Embedder first, then the user: a person's own instruction is the last word, so they can
+    // correct something the product got wrong without editing the product.
+    val additions = listOfNotNull(
+        VoiceAgentCustomization.extraInstructions?.takeIf { it.isNotBlank() },
+        userExtra?.takeIf { it.isNotBlank() },
+    )
+    if (additions.isEmpty()) return core
+    return buildString {
+        append(core)
+        additions.forEach { appendLine(); append("- "); append(it.trim()) }
+    }
+}
+
+private fun builtInRules(names: Set<String>, confirmationWording: String): String = buildString {
     appendLine("Rules:")
     appendLine(
         "- Inspect before you answer: read_scrollback" +
@@ -27,6 +45,14 @@ internal fun voiceAgentRules(
         appendLine(
             "- Run shell commands with run_command; use send_input only for interactive " +
                 "programs (TUIs, prompts); send_signal ctrl_c to interrupt."
+        )
+        // Commands land in the pane the user is watching (see TerminalSettings.voiceRunInFocusedPane),
+        // so the agent has to treat it as someone else's workspace rather than a blank shell.
+        appendLine(
+            "- Your commands run in the terminal the user is looking at, so read_scrollback first " +
+                "when it matters: pick up where they are (their shell, their directory, the error " +
+                "on screen) instead of asking them to repeat it, and don't disturb something they " +
+                "have in progress."
         )
         appendLine(
             "- If run_command reports that shell integration is missing, fall back to " +

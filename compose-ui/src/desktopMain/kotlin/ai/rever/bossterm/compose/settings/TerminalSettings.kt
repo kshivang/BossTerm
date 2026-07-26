@@ -1066,6 +1066,27 @@ data class TerminalSettings(
      * OpenAI Realtime model for Boss Calling. Defaults to the current top-tier realtime model;
      * the viewer never sends this — it is baked into the ephemeral secret the host mints.
      */
+    /**
+     * Run the agent's shell commands in the pane the user is LOOKING at, when nothing is running
+     * there, instead of run_command's dedicated scratch split.
+     *
+     * The scratch split is right for a background MCP client, whose output would otherwise interleave
+     * with what someone is typing. It is wrong for a voice call: asking out loud to cd somewhere and
+     * watching a split open underneath you, with the cd applied over there, is not what was asked
+     * for. A pane with a command in flight still falls back to the split — see
+     * `GuiVoiceToolExecutor.idleFocusedPaneId`.
+     */
+    val voiceRunInFocusedPane: Boolean = true,
+
+    /**
+     * Extra instructions appended to the agent's rules, for both call surfaces.
+     *
+     * The built-in rules describe the terminal and the tool surface; this is where a user (or an
+     * embedder — see [ai.rever.bossterm.compose.voice.VoiceAgentCustomization]) says what THIS
+     * machine is for. Empty by default.
+     */
+    val voiceAgentExtraInstructions: String = "",
+
     val voiceCallModel: String = "gpt-realtime-2.1",
 
     /** OpenAI Realtime voice for Boss Calling. */

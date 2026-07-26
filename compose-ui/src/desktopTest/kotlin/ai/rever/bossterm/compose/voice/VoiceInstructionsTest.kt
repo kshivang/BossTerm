@@ -103,6 +103,41 @@ class VoiceInstructionsTest {
         assertFalse(rules.contains("claude"), "no way to launch it, so naming it sends it nowhere")
     }
 
+    /**
+     * Terseness is the default, and it is told what to STOP doing.
+     *
+     * "Keep replies short. This is a voice conversation." — the previous wording — named a preference
+     * without naming a behaviour, and changed nothing: the agent still restated the request, narrated
+     * its plan, and closed with an offer of further help, all before answering. The rule now lists the
+     * omissions explicitly and gives one-word examples, and it sits LAST because recency carries
+     * weight with these models.
+     */
+    @Test
+    fun `brevity is the default and says what to stop doing`() {
+        val rules = voiceAgentRules(fullToolset, confirmationWording = "spoken")
+        assertTrue(rules.contains("FEWEST words"), rules.takeLast(300))
+        assertTrue(rules.trimEnd().endsWith("required to get."), "it must come last: ${rules.takeLast(200)}")
+        for (habit in listOf("do not restate", "do not narrate", "anything else")) {
+            assertTrue(
+                rules.contains(habit, ignoreCase = true),
+                "the rule must name what to stop: '$habit' missing",
+            )
+        }
+    }
+
+    /**
+     * The old rule asked for a preamble before EVERY slow call, and the preamble usually outran the
+     * answer. Silence only needs explaining when it lasts long enough to look broken.
+     */
+    @Test
+    fun `narration is limited to genuinely slow work`() {
+        val rules = voiceAgentRules(fullToolset, confirmationWording = "spoken")
+        assertTrue(rules.contains("genuinely slow"), rules)
+        assertTrue(rules.contains("just do it"), "quick work needs no announcement: $rules")
+        // Dropped by accident once while rewriting this rule; without it, build logs get read aloud.
+        assertTrue(rules.contains("Never read raw terminal output aloud"), rules)
+    }
+
     @Test
     fun `optional read tools are only named when the surface has them`() {
         val minimal = voiceAgentRules(setOf("read_scrollback"), confirmationWording = "verbal")

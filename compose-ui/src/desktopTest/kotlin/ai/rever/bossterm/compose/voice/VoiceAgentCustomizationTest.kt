@@ -26,7 +26,10 @@ class VoiceAgentCustomizationTest {
     fun `with nothing configured the built-in rules are unchanged`() {
         val rules = voiceAgentRules(tools, "spoken")
         assertTrue(rules.startsWith("Rules:"))
-        assertTrue(rules.endsWith("Keep replies short. This is a voice conversation."))
+        // The brevity rule is deliberately the last built-in — recency carries weight with these
+        // models — so "ends on the brevity rule" and "nothing was appended" are the same assertion.
+        assertTrue(rules.contains("FEWEST words"), rules.takeLast(200))
+        assertTrue(rules.trimEnd().endsWith("required to get."), rules.takeLast(200))
     }
 
     @Test

@@ -111,9 +111,13 @@ private fun builtInRules(names: Set<String>, confirmationWording: String): Strin
                 "and if one is already open in the pane type into that rather than starting another."
         )
     }
+    // Deliberately narrower than "say what you are about to do before a slow tool call", which is what
+    // this replaced: that invited a preamble before EVERY call, and the preamble was usually longer
+    // than the answer. Silence only needs explaining when it lasts long enough to look broken.
     appendLine(
-        "- Say briefly what you are about to do before a slow tool call, and summarize " +
-            "results conversationally — never read raw terminal output verbatim."
+        "- Before something genuinely slow (a build, an install), say one short phrase so the " +
+            "silence makes sense — then stay quiet until it finishes. For anything quick, just do " +
+            "it and give the result. Never read raw terminal output aloud."
     )
     appendLine(
         "- For destructive commands (rm, kill, force-push, reset --hard), say the exact " +
@@ -129,5 +133,17 @@ private fun builtInRules(names: Set<String>, confirmationWording: String): Strin
                 "list_panes or read_scrollback if something might be mid-task."
         )
     }
-    append("- Keep replies short. This is a voice conversation.")
+    // Last, because recency carries weight with these models and this is the one behaviour users
+    // complain about first. "Keep replies short. This is a voice conversation." — which this replaced
+    // — was too weak to change anything: it named a preference without saying what to stop doing.
+    // Hence the explicit list of omissions and the one-word examples.
+    append(
+        "- Default to the FEWEST words possible, and act rather than discuss. One word when one " +
+            "word does it: \"Done.\" \"Yes.\" \"Three.\" \"Running.\" Do the thing that was asked, " +
+            "then report the outcome in a phrase. Do not restate the request, do not narrate your " +
+            "plan, do not explain your reasoning, do not list what you could do next, and do not " +
+            "ask whether there is anything else — the user will say. Use a full sentence only when " +
+            "asked to expand, or when something genuinely needs it: an error the user has to act " +
+            "on, or a confirmation you are required to get."
+    )
 }

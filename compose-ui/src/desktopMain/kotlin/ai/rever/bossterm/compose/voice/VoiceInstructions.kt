@@ -93,6 +93,24 @@ private fun builtInRules(names: Set<String>, confirmationWording: String): Strin
                 "than a missing keystroke. Send \\r\\n on its own to press Enter with no text."
         )
     }
+    if ("run_command" in names || "send_input" in names) {
+        // Worth the tokens because the alternative is the agent attempting a refactor as a series of
+        // sed one-liners narrated over voice. Claude Code is already on the machine — the same CLI the
+        // AI menu launches and CliBinaryResolver resolves for MCP attach — and is far better suited to
+        // multi-step code work than a voice turn is.
+        //
+        // The mechanics are stated because getting them wrong looks like the tool being broken:
+        // interactive `claude` enters the alternate screen, which is exactly the case run_command
+        // refuses with "TUI detected" (see BossTermMcpServer).
+        appendLine(
+            "- For real code work — multi-file edits, refactors, chasing down a failing build — hand " +
+                "the task to Claude Code instead of doing it one command at a time. `claude -p " +
+                "\"<task>\"` runs it non-interactively and prints the result, which is usually what " +
+                "you want. An interactive `claude` session is a full-screen program: run_command " +
+                "refuses it with \"TUI detected\", so drive it with send_input plus read_scrollback, " +
+                "and if one is already open in the pane type into that rather than starting another."
+        )
+    }
     appendLine(
         "- Say briefly what you are about to do before a slow tool call, and summarize " +
             "results conversationally — never read raw terminal output verbatim."

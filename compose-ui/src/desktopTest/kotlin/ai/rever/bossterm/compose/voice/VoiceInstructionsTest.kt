@@ -82,6 +82,27 @@ class VoiceInstructionsTest {
         assertFalse(rules.contains("does not press Enter"), rules)
     }
 
+    /**
+     * Heavy code work goes to Claude Code, not to a series of one-liners narrated over voice.
+     *
+     * The mechanics are part of the claim: interactive `claude` enters the alternate screen, which is
+     * precisely what run_command refuses with "TUI detected", so an agent told only "use claude" would
+     * hit that refusal and report the feature as broken.
+     */
+    @Test
+    fun `the agent is pointed at Claude Code for real code work`() {
+        val rules = voiceAgentRules(fullToolset, confirmationWording = "spoken")
+        assertTrue(rules.contains("claude -p"), "the non-interactive form must be named: $rules")
+        assertTrue(rules.contains("TUI detected"), "and why run_command will not drive it: $rules")
+    }
+
+    @Test
+    fun `a surface that cannot run anything is not told about Claude Code`() {
+        val readOnly = VoiceToolCatalog.ALL.filter { !it.write }.map { it.name }.toSet()
+        val rules = voiceAgentRules(readOnly, confirmationWording = "verbal")
+        assertFalse(rules.contains("claude"), "no way to launch it, so naming it sends it nowhere")
+    }
+
     @Test
     fun `optional read tools are only named when the surface has them`() {
         val minimal = voiceAgentRules(setOf("read_scrollback"), confirmationWording = "verbal")

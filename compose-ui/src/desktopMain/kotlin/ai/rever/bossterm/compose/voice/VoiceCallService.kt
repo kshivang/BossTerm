@@ -537,11 +537,6 @@ internal class VoiceCallService(
     }
 
     /**
-     * Drop this service's calls past the duration ceiling, returning how many of them the host had
-     * been told about. Filters on owner like every other mutation here — the sweep was the one place
-     * that reaped other shares' entries.
-     */
-    /**
      * Retire calls past the duration ceiling; @return how many of OUR OWN were announced, so the
      * caller can pair an "ended" with each "started".
      *

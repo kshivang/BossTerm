@@ -4,6 +4,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * The host's only PLATFORM-INDEPENDENT signal that a remote viewer's agent is on this machine.
@@ -52,6 +53,35 @@ class RemoteVoiceCallsTest {
         // And a real call after that still registers, rather than starting from a negative debt.
         RemoteVoiceCalls.onActivity("session-a", started = true)
         assertEquals(1, RemoteVoiceCalls.active.value)
+    }
+
+    /**
+     * The caller is a share's WebSocket receive loop — closeCall() runs there when a viewer sends
+     * voiceEnd or drops. On macOS the notification spawns `osascript` and blocks on waitFor(), so
+     * doing it inline stalled every inbound frame for that viewer (keystrokes, resize, focus) and
+     * parked a Ktor worker behind a subprocess.
+     */
+    @Test
+    fun `recording a call never blocks the caller`() {
+        val elapsed = mutableListOf<Long>()
+        repeat(6) { i ->
+            val began = System.nanoTime()
+            RemoteVoiceCalls.onActivity("session-$i", started = i % 2 == 0)
+            elapsed.add((System.nanoTime() - began) / 1_000_000)
+        }
+        // Generous: a StateFlow write is microseconds, and a spawned osascript is tens of ms at best.
+        // The point is that nothing here waits on a subprocess.
+        assertTrue(elapsed.all { it < 150 }, "onActivity must return immediately; saw ${elapsed}ms")
+    }
+
+    @Test
+    fun `the count is correct the instant the call returns`() {
+        // The indicator is a security signal, so it cannot lag behind the event it reports even by
+        // one dispatch — only the toast is allowed to be asynchronous.
+        RemoteVoiceCalls.onActivity("s", started = true)
+        assertEquals(1, RemoteVoiceCalls.active.value)
+        RemoteVoiceCalls.onActivity("s", started = false)
+        assertEquals(0, RemoteVoiceCalls.active.value)
     }
 
     @Test

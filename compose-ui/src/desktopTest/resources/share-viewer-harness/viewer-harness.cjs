@@ -984,8 +984,22 @@ const scenarios = {
 
     // The bar exists only when the host can actually take a call.
     assert.ok(!el("voicebar").classList.contains("on"), "no bar before the host reports voice status");
+
+    // A keyless host still OWES a controller an explanation: the host computes a reason and both
+    // servers redact it per viewer precisely so a controller can be told. Silently showing nothing
+    // is the undiagnosable-from-the-far-end case that field exists to fix.
     socket.deliver({ t: "voiceStatus", available: false, reason: "no_key" });
-    assert.ok(!el("voicebar").classList.contains("on"), "a keyless host must not show the bar");
+    assert.ok(el("voicebar").classList.contains("on"), "a controller is told why there is no call");
+    assert.strictEqual(el("voicecallbtn").className, "disabled", "but cannot start one");
+    assert.ok(/set up/i.test(el("voicecallbtn").title), el("voicecallbtn").title);
+    el("voicecallbtn").onclick();
+    assert.strictEqual(sentOfType("voiceStart").length, 0, "and clicking it does nothing");
+
+    // A VIEW-ONLY viewer gets reason:null — host configuration is not theirs to see — so they get
+    // no bar at all rather than an explanation they could not act on.
+    socket.deliver({ t: "voiceStatus", available: false });
+    assert.ok(!el("voicebar").classList.contains("on"), "no reason → no bar");
+
     socket.deliver({ t: "voiceStatus", available: true });
     assert.ok(el("voicebar").classList.contains("on"), "an available host must show the bottom bar");
     assert.strictEqual(el("voicecallbtn").style.display, "inline-flex", "idle shows the Call button");
@@ -1059,8 +1073,12 @@ const scenarios = {
     // The host's master switch is a kill switch, not just a hidden button.
     socket.deliver({ t: "voiceStatus", available: false, reason: "disabled" });
     assert.ok(!el("voicecall").classList.contains("on"), "revoking voice must end a live call");
-    assert.ok(!el("voicebar").classList.contains("on"), "and take the bar away");
+    // The bar stays, disabled, saying why — a caller whose call just vanished is exactly who needs
+    // the explanation, and a controller is allowed to know the host turned it off.
+    assert.strictEqual(el("voicecallbtn").className, "disabled", "and cannot be restarted");
+    assert.strictEqual(el("voicelabel").textContent, "Voice off", el("voicelabel").textContent);
     socket.deliver({ t: "voiceStatus", available: true });
+    assert.strictEqual(el("voicecallbtn").className, "", "turning it back on re-enables the button");
 
     // End call tears down and restores the idle button.
     el("voicecallbtn").onclick();

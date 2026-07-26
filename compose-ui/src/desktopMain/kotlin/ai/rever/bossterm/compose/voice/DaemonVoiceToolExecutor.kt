@@ -32,16 +32,24 @@ internal class DaemonVoiceToolExecutor(
         val scope = inScopeSessionIds()
         // Same fallback as execute(): a stale id shouldn't silently drop the marker.
         val viewing = defaultTabId?.takeIf { it in scope } ?: anchorSessionId()?.takeIf { it in scope }
+        // Same sanitizing as the GUI executor: these fields are terminal-controlled and this string
+        // is baked into the agent's system instructions. See VoiceContextSnapshot.
+        val inScope = host.list().filter { it.id in scope }
         val sb = StringBuilder()
-        for (s in host.list()) {
-            if (s.id !in scope) continue
-            sb.append("- \"").append(s.title).append("\" (tab_id ").append(s.id).append(')')
-            s.cwd?.let { sb.append(", cwd ").append(it) }
-            if (!s.alive) sb.append(" [exited]")
-            if (s.id == viewing) sb.append(" ← the user is viewing this tab")
+        for (session in inScope.take(VoiceContextSnapshot.MAX_ENTRIES)) {
+            sb.append("- \"").append(VoiceContextSnapshot.field(session.title))
+                .append("\" (tab_id ").append(session.id).append(')')
+            VoiceContextSnapshot.field(session.cwd).takeIf { it.isNotEmpty() }
+                ?.let { sb.append(", cwd ").append(it) }
+            if (!session.alive) sb.append(" [exited]")
+            if (session.id == viewing) sb.append(" ← the user is viewing this tab")
             sb.append('\n')
         }
-        return sb.toString().trimEnd()
+        return VoiceContextSnapshot.withOverflowNote(
+            sb.toString().trimEnd(),
+            shown = minOf(inScope.size, VoiceContextSnapshot.MAX_ENTRIES),
+            total = inScope.size,
+        )
     }
 
     override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?): String {

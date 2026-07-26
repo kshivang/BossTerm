@@ -26,7 +26,6 @@ import ai.rever.bossterm.compose.share.resyncSentinel
 import ai.rever.bossterm.compose.share.webViewerScrollbackLines
 import ai.rever.bossterm.compose.share.webTerminalFontFamily
 import ai.rever.bossterm.compose.voice.DaemonVoiceToolExecutor
-import ai.rever.bossterm.compose.notification.NotificationService
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.voice.StampCachedValue
 import ai.rever.bossterm.compose.voice.VoiceAgentStorage
@@ -370,6 +369,12 @@ class DaemonShareServer(
                 runCatching { it.outbox.close() }
             }
             def.viewers.clear()
+            // Belt and braces, matching MirrorShare.stop(): the loop above only reaches tokens still
+            // attached to a viewer, and closeCalls() is exactly the guard for one whose viewer was
+            // already removed. The map is process-wide, so a stray entry would hold one of
+            // MAX_LIVE_CALLS until its 30-minute ceiling. (No executor dispose(): the daemon
+            // executor's is genuinely a no-op.)
+            runCatching { def.voiceService.closeCalls() }
             val op = def.claimRemoteOp() // supersede any in-flight establish so it self-cleans
             val port = boundPort // capture BEFORE stopEngineLocked() may null it (else serve/funnel teardown is skipped)
             scope.launch(Dispatchers.IO) { teardownRemote(def, port, op) }

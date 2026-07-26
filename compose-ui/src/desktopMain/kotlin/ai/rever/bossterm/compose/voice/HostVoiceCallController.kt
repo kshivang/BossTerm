@@ -637,15 +637,20 @@ internal class HostVoiceCallController(
         }
     }
 
+    /** Same clip lengths as `voiceDescribeTool`; VoiceCrossLanguageContractTest asserts they agree. */
+    private fun clip(text: String, max: Int) = if (text.length > max) text.take(max) + "…" else text
+
     /** NOTE: mirrored by `voiceDescribeTool` in viewer.js for the share surface — keep both in step. */
     private fun describeTool(name: String, argsJson: String?): String {
         val args = runCatching { json.parseToJsonElement(argsJson ?: "{}").jsonObject }.getOrNull()
         fun arg(key: String) = args?.get(key)?.jsonPrimitive?.content
         return when (name) {
-            "run_command" -> arg("script")?.let { "Running: ${it.take(48)}" } ?: "Running a command…"
+            "run_command" -> arg("script")?.let { "Running: ${clip(it, 60)}" } ?: "Running a command…"
             "read_scrollback" -> "Reading the terminal…"
-            "search_output" -> arg("pattern")?.let { "Searching for “${it.take(32)}”…" } ?: "Searching…"
-            "send_input" -> "Typing…"
+            "search_output" -> arg("pattern")?.let { "Searching for “${clip(it, 40)}”…" } ?: "Searching…"
+            // Show WHAT is being typed, like the viewer does: "Typing…" alone tells the user nothing
+            // about a tool that is about to put characters into their shell.
+            "send_input" -> arg("text")?.let { "Typing: ${clip(it.replace("\n", "⏎"), 40)}…" } ?: "Typing…"
             "send_signal" -> arg("signal")?.let { "Sending $it…" } ?: "Sending a signal…"
             "get_last_command" -> "Checking the last command…"
             "list_panes" -> "Looking at the split panes…"

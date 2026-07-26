@@ -119,6 +119,22 @@ class VoiceCrossLanguageContractTest {
         assertEquals(emptyList(), unknown, "viewer.js describes tools that do not exist: $unknown")
     }
 
+    /**
+     * Not just "both mention the tool" — the CLIP LENGTHS too. They had drifted: the viewer previewed
+     * a command to 60 chars and the typed text to 40, while the host truncated at 48 and said a bare
+     * "Typing…". Same call, same product, two different captions depending which surface you were on.
+     */
+    @Test
+    fun `the two surfaces clip their captions to the same lengths`() {
+        val describe = viewerJs.substringAfter("function voiceDescribeTool").substringBefore("\n  }")
+        for ((label, len) in listOf("script" to 60, "pattern" to 40, "text" to 40)) {
+            assertTrue(
+                describe.contains("a.$label.slice(0, $len)"),
+                "viewer.js must clip $label at $len to match HostVoiceCallController.describeTool",
+            )
+        }
+    }
+
     private companion object {
         /** Every code emitted by MirrorShare, DaemonShareServer and VoiceCallService. */
         val EMITTED_CODES = listOf(

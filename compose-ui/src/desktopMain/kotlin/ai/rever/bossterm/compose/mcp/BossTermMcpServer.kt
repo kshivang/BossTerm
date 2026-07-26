@@ -157,8 +157,14 @@ class BossTermMcpServer(
     /**
      * Build and return a fully configured [Server] with all BossTerm tools
      * registered. Caller is responsible for connecting a transport.
+     *
+     * @param includeEmbedderTools run [BossTermMcpConfig.additionalTools]. Default true — the
+     *   embedder's own tools belong on the server their app exposes. Boss Calling passes false: it
+     *   builds a private server per share and per in-app call, and its tool surface is filtered to
+     *   the voice catalog, so running an arbitrary registration callback repeatedly would be pure
+     *   side effect for tools nothing can reach.
      */
-    fun createServer(): Server {
+    fun createServer(includeEmbedderTools: Boolean = true): Server {
         val server = Server(
             serverInfo = Implementation(
                 name = config.serverName,
@@ -200,7 +206,13 @@ class BossTermMcpServer(
 
         // Embedder hook: register app-specific tools after built-ins. Names
         // are NOT prefixed — embedder owns them.
-        config.additionalTools(server)
+        //
+        // Skipped for the voice surface. `additionalTools` is arbitrary embedder code, and the voice
+        // executor builds one of these per share plus one per in-app call — so the hook ran N extra
+        // times, doing whatever it does (capturing state, subscribing, allocating) for tools that can
+        // never be called, since the voice surface filters against VoiceToolCatalog. Inheriting the
+        // embedder's CONFIG (allowWriteTools, toolNamePrefix) is the part that matters and is kept.
+        if (includeEmbedderTools) config.additionalTools(server)
 
         return server
     }

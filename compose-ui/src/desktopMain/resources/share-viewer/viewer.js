@@ -260,8 +260,27 @@
   // meter's colour class. Called on every state change (status, connect, speaking, tool, mute).
   function updateVoiceBar() {
     var available = !!(voice.status && voice.status.available);
-    voiceBarEl.classList.toggle("on", available);
-    if (!available) { voiceCallEl.classList.remove("on"); layoutForKeyboard(); return; }
+    var reason = voice.status && voice.status.reason;
+    if (!available) {
+      voiceCallEl.classList.remove("on");
+      // Say WHY, when the host told us. `reason` is redacted to null for view-only viewers by
+      // design — host configuration is not theirs to see — so an explanation only ever appears for
+      // someone who could act on it. Without this the host computed a reason, both servers
+      // redacted it per viewer, and the viewer silently dropped it: "no Call button at all" was
+      // exactly the undiagnosable-from-the-far-end case the field was added for.
+      if (reason) {
+        voiceBarEl.classList.add("on");
+        voiceCallBtnEl.style.display = "inline-flex";
+        voiceCallBtnEl.className = "disabled";
+        voiceCallBtnEl.title = voiceErrorText({ code: reason });
+        voiceLabelEl.textContent = reason === "no_key" ? "Voice not set up" : "Voice off";
+      } else {
+        voiceBarEl.classList.remove("on");
+      }
+      layoutForKeyboard();
+      return;
+    }
+    voiceBarEl.classList.add("on");
     var inCall = voice.state !== "idle";
     voiceCallBtnEl.style.display = inCall ? "none" : "inline-flex";
     voiceCallEl.classList.toggle("on", inCall);
@@ -364,11 +383,23 @@
     var bars = voiceMeterBars();
     for (var i = 0; i < bars.length; i++) bars[i].style.height = "3px";
   }
+  // ~25Hz, not per animation frame. Each repaint writes 12 inline style.height values, and the bars
+  // carry `transition: height 70ms` — so at 60Hz that is ~720 style mutations a second next to
+  // xterm's own rendering, for a meter whose CSS transition already smooths it. Indistinguishable
+  // to look at, a third of the work, and it matters most on the phone where the viewer is used.
+  var VOICE_METER_INTERVAL_MS = 40;
   function voiceMeterRun() {
     if (voiceMeter.raf) return;
+    var lastPaint = 0;
     var tick = function () {
       voiceMeter.raf = null;
       if (voice.state === "idle") { voiceMeterFlat(); return; }
+      var nowMs = Date.now();
+      if (nowMs - lastPaint < VOICE_METER_INTERVAL_MS) {
+        voiceMeter.raf = requestAnimationFrame(tick);
+        return;
+      }
+      lastPaint = nowMs;
       // While the agent talks, meter ITS track; otherwise the mic (flat when muted).
       var an = voice.speaking ? (voiceMeter.remote || voiceMeter.mic)
              : (voice.muted ? null : voiceMeter.mic);

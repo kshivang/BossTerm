@@ -70,7 +70,10 @@ internal class GuiVoiceToolExecutor(
     // createServer()'s return value is deliberately unused: the wrapper owns the map, and every
     // read goes through its locked accessors.
     @Volatile private var built = false
-    private val serverInstance: Any by lazy { built = true; wrapper.createServer() }
+    // includeEmbedderTools = false: see createServer's KDoc. The embedder's CONFIG is inherited (that
+    // is the point of using their BossTermMcpConfig); their registration callback is not, because
+    // this server is per-share/per-call and its tools are filtered to the voice catalog anyway.
+    private val serverInstance: Any by lazy { built = true; wrapper.createServer(includeEmbedderTools = false) }
     @Volatile private var appliedDisabled: Set<String>? = null
 
     /**
@@ -133,17 +136,25 @@ internal class GuiVoiceToolExecutor(
         // Same fallback as execute(): a stale or foreign id would otherwise silently drop the
         // "the user is viewing this tab" marker instead of pointing at the anchor.
         val viewing = defaultTabId?.takeIf { it in scope } ?: anchorTabId()?.takeIf { it in scope }
+        // Titles and cwds are TERMINAL-CONTROLLED and this string becomes part of the agent's system
+        // instructions — see VoiceContextSnapshot for why that is sanitized rather than trusted.
+        val inScope = registry.allTabs().filter { it.id in scope }
         val sb = StringBuilder()
-        for (tab in registry.allTabs()) {
-            if (tab.id !in scope) continue
+        for (tab in inScope.take(VoiceContextSnapshot.MAX_ENTRIES)) {
             val active = registry.findState(tab.id)?.activeTabId == tab.id
-            sb.append("- \"").append(tab.title.value).append("\" (tab_id ").append(tab.id).append(')')
-            tab.workingDirectory.value?.let { sb.append(", cwd ").append(it) }
+            sb.append("- \"").append(VoiceContextSnapshot.field(tab.title.value))
+                .append("\" (tab_id ").append(tab.id).append(')')
+            VoiceContextSnapshot.field(tab.workingDirectory.value).takeIf { it.isNotEmpty() }
+                ?.let { sb.append(", cwd ").append(it) }
             if (active) sb.append(" [active]")
             if (tab.id == viewing) sb.append(" ← the user is viewing this tab")
             sb.append('\n')
         }
-        return sb.toString().trimEnd()
+        return VoiceContextSnapshot.withOverflowNote(
+            sb.toString().trimEnd(),
+            shown = minOf(inScope.size, VoiceContextSnapshot.MAX_ENTRIES),
+            total = inScope.size,
+        )
     }
 
     override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?): String {

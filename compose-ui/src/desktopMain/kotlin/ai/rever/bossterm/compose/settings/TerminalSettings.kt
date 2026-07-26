@@ -1063,10 +1063,6 @@ data class TerminalSettings(
     val voiceCallShareEnabled: Boolean = true,
 
     /**
-     * OpenAI Realtime model for Boss Calling. Defaults to the current top-tier realtime model;
-     * the viewer never sends this — it is baked into the ephemeral secret the host mints.
-     */
-    /**
      * Run the agent's shell commands in the pane the user is LOOKING at, when nothing is running
      * there, instead of run_command's dedicated scratch split.
      *
@@ -1087,6 +1083,10 @@ data class TerminalSettings(
      */
     val voiceAgentExtraInstructions: String = "",
 
+    /**
+     * OpenAI Realtime model for Boss Calling. Defaults to the current top-tier realtime model;
+     * the viewer never sends this — it is baked into the ephemeral secret the host mints.
+     */
     val voiceCallModel: String = "gpt-realtime-2.1",
 
     /** OpenAI Realtime voice for Boss Calling. */

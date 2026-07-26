@@ -7,7 +7,6 @@ import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.theme.ColorPalette
 import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
-import ai.rever.bossterm.compose.notification.NotificationService
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.tabs.TerminalTab
@@ -104,7 +103,13 @@ class MirrorShare(
         )
     }
 
-    /** Set the first time a viewer actually places a call — see [stop]. */
+    /**
+     * Set once a call has actually been PLACED on this share — see [stop].
+     *
+     * Set from the service's own token callback, not from the arrival of a voiceStart frame: a
+     * view-only viewer spamming voiceStart is refused with not_controller every time, and flagging
+     * on the frame made those count, so the flag stopped meaning what it says.
+     */
     @Volatile private var voiceStarted = false
 
     private val voiceService by lazy {
@@ -439,7 +444,6 @@ class MirrorShare(
             is ClientMessage.Focus -> { rememberVoiceTab(vc, msg.tabId); return }
             is ClientMessage.VoiceStart -> {
                 rememberVoiceTab(vc, msg.activeTabId)
-                voiceStarted = true
                 voiceService.handleStart(
                     msg,
                     vc.canControl,
@@ -451,7 +455,10 @@ class MirrorShare(
                         voiceService.closeCall(vc.voiceCallToken)
                         vc.voiceCallToken = null
                     },
-                    onCallTokenChanged = { token -> vc.voiceCallToken = token },
+                    onCallTokenChanged = { token ->
+                        voiceStarted = true // a slot was reserved: this share really did host a call
+                        vc.voiceCallToken = token
+                    },
                     // Compare-and-clear: a mint that fails late must not wipe a token a redial has
                     // since installed, or the newer call ends up audible and billed with no tools.
                     clearCallTokenIfCurrent = { stale -> vc.clearVoiceCallTokenIfCurrent(stale) },

@@ -88,7 +88,10 @@
     #voicehang { border-color: #d9534f !important; color: #e88 !important; }
     #voicehang:active { background: #d9534f !important; color: #fff !important; }
     /* transient call status line (tool running / errors), bottom-centered over the stage */
+    /* pointer-events:none — it sits bottom-centre over the stage for 4-6s and every tool call raises
+       one, which on a phone is exactly where you tap. It is a notice, never a target. */
     #voicetoast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 18px; z-index: 35;
+                  pointer-events: none;
                   display: none; max-width: 80vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
                   padding: 7px 14px; border-radius: 8px; background: #2b2b2b; border: 1px solid #505050;
                   color: #ddd; font-size: 12px; box-shadow: 0 6px 18px rgba(0,0,0,0.55); }

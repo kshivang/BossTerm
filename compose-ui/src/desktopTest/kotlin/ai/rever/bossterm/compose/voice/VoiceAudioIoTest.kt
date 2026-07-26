@@ -126,7 +126,12 @@ class VoiceAudioIoTest {
         override fun stop() { if (throwOnStop) throw IllegalStateException("mixer says no"); started.set(false) }
         override fun drain() {}
         override fun flush() { if (throwOnFlush) throw IllegalStateException("mixer says no"); flushes++ }
-        override fun available(): Int = 0
+        /**
+         * A real line reports how much SPACE is free. This fake writes through immediately, so its
+         * buffer is always empty — available() == bufferSize. Returning 0 meant "completely full",
+         * which made queuedPlaybackMs count a phantom 85ms of audio that had already played.
+         */
+        override fun available(): Int = bufferSize
         override fun getBufferSize(): Int = 4096
         override fun getFormat(): AudioFormat = JavaSoundVoiceAudioIo.FORMAT
         override fun getFramePosition(): Int = 0

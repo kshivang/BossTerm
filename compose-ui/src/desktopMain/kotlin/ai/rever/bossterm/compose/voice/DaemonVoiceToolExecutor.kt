@@ -35,6 +35,10 @@ internal class DaemonVoiceToolExecutor(
      * The daemon answers every one of these itself rather than through an MCP handler, so nothing
      * else applies `disabledMcpTools` on this path — the GUI executor inherits it from
      * `createServer()`, and this one had no equivalent.
+     *
+     * Matched on the BARE name, unlike the GUI executor which checks prefixed and bare. Correct
+     * here because the daemon has no embedder and therefore no `toolNamePrefix` — worth saying,
+     * since the asymmetry otherwise reads as one of them being wrong.
      */
     override fun tools(): List<VoiceToolDef> {
         val disabled = settings().disabledMcpTools.toSet()

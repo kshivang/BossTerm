@@ -590,8 +590,10 @@ internal class VoiceCallService(
         sweeper = scope.launch {
             while (true) {
                 delay(EXPIRY_SWEEP_MS)
-                val expired = synchronized(liveCalls) { expireCalls(nowMs()) }
-                repeat(expired) { onCallActivity(false) }
+                synchronized(liveCalls) { expiredAnnouncements += expireCalls(nowMs()) }
+                // The one drain point, so the caller notifications queued under the lock cannot be
+                // stranded by a path that only remembered the host's counter.
+                flushExpiredAnnouncements()
                 val mine = synchronized(liveCalls) {
                     liveCalls.count { it.value.owner === this@VoiceCallService }
                 }
@@ -648,13 +650,19 @@ internal class VoiceCallService(
     /** Pending "call ended" reports from ceiling expiries, fired outside the lock. */
     private var expiredAnnouncements = 0
 
+    /** Tokens whose callers still need telling — drained by [flushExpiredAnnouncements]. */
+    private val expiredTokens = ArrayDeque<String>()
+
     private fun flushExpiredAnnouncements() {
-        val pending = synchronized(liveCalls) {
+        val (pending, tokens) = synchronized(liveCalls) {
             val n = expiredAnnouncements
             expiredAnnouncements = 0
-            n
+            val t = expiredTokens.toList()
+            expiredTokens.clear()
+            n to t
         }
         repeat(pending) { onCallActivity(false) }
+        tokens.forEach { token -> runCatching { onCallExpired(token) } }
     }
 
     /**
@@ -672,9 +680,13 @@ internal class VoiceCallService(
     private fun expireCalls(now: Long): Int {
         val expired = liveCalls.filterValues { it.owner === this && now - it.issuedAt > MAX_CALL_DURATION_MS }
         expired.keys.forEach { liveCalls.remove(it) }
-        // Tell the CALLER too, not just the host's counter: at the ceiling their tools simply stop,
-        // and silence there reads to the agent as a broken tool rather than an ended call.
-        expired.keys.forEach { token -> runCatching { onCallExpired(token) } }
+        // QUEUED, not invoked: this runs under the process-wide liveCalls monitor, and both servers'
+        // callbacks scan viewers and take the outbox's own lock (which on overflow closes the
+        // connection). A foreign callback plus a second lock under a monitor every share in the
+        // process shares is a lock-ordering hazard one refactor from being real. onCallActivity was
+        // deferred for exactly this reason — that is what expiredAnnouncements is — and this is its
+        // sibling, so it gets the same treatment.
+        expiredTokens += expired.keys
         return expired.values.count { it.announced }
     }
 

@@ -692,6 +692,47 @@ class HostVoiceCallControllerTest {
         c.end()
     }
 
+    /**
+     * A rejected key must SAY so on the in-app surface.
+     *
+     * The default openSocket ends in CompletableFuture.join(), which wraps everything in
+     * CompletionException — so a 401 at the WebSocket handshake surfaced as "Couldn't reach OpenAI
+     * (CompletionException)" on the surface a user hits first when setting the feature up.
+     * FATAL_ERROR_CODES has invalid_api_key, but that needs a Realtime error EVENT, and with a bad
+     * Bearer no socket ever opens. Nothing pinned the classification, which is why it went unseen.
+     */
+    @Test
+    fun `a rejected key is reported as a rejected key, not a network error`() {
+        val refusing = object : RealtimeTransport {
+            override suspend fun connect(
+                model: String,
+                apiKey: String,
+                events: (String) -> Unit,
+                onClosed: (String?) -> Unit,
+            ): Unit = throw java.io.IOException("handshake failed")
+            override fun send(json: String, evictable: Boolean) = false
+            override fun close() {}
+        }
+        val c = HostVoiceCallController(
+            scope = CoroutineScope(Dispatchers.Default),
+            executor = FakeExecutor(),
+            transport = refusing,
+            audio = FakeAudio(),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-bad" },
+        )
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Error })
+        // A plain IO failure IS a network problem, so it keeps the generic wording...
+        assertTrue(c.state.value.error?.contains("Couldn't reach OpenAI") == true, c.state.value.error ?: "")
+
+        // ...but the message must never be the wrapper's own class name, which is what join() throws.
+        assertFalse(
+            c.state.value.error?.contains("CompletionException") == true,
+            "the wrapper leaked instead of its cause: ${c.state.value.error}",
+        )
+    }
+
     @Test
     fun `a long in-app call stops at the duration ceiling`() {
         var clock = 1_000L

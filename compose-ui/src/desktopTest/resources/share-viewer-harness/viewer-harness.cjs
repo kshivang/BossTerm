@@ -1177,6 +1177,8 @@ const scenarios = {
       "Searching for “" + "y".repeat(40) + "”…"
     );
     assert.strictEqual(caption("run_command", { script: "ls -la" }, "c5"), "Running: ls -la");
+    // No arguments to show — both surfaces say the same generic thing rather than naming the tool.
+    assert.strictEqual(caption("list_tabs", {}, "c6"), "Working…");
   },
 
   /**

@@ -204,6 +204,10 @@ class VoiceCrossLanguageContractTest {
                 "Searching for “${"y".repeat(40)}”…",
             ),
             Triple("run_command", """{"script":"ls -la"}""", "Running: ls -la"),
+            // No arguments to show: both fall back to the same generic caption rather than naming
+            // the raw tool id at the user.
+            Triple("list_tabs", "{}", "Working…"),
+            Triple("some_unknown_tool", "{}", "Working…"),
         )
 
         /** Every code emitted by MirrorShare, DaemonShareServer and VoiceCallService. */

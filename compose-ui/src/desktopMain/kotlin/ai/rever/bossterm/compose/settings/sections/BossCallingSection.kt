@@ -32,6 +32,7 @@ import androidx.compose.material.ButtonDefaults
 import androidx.compose.material.Text
 import androidx.compose.material.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -245,9 +246,18 @@ internal fun BossCallingSection(showAgentOptions: Boolean = true, statusLine: Bo
             delay(CROSS_PROCESS_REFRESH_MS)
         }
     }
+    // Optimistic: the poll is up to CROSS_PROCESS_REFRESH_MS behind, so rendering `onDisk` alone
+    // made a switch you just flipped visibly bounce back until the next read.
+    var pending by remember { mutableStateOf<TerminalSettings?>(null) }
+    val shown = pending ?: onDisk
+    LaunchedEffect(onDisk) { if (pending == onDisk) pending = null }
+
     BossCallingSection(
-        settings = onDisk,
-        onSettingsChange = { edited -> SettingsManager.instance.mergeChangedFields(onDisk, edited) },
+        settings = shown,
+        onSettingsChange = { edited ->
+            pending = edited
+            SettingsManager.instance.mergeChangedFields(onDisk, edited)
+        },
         showAgentOptions = showAgentOptions,
         statusLine = statusLine,
         keyPresentOverride = keyOnDisk,

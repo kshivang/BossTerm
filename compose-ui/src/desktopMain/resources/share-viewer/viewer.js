@@ -537,7 +537,9 @@
       if (name === "get_last_command") return "Checking the last command…";
       if (name === "list_panes") return "Looking at the split panes…";
     } catch (e) {}
-    return "Running: " + name + "…";
+    // "Working…", matching describeTool: a tool with no arguments to show is not necessarily being
+    // "run", and naming the raw tool id at the user is worse than saying nothing specific.
+    return "Working…";
   }
   // Function calls surface on the data channel BOTH as function_call_arguments.done and inside
   // response.done's output[] — handle both, dedupe by call_id.

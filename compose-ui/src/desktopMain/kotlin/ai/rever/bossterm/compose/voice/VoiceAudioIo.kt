@@ -267,7 +267,14 @@ internal class JavaSoundVoiceAudioIo(
         runCatching { playback?.flush() }
     }
 
-    override fun queuedPlaybackMs(): Int = bytesToMs(queuedBytes.get())
+    override fun queuedPlaybackMs(): Int {
+        // The LINE's buffer counts too. It is opened at CHUNK_BYTES * 16 — roughly 0.6s at 24kHz
+        // PCM16 — so measuring only our queue said "drained" while up to that much was still on its
+        // way to the speaker, and the bar cleared "Speaking" ahead of the audio by exactly the
+        // amount this feature is trying not to be wrong by.
+        val inLine = runCatching { playback?.let { it.bufferSize - it.available() } ?: 0 }.getOrDefault(0)
+        return bytesToMs(queuedBytes.get() + inLine.coerceAtLeast(0))
+    }
 
     /**
      * Open the speaker line + its drain thread on first use. Null when there is no output device.

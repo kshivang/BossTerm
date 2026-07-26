@@ -25,6 +25,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
+import java.net.http.WebSocketHandshakeException
 import java.util.Base64
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -215,7 +216,7 @@ internal class HostVoiceCallController(
                 // failure. Catching it as an Exception below would surface "Couldn't reach OpenAI".
                 throw e
             } catch (e: Exception) {
-                fail("Couldn't reach OpenAI (${e.javaClass.simpleName})")
+                fail(connectFailureMessage(e))
                 return@launch
             }
             // Re-check after every suspension point: the user may have hung up while we waited.
@@ -292,6 +293,24 @@ internal class HostVoiceCallController(
             }
             if (_state.value.phase != HostCallPhase.Live) return@launch
             startLimits()
+        }
+    }
+
+    /**
+     * What to tell the user when the socket never opened.
+     *
+     * A rejected key is by far the most likely cause and the one they can fix, so it gets the same
+     * words the share path already uses ("The host's OpenAI key was rejected") rather than a class
+     * name. The handshake exception carries the status code; everything else stays generic, since a
+     * JVM exception type is not something a user can act on.
+     */
+    private fun connectFailureMessage(e: Throwable): String {
+        val status = (e as? WebSocketHandshakeException)?.response?.statusCode()
+        return when (status) {
+            401, 403 -> "The host's OpenAI key was rejected — check it in Settings."
+            429 -> "OpenAI is rate-limiting this key — wait a moment and try again."
+            null -> "Couldn't reach OpenAI (${e.javaClass.simpleName})"
+            else -> "Couldn't reach OpenAI (HTTP $status)"
         }
     }
 
@@ -407,6 +426,13 @@ internal class HostVoiceCallController(
         val event = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
         when (event["type"]?.jsonPrimitive?.content) {
             "response.created" -> synchronized(roundLock) { responseOpen = true }
+
+            // A new turn starting means the last one's transient error is history. Only a completed
+            // tool round cleared `activity`, so a single non-fatal hiccup captioned the bar for the
+            // rest of a call that had no further tool calls.
+            "response.created" -> _state.update {
+                if (it.working) it else it.copy(activity = null)
+            }
 
             "response.output_audio.delta" -> {
                 val b64 = event["delta"]?.jsonPrimitive?.content ?: return

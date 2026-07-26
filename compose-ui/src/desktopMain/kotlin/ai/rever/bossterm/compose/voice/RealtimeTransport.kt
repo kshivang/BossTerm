@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets
 import java.net.http.HttpClient
 import java.net.http.WebSocket
 import java.time.Duration
+import java.util.concurrent.CompletionException
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -72,11 +73,20 @@ internal class JdkRealtimeTransport(
      */
     private val openSocket: suspend (url: String, apiKey: String, listener: WebSocket.Listener) -> WebSocket =
         { url, apiKey, listener ->
-            sharedClient.newWebSocketBuilder()
-                .header("Authorization", "Bearer $apiKey")
-                .connectTimeout(Duration.ofSeconds(15))
-                .buildAsync(URI.create(url), listener)
-                .join()
+            try {
+                sharedClient.newWebSocketBuilder()
+                    .header("Authorization", "Bearer $apiKey")
+                    .connectTimeout(Duration.ofSeconds(15))
+                    .buildAsync(URI.create(url), listener)
+                    .join()
+            } catch (e: CompletionException) {
+                // join() wraps everything, so a REJECTED KEY arrived at the controller as
+                // "Couldn't reach OpenAI (CompletionException)" — on the surface a user hits first
+                // when setting the feature up. FATAL_ERROR_CODES has invalid_api_key, but that only
+                // fires on a Realtime error EVENT, which needs a socket that opened; with a bad
+                // Bearer there is never one. Unwrap so the cause reaches the message.
+                throw e.cause ?: e
+            }
         },
 ) : RealtimeTransport {
 

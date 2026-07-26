@@ -34,6 +34,10 @@ internal object VoiceAgentStorage {
     // Starts false and is corrected off-thread: reading + parsing the file in the initializer put a
     // disk hit on whatever thread first touched this object — in practice the Compose thread, at
     // first composition of the status strip.
+    //
+    // The transient `false` is deliberate and self-healing: a share can briefly advertise `no_key`
+    // until the probe lands, and MirrorShare's combine() re-emits when it does. Worth knowing,
+    // because "the Call button appeared a second late" is otherwise a puzzling bug report.
     private val _keyPresentFlow = MutableStateFlow(false)
 
     init {
@@ -65,6 +69,7 @@ internal object VoiceAgentStorage {
      * cross-process flow) compare this and only re-read on a change, instead of decoding the JSON
      * on every tick.
      */
+    /** Collision-prone by construction; [STAMP_TRUST_TICKS] is the load-bearing mitigation. */
     fun keyStamp(file: File = defaultFile()): Long =
         if (file.isFile) file.lastModified() * 31 + file.length() else 0L
 

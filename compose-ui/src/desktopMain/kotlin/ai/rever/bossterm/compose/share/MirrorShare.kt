@@ -94,12 +94,17 @@ class MirrorShare(
 
     // Boss Calling: one service per share; its executor limits the agent's tool targets to
     // this share's scope. Lazy — no MCP machinery spins up until a viewer actually calls.
+    /** Held so [stop] can dispose it: the share owns one executor for its whole lifetime. */
+    private val voiceExecutor by lazy {
+        GuiVoiceToolExecutor(
+            inScopeTabIds = { voiceScopeTabIds() },
+            anchorTabId = { tabId },
+        )
+    }
+
     private val voiceService by lazy {
         VoiceCallService(
-            executor = GuiVoiceToolExecutor(
-                inScopeTabIds = { voiceScopeTabIds() },
-                anchorTabId = { tabId },
-            ),
+            executor = voiceExecutor,
             scope = coro,
             // In-process: answer from the reactive flow instead of re-reading + re-parsing
             // voice.json on every settings emission (status is recomputed per share).
@@ -212,6 +217,9 @@ class MirrorShare(
                 vc.voiceCallToken = null
             }
             voiceService.closeCalls() // belt and braces: now scoped to this service's own entries
+            // dispose() promises to run when a call ends; on this path the executor outlives
+            // individual calls, so the share's teardown is where that promise is kept.
+            voiceExecutor.dispose()
         }
         synchronized(taps) {
             taps.values.forEach(::disposeTap)

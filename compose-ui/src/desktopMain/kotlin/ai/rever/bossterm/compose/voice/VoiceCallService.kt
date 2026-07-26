@@ -157,24 +157,28 @@ internal class VoiceCallService(
             reply(ServerMessage.VoiceError(code = "no_key"))
             return
         }
+        // Order matters three ways here:
+        //  1. PEEK the budget before touching anything — a rate_limited refusal used to run after
+        //     retirePreviousCall(), so a redial the budget rejected destroyed the caller's live tool
+        //     bridge while the viewer deliberately keeps such a call running (its audio carried on
+        //     with every later tool call answering stale_call);
+        //  2. retire before reserving, so a redial reclaims its own slot instead of being refused at
+        //     capacity;
+        //  3. spend the budget last, so neither refusal consumes one of the mints it rations.
+        if (!canMint()) {
+            log.warn("Voice session mint refused: rate limit")
+            reply(ServerMessage.VoiceError(code = "rate_limited"))
+            return
+        }
         retirePreviousCall()
-        // Slot first, budget second: a too_many_calls refusal costs nothing at OpenAI, so it must
-        // not consume one of the mints the budget is there to ration (8 refusals used to leave only
-        // 4 real mints in the window).
         val token = openCall()
         if (token == null) {
             log.warn("Voice call refused: {} calls already live", MAX_LIVE_CALLS)
             reply(ServerMessage.VoiceError(code = "too_many_calls"))
             return
         }
+        recordMint()
         onCallTokenChanged(token)
-        if (!allowMint()) {
-            log.warn("Voice session mint refused: rate limit")
-            closeCall(token) // hand the slot back; this call never happened
-            onCallTokenChanged(null) // …and don't leave the connection pointing at a dead token
-            reply(ServerMessage.VoiceError(code = "rate_limited"))
-            return
-        }
         scope.launch {
             // Everything from here on must either reply or hand the slot back. executor.tools() can
             // force the GUI executor to build its private MCP server, and a throw there used to kill
@@ -301,6 +305,8 @@ internal class VoiceCallService(
                 reply(ServerMessage.VoiceToolResult(callId = msg.callId, resultJson = resultJson))
             } catch (e: VoiceToolException) {
                 reply(toolError(msg.callId, e.message ?: "Tool call rejected"))
+            } catch (e: CancellationException) {
+                throw e // teardown, not a tool failure (CancellationException IS a RuntimeException)
             } catch (e: Exception) {
                 log.warn("Voice tool {} failed: {}", def.name, e.javaClass.simpleName)
                 reply(toolError(msg.callId, "Tool failed: ${e.javaClass.simpleName}"))
@@ -355,17 +361,18 @@ internal class VoiceCallService(
      * path costs money, so this is the spend limiter — a reconnect loop or a viewer holding the
      * button cannot run up the bill.
      */
-    private fun allowMint(): Boolean = synchronized(mintTimestamps) {
+    private fun canMint(): Boolean = synchronized(mintTimestamps) {
         val now = nowMs()
         while (mintTimestamps.isNotEmpty() && now - mintTimestamps.first() > MINT_WINDOW_MS) {
             mintTimestamps.removeFirst()
         }
         val lastMint = mintTimestamps.lastOrNull()
         if (lastMint != null && now - lastMint < MINT_MIN_GAP_MS) return false
-        if (mintTimestamps.size >= MAX_MINTS_PER_WINDOW) return false
-        mintTimestamps.addLast(now)
-        true
+        mintTimestamps.size < MAX_MINTS_PER_WINDOW
     }
+
+    /** Spend one mint from the budget. Separate from [canMint] so a refusal costs nothing. */
+    private fun recordMint() = synchronized(mintTimestamps) { mintTimestamps.addLast(nowMs()) }
 
     /**
      * Register a freshly minted call and hand back the token the viewer must echo on tool calls.
@@ -373,7 +380,7 @@ internal class VoiceCallService(
      */
     internal fun openCall(): String? = synchronized(liveCalls) {
         val now = nowMs()
-        liveCalls.entries.removeAll { now - it.value.issuedAt > MAX_CALL_DURATION_MS }
+        expireOwnCalls(now)
         // Refuse rather than evict: dropping the oldest token left that caller's audio running while
         // every tool answered "No active call", with no way back but hanging up and redialling.
         if (liveCalls.size >= MAX_LIVE_CALLS) return@synchronized null
@@ -393,21 +400,35 @@ internal class VoiceCallService(
      * existed (an older viewer) are rejected — a tool call with no call behind it has no business
      * reaching the session.
      */
-    private fun isLiveCall(token: String?): Boolean = synchronized(liveCalls) {
+    private fun isLiveCall(token: String?): Boolean {
+        val expiredAnnounced = synchronized(liveCalls) { expireOwnCalls(nowMs()) }
+        // Report the end OUTSIDE the lock: the ceiling is the one path that used to retire a call
+        // without its paired "ended" notification, which is doing security work.
+        repeat(expiredAnnounced) { onCallActivity(false) }
+        return synchronized(liveCalls) { isLiveCallLocked(token) }
+    }
+
+    /**
+     * Drop this service's calls past the duration ceiling, returning how many of them the host had
+     * been told about. Filters on owner like every other mutation here — the sweep was the one place
+     * that reaped other shares' entries.
+     */
+    private fun expireOwnCalls(now: Long): Int {
+        val expired = liveCalls.filterValues { it.owner === this && now - it.issuedAt > MAX_CALL_DURATION_MS }
+        expired.keys.forEach { liveCalls.remove(it) }
+        return expired.values.count { it.announced }
+    }
+
+    private fun isLiveCallLocked(token: String?): Boolean {
         if (token == null) return false
         val call = liveCalls[token] ?: return false
         // Ownership as well as liveness: a token issued for another share must not drive this one's
         // tools just because both read the same process-wide map.
         if (call.owner !== this) return false
-        // The duration ceiling lives here: nothing else bounds how long a call runs, and the whole
-        // session bills to the host. Past it the tools stop answering. NOTE the audio session itself
-        // is browser↔OpenAI, so the host cannot hang that up — a viewer ignoring `voiceStatus` keeps
-        // hearing the agent; it just loses every tool.
-        if (nowMs() - call.issuedAt > MAX_CALL_DURATION_MS) {
-            liveCalls.remove(token)
-            return false
-        }
-        true
+        // The duration ceiling is applied by expireOwnCalls before this runs. NOTE the audio session
+        // itself is browser↔OpenAI, so the host cannot hang that up — a viewer ignoring `voiceStatus`
+        // keeps hearing the agent; it just loses every tool.
+        return true
     }
 
     /**
@@ -462,11 +483,14 @@ internal class VoiceCallService(
         const val MAX_MINTS_PER_WINDOW = 12
 
         /**
-         * Hard ceiling on one call. The mint budget bounds how OFTEN calls start; this bounds how
-         * long one runs, which is what actually accrues cost on the host's account. Generous enough
-         * for real work, finite so an abandoned call can't bill all day.
+         * Hard ceiling on one REMOTE call. Deliberately shorter than the in-app one
+         * ([HostVoiceCallController.MAX_CALL_DURATION_MS], 60 min): the host cannot hang up the audio
+         * on this surface at all — it is browser↔OpenAI — so an abandoned tab bills for the whole
+         * ceiling, ×8 concurrent, and the caller here is the less trusted of the two. The viewer also
+         * hangs up on its own after a period of silence; this is the backstop for a client that
+         * doesn't.
          */
-        const val MAX_CALL_DURATION_MS = 60 * 60 * 1000L
+        const val MAX_CALL_DURATION_MS = 30 * 60 * 1000L
         const val MAX_LIVE_CALLS = 8
 
         val json = Json { ignoreUnknownKeys = true }

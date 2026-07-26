@@ -56,7 +56,13 @@ internal class JdkRealtimeTransport : RealtimeTransport {
     private val log = LoggerFactory.getLogger(JdkRealtimeTransport::class.java)
 
     @Volatile private var socket: WebSocket? = null
-    private val pending = StringBuilder()
+    /**
+     * Partial text frames. A StringBuffer, not a StringBuilder: [onText] appends from the JDK
+     * WebSocket reader thread while [close] clears it from the caller's, and an unlucky interleaving
+     * on an unsynchronized builder gives a corrupted event or a StringIndexOutOfBoundsException out
+     * of the listener.
+     */
+    private val pending = StringBuffer()
 
     /**
      * Outgoing events, drained by one writer thread.

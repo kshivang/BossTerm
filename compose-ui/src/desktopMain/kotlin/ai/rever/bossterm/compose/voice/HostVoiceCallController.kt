@@ -15,11 +15,13 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
 import java.util.Base64
@@ -389,10 +391,15 @@ internal class HostVoiceCallController(
             }
             val args = runCatching { json.parseToJsonElement(argsJson ?: "{}").jsonObject }
                 .getOrElse { JsonObject(emptyMap()) }
-            val result = runCatching { clampToolResult(name, executor.execute(name, args, defaultTabId = null)) }
-                .getOrElse { e ->
-                    buildJsonObject { put("error", e.message ?: e.javaClass.simpleName) }.toString()
-                }
+            // Cancellation (end()/fail() cancelling callJob mid-tool) must unwind rather than become
+            // a normal error result that then settles the round and sends on a closed transport.
+            val result = try {
+                clampToolResult(name, executor.execute(name, args, defaultTabId = null))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                buildJsonObject { put("error", e.message ?: e.javaClass.simpleName) }.toString()
+            }
             watchdog.cancel()
             // Claim the call BEFORE sending: the watchdog may already have answered it, and a second
             // function_call_output for one call_id is a protocol error.
@@ -484,6 +491,9 @@ internal class HostVoiceCallController(
             putJsonObject("session") {
                 put("type", "realtime")
                 put("model", s.voiceCallModel)
+                // Same as the share path's mint body: without it an agent that decides to answer in
+                // text would go silent on a voice-only surface, and this is the first place to look.
+                putJsonArray("output_modalities") { add("audio") }
                 putJsonObject("audio") {
                     putJsonObject("input") {
                         putJsonObject("format") {

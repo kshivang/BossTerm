@@ -31,8 +31,16 @@ internal fun clampToolResult(tool: String, resultJson: String): String {
         put("truncated", true)
         put("originalLength", resultJson.length)
         put("note", "The result was too large to send; ask for less (fewer lines, a tighter pattern).")
-        put("head", resultJson.take(MAX_TOOL_RESULT_CHARS / 2))
+        // Don't split a surrogate pair at the cut: a lone surrogate in `head` is invalid text.
+        put("head", resultJson.takeSurrogateSafe(MAX_TOOL_RESULT_CHARS / 2))
     }.toString()
+}
+
+/** [String.take] that never ends on a high surrogate, so the result is always valid text. */
+private fun String.takeSurrogateSafe(n: Int): String {
+    if (length <= n) return this
+    val cut = if (Character.isHighSurrogate(this[n - 1])) n - 1 else n
+    return substring(0, cut)
 }
 
 /** A voice tool call failed before/without reaching the underlying tool (unknown name, scope). */

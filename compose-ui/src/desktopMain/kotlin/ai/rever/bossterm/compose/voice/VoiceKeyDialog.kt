@@ -121,7 +121,7 @@ internal fun VoiceKeyDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
             }
         },
         confirmButton = {
-            TextButton(onClick = ::save, enabled = input.isNotBlank() && !saving) {
+            TextButton(onClick = { save() }, enabled = input.isNotBlank() && !saving) {
                 Text(
                     if (saving) "Saving…" else "Save & call",
                     color = if (input.isNotBlank()) AccentColor else TextMuted,

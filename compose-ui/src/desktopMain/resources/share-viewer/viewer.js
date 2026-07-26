@@ -233,7 +233,7 @@
   var voice = { status: null, state: "idle", pc: null, dc: null, mic: null, muted: false,
                 seenCalls: {}, watchdog: null, model: null, callToken: null,
                 speaking: false, pending: {}, pendingCount: 0, timers: {},
-                responseOpen: false, outputsOwed: 0 };
+                responseOpen: false, outputsOwed: 0, lastActivity: 0, idleTimer: null };
   // The meter's bars are static markup — query once instead of every animation frame.
   var voiceBars = null;
   var voiceMicOk = !!(window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
@@ -396,8 +396,27 @@
     voiceMeterFlat();
   }
 
+  // The host bills for this call and cannot hang up the audio (it is browser↔OpenAI), so an
+  // abandoned tab would otherwise run to the server's ceiling. Anything that means the call is in
+  // use — the agent talking, the user talking, a tool running — pushes the deadline out.
+  var VOICE_IDLE_MS = 10 * 60 * 1000;
+  function voiceTouch() {
+    voice.lastActivity = Date.now();
+  }
+  function voiceStartIdleWatch() {
+    voiceTouch();
+    if (voice.idleTimer) clearInterval(voice.idleTimer);
+    voice.idleTimer = setInterval(function () {
+      if (voice.state === "idle") return;
+      if (Date.now() - voice.lastActivity >= VOICE_IDLE_MS) {
+        endCall(true);
+        toast("Call ended after 10 minutes with nothing happening.", 6000);
+      }
+    }, 15000);
+  }
   function endCall(sendEnd) {
     if (voice.watchdog) { clearTimeout(voice.watchdog); voice.watchdog = null; }
+    if (voice.idleTimer) { clearInterval(voice.idleTimer); voice.idleTimer = null; }
     voiceMeterStop();
     try { if (voice.dc) voice.dc.close(); } catch (e) {}
     try { if (voice.pc) voice.pc.close(); } catch (e) {}
@@ -469,6 +488,7 @@
       // while, so reads get 120s rather than 45.
     }, name === "run_command" ? 630000 : 120000);
     voice.responseOpen = true; // a function call only exists inside a response
+    voiceTouch();
     updateVoiceBar();
     toast(voiceDescribeTool(name, argsJson));
     sendMsg({
@@ -546,6 +566,7 @@
     voice.dc = dc;
     dc.onopen = function () {
       if (voice.watchdog) { clearTimeout(voice.watchdog); voice.watchdog = null; }
+      voiceStartIdleWatch();
       voice.state = "live";
       updateVoiceBar();
       toast("Connected — say something.");
@@ -569,7 +590,13 @@
           voiceMaybeRequestResponse(); // safe now: nothing is generating
           break;
         }
+        // The user talking is activity too — without this, a caller who listens for ten minutes
+        // without the agent answering would be hung up on as idle.
+        case "input_audio_buffer.speech_started":
+          voiceTouch();
+          break;
         case "output_audio_buffer.started":
+          voiceTouch();
           voice.speaking = true;
           updateVoiceBar();
           break;

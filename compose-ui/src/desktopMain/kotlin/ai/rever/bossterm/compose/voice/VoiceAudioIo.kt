@@ -70,6 +70,24 @@ internal interface VoiceAudioIo {
      */
     fun queuedPlaybackMs(): Int
 
+    /**
+     * How loud the audio LEAVING THE SPEAKER right now is, 0..1 — the echo canceller's reference.
+     *
+     * This is the one thing that reliably separates the agent's voice from the user's, and no amount
+     * of measuring the microphone alone can substitute for it: in a real room the reply comes back at
+     * 0.10 RMS, which is exactly what ordinary speech measures, so a static level threshold has
+     * nothing to divide. What we do know for certain is what we sent to the speaker.
+     *
+     * "Right now" is not "what we last wrote". The line is opened with a buffer of about 0.6s, so a
+     * chunk handed to `write()` becomes audible up to that much later — keying the reference off write
+     * time would mis-align it by more than the whole echo. [javax.sound.sampled.DataLine.getLongFramePosition]
+     * reports frames the device has ACTUALLY played, so the level is looked up against that.
+     *
+     * [windowMs] looks back a little, because the microphone hears the room's delay and reverb rather
+     * than the speaker cone directly; the maximum over that window is what could still be arriving.
+     */
+    fun audiblePlaybackLevel(windowMs: Int = JavaSoundVoiceAudioIo.ECHO_REFERENCE_WINDOW_MS): Float
+
     /** Stop both directions and release the lines. */
     fun stop()
 }
@@ -278,6 +296,44 @@ internal class JavaSoundVoiceAudioIo(
         playQueue.clear()
         queuedBytes.set(0)
         runCatching { playback?.flush() }
+        // The written-frame counter and the line's played-frame position only agree while everything
+        // written is eventually played. flush() discards buffered frames, so without re-anchoring here
+        // the reference envelope stays permanently ahead of the device and reports the wrong level for
+        // the rest of the call — on the exact path barge-in takes.
+        synchronized(playedLog) {
+            playedLog.clear()
+            framesWritten = runCatching { playback?.longFramePosition ?: 0L }.getOrDefault(0L)
+        }
+    }
+
+    /** One written chunk and where it lands on the line's own frame clock. */
+    private class PlayedChunk(val startFrame: Long, val endFrame: Long, val level: Float)
+
+    private val playedLog = ArrayDeque<PlayedChunk>()
+
+    /** Frames handed to the line so far, on the same clock as [javax.sound.sampled.DataLine.getLongFramePosition]. */
+    private var framesWritten = 0L
+
+    override fun audiblePlaybackLevel(windowMs: Int): Float {
+        val line = playback ?: return 0f
+        val position = runCatching { line.longFramePosition }.getOrDefault(0L)
+        val from = position - windowMs.toLong() * SAMPLE_RATE / 1000
+        var loudest = 0f
+        synchronized(playedLog) {
+            val entries = playedLog.iterator()
+            while (entries.hasNext()) {
+                val chunk = entries.next()
+                // Already played out and past the look-back: it can no longer be in the room.
+                if (chunk.endFrame < from) {
+                    entries.remove()
+                    continue
+                }
+                // Written but not yet played. Counting it would raise the bar before the sound exists.
+                if (chunk.startFrame > position) break
+                if (chunk.level > loudest) loudest = chunk.level
+            }
+        }
+        return loudest
     }
 
     override fun queuedPlaybackMs(): Int {
@@ -319,6 +375,16 @@ internal class JavaSoundVoiceAudioIo(
                 // subtraction, and a negative total then under-reports against AUDIBLE_TAIL_MS —
                 // clearing "Speaking" early, which is the one thing queuedPlaybackMs exists to stop.
                 queuedBytes.updateAndGet { (it - chunk.size).coerceAtLeast(0) }
+                // Recorded BEFORE the write, which blocks once the line's buffer is full: the capture
+                // thread must be able to see this chunk's level as soon as it can possibly be audible.
+                val frames = chunk.size / 2
+                synchronized(playedLog) {
+                    playedLog.addLast(PlayedChunk(framesWritten, framesWritten + frames, pcm16Rms(chunk)))
+                    framesWritten += frames
+                    // Bounded regardless of how long a call runs. audiblePlaybackLevel prunes by frame
+                    // position, but only while something is asking — nothing does between replies.
+                    while (playedLog.size > PLAYED_LOG_MAX) playedLog.removeFirst()
+                }
                 runCatching { line.write(chunk, 0, chunk.size) }
             }
         }, "boss-voice-playback").apply { isDaemon = true; start() }
@@ -355,6 +421,20 @@ internal class JavaSoundVoiceAudioIo(
         val FORMAT = AudioFormat(24_000f, 16, 1, true, false)
 
         /** ~40 ms per chunk: small enough that playback back-pressure stays responsive. */
+        const val SAMPLE_RATE = 24_000
+
+        /**
+         * How far back [audiblePlaybackLevel] looks for sound that could still be in the room.
+         *
+         * Covers the speaker-to-microphone path and the reverb behind it. Too short and the reference
+         * goes quiet while the echo of it is still arriving — which is the self-interruption; too long
+         * and the bar stays raised into the silence after a reply, blocking a legitimate barge-in.
+         */
+        const val ECHO_REFERENCE_WINDOW_MS = 250
+
+        /** ~20s of chunks. Only a bound; [audiblePlaybackLevel] prunes by position. */
+        const val PLAYED_LOG_MAX = 512
+
         const val CHUNK_BYTES = 1920
 
         /** The format's own rate: 24 kHz, 16-bit, mono. */

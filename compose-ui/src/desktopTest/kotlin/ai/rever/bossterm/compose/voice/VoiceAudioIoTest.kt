@@ -135,7 +135,16 @@ class VoiceAudioIoTest {
         override fun getBufferSize(): Int = 4096
         override fun getFormat(): AudioFormat = JavaSoundVoiceAudioIo.FORMAT
         override fun getFramePosition(): Int = 0
-        override fun getLongFramePosition(): Long = 0
+
+        /**
+         * Frames the device has actually PLAYED, which a real line advances on its own.
+         *
+         * Settable because the distinction between this and "frames we have written" is the whole
+         * point of the echo reference: the line buffer holds ~0.6s, so keying the reference off write
+         * time mis-aligns it by more than the echo it is meant to predict.
+         */
+        @Volatile var playedFrames = 0L
+        override fun getLongFramePosition(): Long = playedFrames
         override fun getMicrosecondPosition(): Long = 0
         override fun getLevel(): Float = 0f
         override fun isActive(): Boolean = started.get()
@@ -422,4 +431,71 @@ class VoiceAudioIoTest {
 
     private fun threadAlive(name: String): Boolean =
         Thread.getAllStackTraces().keys.any { it.name == name && it.isAlive }
+
+    /** 960 frames (one 40ms chunk at 24kHz) of constant amplitude. */
+    private fun chunk(amplitude: Short): ByteArray {
+        val out = ByteArray(1920)
+        for (i in out.indices step 2) {
+            out[i] = (amplitude.toInt() and 0xFF).toByte()
+            out[i + 1] = ((amplitude.toInt() shr 8) and 0xFF).toByte()
+        }
+        return out
+    }
+
+    /**
+     * The echo reference reports what is COMING OUT of the speaker, not what was last handed to it.
+     *
+     * This is the distinction the whole gate rests on. The line buffer holds around 0.6s, so audio
+     * written now becomes audible far later; a reference keyed on write time would raise the gate's bar
+     * before the sound it is predicting exists, and drop it while the echo was still arriving.
+     */
+    @Test
+    fun `the echo reference follows the line's play position, not what was written`() {
+        val speaker = FakeSpeaker()
+        val audio = audioFor(FakeLine(), speaker)
+        // Quiet first, loud second, so "the loud one is not audible yet" is a distinguishable claim —
+        // with the loud chunk first, a max() over everything written would look identical to a correct
+        // answer and the test would prove nothing.
+        audio.play(chunk(600))    // quiet
+        audio.play(chunk(12_000)) // loud
+        assertTrue(await { speaker.written.size == 2 }, "both chunks must reach the line")
+
+        speaker.playedFrames = 0
+        val early = audio.audiblePlaybackLevel(windowMs = 100)
+        assertTrue(early > 0f, "the chunk at the play position is audible")
+        assertTrue(early < 0.2f, "the loud chunk is written but NOT yet playing: $early")
+
+        // The device advances into the loud chunk (which starts at frame 960).
+        speaker.playedFrames = 1_200
+        assertTrue(audio.audiblePlaybackLevel(windowMs = 100) > 0.5f, "now it is what the room hears")
+
+        // Long past both, beyond the look-back: nothing of it can still be in the room.
+        speaker.playedFrames = 100_000
+        assertEquals(0f, audio.audiblePlaybackLevel(windowMs = 100))
+    }
+
+    /**
+     * A flush discards buffered frames, so written-frames and played-frames stop agreeing.
+     *
+     * Without re-anchoring, the reference stays permanently ahead of the device for the rest of the
+     * call — and flushPlayback is on exactly the path barge-in takes, so the failure would appear only
+     * after the first interruption.
+     */
+    @Test
+    fun `flushing re-anchors the echo reference`() {
+        val speaker = FakeSpeaker()
+        val audio = audioFor(FakeLine(), speaker)
+        audio.play(chunk(12_000))
+        assertTrue(await { speaker.written.size == 1 })
+        speaker.playedFrames = 100
+
+        audio.flushPlayback()
+        assertEquals(0f, audio.audiblePlaybackLevel(windowMs = 100), "discarded audio is not audible")
+
+        // And the mapping still works afterwards, rather than being permanently skewed.
+        audio.play(chunk(12_000))
+        assertTrue(await { speaker.written.size == 2 })
+        speaker.playedFrames = 150
+        assertTrue(audio.audiblePlaybackLevel(windowMs = 100) > 0.5f, "post-flush audio must register")
+    }
 }

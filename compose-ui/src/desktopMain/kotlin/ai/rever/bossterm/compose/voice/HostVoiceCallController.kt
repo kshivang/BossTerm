@@ -379,16 +379,18 @@ internal class HostVoiceCallController(
             if (userSpeechConfirmed) duplex.observeUserSpeech(level)
             return true
         }
-        return when (duplex.classify(level)) {
+        val reference = runCatching { audio.audiblePlaybackLevel() }.getOrDefault(0f)
+        return when (duplex.classify(level, reference)) {
             Duplex.WITHHOLD -> false
             Duplex.PASS -> true
             Duplex.INTERRUPTED -> {
                 // Stop the agent the way speech_started would, and let the rest of the sentence
                 // through so the model receives the whole utterance rather than its second half.
                 log.info(
-                    "Boss Calling: user interrupted (level={} bar={} echo={} user={})",
-                    "%.3f".format(level), "%.3f".format(duplex.lastBar),
-                    "%.3f".format(duplex.echoEstimate()), "%.3f".format(duplex.userEstimate()),
+                    "Boss Calling: user interrupted (level={} bar={} ref={} atten={} user={}{})",
+                    "%.3f".format(level), "%.3f".format(duplex.lastBar), "%.3f".format(reference),
+                    "%.2f".format(duplex.attenuationEstimate()), "%.3f".format(duplex.userEstimate()),
+                    if (duplex.indistinguishable) " SPEAKERS-TOO-LOUD" else "",
                 )
                 runCatching { audio.flushPlayback() }
                 drainWatcher?.cancel()

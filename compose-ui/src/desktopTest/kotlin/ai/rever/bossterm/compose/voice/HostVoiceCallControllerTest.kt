@@ -91,6 +91,16 @@ class HostVoiceCallControllerTest {
         /** Decoded audio the speaker has not reached yet, in ms — drives the "still audible" wait. */
         @Volatile var queued = 0
         override fun queuedPlaybackMs(): Int = queued
+
+        /**
+         * How loud the speaker is right now — the gate's echo reference.
+         *
+         * Defaults to a normal playback level so a test that emits mic frames while the agent is
+         * speaking exercises the real path: with this at zero the gate would see "nothing is playing",
+         * drop its bar to the user floor, and let frames through for the wrong reason.
+         */
+        @Volatile var speakerLevel = 0.30f
+        override fun audiblePlaybackLevel(windowMs: Int): Float = if (played.isEmpty()) 0f else speakerLevel
         override fun stop() { stopped = true; capturing = false }
 
         /** Pretend the mic produced a frame. */

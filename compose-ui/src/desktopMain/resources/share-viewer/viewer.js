@@ -328,7 +328,14 @@
     updateVoiceBar();
     // Mic inside the click gesture (permission prompt), so no minted secret is wasted on a
     // denied microphone.
-    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+    // Ask for echo cancellation EXPLICITLY. Browsers default it on for getUserMedia, but the
+    // default is not guaranteed and this is the one thing standing between a speakerphone user and
+    // the agent answering its own voice. The in-app surface has no equivalent — see
+    // TerminalSettings.voiceEchoSuppression for what it does instead.
+    var micConstraints = {
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    };
+    navigator.mediaDevices.getUserMedia(micConstraints).then(function (stream) {
       if (voice.state === "idle") { // hung up while the prompt was open
         try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
         return;

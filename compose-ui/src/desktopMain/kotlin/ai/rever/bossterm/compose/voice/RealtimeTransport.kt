@@ -151,7 +151,13 @@ internal class JdkRealtimeTransport(
                     val whole = pending.toString()
                     pending.setLength(0)
                     runCatching { events(whole) }
-                        .onFailure { log.warn("Voice event handler failed: {}", it.javaClass.simpleName) }
+                        .onFailure {
+                            // Class name AND message, with the throwable: this is a HOST log, and
+                            // the redaction rule is about what reaches a remote viewer. Logging only
+                            // the simple name turned a real "NoClassDefFoundError" into a report
+                            // with no way to tell WHICH class was missing.
+                            log.warn("Voice event handler failed: {}: {}", it.javaClass.name, it.message, it)
+                        }
                 }
                 return null
             }

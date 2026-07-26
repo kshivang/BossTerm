@@ -1104,6 +1104,20 @@ data class TerminalSettings(
     val voiceMicSensitivity: String = "normal",
 
     /**
+     * Stop listening while the agent is talking (in-app calls only).
+     *
+     * There is no acoustic echo cancellation on the in-app surface — the browser gets AEC from
+     * WebRTC, but `javax.sound.sampled` hands us a raw capture line. On speakers that means the
+     * microphone hears the agent, sends it back, and the model answers itself in a loop no VAD
+     * threshold can break, because the input genuinely is speech.
+     *
+     * On by default because speakers are the common case and the loop makes the feature unusable.
+     * Turn it OFF with headphones: there is no echo path, and full duplex means you can interrupt
+     * the agent by speaking.
+     */
+    val voiceEchoSuppression: Boolean = true,
+
+    /**
      * Show the "Call BossTerm" segment in the tab-bar status strip. Its own toggle, like
      * [mcpShowStatusIndicator] and [sessionSharingShowIndicator]: because Boss Calling ships
      * enabled, without this a new pill would appear for everyone — including users who had

@@ -797,6 +797,65 @@ class HostVoiceCallControllerTest {
         c.end()
     }
 
+    /**
+     * The agent must not hear itself.
+     *
+     * There is no acoustic echo cancellation on this surface — the browser gets it from WebRTC,
+     * javax.sound.sampled does not. On speakers the microphone picks up the agent's own voice, ships
+     * it back, and the model answers itself in a loop no VAD threshold can break, because the input
+     * genuinely IS speech. Half-duplex is the standard answer when you have no AEC.
+     */
+    @Test
+    fun `the microphone is withheld while the agent is talking`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val c = controller(transport, audio)
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+
+        audio.emit(byteArrayOf(1, 2))
+        assertTrue(await { transport.sentOfType("input_audio_buffer.append").isNotEmpty() }, "idle: mic flows")
+        val beforeAgent = transport.sentOfType("input_audio_buffer.append").size
+
+        // The agent starts talking; anything the mic hears now is very likely the agent.
+        transport.deliver("""{"type":"response.output_audio.delta","delta":"AAAA"}""")
+        assertTrue(await { c.state.value.speaking })
+        audio.emit(byteArrayOf(3, 4))
+        Thread.sleep(120)
+        assertEquals(
+            beforeAgent,
+            transport.sentOfType("input_audio_buffer.append").size,
+            "a frame captured while the agent speaks is the agent — sending it starts the loop",
+        )
+    }
+
+    /** With headphones there is no echo path, so the setting restores full duplex (and barge-in). */
+    @Test
+    fun `echo suppression off keeps the microphone open while the agent talks`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val c = HostVoiceCallController(
+            scope = CoroutineScope(Dispatchers.Default),
+            executor = FakeExecutor(),
+            transport = transport,
+            newAudio = { audio },
+            settings = { TerminalSettings.DEFAULT.copy(voiceEchoSuppression = false) },
+            loadKey = { "sk-test" },
+        )
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+
+        transport.deliver("""{"type":"response.output_audio.delta","delta":"AAAA"}""")
+        assertTrue(await { c.state.value.speaking })
+        val before = transport.sentOfType("input_audio_buffer.append").size
+        audio.emit(byteArrayOf(5, 6))
+        assertTrue(
+            await { transport.sentOfType("input_audio_buffer.append").size > before },
+            "headphone users must still be able to interrupt",
+        )
+        c.end()
+    }
+
     @Test
     fun `a long in-app call stops at the duration ceiling`() {
         var clock = 1_000L

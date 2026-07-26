@@ -6,6 +6,8 @@ import ai.rever.bossterm.compose.share.ClientMessage
 import ai.rever.bossterm.compose.share.ServerMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
@@ -58,6 +60,16 @@ internal class VoiceCallService(
     private val nowMs: () -> Long = { System.currentTimeMillis() },
     /** Notified when a call is minted (true) or its tools stop being usable (false). */
     private val onCallActivity: (Boolean) -> Unit = {},
+    /**
+     * A specific call's tools have stopped working — it aged out of the duration ceiling.
+     *
+     * Separate from [onCallActivity], which is the host-facing count. This one is caller-facing: at
+     * the ceiling the viewer otherwise just starts getting "No active call" on every tool with no
+     * push at all, and the agent narrates something confusing. The servers turn it into a
+     * `stale_call` for whichever connection holds that token, which the viewer already renders as
+     * "That call is no longer active — start a new one."
+     */
+    private val onCallExpired: (token: String) -> Unit = {},
     /**
      * Mint timestamps, shared process-wide by default: the budget protects ONE API key, so a host
      * with several shares open must not multiply the ceiling. Injectable so tests get their own.
@@ -515,6 +527,7 @@ internal class VoiceCallService(
      * Internal rather than private so tests can open a call without standing up a mint server.
      */
     internal fun openCall(): String? {
+        ensureSweeper()
         // Report expiries this sweep retires: nothing else sweeps periodically, so a call that hits
         // the ceiling and isn't followed by a tool call was only reaped here — silently, breaking the
         // "ended always pairs started" invariant for the exact case that pairing exists to cover.
@@ -538,6 +551,35 @@ internal class VoiceCallService(
         val token = UUID.randomUUID().toString()
         liveCalls[token] = LiveCall(issuedAt = now, owner = this)
         return token
+    }
+
+    /**
+     * Sweeps expired calls while this service has any, then stops.
+     *
+     * [expireCalls] previously only ran from openCall() and isLiveCall(), both of which need inbound
+     * voice traffic — so a purely CONVERSATIONAL call (no tool calls) that hit the duration ceiling
+     * on a viewer that never disconnects left the entry live until the next voiceStart on this
+     * share. `RemoteVoiceCalls.active` is a security indicator, not a statistic: it reading "on a
+     * call" when the call's tools are long dead is worse than the untidy map it looks like.
+     *
+     * Self-limiting rather than a standing timer: started when a call opens, exits when this service
+     * has none left, so a share that never hosts a call never ticks.
+     */
+    @Volatile private var sweeper: Job? = null
+
+    private fun ensureSweeper() {
+        if (sweeper?.isActive == true) return
+        sweeper = scope.launch {
+            while (true) {
+                delay(EXPIRY_SWEEP_MS)
+                val expired = synchronized(liveCalls) { expireCalls(nowMs()) }
+                repeat(expired) { onCallActivity(false) }
+                val mine = synchronized(liveCalls) {
+                    liveCalls.count { it.value.owner === this@VoiceCallService }
+                }
+                if (mine == 0) return@launch
+            }
+        }
     }
 
     /**
@@ -612,6 +654,9 @@ internal class VoiceCallService(
     private fun expireCalls(now: Long): Int {
         val expired = liveCalls.filterValues { it.owner === this && now - it.issuedAt > MAX_CALL_DURATION_MS }
         expired.keys.forEach { liveCalls.remove(it) }
+        // Tell the CALLER too, not just the host's counter: at the ceiling their tools simply stop,
+        // and silence there reads to the agent as a broken tool rather than an ended call.
+        expired.keys.forEach { token -> runCatching { onCallExpired(token) } }
         return expired.values.count { it.announced }
     }
 
@@ -655,6 +700,8 @@ internal class VoiceCallService(
      * shares' live calls down with it.
      */
     fun closeCalls() {
+        sweeper?.cancel()
+        sweeper = null
         val announced = synchronized(liveCalls) {
             val mine = liveCalls.filterValues { it.owner === this }
             mine.keys.forEach { liveCalls.remove(it) }
@@ -712,6 +759,9 @@ internal class VoiceCallService(
          * this one would keep the ceiling while making starvation local to whoever caused it. The
          * in-app surface is unaffected: it does not mint.
          */
+        /** How often a service with live calls checks whether any have aged out. */
+        const val EXPIRY_SWEEP_MS = 30_000L
+
         const val MINT_MIN_GAP_MS = 3_000L
         const val MINT_WINDOW_MS = 10 * 60 * 1000L
         const val MAX_MINTS_PER_WINDOW = 6

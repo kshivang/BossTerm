@@ -702,7 +702,10 @@ internal class HostVoiceCallController(
             "search_output" -> arg("pattern")?.let { "Searching for “${clip(it, 40)}”…" } ?: "Searching…"
             // Show WHAT is being typed, like the viewer does: "Typing…" alone tells the user nothing
             // about a tool that is about to put characters into their shell.
-            "send_input" -> arg("text")?.let { "Typing: ${clip(it.replace("\n", "⏎"), 40)}…" } ?: "Typing…"
+            // No trailing "…" in the template: clip() adds one when it actually truncates, so this
+            // rendered "Typing: hello wor……". run_command above gets it right; the viewer's mirror
+            // produces a single ellipsis too.
+            "send_input" -> arg("text")?.let { "Typing: ${clip(it.replace("\n", "⏎"), 40)}" } ?: "Typing…"
             "send_signal" -> arg("signal")?.let { "Sending $it…" } ?: "Sending a signal…"
             "get_last_command" -> "Checking the last command…"
             "list_panes" -> "Looking at the split panes…"

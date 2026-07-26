@@ -134,6 +134,16 @@ class MirrorShare(
             keyPresent = { VoiceAgentStorage.keyPresentFlow.value || keyOnDisk.get() == true },
             sessionName = { sessionName.value },
             onCallActivity = { started -> RemoteVoiceCalls.onActivity(sessionName.value, started) },
+            onCallExpired = { token ->
+                // The viewer already renders stale_call as "That call is no longer active — start a
+                // new one", which is exactly what has happened.
+                viewers.firstOrNull { it.voiceCallToken == token }?.let { vc ->
+                    vc.clearVoiceCallTokenIfCurrent(token)
+                    vc.outbox.sendControl(
+                        ShareProtocol.encodeServer(ServerMessage.VoiceError(code = "stale_call"))
+                    )
+                }
+            },
         )
     }
 

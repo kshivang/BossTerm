@@ -282,6 +282,16 @@ class DaemonShareServer(
                 // The daemon is exactly the case where nobody is looking at a window, so the
                 // "remote hands arrived" signal matters more here, not less.
                 onCallActivity = { started -> RemoteVoiceCalls.onActivity(name, started) },
+                onCallExpired = { token ->
+                    viewers.firstOrNull { it.voiceCallToken == token }?.let { vc ->
+                        vc.clearVoiceCallTokenIfCurrent(token)
+                        vc.outbox.sendControl(
+                            FrameOutbox.Frame.Text(
+                                ShareProtocol.encodeServer(ServerMessage.VoiceError(code = "stale_call"))
+                            )
+                        )
+                    }
+                },
             )
         }
 

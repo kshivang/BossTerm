@@ -309,6 +309,51 @@ class VoiceCallServiceTest {
         assertEquals("no_key", keyless.status(withReason = true, confidential = false).reason)
     }
 
+    /**
+     * A call that ages out must tell BOTH sides.
+     *
+     * expireCalls only ran from openCall()/isLiveCall(), so a purely conversational call — no tool
+     * calls, viewer still connected — sat past the ceiling until the next voiceStart on that share.
+     * RemoteVoiceCalls.active is a security indicator, so it reading "on a call" for a call whose
+     * tools are long dead is worse than the untidy map it resembles. And the caller was told nothing
+     * at all: their tools just started answering "No active call".
+     */
+    @Test
+    fun `an expired call notifies the host and the caller`() {
+        var clock = 1_000L
+        val activity = mutableListOf<Boolean>()
+        val expired = mutableListOf<String>()
+        val svc = VoiceCallService(
+            executor = FakeExecutor(),
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+            nowMs = { clock },
+            onCallActivity = { started -> synchronized(activity) { activity.add(started) } },
+            onCallExpired = { token -> synchronized(expired) { expired.add(token) } },
+            mintTimestamps = ArrayDeque(),
+            sharedCalls = LinkedHashMap(),
+        )
+        val token = assertNotNull(svc.openCall())
+        svc.announceCallForTest(token)
+        assertEquals(listOf(true), synchronized(activity) { activity.toList() })
+
+        clock += VoiceCallService.MAX_CALL_DURATION_MS + 1
+
+        // The sweeper runs on its own, without any further voice traffic on this share.
+        assertTrue(
+            awaitReply(VoiceCallService.EXPIRY_SWEEP_MS * 2) {
+                synchronized(expired) { expired.isNotEmpty() }
+            },
+            "a conversational call that ages out must not need a tool call to be noticed",
+        )
+        assertEquals(listOf(token), synchronized(expired) { expired.toList() }, "the caller is told")
+        assertTrue(
+            awaitReply { synchronized(activity) { activity == listOf(true, false) } },
+            "and the host's indicator pairs: ${synchronized(activity) { activity.toList() }}",
+        )
+    }
+
     @Test
     fun `voiceStart without control is refused server-side`() {
         val replies = mutableListOf<ServerMessage>()

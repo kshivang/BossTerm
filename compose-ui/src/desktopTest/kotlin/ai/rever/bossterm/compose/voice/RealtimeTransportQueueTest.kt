@@ -1,5 +1,8 @@
 package ai.rever.bossterm.compose.voice
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -55,6 +58,55 @@ class RealtimeTransportQueueTest {
         assertEquals(OutgoingLanes.PROTOCOL_CAPACITY, protocol.size)
         // Oldest-first retention: unlike audio, an early frame is NOT thrown away for a later one.
         assertTrue(protocol.first().contains("n0"), "the first frame is still queued")
+    }
+
+    @Test
+    fun `poll returns the protocol lane first, even when audio is already queued`() {
+        val t = transport()
+        repeat(3) { t.offer("audio-$it", evictable = true) }
+        t.offer("""{"type":"response.create"}""", evictable = false)
+
+        assertEquals("""{"type":"response.create"}""", t.poll(50, TimeUnit.MILLISECONDS))
+        assertEquals("audio-0", t.poll(50, TimeUnit.MILLISECONDS))
+    }
+
+    /**
+     * Waiting on the audio queue alone was correct on priority but slow where it mattered: while
+     * MUTED nothing enqueues audio, so a waiting writer parked for the whole timeout and a protocol
+     * frame arriving a moment later waited it out — up to ~400ms for a function_call_output +
+     * response.create round, with the user sitting there waiting for the agent to answer.
+     */
+    @Test
+    fun `a protocol frame wakes a waiting consumer instead of serving out the timeout`() {
+        val t = transport()
+        val consumer = Executors.newSingleThreadExecutor()
+        try {
+            val started = CountDownLatch(1)
+            val polled = consumer.submit<Pair<String?, Long>> {
+                started.countDown()
+                val begin = System.nanoTime()
+                val frame = t.poll(5_000, TimeUnit.MILLISECONDS) // the muted case: no audio at all
+                frame to (System.nanoTime() - begin) / 1_000_000
+            }
+            assertTrue(started.await(2, TimeUnit.SECONDS), "the consumer is parked")
+            Thread.sleep(50)
+            t.offer("""{"type":"response.create"}""", evictable = false)
+
+            val (frame, elapsedMs) = polled.get(3, TimeUnit.SECONDS)
+            assertEquals("""{"type":"response.create"}""", frame)
+            assertTrue(elapsedMs < 1_000, "woke on the frame, not the timeout (took ${elapsedMs}ms)")
+        } finally {
+            consumer.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `poll still honours its timeout when nothing arrives`() {
+        val t = transport()
+        val begin = System.nanoTime()
+        assertEquals(null, t.poll(120, TimeUnit.MILLISECONDS))
+        val elapsedMs = (System.nanoTime() - begin) / 1_000_000
+        assertTrue(elapsedMs >= 100, "an empty poll must still block for its timeout (${elapsedMs}ms)")
     }
 
     /**

@@ -232,37 +232,25 @@ class DaemonShareServer(
         val viewers = CopyOnWriteArrayList<DaemonShareConnection>()
         val viewerSeq = AtomicInteger(0)
 
-        @Volatile private var keyStamp: Long = -1L
-        @Volatile private var keyPresentCache: Boolean = false
-        @Volatile private var keyStampTicks: Int = 0
-
-        /**
-         * [VoiceAgentStorage.keyPresent], re-read when the file's mtime/size moved — and every
-         * [VoiceAgentStorage.STAMP_TRUST_TICKS] ticks regardless, since a same-length replacement
-         * inside one second is invisible to the stamp on a coarse-mtime filesystem.
-         *
-         * Synchronized because the 5 s poller and `status()` on the admit path really do run
-         * concurrently, and publishing the new stamp before the new value let a reader take the
-         * fresh stamp and the stale cache.
-         */
         /** See [StampCachedValue]: the only path by which a GUI-side toggle reaches this share. */
         private val settingsCache = StampCachedValue(
             stamp = { VoiceAgentStorage.fileStamp(SettingsManager.instance.settingsFilePath()) },
             read = { SettingsManager.instance.readFromDisk() },
         )
 
+        /**
+         * Same class, same reasoning — a cleared key has to reach this share too, and it used to be a
+         * hand-rolled copy of [StampCachedValue] sitting right beside the instance above. One tested
+         * implementation rather than two, since the tests cover the class.
+         */
+        private val keyPresentCache = StampCachedValue(
+            stamp = { VoiceAgentStorage.keyStamp() },
+            read = { VoiceAgentStorage.keyPresent() },
+        )
+
         fun freshSettings(): TerminalSettings = settingsCache.get() ?: settings()
 
-        @Synchronized
-        fun cachedKeyPresent(): Boolean {
-            val stamp = VoiceAgentStorage.keyStamp()
-            if (stamp != keyStamp || ++keyStampTicks >= VoiceAgentStorage.STAMP_TRUST_TICKS) {
-                keyStamp = stamp
-                keyStampTicks = 0
-                keyPresentCache = VoiceAgentStorage.keyPresent()
-            }
-            return keyPresentCache
-        }
+        fun cachedKeyPresent(): Boolean = keyPresentCache.get() ?: false
 
         /** Last voiceStatus pushed, so [watchVoiceStatus] only broadcasts real changes. */
         @Volatile var lastVoiceStatus: ServerMessage.VoiceStatus? = null

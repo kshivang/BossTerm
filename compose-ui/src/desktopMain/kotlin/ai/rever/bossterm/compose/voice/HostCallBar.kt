@@ -134,22 +134,31 @@ private fun BarButton(label: String, onClick: () -> Unit, tint: Color = Label) {
  * A host with the feature on but no key still gets a pill ([CallSegmentState.NeedsKey]) — clicking
  * it collects the key and places the call, rather than hiding the feature until they find Settings.
  *
- * [pillEnabled] is "the feature is on AND its indicator is enabled" — two settings, because either
- * one being off means no pill. A call already in progress still shows one regardless, so ending it is
- * always reachable.
+ * The two settings are separate parameters because they mean different things, and one combined
+ * `pillEnabled` flag could not express both rules at once:
+ *  - [featureEnabled] off (Boss Calling itself) hides everything except a call already in progress,
+ *    so turning it off doesn't leave a "Call BossTerm · failed" pill with nothing behind it, and
+ *    doesn't strand a live call with no way to end it;
+ *  - [indicatorEnabled] off (just the pill) additionally keeps [CallSegmentState.Failed] visible —
+ *    the error segment is the only place the failure can be dismissed, so hiding it left the call
+ *    parked in Error with no Dismiss.
  */
-internal fun HostCallState.segmentState(pillEnabled: Boolean, keyPresent: Boolean): CallSegmentState =
+internal fun HostCallState.segmentState(
+    featureEnabled: Boolean,
+    indicatorEnabled: Boolean,
+    keyPresent: Boolean,
+): CallSegmentState =
     when {
-        // Disabled wins over a stale failure: otherwise turning Boss Calling off left a
-        // "Call BossTerm · failed" pill on screen with nothing behind it.
-        !pillEnabled && phase != HostCallPhase.Live && phase != HostCallPhase.Connecting ->
+        // Ordering is load-bearing: the phase checks below must not resurrect a pill the feature
+        // switch just turned off, so this comes first and only spares a call in progress.
+        !featureEnabled && phase != HostCallPhase.Live && phase != HostCallPhase.Connecting ->
             CallSegmentState.Hidden
         phase == HostCallPhase.Error -> CallSegmentState.Failed
         phase == HostCallPhase.Connecting -> CallSegmentState.Connecting
         phase == HostCallPhase.Live && working -> CallSegmentState.Working
         phase == HostCallPhase.Live && speaking -> CallSegmentState.Speaking
         phase == HostCallPhase.Live -> CallSegmentState.Live
-        !pillEnabled -> CallSegmentState.Hidden
+        !indicatorEnabled -> CallSegmentState.Hidden
         keyPresent -> CallSegmentState.Ready
         else -> CallSegmentState.NeedsKey
     }

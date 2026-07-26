@@ -36,6 +36,19 @@ function fakeSetTimeout(fn, ms) {
   return id;
 }
 
+/**
+ * A real repeating interval, not an alias for setTimeout.
+ *
+ * It used to be one, which quietly made every interval in viewer.js fire at most once — so the
+ * voice idle watcher (a 15s tick) could not be exercised at all, and a scenario asserting "the call
+ * is still up" passed for the wrong reason.
+ */
+function fakeSetInterval(fn, ms) {
+  const id = ++timerSeq;
+  timers.set(id, { at: now + (Number(ms) || 0), fn, every: Math.max(1, Number(ms) || 0) });
+  return id;
+}
+
 function fakeClearTimeout(id) {
   timers.delete(id);
 }
@@ -43,17 +56,34 @@ function fakeClearTimeout(id) {
 /** Run every timer due within [ms], in due order, so retry ladders unfold deterministically. */
 function advance(ms) {
   const target = now + ms;
+  // Intervals re-arm, so a runaway period (or a callback that schedules itself) would spin forever.
+  // The bound is far above any real ladder: 12 hours of the fastest tick viewer.js uses.
+  let guard = 200000;
   for (;;) {
     let due = null;
     for (const [id, timer] of timers) {
       if (timer.at <= target && (due === null || timer.at < due.timer.at)) due = { id, timer };
     }
     if (due === null) break;
-    timers.delete(due.id);
+    if (--guard <= 0) throw new Error("advance(): timer storm — a fake timer is rescheduling forever");
     now = due.timer.at;
+    if (due.timer.every) due.timer.at = now + due.timer.every;
+    else timers.delete(due.id);
     due.timer.fn();
   }
   now = target;
+}
+
+/** Wall clock pinned to the fake timeline, so Date.now() advances exactly as the timers do. */
+const FAKE_EPOCH = 1700000000000;
+class FakeDate extends Date {
+  constructor(...args) {
+    if (args.length === 0) super(FAKE_EPOCH + now);
+    else super(...args);
+  }
+  static now() {
+    return FAKE_EPOCH + now;
+  }
 }
 
 let rafSeq = 0;
@@ -618,8 +648,11 @@ function loadViewer(options) {
   define("WebSocket", FakeWebSocket);
   define("setTimeout", fakeSetTimeout);
   define("clearTimeout", fakeClearTimeout);
-  define("setInterval", fakeSetTimeout);
+  define("setInterval", fakeSetInterval);
   define("clearInterval", fakeClearTimeout);
+  // Date.now() must move with advance(), or any code comparing two timestamps (the voice idle
+  // deadline, the connection-health window) sees no time pass however far the timers are driven.
+  define("Date", FakeDate);
   define("requestAnimationFrame", fakeRequestAnimationFrame);
   define("cancelAnimationFrame", fakeCancelAnimationFrame);
   define("addEventListener", () => {});
@@ -1084,6 +1117,48 @@ const scenarios = {
     // The real reply turns up afterwards.
     socket.deliver({ t: "voiceToolResult", callId: "slow", resultJson: "{\"late\":true}" });
     assert.strictEqual(outputsFor("slow"), 1, "a late result must not answer a second time");
+  },
+
+  /**
+   * The idle hangup (10 min) is shorter than the run_command budget (10.5 min), and the host lets a
+   * command run the full 10 — so "nothing has arrived lately" is not the same as "nothing is
+   * happening". Asking for a long build and waiting quietly for it used to end the call at the
+   * moment the command's own clamp expired.
+   */
+  async "a long-running tool holds off the viewer's idle hangup"() {
+    loadViewer({ voiceCapable: true });
+    const socket = connectPanes(["pane-1"]);
+    socket.deliver({ t: "control", granted: true });
+    socket.deliver({ t: "voiceStatus", available: true });
+    el("voicecallbtn").onclick();
+    await flushPromises();
+    socket.deliver({
+      t: "voiceSession", clientSecret: "ek", model: "gpt-realtime-2.1", callToken: "tok",
+    });
+    await flushPromises();
+    const pc = FakeRTCPeerConnection.latest;
+    pc.dc.open();
+
+    pc.dc.deliver({
+      type: "response.function_call_arguments.done",
+      call_id: "build", name: "run_command", arguments: "{\"script\":\"./gradlew test\"}",
+    });
+    assert.strictEqual(el("voicestate").textContent, "Working…");
+
+    // Past the 10-minute cut-off with the command still running and nothing else arriving — no
+    // audio, no speech, no result — but short of the 10.5-minute run_command watchdog.
+    advance(10 * 60 * 1000 + 15000);
+    assert.ok(el("voicecall").classList.contains("on"), "a pending tool is not an idle call");
+
+    // The result lands after that; the idle deadline must be fresh, not ten minutes stale, or the
+    // next tick hangs up while the agent is reading the result out.
+    socket.deliver({ t: "voiceToolResult", callId: "build", resultJson: "{\"ok\":true}" });
+    advance(2 * 60 * 1000);
+    assert.ok(el("voicecall").classList.contains("on"), "the call survives its own long tool");
+
+    // And the cut-off still works once nothing is outstanding.
+    advance(11 * 60 * 1000);
+    assert.ok(!el("voicecall").classList.contains("on"), "a genuinely idle call still hangs up");
   },
 
   "a share-socket drop mid-call ends the call instead of leaving the agent blind"() {

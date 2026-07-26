@@ -2120,12 +2120,19 @@ fun TabbedTerminal(
         // lambda owns the terminal rendering path, and the call state carries fields that change
         // several times a second while a call is up. Only segment transitions belong here — the
         // level meter collects its own flow inside HostCallBar.
-        val voiceEnabled = settings.voiceCallEnabled && settings.voiceShowStatusIndicator
-        val callSegment by remember(voiceEnabled) {
+        val voiceEnabled = settings.voiceCallEnabled
+        val voiceIndicator = settings.voiceShowStatusIndicator
+        val callSegment by remember(voiceEnabled, voiceIndicator) {
             combine(
                 HostVoiceCall.state,
                 VoiceAgentStorage.keyPresentFlow,
-            ) { call, keyPresent -> call.segmentState(pillEnabled = voiceEnabled, keyPresent = keyPresent) }
+            ) { call, keyPresent ->
+                call.segmentState(
+                    featureEnabled = voiceEnabled,
+                    indicatorEnabled = voiceIndicator,
+                    keyPresent = keyPresent,
+                )
+            }
                 .distinctUntilChanged()
         }.collectAsState(CallSegmentState.Hidden)
         var voiceKeyPrompt by remember { mutableStateOf(false) }

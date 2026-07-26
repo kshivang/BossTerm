@@ -408,6 +408,11 @@
     if (voice.idleTimer) clearInterval(voice.idleTimer);
     voice.idleTimer = setInterval(function () {
       if (voice.state === "idle") return;
+      // A tool still running IS the call in use. The run_command budget (630s) deliberately exceeds
+      // VOICE_IDLE_MS, so checking only the last event hung up mid-command; touching also covers the
+      // gap between the result arriving and the agent speaking about it. Mirrors the host's
+      // startLimits().
+      if (voice.pendingCount > 0) { voiceTouch(); return; }
       if (Date.now() - voice.lastActivity >= VOICE_IDLE_MS) {
         endCall(true);
         toast("Call ended after " + (VOICE_IDLE_MS / 60000) + " minutes with nothing happening.", 6000);

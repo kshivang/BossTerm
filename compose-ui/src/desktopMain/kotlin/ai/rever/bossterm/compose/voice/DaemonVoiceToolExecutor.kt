@@ -45,7 +45,10 @@ internal class DaemonVoiceToolExecutor(
     }
 
     override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?): String {
-        if (tools().none { it.name == name }) throw VoiceToolException("Unknown tool: $name")
+        // One tools() call per invocation: it rebuilds the filtered list each time, and this used to
+        // resolve the name here and then look the same def up again below.
+        val def = tools().firstOrNull { it.name == name }
+            ?: throw VoiceToolException("Unknown tool: $name")
         val scope = inScopeSessionIds()
         val viewing = defaultTabId ?: anchorSessionId()
 
@@ -55,7 +58,6 @@ internal class DaemonVoiceToolExecutor(
         // Any session id present is scope-checked (the boundary, kept loud); it only becomes the
         // TARGET for tools that advertise the parameter — get_active_tab declares none, so honouring
         // one there made `isActive` describe a session the caller isn't viewing.
-        val def = tools().first { it.name == name }
         val named = args.stringArg("tab_id")
         if (named != null && named !in scope) {
             throw VoiceToolException("Tab $named is not part of this share")

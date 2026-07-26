@@ -405,6 +405,53 @@ class HostVoiceCallControllerTest {
         assertTrue(audio.stopped, "and release the microphone")
     }
 
+    /**
+     * The idle cut-off (10 min) is SHORTER than the run_command budget (10.5 min), and the MCP server
+     * lets a command run the full 10. Keying "idle" off the last event therefore hung up on the one
+     * caller who was definitely doing something: ask for a long build, wait quietly for it, get
+     * "nothing happened for 10 minutes" at almost the instant the command's own clamp expired.
+     */
+    @Test
+    fun `a call running a long tool is not idle`() {
+        var clock = 1_000L
+        val gate = CompletableDeferred<Unit>()
+        val slow = object : VoiceToolExecutor {
+            override fun tools(): List<VoiceToolDef> = VoiceToolCatalog.ALL.filter { !it.guiOnly }
+            override fun contextSnapshot(defaultTabId: String?): String = ""
+            override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?): String {
+                gate.await()
+                return """{"ok":true}"""
+            }
+        }
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val c = controller(transport, audio, executor = slow, clock = { clock })
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+
+        transport.deliver(
+            """{"type":"response.function_call_arguments.done","call_id":"build","name":"run_command","arguments":"{\"script\":\"./gradlew test\"}"}"""
+        )
+        assertTrue(await { c.state.value.working }, "the tool is in flight")
+
+        // Well past the cut-off, with nothing else arriving — exactly the reported scenario.
+        clock += HostVoiceCallController.IDLE_TIMEOUT_MS + 1
+        assertFalse(
+            await(HostVoiceCallController.LIMIT_TICK_MS + 1_500) { c.state.value.phase != HostCallPhase.Live },
+            "a pending tool call must hold the idle cut-off off",
+        )
+
+        // And the deadline must be fresh when it finishes, or the next tick hangs up on the caller
+        // while the agent is starting to read the result out.
+        gate.complete(Unit)
+        assertTrue(await { transport.outputsFor("build") == 1 }, "the result was delivered")
+        assertFalse(
+            await(HostVoiceCallController.LIMIT_TICK_MS + 1_500) { c.state.value.phase != HostCallPhase.Live },
+            "the call must not be judged idle the moment a long tool answers",
+        )
+        c.end()
+    }
+
     @Test
     fun `a long in-app call stops at the duration ceiling`() {
         var clock = 1_000L

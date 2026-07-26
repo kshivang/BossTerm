@@ -121,6 +121,60 @@ class VoiceCallServiceTest {
         assertEquals("not_controller", err.code)
     }
 
+    /**
+     * A bail-out that never reaches OpenAI must hand its mint reservation back — the budget rations
+     * requests to OpenAI, not attempts. The too_many_calls refusal always did; the two inside the
+     * coroutine did not, so a share whose key had just been cleared burned one of twelve mints per
+     * try and then rate-limited the host's own retry after they pasted a new one.
+     *
+     * MINT_MIN_GAP_MS is 3s and these run back-to-back, so an unrefunded reservation shows up
+     * immediately as `rate_limited`.
+     */
+    @Test
+    fun `a bail-out that never reaches OpenAI refunds its mint reservation`() {
+        fun codesFrom(svc: VoiceCallService): List<String> {
+            val replies = mutableListOf<ServerMessage>()
+            repeat(2) {
+                svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { r ->
+                    synchronized(replies) { replies.add(r) }
+                }
+                Thread.sleep(250) // the bail-outs under test are inside scope.launch
+            }
+            return synchronized(replies) { replies.filterIsInstance<ServerMessage.VoiceError>().map { it.code } }
+        }
+
+        // The key vanished between the cheap keyPresent() check and the read inside the coroutine.
+        val vanishingKey = VoiceCallService(
+            executor = FakeExecutor(),
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { null },
+            keyPresent = { true },
+            mintTimestamps = ArrayDeque(),
+            sharedCalls = LinkedHashMap(),
+        )
+        assertEquals(listOf("no_key", "no_key"), codesFrom(vanishingKey), "no_key must not spend a mint")
+
+        // tools() throwing: the GUI executor builds its private MCP server on first use.
+        val brokenTools = VoiceCallService(
+            executor = object : VoiceToolExecutor {
+                override fun tools(): List<VoiceToolDef> = error("MCP server unavailable")
+                override fun contextSnapshot(defaultTabId: String?): String = ""
+                override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?) = "{}"
+            },
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+            mintTimestamps = ArrayDeque(),
+            sharedCalls = LinkedHashMap(),
+        )
+        assertEquals(
+            listOf("mint_failed", "mint_failed"),
+            codesFrom(brokenTools),
+            "an unavailable tool surface must not spend a mint either",
+        )
+    }
+
     @Test
     fun `voiceStart validates enabled and key before minting`() {
         val replies = mutableListOf<ServerMessage>()

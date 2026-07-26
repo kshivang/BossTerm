@@ -194,6 +194,9 @@ internal class VoiceCallService(
             if (key == null) {
                 closeCall(token)
                 clearCallTokenIfCurrent(token)
+                // Same invariant as the too_many_calls refusal above: no request reached OpenAI, so
+                // the reservation must go back. Every bail-out below this point holds to it too.
+                refundMint(mintReservation)
                 reply(ServerMessage.VoiceError(code = "no_key"))
                 return@launch
             }
@@ -205,11 +208,13 @@ internal class VoiceCallService(
                 executor.tools()
             } catch (e: CancellationException) {
                 closeCall(token)
+                refundMint(mintReservation)
                 throw e
             } catch (e: Exception) {
                 log.warn("Voice tool surface unavailable: {}", e.javaClass.simpleName)
                 closeCall(token)
                 clearCallTokenIfCurrent(token)
+                refundMint(mintReservation)
                 reply(ServerMessage.VoiceError(code = "mint_failed", message = "Tools unavailable"))
                 return@launch
             }
@@ -507,8 +512,8 @@ internal class VoiceCallService(
 
     /**
      * Retire ONE call: the viewer hung up, or its connection dropped. Without this a token stayed
-     * usable for its whole TTL, so a viewer that hung up (or was later demoted to view-only) kept a
-     * working handle for the read tools — which reach further back than the mirrored screen does.
+     * usable for its whole TTL, so a viewer that hung up kept a working handle for the read tools —
+     * which reach further back than the mirrored screen does.
      */
     fun closeCall(token: String?) {
         if (token == null) return

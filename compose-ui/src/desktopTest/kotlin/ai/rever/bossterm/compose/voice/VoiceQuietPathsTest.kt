@@ -74,26 +74,22 @@ class VoiceQuietPathsTest {
         working: Boolean = false,
     ) = HostCallState(phase = phase, speaking = speaking, working = working)
 
+    private fun HostCallState.segment(
+        featureEnabled: Boolean = true,
+        indicatorEnabled: Boolean = true,
+        keyPresent: Boolean = true,
+    ) = segmentState(featureEnabled, indicatorEnabled, keyPresent)
+
     @Test
     fun `the pill reflects the call before anything else`() {
-        assertEquals(
-            CallSegmentState.Connecting,
-            state(HostCallPhase.Connecting).segmentState(pillEnabled = true, keyPresent = true),
-        )
-        assertEquals(
-            CallSegmentState.Working,
-            state(HostCallPhase.Live, working = true).segmentState(pillEnabled = true, keyPresent = true),
-        )
-        assertEquals(
-            CallSegmentState.Speaking,
-            state(HostCallPhase.Live, speaking = true).segmentState(pillEnabled = true, keyPresent = true),
-        )
+        assertEquals(CallSegmentState.Connecting, state(HostCallPhase.Connecting).segment())
+        assertEquals(CallSegmentState.Working, state(HostCallPhase.Live, working = true).segment())
+        assertEquals(CallSegmentState.Speaking, state(HostCallPhase.Live, speaking = true).segment())
         // Working outranks speaking: the agent can be mid-sentence while a tool runs, and "what is it
         // doing" is the more useful answer.
         assertEquals(
             CallSegmentState.Working,
-            state(HostCallPhase.Live, speaking = true, working = true)
-                .segmentState(pillEnabled = true, keyPresent = true),
+            state(HostCallPhase.Live, speaking = true, working = true).segment(),
         )
     }
 
@@ -102,30 +98,38 @@ class VoiceQuietPathsTest {
         // Otherwise ending the call would become unreachable.
         assertEquals(
             CallSegmentState.Live,
-            state(HostCallPhase.Live).segmentState(pillEnabled = false, keyPresent = true),
+            state(HostCallPhase.Live).segment(featureEnabled = false, indicatorEnabled = false),
         )
         assertEquals(
             CallSegmentState.Connecting,
-            state(HostCallPhase.Connecting).segmentState(pillEnabled = false, keyPresent = true),
+            state(HostCallPhase.Connecting).segment(featureEnabled = false, indicatorEnabled = false),
         )
     }
 
     @Test
-    fun `disabling the feature hides a stale failure`() {
+    fun `disabling the feature hides a stale failure, but hiding only the pill does not`() {
         val failed = HostCallState(phase = HostCallPhase.Error, error = "boom")
-        assertEquals(CallSegmentState.Failed, failed.segmentState(pillEnabled = true, keyPresent = true))
+        assertEquals(CallSegmentState.Failed, failed.segment())
         assertEquals(
             CallSegmentState.Hidden,
-            failed.segmentState(pillEnabled = false, keyPresent = true),
-            "turning it off must not leave a 'failed' pill with nothing behind it",
+            failed.segment(featureEnabled = false),
+            "turning Boss Calling off must not leave a 'failed' pill with nothing behind it",
+        )
+        // The other direction: the error segment carries the only Dismiss, so turning off just the
+        // indicator while a call sits in Error used to strand it with no way to clear it.
+        assertEquals(
+            CallSegmentState.Failed,
+            failed.segment(indicatorEnabled = false),
+            "an error must stay dismissible when only the indicator is off",
         )
     }
 
     @Test
-    fun `an idle host shows ready or needs-key, and nothing when disabled`() {
-        assertEquals(CallSegmentState.Ready, state().segmentState(pillEnabled = true, keyPresent = true))
-        assertEquals(CallSegmentState.NeedsKey, state().segmentState(pillEnabled = true, keyPresent = false))
-        assertEquals(CallSegmentState.Hidden, state().segmentState(pillEnabled = false, keyPresent = true))
+    fun `an idle host shows ready or needs-key, and nothing when either switch is off`() {
+        assertEquals(CallSegmentState.Ready, state().segment())
+        assertEquals(CallSegmentState.NeedsKey, state().segment(keyPresent = false))
+        assertEquals(CallSegmentState.Hidden, state().segment(indicatorEnabled = false))
+        assertEquals(CallSegmentState.Hidden, state().segment(featureEnabled = false))
     }
 
     // ---- mint parsing: the GA shape, the beta fallback, and error extraction ----

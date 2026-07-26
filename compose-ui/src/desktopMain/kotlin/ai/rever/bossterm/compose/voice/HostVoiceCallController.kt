@@ -246,7 +246,14 @@ internal class HostVoiceCallController(
                     endWith("Call ended — reached the ${MAX_CALL_DURATION_MS / 60_000} minute limit.")
                     return@launch
                 }
-                if (now - lastActivityMs >= IDLE_TIMEOUT_MS) {
+                // A tool still running IS the call doing something. toolTimeoutMs("run_command") is
+                // 10.5 min by design — longer than this cut-off — so an idle check that only looks
+                // at "when did an event last arrive" hung up on the caller who asked for a long
+                // build and then waited quietly for it, at almost the same instant the command's own
+                // clamp expired. Touching (rather than merely skipping) also covers the seconds
+                // between the tool answering and the agent starting to speak about it.
+                if (toolsPending()) touchActivity()
+                else if (now - lastActivityMs >= IDLE_TIMEOUT_MS) {
                     log.info("Boss Calling: ending idle in-app call")
                     endWith("Call ended — nothing happened for ${IDLE_TIMEOUT_MS / 60_000} minutes.")
                     return@launch
@@ -258,6 +265,9 @@ internal class HostVoiceCallController(
     private fun touchActivity() {
         lastActivityMs = nowMs()
     }
+
+    /** Is a tool call still outstanding? Read by the idle cut-off — see [startLimits]. */
+    private fun toolsPending(): Boolean = synchronized(roundLock) { pendingCalls.isNotEmpty() }
 
     /** End the call and leave the reason on the bar, rather than vanishing silently. */
     private fun endWith(message: String) {

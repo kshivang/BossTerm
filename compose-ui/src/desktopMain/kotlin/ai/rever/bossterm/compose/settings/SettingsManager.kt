@@ -184,12 +184,6 @@ class SettingsManager(private val customSettingsPath: String? = null) {
     }
 
     /**
-     * Latest persisted settings, or the in-memory snapshot if the file is missing/unreadable. Used as
-     * the merge base for [updateSetting]/[mergeChangedFields] so a write reflects what another process
-     * last persisted. Caller holds [saveLock] so the read→modify→write is atomic against other writers
-     * in THIS process; cross-process atomicity comes from the unique-temp + rename in [writeToFileLocked].
-     */
-    /**
      * @suppress The file this manager persists to, for cross-process pollers.
      *
      * The GUI and the daemon hold independent in-memory copies with no reload-on-change (see the
@@ -202,8 +196,13 @@ class SettingsManager(private val customSettingsPath: String? = null) {
     internal fun readFromDisk(): TerminalSettings? =
         runCatching { json.decodeFromString<TerminalSettings>(settingsFile.readText()) }.getOrNull()
 
-    private fun currentOnDiskOrMemory(): TerminalSettings =
-        runCatching { json.decodeFromString<TerminalSettings>(settingsFile.readText()) }.getOrNull() ?: _settings.value
+    /**
+     * Latest persisted settings, or the in-memory snapshot if the file is missing/unreadable. Used as
+     * the merge base for [updateSetting]/[mergeChangedFields] so a write reflects what another process
+     * last persisted. Caller holds [saveLock] so the read→modify→write is atomic against other writers
+     * in THIS process; cross-process atomicity comes from the unique-temp + rename in [writeToFileLocked].
+     */
+    private fun currentOnDiskOrMemory(): TerminalSettings = readFromDisk() ?: _settings.value
 
     /** Write [value] atomically (temp + rename). Caller holds [saveLock]. */
     private fun writeToFileLocked(value: TerminalSettings) {

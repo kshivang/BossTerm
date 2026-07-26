@@ -397,13 +397,12 @@ internal class VoiceCallService(
     }
 
     /**
-     * Whether another mint is allowed: a minimum gap plus a rolling window cap. Each mint is a
-     * billed `POST /v1/realtime/client_secrets` against the host's key, and nothing else in the
-     * path costs money, so this is the spend limiter — a reconnect loop or a viewer holding the
-     * button cannot run up the bill.
-     */
-    /**
-     * Claim one mint from the budget, or false when the gap or the window cap says no.
+     * Claim one mint from the budget, or null when the gap or the window cap says no.
+     *
+     * A minimum gap plus a rolling window cap. Each mint is a billed
+     * `POST /v1/realtime/client_secrets` against the host's key, and nothing else in the path costs
+     * money, so this is the spend limiter — a reconnect loop or a viewer holding the button cannot
+     * run up the bill.
      *
      * Peek and record are ONE critical section: split across two, two concurrent voiceStart frames
      * could both pass the gap check and the cap before either appended, so neither was actually
@@ -427,6 +426,9 @@ internal class VoiceCallService(
      * T1 removed T2.
      */
     private fun refundMint(reservation: Long) = synchronized(mintTimestamps) {
+        // Matching by value, not by a reservation id: two mints reserved in the same millisecond are
+        // indistinguishable entries, so removing "the wrong one" leaves an identical deque. An id
+        // would be more precise about which slot came back without changing what comes back.
         val at = mintTimestamps.lastIndexOf(reservation)
         if (at >= 0) mintTimestamps.removeAt(at)
     }

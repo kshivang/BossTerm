@@ -68,8 +68,9 @@ internal object VoiceAgentStorage {
      * Cheap change token for the key file: mtime + size, 0 when absent. Pollers (the daemon has no
      * cross-process flow) compare this and only re-read on a change, instead of decoding the JSON
      * on every tick.
+     *
+     * Collision-prone by construction; [STAMP_TRUST_TICKS] is the load-bearing mitigation.
      */
-    /** Collision-prone by construction; [STAMP_TRUST_TICKS] is the load-bearing mitigation. */
     fun keyStamp(file: File = defaultFile()): Long =
         if (file.isFile) file.lastModified() * 31 + file.length() else 0L
 

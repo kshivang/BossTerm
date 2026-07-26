@@ -38,6 +38,7 @@ import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /** Whether a share covers one tab (incl. its splits), the whole window (all tabs), or every window. */
 enum class ShareScope { TAB, WINDOW, ALL }
@@ -361,7 +362,6 @@ class MirrorShare(
         serverLabel = MCP_SERVER_LABEL,
     )
 
-    /** Route viewer messages — input + tab close/new — to the host (controller role only). */
     /**
      * The remote session a host tab itself mirrors (so a viewer's action on it can be relayed
      * to the origin instead of mutating the local mirror — which the next upstream Layout
@@ -457,9 +457,7 @@ class MirrorShare(
                     onCallTokenChanged = { token -> vc.voiceCallToken = token },
                     // Compare-and-clear: a mint that fails late must not wipe a token a redial has
                     // since installed, or the newer call ends up audible and billed with no tools.
-                    clearCallTokenIfCurrent = { stale ->
-                        if (vc.voiceCallToken == stale) vc.voiceCallToken = null
-                    },
+                    clearCallTokenIfCurrent = { stale -> vc.clearVoiceCallTokenIfCurrent(stale) },
                 ) { m ->
                     vc.outbox.sendControl(ShareProtocol.encodeServer(m))
                 }
@@ -1075,8 +1073,28 @@ class ViewerConnection(
      */
     @Volatile var voiceTabId: String? = null
 
-    /** This connection's live call handle, so hanging up (or dropping) can retire exactly it. */
-    @Volatile var voiceCallToken: String? = null
+    /**
+     * This connection's live call handle, so hanging up (or dropping) can retire exactly it.
+     *
+     * An [AtomicReference] rather than a `@Volatile` field because the compare-and-clear below has
+     * to be one operation — see [clearVoiceCallTokenIfCurrent].
+     */
+    private val voiceCallTokenRef = AtomicReference<String?>(null)
+
+    var voiceCallToken: String?
+        get() = voiceCallTokenRef.get()
+        set(value) = voiceCallTokenRef.set(value)
+
+    /**
+     * Clear the token only if it is still [stale], atomically.
+     *
+     * Written as `if (token == stale) token = null`, this was a read-then-write: a late mint failure
+     * could test true, a redial on the receive loop install token B in the gap, and the failure's
+     * write land last — leaving B live and billed in `liveCalls` while this connection held no token
+     * to authorise its tools with. That is the exact outcome the compare was added to prevent.
+     */
+    fun clearVoiceCallTokenIfCurrent(stale: String?): Boolean =
+        voiceCallTokenRef.compareAndSet(stale, null)
 
     /** A mid-session control request is awaiting the host's decision (dedupes re-requests). */
     @Volatile var controlRequestPending = false

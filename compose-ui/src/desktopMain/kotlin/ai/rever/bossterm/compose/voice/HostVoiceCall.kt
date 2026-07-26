@@ -72,17 +72,20 @@ internal object HostVoiceCall {
         mirrorJob = scope.launch {
             launch { c.level.collect { _level.value = it } }
             launch {
-                c.state.collect { state ->
-                    _state.value = state
+                mirrorUntilSelfEnded(
+                    states = c.state,
+                    onState = { _state.value = it },
                     // A call can end itself (fail(), or a ceiling via endWith) — release the
                     // controller and the collectors then too, or this object keeps them until the
                     // next start()/end() despite documenting that it owns exactly one call.
-                    if (state.phase == HostCallPhase.Idle && controller === c) {
-                        controller = null
-                        killSwitchJob?.cancel()
-                        killSwitchJob = null
-                    }
-                }
+                    onSelfEnded = {
+                        if (controller === c) {
+                            controller = null
+                            killSwitchJob?.cancel()
+                            killSwitchJob = null
+                        }
+                    },
+                )
             }
         }
         c.start()
@@ -122,4 +125,30 @@ internal object HostVoiceCall {
     private fun activeTabId(): String? =
         McpTerminalRegistry.primaryState()?.activeTabId
             ?: McpTerminalRegistry.allTabs().firstOrNull()?.id
+}
+
+/**
+ * Mirror a controller's state, reporting only a call that ENDED ITSELF.
+ *
+ * Split out of [HostVoiceCall.start] to be testable: the object it lives on builds a real MCP-backed
+ * executor, so the rule below could not otherwise be exercised — and the rule is subtle.
+ *
+ * A [StateFlow] replays its current value to each new collector, and a fresh controller's current
+ * value is `Idle` — `start()` has not run yet, because the collector is launched first and dispatched
+ * to another thread. Releasing on `Idle` alone therefore raced the start: when the collector won,
+ * the owner dropped its reference a moment before the call came up, leaving the mic open and the
+ * Realtime socket billing behind a bar whose End button resolved to null. Only a call observed
+ * ACTIVE can subsequently have ended itself.
+ */
+internal suspend fun mirrorUntilSelfEnded(
+    states: StateFlow<HostCallState>,
+    onState: (HostCallState) -> Unit,
+    onSelfEnded: () -> Unit,
+) {
+    var sawActive = false
+    states.collect { state ->
+        onState(state)
+        if (state.active) sawActive = true
+        if (sawActive && state.phase == HostCallPhase.Idle) onSelfEnded()
+    }
 }

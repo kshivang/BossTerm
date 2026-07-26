@@ -15,6 +15,7 @@ import java.net.http.WebSocket
 import java.time.Duration
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The host's own connection to the OpenAI Realtime API, as JSON events in both directions.
@@ -34,8 +35,9 @@ internal interface RealtimeTransport {
      * chunk is worth less than an unbounded queue. Protocol frames must NOT be evictable: losing a
      * `function_call_output` wedges that tool round permanently (the round is already settled, so
      * `response.create` fires against a call the model never got an output for).
+     *
+     * @return false when a GUARANTEED frame could not be queued; evictable sends always return true.
      */
-    /** @return false when a GUARANTEED frame could not be queued; evictable sends always return true. */
     fun send(json: String, evictable: Boolean = false): Boolean
 
     fun close()
@@ -94,7 +96,7 @@ internal class JdkRealtimeTransport : RealtimeTransport {
      * NEW socket and send on it. Two concurrent sendText calls is exactly the collision the
      * single-consumer queue exists to prevent, failing the same silent way.
      */
-    @Volatile private var generation = 0
+    private val generation = AtomicInteger(0)
 
     override suspend fun connect(
         model: String,
@@ -153,9 +155,9 @@ internal class JdkRealtimeTransport : RealtimeTransport {
         }
         socket = ws
         open = true
-        val gen = ++generation
+        val gen = generation.incrementAndGet()
         writer = Thread({
-            while (keepWriting(open, gen, generation)) {
+            while (keepWriting(open, gen, generation.get())) {
                 val json = runCatching { lanes.poll(200, TimeUnit.MILLISECONDS) }.getOrNull() ?: continue
                 val ws = socket ?: break
                 // join() per frame is the point: the next sendText may not start until this one

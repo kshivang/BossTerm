@@ -189,7 +189,13 @@ internal class HostVoiceCallController(
             // at "Calling…", the Realtime socket was already open and BILLING, and startLimits()
             // never ran, so neither ceiling was armed. The one failure mode with nothing behind it.
             try {
-                transport.send(sessionUpdate(s).toString())
+                // Checked like every other guaranteed-lane send: the queue is empty here so a
+                // refusal isn't realistic, but an unconfigured session is a call that never works,
+                // and the asymmetry is what drifts.
+                if (!transport.send(sessionUpdate(s).toString())) {
+                    fail("Couldn't configure the call.")
+                    return@launch
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -568,8 +574,7 @@ internal class HostVoiceCallController(
     /**
      * The host is talking about their own machine, so the framing differs from the share viewer's:
      * no remote guest, and "the terminal in front of you" is literally true.
-     */
-    /**
+     *
      * NOTE: the sibling of [ai.rever.bossterm.compose.voice.VoiceCallService]'s share-viewer template.
      * The framing differs deliberately (owner vs remote guest); the RULES should not drift apart.
      */

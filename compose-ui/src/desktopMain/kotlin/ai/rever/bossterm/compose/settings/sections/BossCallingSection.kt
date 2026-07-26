@@ -13,6 +13,7 @@ import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.SettingsDropdown
 import ai.rever.bossterm.compose.settings.components.SettingsSection
 import ai.rever.bossterm.compose.settings.components.SettingsToggle
+import ai.rever.bossterm.compose.voice.StampCachedValue
 import ai.rever.bossterm.compose.voice.StoredVoiceConfig
 import ai.rever.bossterm.compose.voice.VoiceAgentStorage
 import androidx.compose.foundation.background
@@ -34,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -46,6 +48,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -67,6 +70,12 @@ internal fun BossCallingSection(
     onSettingsChange: (TerminalSettings) -> Unit,
     showAgentOptions: Boolean = true,
     statusLine: Boolean = false,
+    /**
+     * Key presence from a source that crosses processes. [VoiceAgentStorage.keyPresentFlow] only
+     * reflects THIS process's own save/clear plus its startup probe, which is right in the GUI and
+     * wrong in the daemon's share window.
+     */
+    keyPresentOverride: Boolean? = null,
 ) {
     SettingsSection(title = "Boss Calling (voice)") {
         SettingsToggle(
@@ -89,7 +98,7 @@ internal fun BossCallingSection(
                     "only — a different trust boundary from calling your own terminal.",
             enabled = settings.voiceCallEnabled,
         )
-        if (statusLine) VoiceAvailabilityLine(settings)
+        if (statusLine) VoiceAvailabilityLine(settings, keyPresentOverride)
         if (showAgentOptions) {
             SettingsToggle(
                 label = "Show the Call BossTerm indicator",
@@ -117,32 +126,72 @@ internal fun BossCallingSection(
                 description = "The agent's speaking voice."
             )
         }
-        VoiceApiKeyField()
+        VoiceApiKeyField(keyPresentOverride)
     }
 }
 
 /**
  * [BossCallingSection] for windows that don't carry a settings snapshot (the Share window): reads
  * the live settings and persists each change immediately, rather than on a dialog's Save.
+ *
+ * Both halves are deliberately cross-process aware, because one caller is the DAEMON's share window
+ * and the daemon is a separate process whose `SettingsManager` has no reload-on-change:
+ *
+ *  - **Writing** goes through [SettingsManager.mergeChangedFields], not `updateSettings`. A whole
+ *    -object write from an in-memory copy frozen at daemon start would persist that entire stale
+ *    snapshot — so flipping this one toggle in the daemon window reverted every GUI-side settings
+ *    change made since the daemon booted. Merging applies only the field that actually changed.
+ *  - **Reading** re-reads from disk on a slow tick instead of trusting the frozen flow, so the
+ *    window doesn't report "No API key yet — viewers see no Call BossTerm button" while the server,
+ *    which reads the same stamps, is correctly advertising the call as available. That contradiction
+ *    would land in the one panel whose entire job is answering "why is there no Call button?".
  */
 @Composable
 internal fun BossCallingSection(showAgentOptions: Boolean = true, statusLine: Boolean = true) {
-    val settings by SettingsManager.instance.settings.collectAsState()
+    val inMemory by SettingsManager.instance.settings.collectAsState()
+    val settingsCache = remember {
+        StampCachedValue(
+            stamp = { VoiceAgentStorage.fileStamp(SettingsManager.instance.settingsFilePath()) },
+            read = { SettingsManager.instance.readFromDisk() },
+        )
+    }
+    val keyCache = remember {
+        StampCachedValue(stamp = { VoiceAgentStorage.keyStamp() }, read = { VoiceAgentStorage.keyPresent() })
+    }
+    // A couple of stats behind the stamp cache, only while this window is open — the same cost the
+    // daemon's own 5s voice-status poll already pays.
+    val onDisk by produceState(inMemory) {
+        while (true) {
+            value = withContext(Dispatchers.IO) { settingsCache.get() } ?: inMemory
+            delay(CROSS_PROCESS_REFRESH_MS)
+        }
+    }
+    val keyOnDisk by produceState(VoiceAgentStorage.keyPresentFlow.value) {
+        while (true) {
+            value = withContext(Dispatchers.IO) { keyCache.get() } ?: false
+            delay(CROSS_PROCESS_REFRESH_MS)
+        }
+    }
     BossCallingSection(
-        settings = settings,
-        onSettingsChange = { SettingsManager.instance.updateSettings(it) },
+        settings = onDisk,
+        onSettingsChange = { edited -> SettingsManager.instance.mergeChangedFields(onDisk, edited) },
         showAgentOptions = showAgentOptions,
         statusLine = statusLine,
+        keyPresentOverride = keyOnDisk,
     )
 }
+
+/** Slow enough to be free, fast enough that a key added in the GUI shows up while you're looking. */
+private const val CROSS_PROCESS_REFRESH_MS = 2_000L
 
 /**
  * Mirrors what the viewer is told (`voiceStatus`), so "why is there no Call button?" is answerable
  * from the host window. Same rules as [ai.rever.bossterm.compose.voice.VoiceCallService.status].
  */
 @Composable
-private fun VoiceAvailabilityLine(settings: TerminalSettings) {
-    val keyPresent by VoiceAgentStorage.keyPresentFlow.collectAsState()
+private fun VoiceAvailabilityLine(settings: TerminalSettings, keyPresentOverride: Boolean?) {
+    val inProcessKey by VoiceAgentStorage.keyPresentFlow.collectAsState()
+    val keyPresent = keyPresentOverride ?: inProcessKey
     val (text, color) = when {
         !settings.voiceCallEnabled -> "Off — no calls from this window or from viewers." to TextMuted
         !settings.voiceCallShareEnabled ->
@@ -161,8 +210,11 @@ private fun VoiceAvailabilityLine(settings: TerminalSettings) {
  * "key is set" state is shown.
  */
 @Composable
-private fun VoiceApiKeyField() {
-    val keyPresent by VoiceAgentStorage.keyPresentFlow.collectAsState()
+private fun VoiceApiKeyField(keyPresentOverride: Boolean? = null) {
+    val inProcessKey by VoiceAgentStorage.keyPresentFlow.collectAsState()
+    // Either source turning true means a key exists: the override lags by up to one refresh tick,
+    // so a key saved in THIS window must not read as absent until the next poll.
+    val keyPresent = inProcessKey || (keyPresentOverride ?: false)
     var input by remember { mutableStateOf("") }
     // Writing the key touches the filesystem (mkdirs + atomic move), so it goes off the UI thread;
     // `error` surfaces a write that failed rather than letting the field claim a key is set.

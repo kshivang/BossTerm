@@ -1187,9 +1187,7 @@ class DaemonShareServer(
                     onCallTokenChanged = { token -> vc.voiceCallToken = token },
                     // Compare-and-clear: a mint that fails late must not wipe a token a redial has
                     // since installed, or the newer call ends up audible and billed with no tools.
-                    clearCallTokenIfCurrent = { stale ->
-                        if (vc.voiceCallToken == stale) vc.voiceCallToken = null
-                    },
+                    clearCallTokenIfCurrent = { stale -> vc.clearVoiceCallTokenIfCurrent(stale) },
                 ) { m ->
                     // See MirrorShare: the token is captured from the host's own reply, never from
                     // an inbound message.

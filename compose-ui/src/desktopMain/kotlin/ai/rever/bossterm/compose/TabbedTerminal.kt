@@ -2125,7 +2125,7 @@ fun TabbedTerminal(
             combine(
                 HostVoiceCall.state,
                 VoiceAgentStorage.keyPresentFlow,
-            ) { call, keyPresent -> call.segmentState(voiceEnabled, keyPresent) }
+            ) { call, keyPresent -> call.segmentState(pillEnabled = voiceEnabled, keyPresent = keyPresent) }
                 .distinctUntilChanged()
         }.collectAsState(CallSegmentState.Hidden)
         var voiceKeyPrompt by remember { mutableStateOf(false) }

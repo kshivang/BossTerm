@@ -129,6 +129,16 @@ internal class HostVoiceCallController(
     /** In-flight tool calls, capped like the share path's MAX_IN_FLIGHT_TOOL_CALLS. */
     private val inFlightTools = AtomicInteger(0)
 
+    /**
+     * The coroutine running each pending tool, so the watchdog can CANCEL it rather than just answer
+     * the model.
+     *
+     * Answering alone left the work running: four wedged reads answered at 120s each and then held
+     * all four slots for the executor's remaining ~8 minutes, so every later tool call got "wait for
+     * one to finish" when nothing was going to finish. The cap protecting the host became an outage.
+     */
+    private val toolJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
     /** Start a call. No-op when one is already up. */
     fun start() {
         if (_state.value.active) return
@@ -136,10 +146,6 @@ internal class HostVoiceCallController(
         // host with the feature off AND no key is told to add a key.
         if (!settings().voiceCallEnabled) {
             fail("Boss Calling is turned off in Settings.")
-            return
-        }
-        val key = loadKey() ?: run {
-            fail("Add an OpenAI API key in Settings → Session Sharing → Boss Calling.")
             return
         }
         _state.value = HostCallState(phase = HostCallPhase.Connecting)
@@ -150,6 +156,13 @@ internal class HostVoiceCallController(
             seenCalls.clear(); pendingCalls.clear(); responseOpen = false; outputsOwed = 0
         }
         startJob = scope.launch {
+            // Read the key HERE, not on the click: this is a file read + JSON parse, and
+            // VoiceAgentStorage's probe thread exists precisely to keep that off the Compose thread.
+            val key = loadKey()
+            if (key == null) {
+                fail("Add an OpenAI API key in Settings → Session Sharing → Boss Calling.")
+                return@launch
+            }
             val s = settings()
             try {
                 transport.connect(
@@ -397,7 +410,7 @@ internal class HostVoiceCallController(
         touchActivity()
         _state.update { it.copy(working = true, activity = describeTool(name, argsJson)) }
         val timeoutMs = toolTimeoutMs(name)
-        scope.launch(parent) {
+        val job = scope.launch(parent) {
             val watchdog = scope.launch(parent) {
                 delay(timeoutMs)
                 toolTimedOut(callId, name)
@@ -424,7 +437,12 @@ internal class HostVoiceCallController(
             if (!sendToolOutput(callId, result)) return@launch
             if (done) _state.update { it.copy(working = false, activity = null) }
             maybeRequestResponse()
-        }.also { job -> job.invokeOnCompletion { inFlightTools.decrementAndGet() } }
+        }
+        toolJobs[callId] = job
+        job.invokeOnCompletion {
+            inFlightTools.decrementAndGet()
+            toolJobs.remove(callId)
+        }
     }
 
     /** Answer a call we refused outright, so the round doesn't hang waiting for it. */
@@ -476,6 +494,9 @@ internal class HostVoiceCallController(
             pendingCalls.isEmpty()
         }
         log.warn("Voice tool {} did not answer in time", tool)
+        // Cancel the work, not just the wait: this is what actually returns the in-flight slot (and
+        // stops a wedged run_command holding the terminal after the call has moved on).
+        toolJobs.remove(callId)?.cancel()
         val delivered = sendToolOutput(
             callId,
             buildJsonObject { put("error", "This tool did not answer in time.") }.toString(),
@@ -560,6 +581,9 @@ internal class HostVoiceCallController(
             if ("run_command" in names) {
                 appendLine("- Run shell commands with run_command; send_input only for interactive " +
                         "programs (TUIs, prompts); send_signal ctrl_c to interrupt.")
+                appendLine("- If run_command reports that shell integration is missing, fall back to " +
+                        "send_input (with a trailing newline) plus read_scrollback — don't tell the " +
+                        "user the feature is broken.")
             } else if ("send_input" in names) {
                 // An embedder with allowWriteTools = false has no run_command; describe what it does
                 // have rather than dropping write guidance entirely.

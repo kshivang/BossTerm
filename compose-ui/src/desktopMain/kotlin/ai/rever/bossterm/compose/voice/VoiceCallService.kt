@@ -7,7 +7,9 @@ import ai.rever.bossterm.compose.share.ServerMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -158,8 +160,9 @@ internal class VoiceCallService(
             reply(ServerMessage.VoiceError(code = "disabled"))
             return
         }
-        val key = loadKey()
-        if (key == null) {
+        // keyPresent() is the cheap check (a stamp-cached stat on the daemon, an in-process flow in
+        // the GUI); the actual read happens inside the coroutine, off the socket's receive loop.
+        if (!keyPresent()) {
             reply(ServerMessage.VoiceError(code = "no_key"))
             return
         }
@@ -187,6 +190,13 @@ internal class VoiceCallService(
         }
         onCallTokenChanged(token)
         scope.launch {
+            val key = loadKey()
+            if (key == null) {
+                closeCall(token)
+                clearCallTokenIfCurrent(token)
+                reply(ServerMessage.VoiceError(code = "no_key"))
+                return@launch
+            }
             // Everything from here on must either reply or hand the slot back. executor.tools() can
             // force the GUI executor to build its private MCP server, and a throw there used to kill
             // this coroutine with no reply at all — the viewer sat at "Connecting…" until its own
@@ -315,8 +325,17 @@ internal class VoiceCallService(
                     reply(toolError(msg.callId, "Unknown tool: ${def.name}"))
                     return@launch
                 }
-                val resultJson = clampToolResult(def.name, executor.execute(def.name, args, defaultTabId))
+                // Bounded here, not just in the viewer: the viewer's own watchdog answers the MODEL
+                // but can't reach this coroutine, so a wedged tool used to hold its in-flight slot
+                // for the executor's much longer ceiling — four of those and every later call was
+                // refused with "wait for one to finish" when nothing was going to finish.
+                val resultJson = withTimeout(toolBudgetMs(def.name)) {
+                    clampToolResult(def.name, executor.execute(def.name, args, defaultTabId))
+                }
                 reply(ServerMessage.VoiceToolResult(callId = msg.callId, resultJson = resultJson))
+            } catch (e: TimeoutCancellationException) {
+                log.warn("Voice tool {} exceeded its budget; releasing the slot", def.name)
+                reply(toolError(msg.callId, "That tool took too long and was stopped."))
             } catch (e: VoiceToolException) {
                 reply(toolError(msg.callId, e.message ?: "Tool call rejected"))
             } catch (e: CancellationException) {
@@ -357,6 +376,9 @@ internal class VoiceCallService(
             if ("run_command" in names) {
                 appendLine("- Run shell commands with run_command; use send_input only for interactive " +
                         "programs (TUIs, prompts); send_signal ctrl_c to interrupt.")
+                appendLine("- If run_command reports that shell integration is missing, fall back to " +
+                        "send_input (with a trailing newline) plus read_scrollback — don't tell the " +
+                        "user the feature is broken.")
             } else {
                 appendLine("- Run shell commands by typing them with send_input (include a trailing \\n " +
                         "to submit), then read_scrollback to see the result; send_signal ctrl_c to interrupt.")
@@ -529,7 +551,18 @@ internal class VoiceCallService(
         /** Shared by every share in this process — see [sharedCalls]. */
         val sharedLiveCalls = LinkedHashMap<String, LiveCall>()
 
+        /**
+         * Concurrent tool calls PER SHARE (deliberately, unlike the process-wide MAX_LIVE_CALLS):
+         * this one protects the host's CPU and MCP handlers, which a single share can saturate, so
+         * the unit is the share rather than the key.
+         */
         const val MAX_IN_FLIGHT_TOOL_CALLS = 4
+
+        /**
+         * How long a tool may run before its slot is reclaimed. Mirrors the viewer's own watchdog so
+         * the two agree: run_command owns its 600s clamp, reads should be quick.
+         */
+        fun toolBudgetMs(tool: String): Long = if (tool == "run_command") 630_000L else 120_000L
 
         /** OpenAI call ids are ~30 chars; this is generous and bounds what we echo back. */
         const val MAX_CALL_ID_CHARS = 200

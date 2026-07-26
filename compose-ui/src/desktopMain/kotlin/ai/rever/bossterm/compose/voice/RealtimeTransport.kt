@@ -14,7 +14,6 @@ import java.net.http.HttpClient
 import java.net.http.WebSocket
 import java.time.Duration
 import java.util.concurrent.CompletionStage
-import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 
 /**
@@ -77,15 +76,8 @@ internal class JdkRealtimeTransport : RealtimeTransport {
      */
     // Two lanes: protocol frames are guaranteed, audio is droppable. One mixed drop-oldest queue
     // would evict a queued function_call_output as readily as a stale mic chunk.
-    private val outgoing = ArrayBlockingQueue<String>(OUTGOING_CAPACITY)
-    private val outgoingAudio = ArrayBlockingQueue<String>(OUTGOING_AUDIO_CAPACITY)
+    private val lanes = OutgoingLanes()
 
-    /** @suppress Test seam: the lane split is correctness-critical and needs no socket to check. */
-    internal fun queuedForTest(): Pair<List<String>, List<String>> =
-        outgoing.toList() to outgoingAudio.toList()
-
-    /** @suppress Test seam: pretend the socket is up so [send] enqueues. */
-    internal fun openForTest() { open = true }
     @Volatile private var writer: Thread? = null
     @Volatile private var open = false
 
@@ -163,12 +155,8 @@ internal class JdkRealtimeTransport : RealtimeTransport {
         open = true
         val gen = ++generation
         writer = Thread({
-            while (open && generation == gen) {
-                // Protocol frames first, then audio: a backlog of mic chunks must not delay a
-                // function_call_output.
-                val json = outgoing.poll()
-                    ?: runCatching { outgoingAudio.poll(200, TimeUnit.MILLISECONDS) }.getOrNull()
-                    ?: continue
+            while (keepWriting(open, gen, generation)) {
+                val json = runCatching { lanes.poll(200, TimeUnit.MILLISECONDS) }.getOrNull() ?: continue
                 val ws = socket ?: break
                 // join() per frame is the point: the next sendText may not start until this one
                 // completes.
@@ -182,22 +170,11 @@ internal class JdkRealtimeTransport : RealtimeTransport {
 
     override fun send(json: String, evictable: Boolean): Boolean {
         if (!open) return false
-        if (evictable) {
-            // Drop the oldest audio when the socket can't keep up: stale mic chunks are worth less
-            // than an unbounded queue, and losing one is inaudible.
-            if (!outgoingAudio.offer(json)) {
-                outgoingAudio.poll()
-                outgoingAudio.offer(json)
-            }
-            return true
+        val accepted = lanes.offer(json, evictable)
+        if (!accepted) {
+            log.warn("Voice control queue full ({}); dropping a protocol frame", OutgoingLanes.PROTOCOL_CAPACITY)
         }
-        // Protocol frames are guaranteed while the lane has room; past it the socket is hopelessly
-        // behind, so surface it rather than silently dropping a tool result.
-        if (!outgoing.offer(json)) {
-            log.warn("Voice control queue full ({}); dropping a protocol frame", OUTGOING_CAPACITY)
-            return false
-        }
-        return true
+        return accepted
     }
 
     override fun close() {
@@ -214,8 +191,7 @@ internal class JdkRealtimeTransport : RealtimeTransport {
         // reachable, since the controller keeps one transport for its whole lifetime.
         pending.setLength(0)
         writer = null
-        outgoing.clear()
-        outgoingAudio.clear()
+        lanes.clear()
         val ws = socket ?: return
         socket = null
         // Let the close frame actually flush before aborting: abort() straight after sendClose
@@ -228,16 +204,20 @@ internal class JdkRealtimeTransport : RealtimeTransport {
     }
 
     internal companion object {
+        /**
+         * Whether a writer thread should keep draining: its own [myGeneration] must still be the
+         * current one. A lingering writer from a previous connect would otherwise re-read the shared
+         * `open` flag, pick up the NEW socket and send concurrently with its replacement — the exact
+         * collision the single-consumer queue exists to prevent. Pure, so the guard is testable.
+         */
+        fun keepWriting(open: Boolean, myGeneration: Int, currentGeneration: Int): Boolean =
+            open && myGeneration == currentGeneration
+
         const val REALTIME_WS_URL = "wss://api.openai.com/v1/realtime"
 
         /** How long close() waits for the writer to unwind before abandoning it. */
         const val WRITER_SHUTDOWN_MS = 500L
 
-        /** Protocol frames in flight; small because they are answered promptly. */
-        const val OUTGOING_CAPACITY = 64
-
-        /** ~10s of mic frames; beyond that the socket is stalled and old audio is worthless. */
-        const val OUTGOING_AUDIO_CAPACITY = 256
 
         /**
          * One client for the process. A per-connect client is never closed (HttpClient only became

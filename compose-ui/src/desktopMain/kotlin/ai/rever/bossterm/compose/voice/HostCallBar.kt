@@ -133,19 +133,23 @@ private fun BarButton(label: String, onClick: () -> Unit, tint: Color = Label) {
  *
  * A host with the feature on but no key still gets a pill ([CallSegmentState.NeedsKey]) — clicking
  * it collects the key and places the call, rather than hiding the feature until they find Settings.
+ *
+ * [pillEnabled] is "the feature is on AND its indicator is enabled" — two settings, because either
+ * one being off means no pill. A call already in progress still shows one regardless, so ending it is
+ * always reachable.
  */
-internal fun HostCallState.segmentState(enabled: Boolean, keyPresent: Boolean): CallSegmentState =
+internal fun HostCallState.segmentState(pillEnabled: Boolean, keyPresent: Boolean): CallSegmentState =
     when {
         // Disabled wins over a stale failure: otherwise turning Boss Calling off left a
         // "Call BossTerm · failed" pill on screen with nothing behind it.
-        !enabled && phase != HostCallPhase.Live && phase != HostCallPhase.Connecting ->
+        !pillEnabled && phase != HostCallPhase.Live && phase != HostCallPhase.Connecting ->
             CallSegmentState.Hidden
         phase == HostCallPhase.Error -> CallSegmentState.Failed
         phase == HostCallPhase.Connecting -> CallSegmentState.Connecting
         phase == HostCallPhase.Live && working -> CallSegmentState.Working
         phase == HostCallPhase.Live && speaking -> CallSegmentState.Speaking
         phase == HostCallPhase.Live -> CallSegmentState.Live
-        !enabled -> CallSegmentState.Hidden
+        !pillEnabled -> CallSegmentState.Hidden
         keyPresent -> CallSegmentState.Ready
         else -> CallSegmentState.NeedsKey
     }

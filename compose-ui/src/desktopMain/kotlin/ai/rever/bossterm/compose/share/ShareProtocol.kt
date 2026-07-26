@@ -259,8 +259,22 @@ sealed class ServerMessage {
     ) : ServerMessage()
 
     /**
-     * A voice request failed. [code]: no_key | disabled | not_controller | unauthorized |
-     * mint_failed | bad_tool. [message] is optional human-readable detail (already sanitized).
+     * A voice request failed.
+     *
+     * [code] is the cross-language contract with `voiceErrorText` in viewer.js — there is no shared
+     * type, so this list is the only thing keeping the two honest. Keep it in step when adding one:
+     *
+     *  - `disabled` — the feature (or the share surface) is switched off on the host
+     *  - `no_key` — no OpenAI key configured
+     *  - `not_controller` — the caller doesn't hold control of the share
+     *  - `unauthorized` — OpenAI rejected the host's key
+     *  - `mint_failed` — the session couldn't be minted (message carries a sanitized reason)
+     *  - `rate_limited` — too many call attempts; an existing call keeps running
+     *  - `too_many_calls` — the host is already at its concurrent-call ceiling
+     *  - `stale_call` — a frame for a call that is no longer this connection's; an existing call
+     *    keeps running
+     *
+     * [message] is optional human-readable detail (already sanitized).
      */
     @Serializable
     @SerialName("voiceError")

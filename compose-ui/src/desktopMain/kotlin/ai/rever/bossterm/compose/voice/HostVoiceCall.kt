@@ -91,14 +91,18 @@ internal object HostVoiceCall {
     fun toggleMute() = controller?.toggleMute() ?: Unit
 
     fun end() {
-        controller?.end()
+        // The UI-visible flip happens here; the blocking parts of teardown (joining the socket
+        // writer for up to 500ms, closing audio lines, taking toolsLock in dispose) go to IO. This
+        // runs from a Compose click handler on the thread that owns terminal rendering.
+        _state.value = HostCallState()
+        _level.value = 0f
+        val ending = controller
         controller = null
         mirrorJob?.cancel()
         mirrorJob = null
         killSwitchJob?.cancel()
         killSwitchJob = null
-        _state.value = HostCallState()
-        _level.value = 0f
+        if (ending != null) scope.launch(Dispatchers.IO) { ending.end() }
     }
 
     /** Clear a failed call's error so the pill goes back to idle. */

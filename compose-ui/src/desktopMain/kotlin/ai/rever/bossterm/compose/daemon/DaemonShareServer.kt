@@ -28,6 +28,7 @@ import ai.rever.bossterm.compose.share.webTerminalFontFamily
 import ai.rever.bossterm.compose.voice.DaemonVoiceToolExecutor
 import ai.rever.bossterm.compose.notification.NotificationService
 import ai.rever.bossterm.compose.settings.SettingsManager
+import ai.rever.bossterm.compose.voice.StampCachedValue
 import ai.rever.bossterm.compose.voice.VoiceAgentStorage
 import ai.rever.bossterm.compose.voice.VoiceCallService
 import ai.rever.bossterm.compose.voice.voiceCallTokenMatches
@@ -244,30 +245,13 @@ class DaemonShareServer(
          * concurrently, and publishing the new stamp before the new value let a reader take the
          * fresh stamp and the stale cache.
          */
-        @Volatile private var settingsStamp: Long = -1L
-        @Volatile private var settingsCache: TerminalSettings? = null
-        @Volatile private var settingsStampTicks: Int = 0
+        /** See [StampCachedValue]: the only path by which a GUI-side toggle reaches this share. */
+        private val settingsCache = StampCachedValue(
+            stamp = { VoiceAgentStorage.fileStamp(SettingsManager.instance.settingsFilePath()) },
+            read = { SettingsManager.instance.readFromDisk() },
+        )
 
-        /**
-         * [settings] re-read from disk whenever settings.json changes, so a GUI-side toggle reaches
-         * this daemon-hosted share. Falls back to the process's own copy if the file can't be parsed.
-         */
-        @Synchronized
-        fun freshSettings(): TerminalSettings {
-            val stamp = VoiceAgentStorage.fileStamp(SettingsManager.instance.settingsFilePath())
-            // Same escape hatch as the key cache: mtime granularity is 1s, so two booleans flipped in
-            // one write whose lengths cancel out would be invisible to mtime+size — and this now
-            // gates the kill switch on daemon shares.
-            if (stamp != settingsStamp ||
-                settingsCache == null ||
-                ++settingsStampTicks >= VoiceAgentStorage.STAMP_TRUST_TICKS
-            ) {
-                settingsStamp = stamp
-                settingsStampTicks = 0
-                settingsCache = SettingsManager.instance.readFromDisk()
-            }
-            return settingsCache ?: settings()
-        }
+        fun freshSettings(): TerminalSettings = settingsCache.get() ?: settings()
 
         @Synchronized
         fun cachedKeyPresent(): Boolean {

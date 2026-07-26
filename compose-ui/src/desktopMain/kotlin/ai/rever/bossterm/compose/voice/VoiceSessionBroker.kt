@@ -109,14 +109,14 @@ internal class VoiceSessionBroker(
     }
 
     /** OpenAI's `error.message` if the body is its usual error envelope, else a clipped raw body. */
-    private fun errorDetail(text: String): String {
+    internal fun errorDetail(text: String): String {
         val message = runCatching {
             (json.parseToJsonElement(text).jsonObject["error"] as? JsonObject)?.stringField("message")
         }.getOrNull()
         return message ?: text.take(300).replace('\n', ' ').ifBlank { "(empty body)" }
     }
 
-    private fun parseMint(text: String): MintResult {
+    internal fun parseMint(text: String): MintResult {
         val root = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull()
             ?: return MintResult.Failed("Unparseable mint response")
         val secret = root.stringField("value")

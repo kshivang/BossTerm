@@ -331,7 +331,9 @@ class HostVoiceCallControllerTest {
         val keyless = FakeTransport()
         val noKey = controller(keyless, FakeAudio(), key = null)
         noKey.start()
-        assertEquals(HostCallPhase.Error, noKey.state.value.phase)
+        // The key read moved off the click (it's a file read + parse, and the click runs on the
+        // Compose thread), so this failure is reported asynchronously — but still before any socket.
+        assertTrue(await { noKey.state.value.phase == HostCallPhase.Error }, "no key must fail the call")
         assertTrue(noKey.state.value.error?.contains("API key") == true, noKey.state.value.error ?: "")
         assertEquals(null, keyless.connectedModel, "no key → never connect")
 

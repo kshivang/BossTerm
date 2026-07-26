@@ -16,17 +16,17 @@ import kotlin.test.assertTrue
  */
 class RealtimeTransportQueueTest {
 
-    private fun transport() = JdkRealtimeTransport().apply { openForTest() }
+    private fun transport() = OutgoingLanes()
 
     @Test
     fun `audio is dropped oldest-first once its lane is full`() {
         val t = transport()
-        val overflow = JdkRealtimeTransport.OUTGOING_AUDIO_CAPACITY + 5
-        repeat(overflow) { t.send("audio-$it", evictable = true) }
+        val overflow = OutgoingLanes.AUDIO_CAPACITY + 5
+        repeat(overflow) { t.offer("audio-$it", evictable = true) }
 
-        val (protocol, audio) = t.queuedForTest()
+        val (protocol, audio) = t.snapshot()
         assertTrue(protocol.isEmpty(), "audio must not land in the protocol lane")
-        assertEquals(JdkRealtimeTransport.OUTGOING_AUDIO_CAPACITY, audio.size, "the lane stays bounded")
+        assertEquals(OutgoingLanes.AUDIO_CAPACITY, audio.size, "the lane stays bounded")
         assertFalse(audio.contains("audio-0"), "the OLDEST chunk is the one dropped")
         assertTrue(audio.contains("audio-${overflow - 1}"), "the newest chunk is kept")
     }
@@ -34,10 +34,10 @@ class RealtimeTransportQueueTest {
     @Test
     fun `a flood of audio never evicts a queued protocol frame`() {
         val t = transport()
-        t.send("""{"type":"conversation.item.create"}""")
-        repeat(JdkRealtimeTransport.OUTGOING_AUDIO_CAPACITY * 3) { t.send("audio-$it", evictable = true) }
+        t.offer("""{"type":"conversation.item.create"}""", evictable = false)
+        repeat(OutgoingLanes.AUDIO_CAPACITY * 3) { t.offer("audio-$it", evictable = true) }
 
-        val (protocol, _) = t.queuedForTest()
+        val (protocol, _) = t.snapshot()
         assertEquals(
             listOf("""{"type":"conversation.item.create"}"""),
             protocol,
@@ -48,21 +48,26 @@ class RealtimeTransportQueueTest {
     @Test
     fun `protocol frames past their bound are refused rather than silently replacing each other`() {
         val t = transport()
-        val over = JdkRealtimeTransport.OUTGOING_CAPACITY + 3
-        repeat(over) { t.send("""{"type":"n$it"}""") }
+        val over = OutgoingLanes.PROTOCOL_CAPACITY + 3
+        repeat(over) { t.offer("""{"type":"n$it"}""", evictable = false) }
 
-        val (protocol, _) = t.queuedForTest()
-        assertEquals(JdkRealtimeTransport.OUTGOING_CAPACITY, protocol.size)
+        val (protocol, _) = t.snapshot()
+        assertEquals(OutgoingLanes.PROTOCOL_CAPACITY, protocol.size)
         // Oldest-first retention: unlike audio, an early frame is NOT thrown away for a later one.
         assertTrue(protocol.first().contains("n0"), "the first frame is still queued")
     }
 
+    /**
+     * The writer's exit condition, which carries the longest comment in the transport: a lingering
+     * writer from a previous connect must not adopt the next socket.
+     */
     @Test
-    fun `nothing is queued before the socket is up`() {
-        val t = JdkRealtimeTransport() // deliberately not openForTest()
-        t.send("""{"type":"session.update"}""")
-        t.send("audio", evictable = true)
-        val (protocol, audio) = t.queuedForTest()
-        assertTrue(protocol.isEmpty() && audio.isEmpty(), "a closed transport drops sends")
+    fun `only the current generation keeps writing`() {
+        assertTrue(JdkRealtimeTransport.keepWriting(open = true, myGeneration = 3, currentGeneration = 3))
+        assertFalse(
+            JdkRealtimeTransport.keepWriting(open = true, myGeneration = 2, currentGeneration = 3),
+            "a superseded writer must stop even while the socket is open",
+        )
+        assertFalse(JdkRealtimeTransport.keepWriting(open = false, myGeneration = 3, currentGeneration = 3))
     }
 }

@@ -25,6 +25,13 @@ import ai.rever.bossterm.compose.share.isShareViewerIndexResource
 import ai.rever.bossterm.compose.share.resyncSentinel
 import ai.rever.bossterm.compose.share.webViewerScrollbackLines
 import ai.rever.bossterm.compose.share.webTerminalFontFamily
+import ai.rever.bossterm.compose.voice.DaemonVoiceToolExecutor
+import ai.rever.bossterm.compose.settings.SettingsManager
+import ai.rever.bossterm.compose.voice.StampCachedValue
+import ai.rever.bossterm.compose.voice.VoiceAgentStorage
+import ai.rever.bossterm.compose.voice.RemoteVoiceCalls
+import ai.rever.bossterm.compose.voice.VoiceCallService
+import ai.rever.bossterm.compose.voice.voiceCallTokenMatches
 import ai.rever.bossterm.terminal.model.TerminalModelListener
 import io.ktor.http.CacheControl
 import io.ktor.server.application.install
@@ -136,6 +143,13 @@ class DaemonShareServer(
 
         const val MAX_PORT_FALLBACK = 10
         const val GRANT_TTL_MS = 24L * 60 * 60 * 1000
+
+        /**
+         * How often a daemon share re-checks Boss Calling availability for connected viewers.
+         * The daemon can't see the GUI's key flow across processes, so this is the only way a
+         * key added mid-session reaches an open browser tab. Cheap: one small-file stat.
+         */
+        const val VOICE_STATUS_POLL_MS = 5_000L
         // A Cloudflare quick tunnel serves an error page until cloudflared registers an edge
         // connection; spin a fresh one a couple of times before falling back to the LAN link.
         const val MAX_REFRESHES = 2
@@ -218,6 +232,69 @@ class DaemonShareServer(
         val viewers = CopyOnWriteArrayList<DaemonShareConnection>()
         val viewerSeq = AtomicInteger(0)
 
+        /** See [StampCachedValue]: the only path by which a GUI-side toggle reaches this share. */
+        private val settingsCache = StampCachedValue(
+            stamp = { VoiceAgentStorage.fileStamp(SettingsManager.instance.settingsFilePath()) },
+            read = { SettingsManager.instance.readFromDisk() },
+        )
+
+        /**
+         * Same class, same reasoning — a cleared key has to reach this share too, and it used to be a
+         * hand-rolled copy of [StampCachedValue] sitting right beside the instance above. One tested
+         * implementation rather than two, since the tests cover the class.
+         */
+        private val keyPresentCache = StampCachedValue(
+            stamp = { VoiceAgentStorage.keyStamp() },
+            read = { VoiceAgentStorage.keyPresent() },
+        )
+
+        fun freshSettings(): TerminalSettings = settingsCache.get() ?: settings()
+
+        fun cachedKeyPresent(): Boolean = keyPresentCache.get() ?: false
+
+        /** Last voiceStatus pushed, so [watchVoiceStatus] only broadcasts real changes. */
+        @Volatile var lastVoiceStatus: ServerMessage.VoiceStatus? = null
+        @Volatile var voiceWatchJob: Job? = null
+        val voiceWatchLock = Any()
+
+        // Boss Calling: one service per share; its executor limits tool targets to this share's
+        // scope. The daemon has no cross-process key flow — availability is re-checked from disk
+        // at admit time, on each voiceStart, and by [watchVoiceStatus] below.
+        val voiceService: VoiceCallService by lazy {
+            VoiceCallService(
+                executor = DaemonVoiceToolExecutor(
+                    host = host,
+                    inScopeSessionIds = { inScopeCores(this).map { it.id }.toSet() },
+                    anchorSessionId = { sessionId ?: host.list().firstOrNull()?.id },
+                ),
+                scope = this@DaemonShareServer.scope,
+                // Stamp-cached: the poller runs every few seconds, and re-decoding voice.json each
+                // tick was needless when mtime+size can say "unchanged".
+                keyPresent = { cachedKeyPresent() },
+                // The daemon is a SEPARATE PROCESS from the GUI and SettingsManager has no
+                // reload-on-change, so its in-memory copy is frozen at daemon start: flipping
+                // "Enable Boss Calling" or "Allow calls from share viewers" in the GUI would never
+                // reach a daemon-hosted share, leaving MAX_CALL_DURATION_MS as the real upper bound
+                // and only "Clear key" as a working revocation. Re-read settings.json on change,
+                // using the same mtime+size stamp trick as the key file.
+                settings = { freshSettings() },
+                sessionName = { name },
+                // The daemon is exactly the case where nobody is looking at a window, so the
+                // "remote hands arrived" signal matters more here, not less.
+                onCallActivity = { started -> RemoteVoiceCalls.onActivity(name, started) },
+                onCallExpired = { token ->
+                    viewers.firstOrNull { it.voiceCallToken == token }?.let { vc ->
+                        vc.clearVoiceCallTokenIfCurrent(token)
+                        vc.outbox.sendControl(
+                            FrameOutbox.Frame.Text(
+                                ShareProtocol.encodeServer(ServerMessage.VoiceError(code = "stale_call"))
+                            )
+                        )
+                    }
+                },
+            )
+        }
+
         val viewerCount: Int get() = viewers.size
 
         fun broadcast(msg: ServerMessage) {
@@ -294,8 +371,20 @@ class DaemonShareServer(
             shares.remove(def)
             grants.values.removeIf { it.shareToken == def.viewToken }
             failPendingFor(def.viewToken)
-            def.viewers.forEach { runCatching { it.outbox.close() } }
+            def.viewers.forEach {
+                // Retire its call token: an abandoned one holds a now process-wide MAX_LIVE_CALLS
+                // slot for the full ceiling, and the host never gets the "ended" half of the pair.
+                def.voiceService.closeCall(it.voiceCallToken)
+                it.voiceCallToken = null
+                runCatching { it.outbox.close() }
+            }
             def.viewers.clear()
+            // Belt and braces, matching MirrorShare.stop(): the loop above only reaches tokens still
+            // attached to a viewer, and closeCalls() is exactly the guard for one whose viewer was
+            // already removed. The map is process-wide, so a stray entry would hold one of
+            // MAX_LIVE_CALLS until its 30-minute ceiling. (No executor dispose(): the daemon
+            // executor's is genuinely a no-op.)
+            runCatching { def.voiceService.closeCalls() }
             val op = def.claimRemoteOp() // supersede any in-flight establish so it self-cleans
             val port = boundPort // capture BEFORE stopEngineLocked() may null it (else serve/funnel teardown is skipped)
             scope.launch(Dispatchers.IO) { teardownRemote(def, port, op) }
@@ -676,6 +765,17 @@ class DaemonShareServer(
         // taps/collectors so the outbox only carries output produced AFTER the snapshot (no double paint).
         send(themeMessage())
         send(mcpStatusMessage())
+        send(
+            def.voiceService.status(
+                withReason = canControl,
+                confidential = serverCipher != null,
+                // The daemon has NO mid-session control upgrade: requestControl falls through to
+                // `if (!vc.canControl) return`. Advertising a Call button to a view-only viewer here
+                // sends them to a confirm dialog and then an approval nobody will ever be asked for.
+                // MirrorShare does have that path, so it keeps offering the button.
+                callable = canControl,
+            )
+        )
         send(layoutFor(def))
 
         val vc = DaemonShareConnection(
@@ -683,6 +783,8 @@ class DaemonShareServer(
             canControl,
             hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})",
             hello?.capabilities?.contains(PANE_GRAPHICS_CAPABILITY) == true,
+            // A negotiated cipher is what lets this connection be handed an ephemeral OpenAI secret.
+            confidential = serverCipher != null,
         )
 
         // Per-session attachment: the output tap + its size collector. Mutated from BOTH the change
@@ -909,6 +1011,9 @@ class DaemonShareServer(
         }
         def.broadcast(ServerMessage.Presence(def.viewerCount))
         publishState() // viewer count changed
+        // AFTER viewers.add: the poll loop's guard is `viewers.isNotEmpty()`, so arming it during
+        // the admit preamble made it exit immediately for a share's first (usually only) viewer.
+        watchVoiceStatus(def)
 
         send(ServerMessage.Control(granted = canControl))
 
@@ -976,6 +1081,9 @@ class DaemonShareServer(
             }
             writer.cancel()
             if (def.viewers.remove(vc)) {
+                // Same as a hangup: a dropped viewer's call handle must not outlive its socket.
+                def.voiceService.closeCall(vc.voiceCallToken)
+                vc.voiceCallToken = null
                 runCatching { vc.outbox.close() }
                 def.broadcast(ServerMessage.Presence(def.viewerCount))
                 publishState()
@@ -1012,12 +1120,132 @@ class DaemonShareServer(
         lateinit var repaintSender: DeferredPaneRepaint
     }
 
+    /** Same host-facing signal MirrorShare sends, for daemon-hosted shares. */
+
+    /**
+     * Keep browser viewers' Call button honest while they stay connected.
+     *
+     * The GUI gets this from a settings + key flow, but the daemon is a different process: the key
+     * file is written by the GUI and nothing pushes across. Without this, adding a key (or flipping
+     * the switch) while a viewer is connected needs a page reload before the button appears — or
+     * worse, leaves a button up after the host revoked the feature. One stat of a small JSON file
+     * every few seconds, only while the share has viewers.
+     */
+    private fun watchVoiceStatus(def: ShareDef) {
+        synchronized(def.voiceWatchLock) {
+            if (def.voiceWatchJob?.isActive == true) return
+            lateinit var job: Job
+            job = scope.launch { pollVoiceStatus(def) { job } }
+            def.voiceWatchJob = job
+        }
+    }
+
+    private suspend fun pollVoiceStatus(def: ShareDef, self: () -> Job) {
+        try {
+            while (def.viewers.isNotEmpty()) {
+                // The host-wide answer, for change detection and the kill decision only.
+                val hostStatus = def.voiceService.status(withReason = true, confidential = true)
+                // Seeded on the first tick rather than pushed: admit already sent this exact status
+                // seconds ago, and lastVoiceStatus starting null made every share emit a duplicate
+                // control frame.
+                if (def.lastVoiceStatus == null) {
+                    def.lastVoiceStatus = hostStatus
+                    delay(VOICE_STATUS_POLL_MS)
+                    continue
+                }
+                if (hostStatus != def.lastVoiceStatus) {
+                    def.lastVoiceStatus = hostStatus
+                    // Per viewer, because both inputs are: the reason is host configuration that
+                    // only a controller may see, and `available` depends on whether THAT connection
+                    // completed the E2E handshake. See MirrorShare's collector for the bug this
+                    // fixes — a broadcast status flipped a non-E2E viewer to available.
+                    for (viewer in def.viewers) {
+                        val msg = def.voiceService.status(
+                            withReason = viewer.canControl,
+                            confidential = viewer.confidential,
+                            callable = viewer.canControl, // no control upgrade on this surface
+                        )
+                        viewer.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(msg)))
+                    }
+                    // Revoked mid-call: invalidate the call so its tool calls stop too, not just
+                    // the button.
+                    if (!hostStatus.available) def.voiceService.closeCalls()
+                }
+                delay(VOICE_STATUS_POLL_MS)
+            }
+        } finally {
+            // Clear the handle only if it is still OURS. Comparing identity, not isActive: inside
+            // finally this job is Completing, so isActive is still true and the old check never
+            // fired — meaning a stale handle could outlive its poller.
+            synchronized(def.voiceWatchLock) {
+                if (def.voiceWatchJob === self()) def.voiceWatchJob = null
+            }
+        }
+    }
+
     /**
      * Route a viewer message to the daemon (controller role only for mutating actions). A daemon
      * session is a flat single-pane PTY, so window/split/AI/rename/color/MCP verbs are NO-OPs here
      * (they only make sense for the GUI's window→tabs→panes model in MirrorShare).
      */
     private fun handleClient(def: ShareDef, vc: DaemonShareConnection, msg: ClientMessage) {
+        // Voice messages run BEFORE the control gate so a view-only caller gets an explicit
+        // not_controller error (the service re-checks the role) instead of silence. Focus rides
+        // along: it tracks which session the viewer is looking at — the agent's default target.
+        val voiceReply: (ServerMessage) -> Unit = { m ->
+            vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(m)))
+        }
+        // Only remember a session this share actually covers: the id is unvalidated viewer input
+        // that becomes the agent's default tool target (the executor re-checks too).
+        fun rememberVoiceTab(id: String?) {
+            if (id != null && mutationInScope(def.scope, def.sessionId, id)) vc.voiceTabId = id
+        }
+        when (msg) {
+            is ClientMessage.Focus -> { rememberVoiceTab(msg.tabId); return }
+            is ClientMessage.VoiceStart -> {
+                rememberVoiceTab(msg.activeTabId)
+                def.voiceService.handleStart(
+                    msg,
+                    vc.canControl,
+                    confidential = vc.confidential,
+                    // Retire the previous call BEFORE reserving (so a redial reclaims its own slot),
+                    // and only after the control/enabled/key checks — a view-only viewer must not be
+                    // able to end a live call just by asking.
+                    retirePreviousCall = {
+                        def.voiceService.closeCall(vc.voiceCallToken)
+                        vc.voiceCallToken = null
+                    },
+                    onCallTokenChanged = { token -> vc.voiceCallToken = token },
+                    // Compare-and-clear: a mint that fails late must not wipe a token a redial has
+                    // since installed, or the newer call ends up audible and billed with no tools.
+                    clearCallTokenIfCurrent = { stale -> vc.clearVoiceCallTokenIfCurrent(stale) },
+                ) { m ->
+                    // See MirrorShare: the token is captured from the host's own reply, never from
+                    // an inbound message.
+                    voiceReply(m)
+                }
+                return
+            }
+            is ClientMessage.VoiceEnd -> {
+                def.voiceService.closeCall(vc.voiceCallToken)
+                vc.voiceCallToken = null
+                return
+            }
+            is ClientMessage.VoiceToolCall -> {
+                // Defence in depth: the token must be the one THIS connection was issued, not merely
+                // one live somewhere on the share — otherwise another viewer presenting it would
+                // drive the read tools without ever passing handleStart's control gate. Reported as
+                // stale_call, not not_controller: the realistic cause is a redial racing an old
+                // token, which shouldn't read to the user as a permissions problem.
+                if (!voiceCallTokenMatches(vc.voiceCallToken, msg.callToken)) {
+                    voiceReply(ServerMessage.VoiceError(code = "stale_call"))
+                    return
+                }
+                def.voiceService.handleToolCall(msg, vc.canControl, vc.voiceTabId, voiceReply)
+                return
+            }
+            else -> {}
+        }
         if (!vc.canControl) return // every mutating action requires the control role
         // A SESSION-scoped share must WRITE-isolate to its one session, not just render-isolate it. The
         // read/layout path (inScopeCores/layoutFor) is already scoped, but without this an approved
@@ -1035,7 +1263,8 @@ class DaemonShareServer(
             is ClientMessage.ClosePane -> if (inScope(msg.paneId)) host.closeSession(msg.paneId)
             // SplitVertical/SplitHorizontal/LaunchAI/RenameTab/SetTabColor/DuplicateTab/CloseOtherTabs/
             // CloseTabsBelow/ResizeSplit/CloseWindow/DisconnectUpstream/OfferShare/SetMcpEnabled/
-            // AttachMcp/Focus/RequestControl/Hello → no-op (daemon sessions are single-pane PTYs).
+            // AttachMcp/RequestControl/Hello → no-op (daemon sessions are single-pane PTYs;
+            // Focus + voice messages are handled before the control gate above).
             else -> {}
         }
     }

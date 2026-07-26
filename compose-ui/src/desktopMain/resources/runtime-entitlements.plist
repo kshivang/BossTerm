@@ -22,6 +22,11 @@
     <key>com.apple.security.cs.debugger</key>
     <true/>
 
+    <!-- Microphone for Boss Calling's in-app voice call (paired with
+         NSMicrophoneUsageDescription in Info.plist) -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
     <!-- Inherit the user's login environment -->
     <key>com.apple.security.inherit</key>
     <true/>

@@ -222,6 +222,524 @@
     viewPillEl.style.display = "none";
   }
 
+  // ---- Boss Calling (voice agent) ----
+  // The host mints an ephemeral OpenAI Realtime session (voiceSession); this browser talks
+  // WebRTC directly to OpenAI (audio never rides the tunnel/share socket) and forwards the
+  // agent's function calls to the host over THIS share socket (voiceToolCall → executed
+  // against the shared session → voiceToolResult → back onto the data channel).
+  // state is the CONNECTION lifecycle only ("idle" | "connecting" | "live"); what the agent is
+  // doing rides alongside it (speaking / pending tool calls), because those overlap — a tool can
+  // start while audio is still playing, and collapsing them into one field desynced the bar.
+  var voice = { status: null, state: "idle", pc: null, dc: null, mic: null, muted: false,
+                seenCalls: Object.create(null), watchdog: null, model: null, callToken: null,
+                speaking: false, pending: Object.create(null), pendingCount: 0, timers: Object.create(null),
+                responseOpen: false, outputsOwed: 0, lastActivity: 0, idleTimer: null };
+  // The meter's bars are static markup — query once instead of every animation frame.
+  var voiceBars = null;
+  var voiceMicOk = !!(window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  var voiceBarEl = document.getElementById("voicebar");
+  var voiceCallBtnEl = document.getElementById("voicecallbtn");
+  var voiceLabelEl = document.getElementById("voicelabel");
+  var voiceCallEl = document.getElementById("voicecall");
+  var voiceLevelEl = document.getElementById("voicelevel");
+  var voiceStateEl = document.getElementById("voicestate");
+  var voiceMuteEl = document.getElementById("voicemute");
+  var voiceHangEl = document.getElementById("voicehang");
+  var voiceToastEl = document.getElementById("voicetoast");
+  var voiceAudioEl = null; // hidden <audio> for the agent's voice, created on first call
+  var voiceToastTimer = null;
+  function toast(text, ms) {
+    voiceToastEl.textContent = text;
+    // Sit above the call bar rather than under it.
+    voiceToastEl.style.bottom = (voiceBarEl.classList.contains("on") ? voiceBarEl.offsetHeight + 12 : 18) + "px";
+    voiceToastEl.style.display = "block";
+    if (voiceToastTimer) clearTimeout(voiceToastTimer);
+    voiceToastTimer = setTimeout(function () { voiceToastEl.style.display = "none"; }, ms || 4000);
+  }
+  // One renderer for the whole bottom bar: which half shows, the call's state label, and the
+  // meter's colour class. Called on every state change (status, connect, speaking, tool, mute).
+  function updateVoiceBar() {
+    var available = !!(voice.status && voice.status.available);
+    var reason = voice.status && voice.status.reason;
+    if (!available) {
+      voiceCallEl.classList.remove("on");
+      // Say WHY, when the host told us. `reason` is redacted to null for view-only viewers by
+      // design — host configuration is not theirs to see — so an explanation only ever appears for
+      // someone who could act on it. Without this the host computed a reason, both servers
+      // redacted it per viewer, and the viewer silently dropped it: "no Call button at all" was
+      // exactly the undiagnosable-from-the-far-end case the field was added for.
+      if (reason) {
+        voiceBarEl.classList.add("on");
+        voiceCallBtnEl.style.display = "inline-flex";
+        voiceCallBtnEl.className = "disabled";
+        voiceCallBtnEl.title = voiceErrorText({ code: reason });
+        // insecure_transport is the one reason on this list the VIEWER can fix. Labelling it
+        // "Voice off" says the host switched the feature off — wrong, and unactionable — leaving the
+        // real explanation in a hover tooltip, on a bar built for a phone.
+        voiceLabelEl.textContent =
+          reason === "no_key" ? "Voice not set up"
+          : reason === "insecure_transport" ? "Reopen the full link"
+          : reason === "not_controller" ? "Needs control"
+          : "Voice off";
+      } else {
+        voiceBarEl.classList.remove("on");
+      }
+      layoutForKeyboard();
+      return;
+    }
+    voiceBarEl.classList.add("on");
+    var inCall = voice.state !== "idle";
+    voiceCallBtnEl.style.display = inCall ? "none" : "inline-flex";
+    voiceCallEl.classList.toggle("on", inCall);
+    if (!inCall) {
+      voiceCallBtnEl.className = voiceMicOk ? "" : "disabled";
+      voiceCallBtnEl.title = voiceMicOk
+        ? "Talk to this session's BossTerm agent"
+        : "Voice calls need an https share link — open the remote (tunnel) link";
+      voiceLabelEl.textContent = "Call BossTerm";
+    } else {
+      voiceCallBtnEl.className = "";
+      var working = voice.pendingCount > 0;
+      voiceCallEl.className = "on" +
+        (!working && voice.speaking ? " speaking" : "") +
+        (working ? " tool" : "") +
+        (voice.muted ? " muted" : "");
+      voiceStateEl.textContent =
+        voice.state === "connecting" ? "Connecting…" :
+        working ? "Working…" :
+        voice.speaking ? "Agent speaking" :
+        voice.muted ? "Muted" : "Listening…";
+      voiceStateEl.title = voice.model ? "In a call with " + voice.model : "";
+      voiceMuteEl.textContent = voice.muted ? "Unmute" : "Mute";
+    }
+    layoutForKeyboard(); // the bar changed height → re-reserve space at the bottom
+  }
+  voiceCallBtnEl.onclick = function () {
+    if (!voice.status || !voice.status.available || voice.state !== "idle") return;
+    if (!voiceMicOk) { toast("Voice calls need an https share link — open the remote (tunnel) link."); return; }
+    if (viewOnlyGate()) return; // view-only → request-control prompt
+    // Claim the call SYNCHRONOUSLY, before awaiting the mic: the guard above runs again on a second
+    // click while getUserMedia is still pending, and two clicks used to mean two mic streams and two
+    // voiceStarts — the second tripping the host's rate limit, whose voiceError then tore down the
+    // call the first one had just established.
+    voice.state = "connecting";
+    voice.muted = false;
+    voice.seenCalls = Object.create(null);
+    updateVoiceBar();
+    // Mic inside the click gesture (permission prompt), so no minted secret is wasted on a
+    // denied microphone.
+    // Ask for echo cancellation EXPLICITLY. Browsers default it on for getUserMedia, but the
+    // default is not guaranteed and this is the one thing standing between a speakerphone user and
+    // the agent answering its own voice. The in-app surface has no equivalent — see
+    // TerminalSettings.voiceEchoSuppression for what it does instead.
+    var micConstraints = {
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    };
+    navigator.mediaDevices.getUserMedia(micConstraints).then(function (stream) {
+      if (voice.state === "idle") { // hung up while the prompt was open
+        try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+        return;
+      }
+      voice.mic = stream;
+      sendMsg({ t: "voiceStart", activeTabId: activeTabId });
+      // Phase ONE of connecting: the host mints. Its own HTTP timeout to OpenAI is 15s, so sharing
+      // one 15s budget across mint AND the SDP round-trip meant a merely-slow mint lost the race
+      // reliably — and told the caller their network blocks WebRTC, which is the wrong cause, while
+      // the host had already been billed for the session. Two phases, two budgets; the timer is
+      // restarted when voiceSession arrives (see armSdpWatchdog).
+      voiceArmWatchdog(VOICE_MINT_TIMEOUT_MS, "The host didn't answer in time — try again.");
+    }).catch(function () {
+      voice.state = "idle"; // release the claim so the button comes back
+      updateVoiceBar();
+      toast("Microphone access was denied — allow the mic for this site and try again.");
+    });
+  };
+  voiceMuteEl.onclick = function () {
+    if (!voice.mic) return;
+    voice.muted = !voice.muted;
+    // enabled=false, NOT track.stop(). The in-app surface stops its capture line so the OS
+    // microphone indicator clears, and VoiceAudioIo.setCaptureMuted's KDoc argues that case well —
+    // but it does not transfer to the browser. stop() ends a track permanently, so unmuting would
+    // need another getUserMedia plus sender.replaceTrack, mid-call, each with its own failure modes
+    // on a path where the cost of getting it wrong is a call that can no longer hear you. So the
+    // tab's recording dot stays lit while muted here. A deliberate difference between the surfaces,
+    // not an oversight — worth revisiting if the re-acquire can be made reliable.
+    voice.mic.getAudioTracks().forEach(function (t) { t.enabled = !voice.muted; });
+    updateVoiceBar();
+  };
+  voiceHangEl.onclick = function () { endCall(true); toast("Call ended."); };
+
+  // ---- level meter ----
+  // Real audio levels, not a canned animation: an AnalyserNode on the mic while you speak and on
+  // the agent's own track while it answers, so "it can't hear me" is visible at a glance. Absent
+  // WebAudio (or a browser that refuses the context) the bars just stay flat — never fatal.
+  var voiceMeter = { ctx: null, mic: null, remote: null, raf: null, buf: null };
+  function voiceMeterAttach(kind, stream) {
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC || !stream) return;
+      if (!voiceMeter.ctx) {
+        voiceMeter.ctx = new AC();
+        // Created from a socket message rather than a user gesture, so iOS Safari starts it
+        // suspended and the meter would sit flat for the whole call — the one affordance a phone
+        // caller has for "can it hear me?".
+        if (voiceMeter.ctx.state === "suspended") {
+          try { voiceMeter.ctx.resume(); } catch (e) {}
+        }
+      }
+      var an = voiceMeter.ctx.createAnalyser();
+      an.fftSize = 256;
+      an.smoothingTimeConstant = 0.7;
+      voiceMeter.ctx.createMediaStreamSource(stream).connect(an);
+      voiceMeter[kind] = an;
+      if (!voiceMeter.buf) voiceMeter.buf = new Uint8Array(an.frequencyBinCount);
+      voiceMeterRun();
+    } catch (e) {}
+  }
+  function voiceMeterBars() {
+    if (!voiceBars) voiceBars = voiceLevelEl.querySelectorAll("i");
+    return voiceBars;
+  }
+  function voiceMeterFlat() {
+    var bars = voiceMeterBars();
+    for (var i = 0; i < bars.length; i++) bars[i].style.height = "3px";
+  }
+  // ~25Hz, not per animation frame. Each repaint writes 12 inline style.height values, and the bars
+  // carry `transition: height 70ms` — so at 60Hz that is ~720 style mutations a second next to
+  // xterm's own rendering, for a meter whose CSS transition already smooths it. Indistinguishable
+  // to look at, a third of the work, and it matters most on the phone where the viewer is used.
+  var VOICE_METER_INTERVAL_MS = 40;
+  function voiceMeterRun() {
+    if (voiceMeter.raf) return;
+    var lastPaint = 0;
+    var tick = function () {
+      voiceMeter.raf = null;
+      if (voice.state === "idle") { voiceMeterFlat(); return; }
+      var nowMs = Date.now();
+      if (nowMs - lastPaint < VOICE_METER_INTERVAL_MS) {
+        voiceMeter.raf = requestAnimationFrame(tick);
+        return;
+      }
+      lastPaint = nowMs;
+      // While the agent talks, meter ITS track; otherwise the mic (flat when muted).
+      var an = voice.speaking ? (voiceMeter.remote || voiceMeter.mic)
+             : (voice.muted ? null : voiceMeter.mic);
+      var bars = voiceMeterBars();
+      if (an && voiceMeter.buf) {
+        an.getByteFrequencyData(voiceMeter.buf);
+        // Speech energy lives low in the spectrum, so only sample the bottom ~60% of the bins.
+        var span = Math.max(1, Math.floor(voiceMeter.buf.length * 0.6 / bars.length));
+        for (var i = 0; i < bars.length; i++) {
+          var sum = 0;
+          for (var j = 0; j < span; j++) sum += voiceMeter.buf[i * span + j] || 0;
+          bars[i].style.height = Math.max(3, Math.round(3 + (sum / span / 255) * 21)) + "px";
+        }
+      } else {
+        voiceMeterFlat();
+      }
+      voiceMeter.raf = requestAnimationFrame(tick);
+    };
+    voiceMeter.raf = requestAnimationFrame(tick);
+  }
+  function voiceMeterStop() {
+    if (voiceMeter.raf) { try { cancelAnimationFrame(voiceMeter.raf); } catch (e) {} voiceMeter.raf = null; }
+    if (voiceMeter.ctx) { try { voiceMeter.ctx.close(); } catch (e) {} }
+    voiceMeter.ctx = null; voiceMeter.mic = null; voiceMeter.remote = null; voiceMeter.buf = null;
+    voiceMeterFlat();
+  }
+
+  // The host bills for this call and cannot hang up the audio (it is browser↔OpenAI), so an
+  // abandoned tab would otherwise run to the server's ceiling. Anything that means the call is in
+  // use — the agent talking, the user talking, a tool running — pushes the deadline out.
+  var VOICE_IDLE_MS = 10 * 60 * 1000;
+  // Mirrors HostVoiceCallController.SEEN_CALLS_LIMIT.
+  var VOICE_SEEN_CALLS_LIMIT = 400;
+  // Connecting has two phases with different owners: the host mints (its own OpenAI timeout is 15s,
+  // so allow for that plus the round-trip to us), then the browser negotiates SDP with OpenAI.
+  var VOICE_MINT_TIMEOUT_MS = 20000;
+  var VOICE_SDP_TIMEOUT_MS = 15000;
+  function voiceArmWatchdog(ms, message) {
+    if (voice.watchdog) clearTimeout(voice.watchdog);
+    voice.watchdog = setTimeout(function () {
+      if (voice.state === "connecting") {
+        toast(message);
+        endCall(true);
+      }
+    }, ms);
+  }
+  function voiceTouch() {
+    voice.lastActivity = Date.now();
+  }
+  function voiceStartIdleWatch() {
+    voiceTouch();
+    if (voice.idleTimer) clearInterval(voice.idleTimer);
+    voice.idleTimer = setInterval(function () {
+      if (voice.state === "idle") return;
+      // A tool still running IS the call in use. The run_command budget (630s) deliberately exceeds
+      // VOICE_IDLE_MS, so checking only the last event hung up mid-command; touching also covers the
+      // gap between the result arriving and the agent speaking about it. Mirrors the host's
+      // startLimits().
+      if (voice.pendingCount > 0) { voiceTouch(); return; }
+      if (Date.now() - voice.lastActivity >= VOICE_IDLE_MS) {
+        endCall(true);
+        toast("Call ended after " + (VOICE_IDLE_MS / 60000) + " minutes with nothing happening.", 6000);
+      }
+    }, 15000);
+  }
+  function endCall(sendEnd) {
+    if (voice.watchdog) { clearTimeout(voice.watchdog); voice.watchdog = null; }
+    if (voice.idleTimer) { clearInterval(voice.idleTimer); voice.idleTimer = null; }
+    voiceMeterStop();
+    try { if (voice.dc) voice.dc.close(); } catch (e) {}
+    try { if (voice.pc) voice.pc.close(); } catch (e) {}
+    if (voice.mic) { try { voice.mic.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {} }
+    // Drop the remote stream too: the <audio> element is permanent, so holding srcObject would keep
+    // the ended call's stream referenced for the life of the page.
+    if (voiceAudioEl) { try { voiceAudioEl.srcObject = null; } catch (e) {} }
+    var wasLive = voice.state !== "idle";
+    voice.dc = null; voice.pc = null; voice.mic = null; voice.muted = false; voice.model = null;
+    voice.callToken = null; voice.speaking = false;
+    Object.keys(voice.timers).forEach(function (id) { clearTimeout(voice.timers[id]); });
+    voice.timers = Object.create(null);
+    // Object.create(null) everywhere these are (re)set: a plain object inherits from
+    // Object.prototype, so a call_id of "constructor" / "toString" / "__proto__" reads as truthy on
+    // its FIRST sighting — voiceHandleFunctionCall would drop the call and hang the round until the
+    // watchdog. Realtime ids are call_… today, so this is defence rather than a live bug; the Kotlin
+    // mirror uses a HashSet and never had it.
+    voice.pending = Object.create(null); voice.pendingCount = 0; voice.responseOpen = false; voice.outputsOwed = 0;
+    voice.state = "idle";
+    if (sendEnd && wasLive) sendMsg({ t: "voiceEnd" });
+    updateVoiceBar();
+  }
+  function voiceErrorText(m) {
+    switch (m.code) {
+      case "no_key":
+        return "The host hasn't added an OpenAI key yet — Boss Calling needs one in BossTerm Settings.";
+      case "disabled":
+        return "The host has Boss Calling switched off for shared sessions.";
+      case "unauthorized":
+        return "The host's OpenAI key was rejected — check it in BossTerm Settings.";
+      case "not_controller":
+        return "You need control of this session to call — asking the host now.";
+      case "rate_limited":
+        return "Too many call attempts — wait a moment and try again.";
+      case "stale_call":
+        return "That call is no longer active — start a new one.";
+      case "too_many_calls":
+        return "This session already has as many voice calls as it allows.";
+      case "insecure_transport":
+        return "This session isn't end-to-end encrypted, so the host won't put a call secret on " +
+          "it — reopen the full share link, including the #k part after the '#'.";
+      default:
+        return "Couldn't start the call" + (m.message ? ": " + m.message : ".");
+    }
+  }
+  // NOTE: mirrored by HostVoiceCallController.describeTool for the in-app surface — a new tool needs
+  // a line in BOTH (and its schema in VoiceToolCatalog, and its handler in the executors).
+  function voiceDescribeTool(name, argsJson) {
+    try {
+      var a = JSON.parse(argsJson || "{}");
+      if (name === "run_command" && a.script)
+        return "Running: " + a.script.slice(0, 60) + (a.script.length > 60 ? "…" : "");
+      if (name === "read_scrollback") return "Reading the terminal…";
+      if (name === "search_output" && a.pattern) return "Searching for “" + a.pattern.slice(0, 40) + "”…";
+      if (name === "send_input" && a.text)
+        // The ellipsis only when it actually truncates — "Typing: ls…" for a two-character command
+        // read as though something were still coming. Matches describeTool.
+        return "Typing: " + a.text.slice(0, 40).replace(/\n/g, "⏎") + (a.text.length > 40 ? "…" : "");
+      if (name === "send_signal" && a.signal) return "Sending " + a.signal + "…";
+      if (name === "get_last_command") return "Checking the last command…";
+      if (name === "list_panes") return "Looking at the split panes…";
+    } catch (e) {}
+    // "Working…", matching describeTool: a tool with no arguments to show is not necessarily being
+    // "run", and naming the raw tool id at the user is worse than saying nothing specific.
+    return "Working…";
+  }
+  // Function calls surface on the data channel BOTH as function_call_arguments.done and inside
+  // response.done's output[] — handle both, dedupe by call_id.
+  function voiceHandleFunctionCall(callId, name, argsJson) {
+    if (!callId || voice.seenCalls[callId]) return;
+    // Dedupe set, trimmed so a long call can't grow it without bound — dropping the OLDEST
+    // completed id rather than keeping only what is pending. Keeping only pending discarded every
+    // finished id, so a replayed call_id would re-execute its tool; the host fixed that and this
+    // mirror had not. Object keys iterate in insertion order, so the first non-pending key is the
+    // oldest. VoiceCrossLanguageContractTest pins the two together.
+    var seen = Object.keys(voice.seenCalls);
+    while (seen.length > VOICE_SEEN_CALLS_LIMIT) {
+      var oldest = null;
+      for (var i = 0; i < seen.length; i++) {
+        if (!voice.pending[seen[i]]) { oldest = seen[i]; break; }
+      }
+      if (oldest === null) break; // everything left is still in flight
+      delete voice.seenCalls[oldest];
+      seen = Object.keys(voice.seenCalls);
+    }
+    voice.seenCalls[callId] = true;
+    voice.pending[callId] = true;
+    voice.pendingCount += 1;
+    // A reply that never arrives would otherwise pin the call at "Working…" with the agent mute
+    // and no way out but End call. Answer ourselves so it can say so out loud.
+    //
+    // This is the OUTERMOST rung of the deadline ladder — a pure backstop for a host that never
+    // replies at all. It must stay strictly longer than the host's own budget, or the two race over
+    // who answers a tool finishing on the boundary. The ladder and its reasoning live in
+    // VoiceToolTimeouts.kt (viewerMs); these numbers are a mirror of it, not an independent choice.
+    voice.timers[callId] = setTimeout(function () {
+      voiceToolTimedOut(callId);
+    }, name === "run_command" ? 630000 : 120000);
+    voice.responseOpen = true; // a function call only exists inside a response
+    voiceTouch();
+    updateVoiceBar();
+    toast(voiceDescribeTool(name, argsJson));
+    sendMsg({
+      t: "voiceToolCall", callId: callId, name: name, argsJson: argsJson || "{}",
+      callToken: voice.callToken,
+    });
+  }
+  /**
+   * Ask for the follow-up turn exactly once per tool round.
+   *
+   * Realtime rejects a response.create while one is still generating
+   * (conversation_already_has_active_response), and it can request SEVERAL function calls in one
+   * response — so answering each result immediately would fire mid-response and once per call.
+   * Wait until the response has finished AND every call it asked for has come back.
+   */
+  function voiceMaybeRequestResponse() {
+    if (voice.responseOpen || voice.pendingCount > 0 || voice.outputsOwed === 0) return;
+    voice.outputsOwed = 0;
+    voiceDcSend({ type: "response.create" });
+  }
+  /** Hand the model an error result for a call the host never answered, and unblock the round. */
+  function voiceToolTimedOut(callId) {
+    if (!voice.pending[callId]) return;
+    delete voice.pending[callId];
+    delete voice.timers[callId];
+    voice.pendingCount = Math.max(0, voice.pendingCount - 1);
+    voice.outputsOwed += 1;
+    voiceDcSend({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output", call_id: callId,
+        output: JSON.stringify({ error: "The host did not answer this tool call in time." }),
+      },
+    });
+    toast("A tool call timed out — the agent will say so.");
+    updateVoiceBar();
+    voiceMaybeRequestResponse();
+  }
+  function voiceDcSend(o) {
+    try { if (voice.dc && voice.dc.readyState === "open") voice.dc.send(JSON.stringify(o)); } catch (e) {}
+  }
+  function connectRealtime(m) {
+    if (voice.state !== "connecting") return; // user hung up while the host was minting
+    // The mic resolves before voiceStart on every path the host drives today, but a voiceSession
+    // arriving while the permission prompt is still open would throw inside the message handler.
+    if (!voice.mic) return;
+    var pc;
+    try { pc = new RTCPeerConnection(); } catch (e) {
+      toast("This browser doesn't support WebRTC calls."); endCall(true); return;
+    }
+    voice.pc = pc;
+    voice.model = m.model || null; // host-chosen model, shown on the bar while in a call
+    voice.callToken = m.callToken || null; // proves to the host that this call was minted
+    voice.mic.getAudioTracks().forEach(function (t) { pc.addTrack(t, voice.mic); });
+    voiceMeterAttach("mic", voice.mic);
+    if (!voiceAudioEl) {
+      voiceAudioEl = document.createElement("audio");
+      voiceAudioEl.autoplay = true;
+      voiceAudioEl.style.display = "none";
+      document.body.appendChild(voiceAudioEl);
+    }
+    pc.ontrack = function (e) {
+      voiceAudioEl.srcObject = e.streams[0];
+      voiceMeterAttach("remote", e.streams[0]); // so the meter shows the agent talking too
+    };
+    pc.onconnectionstatechange = function () {
+      if (voice.pc !== pc) return; // a stale pc from an earlier call
+      var st = pc.connectionState;
+      if ((st === "failed" || st === "disconnected" || st === "closed") && voice.state !== "idle") {
+        toast("Voice connection lost.");
+        endCall(true);
+      }
+    };
+    var dc = pc.createDataChannel("oai-events");
+    voice.dc = dc;
+    dc.onopen = function () {
+      if (voice.watchdog) { clearTimeout(voice.watchdog); voice.watchdog = null; }
+      voiceStartIdleWatch();
+      voice.state = "live";
+      updateVoiceBar();
+      toast("Connected — say something.");
+    };
+    dc.onmessage = function (ev) {
+      var e; try { e = JSON.parse(ev.data); } catch (x) { return; }
+      switch (e.type) {
+        case "response.created":
+          voice.responseOpen = true;
+          break;
+        case "response.function_call_arguments.done":
+          voiceHandleFunctionCall(e.call_id, e.name, e.arguments);
+          break;
+        case "response.done": {
+          var out = (e.response && e.response.output) || [];
+          for (var i = 0; i < out.length; i++) {
+            if (out[i].type === "function_call")
+              voiceHandleFunctionCall(out[i].call_id, out[i].name, out[i].arguments);
+          }
+          voice.responseOpen = false;
+          voiceMaybeRequestResponse(); // safe now: nothing is generating
+          break;
+        }
+        // The user talking is activity too — without this, a caller who listens for ten minutes
+        // without the agent answering would be hung up on as idle.
+        case "input_audio_buffer.speech_started":
+          voiceTouch();
+          break;
+        case "output_audio_buffer.started":
+          voiceTouch();
+          voice.speaking = true;
+          updateVoiceBar();
+          break;
+        case "output_audio_buffer.stopped":
+          voice.speaking = false;
+          updateVoiceBar();
+          break;
+        case "error":
+          if (e.error && e.error.message) toast("Agent error: " + String(e.error.message).slice(0, 80));
+          break;
+      }
+    };
+    pc.createOffer().then(function (offer) {
+      return pc.setLocalDescription(offer).then(function () {
+        // No query string: the GA SDP endpoint rejects any URL parameter with an empty 400, and
+        // the model is already bound to the ephemeral secret the host minted.
+        return fetch("https://api.openai.com/v1/realtime/calls", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + m.clientSecret, "Content-Type": "application/sdp" },
+          body: offer.sdp,
+        });
+      });
+    }).then(function (resp) {
+      if (!resp.ok) throw new Error("sdp " + resp.status);
+      return resp.text();
+    }).then(function (answer) {
+      return pc.setRemoteDescription({ type: "answer", sdp: answer });
+    }).catch(function () {
+      if (voice.state !== "idle") {
+        toast("Couldn't establish the voice connection — your network may block WebRTC.");
+        endCall(true);
+      }
+    });
+  }
+  // The tool bridge rides the share socket — when it drops mid-call the agent goes blind,
+  // so end the call rather than leave audio-only limbo.
+  function voiceOnSocketDown() {
+    if (voice.state !== "idle") {
+      endCall(false);
+      toast("Share connection lost — call ended.");
+    }
+  }
+
   var keybarEl = document.getElementById("keybar");
   var menubtnEl = document.getElementById("menubtn");
   var bodyEl = document.getElementById("body");
@@ -365,9 +883,16 @@
     // Blur-safe (touches no textarea ancestor): keep the key bar riding the keyboard top and
     // reserve body padding. Uses the scroll-invariant kbH so it doesn't jitter, and is safe to
     // run on every event — including output-driven scroll events.
-    keybarEl.style.bottom = Math.max(0, Math.round(kbH) - appliedShiftPx) + "px";
-    bodyEl.style.paddingBottom = (keybarEl.style.display !== "none" && keybarEl.offsetHeight)
-      ? keybarEl.offsetHeight + "px" : "0px";
+    positionBottomBars(Math.max(0, Math.round(kbH) - appliedShiftPx));
+  }
+  // The two fixed bars stack: #keybar rides the keyboard top, the Boss Calling bar sits on top of
+  // it, and #body reserves both so the terminal is never hidden behind them.
+  function positionBottomBars(kbBottomPx) {
+    keybarEl.style.bottom = kbBottomPx + "px";
+    var keyH = (keybarEl.style.display !== "none" && keybarEl.offsetHeight) ? keybarEl.offsetHeight : 0;
+    voiceBarEl.style.bottom = (kbBottomPx + keyH) + "px";
+    var voiceH = voiceBarEl.classList.contains("on") ? voiceBarEl.offsetHeight : 0;
+    bodyEl.style.paddingBottom = (keyH + voiceH) + "px";
   }
   // While the keyboard is up, keep the cursor visible above it. Only pushes FURTHER up (never
   // reduces the shift) and only when the cursor sits below the visible fold — so the common
@@ -387,7 +912,7 @@
     var wasFocused = document.activeElement === activeTextarea();
     document.body.style.transform = "translateY(-" + want + "px)";
     if (wasFocused) { var ta = activeTextarea(); if (ta) try { ta.focus({ preventScroll: true }); } catch (e) {} }
-    keybarEl.style.bottom = Math.max(0, Math.round(kbH) - appliedShiftPx) + "px";
+    positionBottomBars(Math.max(0, Math.round(kbH) - appliedShiftPx));
   }
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", layoutForKeyboard);
@@ -1924,6 +2449,9 @@
   function selectPane(tabId, paneId) {
     activeTabId = tabId;
     if (paneId) currentPaneId = paneId;
+    // Mid voice call: tell the host which tab we're looking at now — it's the agent's
+    // default tool target (old hosts ignore focus, so this is safe to send).
+    if (voice.state !== "idle") sendMsg({ t: "focus", tabId: tabId, paneId: paneId || tabId });
     sidebarEl.classList.remove("open"); // close the phone drawer after picking
     renderTabBar();
     renderStage();
@@ -2446,6 +2974,9 @@
     socket.onerror = function () { if (ws === socket) setStatus("down"); };
     socket.onclose = function (ev) {
       if (ws !== socket) return;
+      // Any real drop kills the tool bridge, so end the call — even when an automatic reconnect
+      // follows: the agent would otherwise sit blind waiting for a tool result sendMsg dropped.
+      voiceOnSocketDown();
       if (viewerLogic.isTerminalWebSocketClose(ev && ev.code)) {
         disarmConnectionHealth();
         ws = null;
@@ -2535,6 +3066,52 @@
         presenceEl.textContent = m.viewers === 1 ? "1 viewer" : m.viewers + " viewers"; break;
       case "mcpStatus":
         mcp = m; updateMcpPill(); break;
+      case "voiceStatus":
+        voice.status = m;
+        // The host's master switch is a kill switch: don't just hide the bar under a live call.
+        if (!m.available && voice.state !== "idle") {
+          endCall(true);
+          toast("Boss Calling was turned off on the host — call ended.");
+        }
+        updateVoiceBar();
+        break;
+      case "voiceSession":
+        // Phase TWO: the mint landed, so SDP gets its own clock rather than whatever was left of
+        // the mint's.
+        voiceArmWatchdog(
+          VOICE_SDP_TIMEOUT_MS,
+          "Couldn't establish the voice connection — your network may block WebRTC."
+        );
+        connectRealtime(m); break;
+      case "voiceError":
+        toast(voiceErrorText(m));
+        // Actually ASK. The Call button is offered to a view-only viewer because clicking it is
+        // supposed to be a real path to control — but nothing sent the request, so they granted
+        // microphone access, got nothing, and were told to do a thing the button had not done.
+        if (m.code === "not_controller") sendMsg({ t: "requestControl" });
+        // A refusal that belongs to a DIFFERENT (older or duplicate) request must not tear down the
+        // call that is already running: rate_limited is a duplicate start, and stale_call is a frame
+        // from a call that is already gone arriving while a new one is live. Only errors that mean
+        // "this call can't happen" end it.
+        var refusesAnotherRequest = m.code === "rate_limited" || m.code === "stale_call";
+        if (voice.state !== "idle" && !(refusesAnotherRequest && voice.dc)) endCall(false);
+        break;
+      case "voiceToolResult":
+        // Claim FIRST, then send. Only a call still pending may be answered: voiceToolTimedOut may
+        // already have supplied an output for this id, and a second function_call_output for one
+        // call_id is a protocol error — which also lands with no turn requested for it.
+        if (voice.pending[m.callId]) {
+          delete voice.pending[m.callId];
+          if (voice.timers[m.callId]) { clearTimeout(voice.timers[m.callId]); delete voice.timers[m.callId]; }
+          voice.pendingCount = Math.max(0, voice.pendingCount - 1);
+          voice.outputsOwed += 1;
+          voiceDcSend({ type: "conversation.item.create",
+            item: { type: "function_call_output", call_id: m.callId, output: m.resultJson } });
+        }
+        updateVoiceBar();
+        voiceMaybeRequestResponse();
+        if (m.isError) toast("Tool failed — the agent will explain.");
+        break;
       case "control":
         controlGranted = !!m.granted;
         viewOnlyEl.style.display = controlGranted ? "none" : "";

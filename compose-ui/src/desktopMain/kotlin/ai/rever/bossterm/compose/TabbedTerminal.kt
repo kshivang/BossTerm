@@ -62,6 +62,8 @@ import ai.rever.bossterm.compose.vcs.VersionControlMenuProvider
 import ai.rever.bossterm.compose.shell.ShellCustomizationMenuProvider
 import ai.rever.bossterm.compose.menu.MenuActions
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.util.loadTerminalFont
@@ -80,6 +82,14 @@ import ai.rever.bossterm.compose.tabs.TabBar
 import ai.rever.bossterm.compose.tabs.TabBarHeight
 import ai.rever.bossterm.compose.tabs.TabController
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import ai.rever.bossterm.compose.share.CallSegmentState
+import ai.rever.bossterm.compose.voice.HostCallBar
+import ai.rever.bossterm.compose.voice.HostCallPhase
+import ai.rever.bossterm.compose.voice.HostVoiceCall
+import ai.rever.bossterm.compose.voice.RemoteVoiceCalls
+import ai.rever.bossterm.compose.voice.VoiceAgentStorage
+import ai.rever.bossterm.compose.voice.VoiceKeyDialog
+import ai.rever.bossterm.compose.voice.segmentState
 import ai.rever.bossterm.compose.ui.ProperTerminal
 
 /**
@@ -2104,6 +2114,35 @@ fun TabbedTerminal(
         // QR/links dialog if already shared). Shown per its own toggle.
         val showMcpStatus = settings.mcpShowStatusIndicator
         val showSharingStatus = settings.sessionSharingShowIndicator
+        // In-app voice call ("Call BossTerm"): the pill sits beside Sharing and drives the one call
+        // this app can have; the strip below it appears while that call is up.
+        //
+        // Subscribed as a DERIVED, distinct-until-changed flow rather than the raw call state: this
+        // lambda owns the terminal rendering path, and the call state carries fields that change
+        // several times a second while a call is up. Only segment transitions belong here — the
+        // level meter collects its own flow inside HostCallBar.
+        // The settings flow is IN the combine rather than a remember() key: keyed on the toggles, the
+        // whole flow was rebuilt whenever either changed, and collectAsState's initial value flashed
+        // the segment to Hidden for a frame — a pill that blinks mid-call because someone opened
+        // Settings. With no keys the subscription outlives every toggle change.
+        val callSegment by remember {
+            combine(
+                HostVoiceCall.state,
+                VoiceAgentStorage.keyPresentFlow,
+                SettingsManager.instance.settings,
+            ) { call, keyPresent, live ->
+                call.segmentState(
+                    featureEnabled = live.voiceCallEnabled,
+                    indicatorEnabled = live.voiceShowStatusIndicator,
+                    keyPresent = keyPresent,
+                )
+            }
+                .distinctUntilChanged()
+        }.collectAsState(CallSegmentState.Hidden)
+        // Platform-independent: the "a viewer started a call" notification does nothing off macOS,
+        // and the Call pill only ever reflects THIS host's own call.
+        val remoteVoiceCalls by RemoteVoiceCalls.active.collectAsState()
+        var voiceKeyPrompt by remember { mutableStateOf(false) }
         // The active tab's remote session while it's still view-only — drives the read-only
         // pill, stacked in this same column so it sits BELOW the MCP/Sharing pills.
         val activeRemoteSession = tabController.activeTab?.let { t -> state?.remoteSessions?.sessionForTab(t) }
@@ -2118,7 +2157,10 @@ fun TabbedTerminal(
             }
         } else null
         if (showMcpStatus || showSharingStatus || attachStatus != null || pendingShareRequests.isNotEmpty() ||
-            viewOnlyRemote != null || upstreamReadOnly != null) {
+            viewOnlyRemote != null || upstreamReadOnly != null ||
+            // A remote call shows the strip even with every indicator switched off — see StatusStrip.
+            remoteVoiceCalls > 0 ||
+            callSegment != CallSegmentState.Hidden) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -2150,6 +2192,7 @@ fun TabbedTerminal(
                         ))
                     },
                     showSharing = showSharingStatus,
+                    remoteCalls = remoteVoiceCalls,
                     // Count in-process shares AND daemon-hosted shares (one is always empty depending
                     // on mode), so the pill lights whenever anything is actually being shared.
                     sharingCount = sharedTabIds.size + daemonShareState.shares.size,
@@ -2187,7 +2230,34 @@ fun TabbedTerminal(
                             }
                         }
                     },
+                    call = callSegment,
+                    onCallClick = {
+                        // One click is the whole interaction: ask for a key if there isn't one,
+                        // start when idle, end when live, clear a failure when it failed.
+                        when (callSegment) {
+                            CallSegmentState.NeedsKey ->
+                                voiceKeyPrompt = true
+                            CallSegmentState.Failed ->
+                                HostVoiceCall.dismissError()
+                            CallSegmentState.Connecting,
+                            CallSegmentState.Live,
+                            CallSegmentState.Speaking,
+                            CallSegmentState.Working ->
+                                HostVoiceCall.end()
+                            else -> HostVoiceCall.start()
+                        }
+                    },
                 )
+                HostCallBar()
+                if (voiceKeyPrompt) {
+                    VoiceKeyDialog(
+                        onDismiss = { voiceKeyPrompt = false },
+                        onSaved = {
+                            voiceKeyPrompt = false
+                            HostVoiceCall.start()
+                        },
+                    )
+                }
                 attachStatus?.let { status ->
                     AttachToast(status = status)
                 }

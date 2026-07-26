@@ -986,11 +986,18 @@ object SessionShareManager {
         // snapshot may already contain, deterministically replaying it below the snapshot. Once
         // registered, addViewer schedules a graphics poll for every pane to close the graphics
         // admission window even when the pane goes quiet.
-        val initialMessages = share.initialMessages(includePaneGraphics = supportsPaneGraphics)
+        val initialMessages = share.initialMessages(
+            includePaneGraphics = supportsPaneGraphics,
+            canControl = canControl,
+            confidential = serverCipher != null,
+        )
         val vc = share.addViewer(
             canControl,
             hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})",
             supportsPaneGraphics,
+            // A negotiated cipher means every frame is encrypted end-to-end, which is what lets the
+            // host hand this connection an ephemeral OpenAI secret. See ViewerConnection.confidential.
+            confidential = serverCipher != null,
         )
         vc.grantKey = accessKey // lets an approved mid-session upgrade persist into the grant
         try {

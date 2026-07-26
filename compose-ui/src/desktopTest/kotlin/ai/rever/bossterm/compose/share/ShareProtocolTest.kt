@@ -316,4 +316,54 @@ class ShareProtocolTest {
         assertEquals(null, flatBack.tabs[0].windowId)
         assertEquals(null, flatBack.tabs[0].windowName)
     }
+
+    @Test
+    fun `voice server messages encode with the t discriminator`() {
+        val status = ShareProtocol.encodeServer(ServerMessage.VoiceStatus(available = false, reason = "no_key"))
+        assertTrue(status.contains("\"t\":\"voiceStatus\""), status)
+        assertTrue(status.contains("\"available\":false") && status.contains("\"reason\":\"no_key\""))
+
+        val session = ShareProtocol.encodeServer(
+            ServerMessage.VoiceSession(clientSecret = "ek_test", model = "gpt-realtime", callToken = "call-1")
+        )
+        assertTrue(session.contains("\"t\":\"voiceSession\""), session)
+        assertTrue(session.contains("\"clientSecret\":\"ek_test\"") && session.contains("\"model\":\"gpt-realtime\""))
+        assertTrue(session.contains("\"callToken\":\"call-1\""), "the viewer must get the call handle to echo")
+
+        val err = ShareProtocol.encodeServer(ServerMessage.VoiceError(code = "unauthorized"))
+        assertTrue(err.contains("\"t\":\"voiceError\"") && err.contains("\"code\":\"unauthorized\""), err)
+
+        val result = ShareProtocol.encodeServer(
+            ServerMessage.VoiceToolResult(callId = "call_1", resultJson = """{"ok":true}""", isError = true)
+        )
+        assertTrue(result.contains("\"t\":\"voiceToolResult\""), result)
+        assertTrue(result.contains("\"callId\":\"call_1\"") && result.contains("\"isError\":true"))
+
+        // Round-trip (what the native remote viewer would decode).
+        val back = ShareProtocol.decodeServer(session)
+        assertIs<ServerMessage.VoiceSession>(back)
+        assertEquals("ek_test", back.clientSecret)
+    }
+
+    @Test
+    fun `voice client messages decode by discriminator`() {
+        val start = ShareProtocol.decodeClient("""{"t":"voiceStart","activeTabId":"tab1"}""")
+        assertIs<ClientMessage.VoiceStart>(start)
+        assertEquals("tab1", start.activeTabId)
+
+        // activeTabId is optional (older viewers / no tab reported yet).
+        val bare = ShareProtocol.decodeClient("""{"t":"voiceStart"}""")
+        assertIs<ClientMessage.VoiceStart>(bare)
+        assertNull(bare.activeTabId)
+
+        assertIs<ClientMessage.VoiceEnd>(ShareProtocol.decodeClient("""{"t":"voiceEnd"}"""))
+
+        val call = ShareProtocol.decodeClient(
+            """{"t":"voiceToolCall","callId":"c1","name":"run_command","argsJson":"{\"script\":\"git status\"}"}"""
+        )
+        assertIs<ClientMessage.VoiceToolCall>(call)
+        assertEquals("c1", call.callId)
+        assertEquals("run_command", call.name)
+        assertTrue(call.argsJson.contains("git status"))
+    }
 }

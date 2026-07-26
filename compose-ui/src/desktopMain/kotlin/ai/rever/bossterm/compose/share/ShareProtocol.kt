@@ -229,6 +229,77 @@ sealed class ServerMessage {
         val fontFamily: String,
         val fontSize: Int,
     ) : ServerMessage()
+
+    /**
+     * Whether the host can take a voice call (the "Call" pill): Boss Calling is enabled AND an
+     * OpenAI key is configured. Sent on connect and whenever it changes. [reason] is a machine
+     * code for the unavailable case (`disabled` | `no_key` | `insecure_transport` | `not_controller`) — for a settings hint, never shown raw.
+     */
+    @Serializable
+    @SerialName("voiceStatus")
+    data class VoiceStatus(
+        val available: Boolean,
+        val reason: String? = null,
+    ) : ServerMessage()
+
+    /**
+     * A minted OpenAI Realtime session for THIS viewer (reply to [ClientMessage.VoiceStart]).
+     * [clientSecret] is the short-lived ephemeral secret (`ek_…`) — never the host's API key.
+     * [model] is informational (the viewer shows it on the call bar): the SDP exchange takes no
+     * URL parameters — the model is bound to the secret when the host mints it. [callToken] is
+     * this call's handle, which the viewer must echo on every [ClientMessage.VoiceToolCall] so the
+     * share socket can't be driven as a tool RPC by a viewer that never started a call.
+     */
+    @Serializable
+    @SerialName("voiceSession")
+    data class VoiceSession(
+        val clientSecret: String,
+        val model: String,
+        val callToken: String,
+    ) : ServerMessage()
+
+    /**
+     * A voice request failed.
+     *
+     * [code] is the cross-language contract with `voiceErrorText` in viewer.js — there is no shared
+     * type, so this list is the only thing keeping the two honest. Keep it in step when adding one:
+     *
+     *  - `disabled` — the feature (or the share surface) is switched off on the host
+     *  - `no_key` — no OpenAI key configured
+     *  - `not_controller` — the caller doesn't hold control of the share
+     *  - `unauthorized` — OpenAI rejected the host's key
+     *  - `mint_failed` — the session couldn't be minted (message carries a sanitized reason)
+     *  - `rate_limited` — too many call attempts; an existing call keeps running
+     *  - `too_many_calls` — the host is already at its concurrent-call ceiling
+     *  - `stale_call` — a frame for a call that is no longer this connection's; an existing call
+     *    keeps running
+     *  - `insecure_transport` — the connection isn't encrypted, so the host won't put an ephemeral
+     *    OpenAI secret on it
+     *
+     * `VoiceCrossLanguageContractTest` now asserts this list against viewer.js, so the two cannot
+     * drift silently — but keep the list itself accurate, since the test reads it from here.
+     *
+     * [message] is optional human-readable detail (already sanitized).
+     */
+    @Serializable
+    @SerialName("voiceError")
+    data class VoiceError(
+        val code: String,
+        val message: String? = null,
+    ) : ServerMessage()
+
+    /**
+     * Result of one voice-agent tool call ([ClientMessage.VoiceToolCall]). [callId] echoes
+     * OpenAI's function-call id; [resultJson] is the tool's JSON payload the viewer forwards
+     * verbatim as the `function_call_output`.
+     */
+    @Serializable
+    @SerialName("voiceToolResult")
+    data class VoiceToolResult(
+        val callId: String,
+        val resultJson: String,
+        val isError: Boolean = false,
+    ) : ServerMessage()
 }
 
 /**
@@ -507,6 +578,37 @@ sealed class ClientMessage {
     @Serializable
     @SerialName("attachMcp")
     data class AttachMcp(val target: String, val tabId: String? = null) : ClientMessage()
+
+    /**
+     * Start a voice call: ask the host to mint an ephemeral OpenAI Realtime session
+     * ([ServerMessage.VoiceSession] / [ServerMessage.VoiceError] reply). Controller role only.
+     * [activeTabId] is the tab the viewer is currently looking at — becomes the agent's
+     * default target for tool calls.
+     */
+    @Serializable
+    @SerialName("voiceStart")
+    data class VoiceStart(val activeTabId: String? = null) : ClientMessage()
+
+    /** The viewer ended (or lost) its voice call. Informational; hosts may ignore it. */
+    @Serializable
+    @SerialName("voiceEnd")
+    data object VoiceEnd : ClientMessage()
+
+    /**
+     * The voice agent asked for a tool call: [name] + [argsJson] (the model's raw arguments
+     * JSON) forwarded from the Realtime data channel. The host executes it against the shared
+     * session and replies [ServerMessage.VoiceToolResult] echoing [callId]. Write tools
+     * require controller role; targets are limited to the share's scope. [callToken] is the handle
+     * from [ServerMessage.VoiceSession] — a tool call without a live one is refused.
+     */
+    @Serializable
+    @SerialName("voiceToolCall")
+    data class VoiceToolCall(
+        val callId: String,
+        val name: String,
+        val argsJson: String,
+        val callToken: String? = null,
+    ) : ClientMessage()
 }
 
 /** Browser-displayable image data referenced by [ServerMessage.PaneGraphics]. */

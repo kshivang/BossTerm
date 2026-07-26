@@ -5,6 +5,7 @@
 - **Repository**: BossTerm (Kotlin/Compose Desktop terminal emulator)
 - **Main Branch**: `master` | **Dev Branch**: `dev`
 - **Settings**: `~/.bossterm/settings.json`
+- **Secrets**: `~/.bossterm/voice.json` (chmod 600) — the Boss Calling OpenAI key, deliberately NOT in settings.json
 
 ## Build & Run
 
@@ -90,6 +91,18 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 - `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/settings/TerminalSettings.kt`
 - `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/actions/BuiltinActions.kt`
 
+**Boss Calling (voice)** — `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/voice/`
+- `VoiceToolCatalog.kt` — the curated tool surface both call surfaces advertise; a new tool needs a
+  schema here, a handler in each executor, and a description in `HostVoiceCallController.describeTool`
+  AND `viewer.js voiceDescribeTool`
+- `VoiceCallService.kt` — share-viewer policy: control role, share scope, mint budget, call tokens
+- `HostVoiceCallController.kt` — the in-app call (JDK WebSocket + `javax.sound.sampled`, no WebRTC)
+- `VoiceAgentStorage.kt` — the chmod-600 key file
+- Two surfaces, one tool set: the viewer path is browser↔OpenAI over WebRTC with an ephemeral secret;
+  the in-app path is host↔OpenAI over WebSocket with the standard key. They key "agent is speaking"
+  off *different* event families (`output_audio_buffer.*` vs `response.output_audio.*`), so a change
+  to one is not automatically right for the other.
+
 ## Features Summary
 
 - **Tabs**: Ctrl+T/W/Tab, Ctrl+1-9
@@ -97,6 +110,9 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 - **Clipboard**: Copy-on-select, middle-click paste
 - **Mouse**: vim/tmux support, Shift bypasses
 - **AI Menu**: Claude Code, Codex, Gemini, OpenCode
+- **Boss Calling**: voice-call the session's AI agent — "Call BossTerm" in the status strip (in-app)
+  or the share viewer's bottom bar (remote). Needs an OpenAI key in `~/.bossterm/voice.json`;
+  remote calls additionally require control of the share
 - **Debug**: Ctrl+Shift+D
 
 ## Programmatic API

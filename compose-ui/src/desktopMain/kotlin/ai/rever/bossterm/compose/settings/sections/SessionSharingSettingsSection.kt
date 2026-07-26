@@ -86,5 +86,15 @@ fun SessionSharingSettingsSection(
                         "link alone grants access. Approved devices get a 24h key so they aren't re-prompted."
             )
         }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // statusLine here too: Settings is where someone goes to ask why the viewer shows no
+        // Call BossTerm button, so it should answer that in place.
+        BossCallingSection(
+            settings = settings,
+            onSettingsChange = onSettingsChange,
+            statusLine = true,
+        )
     }
 }

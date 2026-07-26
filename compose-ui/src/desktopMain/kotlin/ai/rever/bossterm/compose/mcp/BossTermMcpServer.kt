@@ -13,6 +13,7 @@ import java.util.Base64
 import javax.imageio.ImageIO
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
@@ -69,6 +70,7 @@ import kotlinx.serialization.json.putJsonObject
  *   - `send_input`          — write raw text to a tab's stdin (queued).
  *   - `send_signal`         — send ctrl_c / ctrl_d / ctrl_z to a tab (queued).
  *   - `run_in_panel`        — open a new tab / split pane and run a script in it.
+ *   - `close_panel`         — close a split pane, or a whole tab (never a window's last tab).
  *
  * Threading: tool handlers run on whatever coroutine context the MCP
  * transport dispatches them on. All operations performed here are either
@@ -126,6 +128,7 @@ class BossTermMcpServer(
         "send_input" to ::registerSendInput,
         "send_signal" to ::registerSendSignal,
         "run_in_panel" to ::registerRunInPanel,
+        "close_panel" to ::registerClosePanel,
         "run_command" to ::registerRunCommand,
         "show_image" to ::registerShowImage
     )
@@ -134,7 +137,9 @@ class BossTermMcpServer(
     private val undisablableTools: Set<String> = UNDISABLABLE_TOOLS
 
     // Hold the live Server so applyDisabledSet can mutate it.
-    private var serverRef: Server? = null
+    // @Volatile: written by createServer() outside toolsLock, read under it by the accessors. Boss
+    // Calling is what introduced concurrent readers — four in-flight tool calls plus applyDisabledSet.
+    @Volatile private var serverRef: Server? = null
 
     // Serializes concurrent applyDisabledSet callers. Two paths invoke it: the
     // manage_tools MCP handler (no external lock) and the BossTermMcpManager
@@ -156,8 +161,14 @@ class BossTermMcpServer(
     /**
      * Build and return a fully configured [Server] with all BossTerm tools
      * registered. Caller is responsible for connecting a transport.
+     *
+     * @param includeEmbedderTools run [BossTermMcpConfig.additionalTools]. Default true — the
+     *   embedder's own tools belong on the server their app exposes. Boss Calling passes false: it
+     *   builds a private server per share and per in-app call, and its tool surface is filtered to
+     *   the voice catalog, so running an arbitrary registration callback repeatedly would be pure
+     *   side effect for tools nothing can reach.
      */
-    fun createServer(): Server {
+    fun createServer(includeEmbedderTools: Boolean = true): Server {
         val server = Server(
             serverInfo = Implementation(
                 name = config.serverName,
@@ -199,22 +210,17 @@ class BossTermMcpServer(
 
         // Embedder hook: register app-specific tools after built-ins. Names
         // are NOT prefixed — embedder owns them.
-        config.additionalTools(server)
+        //
+        // Skipped for the voice surface. `additionalTools` is arbitrary embedder code, and the voice
+        // executor builds one of these per share plus one per in-app call — so the hook ran N extra
+        // times, doing whatever it does (capturing state, subscribing, allocating) for tools that can
+        // never be called, since the voice surface filters against VoiceToolCatalog. Inheriting the
+        // embedder's CONFIG (allowWriteTools, toolNamePrefix) is the part that matters and is kept.
+        if (includeEmbedderTools) config.additionalTools(server)
 
         return server
     }
 
-    /**
-     * Sync the live server's exposed tool set to match [disabled]. Adds back any
-     * available tool not in the set; removes any tool that is. No-op if no server
-     * has been built yet.
-     *
-     * Safe to call from any thread; the body runs under [toolsLock] so concurrent
-     * callers (the manage_tools MCP handler and the settings watcher in
-     * BossTermMcpManager) are serialized. Without this, the containsKey →
-     * addTool/removeTool sequence could double-register a tool against the SDK's
-     * non-thread-safe Server.tools map.
-     */
     /**
      * Signal that the live [Server] this wrapper was bound to has been torn down
      * (engine stop or app shutdown). Subsequent [applyDisabledSet] calls become
@@ -227,6 +233,64 @@ class BossTermMcpServer(
         }
     }
 
+    /**
+     * The registered tool names, read under [toolsLock].
+     *
+     * The SDK's `Server.tools` map is not thread-safe and every mutation here is serialized; callers
+     * that iterate it themselves (Boss Calling's in-process executor, with up to four concurrent
+     * tool calls) could hit a ConcurrentModificationException when a `manage_tools` toggle lands
+     * mid-iteration.
+     */
+    fun toolNames(): Set<String> = synchronized(toolsLock) {
+        serverRef?.tools?.keys?.toSet().orEmpty()
+    }
+
+    /**
+     * Every tool currently registered, with its real description and input schema.
+     *
+     * For callers that want to advertise the WHOLE MCP surface rather than a hand-written subset —
+     * Boss Calling's in-app agent. Taking the schema from the server rather than restating it means
+     * a tool added to this class reaches the voice agent with no second edit, and the two cannot
+     * describe the same tool differently.
+     *
+     * [RegisteredToolInfo.write] comes from this class's own read/write split, so a caller can still
+     * gate mutations without classifying tools itself.
+     */
+    fun registeredToolInfo(): List<RegisteredToolInfo> = synchronized(toolsLock) {
+        serverRef?.tools?.values.orEmpty().map { registered ->
+            val tool = registered.tool
+            RegisteredToolInfo(
+                name = tool.name,
+                description = tool.description.orEmpty(),
+                properties = tool.inputSchema.properties ?: kotlinx.serialization.json.JsonObject(emptyMap()),
+                required = tool.inputSchema.required.orEmpty(),
+                write = writeToolRegistrations.containsKey(stripPrefix(tool.name)),
+            )
+        }
+    }
+
+    private fun stripPrefix(name: String): String =
+        if (config.toolNamePrefix.isNotEmpty() && name.startsWith(config.toolNamePrefix)) {
+            name.removePrefix(config.toolNamePrefix)
+        } else {
+            name
+        }
+
+    /** The handler registered for [name], resolved under [toolsLock]. Null when not registered. */
+    fun handlerFor(name: String): (suspend (CallToolRequest) -> CallToolResult)? =
+        synchronized(toolsLock) { serverRef?.tools?.get(name)?.handler }
+
+    /**
+     * Sync the live server's exposed tool set to match [disabled]. Adds back any
+     * available tool not in the set; removes any tool that is. No-op if no server
+     * has been built yet.
+     *
+     * Safe to call from any thread; the body runs under [toolsLock] so concurrent
+     * callers (the manage_tools MCP handler and the settings watcher in
+     * BossTermMcpManager) are serialized. Without this, the containsKey →
+     * addTool/removeTool sequence could double-register a tool against the SDK's
+     * non-thread-safe Server.tools map.
+     */
     fun applyDisabledSet(disabled: Set<String>) {
         synchronized(toolsLock) {
             // Read the ref inside the lock so a concurrent detachServer() can't
@@ -584,10 +648,37 @@ class BossTermMcpServer(
             val firstRow = -snapshot.historyLinesCount
             val lastRowExclusive = snapshot.height
             var row = firstRow
+            // A WALL-CLOCK deadline, checked per line, plus a per-line width clip.
+            //
+            // `pattern` comes from a model (and, on a voice call, from whatever an agent was talked
+            // into by scrollback it read). Regex backtracking is not interruptible: a nested
+            // quantifier like (a+)+b against a long run of one character runs effectively forever
+            // inside a single findAll, with no suspension point for withTimeout to land on. That
+            // pinned a thread AND — until the callers grew a slot reclaim — permanently consumed one
+            // of four in-flight tool slots. This bounds the accidental case at its source; the
+            // reclaim covers what is left.
+            val deadline = System.nanoTime() + SEARCH_SCAN_BUDGET_MS * 1_000_000
+            var timedOut = false
             outer@ while (row < lastRowExclusive) {
-                val lineText = snapshot.getLine(row).text
+                if (System.nanoTime() > deadline) {
+                    timedOut = true
+                    truncated = true
+                    break@outer
+                }
+                // Clipped, not skipped: a 200k-character line is almost always a progress bar or
+                // base64, and it is exactly the input that makes backtracking explode.
+                val lineText = snapshot.getLine(row).text.let {
+                    if (it.length > SEARCH_MAX_LINE_CHARS) it.take(SEARCH_MAX_LINE_CHARS) else it
+                }
                 for (m in regex.findAll(lineText)) {
                     if (matches.size >= maxMatches) {
+                        truncated = true
+                        break@outer
+                    }
+                    if (System.nanoTime() > deadline) {
+                        // Also checked INSIDE the match loop: one line can produce enough matches to
+                        // blow the budget on its own.
+                        timedOut = true
                         truncated = true
                         break@outer
                     }
@@ -619,6 +710,7 @@ class BossTermMcpServer(
                 buildJsonObject {
                     put("matches", positions)
                     put("truncated", truncated)
+                    if (timedOut) put("timedOut", SEARCH_TIMEOUT_HINT)
                     put("historyLinesCount", snapshot.historyLinesCount)
                     put("height", snapshot.height)
                     if (!includeLineText) put("includeLineText", false)
@@ -634,6 +726,7 @@ class BossTermMcpServer(
                     put("rowCounts", counts)
                     put("totalMatches", matches.size)
                     put("truncated", truncated)
+                    if (timedOut) put("timedOut", SEARCH_TIMEOUT_HINT)
                     put("historyLinesCount", snapshot.historyLinesCount)
                     put("height", snapshot.height)
                     put("shortened", "rowCounts: hit counts per row")
@@ -643,6 +736,7 @@ class BossTermMcpServer(
                 buildJsonObject {
                     put("totalMatches", matches.size)
                     put("truncated", truncated)
+                    if (timedOut) put("timedOut", SEARCH_TIMEOUT_HINT)
                     put("historyLinesCount", snapshot.historyLinesCount)
                     put("height", snapshot.height)
                     put("shortened", "totals only")
@@ -840,6 +934,90 @@ class BossTermMcpServer(
                 )
             tab.writeRawBytes(bytes)
             successJson(json.encodeToString(OkResult.serializer(), OkResult(ok = true)))
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Tool: close_panel
+    // -----------------------------------------------------------------
+
+    /**
+     * The inverse of [registerRunInPanel] — close a split, or a whole tab.
+     *
+     * One tool rather than two because the caller's intent differs only by scope, and the ids come
+     * from the same place ([registerListPanes]). `pane_id` present means "just this split"; absent
+     * means the tab and everything in it.
+     *
+     * Refuses a window's LAST tab. `TabController.closeTab` calls `onLastTabClosed()` there, whose own
+     * comment is "exit application" — so an agent tidying up would quit BossTerm, and over voice it
+     * would kill the call that asked. A tool whose worst outcome is "the app vanished" needs the
+     * refusal in the tool, not in a prompt that may or may not be followed.
+     */
+    private fun registerClosePanel(server: Server) {
+        server.addTool(
+            name = toolName("close_panel"),
+            description = describe(
+                "close_panel",
+                "Close a split pane, or a whole tab. With `pane_id`, closes just that split and " +
+                        "leaves the rest of the tab open; without it, closes the tab and every pane " +
+                        "in it. This kills whatever is running there and cannot be undone, so check " +
+                        "with list_panes / read_scrollback first if something might be mid-task. " +
+                        "Refuses to close a window's last remaining tab, because that quits the app."
+            ),
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("tab_id") {
+                        put("type", "string")
+                        put("description", "Stable tab id (see list_tabs).")
+                    }
+                    putJsonObject("pane_id") {
+                        put("type", "string")
+                        put(
+                            "description",
+                            "Optional split pane to close (see list_panes). Omit to close the " +
+                                    "whole tab, including all of its panes."
+                        )
+                    }
+                },
+                required = listOf("tab_id")
+            )
+        ) { request ->
+            val args = request.arguments
+            val tabId = args.requireString("tab_id")
+                ?: return@addTool errorResult("Missing required argument: tab_id")
+            val paneId = args.requireString("pane_id")
+            val state = registry.findState(tabId)
+                ?: return@addTool errorResult("Unknown tab_id: $tabId")
+
+            if (paneId != null) {
+                val split = state.splitStates[tabId]
+                // Deliberately an error rather than silently closing the tab: list_panes reports a
+                // split-less tab as one pane whose id EQUALS the tab id, so an agent reading that and
+                // passing it back here is asking to close a split it believes exists. Treating that as
+                // "close the tab" would destroy every pane on a misunderstanding.
+                if (split == null || split.isSinglePane) {
+                    return@addTool errorResult(
+                        "Tab '$tabId' has no split panes. Omit pane_id to close the whole tab."
+                    )
+                }
+                if (split.getAllPanes().none { it.id == paneId }) {
+                    return@addTool errorResult("Unknown pane_id '$paneId' in tab '$tabId'")
+                }
+                if (!split.closePane(paneId)) {
+                    return@addTool errorResult("Failed to close pane '$paneId' in tab '$tabId'")
+                }
+                registry.clearScratchPane(tabId, paneId)
+                val payload = ClosePanelResult(ok = true, closed = "pane", tabId = tabId, paneId = paneId)
+                return@addTool successJson(json.encodeToString(ClosePanelResult.serializer(), payload))
+            }
+
+            lastTabRefusal(tabId, state.tabs.size)?.let { return@addTool errorResult(it) }
+            if (!state.closeTab(tabId)) {
+                return@addTool errorResult("Failed to close tab '$tabId'")
+            }
+            registry.clearScratchPane(tabId)
+            val payload = ClosePanelResult(ok = true, closed = "tab", tabId = tabId, paneId = null)
+            successJson(json.encodeToString(ClosePanelResult.serializer(), payload))
         }
     }
 
@@ -2348,6 +2526,15 @@ class BossTermMcpServer(
     )
 
     @Serializable
+    data class ClosePanelResult(
+        val ok: Boolean,
+        /** "pane" or "tab" — which of the two was actually closed. */
+        val closed: String,
+        val tabId: String,
+        val paneId: String?
+    )
+
+    @Serializable
     data class ShowImageResult(
         val ok: Boolean,
         val tabId: String,
@@ -2400,7 +2587,32 @@ class BossTermMcpServer(
     @Serializable
     data class ManageToolsListResult(val tools: List<ManageToolItem>)
 
+    /** One registered MCP tool, as the voice surface needs to see it. */
+    data class RegisteredToolInfo(
+        val name: String,
+        val description: String,
+        val properties: kotlinx.serialization.json.JsonObject,
+        val required: List<String>,
+        val write: Boolean,
+    )
+
     companion object {
+        /**
+         * Wall-clock budget for one search_output scan.
+         *
+         * The pattern is model-supplied and regex backtracking is not interruptible, so neither
+         * withTimeout nor job cancellation can stop a pathological one — the deadline has to be
+         * checked by the loop itself.
+         */
+        const val SEARCH_SCAN_BUDGET_MS = 8_000L
+
+        /** Per-line clip. A line longer than this is a progress bar or base64, not prose. */
+        const val SEARCH_MAX_LINE_CHARS = 8_000
+
+        /** Told to the agent so it rewrites the pattern rather than retrying the same one. */
+        const val SEARCH_TIMEOUT_HINT =
+            "the scan hit its time budget — narrow the pattern (avoid nested quantifiers) or search fewer lines"
+
         private const val DEFAULT_SCROLLBACK_LINES = 200
         private const val DEFAULT_SEARCH_MAX_MATCHES = 50
         private const val DEFAULT_DEBUG_CHUNKS = 100
@@ -2482,11 +2694,31 @@ class BossTermMcpServer(
             "read_debug_console"
         )
 
+        /**
+         * Why `close_panel` must not close this tab, or null if it may.
+         *
+         * A pure function so the rule can actually be tested: closing the real thing needs a live
+         * window, and `TabbedTerminalState.createTab` returns null with no PTY available, so a test
+         * that went through the handler could only ever assert the unknown-tab path.
+         *
+         * The rule exists because `TabController.closeTab` reaches `onLastTabClosed()` on a window's
+         * final tab — its own comment says "exit application". An agent asked to tidy up would quit
+         * BossTerm, and over voice it would kill the call that asked.
+         */
+        internal fun lastTabRefusal(tabId: String, tabCount: Int): String? =
+            if (tabCount <= 1) {
+                "Tab '$tabId' is the only tab in its window, and closing it would quit BossTerm. " +
+                    "Close a split with pane_id, or leave this tab open."
+            } else {
+                null
+            }
+
         /** Unprefixed built-in write tool names, in display order. */
         val BUILT_IN_WRITE_TOOLS: List<String> = listOf(
             "send_input",
             "send_signal",
             "run_in_panel",
+            "close_panel",
             "run_command",
             "show_image"
         )

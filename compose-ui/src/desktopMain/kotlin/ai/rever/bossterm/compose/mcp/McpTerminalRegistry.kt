@@ -123,10 +123,28 @@ object McpTerminalRegistry {
     @Volatile var mcpServerLabel: String = "BossTerm"
         private set
 
+    /**
+     * The embedder's MCP configuration, published by [BossTermMcpManager] at construction. Read by
+     * non-Compose consumers that need to build their own in-process tool surface — Boss Calling's
+     * [ai.rever.bossterm.compose.voice.GuiVoiceToolExecutor] must honour the embedder's
+     * `allowWriteTools` and `toolNamePrefix` rather than fabricating a config of its own, or a
+     * deliberately read-only MCP surface would still expose run_command by voice.
+     *
+     * Null until a manager exists (a library user who never starts MCP); callers fall back to
+     * [BossTermMcpConfig] defaults.
+     */
+    @Volatile var mcpConfig: BossTermMcpConfig? = null
+        private set
+
     /** @suppress Manager-only. Publish the embedder's MCP server name/label. */
     internal fun setServerInfo(name: String, label: String) {
         mcpServerName = name
         mcpServerLabel = label
+    }
+
+    /** @suppress Manager-only. Publish the embedder's full MCP config. */
+    internal fun setMcpConfig(config: BossTermMcpConfig) {
+        mcpConfig = config
     }
 
     /**

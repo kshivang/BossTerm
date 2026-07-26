@@ -10,6 +10,12 @@ import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import ai.rever.bossterm.compose.voice.GuiVoiceToolExecutor
+import ai.rever.bossterm.compose.voice.VoiceAgentStorage
+import ai.rever.bossterm.compose.voice.RemoteVoiceCalls
+import ai.rever.bossterm.compose.voice.StampCachedValue
+import ai.rever.bossterm.compose.voice.VoiceCallService
+import ai.rever.bossterm.compose.voice.voiceCallTokenMatches
 import ai.rever.bossterm.compose.window.WindowManager
 import ai.rever.bossterm.terminal.model.TerminalModelListener
 import androidx.compose.runtime.getValue
@@ -26,13 +32,16 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /** Whether a share covers one tab (incl. its splits), the whole window (all tabs), or every window. */
 enum class ShareScope { TAB, WINDOW, ALL }
@@ -85,6 +94,95 @@ class MirrorShare(
     val sessionName = androidx.compose.runtime.mutableStateOf(SessionShareManager.defaultSessionName())
     private var observerJob: Job? = null
     private var mcpJob: Job? = null
+    private var voiceJob: Job? = null
+
+    // Boss Calling: one service per share; its executor limits the agent's tool targets to
+    // this share's scope. Lazy — no MCP machinery spins up until a viewer actually calls.
+    /** Held so [stop] can dispose it: the share owns one executor for its whole lifetime. */
+    private val voiceExecutor by lazy {
+        GuiVoiceToolExecutor(
+            inScopeTabIds = { voiceScopeTabIds() },
+            anchorTabId = { tabId },
+        )
+    }
+
+    /**
+     * Ticks only while Boss Calling is ON, and does its disk read on IO.
+     *
+     * Two corrections to the plain ticker this replaced. It ran for the life of EVERY share whether
+     * the feature was on or not, forcing a voice.json read+parse every twelfth tick on a path that
+     * cannot change anything while the switch is off. And it ran on `coro`, i.e.
+     * Dispatchers.Default — while VoiceAgentStorage spawns a probe thread specifically to keep that
+     * read off a shared pool, and BossCallingSection wraps the identical call in
+     * withContext(Dispatchers.IO). Same call, three different opinions; now two.
+     */
+    private fun revocationTicks() = flow {
+        while (true) {
+            if (SettingsManager.instance.settings.value.voiceCallEnabled) {
+                withContext(Dispatchers.IO) { keyOnDisk.get() }
+                emit(Unit)
+            }
+            delay(VOICE_REVOCATION_POLL_MS)
+        }
+    }
+
+    /** Cross-process key presence, on the same stamp cache the daemon uses. See [voiceService]. */
+    private val keyOnDisk = StampCachedValue(
+        stamp = { VoiceAgentStorage.keyStamp() },
+        read = { VoiceAgentStorage.keyPresent() },
+    )
+
+    /**
+     * Set once a call has actually been PLACED on this share — see [stop].
+     *
+     * Set from the service's own token callback, not from the arrival of a voiceStart frame: a
+     * view-only viewer spamming voiceStart is refused with not_controller every time, and flagging
+     * on the frame made those count, so the flag stopped meaning what it says.
+     */
+    @Volatile private var voiceStarted = false
+
+    private val voiceService by lazy {
+        VoiceCallService(
+            executor = voiceExecutor,
+            scope = coro,
+            // In-process: answer from the reactive flow instead of re-reading + re-parsing
+            // voice.json on every settings emission (status is recomputed per share).
+            // The flow is only written by THIS process's save()/clear() plus the startup probe, so
+            // a key deleted by hand — or cleared from a second BossTerm — left the share advertising
+            // available and the viewer holding a Call button whose only outcome is a no_key
+            // round-trip: the same undiagnosable-from-the-far-end failure `reason` exists to stop.
+            // Either source saying yes is enough. The flow is instant after an in-process save; the
+            // stamp cache catches everything else for two stats.
+            keyPresent = { VoiceAgentStorage.keyPresentFlow.value || keyOnDisk.get() == true },
+            // Reads voice.json when its stamp moved. The FLOW answer is free and usually enough;
+            // this is the cross-process half — see keyOnDisk.
+            sessionName = { sessionName.value },
+            onCallActivity = { started -> RemoteVoiceCalls.onActivity(sessionName.value, started) },
+            onCallExpired = { token ->
+                // The viewer already renders stale_call as "That call is no longer active — start a
+                // new one", which is exactly what has happened.
+                viewers.firstOrNull { it.voiceCallToken == token }?.let { vc ->
+                    vc.clearVoiceCallTokenIfCurrent(token)
+                    vc.outbox.sendControl(
+                        ShareProtocol.encodeServer(ServerMessage.VoiceError(code = "stale_call"))
+                    )
+                }
+            },
+        )
+    }
+
+    /** The tabs this share covers — the only ids the voice agent may ever target. */
+    private fun voiceScopeTabIds(): Set<String> =
+        inScopeStates().flatMap { st -> inScopeTabs(st).map { it.id } }.toSet()
+
+    /**
+     * Remember which tab a viewer is looking at, but only if the share actually covers it: this is
+     * unvalidated viewer input that becomes the voice agent's default tool target, so a foreign id
+     * must never be stored (the executor re-checks, and this keeps it from getting that far).
+     */
+    private fun rememberVoiceTab(vc: ViewerConnection, tabId: String?) {
+        if (tabId != null && tabId in voiceScopeTabIds()) vc.voiceTabId = tabId
+    }
 
     private class TapEntry(
         val tab: TerminalTab,
@@ -123,11 +221,68 @@ class MirrorShare(
                 )
             }.distinctUntilChanged().collect { broadcast(it) }
         }
+        // Push the Call pill's availability whenever the voice settings or the key change.
+        voiceJob = coro.launch {
+            combine(
+                SettingsManager.instance.settings,
+                VoiceAgentStorage.keyPresentFlow,
+                // A slow tick, because the other two sources are BOTH in-process. keyOnDisk exists
+                // for the key deleted by hand or cleared from a second BossTerm — neither of which
+                // moves a flow — and without something calling status() it never fired for the case
+                // it was added for. Worse than the stale button: closeCalls() is only reached from
+                // this collector, so a call in progress kept its tool bridge for the rest of
+                // MAX_CALL_DURATION_MS after the key was gone. The daemon's poller has always had
+                // this; the GUI's not having it was invisible because both call the same status().
+                // distinctUntilChanged absorbs the no-op ticks, so the cost is keyOnDisk's two stats.
+                revocationTicks(),
+                // The host-wide answer, used only to decide whether anything changed and whether to
+                // kill live calls. What each viewer is TOLD is computed per viewer below.
+            ) { _, _, _ -> voiceService.status(withReason = true, confidential = true) }
+                .distinctUntilChanged()
+                .collect { hostStatus ->
+                    // Server-side kill, same as DaemonShareServer's poller: the viewer ends its own
+                    // call on this push, but a viewer that ignores it is exactly why the server
+                    // check exists.
+                    if (!hostStatus.available) voiceService.closeCalls()
+                    // Per viewer, because BOTH inputs are per viewer: only a controller may see WHY
+                    // voice is unavailable, and `available` itself depends on whether THAT connection
+                    // is E2E. Broadcasting one status meant a plain-ws viewer, correctly refused at
+                    // admit, flipped to available on the next settings change — with a Call button
+                    // that could only ever come back insecure_transport.
+                    for (vc in viewers) {
+                        val msg = voiceService.status(
+                            withReason = vc.canControl,
+                            confidential = vc.confidential,
+                        )
+                        vc.outbox.sendControl(ShareProtocol.encodeServer(msg))
+                    }
+                }
+        }
     }
 
     fun stop() {
         observerJob?.cancel()
         mcpJob?.cancel()
+        voiceJob?.cancel()
+        // Retire the calls riding THIS share (and nothing else — the live-call map is process-wide,
+        // so clearing it would take other shares' calls down with it).
+        //
+        // Only if a call was ever ATTEMPTED. There is nothing to retire otherwise: closeCalls only
+        // touches entries this service opened, and the executor's MCP server is built by tools()/
+        // execute(), which only run during a call. Unconditionally, teardown of a share that never
+        // saw a call still forced the executor lazy — harmless (dispose() no-ops on an unbuilt
+        // server) but against the "no MCP machinery until a viewer calls" intent. Note the SERVICE
+        // itself may already exist either way: status() is sent to every viewer on admit.
+        if (voiceStarted) runCatching {
+            viewers.forEach { vc ->
+                voiceService.closeCall(vc.voiceCallToken)
+                vc.voiceCallToken = null
+            }
+            voiceService.closeCalls() // belt and braces: now scoped to this service's own entries
+            // dispose() promises to run when a call ends; on this path the executor outlives
+            // individual calls, so the share's teardown is where that promise is kept.
+            voiceExecutor.dispose()
+        }
         synchronized(taps) {
             taps.values.forEach(::disposeTap)
             taps.clear()
@@ -142,8 +297,11 @@ class MirrorShare(
         canControl: Boolean,
         name: String = "Viewer",
         supportsPaneGraphics: Boolean = false,
+        confidential: Boolean = false,
     ): ViewerConnection {
-        val vc = ViewerConnection(viewerSeq.incrementAndGet(), canControl, name, supportsPaneGraphics)
+        val vc = ViewerConnection(
+            viewerSeq.incrementAndGet(), canControl, name, supportsPaneGraphics, confidential,
+        )
         viewers.add(vc)
         if (supportsPaneGraphics) {
             // A graphics mutation may have landed after this viewer's initial full frames were
@@ -161,6 +319,10 @@ class MirrorShare(
 
     fun removeViewer(vc: ViewerConnection) {
         if (viewers.remove(vc)) {
+            // A dropped connection can't hang up, so retire its call handle here or the token
+            // stays usable for its whole TTL.
+            voiceService.closeCall(vc.voiceCallToken)
+            vc.voiceCallToken = null
             vc.outbox.close()
             broadcast(ServerMessage.Presence(viewers.size))
             if (viewers.none { it.supportsPaneGraphics }) {
@@ -226,12 +388,28 @@ class MirrorShare(
         }
     }
 
-    /** Theme + Layout + a PaneSnapshot per pane, for a newly-connected viewer. */
-    fun initialMessages(includePaneGraphics: Boolean = false): List<ServerMessage> {
+    /**
+     * Theme + Layout + a PaneSnapshot per pane, for a newly-connected viewer. [canControl] gates the
+     * voice-status reason, which is host configuration (see [VoiceCallService.status]).
+     */
+    fun initialMessages(
+        includePaneGraphics: Boolean = false,
+        canControl: Boolean = false,
+        /**
+         * Whether this connection completed the E2E handshake — see [ViewerConnection.confidential].
+         *
+         * No default, matching status() and handleStart, which it feeds. Those two have written-out
+         * arguments for why a default of `true` here is fail-open; leaving one on the function that
+         * calls them is how the next caller inherits it. (addViewer defaults the same concept to
+         * false, which is the safe direction but makes the disagreement worse to read.)
+         */
+        confidential: Boolean,
+    ): List<ServerMessage> {
         val sig = computeSignature()
         val out = ArrayList<ServerMessage>()
         out.add(themeMessage())
         out.add(mcpStatusMessage())
+        out.add(voiceService.status(withReason = canControl, confidential = confidential))
         out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
@@ -260,7 +438,6 @@ class MirrorShare(
         serverLabel = MCP_SERVER_LABEL,
     )
 
-    /** Route viewer messages — input + tab close/new — to the host (controller role only). */
     /**
      * The remote session a host tab itself mirrors (so a viewer's action on it can be relayed
      * to the origin instead of mutating the local mirror — which the next upstream Layout
@@ -330,10 +507,76 @@ class MirrorShare(
                         // come back WITH control instead of silently demoting to view-only.
                         vc.grantKey?.let { SessionShareManager.upgradeGrantToControl(it) }
                         vc.outbox.trySend(ShareProtocol.encodeServer(ServerMessage.Control(granted = true)))
+                        // Re-send voiceStatus WITH the reason. It is sent once at admit, redacted
+                        // for a view-only viewer, and the voiceJob collector only pushes on a change
+                        // to the underlying status — so a promoted controller kept `reason: null`
+                        // indefinitely. On a keyless host that means no bar at all instead of "Voice
+                        // not set up": the exact undiagnosable-from-the-far-end case reason exists
+                        // for, on the viewer who can now actually act on it.
+                        vc.outbox.trySend(
+                            ShareProtocol.encodeServer(voiceService.status(withReason = true, confidential = vc.confidential))
+                        )
                     }
                 }
             }
             return
+        }
+        // Voice messages run BEFORE the control gate so a view-only caller gets an explicit
+        // not_controller error (the service re-checks the role) instead of silence. Focus
+        // rides along: it tracks which tab the viewer is looking at — the voice agent's
+        // default tool target.
+        when (msg) {
+            is ClientMessage.Focus -> { rememberVoiceTab(vc, msg.tabId); return }
+            is ClientMessage.VoiceStart -> {
+                rememberVoiceTab(vc, msg.activeTabId)
+                voiceService.handleStart(
+                    msg,
+                    vc.canControl,
+                    confidential = vc.confidential,
+                    // Retire the previous call BEFORE reserving (so a redial reclaims its own slot),
+                    // and only after the control/enabled/key checks — a view-only viewer must not be
+                    // able to end a live call just by asking.
+                    retirePreviousCall = {
+                        voiceService.closeCall(vc.voiceCallToken)
+                        vc.voiceCallToken = null
+                    },
+                    onCallTokenChanged = { token ->
+                        voiceStarted = true // a slot was reserved: this share really did host a call
+                        vc.voiceCallToken = token
+                    },
+                    // Compare-and-clear: a mint that fails late must not wipe a token a redial has
+                    // since installed, or the newer call ends up audible and billed with no tools.
+                    clearCallTokenIfCurrent = { stale -> vc.clearVoiceCallTokenIfCurrent(stale) },
+                ) { m ->
+                    vc.outbox.sendControl(ShareProtocol.encodeServer(m))
+                }
+                return
+            }
+            is ClientMessage.VoiceEnd -> {
+                voiceService.closeCall(vc.voiceCallToken)
+                vc.voiceCallToken = null
+                return
+            }
+            is ClientMessage.VoiceToolCall -> {
+                // Defence in depth: the token must be the one THIS connection was issued, not merely
+                // one live somewhere on the share — otherwise another viewer presenting it would
+                // drive the read tools without ever passing handleStart's control gate. Reported as
+                // stale_call, not not_controller: the realistic cause is a redial racing an old
+                // token, which shouldn't read to the user as a permissions problem.
+                if (!voiceCallTokenMatches(vc.voiceCallToken, msg.callToken)) {
+                    vc.outbox.sendControl(
+                        ShareProtocol.encodeServer(ServerMessage.VoiceError(code = "stale_call"))
+                    )
+                    return
+                }
+                voiceService.handleToolCall(msg, vc.canControl, vc.voiceTabId) { m ->
+                    // Control lane: a tool result dropped under output back-pressure would leave
+                    // the agent waiting on a reply that never comes.
+                    vc.outbox.sendControl(ShareProtocol.encodeServer(m))
+                }
+                return
+            }
+            else -> {}
         }
         if (!vc.canControl) return // all mutating actions require the control role
         // Structural actions on a tab WE mirror from another session relay to that origin
@@ -448,7 +691,7 @@ class MirrorShare(
                     }
                 }
             }
-            else -> {} // Hello / Focus: no-op (focus is viewer-side; RequestControl handled above)
+            else -> {} // Hello: no-op (Focus/voice/RequestControl handled above)
         }
     }
 
@@ -527,6 +770,13 @@ class MirrorShare(
 
     companion object {
         private const val GRAPHICS_SYNC_DEBOUNCE_MS = 100L
+
+        /**
+         * How often a GUI share re-evaluates voice availability from disk.
+         * Matches DaemonShareServer.VOICE_STATUS_POLL_MS — the two surfaces should revoke at the
+         * same speed, and the daemon only had it because it had nothing in-process to listen to.
+         */
+        private const val VOICE_REVOCATION_POLL_MS = 5_000L
 
         // MCP server name/label as the CLI attachers register it / as broadcast to viewers.
         // The embedder's BossTermMcpConfig is a Compose CompositionLocal (unavailable in this
@@ -909,9 +1159,48 @@ class ViewerConnection(
     val name: String = "Viewer",
     /** True only for peers that render the host's normalized image-cell protocol. */
     val supportsPaneGraphics: Boolean = false,
+    /**
+     * Whether this connection's frames are confidential — the viewer completed the E2E handshake, so
+     * every frame is AES-GCM'd under a secret that only travels in the link's `#k` fragment.
+     *
+     * Boss Calling gates on it: a `voiceSession` reply carries the ephemeral `ek_…`, and on a plain
+     * `ws://` LAN share with a legacy plaintext client that secret would cross the wire in the clear.
+     * The stock viewer already refuses to offer the Call button without a secure context, but that is
+     * the CLIENT deciding; this is the host refusing to mint one.
+     */
+    val confidential: Boolean = false,
 ) {
     internal val outbox = BoundedViewerOutbox()
     internal val graphicsResyncLimiter = GraphicsResyncLimiter()
+
+    /**
+     * The tab this viewer is looking at (from [ClientMessage.Focus] / [ClientMessage.VoiceStart])
+     * — the voice agent's default tool target. Null until the viewer reports one.
+     */
+    @Volatile var voiceTabId: String? = null
+
+    /**
+     * This connection's live call handle, so hanging up (or dropping) can retire exactly it.
+     *
+     * An [AtomicReference] rather than a `@Volatile` field because the compare-and-clear below has
+     * to be one operation — see [clearVoiceCallTokenIfCurrent].
+     */
+    private val voiceCallTokenRef = AtomicReference<String?>(null)
+
+    var voiceCallToken: String?
+        get() = voiceCallTokenRef.get()
+        set(value) = voiceCallTokenRef.set(value)
+
+    /**
+     * Clear the token only if it is still [stale], atomically.
+     *
+     * Written as `if (token == stale) token = null`, this was a read-then-write: a late mint failure
+     * could test true, a redial on the receive loop install token B in the gap, and the failure's
+     * write land last — leaving B live and billed in `liveCalls` while this connection held no token
+     * to authorise its tools with. That is the exact outcome the compare was added to prevent.
+     */
+    fun clearVoiceCallTokenIfCurrent(stale: String?): Boolean =
+        voiceCallTokenRef.compareAndSet(stale, null)
 
     /** A mid-session control request is awaiting the host's decision (dedupes re-requests). */
     @Volatile var controlRequestPending = false
@@ -933,9 +1222,21 @@ class ViewerConnection(
 internal class BoundedViewerOutbox(
     private val capacityChars: Int = DEFAULT_CAPACITY_CHARS,
     private val capacityFrames: Int = DEFAULT_CAPACITY_FRAMES,
+    private val controlCapacityFrames: Int = CONTROL_CAPACITY_FRAMES,
+    private val controlCapacityChars: Int = CONTROL_CAPACITY_CHARS,
 ) {
     private val lock = Any()
     private val frames = ArrayDeque<String>()
+
+    /**
+     * Frames that must never be dropped, drained ahead of pane output. [trySend] evicts the OLDEST
+     * queued frames under back-pressure, which is exactly wrong for a voice tool result: the moment
+     * that matters is a `run_command` flooding output, when the queued result is the oldest thing
+     * there. The daemon side has always had this lane ([FrameOutbox.sendControl]); this is its
+     * counterpart for in-app shares.
+     */
+    private val controlFrames = ArrayDeque<String>()
+    private var controlChars = 0
     private var queuedChars = 0
     private val wake = Channel<Unit>(Channel.CONFLATED)
     @Volatile private var closed = false
@@ -987,10 +1288,64 @@ internal class BoundedViewerOutbox(
         return true
     }
 
+    /**
+     * Enqueue a frame that must survive back-pressure (voice control traffic).
+     *
+     * Bounded like [ai.rever.bossterm.compose.daemon.FrameOutbox.sendControl], and for the same
+     * reason: a guaranteed lane with no ceiling is a memory hole. Any viewer holding a link can pump
+     * `voiceToolCall` frames — the cheap refusal paths in `VoiceCallService.handleToolCall` reply
+     * before the in-flight gate — while not reading its own socket. Past the bound the connection is
+     * closed rather than grown, because a viewer this far behind is not going to catch up.
+     */
+    fun sendControl(text: String): Boolean {
+        if (closed || text.isEmpty()) return false
+        // Snapshot the numbers under the lock: they are only read in the bad case, and torn values
+        // in the one diagnostic that fires there would be actively misleading.
+        val overflow: Pair<Int, Int>? = synchronized(lock) {
+            if (closed) return false
+            if (controlFrames.size >= controlCapacityFrames ||
+                controlChars + text.length > controlCapacityChars
+            ) {
+                controlFrames.size to controlChars
+            } else {
+                controlFrames.addLast(text)
+                controlChars += text.length
+                null
+            }
+        }
+        if (overflow != null) {
+            log.warn(
+                "Closing stalled viewer outbox: control backlog at {} frames / {} chars",
+                overflow.first,
+                overflow.second,
+            )
+            close()
+            return false
+        }
+        wake.trySend(Unit)
+        return true
+    }
+
     suspend fun drainTo(emit: suspend (String) -> Unit) {
+        var controlBurst = 0
         while (true) {
+            // Prefer control frames, but only [CONTROL_BURST] in a row: draining every one first
+            // would let voice traffic starve pane output entirely.
             val next = synchronized(lock) {
-                frames.removeFirstOrNull()?.also { queuedChars -= it.length }
+                // …unless there is no output to be fair to: with the output queue empty the burst
+                // cap would take nothing and park the loop on `wake` with control frames still
+                // queued — on the one lane advertised as guaranteed.
+                val takeControl = controlBurst < CONTROL_BURST || frames.isEmpty()
+                val control = if (takeControl) {
+                    controlFrames.removeFirstOrNull()?.also { controlChars -= it.length }
+                } else null
+                if (control != null) {
+                    controlBurst++
+                    control
+                } else {
+                    controlBurst = 0
+                    frames.removeFirstOrNull()?.also { queuedChars -= it.length }
+                }
             }
             if (next != null) {
                 emit(next)
@@ -1006,9 +1361,16 @@ internal class BoundedViewerOutbox(
         wake.close()
     }
 
-    private companion object {
+    internal companion object {
         val log = LoggerFactory.getLogger(BoundedViewerOutbox::class.java)
         const val DEFAULT_CAPACITY_CHARS = 32 * 1024 * 1024
         const val DEFAULT_CAPACITY_FRAMES = 2048
+
+        /** Control-lane bounds — guaranteed delivery, but not at any price. */
+        const val CONTROL_CAPACITY_FRAMES = 1024
+        const val CONTROL_CAPACITY_CHARS = 8 * 1024 * 1024
+
+        /** Control frames drained per pass before yielding to output, so neither starves. */
+        const val CONTROL_BURST = 64
     }
 }

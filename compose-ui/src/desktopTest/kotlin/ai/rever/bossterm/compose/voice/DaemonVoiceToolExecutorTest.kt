@@ -1,0 +1,172 @@
+package ai.rever.bossterm.compose.voice
+
+import ai.rever.bossterm.compose.daemon.SessionHost
+import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
+
+/**
+ * The daemon voice executor against a real PTY-backed [SessionHost]: `tab_id` → `session_id`
+ * mapping, scope filtering/rejection, and the reduced (non-guiOnly) tool surface.
+ */
+class DaemonVoiceToolExecutorTest {
+
+    private fun executor(host: SessionHost, scope: () -> Set<String>, anchor: () -> String?) =
+        DaemonVoiceToolExecutor(host, inScopeSessionIds = scope, anchorSessionId = anchor)
+
+    @Test
+    fun `read_scrollback maps tab_id onto the daemon session`() {
+        if (ShellCustomizationUtils.isWindows()) return
+        val host = SessionHost(TerminalSettings.DEFAULT)
+        try {
+            val marker = "VOICE_EXEC_OK_7311"
+            val id = host.openSession(command = "/bin/sh", arguments = listOf("-c", "printf '%s\\n' $marker; sleep 0.4"))
+            val exec = executor(host, { setOf(id) }, { id })
+            assertTrue(await(8000) {
+                runBlocking {
+                    exec.execute("read_scrollback", buildJsonObject { put("tab_id", id) }, defaultTabId = null)
+                }.contains(marker)
+            }, "read_scrollback via the voice executor should see the command output")
+            // Omitted tab_id falls back to the viewer's/anchor session.
+            assertTrue(runBlocking {
+                exec.execute("read_scrollback", buildJsonObject { }, defaultTabId = null)
+            }.contains(marker))
+        } finally {
+            host.shutdownAll()
+        }
+    }
+
+    /**
+     * The `target == null` guard after the orienting-tools `when` is LIVE, not dead: that `when` has
+     * no `else`, so every other tool falls through to it. Reported as unreachable in review, which is
+     * the sort of thing that gets "cleaned up" — so it is pinned here. Without it, a targetless call
+     * would put a null session_id into the daemon args instead of telling the agent why it failed.
+     */
+    @Test
+    fun `a tool that needs a target says so when there is none`() {
+        if (ShellCustomizationUtils.isWindows()) return
+        val host = SessionHost(TerminalSettings.DEFAULT)
+        try {
+            // A share whose sessions have all gone: nothing in scope, no anchor.
+            val exec = executor(host, { emptySet() }, { null })
+
+            // Only the tools this surface actually advertises — the daemon drops the guiOnly ones.
+            val targeted = VoiceToolCatalog.ALL
+                .filter { !it.guiOnly && it.name != "list_tabs" && it.name != "get_active_tab" }
+                .map { it.name }
+            assertTrue(targeted.isNotEmpty(), "the daemon surface must have some targeted tools")
+            for (tool in targeted) {
+                val e = assertFailsWith<VoiceToolException>("$tool must refuse without a target") {
+                    runBlocking {
+                        exec.execute(
+                            tool,
+                            buildJsonObject { put("text", "x"); put("signal", "ctrl_c") },
+                            null,
+                        )
+                    }
+                }
+                assertTrue(e.message?.contains("No session") == true, "$tool: ${e.message}")
+            }
+            // list_tabs is the exception on purpose — the agent's first orienting call must work.
+            assertTrue(runBlocking { exec.execute("list_tabs", buildJsonObject { }, null) }.isNotEmpty())
+        } finally {
+            host.shutdownAll()
+        }
+    }
+
+    @Test
+    fun `out-of-scope sessions are rejected and filtered`() {
+        if (ShellCustomizationUtils.isWindows()) return
+        val host = SessionHost(TerminalSettings.DEFAULT)
+        try {
+            val inScope = host.openSession(command = "/bin/cat")
+            val outOfScope = host.openSession(command = "/bin/cat")
+            val exec = executor(host, { setOf(inScope) }, { inScope })
+
+            // A SESSION-scoped share must not let the agent touch the other session…
+            assertFailsWith<VoiceToolException> {
+                runBlocking {
+                    exec.execute("send_input", buildJsonObject { put("tab_id", outOfScope); put("text", "x") }, null)
+                }
+            }
+            // …or even see it.
+            val tabs = runBlocking { exec.execute("list_tabs", buildJsonObject { }, null) }
+            assertTrue(tabs.contains(inScope))
+            assertFalse(tabs.contains(outOfScope))
+        } finally {
+            host.shutdownAll()
+        }
+    }
+
+    /**
+     * `defaultTabId` is whatever the viewer last claimed to be looking at (Focus / VoiceStart), and
+     * the lookups behind `get_active_tab` scan every session on the host — so a scope check that
+     * only guarded the generic tool path let a viewer name a foreign session and read back its
+     * title and cwd. Every tool, including the locally-answered ones, must be scope-checked.
+     */
+    @Test
+    fun `get_active_tab cannot be pointed at a session outside the share`() {
+        if (ShellCustomizationUtils.isWindows()) return
+        val host = SessionHost(TerminalSettings.DEFAULT)
+        try {
+            val inScope = host.openSession(command = "/bin/cat")
+            val outOfScope = host.openSession(command = "/bin/cat")
+            val exec = executor(host, { setOf(inScope) }, { inScope })
+
+            // Named outright → refused. That is the boundary.
+            assertFailsWith<VoiceToolException> {
+                runBlocking {
+                    exec.execute("get_active_tab", buildJsonObject { put("tab_id", outOfScope) }, null)
+                }
+            }
+            // Claimed as the viewer's "current tab" → treated as stale and dropped in favour of the
+            // anchor (a session CAN exit after being stored), but its data must never come back.
+            val info = runBlocking {
+                exec.execute("get_active_tab", buildJsonObject { }, defaultTabId = outOfScope)
+            }
+            assertFalse(info.contains(outOfScope), info)
+            val listed = runBlocking { exec.execute("list_tabs", buildJsonObject { }, defaultTabId = outOfScope) }
+            assertFalse(listed.contains(outOfScope), listed)
+            // The in-scope session still answers normally.
+            assertTrue(
+                runBlocking { exec.execute("get_active_tab", buildJsonObject { }, defaultTabId = inScope) }
+                    .contains(inScope)
+            )
+        } finally {
+            host.shutdownAll()
+        }
+    }
+
+    @Test
+    fun `guiOnly tools are not advertised and are rejected`() {
+        val host = SessionHost(TerminalSettings.DEFAULT)
+        try {
+            val exec = executor(host, { emptySet() }, { null })
+            assertEquals(
+                setOf("list_tabs", "get_active_tab", "read_scrollback", "send_input", "send_signal"),
+                exec.tools().map { it.name }.toSet(),
+            )
+            assertFailsWith<VoiceToolException> {
+                runBlocking { exec.execute("run_command", buildJsonObject { put("script", "ls") }, null) }
+            }
+        } finally {
+            host.shutdownAll()
+        }
+    }
+
+    private fun await(timeoutMs: Long, predicate: () -> Boolean): Boolean {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        while (System.nanoTime() < deadline) {
+            if (runCatching { predicate() }.getOrDefault(false)) return true
+            Thread.sleep(100)
+        }
+        return false
+    }
+}

@@ -36,6 +36,19 @@ function fakeSetTimeout(fn, ms) {
   return id;
 }
 
+/**
+ * A real repeating interval, not an alias for setTimeout.
+ *
+ * It used to be one, which quietly made every interval in viewer.js fire at most once — so the
+ * voice idle watcher (a 15s tick) could not be exercised at all, and a scenario asserting "the call
+ * is still up" passed for the wrong reason.
+ */
+function fakeSetInterval(fn, ms) {
+  const id = ++timerSeq;
+  timers.set(id, { at: now + (Number(ms) || 0), fn, every: Math.max(1, Number(ms) || 0) });
+  return id;
+}
+
 function fakeClearTimeout(id) {
   timers.delete(id);
 }
@@ -43,17 +56,34 @@ function fakeClearTimeout(id) {
 /** Run every timer due within [ms], in due order, so retry ladders unfold deterministically. */
 function advance(ms) {
   const target = now + ms;
+  // Intervals re-arm, so a runaway period (or a callback that schedules itself) would spin forever.
+  // The bound is far above any real ladder: 12 hours of the fastest tick viewer.js uses.
+  let guard = 200000;
   for (;;) {
     let due = null;
     for (const [id, timer] of timers) {
       if (timer.at <= target && (due === null || timer.at < due.timer.at)) due = { id, timer };
     }
     if (due === null) break;
-    timers.delete(due.id);
+    if (--guard <= 0) throw new Error("advance(): timer storm — a fake timer is rescheduling forever");
     now = due.timer.at;
+    if (due.timer.every) due.timer.at = now + due.timer.every;
+    else timers.delete(due.id);
     due.timer.fn();
   }
   now = target;
+}
+
+/** Wall clock pinned to the fake timeline, so Date.now() advances exactly as the timers do. */
+const FAKE_EPOCH = 1700000000000;
+class FakeDate extends Date {
+  constructor(...args) {
+    if (args.length === 0) super(FAKE_EPOCH + now);
+    else super(...args);
+  }
+  static now() {
+    return FAKE_EPOCH + now;
+  }
 }
 
 let rafSeq = 0;
@@ -494,6 +524,63 @@ FakeWebSocket.CLOSED = 3;
  * BROWSER branch (no CommonJS `module` in scope) so it publishes window.BossTermViewerLogic exactly
  * as the served page does, and viewer.js must see the same globals a page would.
  */
+// ---------------------------------------------------------------- voice call fakes
+// Boss Calling needs a secure context, a mic, WebRTC and fetch. Scenarios opt in
+// (`voiceCapable: true`) so the default load still exercises the no-voice branch a plain-LAN
+// http:// share really takes.
+
+/** Real promises need a microtask turn to settle; the faked clock can't do that. */
+const flushPromises = () => new Promise((resolve) => setImmediate(resolve));
+
+class FakeMediaTrack {
+  constructor() { this.enabled = true; this.stopped = false; }
+  stop() { this.stopped = true; }
+}
+
+class FakeMediaStream {
+  constructor() { this.tracks = [new FakeMediaTrack()]; }
+  getAudioTracks() { return this.tracks; }
+  getTracks() { return this.tracks; }
+}
+
+class FakeDataChannel {
+  constructor(label) {
+    this.label = label; this.readyState = "connecting"; this.sent = []; this.closed = false;
+    this.onopen = null; this.onmessage = null;
+  }
+  send(data) { this.sent.push(data); }
+  close() { this.closed = true; this.readyState = "closed"; }
+  /** Test drivers: the channel coming up, and a server event arriving on it. */
+  open() { this.readyState = "open"; if (this.onopen) this.onopen(); }
+  deliver(event) { if (this.onmessage) this.onmessage({ data: JSON.stringify(event) }); }
+}
+
+class FakeRTCPeerConnection {
+  constructor() {
+    this.tracks = []; this.dc = null; this.closed = false; this.remote = null;
+    this.connectionState = "new"; this.ontrack = null; this.onconnectionstatechange = null;
+    FakeRTCPeerConnection.latest = this;
+  }
+  addTrack(track) { this.tracks.push(track); }
+  createDataChannel(label) { this.dc = new FakeDataChannel(label); return this.dc; }
+  createOffer() { return Promise.resolve({ type: "offer", sdp: "v=0 offer" }); }
+  setLocalDescription() { return Promise.resolve(); }
+  setRemoteDescription(desc) { this.remote = desc; return Promise.resolve(); }
+  close() { this.closed = true; this.connectionState = "closed"; }
+}
+FakeRTCPeerConnection.latest = null;
+
+const FakeFetch = {
+  calls: [],
+  install() {
+    FakeFetch.calls = [];
+    return (url, init) => {
+      FakeFetch.calls.push({ url: url, init: init });
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve("v=0 answer") });
+    };
+  },
+};
+
 function loadViewer(options) {
   const opts = options || {};
   installClock();
@@ -561,12 +648,29 @@ function loadViewer(options) {
   define("WebSocket", FakeWebSocket);
   define("setTimeout", fakeSetTimeout);
   define("clearTimeout", fakeClearTimeout);
-  define("setInterval", fakeSetTimeout);
+  define("setInterval", fakeSetInterval);
   define("clearInterval", fakeClearTimeout);
+  // Date.now() must move with advance(), or any code comparing two timestamps (the voice idle
+  // deadline, the connection-health window) sees no time pass however far the timers are driven.
+  define("Date", FakeDate);
   define("requestAnimationFrame", fakeRequestAnimationFrame);
   define("cancelAnimationFrame", fakeCancelAnimationFrame);
   define("addEventListener", () => {});
   define("removeEventListener", () => {});
+
+  if (opts.voiceCapable) {
+    FakeRTCPeerConnection.latest = null;
+    define("isSecureContext", true);
+    define("navigator", {
+      platform: "TestPhone", userAgent: "harness", clipboard: undefined,
+      mediaDevices: { getUserMedia: () => Promise.resolve(new FakeMediaStream()) },
+    });
+    define("RTCPeerConnection", FakeRTCPeerConnection);
+    define("fetch", FakeFetch.install());
+    // No AudioContext on purpose: the level meter must degrade to flat bars, never throw.
+    define("AudioContext", undefined);
+    define("webkitAudioContext", undefined);
+  }
 
   if (!opts.withoutViewerLogic) {
     vm.runInThisContext(readAsset("viewer-logic.js"), { filename: "viewer-logic.js" });
@@ -872,6 +976,266 @@ const scenarios = {
     assert.strictEqual(lastTerminal().options.scrollback, 20000, "the viewer cap must win over a huge host cap");
   },
 
+  async "Boss Calling lives in the bottom bar: Call → live strip with meter, Mute, End"() {
+    loadViewer({ voiceCapable: true });
+    const socket = connectPanes(["pane-1"]);
+    socket.deliver({ t: "control", granted: true });
+    const sentOfType = (t) => socket.sent.map(JSON.parse).filter((m) => m.t === t);
+
+    // The bar exists only when the host can actually take a call.
+    assert.ok(!el("voicebar").classList.contains("on"), "no bar before the host reports voice status");
+
+    // A keyless host still OWES a controller an explanation: the host computes a reason and both
+    // servers redact it per viewer precisely so a controller can be told. Silently showing nothing
+    // is the undiagnosable-from-the-far-end case that field exists to fix.
+    socket.deliver({ t: "voiceStatus", available: false, reason: "no_key" });
+    assert.ok(el("voicebar").classList.contains("on"), "a controller is told why there is no call");
+    assert.strictEqual(el("voicecallbtn").className, "disabled", "but cannot start one");
+    // no_key and disabled are different situations and now say so: the tooltip must name the key
+    // rather than repeating the generic "not set up" the label already carries.
+    assert.ok(/OpenAI key/i.test(el("voicecallbtn").title), el("voicecallbtn").title);
+    el("voicecallbtn").onclick();
+    assert.strictEqual(sentOfType("voiceStart").length, 0, "and clicking it does nothing");
+
+    // A VIEW-ONLY viewer gets reason:null — host configuration is not theirs to see — so they get
+    // no bar at all rather than an explanation they could not act on.
+    socket.deliver({ t: "voiceStatus", available: false });
+    assert.ok(!el("voicebar").classList.contains("on"), "no reason → no bar");
+
+    socket.deliver({ t: "voiceStatus", available: true });
+    assert.ok(el("voicebar").classList.contains("on"), "an available host must show the bottom bar");
+    assert.strictEqual(el("voicecallbtn").style.display, "inline-flex", "idle shows the Call button");
+    assert.strictEqual(el("voicelabel").textContent, "Call BossTerm", "the button is branded");
+    assert.ok(!el("voicecall").classList.contains("on"), "idle hides the in-call strip");
+
+    // Clicking Call takes the mic first, then asks the host to mint.
+    el("voicecallbtn").onclick();
+    await flushPromises();
+    assert.strictEqual(sentOfType("voiceStart").length, 1, "Call must request a session");
+    assert.strictEqual(el("voicecallbtn").style.display, "none", "the button yields to the strip");
+    assert.ok(el("voicecall").classList.contains("on"), "connecting already shows the strip");
+    assert.strictEqual(el("voicestate").textContent, "Connecting…");
+
+    // Minted session → SDP exchange → data channel opens.
+    socket.deliver({
+      t: "voiceSession", clientSecret: "ek_test", model: "gpt-realtime-2.1", callToken: "call-tok-1",
+    });
+    await flushPromises();
+    assert.strictEqual(
+      FakeFetch.calls[0].url,
+      "https://api.openai.com/v1/realtime/calls",
+      "the GA SDP endpoint must be called with NO query string"
+    );
+    const pc = FakeRTCPeerConnection.latest;
+    assert.strictEqual(pc.dc.label, "oai-events", "the data channel name is part of the protocol");
+    pc.dc.open();
+    assert.strictEqual(el("voicestate").textContent, "Listening…", "a live call is listening");
+
+    // Mute, agent speech and tool runs are each visible in the strip.
+    el("voicemute").onclick();
+    assert.strictEqual(el("voicestate").textContent, "Muted");
+    assert.ok(el("voicecall").classList.contains("muted"), "the meter must show muted");
+    assert.strictEqual(pc.tracks[0].enabled, false, "muting must actually disable the mic track");
+    el("voicemute").onclick();
+    pc.dc.deliver({ type: "output_audio_buffer.started" });
+    assert.strictEqual(el("voicestate").textContent, "Agent speaking");
+    pc.dc.deliver({ type: "output_audio_buffer.stopped" });
+    assert.strictEqual(el("voicestate").textContent, "Listening…");
+
+    // A tool call rides the share socket, and its result goes back on the data channel.
+    pc.dc.deliver({
+      type: "response.function_call_arguments.done",
+      call_id: "c1", name: "read_scrollback", arguments: "{\"lines\":20}",
+    });
+    assert.strictEqual(el("voicestate").textContent, "Working…");
+    const toolCall = sentOfType("voiceToolCall")[0];
+    assert.strictEqual(toolCall.callId, "c1", "the host executes it, not the browser");
+    assert.strictEqual(toolCall.callToken, "call-tok-1", "the call handle must be echoed or the host refuses");
+    socket.deliver({ t: "voiceToolResult", callId: "c1", resultJson: "{\"ok\":true}" });
+    assert.ok(
+      pc.dc.sent.some((s) => /function_call_output/.test(s)),
+      "the result must be handed back to the model"
+    );
+    // The response is still generating: asking for another turn now earns
+    // conversation_already_has_active_response, so the follow-up must wait for response.done.
+    assert.ok(
+      !pc.dc.sent.some((s) => /response\.create/.test(s)),
+      "response.create must not fire while the response is still open"
+    );
+    // A result for an id we never forwarded must not bank a follow-up turn for later.
+    socket.deliver({ t: "voiceToolResult", callId: "never-sent", resultJson: "{}" });
+    pc.dc.deliver({ type: "response.done", response: { output: [] } });
+    assert.strictEqual(
+      pc.dc.sent.filter((s) => /response\.create/.test(s)).length,
+      1,
+      "exactly one follow-up turn per tool round, however many results arrived"
+    );
+    assert.strictEqual(el("voicestate").textContent, "Listening…", "and the call resumes");
+
+    // The host's master switch is a kill switch, not just a hidden button.
+    socket.deliver({ t: "voiceStatus", available: false, reason: "disabled" });
+    assert.ok(!el("voicecall").classList.contains("on"), "revoking voice must end a live call");
+    // The bar stays, disabled, saying why — a caller whose call just vanished is exactly who needs
+    // the explanation, and a controller is allowed to know the host turned it off.
+    assert.strictEqual(el("voicecallbtn").className, "disabled", "and cannot be restarted");
+    assert.strictEqual(el("voicelabel").textContent, "Voice off", el("voicelabel").textContent);
+    socket.deliver({ t: "voiceStatus", available: true });
+    assert.strictEqual(el("voicecallbtn").className, "", "turning it back on re-enables the button");
+
+    // End call tears down and restores the idle button.
+    el("voicecallbtn").onclick();
+    await flushPromises();
+    socket.deliver({
+      t: "voiceSession", clientSecret: "ek_test2", model: "gpt-realtime-2.1", callToken: "call-tok-2",
+    });
+    await flushPromises();
+    FakeRTCPeerConnection.latest.dc.open();
+    const pc2 = FakeRTCPeerConnection.latest;
+    el("voicehang").onclick();
+    assert.ok(!el("voicecall").classList.contains("on"), "ending hides the strip");
+    assert.strictEqual(el("voicecallbtn").style.display, "inline-flex", "and restores the Call button");
+    assert.ok(pc2.closed, "the peer connection must be closed");
+    assert.ok(pc2.tracks[0].stopped, "the mic must be released");
+    assert.ok(pc.closed, "the revoked call's peer connection was closed too");
+    // Two calls ended in this scenario: the one the host revoked, and the one hung up here.
+    assert.strictEqual(sentOfType("voiceEnd").length, 2, "every ended call must tell the host");
+  },
+
+  /**
+   * The viewer answers a tool call itself when the host is too slow. A host reply arriving after
+   * that must NOT produce a second function_call_output for the same call_id — a protocol error
+   * that also lands with no turn requested for it.
+   */
+  async "a host result arriving after the viewer's tool timeout is not sent twice"() {
+    loadViewer({ voiceCapable: true });
+    const socket = connectPanes(["pane-1"]);
+    socket.deliver({ t: "control", granted: true });
+    socket.deliver({ t: "voiceStatus", available: true });
+    el("voicecallbtn").onclick();
+    await flushPromises();
+    socket.deliver({
+      t: "voiceSession", clientSecret: "ek", model: "gpt-realtime-2.1", callToken: "tok",
+    });
+    await flushPromises();
+    const pc = FakeRTCPeerConnection.latest;
+    pc.dc.open();
+
+    pc.dc.deliver({
+      type: "response.function_call_arguments.done",
+      call_id: "slow", name: "read_scrollback", arguments: "{}",
+    });
+    const outputsFor = (id) => pc.dc.sent.filter((s) => {
+      const m = JSON.parse(s);
+      return m.type === "conversation.item.create" && m.item && m.item.call_id === id;
+    }).length;
+    assert.strictEqual(outputsFor("slow"), 0, "nothing answered yet");
+
+    // Let the read timeout elapse — the viewer answers on the host's behalf.
+    advance(130000);
+    assert.strictEqual(outputsFor("slow"), 1, "the viewer's timeout answered it");
+
+    // The real reply turns up afterwards.
+    socket.deliver({ t: "voiceToolResult", callId: "slow", resultJson: "{\"late\":true}" });
+    assert.strictEqual(outputsFor("slow"), 1, "a late result must not answer a second time");
+  },
+
+  /**
+   * The captions the viewer shows while a tool runs, as RENDERED.
+   *
+   * These exact strings are also asserted against HostVoiceCallController.describeTool in
+   * VoiceCrossLanguageContractTest — the two surfaces drifted twice on ellipsis handling alone,
+   * which comparing slice lengths could not see.
+   */
+  async "tool captions render identically to the in-app surface"() {
+    loadViewer({ voiceCapable: true });
+    const socket = connectPanes(["pane-1"]);
+    socket.deliver({ t: "control", granted: true });
+    socket.deliver({ t: "voiceStatus", available: true });
+    el("voicecallbtn").onclick();
+    await flushPromises();
+    socket.deliver({ t: "voiceSession", clientSecret: "ek", model: "gpt-realtime-2.1", callToken: "tok" });
+    await flushPromises();
+    const pc = FakeRTCPeerConnection.latest;
+    pc.dc.open();
+
+    const caption = (name, args, id) => {
+      pc.dc.deliver({
+        type: "response.function_call_arguments.done",
+        call_id: id, name: name, arguments: JSON.stringify(args),
+      });
+      return el("voicetoast").textContent;
+    };
+
+    assert.strictEqual(caption("send_input", { text: "ls" }, "c1"), "Typing: ls");
+    assert.strictEqual(
+      caption("send_input", { text: "x".repeat(50) }, "c2"),
+      "Typing: " + "x".repeat(40) + "…"
+    );
+    assert.strictEqual(caption("search_output", { pattern: "boom" }, "c3"), "Searching for “boom”…");
+    assert.strictEqual(
+      caption("search_output", { pattern: "y".repeat(50) }, "c4"),
+      "Searching for “" + "y".repeat(40) + "”…"
+    );
+    assert.strictEqual(caption("run_command", { script: "ls -la" }, "c5"), "Running: ls -la");
+    // No arguments to show — both surfaces say the same generic thing rather than naming the tool.
+    assert.strictEqual(caption("list_tabs", {}, "c6"), "Working…");
+  },
+
+  /**
+   * The idle hangup (10 min) is shorter than the run_command budget (10.5 min), and the host lets a
+   * command run the full 10 — so "nothing has arrived lately" is not the same as "nothing is
+   * happening". Asking for a long build and waiting quietly for it used to end the call at the
+   * moment the command's own clamp expired.
+   */
+  async "a long-running tool holds off the viewer's idle hangup"() {
+    loadViewer({ voiceCapable: true });
+    const socket = connectPanes(["pane-1"]);
+    socket.deliver({ t: "control", granted: true });
+    socket.deliver({ t: "voiceStatus", available: true });
+    el("voicecallbtn").onclick();
+    await flushPromises();
+    socket.deliver({
+      t: "voiceSession", clientSecret: "ek", model: "gpt-realtime-2.1", callToken: "tok",
+    });
+    await flushPromises();
+    const pc = FakeRTCPeerConnection.latest;
+    pc.dc.open();
+
+    pc.dc.deliver({
+      type: "response.function_call_arguments.done",
+      call_id: "build", name: "run_command", arguments: "{\"script\":\"./gradlew test\"}",
+    });
+    assert.strictEqual(el("voicestate").textContent, "Working…");
+
+    // Past the 10-minute cut-off with the command still running and nothing else arriving — no
+    // audio, no speech, no result — but short of the 10.5-minute run_command watchdog.
+    advance(10 * 60 * 1000 + 15000);
+    assert.ok(el("voicecall").classList.contains("on"), "a pending tool is not an idle call");
+
+    // The result lands after that; the idle deadline must be fresh, not ten minutes stale, or the
+    // next tick hangs up while the agent is reading the result out.
+    socket.deliver({ t: "voiceToolResult", callId: "build", resultJson: "{\"ok\":true}" });
+    advance(2 * 60 * 1000);
+    assert.ok(el("voicecall").classList.contains("on"), "the call survives its own long tool");
+
+    // And the cut-off still works once nothing is outstanding.
+    advance(11 * 60 * 1000);
+    assert.ok(!el("voicecall").classList.contains("on"), "a genuinely idle call still hangs up");
+  },
+
+  "a share-socket drop mid-call ends the call instead of leaving the agent blind"() {
+    loadViewer({ voiceCapable: true });
+    const socket = connectPanes(["pane-1"]);
+    socket.deliver({ t: "control", granted: true });
+    socket.deliver({ t: "voiceStatus", available: true });
+    el("voicecallbtn").onclick();
+    return flushPromises().then(() => {
+      socket.drop(1006);
+      assert.ok(!el("voicecall").classList.contains("on"), "the call strip must go away with the socket");
+      assert.strictEqual(el("voicecallbtn").style.display, "inline-flex", "back to an idle Call button");
+    });
+  },
+
   "a viewer.js without viewer-logic.js fails visibly instead of throwing"() {
     loadViewer({ withoutViewerLogic: true });
     assert.strictEqual(FakeWebSocket.instances.length, 0, "it must not try to connect");
@@ -882,19 +1246,24 @@ const scenarios = {
   },
 };
 
+// Awaited, so a scenario that has to let promises settle (the WebRTC call flow) still reports its
+// assertion failures instead of losing them to an unhandled rejection. Sync scenarios are
+// unaffected — awaiting a non-promise just continues.
 let failures = 0;
-Object.keys(scenarios).forEach((name) => {
-  try {
-    scenarios[name]();
-    process.stdout.write("ok   " + name + "\n");
-  } catch (e) {
-    failures += 1;
-    process.stdout.write("FAIL " + name + "\n     " + (e && e.message) + "\n");
-    if (e && e.stack) process.stdout.write("     " + e.stack.split("\n").slice(1, 4).join("\n     ") + "\n");
+(async () => {
+  for (const name of Object.keys(scenarios)) {
+    try {
+      await scenarios[name]();
+      process.stdout.write("ok   " + name + "\n");
+    } catch (e) {
+      failures += 1;
+      process.stdout.write("FAIL " + name + "\n     " + (e && e.message) + "\n");
+      if (e && e.stack) process.stdout.write("     " + e.stack.split("\n").slice(1, 4).join("\n     ") + "\n");
+    }
   }
-});
 
-if (failures > 0) {
-  process.stdout.write(failures + " viewer scenario(s) failed\n");
-  process.exit(1);
-}
+  if (failures > 0) {
+    process.stdout.write(failures + " viewer scenario(s) failed\n");
+    process.exit(1);
+  }
+})();

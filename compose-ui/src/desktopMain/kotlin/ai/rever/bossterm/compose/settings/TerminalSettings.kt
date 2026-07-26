@@ -1034,6 +1034,97 @@ data class TerminalSettings(
      */
     val sessionSharingShowIndicator: Boolean = true,
 
+    // ===== Boss Calling (voice agent in the share viewer) =====
+
+    /**
+     * Master switch for Boss Calling: shows a "Call" button in the share viewer that
+     * connects the remote user by voice to an AI agent (OpenAI Realtime) able to inspect
+     * and act on the shared session.
+     *
+     * On by default, because storing an OpenAI API key in `~/.bossterm/voice.json` (entered in
+     * Settings — deliberately NOT stored here, see
+     * [ai.rever.bossterm.compose.voice.VoiceAgentStorage]) is itself the deliberate opt-in: with
+     * no key the feature advertises itself as unavailable and the viewer hides the button. The
+     * switch is what turns Boss Calling off again for a host that keeps a key configured.
+     */
+    val voiceCallEnabled: Boolean = true,
+
+    /**
+     * Whether a REMOTE share viewer may place a voice call, separate from the in-app surface.
+     *
+     * The two are different trust boundaries: [voiceCallEnabled] covers the machine's owner talking
+     * to their own terminal, while this one lets anyone holding a control-share link voice-drive
+     * `run_command`. Splitting them means storing a key to try "Call BossTerm" doesn't silently open
+     * the remote surface too, and turning this off leaves the in-app call working.
+     *
+     * Defaults on, matching the in-app surface. Review feedback recommends defaulting it OFF so the
+     * remote surface is an explicit second opt-in — a product call rather than a code one.
+     */
+    val voiceCallShareEnabled: Boolean = true,
+
+    /**
+     * Run the agent's shell commands in the pane the user is LOOKING at, when nothing is running
+     * there, instead of run_command's dedicated scratch split.
+     *
+     * The scratch split is right for a background MCP client, whose output would otherwise interleave
+     * with what someone is typing. It is wrong for a voice call: asking out loud to cd somewhere and
+     * watching a split open underneath you, with the cd applied over there, is not what was asked
+     * for. A pane with a command in flight still falls back to the split — see
+     * `GuiVoiceToolExecutor.idleFocusedPaneId`.
+     */
+    val voiceRunInFocusedPane: Boolean = true,
+
+    /**
+     * Extra instructions appended to the agent's rules, for both call surfaces.
+     *
+     * The built-in rules describe the terminal and the tool surface; this is where a user (or an
+     * embedder — see [ai.rever.bossterm.compose.voice.VoiceAgentCustomization]) says what THIS
+     * machine is for. Empty by default.
+     */
+    val voiceAgentExtraInstructions: String = "",
+
+    /**
+     * OpenAI Realtime model for Boss Calling. Defaults to the current top-tier realtime model;
+     * the viewer never sends this — it is baked into the ephemeral secret the host mints.
+     */
+    val voiceCallModel: String = "gpt-realtime-2.1",
+
+    /** OpenAI Realtime voice for Boss Calling. */
+    val voiceCallVoice: String = "marin",
+
+    /**
+     * How readily the agent treats sound as you speaking — see [ai.rever.bossterm.compose.voice.VoiceTurnDetection].
+     *
+     * Boss Calling originally used OpenAI's semantic VAD, which has no activation threshold at all:
+     * a model decides whether you have finished a thought. That is good at not interrupting you
+     * mid-sentence and offers nothing for a room with a fan in it, which is what people actually
+     * hit first. "normal" is a server-VAD threshold slightly above the API's own default, because
+     * the reported problem was over-triggering.
+     */
+    val voiceMicSensitivity: String = "normal",
+
+    /**
+     * Give the IN-APP voice agent every registered MCP tool, not the curated nine.
+     *
+     * The curated [ai.rever.bossterm.compose.voice.VoiceToolCatalog] exists for the SHARE surface,
+     * where the caller is a guest and the argument allowlist is doing real security work — that
+     * surface is unaffected by this and keeps the catalog. In-app, the caller is the machine's owner,
+     * who already reaches the whole MCP surface from their own endpoint; withholding
+     * `read_debug_console` or `show_image` from them buys nothing.
+     *
+     * Schemas come from the server, so a tool added to BossTermMcpServer reaches the agent with no
+     * second edit. Write tools are still classified by the server's own read/write split.
+     */
+    val voiceExposeAllTools: Boolean = true,
+
+    /**
+     * Show the "Call BossTerm" segment in the tab-bar status strip. Its own toggle, like
+     * [mcpShowStatusIndicator] and [sessionSharingShowIndicator]: because Boss Calling ships
+     * enabled, without this a new pill would appear for everyone — including users who had
+     * deliberately turned the other two off to reclaim that corner.
+     */
+    val voiceShowStatusIndicator: Boolean = true,
+
     /**
      * Show the small green status indicator in the tab bar while the MCP
      * server is running. Has no effect when mcpEnabled is false. Turning

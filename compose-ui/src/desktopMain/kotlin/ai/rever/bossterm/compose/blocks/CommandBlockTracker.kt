@@ -49,9 +49,22 @@ class CommandBlockTracker(
             textBuffer = tab.textBuffer,
         )
 
+    /**
+     * Whether OSC 133 has ever reported on this pane.
+     *
+     * Distinct from `blocks.isEmpty()`: a shell at a fresh prompt that has run nothing has no
+     * blocks but IS reporting, while a shell without integration also has no blocks and is not.
+     * Callers deciding "is this pane idle?" need to tell those apart — see
+     * `GuiVoiceToolExecutor.idleFocusedPaneId`.
+     */
+    @Volatile
+    var hasSeenPrompt: Boolean = false
+        private set
+
     override fun onPromptStarted() {
         // OSC 133;A — remember where the prompt begins; the next command's block
         // starts here so the gutter aligns with the prompt line, not the output.
+        hasSeenPrompt = true
         pendingPromptAnchor = anchorAtCursor()
     }
 

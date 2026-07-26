@@ -1,0 +1,201 @@
+package ai.rever.bossterm.compose.voice
+
+import ai.rever.bossterm.compose.share.CallSegmentState
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertTrue
+
+/**
+ * Paths that fail QUIETLY, so a mistake in them has no symptom until someone checks by hand:
+ * the stamp cache that carries cross-process revocation, the pill's ordered state mapping, and the
+ * mint-response parsers.
+ */
+class VoiceQuietPathsTest {
+
+    // ---- StampCachedValue: the only way a GUI toggle or a cleared key reaches a daemon share ----
+
+    @Test
+    fun `the cache re-reads when the stamp moves`() {
+        var stamp = 1L
+        var reads = 0
+        val cache = StampCachedValue(stamp = { stamp }, read = { reads++; "v$stamp" }, trustTicks = 100)
+
+        assertEquals("v1", cache.get())
+        assertEquals("v1", cache.get(), "unchanged stamp → cached")
+        assertEquals(1, reads)
+
+        stamp = 2
+        assertEquals("v2", cache.get(), "moved stamp → re-read")
+        assertEquals(2, reads)
+    }
+
+    /**
+     * mtime+size is collision-prone by construction — two booleans flipped in one write whose lengths
+     * cancel out, inside one second, look unchanged. This is the escape hatch, and without it
+     * revocation silently doesn't revoke.
+     */
+    @Test
+    fun `an unchanged stamp is still re-read once trust runs out`() {
+        var reads = 0
+        val cache = StampCachedValue(stamp = { 7L }, read = { reads++; reads }, trustTicks = 3)
+
+        assertEquals(1, cache.get()) // first read
+        cache.get(); cache.get()     // ticks 1, 2 — still cached
+        assertEquals(1, reads, "trust not yet exhausted")
+        assertEquals(2, cache.get(), "third unchanged read forces a refresh")
+    }
+
+    @Test
+    fun `a moved stamp does not also consume a tick`() {
+        // A file that changes on every read must never hit the forced refresh it doesn't need:
+        // if the stamp check consumed a tick, the two conditions would interfere.
+        var stamp = 0L
+        var reads = 0
+        val cache = StampCachedValue(stamp = { ++stamp }, read = { reads++; stamp }, trustTicks = 2)
+        repeat(6) { cache.get() }
+        assertEquals(6, reads, "one read per change, no extra forced refreshes")
+    }
+
+    /**
+     * A failed read recovers on the TRUST schedule, not on every call.
+     *
+     * Treating `cached == null` as "nothing cached yet" meant a persistently unreadable settings.json
+     * attempted a full read+parse on every get() — on the daemon, on the socket's receive loop, on
+     * the exact path this class exists to make cheap. Recovery still happens, bounded by trustTicks
+     * (and immediately if the file's stamp moves, which a file becoming readable usually does).
+     */
+    @Test
+    fun `a failing read recovers, but does not retry on every call`() {
+        var fail = true
+        var reads = 0
+        val cache = StampCachedValue<String>(
+            stamp = { 1L },
+            read = { reads++; if (fail) null else "ok" },
+            trustTicks = 3,
+        )
+        assertEquals(null, cache.get(), "unreadable file → no value")
+        assertEquals(1, reads)
+        repeat(2) { cache.get() } // ticks 1 and 2 of 3
+        assertEquals(1, reads, "and it does not hammer the file while it stays unreadable")
+
+        fail = false
+        assertEquals("ok", cache.get(), "the third unchanged read exhausts trust and tries again")
+        assertEquals(2, reads)
+    }
+
+    @Test
+    fun `a stamp change recovers a failed read immediately`() {
+        var stamp = 1L
+        var fail = true
+        val cache = StampCachedValue<String>(stamp = { stamp }, read = { if (fail) null else "ok" }, trustTicks = 100)
+        assertEquals(null, cache.get())
+        // The usual real-world recovery: the file was rewritten, so its mtime/size moved.
+        fail = false
+        stamp = 2L
+        assertEquals("ok", cache.get(), "a moved stamp must not wait for trust to run out")
+    }
+
+    // ---- segmentState: eleven ordered branches, and the ordering is load-bearing ----
+
+    private fun state(
+        phase: HostCallPhase = HostCallPhase.Idle,
+        speaking: Boolean = false,
+        working: Boolean = false,
+    ) = HostCallState(phase = phase, speaking = speaking, working = working)
+
+    private fun HostCallState.segment(
+        featureEnabled: Boolean = true,
+        indicatorEnabled: Boolean = true,
+        keyPresent: Boolean = true,
+    ) = segmentState(featureEnabled, indicatorEnabled, keyPresent)
+
+    @Test
+    fun `the pill reflects the call before anything else`() {
+        assertEquals(CallSegmentState.Connecting, state(HostCallPhase.Connecting).segment())
+        assertEquals(CallSegmentState.Working, state(HostCallPhase.Live, working = true).segment())
+        assertEquals(CallSegmentState.Speaking, state(HostCallPhase.Live, speaking = true).segment())
+        // Working outranks speaking: the agent can be mid-sentence while a tool runs, and "what is it
+        // doing" is the more useful answer.
+        assertEquals(
+            CallSegmentState.Working,
+            state(HostCallPhase.Live, speaking = true, working = true).segment(),
+        )
+    }
+
+    @Test
+    fun `a live call stays visible even with the indicator turned off`() {
+        // Otherwise ending the call would become unreachable.
+        assertEquals(
+            CallSegmentState.Live,
+            state(HostCallPhase.Live).segment(featureEnabled = false, indicatorEnabled = false),
+        )
+        assertEquals(
+            CallSegmentState.Connecting,
+            state(HostCallPhase.Connecting).segment(featureEnabled = false, indicatorEnabled = false),
+        )
+    }
+
+    @Test
+    fun `disabling the feature hides a stale failure, but hiding only the pill does not`() {
+        val failed = HostCallState(phase = HostCallPhase.Error, error = "boom")
+        assertEquals(CallSegmentState.Failed, failed.segment())
+        assertEquals(
+            CallSegmentState.Hidden,
+            failed.segment(featureEnabled = false),
+            "turning Boss Calling off must not leave a 'failed' pill with nothing behind it",
+        )
+        // The other direction: the error segment carries the only Dismiss, so turning off just the
+        // indicator while a call sits in Error used to strand it with no way to clear it.
+        assertEquals(
+            CallSegmentState.Failed,
+            failed.segment(indicatorEnabled = false),
+            "an error must stay dismissible when only the indicator is off",
+        )
+    }
+
+    @Test
+    fun `an idle host shows ready or needs-key, and nothing when either switch is off`() {
+        assertEquals(CallSegmentState.Ready, state().segment())
+        assertEquals(CallSegmentState.NeedsKey, state().segment(keyPresent = false))
+        assertEquals(CallSegmentState.Hidden, state().segment(indicatorEnabled = false))
+        assertEquals(CallSegmentState.Hidden, state().segment(featureEnabled = false))
+    }
+
+    // ---- mint parsing: the GA shape, the beta fallback, and error extraction ----
+
+    @Test
+    fun `the GA response shape is parsed`() {
+        val r = VoiceSessionBroker().parseMint("""{"value":"ek_ga","expires_at":123}""")
+        assertIs<VoiceSessionBroker.MintResult.Ok>(r)
+        assertEquals("ek_ga", r.clientSecret)
+    }
+
+    @Test
+    fun `the older beta shape still works`() {
+        val r = VoiceSessionBroker().parseMint("""{"client_secret":{"value":"ek_beta"}}""")
+        assertIs<VoiceSessionBroker.MintResult.Ok>(r)
+        assertEquals("ek_beta", r.clientSecret)
+    }
+
+    @Test
+    fun `a response with no secret is a failure, not an empty success`() {
+        assertIs<VoiceSessionBroker.MintResult.Failed>(VoiceSessionBroker().parseMint("""{"ok":true}"""))
+        assertIs<VoiceSessionBroker.MintResult.Failed>(VoiceSessionBroker().parseMint("not json"))
+        // A non-string `value` must not be coerced into a secret.
+        assertIs<VoiceSessionBroker.MintResult.Failed>(VoiceSessionBroker().parseMint("""{"value":42}"""))
+    }
+
+    @Test
+    fun `error detail prefers OpenAI's message and never returns blank`() {
+        val broker = VoiceSessionBroker()
+        assertEquals(
+            "Project is not usable",
+            broker.errorDetail("""{"error":{"message":"Project is not usable","type":"server_error"}}"""),
+        )
+        assertEquals("(empty body)", broker.errorDetail(""))
+        // A non-envelope body is clipped rather than dropped, so the log still says something.
+        assertTrue(broker.errorDetail("<html>gateway timeout</html>").contains("gateway timeout"))
+    }
+
+}

@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.daemon
 
 import ai.rever.bossterm.compose.share.GraphicsResyncLimiter
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CompletableDeferred
 
 /**
@@ -22,11 +23,47 @@ internal class DaemonShareConnection(
     val name: String,
     /** True for the bundled web viewer; native peers decode raw graphics themselves. */
     val supportsPaneGraphics: Boolean = false,
+    /**
+     * Whether this connection's frames are confidential (the E2E handshake completed).
+     *
+     * Boss Calling gates on it — see the equivalent on
+     * [ai.rever.bossterm.compose.share.ViewerConnection].
+     */
+    val confidential: Boolean = false,
 ) {
     // Tighter budget than the attach outbox: browser viewers ride real (possibly remote) links, and
     // a healing re-snapshot replaces a big stale backlog more cheaply than delivering it.
     val outbox = FrameOutbox(outputCapacityChars = 2 * 1024 * 1024)
     internal val graphicsResyncLimiter = GraphicsResyncLimiter()
+
+    /**
+     * The session this viewer is looking at (from Focus / VoiceStart) — the voice agent's
+     * default tool target. Null until the viewer reports one.
+     */
+    @Volatile var voiceTabId: String? = null
+
+    /**
+     * This connection's live call handle, so hanging up (or dropping) retires exactly it.
+     *
+     * An [AtomicReference] rather than a `@Volatile` field because the compare-and-clear below has
+     * to be one operation — see [clearVoiceCallTokenIfCurrent].
+     */
+    private val voiceCallTokenRef = AtomicReference<String?>(null)
+
+    var voiceCallToken: String?
+        get() = voiceCallTokenRef.get()
+        set(value) = voiceCallTokenRef.set(value)
+
+    /**
+     * Clear the token only if it is still [stale], atomically.
+     *
+     * Written as `if (token == stale) token = null`, this was a read-then-write: a late mint failure
+     * could test true, a redial on the receive loop install token B in the gap, and the failure's
+     * write land last — leaving B live and billed in `liveCalls` while this connection held no token
+     * to authorise its tools with. That is the exact outcome the compare was added to prevent.
+     */
+    fun clearVoiceCallTokenIfCurrent(stale: String?): Boolean =
+        voiceCallTokenRef.compareAndSet(stale, null)
 }
 
 /**

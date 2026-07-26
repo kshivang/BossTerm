@@ -12,6 +12,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.components.SettingsSection
 import ai.rever.bossterm.compose.settings.components.SettingsTextField
+import ai.rever.bossterm.compose.settings.sections.BossCallingSection
 import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -297,6 +298,11 @@ private fun ShareDetails(
             color = TextMuted, fontSize = 11.sp
         )
     }
+    Spacer(Modifier.height(20.dp))
+
+    // Same controls as the GUI share window: the daemon serves voice calls too (with the smaller
+    // headless tool surface), and this is the window a daemon host is looking at.
+    BossCallingSection(showAgentOptions = false)
     Spacer(Modifier.height(20.dp))
 
     RemoteAccessSection(share)

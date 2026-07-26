@@ -217,6 +217,48 @@ class VoiceAudioIoTest {
         assertTrue(await { chunks.size > whileMuted }, "audio flows again after unmute")
     }
 
+    /**
+     * The queue is bounded by DURATION, not entry count.
+     *
+     * It was 100 entries documented as "~4s of speech", which only held if every entry were one
+     * 40ms frame — but play() enqueues whatever a server-chosen delta decodes to, so the real
+     * ceiling was unpredictable, and queuedPlaybackMs was a poor answer to "is Boss still audible".
+     */
+    @Test
+    fun `the play queue is bounded by seconds of audio, not by entry count`() {
+        val line = FakeLine()
+        val speaker = FakeSpeaker()
+        val audio = audioFor(line, speaker)
+        audio.startCapture(onChunk = {}, onLevel = {})
+        // Nothing drains while the speaker is blocked on its first write.
+        audio.flushPlayback()
+
+        // One second per delta, which is what a server-sized chunk can look like — nothing like the
+        // 40ms frame the old entry count assumed.
+        val oneSecond = ByteArray(JavaSoundVoiceAudioIo.BYTES_PER_SECOND)
+        repeat(20) { audio.play(oneSecond) }
+
+        val queuedMs = audio.queuedPlaybackMs()
+        assertTrue(
+            queuedMs <= 4_200,
+            "20s of audio must not sit in a queue documented as ~4s; saw ${queuedMs}ms",
+        )
+    }
+
+    @Test
+    fun `queued audio is reported in milliseconds`() {
+        val line = FakeLine()
+        val speaker = FakeSpeaker()
+        val audio = audioFor(line, speaker)
+        audio.startCapture(onChunk = {}, onLevel = {})
+        audio.flushPlayback()
+        assertEquals(0, audio.queuedPlaybackMs())
+
+        audio.play(ByteArray(JavaSoundVoiceAudioIo.BYTES_PER_SECOND / 2)) // 500ms
+        // The drain thread may already have taken it; either way it is never reported as chunks.
+        assertTrue(audio.queuedPlaybackMs() in 0..500, audio.queuedPlaybackMs().toString())
+    }
+
     // ---- the level maths behind "can it hear me?" ----
 
     @Test

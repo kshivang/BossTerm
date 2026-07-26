@@ -256,8 +256,14 @@ internal class VoiceCallService(
         //     retirePreviousCall(), so a redial the budget rejected destroyed the caller's live tool
         //     bridge while the viewer deliberately keeps such a call running (its audio carried on
         //     with every later tool call answering stale_call);
-        //  2. retire before reserving, so a redial reclaims its own slot instead of being refused at
-        //     capacity;
+        //  2. retire before reserving, so a redial USUALLY reclaims its own slot instead of being
+        //     refused at capacity. Not a guarantee: the two are separate critical sections on a
+        //     process-wide map, so another share can take the freed slot in between and the
+        //     redialling viewer loses its call AND gets too_many_calls. It needs MAX_LIVE_CALLS
+        //     concurrent callers to reach, and closing it means holding the map's lock across
+        //     retirePreviousCall — a caller-supplied callback — which is a worse trade than the
+        //     race. Stated rather than fixed, so the next reader does not assume it is airtight;
+        
         //  3. spend the budget last, so neither refusal consumes one of the mints it rations.
         val mintReservation = tryReserveMint()
         if (mintReservation == null) {
@@ -574,7 +580,12 @@ internal class VoiceCallService(
      */
     @Volatile private var sweeper: Job? = null
 
+    @Synchronized
     private fun ensureSweeper() {
+        // Check-then-act otherwise: openCall() is reachable from two shares' receive loops at once,
+        // so two sweepers could start and one handle be lost — closeCalls() then cancels only the
+        // survivor. Benign (the orphan retires itself on its next `mine == 0`), but
+        // DaemonShareServer.watchVoiceStatus already solves the identical problem with a lock.
         if (sweeper?.isActive == true) return
         sweeper = scope.launch {
             while (true) {
@@ -748,6 +759,15 @@ internal class VoiceCallService(
         /** Arguments for the curated tools are small; run_command's script is the largest by far. */
         const val MAX_ARGS_CHARS = 32 * 1024
 
+        /** How often a service with live calls checks whether any have aged out. */
+        const val EXPIRY_SWEEP_MS = 30_000L
+
+        /**
+         * Reasons that describe the ASKING CONNECTION rather than the host's configuration, and so
+         * are told to every viewer: they leak nothing a viewer does not already know about itself.
+         */
+        val SELF_DESCRIBING_REASONS = setOf("insecure_transport", "not_controller")
+
         /**
          * Mint budget: no faster than one per gap, and no more than N per window.
          *
@@ -766,15 +786,6 @@ internal class VoiceCallService(
          * this one would keep the ceiling while making starvation local to whoever caused it. The
          * in-app surface is unaffected: it does not mint.
          */
-        /** How often a service with live calls checks whether any have aged out. */
-        const val EXPIRY_SWEEP_MS = 30_000L
-
-        /**
-         * Reasons that describe the ASKING CONNECTION rather than the host's configuration, and so
-         * are told to every viewer: they leak nothing a viewer does not already know about itself.
-         */
-        val SELF_DESCRIBING_REASONS = setOf("insecure_transport", "not_controller")
-
         const val MINT_MIN_GAP_MS = 3_000L
         const val MINT_WINDOW_MS = 10 * 60 * 1000L
         const val MAX_MINTS_PER_WINDOW = 6

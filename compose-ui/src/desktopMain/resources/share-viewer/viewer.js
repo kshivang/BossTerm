@@ -530,7 +530,9 @@
       if (name === "read_scrollback") return "Reading the terminal…";
       if (name === "search_output" && a.pattern) return "Searching for “" + a.pattern.slice(0, 40) + "”…";
       if (name === "send_input" && a.text)
-        return "Typing: " + a.text.slice(0, 40).replace(/\n/g, "⏎") + "…";
+        // The ellipsis only when it actually truncates — "Typing: ls…" for a two-character command
+        // read as though something were still coming. Matches describeTool.
+        return "Typing: " + a.text.slice(0, 40).replace(/\n/g, "⏎") + (a.text.length > 40 ? "…" : "");
       if (name === "send_signal" && a.signal) return "Sending " + a.signal + "…";
       if (name === "get_last_command") return "Checking the last command…";
       if (name === "list_panes") return "Looking at the split panes…";

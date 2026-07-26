@@ -161,7 +161,7 @@ internal class HostVoiceCallController(
         drainWatcher = scope.launch {
             // Bounded: a wedged speaker must not leave the bar stuck on "Speaking" for the call.
             val deadline = nowMs() + MAX_DRAIN_WAIT_MS
-            while (_state.value.active && audio.queuedPlaybackChunks() > 0 && nowMs() < deadline) {
+            while (_state.value.active && audio.queuedPlaybackMs() > AUDIBLE_TAIL_MS && nowMs() < deadline) {
                 delay(DRAIN_POLL_MS)
             }
             _state.update { it.copy(speaking = false) }
@@ -692,14 +692,20 @@ internal class HostVoiceCallController(
     /** Same clip lengths as `voiceDescribeTool`; VoiceCrossLanguageContractTest asserts they agree. */
     private fun clip(text: String, max: Int) = if (text.length > max) text.take(max) + "…" else text
 
+    /** Truncate WITHOUT an ellipsis, for captions that put their own outside a quoted span. */
+    private fun clipPlain(text: String, max: Int) = text.take(max)
+
     /** NOTE: mirrored by `voiceDescribeTool` in viewer.js for the share surface — keep both in step. */
-    private fun describeTool(name: String, argsJson: String?): String {
+    internal fun describeTool(name: String, argsJson: String?): String {
         val args = runCatching { json.parseToJsonElement(argsJson ?: "{}").jsonObject }.getOrNull()
         fun arg(key: String) = args?.get(key)?.jsonPrimitive?.content
         return when (name) {
             "run_command" -> arg("script")?.let { "Running: ${clip(it, 60)}" } ?: "Running a command…"
             "read_scrollback" -> "Reading the terminal…"
-            "search_output" -> arg("pattern")?.let { "Searching for “${clip(it, 40)}”…" } ?: "Searching…"
+            // clip() adds its own ellipsis when it truncates, so the pattern must not be wrapped in
+            // one too — that rendered Searching for "<40 chars>…"… The viewer puts the ellipsis
+            // outside the quotes only; matched here.
+            "search_output" -> arg("pattern")?.let { "Searching for “${clipPlain(it, 40)}”…" } ?: "Searching…"
             // Show WHAT is being typed, like the viewer does: "Typing…" alone tells the user nothing
             // about a tool that is about to put characters into their shell.
             // No trailing "…" in the template: clip() adds one when it actually truncates, so this
@@ -728,6 +734,9 @@ internal class HostVoiceCallController(
 
         /** No agent audio, user speech or tool call for this long → hang up. */
         const val IDLE_TIMEOUT_MS = 10 * 60 * 1000L
+
+        /** Below this much queued audio the tail is inaudible; waiting longer just delays the UI. */
+        const val AUDIBLE_TAIL_MS = 120
 
         /** How often the drain watcher checks the speaker queue. */
         const val DRAIN_POLL_MS = 60L

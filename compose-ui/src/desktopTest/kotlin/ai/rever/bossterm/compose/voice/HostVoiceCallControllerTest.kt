@@ -88,9 +88,9 @@ class HostVoiceCallControllerTest {
         override fun setCaptureMuted(muted: Boolean) { lineMuted = muted }
         override fun play(pcm: ByteArray) { played.add(pcm) }
         override fun flushPlayback() { flushes += 1; queued = 0 }
-        /** Decoded audio the speaker has not reached yet — drives the "still audible" wait. */
+        /** Decoded audio the speaker has not reached yet, in ms — drives the "still audible" wait. */
         @Volatile var queued = 0
-        override fun queuedPlaybackChunks(): Int = queued
+        override fun queuedPlaybackMs(): Int = queued
         override fun stop() { stopped = true; capturing = false }
 
         /** Pretend the mic produced a frame. */
@@ -662,7 +662,7 @@ class HostVoiceCallControllerTest {
         transport.deliver("""{"type":"response.output_audio.delta","delta":"AAAA"}""")
         assertTrue(await { c.state.value.speaking }, "the agent is talking")
 
-        audio.queued = 3 // three chunks still ahead of the speaker
+        audio.queued = 900 // ~0.9s still ahead of the speaker, well above AUDIBLE_TAIL_MS
         transport.deliver("""{"type":"response.output_audio.done"}""")
         Thread.sleep(200)
         assertTrue(c.state.value.speaking, "still audible, so still 'Speaking'")
@@ -683,7 +683,7 @@ class HostVoiceCallControllerTest {
 
         transport.deliver("""{"type":"response.output_audio.delta","delta":"AAAA"}""")
         assertTrue(await { c.state.value.speaking })
-        audio.queued = 5
+        audio.queued = 900
         transport.deliver("""{"type":"response.output_audio.done"}""")
         transport.deliver("""{"type":"input_audio_buffer.speech_started"}""")
 

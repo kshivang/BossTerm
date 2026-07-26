@@ -60,7 +60,7 @@ internal interface VoiceAudioIo {
     fun flushPlayback()
 
     /**
-     * How much decoded audio is still waiting for the speaker.
+     * How much decoded audio is still waiting for the speaker, in MILLISECONDS.
      *
      * The Realtime API says `response.output_audio.done` when it has finished SENDING, which is not
      * when the user has finished HEARING: up to PLAY_QUEUE_CHUNKS × ~40ms (≈4s) can still be queued.
@@ -68,22 +68,22 @@ internal interface VoiceAudioIo {
      * mid-sentence. The viewer has no equivalent problem — `output_audio_buffer.stopped` is
      * playback-accurate — so this is what lets the two surfaces agree.
      */
-    fun queuedPlaybackChunks(): Int
+    fun queuedPlaybackMs(): Int
 
     /** Stop both directions and release the lines. */
     fun stop()
 }
 
 /**
- * Loudness of one PCM16 chunk, 0..1. Top-level and testable: this is the number behind "can it hear
- * me?", and the meter reading nothing is indistinguishable from a muted mic to the person watching.
- */
-/**
  * Meter gain. Conversational speech sits well below full scale — RMS around 0.05-0.15 — so without
  * this the bars would barely leave the floor and the meter would read as "not hearing you".
  */
 private const val SPEECH_METER_GAIN = 3.0
 
+/**
+ * Loudness of one PCM16 chunk, 0..1. Top-level and testable: this is the number behind "can it hear
+ * me?", and the meter reading nothing is indistinguishable from a muted mic to the person watching.
+ */
 internal fun pcm16Rms(pcm: ByteArray): Float {
     if (pcm.size < 2) return 0f
     var sum = 0.0
@@ -173,6 +173,11 @@ internal class JavaSoundVoiceAudioIo(
      */
     private val playQueue = ArrayBlockingQueue<ByteArray>(PLAY_QUEUE_CHUNKS)
 
+    /** Bytes currently in [playQueue] — see [PLAY_QUEUE_BYTES]. */
+    private val queuedBytes = java.util.concurrent.atomic.AtomicInteger(0)
+
+    private fun bytesToMs(bytes: Int): Int = (bytes.toLong() * 1000 / BYTES_PER_SECOND).toInt()
+
     override fun startCapture(
         onChunk: (ByteArray) -> Unit,
         onLevel: (Float) -> Unit,
@@ -247,22 +252,26 @@ internal class JavaSoundVoiceAudioIo(
     override fun play(pcm: ByteArray) {
         if (disposed) return
         ensurePlayback() ?: return
-        // Never block the caller (the socket thread): drop the oldest chunk if the speaker is behind.
-        if (!playQueue.offer(pcm)) {
-            playQueue.poll()
-            playQueue.offer(pcm)
+        // Never block the caller (the socket thread): drop the OLDEST audio until this fits, by
+        // duration rather than entry count.
+        while (queuedBytes.get() + pcm.size > PLAY_QUEUE_BYTES || playQueue.remainingCapacity() == 0) {
+            val dropped = playQueue.poll() ?: break
+            queuedBytes.addAndGet(-dropped.size)
         }
+        if (playQueue.offer(pcm)) queuedBytes.addAndGet(pcm.size)
     }
 
     override fun flushPlayback() {
         playQueue.clear()
+        queuedBytes.set(0)
         runCatching { playback?.flush() }
     }
 
-    override fun queuedPlaybackChunks(): Int = playQueue.size
+    override fun queuedPlaybackMs(): Int = bytesToMs(queuedBytes.get())
 
-    /** Open the speaker line + its drain thread on first use. Null when there is no output device. */
     /**
+     * Open the speaker line + its drain thread on first use. Null when there is no output device.
+     *
      * @Synchronized with [stop]. play() runs on the JDK WebSocket reader thread while stop() runs on
      * IO, and opening a line takes real milliseconds — long enough for this to pass the `disposed`
      * check, stop() to run to completion, and this to then set `running = true` again and start a
@@ -286,6 +295,7 @@ internal class JavaSoundVoiceAudioIo(
         playbackThread = Thread({
             while (running || playQueue.isNotEmpty()) {
                 val chunk = runCatching { playQueue.poll(200, TimeUnit.MILLISECONDS) }.getOrNull() ?: continue
+                queuedBytes.addAndGet(-chunk.size)
                 runCatching { line.write(chunk, 0, chunk.size) }
             }
         }, "boss-voice-playback").apply { isDaemon = true; start() }
@@ -324,8 +334,23 @@ internal class JavaSoundVoiceAudioIo(
         /** ~40 ms per chunk: small enough that playback back-pressure stays responsive. */
         const val CHUNK_BYTES = 1920
 
-        /** ~4 s of queued speech; beyond that the speaker is hopelessly behind, so drop. */
-        const val PLAY_QUEUE_CHUNKS = 100
+        /**
+         * Queue bound, in BYTES rather than entries.
+         *
+         * It used to be 100 entries, documented as "~4s of queued speech" — true only if every entry
+         * were one CHUNK_BYTES frame. But play() enqueues whatever a response.output_audio.delta
+         * base64-decodes to, and that size is chosen by the server: the real backlog ceiling was
+         * unpredictable and the comment was wrong. It also made queuedPlaybackMs a poor answer to
+         * "is Boss still audible", which is what clearSpeakingWhenAudible asks it.
+         *
+         * [BYTES_PER_SECOND] is the format's own rate: 24 kHz, 16-bit, mono.
+         */
+        const val BYTES_PER_SECOND = 24_000 * 2
+
+        const val PLAY_QUEUE_BYTES = 4 * BYTES_PER_SECOND
+
+        /** Entry cap as a backstop, so a flood of tiny deltas cannot grow the deque without bound. */
+        const val PLAY_QUEUE_CHUNKS = 512
 
         /** How long the capture loop parks when a read yields nothing and the mic is live. */
         const val IDLE_READ_MS = 20L

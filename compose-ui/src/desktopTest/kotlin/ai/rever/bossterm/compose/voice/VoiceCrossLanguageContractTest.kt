@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.voice
 
 import ai.rever.bossterm.compose.share.NodeHarness
+import kotlinx.serialization.json.JsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -135,7 +136,76 @@ class VoiceCrossLanguageContractTest {
         }
     }
 
+    /**
+     * The RENDERED captions, not just the clip lengths.
+     *
+     * Comparing lengths let two real divergences through: the host wrapped a truncated search
+     * pattern in its own ellipsis AND clip()'s, giving `Searching for "…"…`, and the viewer appended
+     * an ellipsis to send_input unconditionally, so a two-character command read as `Typing: ls…`.
+     * Both sides are asserted against the same fixtures here; the harness drives the JS half through
+     * the real code path.
+     */
+    @Test
+    fun `both surfaces render the same caption for the same call`() {
+        val controller = HostVoiceCallController(
+            scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default),
+            executor = object : VoiceToolExecutor {
+                override fun tools(): List<VoiceToolDef> = VoiceToolCatalog.ALL
+                override fun contextSnapshot(defaultTabId: String?): String = ""
+                override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?) = "{}"
+            },
+        )
+        for ((tool, argsJson, expected) in CAPTION_FIXTURES) {
+            assertEquals(expected, controller.describeTool(tool, argsJson), "$tool / $argsJson")
+        }
+    }
+
+    /**
+     * The viewer harness pins the same captions, through the real JS path.
+     *
+     * Only the fixtures that appear LITERALLY on both sides are cross-checked here: the harness
+     * builds its long inputs with `"x".repeat(40)`, so a substring search cannot see the expansion.
+     * The truncating cases are still pinned — exactly, by `strictEqual` in the harness and by the
+     * test above here — this check is the cheaper guard that neither side quietly stops asserting.
+     */
+    @Test
+    fun `the viewer harness pins the same caption fixtures`() {
+        val harness = NodeHarness.readResource("share-viewer-harness/viewer-harness.cjs")
+        val literals = CAPTION_FIXTURES.map { it.third }.filter { it.length < 40 }
+        assertTrue(literals.size >= 3, "expected some short fixtures to cross-check")
+        for (expected in literals) {
+            assertTrue(
+                harness.contains(expected),
+                "viewer-harness.cjs must assert the caption \"$expected\" so the two stay in step",
+            )
+        }
+        // And that it asserts the truncating ones at all, whatever the expansion looks like.
+        for (tool in listOf("send_input", "search_output")) {
+            assertTrue(
+                harness.contains("caption(\"$tool\""),
+                "viewer-harness.cjs must render $tool's caption for both a short and a long input",
+            )
+        }
+    }
+
     private companion object {
+        /** (tool, argsJson, rendered caption) — short and long for each truncating tool. */
+        val CAPTION_FIXTURES = listOf(
+            Triple("send_input", """{"text":"ls"}""", "Typing: ls"),
+            Triple(
+                "send_input",
+                """{"text":"${"x".repeat(50)}"}""",
+                "Typing: ${"x".repeat(40)}…",
+            ),
+            Triple("search_output", """{"pattern":"boom"}""", "Searching for “boom”…"),
+            Triple(
+                "search_output",
+                """{"pattern":"${"y".repeat(50)}"}""",
+                "Searching for “${"y".repeat(40)}”…",
+            ),
+            Triple("run_command", """{"script":"ls -la"}""", "Running: ls -la"),
+        )
+
         /** Every code emitted by MirrorShare, DaemonShareServer and VoiceCallService. */
         val EMITTED_CODES = listOf(
             "no_key", "disabled", "not_controller", "unauthorized",

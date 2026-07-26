@@ -1140,6 +1140,46 @@ const scenarios = {
   },
 
   /**
+   * The captions the viewer shows while a tool runs, as RENDERED.
+   *
+   * These exact strings are also asserted against HostVoiceCallController.describeTool in
+   * VoiceCrossLanguageContractTest — the two surfaces drifted twice on ellipsis handling alone,
+   * which comparing slice lengths could not see.
+   */
+  async "tool captions render identically to the in-app surface"() {
+    loadViewer({ voiceCapable: true });
+    const socket = connectPanes(["pane-1"]);
+    socket.deliver({ t: "control", granted: true });
+    socket.deliver({ t: "voiceStatus", available: true });
+    el("voicecallbtn").onclick();
+    await flushPromises();
+    socket.deliver({ t: "voiceSession", clientSecret: "ek", model: "gpt-realtime-2.1", callToken: "tok" });
+    await flushPromises();
+    const pc = FakeRTCPeerConnection.latest;
+    pc.dc.open();
+
+    const caption = (name, args, id) => {
+      pc.dc.deliver({
+        type: "response.function_call_arguments.done",
+        call_id: id, name: name, arguments: JSON.stringify(args),
+      });
+      return el("voicetoast").textContent;
+    };
+
+    assert.strictEqual(caption("send_input", { text: "ls" }, "c1"), "Typing: ls");
+    assert.strictEqual(
+      caption("send_input", { text: "x".repeat(50) }, "c2"),
+      "Typing: " + "x".repeat(40) + "…"
+    );
+    assert.strictEqual(caption("search_output", { pattern: "boom" }, "c3"), "Searching for “boom”…");
+    assert.strictEqual(
+      caption("search_output", { pattern: "y".repeat(50) }, "c4"),
+      "Searching for “" + "y".repeat(40) + "”…"
+    );
+    assert.strictEqual(caption("run_command", { script: "ls -la" }, "c5"), "Running: ls -la");
+  },
+
+  /**
    * The idle hangup (10 min) is shorter than the run_command budget (10.5 min), and the host lets a
    * command run the full 10 — so "nothing has arrived lately" is not the same as "nothing is
    * happening". Asking for a long build and waiting quietly for it used to end the call at the

@@ -23,6 +23,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -434,23 +435,30 @@ class VoiceCallServiceTest {
 
         shareA.closeCalls() // share A stops
 
-        // B's call still works…
-        val replies = mutableListOf<ServerMessage>()
+        // Separate sinks per share: B's reply is produced asynchronously, so a shared list would
+        // occasionally collect it after A's and make either assertion look wrong.
+        val repliesB = java.util.concurrent.CopyOnWriteArrayList<ServerMessage>()
         shareB.handleToolCall(
             ClientMessage.VoiceToolCall("c1", "read_scrollback", "{}", callToken = tokenB),
             canControl = true, defaultTabId = "t1",
-        ) { replies.add(it) }
-        assertTrue(
-            replies.isEmpty() || !(replies.first() as ServerMessage.VoiceToolResult).isError,
-            "share B's call must survive share A stopping: $replies",
-        )
-        // …and A's is gone.
-        replies.clear()
+        ) { repliesB.add(it) }
+
+        // A's own call is gone — refused synchronously, before any executor work.
+        val repliesA = java.util.concurrent.CopyOnWriteArrayList<ServerMessage>()
         shareA.handleToolCall(
             ClientMessage.VoiceToolCall("c2", "read_scrollback", "{}", callToken = tokenA),
             canControl = true, defaultTabId = "t1",
-        ) { replies.add(it) }
-        assertTrue((replies.single() as ServerMessage.VoiceToolResult).isError, "A's own call is retired")
+        ) { repliesA.add(it) }
+        assertTrue((repliesA.single() as ServerMessage.VoiceToolResult).isError, "A's own call is retired")
+
+        // …while B's survived A stopping.
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (repliesB.isEmpty() && System.nanoTime() < deadline) Thread.sleep(20)
+        assertTrue(repliesB.isNotEmpty(), "share B's call should have answered")
+        assertFalse(
+            (repliesB.first() as ServerMessage.VoiceToolResult).isError,
+            "share B's call must survive share A stopping: ${'$'}repliesB",
+        )
     }
 
     /** A token issued for one share must not drive another's tools, even sharing one map. */
@@ -475,6 +483,42 @@ class VoiceCallServiceTest {
             canControl = true, defaultTabId = "t1",
         ) { replies.add(it) }
         assertTrue((replies.single() as ServerMessage.VoiceToolResult).isError, "wrong share's token")
+    }
+
+    /**
+     * A mint that fails LATE must not clear a token a redial has since installed. Otherwise mint #2
+     * succeeds, the viewer connects (audible and billed) and every tool call answers stale_call.
+     */
+    @Test
+    fun `a late mint failure only clears its own token`() = testApplication {
+        val hold = CompletableDeferred<Unit>()
+        routing {
+            post("/v1/realtime/client_secrets") {
+                hold.await()
+                call.respond(HttpStatusCode.Unauthorized) // mint #1 fails, late
+            }
+        }
+        val svc = service(broker = VoiceSessionBroker(baseUrl = "", httpOverride = client))
+
+        // Model the connection the way both servers do.
+        var connectionToken: String? = null
+        svc.handleStart(
+            ClientMessage.VoiceStart(),
+            canControl = true,
+            onCallTokenChanged = { connectionToken = it },
+            clearCallTokenIfCurrent = { stale -> if (connectionToken == stale) connectionToken = null },
+        ) {}
+        val tokenA = connectionToken
+        assertTrue(tokenA != null)
+
+        // A redial installs token B while mint #1 is still in flight.
+        val tokenB = svc.openCall()
+        connectionToken = tokenB
+
+        hold.complete(Unit) // mint #1 now fails
+        Thread.sleep(250)
+
+        assertEquals(tokenB, connectionToken, "a late failure must not clear the newer token")
     }
 
     /** Tokens age out, so a call handle can't be replayed indefinitely. */

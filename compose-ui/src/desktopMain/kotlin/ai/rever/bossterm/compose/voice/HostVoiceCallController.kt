@@ -421,23 +421,7 @@ internal class HostVoiceCallController(
                 outputsOwed += 1
                 pendingCalls.isEmpty()
             }
-            // The round is already settled locally, so a dropped output wedges the call with only a
-            // log line — indistinguishable from a hang. The lane is advertised as guaranteed, so treat
-            // a refusal the way BoundedViewerOutbox.sendControl treats overflow: end it, don't limp.
-            val delivered = transport.send(
-                buildJsonObject {
-                    put("type", "conversation.item.create")
-                    putJsonObject("item") {
-                        put("type", "function_call_output")
-                        put("call_id", callId)
-                        put("output", result)
-                    }
-                }.toString()
-            )
-            if (!delivered) {
-                fail("Lost the connection to OpenAI mid-call.")
-                return@launch
-            }
+            if (!sendToolOutput(callId, result)) return@launch
             if (done) _state.update { it.copy(working = false, activity = null) }
             maybeRequestResponse()
         }.also { job -> job.invokeOnCompletion { inFlightTools.decrementAndGet() } }
@@ -450,18 +434,32 @@ internal class HostVoiceCallController(
             outputsOwed += 1
             pendingCalls.isEmpty()
         }
-        transport.send(
+        val delivered = sendToolOutput(callId, buildJsonObject { put("error", message) }.toString())
+        if (settled) _state.update { it.copy(working = false, activity = null) }
+        if (!delivered) return // the call is already failing; don't ask for a turn on a dead socket
+        maybeRequestResponse()
+    }
+
+    /**
+     * Send one function_call_output, ending the call if the guaranteed lane refused it.
+     *
+     * Every caller has already settled the round locally (pendingCalls cleared, outputsOwed
+     * incremented), so a dropped frame is indistinguishable from a hang — the same reasoning the
+     * success path applies, now applied by all of them.
+     */
+    private fun sendToolOutput(callId: String, output: String): Boolean {
+        val delivered = transport.send(
             buildJsonObject {
                 put("type", "conversation.item.create")
                 putJsonObject("item") {
                     put("type", "function_call_output")
                     put("call_id", callId)
-                    put("output", buildJsonObject { put("error", message) }.toString())
+                    put("output", output)
                 }
             }.toString()
         )
-        if (settled) _state.update { it.copy(working = false, activity = null) }
-        maybeRequestResponse()
+        if (!delivered) fail("Lost the connection to OpenAI mid-call.")
+        return delivered
     }
 
     /**
@@ -478,19 +476,12 @@ internal class HostVoiceCallController(
             pendingCalls.isEmpty()
         }
         log.warn("Voice tool {} did not answer in time", tool)
-        transport.send(
-            buildJsonObject {
-                put("type", "conversation.item.create")
-                putJsonObject("item") {
-                    put("type", "function_call_output")
-                    put("call_id", callId)
-                    put("output", buildJsonObject {
-                        put("error", "This tool did not answer in time.")
-                    }.toString())
-                }
-            }.toString()
+        val delivered = sendToolOutput(
+            callId,
+            buildJsonObject { put("error", "This tool did not answer in time.") }.toString(),
         )
         if (settled) _state.update { it.copy(working = false, activity = null) }
+        if (!delivered) return
         maybeRequestResponse()
     }
 
@@ -500,7 +491,11 @@ internal class HostVoiceCallController(
             if (responseOpen || pendingCalls.isNotEmpty() || outputsOwed == 0) false
             else { outputsOwed = 0; true }
         }
-        if (ask) transport.send("""{"type":"response.create"}""")
+        // A dropped response.create leaves the agent silent forever — same treatment as a dropped
+        // tool output rather than a log line.
+        if (ask && !transport.send("""{"type":"response.create"}""")) {
+            fail("Lost the connection to OpenAI mid-call.")
+        }
     }
 
     private fun sessionUpdate(s: TerminalSettings): JsonObject {

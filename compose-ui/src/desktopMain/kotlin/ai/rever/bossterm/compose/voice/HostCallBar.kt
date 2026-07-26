@@ -136,6 +136,10 @@ private fun BarButton(label: String, onClick: () -> Unit, tint: Color = Label) {
  */
 internal fun HostCallState.segmentState(enabled: Boolean, keyPresent: Boolean): CallSegmentState =
     when {
+        // Disabled wins over a stale failure: otherwise turning Boss Calling off left a
+        // "Call BossTerm · failed" pill on screen with nothing behind it.
+        !enabled && phase != HostCallPhase.Live && phase != HostCallPhase.Connecting ->
+            CallSegmentState.Hidden
         phase == HostCallPhase.Error -> CallSegmentState.Failed
         phase == HostCallPhase.Connecting -> CallSegmentState.Connecting
         phase == HostCallPhase.Live && working -> CallSegmentState.Working

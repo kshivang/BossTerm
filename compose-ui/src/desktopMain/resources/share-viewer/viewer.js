@@ -2981,9 +2981,12 @@
         connectRealtime(m); break;
       case "voiceError":
         toast(voiceErrorText(m));
-        // A refusal for a DUPLICATE start (rate limit) must not tear down the call that is already
-        // running — only errors that mean "this call can't happen" end it.
-        if (voice.state !== "idle" && !(m.code === "rate_limited" && voice.dc)) endCall(false);
+        // A refusal that belongs to a DIFFERENT (older or duplicate) request must not tear down the
+        // call that is already running: rate_limited is a duplicate start, and stale_call is a frame
+        // from a call that is already gone arriving while a new one is live. Only errors that mean
+        // "this call can't happen" end it.
+        var refusesAnotherRequest = m.code === "rate_limited" || m.code === "stale_call";
+        if (voice.state !== "idle" && !(refusesAnotherRequest && voice.dc)) endCall(false);
         break;
       case "voiceToolResult":
         // Claim FIRST, then send. Only a call still pending may be answered: voiceToolTimedOut may

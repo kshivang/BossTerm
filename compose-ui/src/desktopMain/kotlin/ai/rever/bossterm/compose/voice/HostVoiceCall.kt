@@ -70,8 +70,20 @@ internal object HostVoiceCall {
         // add another live collector writing into the same flow.
         mirrorJob?.cancel()
         mirrorJob = scope.launch {
-            launch { c.state.collect { _state.value = it } }
             launch { c.level.collect { _level.value = it } }
+            launch {
+                c.state.collect { state ->
+                    _state.value = state
+                    // A call can end itself (fail(), or a ceiling via endWith) — release the
+                    // controller and the collectors then too, or this object keeps them until the
+                    // next start()/end() despite documenting that it owns exactly one call.
+                    if (state.phase == HostCallPhase.Idle && controller === c) {
+                        controller = null
+                        killSwitchJob?.cancel()
+                        killSwitchJob = null
+                    }
+                }
+            }
         }
         c.start()
     }

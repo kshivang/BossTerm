@@ -101,7 +101,8 @@ object VoiceToolCatalog {
                 putJsonObject("tab_id") { put("type", "string"); put("description", TAB_ID_DESC) }
                 putJsonObject("timeout_ms") {
                     put("type", "integer")
-                    put("description", "Hard timeout in milliseconds (default 120000).")
+                    put("description", "Hard timeout in milliseconds. Omit for the host's " +
+                            "configured default.")
                 }
             },
             write = true,

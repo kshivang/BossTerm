@@ -129,12 +129,18 @@ internal class VoiceCallService(
         msg: ClientMessage.VoiceStart,
         canControl: Boolean,
         /**
-         * Called with this connection's token as it changes: the new token the moment a slot is
-         * reserved (BEFORE the mint, so a viewer that drops mid-mint still has its reservation
-         * retired), or null when a reservation is handed back. The caller records it on the
-         * connection.
+         * Called with the new token the moment a slot is reserved (BEFORE the mint, so a viewer that
+         * drops mid-mint still has its reservation retired). The caller records it on the connection.
          */
-        onCallTokenChanged: (String?) -> Unit = {},
+        onCallTokenChanged: (String) -> Unit = {},
+        /**
+         * Clear the connection's token, but ONLY if it still holds [token].
+         *
+         * A late mint failure used to clear unconditionally: a redial during an in-flight mint left
+         * the connection on token B, and mint #1's failure then nulled it — so mint #2 succeeded, the
+         * viewer connected and was audible and billed, and every tool call answered stale_call.
+         */
+        clearCallTokenIfCurrent: (token: String) -> Unit = {},
         /**
          * Retire whatever call this connection already had. Invoked after validation and BEFORE the
          * new reservation, so a redial at capacity reclaims its own slot instead of being refused —
@@ -165,7 +171,8 @@ internal class VoiceCallService(
         //  2. retire before reserving, so a redial reclaims its own slot instead of being refused at
         //     capacity;
         //  3. spend the budget last, so neither refusal consumes one of the mints it rations.
-        if (!tryReserveMint()) {
+        val mintReservation = tryReserveMint()
+        if (mintReservation == null) {
             log.warn("Voice session mint refused: rate limit")
             reply(ServerMessage.VoiceError(code = "rate_limited"))
             return
@@ -174,7 +181,7 @@ internal class VoiceCallService(
         val token = openCall()
         if (token == null) {
             log.warn("Voice call refused: {} calls already live", MAX_LIVE_CALLS)
-            refundMint() // it never reached OpenAI, so it must not spend the budget
+            refundMint(mintReservation) // it never reached OpenAI, so it must not spend the budget
             reply(ServerMessage.VoiceError(code = "too_many_calls"))
             return
         }
@@ -192,7 +199,7 @@ internal class VoiceCallService(
             } catch (e: Exception) {
                 log.warn("Voice tool surface unavailable: {}", e.javaClass.simpleName)
                 closeCall(token)
-                onCallTokenChanged(null)
+                clearCallTokenIfCurrent(token)
                 reply(ServerMessage.VoiceError(code = "mint_failed", message = "Tools unavailable"))
                 return@launch
             }
@@ -211,7 +218,7 @@ internal class VoiceCallService(
                     // The mint is already billed either way; that cost is unavoidable.
                     if (!isLiveCall(token)) {
                         log.info("Voice session minted for a caller that already went away; discarding")
-                        onCallTokenChanged(null)
+                        clearCallTokenIfCurrent(token)
                         return@launch
                     }
                     reply(
@@ -225,12 +232,12 @@ internal class VoiceCallService(
                 }
                 is VoiceSessionBroker.MintResult.Unauthorized -> {
                     closeCall(token) // the reservation didn't become a call
-                    onCallTokenChanged(null)
+                    clearCallTokenIfCurrent(token)
                     reply(ServerMessage.VoiceError(code = "unauthorized"))
                 }
                 is VoiceSessionBroker.MintResult.Failed -> {
                     closeCall(token)
-                    onCallTokenChanged(null)
+                    clearCallTokenIfCurrent(token)
                     reply(ServerMessage.VoiceError(code = "mint_failed", message = result.message))
                 }
             }
@@ -250,6 +257,13 @@ internal class VoiceCallService(
     ) {
         // The master switch is a kill switch: re-read it here, not just at status/start, so
         // turning Boss Calling off stops an agent that is already mid-call.
+        // Remote input: the result is clamped, but callId is echoed verbatim into VoiceToolResult and
+        // a large enough frame would trip the control lane's overflow (closing the connection).
+        if (msg.callId.length > MAX_CALL_ID_CHARS || msg.argsJson.length > MAX_ARGS_CHARS) {
+            log.warn("Voice tool call refused: oversized frame")
+            reply(toolError(msg.callId.take(MAX_CALL_ID_CHARS), "That tool call was too large."))
+            return
+        }
         val current = settings()
         if (!current.voiceCallEnabled || !current.voiceCallShareEnabled) {
             closeCalls()
@@ -368,20 +382,27 @@ internal class VoiceCallService(
      * could both pass the gap check and the cap before either appended, so neither was actually
      * enforced. A caller that then refuses the call [refundMint]s.
      */
-    private fun tryReserveMint(): Boolean = synchronized(mintTimestamps) {
+    private fun tryReserveMint(): Long? = synchronized(mintTimestamps) {
         val now = nowMs()
         while (mintTimestamps.isNotEmpty() && now - mintTimestamps.first() > MINT_WINDOW_MS) {
             mintTimestamps.removeFirst()
         }
         val lastMint = mintTimestamps.lastOrNull()
-        if (lastMint != null && now - lastMint < MINT_MIN_GAP_MS) return false
-        if (mintTimestamps.size >= MAX_MINTS_PER_WINDOW) return false
+        if (lastMint != null && now - lastMint < MINT_MIN_GAP_MS) return null
+        if (mintTimestamps.size >= MAX_MINTS_PER_WINDOW) return null
         mintTimestamps.addLast(now)
-        true
+        now
     }
 
-    /** Hand a reserved mint back — the call was refused before it reached OpenAI. */
-    private fun refundMint() = synchronized(mintTimestamps) { mintTimestamps.removeLastOrNull() }
+    /**
+     * Hand a specific reserved mint back — the call was refused before it reached OpenAI.
+     * By value, not "the last one": two concurrent starts reserving T1 and T2 meant the one refunding
+     * T1 removed T2.
+     */
+    private fun refundMint(reservation: Long) = synchronized(mintTimestamps) {
+        val at = mintTimestamps.lastIndexOf(reservation)
+        if (at >= 0) mintTimestamps.removeAt(at)
+    }
 
     /**
      * Register a freshly minted call and hand back the token the viewer must echo on tool calls.
@@ -490,12 +511,15 @@ internal class VoiceCallService(
      * shares' live calls down with it.
      */
     fun closeCalls() {
-        val hadAnnounced = synchronized(liveCalls) {
+        val announced = synchronized(liveCalls) {
             val mine = liveCalls.filterValues { it.owner === this }
             mine.keys.forEach { liveCalls.remove(it) }
-            mine.values.any { it.announced }
+            mine.values.count { it.announced }
         }
-        if (hadAnnounced) onCallActivity(false)
+        // One "ended" per announced call, matching closeCall and the expiry sweep: collapsing to a
+        // single notification meant two "started" and one "ended", and this pair is the host's only
+        // signal that remote hands are on the machine.
+        repeat(announced) { onCallActivity(false) }
     }
 
     private companion object {
@@ -506,6 +530,12 @@ internal class VoiceCallService(
         val sharedLiveCalls = LinkedHashMap<String, LiveCall>()
 
         const val MAX_IN_FLIGHT_TOOL_CALLS = 4
+
+        /** OpenAI call ids are ~30 chars; this is generous and bounds what we echo back. */
+        const val MAX_CALL_ID_CHARS = 200
+
+        /** Arguments for the curated tools are small; run_command's script is the largest by far. */
+        const val MAX_ARGS_CHARS = 32 * 1024
 
         /** Mint budget: no faster than one per gap, and no more than N per window. */
         const val MINT_MIN_GAP_MS = 3_000L

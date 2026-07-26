@@ -125,7 +125,13 @@ class MirrorShare(
             scope = coro,
             // In-process: answer from the reactive flow instead of re-reading + re-parsing
             // voice.json on every settings emission (status is recomputed per share).
-            keyPresent = { VoiceAgentStorage.keyPresentFlow.value },
+            // The flow is only written by THIS process's save()/clear() plus the startup probe, so
+            // a key deleted by hand — or cleared from a second BossTerm — left the share advertising
+            // available and the viewer holding a Call button whose only outcome is a no_key
+            // round-trip: the same undiagnosable-from-the-far-end failure `reason` exists to stop.
+            // Either source saying yes is enough. The flow is instant after an in-process save; the
+            // stamp cache catches everything else for two stats.
+            keyPresent = { VoiceAgentStorage.keyPresentFlow.value || keyOnDisk.get() == true },
             sessionName = { sessionName.value },
             onCallActivity = { started -> RemoteVoiceCalls.onActivity(sessionName.value, started) },
         )

@@ -1093,6 +1093,17 @@ data class TerminalSettings(
     val voiceCallVoice: String = "marin",
 
     /**
+     * How readily the agent treats sound as you speaking — see [ai.rever.bossterm.compose.voice.VoiceTurnDetection].
+     *
+     * Boss Calling originally used OpenAI's semantic VAD, which has no activation threshold at all:
+     * a model decides whether you have finished a thought. That is good at not interrupting you
+     * mid-sentence and offers nothing for a room with a fan in it, which is what people actually
+     * hit first. "normal" is a server-VAD threshold slightly above the API's own default, because
+     * the reported problem was over-triggering.
+     */
+    val voiceMicSensitivity: String = "normal",
+
+    /**
      * Show the "Call BossTerm" segment in the tab-bar status strip. Its own toggle, like
      * [mcpShowStatusIndicator] and [sessionSharingShowIndicator]: because Boss Calling ships
      * enabled, without this a new pill would appear for everyone — including users who had

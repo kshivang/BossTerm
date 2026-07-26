@@ -1030,7 +1030,12 @@ class VoiceCallServiceTest {
 
         val audio = session["audio"]!!.jsonObject
         val input = audio["input"]!!.jsonObject
-        assertEquals("semantic_vad", input["turn_detection"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        // The MINT body and session.update must configure turn detection identically — two places
+        // that have drifted before. Both go through VoiceTurnDetection now.
+        assertEquals(
+            VoiceTurnDetection.json(TerminalSettings.DEFAULT.voiceMicSensitivity),
+            input["turn_detection"]!!.jsonObject,
+        )
         assertEquals("marin", audio["output"]!!.jsonObject["voice"]!!.jsonPrimitive.content)
         // NO pcm format on this path, deliberately: the viewer talks WebRTC, so the browser and
         // OpenAI negotiate the codec between themselves. Raw PCM formats belong to the in-app

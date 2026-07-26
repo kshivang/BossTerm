@@ -697,7 +697,7 @@ internal class HostVoiceCallController(
                             put("type", "audio/pcm")
                             put("rate", 24_000)
                         }
-                        putJsonObject("turn_detection") { put("type", "semantic_vad") }
+                        put("turn_detection", VoiceTurnDetection.json(s.voiceMicSensitivity))
                     }
                     putJsonObject("output") {
                         // `rate` is required here too — the docs' example omits it on the output

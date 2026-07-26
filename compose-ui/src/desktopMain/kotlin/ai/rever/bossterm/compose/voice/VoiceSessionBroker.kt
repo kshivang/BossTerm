@@ -54,6 +54,8 @@ internal class VoiceSessionBroker(
         apiKey: String,
         model: String,
         voice: String,
+        /** See [VoiceTurnDetection]; the same value the in-app surface puts in session.update. */
+        micSensitivity: String,
         instructions: String,
         tools: JsonArray,
     ): MintResult {
@@ -72,7 +74,7 @@ internal class VoiceSessionBroker(
                 putJsonArray("output_modalities") { add("audio") }
                 putJsonObject("audio") {
                     putJsonObject("input") {
-                        putJsonObject("turn_detection") { put("type", "semantic_vad") }
+                        put("turn_detection", VoiceTurnDetection.json(micSensitivity))
                     }
                     putJsonObject("output") { put("voice", voice) }
                 }

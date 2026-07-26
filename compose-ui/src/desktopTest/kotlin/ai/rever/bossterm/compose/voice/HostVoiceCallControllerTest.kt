@@ -161,9 +161,12 @@ class HostVoiceCallControllerTest {
             24_000,
             audioCfg["input"]!!.jsonObject["format"]!!.jsonObject["rate"]!!.jsonPrimitive.content.toInt(),
         )
+        // Whatever the sensitivity setting says — the default is a tunable server_vad, because
+        // semantic_vad has no threshold to lower for a noisy room. VoiceTurnDetectionTest owns the
+        // mapping; this pins that session.update carries it rather than a hardcoded mode.
         assertEquals(
-            "semantic_vad",
-            audioCfg["input"]!!.jsonObject["turn_detection"]!!.jsonObject["type"]!!.jsonPrimitive.content,
+            VoiceTurnDetection.json(TerminalSettings.DEFAULT.voiceMicSensitivity),
+            audioCfg["input"]!!.jsonObject["turn_detection"]!!.jsonObject,
         )
         // Both directions need an explicit rate: the guide's example omits it on the output side
         // and the session is rejected with

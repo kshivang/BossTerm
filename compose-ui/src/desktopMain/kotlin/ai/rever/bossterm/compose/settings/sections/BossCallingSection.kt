@@ -14,6 +14,7 @@ import ai.rever.bossterm.compose.settings.components.SettingsDropdown
 import ai.rever.bossterm.compose.settings.components.SettingsSection
 import ai.rever.bossterm.compose.settings.components.SettingsToggle
 import ai.rever.bossterm.compose.voice.StampCachedValue
+import ai.rever.bossterm.compose.voice.VoiceTurnDetection
 import ai.rever.bossterm.compose.voice.StoredVoiceConfig
 import ai.rever.bossterm.compose.voice.VoiceAgentStorage
 import androidx.compose.foundation.background
@@ -130,6 +131,20 @@ internal fun BossCallingSection(
                         "way you would type them yourself. When something is already running there, " +
                         "it falls back to a separate split so it can't interrupt you. Turn this off " +
                         "to keep every agent command in its own split.",
+            )
+            SettingsDropdown(
+                label = "Microphone sensitivity",
+                options = VoiceTurnDetection.ALL.map { VoiceTurnDetection.label(it) },
+                selectedOption = VoiceTurnDetection.label(settings.voiceMicSensitivity),
+                onOptionSelected = { chosen ->
+                    val value = VoiceTurnDetection.ALL.firstOrNull { VoiceTurnDetection.label(it) == chosen }
+                        ?: VoiceTurnDetection.NORMAL
+                    onSettingsChange(settings.copy(voiceMicSensitivity = value))
+                },
+                description = "How readily the agent treats sound as you speaking. Turn this down if " +
+                        "a fan, keyboard or background chatter keeps interrupting it. Automatic lets " +
+                        "the model judge when you've finished a thought — better at not cutting you " +
+                        "off mid-sentence, but it has no threshold to lower for a noisy room.",
             )
             SettingsDropdown(
                 label = "Voice",

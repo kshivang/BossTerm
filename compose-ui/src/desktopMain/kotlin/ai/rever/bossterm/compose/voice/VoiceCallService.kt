@@ -321,6 +321,7 @@ internal class VoiceCallService(
                 apiKey = key,
                 model = s.voiceCallModel,
                 voice = s.voiceCallVoice,
+                micSensitivity = s.voiceMicSensitivity,
                 instructions = buildInstructions(msg.activeTabId, tools),
                 tools = VoiceToolCatalog.openAiToolsJson(tools),
             )

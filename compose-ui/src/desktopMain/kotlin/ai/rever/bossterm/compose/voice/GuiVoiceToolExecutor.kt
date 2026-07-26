@@ -179,6 +179,11 @@ internal class GuiVoiceToolExecutor(
     }
 
     override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?): String {
+        // ONE rebuild per call. tools() takes toolsLock (via server().toolNames()) and copies the
+        // disabled set, and this method used to call it two or three times — plus the service calls
+        // it once more just before. Resolving here also refuses a DISABLED local tool for free:
+        // tools() filters those out, so it never resolves, which is what the extra check below was
+        // doing by hand.
         val def = tools().firstOrNull { it.name == name }
             ?: throw VoiceToolException("Unknown tool: $name")
         val scope = inScopeTabIds()
@@ -206,11 +211,6 @@ internal class GuiVoiceToolExecutor(
 
         // Tab enumeration is answered locally so it can be scope-filtered (the MCP handler
         // enumerates every window on the host), and needs no target at all.
-        // Resolved against tools(), so a disabled local tool is refused here too rather than being
-        // answered by the short-circuit below.
-        if (def.name in LOCAL_TOOLS && tools().none { it.name == def.name }) {
-            throw VoiceToolException("Tool not available on this host: $name")
-        }
         when (name) {
             "list_tabs" -> return listTabsJson(scope, fallback)
             "get_active_tab" -> return tabInfoJson(

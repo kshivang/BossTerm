@@ -991,7 +991,9 @@ const scenarios = {
     socket.deliver({ t: "voiceStatus", available: false, reason: "no_key" });
     assert.ok(el("voicebar").classList.contains("on"), "a controller is told why there is no call");
     assert.strictEqual(el("voicecallbtn").className, "disabled", "but cannot start one");
-    assert.ok(/set up/i.test(el("voicecallbtn").title), el("voicecallbtn").title);
+    // no_key and disabled are different situations and now say so: the tooltip must name the key
+    // rather than repeating the generic "not set up" the label already carries.
+    assert.ok(/OpenAI key/i.test(el("voicecallbtn").title), el("voicecallbtn").title);
     el("voicecallbtn").onclick();
     assert.strictEqual(sentOfType("voiceStart").length, 0, "and clicking it does nothing");
 

@@ -479,8 +479,10 @@
   }
   function voiceErrorText(m) {
     switch (m.code) {
-      case "no_key": case "disabled":
-        return "Voice isn't set up on the host — enable Boss Calling in BossTerm Settings.";
+      case "no_key":
+        return "The host hasn't added an OpenAI key yet — Boss Calling needs one in BossTerm Settings.";
+      case "disabled":
+        return "The host has Boss Calling switched off for shared sessions.";
       case "unauthorized":
         return "The host's OpenAI key was rejected — check it in BossTerm Settings.";
       case "not_controller":

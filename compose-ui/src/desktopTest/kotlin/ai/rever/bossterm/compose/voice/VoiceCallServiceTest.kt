@@ -212,6 +212,27 @@ class VoiceCallServiceTest {
         assertEquals(listOf(true, false), synchronized(activity) { activity.toList() }, "and pairs")
     }
 
+    /**
+     * `withReason` is the per-viewer redaction: "disabled" vs "no_key" tells the reader whether the
+     * host has an OpenAI key configured, which is host configuration a view-only guest has no
+     * business knowing. Four sites implement this one policy and none of them had a test.
+     */
+    @Test
+    fun `a view-only viewer is told availability but never why`() {
+        val keyless = service(key = null)
+        assertEquals("no_key", keyless.status(withReason = true).reason, "a controller can act on it")
+        assertEquals(null, keyless.status(withReason = false).reason, "a guest learns only that it is off")
+        assertFalse(keyless.status(withReason = false).available, "availability itself is not secret")
+
+        val off = service(enabled = false)
+        assertEquals("disabled", off.status(withReason = true).reason)
+        assertEquals(null, off.status(withReason = false).reason)
+
+        // And an available host has nothing to redact either way.
+        assertEquals(null, service().status(withReason = true).reason)
+        assertEquals(null, service().status(withReason = false).reason)
+    }
+
     @Test
     fun `voiceStart without control is refused server-side`() {
         val replies = mutableListOf<ServerMessage>()

@@ -57,13 +57,43 @@ class VoiceQuietPathsTest {
         assertEquals(6, reads, "one read per change, no extra forced refreshes")
     }
 
+    /**
+     * A failed read recovers on the TRUST schedule, not on every call.
+     *
+     * Treating `cached == null` as "nothing cached yet" meant a persistently unreadable settings.json
+     * attempted a full read+parse on every get() — on the daemon, on the socket's receive loop, on
+     * the exact path this class exists to make cheap. Recovery still happens, bounded by trustTicks
+     * (and immediately if the file's stamp moves, which a file becoming readable usually does).
+     */
     @Test
-    fun `a failing read is retried rather than cached as absent`() {
+    fun `a failing read recovers, but does not retry on every call`() {
         var fail = true
-        val cache = StampCachedValue<String>(stamp = { 1L }, read = { if (fail) null else "ok" }, trustTicks = 100)
+        var reads = 0
+        val cache = StampCachedValue<String>(
+            stamp = { 1L },
+            read = { reads++; if (fail) null else "ok" },
+            trustTicks = 3,
+        )
         assertEquals(null, cache.get(), "unreadable file → no value")
+        assertEquals(1, reads)
+        repeat(2) { cache.get() } // ticks 1 and 2 of 3
+        assertEquals(1, reads, "and it does not hammer the file while it stays unreadable")
+
         fail = false
-        assertEquals("ok", cache.get(), "a null is not cached, so recovery is possible")
+        assertEquals("ok", cache.get(), "the third unchanged read exhausts trust and tries again")
+        assertEquals(2, reads)
+    }
+
+    @Test
+    fun `a stamp change recovers a failed read immediately`() {
+        var stamp = 1L
+        var fail = true
+        val cache = StampCachedValue<String>(stamp = { stamp }, read = { if (fail) null else "ok" }, trustTicks = 100)
+        assertEquals(null, cache.get())
+        // The usual real-world recovery: the file was rewritten, so its mtime/size moved.
+        fail = false
+        stamp = 2L
+        assertEquals("ok", cache.get(), "a moved stamp must not wait for trust to run out")
     }
 
     // ---- segmentState: eleven ordered branches, and the ordering is load-bearing ----

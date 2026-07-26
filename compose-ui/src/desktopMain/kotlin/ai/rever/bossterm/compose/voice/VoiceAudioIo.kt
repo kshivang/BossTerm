@@ -67,6 +67,12 @@ internal interface VoiceAudioIo {
  * Loudness of one PCM16 chunk, 0..1. Top-level and testable: this is the number behind "can it hear
  * me?", and the meter reading nothing is indistinguishable from a muted mic to the person watching.
  */
+/**
+ * Meter gain. Conversational speech sits well below full scale — RMS around 0.05-0.15 — so without
+ * this the bars would barely leave the floor and the meter would read as "not hearing you".
+ */
+private const val SPEECH_METER_GAIN = 3.0
+
 internal fun pcm16Rms(pcm: ByteArray): Float {
     if (pcm.size < 2) return 0f
     var sum = 0.0
@@ -77,8 +83,7 @@ internal fun pcm16Rms(pcm: ByteArray): Float {
         sum += (sample.toDouble() / Short.MAX_VALUE) * (sample.toDouble() / Short.MAX_VALUE)
         i += 2
     }
-    // Speech sits well below full scale, so scale up before clamping or the meter barely moves.
-    return min(1f, (sqrt(sum / samples) * 3.0).toFloat())
+    return min(1f, (sqrt(sum / samples) * SPEECH_METER_GAIN).toFloat())
 }
 
 /** The real thing: `javax.sound.sampled` lines on their own threads. */
@@ -164,7 +169,10 @@ internal class JavaSoundVoiceAudioIo(
                 // (or a throw, mapped to -1 above) means the device is gone: unplugged headset,
                 // another app taking it, a closed line.
                 if (n == 0) {
-                    runCatching { Thread.sleep(IDLE_READ_MS) }
+                    // Park longer while MUTED: the line is stopped for the whole muted stretch, so a
+                    // 20ms poll is ~50 pointless wakeups a second for as long as it lasts. Unmuting
+                    // restarts the line, and the worst case is one extra park before audio resumes.
+                    runCatching { Thread.sleep(if (captureMuted) MUTED_IDLE_MS else IDLE_READ_MS) }
                     continue
                 }
                 if (n < 0) {
@@ -275,8 +283,11 @@ internal class JavaSoundVoiceAudioIo(
         /** ~4 s of queued speech; beyond that the speaker is hopelessly behind, so drop. */
         const val PLAY_QUEUE_CHUNKS = 100
 
-        /** How long the capture loop parks when a read yields nothing (muted, or no samples yet). */
+        /** How long the capture loop parks when a read yields nothing and the mic is live. */
         const val IDLE_READ_MS = 20L
+
+        /** The same, while muted — nothing can arrive until unmute restarts the line. */
+        const val MUTED_IDLE_MS = 200L
     }
 }
 

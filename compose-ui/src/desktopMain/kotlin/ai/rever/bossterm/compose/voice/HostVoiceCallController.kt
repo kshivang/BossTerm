@@ -435,6 +435,11 @@ internal class HostVoiceCallController(
 
     private fun handleFunctionCall(callId: String?, name: String?, argsJson: String?) {
         if (callId == null || name == null) return
+        // end() writes Idle before it nulls callJob, so an event landing in that window would pass
+        // the `callJob ?: return` guard below, claim an in-flight slot, and paint "Running: …" onto a
+        // call that is already over. Nothing renders it today (the bar returns early on !active), so
+        // this is closing a latent path rather than a visible bug.
+        if (!_state.value.active) return
         // This path calls the executor directly, so VoiceCallService's re-read doesn't cover it:
         // check the switch here as well, or a call in flight keeps running tools after it is off.
         if (!settings().voiceCallEnabled) {

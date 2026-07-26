@@ -1,8 +1,6 @@
 package ai.rever.bossterm.compose.voice
 
 import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.sqrt
 
 /** What to do with one microphone frame captured while the agent is talking. */
 internal enum class Duplex {
@@ -47,20 +45,22 @@ internal enum class Duplex {
 internal class VoiceDuplexGate(
     /** One loud frame is a door closing; several in a row is a voice. ~120ms at 40ms frames. */
     private val framesToTrigger: Int = 3,
-    /** How far above the measured echo the bar must sit before a frame counts as the user. */
+    /**
+     * How far above the measured echo the bar must sit before a frame counts as the user.
+     *
+     * Only ever raises the bar — see [barFor] for why a low echo estimate must never lower it.
+     */
     private val minRatio: Float = 1.6f,
-    /** Used until the user's own level is known — no second measurement to place the bar between. */
-    private val fallbackRatio: Float = 2.0f,
     /**
      * Absolute floor, so a silent room cannot trigger.
      *
-     * With the speakers off the echo estimate falls to near zero, and any ratio of near-zero is
-     * clearable by fan noise. Well below [SPEECH_METER_GAIN]'s 0.05 figure for quiet speech: this is
-     * meant to exclude a room, not a person.
+     * Matters when the user's own measured level is very low: a bar at 70% of a near-silent
+     * measurement would be clearable by fan noise. Well below the 0.05 figure for quiet speech —
+     * this is meant to exclude a room, not a person.
      */
     private val absoluteFloor: Float = 0.03f,
     /**
-     * The fraction of the user's measured speech level the bar may reach.
+     * The fraction of the user's measured speech level the bar sits at.
      *
      * Speech is not level — it has consonants and pauses and trails off — so a bar at 100% of the
      * average would only catch the loudest syllables. At 70% a normally-spoken interruption clears
@@ -148,23 +148,36 @@ internal class VoiceDuplexGate(
     }
 
     /**
-     * Where the bar sits between the two measurements.
+     * The bar, which is the HIGHER of what the user's voice implies and what the echo implies.
      *
-     * The geometric mean rather than the arithmetic one because these are loudnesses spanning an
-     * order of magnitude: halfway between 0.04 and 0.20 should be 0.09, not 0.12.
+     * The first version took a point between the two and it self-interrupted on every reply, for a
+     * reason that is worth keeping written down because it is invisible from the code alone:
+     * [VoiceAudioIo.play] QUEUES audio, so sound does not leave the speaker for some time after
+     * `speaking` becomes true. The frames arriving in that window are room silence, not echo. Warm-up
+     * measured them, anchored the echo estimate near zero, and a bar derived partly from that
+     * estimate collapsed to [absoluteFloor] — whereupon the real echo, arriving a moment later at a
+     * perfectly ordinary 0.05, cleared it three frames running and cut the agent off mid-sentence.
+     *
+     * A low echo estimate is not evidence that a quiet sound is the user. Only the user's own
+     * measured level is evidence of that, so it alone sets the lower bound and nothing may pull the
+     * bar beneath it. The echo term can only push the bar UP, for rooms where the reply comes back
+     * loud.
      */
     private fun barFor(): Float {
-        val floor = max(echoLevel * minRatio, absoluteFloor)
         if (userLevel <= 0f) {
+            // Nothing to compare against. In practice the user speaks first, so this is only the
+            // opening greeting of a call; withholding through it costs one un-interruptible sentence
+            // and cannot mistake the agent's own voice for theirs.
             indistinguishable = false
-            return max(echoLevel * fallbackRatio, absoluteFloor)
+            return Float.MAX_VALUE
         }
-        val ceiling = userLevel * userReach
-        // When the echo comes back louder than the user's own voice there is no bar that both
-        // rejects it and admits them, and something has to give. Rejecting wins: a self-sustaining
-        // loop derails the call completely, where a missed interruption costs one sentence. Recorded
-        // so the cause is visible in the log rather than presenting as "barge-in is flaky".
-        indistinguishable = ceiling < floor
-        return if (indistinguishable) floor else max(floor, min(sqrt(echoLevel * userLevel), ceiling))
+        val fromUser = userLevel * userReach
+        val fromEcho = echoLevel * minRatio
+        // When the echo returns loud enough that rejecting it means rejecting the user too, something
+        // has to give. Rejecting wins: a self-sustaining loop derails the call completely, where a
+        // missed interruption costs one sentence. Recorded so the log names the cause rather than
+        // this presenting as "barge-in is flaky".
+        indistinguishable = fromEcho > fromUser
+        return max(max(fromUser, fromEcho), absoluteFloor)
     }
 }

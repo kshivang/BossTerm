@@ -60,6 +60,45 @@ class VoiceDuplexGateTest {
         assertTrue(g.lastBar > 0.04f, "and above the echo's, was ${g.lastBar}")
     }
 
+    /**
+     * The reported bug: the agent cut itself off mid-sentence on every reply.
+     *
+     * `play()` QUEUES audio, so nothing leaves the speaker for a moment after `speaking` becomes
+     * true. The frames captured in that gap are room silence, not echo — and the first version of
+     * this gate measured exactly them, anchored the echo estimate near zero, and let a bar derived
+     * from that estimate fall to the absolute floor. The real echo then arrived at a perfectly
+     * ordinary 0.05 and read as a voice.
+     *
+     * The gate has no clock and cannot see the latency, so it must not be able to conclude "quiet, so
+     * anything louder is the user" in the first place.
+     */
+    @Test
+    fun `playback latency does not turn the echo estimate into a hair trigger`() {
+        val g = gate()
+        repeat(20) { g.observeUserSpeech(0.10f) }
+        g.beginAgentTurn()
+        g.feed(0.0f, 8) // audio is queued but not yet audible: silence, mistaken for a quiet room
+        assertEquals(null, g.feed(0.05f, 40), "the reply arriving is not an interruption; bar ${g.lastBar}")
+        assertTrue(g.lastBar >= 0.07f, "the bar must not fall under the user's own level: ${g.lastBar}")
+    }
+
+    @Test
+    fun `a quiet echo estimate never lowers the bar below the user's voice`() {
+        val g = gate()
+        repeat(20) { g.observeUserSpeech(0.20f) } // a loud talker
+        g.settleEcho(0.01f) // headphones, or a very quiet room
+        assertEquals(null, g.feed(0.10f, 20), "half their usual level is not them; bar ${g.lastBar}")
+        assertTrue(g.feed(0.20f, 4) != null, "their actual level is")
+    }
+
+    @Test
+    fun `before the user has ever been measured nothing interrupts`() {
+        val g = gate()
+        // Only reachable when the agent speaks first. There is no evidence of what this user sounds
+        // like, so any bar would be a guess, and guessing is what cut replies off.
+        assertEquals(null, g.feed(0.5f, 40), "with nothing to compare against, withhold")
+    }
+
     @Test
     fun `one loud frame is not a voice`() {
         val g = gate()
@@ -128,12 +167,32 @@ class VoiceDuplexGateTest {
         assertTrue(g.userEstimate() < 0.30f, "one outlier must not redefine their voice: ${g.userEstimate()}")
     }
 
+    /**
+     * Superseded by [before the user has ever been measured nothing interrupts].
+     *
+     * This used to assert that a clear voice got through even with no measurement of the user, off a
+     * bar of echo × 2. That bar was the self-interruption bug: with the echo estimate anchored to the
+     * silence of playback latency, "echo × 2" is near zero and the reply clears its own bar. There is
+     * no safe threshold to pick without knowing what the user sounds like, so the gate no longer
+     * pretends there is.
+     */
     @Test
-    fun `without a user measurement it still rejects steady echo`() {
-        val g = gate()
-        g.settleEcho(0.04f) // no observeUserSpeech at all — the first reply of a call
-        assertEquals(null, g.feed(0.04f, 50))
-        assertFalse(g.indistinguishable)
-        assertTrue(g.feed(0.15f, 4) != null, "and a clear voice still gets through")
+    fun `an unmeasured user does not get a guessed threshold`() {
+        val unmeasured = gate()
+        unmeasured.settleEcho(0.04f)
+        assertEquals(null, unmeasured.feed(0.15f, 20))
+        assertFalse(
+            unmeasured.indistinguishable,
+            "this is not the loud-speaker case, it is the no-evidence case",
+        )
+
+        // One confirmed turn is all it takes. A separate gate on purpose: while nothing is known about
+        // the user every frame is presumed echo, so feeding the loud frames above to this one would
+        // teach it that 0.15 is what the room does — which is the correct reading of them, and not
+        // what this half of the claim is about.
+        val measured = gate()
+        measured.settleEcho(0.04f)
+        repeat(20) { measured.observeUserSpeech(0.15f) }
+        assertTrue(measured.feed(0.15f, 4) != null, "once measured, their voice works")
     }
 }

@@ -36,7 +36,14 @@ internal interface RealtimeTransport {
      * `function_call_output` wedges that tool round permanently (the round is already settled, so
      * `response.create` fires against a call the model never got an output for).
      *
-     * @return false when a GUARANTEED frame could not be queued; evictable sends always return true.
+     * `true` does NOT mean the frame reached OpenAI — it means the transport has ACCEPTED
+     * responsibility for delivering it, and will report a failure to deliver through `onClosed`
+     * rather than dropping it quietly. Callers rely on exactly that: they treat `false` as connection
+     * loss and settle the round on `true`, which is only sound because the writer now treats a failed
+     * send as terminal for the socket.
+     *
+     * @return false when a GUARANTEED frame could not be accepted — a full queue, or a socket that is
+     *   closed or has already failed. Evictable sends always return true.
      */
     fun send(json: String, evictable: Boolean = false): Boolean
 
@@ -176,13 +183,35 @@ internal class JdkRealtimeTransport(
                 // completes.
                 // Bounded wait: a wedged socket must not park the writer forever (and interrupting
                 // a thread inside CompletableFuture.join() would not release it).
-                runCatching { ws.sendText(json, true).orTimeout(15, TimeUnit.SECONDS).join() }
-                    .onFailure { log.warn("Voice send failed: {}", it.javaClass.simpleName) }
+                val failure = runCatching {
+                    ws.sendText(json, true).orTimeout(SEND_TIMEOUT_SECONDS, TimeUnit.SECONDS).join()
+                }.exceptionOrNull()
+                if (failure != null) {
+                    // A failed send is TERMINAL for this socket, not a lost frame.
+                    //
+                    // orTimeout completes the FUTURE exceptionally; it does not retract the send the
+                    // JDK still has in flight. Since the contract forbids starting the next text send
+                    // before the previous one completes, every subsequent sendText on this socket
+                    // throws IllegalStateException("Pending text message") — forever. Swallowing that
+                    // into a log line left `open` true, so send() kept reporting frames as accepted,
+                    // sendToolOutput kept reporting them delivered, rounds settled locally, and
+                    // response.create fired into a socket that would never carry it: a permanently
+                    // mute call with no error anywhere. Fail loudly through the same path a dropped
+                    // connection takes.
+                    log.warn("Voice send failed ({}); ending the call", failure.javaClass.simpleName)
+                    open = false
+                    runCatching { ws.abort() }
+                    runCatching { onClosed(failure.javaClass.simpleName) }
+                    break
+                }
             }
         }, "boss-voice-ws-writer").apply { isDaemon = true; start() }
     }
 
     override fun send(json: String, evictable: Boolean): Boolean {
+        // Refuses once the socket has failed, not just once it is closed — the writer clears `open`
+        // on a terminal send failure precisely so later frames are reported as undeliverable rather
+        // than queued into a socket that can no longer carry them.
         if (!open) return false
         val accepted = lanes.offer(json, evictable)
         if (!accepted) {
@@ -231,6 +260,12 @@ internal class JdkRealtimeTransport(
 
         /** How long close() waits for the writer to unwind before abandoning it. */
         const val WRITER_SHUTDOWN_MS = 500L
+
+        /**
+         * Per-frame send ceiling. Reaching it kills the socket (see the writer loop): the JDK will
+         * not accept another text send while this one is pending, so there is no recovery from here.
+         */
+        const val SEND_TIMEOUT_SECONDS = 15L
 
 
         /**

@@ -120,6 +120,31 @@ class VoiceCallServiceTest {
         assertTrue(TerminalSettings.DEFAULT.voiceCallShareEnabled)
     }
 
+    /**
+     * The `voiceSession` reply carries the ephemeral `ek_…`. On a plain `ws://` LAN share spoken by a
+     * legacy plaintext client, that secret would cross the wire in the clear. The stock viewer hides
+     * its Call button outside a secure context — but that is the CLIENT policing itself, and the host
+     * will mint for anything that asks, so the refusal has to live here too.
+     */
+    @Test
+    fun `an unencrypted connection is refused before anything is minted`() {
+        val replies = mutableListOf<ServerMessage>()
+        val svc = service()
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = false) { replies.add(it) }
+
+        assertEquals("insecure_transport", (replies.single() as ServerMessage.VoiceError).code)
+        // Refused BEFORE the budget: an unusable connection must not be able to spend the host's
+        // mints just by asking repeatedly.
+        replies.clear()
+        repeat(VoiceCallService.MAX_MINTS_PER_WINDOW + 2) {
+            svc.handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = false) { replies.add(it) }
+        }
+        assertTrue(
+            replies.all { (it as ServerMessage.VoiceError).code == "insecure_transport" },
+            "no attempt may reach the rate limiter: ${replies.map { (it as ServerMessage.VoiceError).code }}",
+        )
+    }
+
     @Test
     fun `voiceStart without control is refused server-side`() {
         val replies = mutableListOf<ServerMessage>()

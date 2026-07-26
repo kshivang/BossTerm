@@ -52,8 +52,17 @@ internal class GuiVoiceToolExecutor(
         val LOCAL_TOOLS = setOf("list_tabs", "get_active_tab")
     }
 
-    /** The embedder's config, or library defaults when no manager was ever constructed. */
-    private val mcpConfig: BossTermMcpConfig get() = registry.mcpConfig ?: BossTermMcpConfig()
+    /**
+     * The embedder's config, or a READ-ONLY default when no manager was ever constructed.
+     *
+     * `BossTermMcpConfig()` defaults `allowWriteTools = true`, which is right for an app that set up
+     * MCP and said nothing about writes. It is not right here: a null `mcpConfig` means nobody ever
+     * published one — an embedder that deliberately never wanted MCP at all — and "nobody told us"
+     * must not resolve the same way as "they told us it is fine". The voice surface is the only
+     * caller that can reach this path without the embedder having opted into anything.
+     */
+    private val mcpConfig: BossTermMcpConfig
+        get() = registry.mcpConfig ?: BossTermMcpConfig(allowWriteTools = false)
 
     // Built lazily so no MCP machinery spins up until the first call actually starts.
     private val wrapper: BossTermMcpServer by lazy { BossTermMcpServer(config = mcpConfig) }

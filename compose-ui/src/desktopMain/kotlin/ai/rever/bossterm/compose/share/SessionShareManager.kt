@@ -994,6 +994,9 @@ object SessionShareManager {
             canControl,
             hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})",
             supportsPaneGraphics,
+            // A negotiated cipher means every frame is encrypted end-to-end, which is what lets the
+            // host hand this connection an ephemeral OpenAI secret. See ViewerConnection.confidential.
+            confidential = serverCipher != null,
         )
         vc.grantKey = accessKey // lets an approved mid-session upgrade persist into the grant
         try {

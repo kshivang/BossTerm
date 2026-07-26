@@ -39,8 +39,12 @@ class RealtimeTransportLifecycleTest {
         /** Completed by the test to release a send, so a parked writer can be observed. */
         @Volatile var gate: CompletableFuture<WebSocket>? = null
 
+        /** Once true, every send throws — what the JDK does after a pending text message. */
+        @Volatile var failSends = false
+
         override fun sendText(data: CharSequence, last: Boolean): CompletableFuture<WebSocket> {
             senderThreads.add(System.identityHashCode(Thread.currentThread()))
+            if (failSends) throw IllegalStateException("Pending text message")
             sent.add(data.toString())
             return gate ?: CompletableFuture.completedFuture(this)
         }
@@ -145,6 +149,36 @@ class RealtimeTransportLifecycleTest {
             1,
             second.senderThreads.size,
             "exactly one writer may ever send on a socket; saw ${second.senderThreads}",
+        )
+        h.transport.close()
+    }
+
+    /**
+     * A failed send is terminal for the socket, not a lost frame.
+     *
+     * `orTimeout` completes the FUTURE exceptionally; it does not retract the send the JDK still has
+     * in flight, and the contract forbids starting the next text send before the previous completes —
+     * so every later sendText on that socket throws for the rest of its life. Swallowed into a log
+     * line, that left `open` true: send() kept accepting frames, the controller kept settling rounds
+     * on "delivered", and response.create fired into a socket that would never carry it. A
+     * permanently mute call with no error anywhere.
+     */
+    @Test
+    fun `a send that fails ends the call instead of going quiet`() = runBlocking {
+        val h = Harness()
+        val closes = ConcurrentLinkedQueue<String?>()
+        h.transport.connect("gpt-realtime-2.1", "sk-a", events = {}, onClosed = { closes.add(it) })
+        val socket = h.sockets[0]
+
+        // The JDK's behaviour once a send has not completed: everything after it throws.
+        socket.failSends = true
+        assertTrue(h.transport.send("""{"type":"one"}"""), "queued before the failure is known")
+
+        assertTrue(await { closes.isNotEmpty() }, "the failure must reach the controller's onClosed")
+        assertTrue(await { socket.aborted }, "and the dead socket is released")
+        assertFalse(
+            h.transport.send("""{"type":"two"}"""),
+            "later frames must be refused, not accepted into a socket that cannot carry them",
         )
         h.transport.close()
     }

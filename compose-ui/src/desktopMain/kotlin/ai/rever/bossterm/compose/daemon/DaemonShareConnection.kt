@@ -23,6 +23,13 @@ internal class DaemonShareConnection(
     val name: String,
     /** True for the bundled web viewer; native peers decode raw graphics themselves. */
     val supportsPaneGraphics: Boolean = false,
+    /**
+     * Whether this connection's frames are confidential (the E2E handshake completed).
+     *
+     * Boss Calling gates on it — see the equivalent on
+     * [ai.rever.bossterm.compose.share.ViewerConnection].
+     */
+    val confidential: Boolean = false,
 ) {
     // Tighter budget than the attach outbox: browser viewers ride real (possibly remote) links, and
     // a healing re-snapshot replaces a big stale backlog more cheaply than delivering it.

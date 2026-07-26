@@ -160,7 +160,10 @@ internal fun BossCallingSection(showAgentOptions: Boolean = true, statusLine: Bo
     }
     // A couple of stats behind the stamp cache, only while this window is open — the same cost the
     // daemon's own 5s voice-status poll already pays.
-    val onDisk by produceState(inMemory) {
+    // Keyed on `inMemory`: with no key the producer launches once and its `?: inMemory` fallback
+    // stays pinned to the first composition's snapshot, so an unreadable settings.json would keep
+    // showing stale values even after this process's own copy moved on.
+    val onDisk by produceState(inMemory, inMemory) {
         while (true) {
             value = withContext(Dispatchers.IO) { settingsCache.get() } ?: inMemory
             delay(CROSS_PROCESS_REFRESH_MS)

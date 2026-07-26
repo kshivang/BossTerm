@@ -273,6 +273,11 @@ sealed class ServerMessage {
      *  - `too_many_calls` — the host is already at its concurrent-call ceiling
      *  - `stale_call` — a frame for a call that is no longer this connection's; an existing call
      *    keeps running
+     *  - `insecure_transport` — the connection isn't encrypted, so the host won't put an ephemeral
+     *    OpenAI secret on it
+     *
+     * `VoiceCrossLanguageContractTest` now asserts this list against viewer.js, so the two cannot
+     * drift silently — but keep the list itself accurate, since the test reads it from here.
      *
      * [message] is optional human-readable detail (already sanitized).
      */

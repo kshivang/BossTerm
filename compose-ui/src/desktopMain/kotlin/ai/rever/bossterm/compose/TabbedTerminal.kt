@@ -2120,16 +2120,19 @@ fun TabbedTerminal(
         // lambda owns the terminal rendering path, and the call state carries fields that change
         // several times a second while a call is up. Only segment transitions belong here — the
         // level meter collects its own flow inside HostCallBar.
-        val voiceEnabled = settings.voiceCallEnabled
-        val voiceIndicator = settings.voiceShowStatusIndicator
-        val callSegment by remember(voiceEnabled, voiceIndicator) {
+        // The settings flow is IN the combine rather than a remember() key: keyed on the toggles, the
+        // whole flow was rebuilt whenever either changed, and collectAsState's initial value flashed
+        // the segment to Hidden for a frame — a pill that blinks mid-call because someone opened
+        // Settings. With no keys the subscription outlives every toggle change.
+        val callSegment by remember {
             combine(
                 HostVoiceCall.state,
                 VoiceAgentStorage.keyPresentFlow,
-            ) { call, keyPresent ->
+                SettingsManager.instance.settings,
+            ) { call, keyPresent, live ->
                 call.segmentState(
-                    featureEnabled = voiceEnabled,
-                    indicatorEnabled = voiceIndicator,
+                    featureEnabled = live.voiceCallEnabled,
+                    indicatorEnabled = live.voiceShowStatusIndicator,
                     keyPresent = keyPresent,
                 )
             }

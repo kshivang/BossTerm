@@ -50,6 +50,10 @@ internal object HostVoiceCall {
         if (existing != null && existing.state.value.active) return
         // `created` so the terminal callback can name the controller it belongs to: the release must
         // be a no-op for a call this object has already moved on from.
+        // A FRESH controller per call is required, not merely tidy: JavaSoundVoiceAudioIo is
+        // single-use by design (its `disposed` latch is never cleared, because clearing it is what
+        // let an end-during-agent-speech resurrect the capture loop and leak a line and a thread per
+        // call), so reusing a controller would start a call whose audio can never open.
         var created: HostVoiceCallController? = null
         val c = HostVoiceCallController(
             scope = scope,

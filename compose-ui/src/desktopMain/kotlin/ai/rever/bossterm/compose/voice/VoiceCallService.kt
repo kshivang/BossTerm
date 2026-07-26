@@ -131,6 +131,16 @@ internal class VoiceCallService(
         msg: ClientMessage.VoiceStart,
         canControl: Boolean,
         /**
+         * Whether this connection's frames are confidential (E2E-encrypted, or over TLS).
+         *
+         * The reply to a successful start carries the ephemeral `ek_…` secret, so on a plain
+         * `ws://` LAN share spoken by a legacy plaintext client it would cross the wire in the
+         * clear. The stock viewer already hides the Call button outside a secure context — but that
+         * is the client policing itself, and the host will mint for anything that asks. Defaults to
+         * true so existing callers are unchanged; both servers pass their real value.
+         */
+        confidential: Boolean = true,
+        /**
          * Called with the new token the moment a slot is reserved (BEFORE the mint, so a viewer that
          * drops mid-mint still has its reservation retired). The caller records it on the connection.
          */
@@ -162,6 +172,13 @@ internal class VoiceCallService(
         // it is bounded — but the claim that these are the free checks and only loadKey() touches
         // disk was not true here. The key READ (and its decrypt-shaped JSON parse) is still deferred
         // to the coroutine below; what stays here is what has to gate the reservation.
+        // Before anything that costs money or reveals configuration: this connection cannot be
+        // trusted with a secret, whatever its role.
+        if (!confidential) {
+            log.warn("Voice call refused: the viewer's connection is not encrypted")
+            reply(ServerMessage.VoiceError(code = "insecure_transport"))
+            return
+        }
         val s = settings()
         if (!s.voiceCallEnabled || !s.voiceCallShareEnabled) {
             reply(ServerMessage.VoiceError(code = "disabled"))
@@ -442,16 +459,14 @@ internal class VoiceCallService(
 
     private fun openCallLocked(): String? {
         val now = nowMs()
-        expiredAnnouncements += expireOwnCalls(now)
+        expiredAnnouncements += expireCalls(now)
         // Refuse rather than evict: dropping the oldest token left that caller's audio running while
         // every tool answered "No active call", with no way back but hanging up and redialling.
         //
-        // Count only UN-EXPIRED entries. The sweep above is owner-filtered on purpose — the "ended"
-        // announcement belongs to the service that opened the call — but the cap was checked against
-        // the whole process-wide map, so another share's calls past the ceiling denied capacity here
-        // until that share happened to sweep. Nothing sweeps periodically, so a share seeing no
-        // further voice traffic could hold a slot indefinitely. Foreign expired entries are still
-        // left for their owner to announce; they just no longer count.
+        // Count only UN-EXPIRED entries. The sweep above is owner-filtered on purpose (see
+        // [expireCalls]), so the map can still hold another share's aged-out calls — and checking the
+        // raw size meant those denied capacity here until that share happened to sweep, which for a
+        // share seeing no further voice traffic is never.
         val liveNow = liveCalls.count { now - it.value.issuedAt <= MAX_CALL_DURATION_MS }
         if (liveNow >= MAX_LIVE_CALLS) return null
         val token = UUID.randomUUID().toString()
@@ -472,7 +487,7 @@ internal class VoiceCallService(
      */
     private fun isLiveCall(token: String?): Boolean {
         val live = synchronized(liveCalls) {
-            expiredAnnouncements += expireOwnCalls(nowMs())
+            expiredAnnouncements += expireCalls(nowMs())
             isLiveCallLocked(token)
         }
         flushExpiredAnnouncements()
@@ -496,7 +511,19 @@ internal class VoiceCallService(
      * been told about. Filters on owner like every other mutation here — the sweep was the one place
      * that reaped other shares' entries.
      */
-    private fun expireOwnCalls(now: Long): Int {
+    /**
+     * Retire calls past the duration ceiling; @return how many of OUR OWN were announced, so the
+     * caller can pair an "ended" with each "started".
+     *
+     * Removal is owner-filtered too, and deliberately so. Sweeping other shares' aged-out entries
+     * would tidy the map — each holds a strong reference to the service that opened it — but an
+     * ANNOUNCED foreign call would then be removed by us and never announced as ended by its owner,
+     * which breaks the pairing invariant that several rounds of this branch were spent establishing.
+     * A stale entry cannot deny capacity (see [openCallLocked], which counts only un-expired ones)
+     * and both share teardown paths retire their own calls, so what is left is a bounded tidiness
+     * problem — strictly better than a lost notification.
+     */
+    private fun expireCalls(now: Long): Int {
         val expired = liveCalls.filterValues { it.owner === this && now - it.issuedAt > MAX_CALL_DURATION_MS }
         expired.keys.forEach { liveCalls.remove(it) }
         return expired.values.count { it.announced }
@@ -508,7 +535,7 @@ internal class VoiceCallService(
         // Ownership as well as liveness: a token issued for another share must not drive this one's
         // tools just because both read the same process-wide map.
         if (call.owner !== this) return false
-        // The duration ceiling is applied by expireOwnCalls before this runs. NOTE the audio session
+        // The duration ceiling is applied by expireCalls before this runs. NOTE the audio session
         // itself is browser↔OpenAI, so the host cannot hang that up — a viewer ignoring `voiceStatus`
         // keeps hearing the agent; it just loses every tool.
         return true

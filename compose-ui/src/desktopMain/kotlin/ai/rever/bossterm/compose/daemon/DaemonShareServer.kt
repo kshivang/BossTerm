@@ -757,6 +757,8 @@ class DaemonShareServer(
             canControl,
             hello?.name?.takeIf { it.isNotBlank() } ?: "Viewer (${clientId.take(6)})",
             hello?.capabilities?.contains(PANE_GRAPHICS_CAPABILITY) == true,
+            // A negotiated cipher is what lets this connection be handed an ephemeral OpenAI secret.
+            confidential = serverCipher != null,
         )
 
         // Per-session attachment: the output tap + its size collector. Mutated from BOTH the change
@@ -1177,6 +1179,7 @@ class DaemonShareServer(
                 def.voiceService.handleStart(
                     msg,
                     vc.canControl,
+                    confidential = vc.confidential,
                     // Retire the previous call BEFORE reserving (so a redial reclaims its own slot),
                     // and only after the control/enabled/key checks — a view-only viewer must not be
                     // able to end a live call just by asking.

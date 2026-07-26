@@ -453,6 +453,9 @@
         return "That call is no longer active — start a new one.";
       case "too_many_calls":
         return "This session already has as many voice calls as it allows.";
+      case "insecure_transport":
+        return "This link isn't encrypted, so the host won't start a call on it — open the share " +
+          "link with its #k secret, or over https.";
       default:
         return "Couldn't start the call" + (m.message ? ": " + m.message : ".");
     }

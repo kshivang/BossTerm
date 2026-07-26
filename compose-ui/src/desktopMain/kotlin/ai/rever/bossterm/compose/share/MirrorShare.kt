@@ -236,8 +236,11 @@ class MirrorShare(
         canControl: Boolean,
         name: String = "Viewer",
         supportsPaneGraphics: Boolean = false,
+        confidential: Boolean = false,
     ): ViewerConnection {
-        val vc = ViewerConnection(viewerSeq.incrementAndGet(), canControl, name, supportsPaneGraphics)
+        val vc = ViewerConnection(
+            viewerSeq.incrementAndGet(), canControl, name, supportsPaneGraphics, confidential,
+        )
         viewers.add(vc)
         if (supportsPaneGraphics) {
             // A graphics mutation may have landed after this viewer's initial full frames were
@@ -447,6 +450,7 @@ class MirrorShare(
                 voiceService.handleStart(
                     msg,
                     vc.canControl,
+                    confidential = vc.confidential,
                     // Retire the previous call BEFORE reserving (so a redial reclaims its own slot),
                     // and only after the control/enabled/key checks — a view-only viewer must not be
                     // able to end a live call just by asking.
@@ -1063,6 +1067,16 @@ class ViewerConnection(
     val name: String = "Viewer",
     /** True only for peers that render the host's normalized image-cell protocol. */
     val supportsPaneGraphics: Boolean = false,
+    /**
+     * Whether this connection's frames are confidential — the viewer completed the E2E handshake, so
+     * every frame is AES-GCM'd under a secret that only travels in the link's `#k` fragment.
+     *
+     * Boss Calling gates on it: a `voiceSession` reply carries the ephemeral `ek_…`, and on a plain
+     * `ws://` LAN share with a legacy plaintext client that secret would cross the wire in the clear.
+     * The stock viewer already refuses to offer the Call button without a secure context, but that is
+     * the CLIENT deciding; this is the host refusing to mint one.
+     */
+    val confidential: Boolean = false,
 ) {
     internal val outbox = BoundedViewerOutbox()
     internal val graphicsResyncLimiter = GraphicsResyncLimiter()

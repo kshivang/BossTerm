@@ -441,13 +441,16 @@ internal class HostVoiceCallController(
     private fun onEvent(text: String) {
         val event = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
         when (event["type"]?.jsonPrimitive?.content) {
-            "response.created" -> synchronized(roundLock) { responseOpen = true }
-
-            // A new turn starting means the last one's transient error is history. Only a completed
-            // tool round cleared `activity`, so a single non-fatal hiccup captioned the bar for the
-            // rest of a call that had no further tool calls.
-            "response.created" -> _state.update {
-                if (it.working) it else it.copy(activity = null)
+            "response.created" -> {
+                synchronized(roundLock) { responseOpen = true }
+                // A new turn starting means the last one's transient error is history. Only a
+                // completed tool round cleared `activity`, so a single non-fatal hiccup captioned
+                // the bar for the rest of a call that had no further tool calls.
+                //
+                // This was added as a SECOND "response.created" branch, which `when` never reaches —
+                // Kotlin only warns on a duplicate label, and no test asserted on `activity`, so
+                // eight tests over this state machine stayed green while the fix did nothing.
+                _state.update { if (it.working) it else it.copy(activity = null) }
             }
 
             "response.output_audio.delta" -> {

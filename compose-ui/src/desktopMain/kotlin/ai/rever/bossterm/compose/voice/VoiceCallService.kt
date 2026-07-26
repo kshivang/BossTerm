@@ -264,7 +264,9 @@ internal class VoiceCallService(
         //     retirePreviousCall — a caller-supplied callback — which is a worse trade than the
         //     race. Stated rather than fixed, so the next reader does not assume it is airtight;
         
-        //  3. spend the budget last, so neither refusal consumes one of the mints it rations.
+        //  3. the budget is PEEKED first (see 1) and every refusal below refunds, which is how "no
+        //     refusal consumes one of the mints it rations" is actually achieved — this used to say
+        //     the budget was spent last, which describes the opposite of the code.
         val mintReservation = tryReserveMint()
         if (mintReservation == null) {
             log.warn("Voice session mint refused: rate limit")
@@ -481,6 +483,12 @@ internal class VoiceCallService(
             isError = true,
         )
 
+    /**
+     * The agent's system prompt. EVERY interpolated field goes through [VoiceContextSnapshot.field]:
+     * a newline in any of them can close the structure and open what reads like a new instruction.
+     * sessionName is host-typed today, so it was the one exemption — but it is the same rule, the
+     * sanitizer costs nothing, and an exemption is what the next reader copies.
+     */
     private fun buildInstructions(activeTabId: String?, tools: List<VoiceToolDef>): String {
         val names = tools.map { it.name }.toSet()
         val extra = runCatching { settings().voiceAgentExtraInstructions }.getOrNull()
@@ -489,7 +497,7 @@ internal class VoiceCallService(
             appendLine("You are Boss, a voice assistant inside a shared BossTerm terminal session.")
             appendLine("A remote user is watching this terminal in a browser and talking to you.")
             appendLine()
-            sessionName()?.let { appendLine("Session: $it") }
+            sessionName()?.let { appendLine("Session: ${VoiceContextSnapshot.field(it)}") }
             appendLine("Session snapshot (may be stale — use tools for fresh data):")
             appendLine(snapshot.ifBlank { "- (no tabs visible)" })
             appendLine("Default all tool calls to the tab the user is viewing (omit tab_id).")

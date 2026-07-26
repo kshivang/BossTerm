@@ -733,6 +733,67 @@ class HostVoiceCallControllerTest {
         )
     }
 
+    /**
+     * A transient error must not caption the bar for the rest of the call.
+     *
+     * Nothing asserted on `activity`, which is how a dead `when` branch shipped: the clear was added
+     * as a SECOND "response.created" case, and Kotlin only warns on a duplicate label. Eight tests
+     * over this state machine stayed green while the fix did nothing.
+     */
+    @Test
+    fun `a new turn clears a stale error caption`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val c = controller(transport, audio)
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+
+        transport.deliver("""{"type":"error","error":{"message":"transient hiccup"}}""")
+        assertTrue(
+            await { c.state.value.activity?.contains("transient hiccup") == true },
+            "the error is shown: ${c.state.value.activity}",
+        )
+        assertEquals(HostCallPhase.Live, c.state.value.phase, "a non-fatal error does not end the call")
+
+        transport.deliver("""{"type":"response.created"}""")
+        assertTrue(
+            await { c.state.value.activity == null },
+            "a new turn clears it; saw ${c.state.value.activity}",
+        )
+        c.end()
+    }
+
+    /** But a caption describing a RUNNING tool is not stale, so a new turn must not wipe it. */
+    @Test
+    fun `a new turn leaves a working caption alone`() {
+        val gate = CompletableDeferred<Unit>()
+        val slow = object : VoiceToolExecutor {
+            override fun tools(): List<VoiceToolDef> = VoiceToolCatalog.ALL.filter { !it.guiOnly }
+            override fun contextSnapshot(defaultTabId: String?): String = ""
+            override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?): String {
+                gate.await()
+                return "{}"
+            }
+        }
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val c = controller(transport, audio, executor = slow)
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+
+        transport.deliver(
+            """{"type":"response.function_call_arguments.done","call_id":"t1","name":"read_scrollback","arguments":"{}"}"""
+        )
+        assertTrue(await { c.state.value.working }, "the tool is in flight")
+        val caption = c.state.value.activity
+
+        transport.deliver("""{"type":"response.created"}""")
+        Thread.sleep(150)
+        assertEquals(caption, c.state.value.activity, "a live tool's caption must survive a new turn")
+        gate.complete(Unit)
+        c.end()
+    }
+
     @Test
     fun `a long in-app call stops at the duration ceiling`() {
         var clock = 1_000L

@@ -273,7 +273,7 @@ internal class JavaSoundVoiceAudioIo(
         // way to the speaker, and the bar cleared "Speaking" ahead of the audio by exactly the
         // amount this feature is trying not to be wrong by.
         val inLine = runCatching { playback?.let { it.bufferSize - it.available() } ?: 0 }.getOrDefault(0)
-        return bytesToMs(queuedBytes.get() + inLine.coerceAtLeast(0))
+        return bytesToMs((queuedBytes.get() + inLine).coerceAtLeast(0))
     }
 
     /**
@@ -302,7 +302,10 @@ internal class JavaSoundVoiceAudioIo(
         playbackThread = Thread({
             while (running || playQueue.isNotEmpty()) {
                 val chunk = runCatching { playQueue.poll(200, TimeUnit.MILLISECONDS) }.getOrNull() ?: continue
-                queuedBytes.addAndGet(-chunk.size)
+                // Floored: flushPlayback() can reset the counter between this thread's poll and its
+                // subtraction, and a negative total then under-reports against AUDIBLE_TAIL_MS —
+                // clearing "Speaking" early, which is the one thing queuedPlaybackMs exists to stop.
+                queuedBytes.updateAndGet { (it - chunk.size).coerceAtLeast(0) }
                 runCatching { line.write(chunk, 0, chunk.size) }
             }
         }, "boss-voice-playback").apply { isDaemon = true; start() }

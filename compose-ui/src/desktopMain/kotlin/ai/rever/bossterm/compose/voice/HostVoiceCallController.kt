@@ -233,6 +233,14 @@ internal class HostVoiceCallController(
                 runCatching { audio.stop() }
                 return@launch
             }
+            // Re-check the master switch with the mic KNOWN open. The owner arms its kill-switch
+            // collector around this coroutine, so a flip that lands while we are connecting can be
+            // missed by both — and the failure mode is an open microphone nothing holds a reference
+            // to. Cheap, and this is the last moment before the call is live.
+            if (!settings().voiceCallEnabled) {
+                fail("Boss Calling was turned off.")
+                return@launch
+            }
             _state.update { it.copy(phase = HostCallPhase.Live, activity = null) }
             startLimits()
         }
@@ -283,7 +291,13 @@ internal class HostVoiceCallController(
 
     fun toggleMute() {
         if (!_state.value.active) return
-        _state.update { it.copy(muted = !it.muted) }
+        val muted = !_state.value.muted
+        _state.update { it.copy(muted = muted) }
+        // Stop the LINE, not just the send: skipping the append was already enough for correctness,
+        // but it left the platform's microphone indicator lit for the whole muted stretch — which
+        // reads as "still listening" to exactly the user who just pressed Mute.
+        runCatching { audio.setCaptureMuted(muted) }
+        if (muted) _level.value = 0f
     }
 
     /** End the call and release the mic + speaker. */
@@ -589,27 +603,7 @@ internal class HostVoiceCallController(
             appendLine(snapshot.ifBlank { "- (no tabs visible)" })
             appendLine("Default tool calls to the tab they are viewing (omit tab_id).")
             appendLine()
-            appendLine("Rules:")
-            appendLine("- Inspect before you answer: read_scrollback" +
-                    (if ("search_output" in names) " / search_output" else "") +
-                    (if ("get_last_command" in names) " / get_last_command" else "") + ".")
-            if ("run_command" in names) {
-                appendLine("- Run shell commands with run_command; send_input only for interactive " +
-                        "programs (TUIs, prompts); send_signal ctrl_c to interrupt.")
-                appendLine("- If run_command reports that shell integration is missing, fall back to " +
-                        "send_input (with a trailing newline) plus read_scrollback — don't tell the " +
-                        "user the feature is broken.")
-            } else if ("send_input" in names) {
-                // An embedder with allowWriteTools = false has no run_command; describe what it does
-                // have rather than dropping write guidance entirely.
-                appendLine("- Run shell commands by typing them with send_input (include a trailing " +
-                        "\\n to submit), then read_scrollback for the result; send_signal ctrl_c to interrupt.")
-            }
-            appendLine("- Say briefly what you are about to do before a slow tool call, and summarize " +
-                    "results conversationally — never read raw terminal output verbatim.")
-            appendLine("- For destructive commands (rm, kill, force-push, reset --hard), say the exact " +
-                    "command and get spoken confirmation first.")
-            append("- Keep replies short. This is a voice conversation.")
+            append(voiceAgentRules(names, confirmationWording = "spoken"))
         }
     }
 

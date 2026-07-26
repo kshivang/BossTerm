@@ -40,6 +40,8 @@ internal class VoiceSessionBroker(
     sealed class MintResult {
         data class Ok(val clientSecret: String) : MintResult()
         data object Unauthorized : MintResult()
+        /** OpenAI's own 429, kept distinct so the viewer hears "wait and retry", not a status code. */
+        data object RateLimited : MintResult()
         data class Failed(val message: String) : MintResult()
     }
 
@@ -85,6 +87,15 @@ internal class VoiceSessionBroker(
                 resp.status == HttpStatusCode.Unauthorized || resp.status == HttpStatusCode.Forbidden -> {
                     log.warn("Voice session mint rejected ({})", resp.status.value)
                     MintResult.Unauthorized
+                }
+                // OpenAI's own rate limit reads the same to the caller as ours does, so it gets the
+                // same "wait and retry" story rather than a bare status code they can't act on.
+                resp.status == HttpStatusCode.TooManyRequests -> {
+                    log.warn(
+                        "Voice session mint rate-limited by OpenAI (request-id {})",
+                        resp.headers["x-request-id"] ?: "none",
+                    )
+                    MintResult.RateLimited
                 }
                 resp.status.value in 200..299 -> parseMint(resp.bodyAsText())
                 else -> {

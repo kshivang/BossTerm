@@ -74,6 +74,9 @@ class HostVoiceCallControllerTest {
             this.onChunk = onChunk
             onLevel(0.5f)
         }
+        /** Mirrors the real line: muted means the capture line is STOPPED, not merely ignored. */
+        var lineMuted = false
+        override fun setCaptureMuted(muted: Boolean) { lineMuted = muted }
         override fun play(pcm: ByteArray) { played.add(pcm) }
         override fun flushPlayback() { flushes += 1 }
         override fun stop() { stopped = true; capturing = false }
@@ -184,10 +187,23 @@ class HostVoiceCallControllerTest {
 
         c.toggleMute()
         assertTrue(c.state.value.muted)
+        // Mute has to reach the LINE, not just the send: leaving the capture line started kept the
+        // platform's microphone indicator lit, which reads as "still listening" to the person who
+        // just pressed Mute — on a feature whose whole trust story is that you can see what it does.
+        assertTrue(audio.lineMuted, "muting stops the capture line, not just the append")
         val before = transport.sentOfType("input_audio_buffer.append").size
         audio.emit(byteArrayOf(9, 9))
         Thread.sleep(100)
         assertEquals(before, transport.sentOfType("input_audio_buffer.append").size, "muted mic must not be sent")
+
+        c.toggleMute()
+        assertFalse(c.state.value.muted)
+        assertFalse(audio.lineMuted, "and unmuting restarts it")
+        audio.emit(byteArrayOf(7, 7))
+        assertTrue(
+            await { transport.sentOfType("input_audio_buffer.append").size > before },
+            "audio flows again after unmute",
+        )
         c.end()
     }
 
@@ -450,6 +466,36 @@ class HostVoiceCallControllerTest {
             "the call must not be judged idle the moment a long tool answers",
         )
         c.end()
+    }
+
+    /**
+     * The owner arms its kill-switch collector around start(), so a flip landing while we connect
+     * can be missed by both sides — and what is left over is an open microphone with nothing holding
+     * a reference to stop it. This is the last check before the call goes live, with the mic known
+     * open, so it closes that window for good.
+     */
+    @Test
+    fun `turning the feature off mid-connect stops the call before it goes live`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        // Enabled for start()'s own gate and the session read; off by the time the mic is open.
+        val reads = java.util.concurrent.atomic.AtomicInteger(0)
+        val c = HostVoiceCallController(
+            scope = CoroutineScope(Dispatchers.Default),
+            executor = FakeExecutor(),
+            transport = transport,
+            audio = audio,
+            settings = {
+                TerminalSettings.DEFAULT.copy(voiceCallEnabled = reads.incrementAndGet() <= 2)
+            },
+            loadKey = { "sk-test" },
+        )
+        c.start()
+
+        assertTrue(await { c.state.value.phase == HostCallPhase.Error }, "the call must not go live")
+        assertTrue(c.state.value.error?.contains("turned off") == true, c.state.value.error ?: "")
+        assertTrue(await { audio.stopped }, "and the microphone must be released")
+        assertTrue(transport.closed, "with the billed socket closed too")
     }
 
     @Test

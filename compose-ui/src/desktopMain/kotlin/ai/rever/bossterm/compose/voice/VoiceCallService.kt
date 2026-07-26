@@ -155,13 +155,18 @@ internal class VoiceCallService(
             reply(ServerMessage.VoiceError(code = "not_controller"))
             return
         }
+        // Both of these run on the socket's receive loop, and on the DAEMON neither is purely a
+        // stat: settings() and keyPresent() go through StampCachedValue, which re-reads and re-parses
+        // the file whenever its stamp moved or its trust ticks ran out, under a monitor the 5s status
+        // poller also takes. That cost is the price of cross-process revocation working at all, and
+        // it is bounded — but the claim that these are the free checks and only loadKey() touches
+        // disk was not true here. The key READ (and its decrypt-shaped JSON parse) is still deferred
+        // to the coroutine below; what stays here is what has to gate the reservation.
         val s = settings()
         if (!s.voiceCallEnabled || !s.voiceCallShareEnabled) {
             reply(ServerMessage.VoiceError(code = "disabled"))
             return
         }
-        // keyPresent() is the cheap check (a stamp-cached stat on the daemon, an in-process flow in
-        // the GUI); the actual read happens inside the coroutine, off the socket's receive loop.
         if (!keyPresent()) {
             reply(ServerMessage.VoiceError(code = "no_key"))
             return
@@ -249,6 +254,13 @@ internal class VoiceCallService(
                     closeCall(token) // the reservation didn't become a call
                     clearCallTokenIfCurrent(token)
                     reply(ServerMessage.VoiceError(code = "unauthorized"))
+                }
+                is VoiceSessionBroker.MintResult.RateLimited -> {
+                    closeCall(token)
+                    clearCallTokenIfCurrent(token)
+                    // Same code as our own budget refusal: the caller's action is identical, and the
+                    // viewer already renders it as "wait a moment and try again".
+                    reply(ServerMessage.VoiceError(code = "rate_limited"))
                 }
                 is VoiceSessionBroker.MintResult.Failed -> {
                     closeCall(token)
@@ -374,25 +386,7 @@ internal class VoiceCallService(
             appendLine(snapshot.ifBlank { "- (no tabs visible)" })
             appendLine("Default all tool calls to the tab the user is viewing (omit tab_id).")
             appendLine()
-            appendLine("Rules:")
-            appendLine("- Inspect before you answer: read_scrollback" +
-                    (if ("search_output" in names) " / search_output" else "") +
-                    (if ("get_last_command" in names) " / get_last_command" else "") + ".")
-            if ("run_command" in names) {
-                appendLine("- Run shell commands with run_command; use send_input only for interactive " +
-                        "programs (TUIs, prompts); send_signal ctrl_c to interrupt.")
-                appendLine("- If run_command reports that shell integration is missing, fall back to " +
-                        "send_input (with a trailing newline) plus read_scrollback — don't tell the " +
-                        "user the feature is broken.")
-            } else {
-                appendLine("- Run shell commands by typing them with send_input (include a trailing \\n " +
-                        "to submit), then read_scrollback to see the result; send_signal ctrl_c to interrupt.")
-            }
-            appendLine("- Say briefly what you are about to do before a slow tool call, and summarize " +
-                    "results conversationally — never read raw terminal output verbatim.")
-            appendLine("- For destructive commands (rm, kill, force-push, reset --hard), say the exact " +
-                    "command and get verbal confirmation first.")
-            append("- Keep replies short. This is a voice conversation.")
+            append(voiceAgentRules(names, confirmationWording = "verbal"))
         }
     }
 
@@ -451,7 +445,15 @@ internal class VoiceCallService(
         expiredAnnouncements += expireOwnCalls(now)
         // Refuse rather than evict: dropping the oldest token left that caller's audio running while
         // every tool answered "No active call", with no way back but hanging up and redialling.
-        if (liveCalls.size >= MAX_LIVE_CALLS) return null
+        //
+        // Count only UN-EXPIRED entries. The sweep above is owner-filtered on purpose — the "ended"
+        // announcement belongs to the service that opened the call — but the cap was checked against
+        // the whole process-wide map, so another share's calls past the ceiling denied capacity here
+        // until that share happened to sweep. Nothing sweeps periodically, so a share seeing no
+        // further voice traffic could hold a slot indefinitely. Foreign expired entries are still
+        // left for their owner to announce; they just no longer count.
+        val liveNow = liveCalls.count { now - it.value.issuedAt <= MAX_CALL_DURATION_MS }
+        if (liveNow >= MAX_LIVE_CALLS) return null
         val token = UUID.randomUUID().toString()
         liveCalls[token] = LiveCall(issuedAt = now, owner = this)
         return token
@@ -551,7 +553,12 @@ internal class VoiceCallService(
         repeat(announced) { onCallActivity(false) }
     }
 
-    private companion object {
+    /**
+     * Internal, not private, so tests assert against the REAL ceilings — the test file used to carry
+     * its own `= 8` mirror, which is a constant that can drift from the one being tested. Matches
+     * [HostVoiceCallController]'s companion.
+     */
+    internal companion object {
         /** Shared by every share in this process — see [mintTimestamps]. */
         val sharedMintTimestamps = ArrayDeque<Long>()
 
@@ -566,10 +573,15 @@ internal class VoiceCallService(
         const val MAX_IN_FLIGHT_TOOL_CALLS = 4
 
         /**
-         * How long a tool may run before its slot is reclaimed. Mirrors the viewer's own watchdog so
-         * the two agree: run_command owns its 600s clamp, reads should be quick.
+         * How long a tool may run before its slot is reclaimed.
+         *
+         * Deliberately SHORTER than the viewer's watchdog (630s / 120s), so the host is the side
+         * that decides and the viewer is a pure backstop. Set equal, a tool finishing on the
+         * boundary was a coin flip over which side answered it — handled and tested, but a tie is
+         * harder to reason about than an order. run_command still owns its own 600s clamp inside
+         * this budget.
          */
-        fun toolBudgetMs(tool: String): Long = if (tool == "run_command") 630_000L else 120_000L
+        fun toolBudgetMs(tool: String): Long = if (tool == "run_command") 615_000L else 110_000L
 
         /** OpenAI call ids are ~30 chars; this is generous and bounds what we echo back. */
         const val MAX_CALL_ID_CHARS = 200

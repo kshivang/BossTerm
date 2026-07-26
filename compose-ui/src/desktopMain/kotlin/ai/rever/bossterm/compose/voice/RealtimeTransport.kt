@@ -53,7 +53,25 @@ internal interface RealtimeTransport {
  * Text frames arrive in fragments, so [onText] accumulates until `last` before handing an event up;
  * a partially-delivered event would otherwise fail to parse.
  */
-internal class JdkRealtimeTransport : RealtimeTransport {
+internal class JdkRealtimeTransport(
+    /**
+     * How a socket is opened. Injected so the connect/close/reconnect lifecycle — the subtlest
+     * reasoning in this file, and the part that has bitten twice (see [closeRequested] and
+     * [generation]) — is testable without a network: a real handshake needs OpenAI, so this was the
+     * only piece of the voice path with no direct coverage.
+     *
+     * A dependency, not a test hook: it takes the same arguments the real builder does and has no
+     * "make the transport misbehave" affordance.
+     */
+    private val openSocket: suspend (url: String, apiKey: String, listener: WebSocket.Listener) -> WebSocket =
+        { url, apiKey, listener ->
+            sharedClient.newWebSocketBuilder()
+                .header("Authorization", "Bearer $apiKey")
+                .connectTimeout(Duration.ofSeconds(15))
+                .buildAsync(URI.create(url), listener)
+                .join()
+        },
+) : RealtimeTransport {
 
     private val log = LoggerFactory.getLogger(JdkRealtimeTransport::class.java)
 
@@ -140,13 +158,7 @@ internal class JdkRealtimeTransport : RealtimeTransport {
         // mid-join used to let join() finish and hand back a LIVE socket while withContext threw
         // before the assignment — leaving `socket` null, close() a no-op, and a billed realtime
         // session open to OpenAI until the process exited.
-        val ws = withContext(Dispatchers.IO + NonCancellable) {
-            sharedClient.newWebSocketBuilder()
-                .header("Authorization", "Bearer $apiKey")
-                .connectTimeout(Duration.ofSeconds(15))
-                .buildAsync(URI.create(url), listener)
-                .join()
-        }
+        val ws = withContext(Dispatchers.IO + NonCancellable) { openSocket(url, apiKey, listener) }
         // Hung up while we were connecting (either by cancellation or by close() racing the
         // assignment below): own it just long enough to shut it down.
         if (!currentCoroutineContext().isActive || closeRequested) {

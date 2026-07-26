@@ -25,6 +25,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -32,9 +34,6 @@ import kotlin.test.assertTrue
  * unknown-tool recovery, and the OpenAI client-secret mint against a loopback stub server.
  */
 class VoiceCallServiceTest {
-
-    /** Mirrors VoiceCallService.MAX_LIVE_CALLS; kept local so the production constant stays private. */
-    private val MAX_LIVE_CALLS_FOR_TEST = 8
 
 
     private class FakeExecutor : VoiceToolExecutor {
@@ -60,6 +59,15 @@ class VoiceCallServiceTest {
         mintTimestamps = ArrayDeque(),
         sharedCalls = LinkedHashMap(),
     )
+
+    private fun awaitReply(timeoutMs: Long = 10_000, predicate: () -> Boolean): Boolean {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        while (System.nanoTime() < deadline) {
+            if (runCatching { predicate() }.getOrDefault(false)) return true
+            Thread.sleep(20)
+        }
+        return false
+    }
 
     @Test
     fun `status reflects enabled + key presence`() {
@@ -173,6 +181,43 @@ class VoiceCallServiceTest {
             codesFrom(brokenTools),
             "an unavailable tool surface must not spend a mint either",
         )
+    }
+
+    /**
+     * The live-call ceiling is a spend limit on ONE key, so the map is process-wide — but the sweep
+     * that retires expired calls is owner-filtered (the "ended" notification belongs to the service
+     * that opened the call). Counting the whole map against the cap therefore let another share's
+     * EXPIRED calls deny capacity here until that share happened to sweep, and nothing sweeps
+     * periodically: a share seeing no further voice traffic could hold a slot indefinitely.
+     */
+    @Test
+    fun `another share's expired calls do not occupy the ceiling`() {
+        val shared = LinkedHashMap<String, VoiceCallService.LiveCall>()
+        var clock = 1_000L
+        fun service() = VoiceCallService(
+            executor = FakeExecutor(),
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+            nowMs = { clock },
+            mintTimestamps = ArrayDeque(),
+            sharedCalls = shared,
+        )
+        val other = service()
+        repeat(VoiceCallService.MAX_LIVE_CALLS) { assertNotNull(other.openCall(), "share A fills the ceiling") }
+
+        val mine = service()
+        assertNull(mine.openCall(), "at capacity, a new call is refused rather than evicting a live one")
+
+        // Everything share A opened is now past the duration ceiling, but share A has gone quiet, so
+        // nothing has swept it.
+        clock += VoiceCallService.MAX_CALL_DURATION_MS + 1
+        assertEquals(
+            VoiceCallService.MAX_LIVE_CALLS,
+            shared.size,
+            "the stale entries are still in the map — only their owner may announce them",
+        )
+        assertNotNull(mine.openCall(), "expired foreign calls must not deny capacity")
     }
 
     @Test
@@ -460,7 +505,7 @@ class VoiceCallServiceTest {
         Thread.sleep(200)
 
         // The reservation is back: a fresh call can be opened without hitting the cap...
-        repeat(MAX_LIVE_CALLS_FOR_TEST) { assertTrue(svc.openCall() != null, "slot ${'$'}it should be free") }
+        repeat(VoiceCallService.MAX_LIVE_CALLS) { assertTrue(svc.openCall() != null, "slot ${'$'}it should be free") }
         // ...and nothing was ever announced, since no call actually started.
         assertTrue(synchronized(activity) { activity.none { it } }, "saw ${'$'}activity")
     }
@@ -742,6 +787,29 @@ class VoiceCallServiceTest {
         val r = withTimeout(5000) { reply.await() }
         assertIs<ServerMessage.VoiceSession>(r)
         assertEquals("ek_beta_shape", r.clientSecret)
+    }
+
+    /**
+     * OpenAI's own 429 means the same thing to the caller as our budget refusal does — wait and
+     * retry — so it must not arrive as a bare "OpenAI returned HTTP 429" they can't act on. The
+     * viewer already renders `rate_limited` as "wait a moment and try again".
+     */
+    @Test
+    fun `OpenAI's rate limit reaches the viewer as rate_limited`() = testApplication {
+        routing {
+            post("/v1/realtime/client_secrets") { call.respond(HttpStatusCode.TooManyRequests) }
+        }
+        val svc = service(broker = VoiceSessionBroker(baseUrl = "", httpOverride = client))
+        val replies = mutableListOf<ServerMessage>()
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { synchronized(replies) { replies.add(it) } }
+
+        assertTrue(
+            awaitReply { synchronized(replies) { replies.any { it is ServerMessage.VoiceError } } },
+            "the refusal must reach the viewer",
+        )
+        val err = synchronized(replies) { replies.filterIsInstance<ServerMessage.VoiceError>().first() }
+        assertEquals("rate_limited", err.code)
+        assertNull(err.message, "and carries no OpenAI-side detail")
     }
 
     @Test

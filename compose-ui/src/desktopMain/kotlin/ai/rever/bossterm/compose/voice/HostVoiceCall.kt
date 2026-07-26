@@ -56,16 +56,8 @@ internal object HostVoiceCall {
             ),
         )
         controller = c
-        // The master switch is a kill switch on THIS surface too: the share path ends its call when
-        // voiceStatus goes unavailable, and the surface that owns the microphone must not be the one
-        // that keeps listening after the user turns the feature off.
         killSwitchJob?.cancel()
-        killSwitchJob = scope.launch {
-            SettingsManager.instance.settings
-                .map { it.voiceCallEnabled }
-                .distinctUntilChanged()
-                .collect { enabled -> if (!enabled) end() }
-        }
+        killSwitchJob = null
         // One mirror per call: the previous controller's collector must go, or every start would
         // add another live collector writing into the same flow.
         mirrorJob?.cancel()
@@ -75,9 +67,10 @@ internal object HostVoiceCall {
                 mirrorUntilSelfEnded(
                     states = c.state,
                     onState = { _state.value = it },
-                    // A call can end itself (fail(), or a ceiling via endWith) — release the
-                    // controller and the collectors then too, or this object keeps them until the
-                    // next start()/end() despite documenting that it owns exactly one call.
+                    // A call that ends itself (a ceiling via endWith reaching Idle) releases the
+                    // controller and the collectors too, or this object keeps them until the next
+                    // start()/end() despite documenting that it owns exactly one call. A FAILED call
+                    // deliberately does not: Error keeps its Dismiss, and dismissError() clears it.
                     onSelfEnded = {
                         if (controller === c) {
                             controller = null
@@ -89,6 +82,20 @@ internal object HostVoiceCall {
             }
         }
         c.start()
+        // AFTER start(), deliberately. The master switch is a kill switch on this surface too — the
+        // share path ends its call when voiceStatus goes unavailable, and the surface that owns the
+        // microphone must not be the one still listening after the user turns the feature off. But
+        // armed BEFORE start(), a flip landing in the gap ran end() against a controller that had not
+        // started: it cleared `controller` and cancelled the mirror, and then start() proceeded
+        // anyway, opening the mic and the billed socket with nothing left holding a reference to stop
+        // it. The controller re-checks the switch itself at the Connecting → Live transition, which
+        // is where the mic is known to be open, so the narrowed window is closed on both sides.
+        killSwitchJob = scope.launch {
+            SettingsManager.instance.settings
+                .map { it.voiceCallEnabled }
+                .distinctUntilChanged()
+                .collect { enabled -> if (!enabled) end() }
+        }
     }
 
     fun toggleMute() = controller?.toggleMute() ?: Unit

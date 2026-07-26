@@ -23,6 +23,17 @@ internal interface VoiceAudioIo {
     /** Begin capturing; [onChunk] receives raw PCM16 frames, [onLevel] a 0..1 loudness estimate. */
     fun startCapture(onChunk: (ByteArray) -> Unit, onLevel: (Float) -> Unit)
 
+    /**
+     * Mute/unmute the microphone at the LINE, not just at the send.
+     *
+     * Skipping the send is enough for correctness — nothing is transmitted either way — but it left
+     * the capture line started, so the platform's "an app is using your microphone" indicator (the
+     * orange dot on macOS, the tray icon on Windows) stayed lit for the whole muted stretch. For a
+     * feature whose trust story is "you can see what it is doing", a Mute button that leaves the
+     * indicator on invites exactly the conclusion it is meant to prevent.
+     */
+    fun setCaptureMuted(muted: Boolean)
+
     /** Queue decoded PCM16 for playback. */
     fun play(pcm: ByteArray)
 
@@ -48,6 +59,12 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
     @Volatile private var running = false
     /** Set once the speaker line has failed to open, so we stop probing hardware per chunk. */
     @Volatile private var playbackUnavailable = false
+
+    /** Mute state, read by the capture loop — see [setCaptureMuted]. */
+    @Volatile private var captureMuted = false
+
+    /** The level sink, kept so muting can zero the meter without waiting for the next chunk. */
+    @Volatile private var onLevelRef: ((Float) -> Unit)? = null
 
     /**
      * Set by [stop] and never cleared: this object serves exactly one call.
@@ -83,6 +100,8 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
             throw VoiceAudioException("No microphone available (${it.message})")
         }
         capture = line
+        onLevelRef = onLevel
+        captureMuted = false
         running = true
         // A dedicated thread, NOT a coroutine dispatcher: this loop blocks on line.read for the
         // whole call, and parking a shared pool worker for minutes is what starved BossTerm's IO
@@ -91,12 +110,44 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
             val buf = ByteArray(CHUNK_BYTES)
             while (running) {
                 val n = runCatching { line.read(buf, 0, buf.size) }.getOrDefault(-1)
-                if (n <= 0) break
+                if (n <= 0) {
+                    // A STOPPED line (i.e. muted) legitimately hands back nothing; treating that as
+                    // death would end capture for good and leave unmute silent. Only an unmuted zero
+                    // means the device actually went away.
+                    if (captureMuted && running) {
+                        runCatching { Thread.sleep(MUTED_IDLE_MS) }
+                        continue
+                    }
+                    break
+                }
+                // Belt and braces: even if a buffered chunk arrives after the line stopped, a muted
+                // call must not transmit, and the meter must read silent rather than freeze.
+                if (captureMuted) {
+                    onLevel(0f)
+                    continue
+                }
                 val chunk = buf.copyOf(n)
                 onLevel(rms(chunk))
                 runCatching { onChunk(chunk) }
             }
         }, "boss-voice-capture").apply { isDaemon = true; start() }
+    }
+
+    override fun setCaptureMuted(muted: Boolean) {
+        if (disposed) return
+        captureMuted = muted
+        val line = capture ?: return
+        // Best-effort: if a mixer refuses stop/start, the flag above still guarantees silence — the
+        // indicator just stays lit, which is the behaviour this replaces rather than a regression.
+        runCatching {
+            if (muted) {
+                line.stop()
+                line.flush()
+            } else {
+                line.start()
+            }
+        }.onFailure { log.warn("Could not {} the capture line: {}", if (muted) "stop" else "restart", it.message) }
+        if (muted) onLevelRef?.invoke(0f)
     }
 
     override fun play(pcm: ByteArray) {
@@ -146,6 +197,8 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
     override fun stop() {
         disposed = true
         running = false
+        captureMuted = false
+        onLevelRef = null
         captureThread?.interrupt()
         captureThread = null
         playQueue.clear()
@@ -180,6 +233,9 @@ internal class JavaSoundVoiceAudioIo : VoiceAudioIo {
 
         /** ~4 s of queued speech; beyond that the speaker is hopelessly behind, so drop. */
         const val PLAY_QUEUE_CHUNKS = 100
+
+        /** How long the capture loop parks per turn while the line is stopped for mute. */
+        const val MUTED_IDLE_MS = 50L
     }
 }
 

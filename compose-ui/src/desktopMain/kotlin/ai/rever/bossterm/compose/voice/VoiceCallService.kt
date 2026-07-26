@@ -80,6 +80,12 @@ internal class VoiceCallService(
      * per-share accounting let N shares run 8N concurrent billed sessions. Injectable for tests.
      */
     private val sharedCalls: LinkedHashMap<String, LiveCall>? = null,
+    /**
+     * How long a tool may run before its slot is reclaimed. Injected for the same reason
+     * [HostVoiceCallController.toolTimeoutMs] is: the reclaim only matters on a handler that ignores
+     * cancellation, and waiting out a real 110s budget is not a test anyone will keep.
+     */
+    private val toolBudgetMs: (String) -> Long = { VoiceToolTimeouts.hostMs(it) },
 ) {
 
     private val log = LoggerFactory.getLogger(VoiceCallService::class.java)
@@ -434,6 +440,8 @@ internal class VoiceCallService(
         // If [scope] is already cancelled the body never runs, so the claimed slot would leak;
         // release it from the completion handler in that case.
         val bodyRan = AtomicBoolean(false)
+        /** Whoever gets here first releases the slot: the coroutine, or the reclaim below. */
+        val slotReleased = AtomicBoolean(false)
         val job = scope.launch {
             bodyRan.set(true)
             try {
@@ -470,10 +478,42 @@ internal class VoiceCallService(
                 log.warn("Voice tool {} failed: {}", def.name, e.javaClass.simpleName)
                 reply(toolError(msg.callId, "Tool failed: ${e.javaClass.simpleName}"))
             } finally {
+                // Only if the watchdog has not already reclaimed it — see releaseSlotOnce.
+                releaseSlotOnce(slotReleased)
+            }
+        }
+        job.invokeOnCompletion { if (!bodyRan.get()) releaseSlotOnce(slotReleased) }
+
+        // A DEADLINE on the slot, independent of the coroutine.
+        //
+        // withTimeout is cooperative: it can only fire at a suspension point, and an MCP handler
+        // doing non-suspending CPU work has none. search_output hands a MODEL-SUPPLIED regex to
+        // Regex(...) and runs it per scrollback line — a nested quantifier against a long line
+        // backtracks effectively forever. The viewer's backstop answers the model, the host logs
+        // "releasing the slot", and then the `finally` that actually releases it never runs because
+        // the coroutine never returns. Four of those and every later tool on the share answers "Too
+        // many tool calls in flight" for the life of the process: exactly the outage the in-flight
+        // cap was supposed to prevent, reintroduced by work that cancellation cannot reach.
+        //
+        // So the cap stops trusting the handler to finish. The thread stays pinned (nothing here can
+        // fix that from outside), but capacity comes back.
+        scope.launch {
+            delay(toolBudgetMs(def.name) + SLOT_RECLAIM_GRACE_MS)
+            if (slotReleased.compareAndSet(false, true)) {
+                log.warn(
+                    "Voice tool {} never returned; reclaiming its slot (the handler is still running)",
+                    def.name,
+                )
                 inFlightToolCalls.decrementAndGet()
             }
         }
-        job.invokeOnCompletion { if (!bodyRan.get()) inFlightToolCalls.decrementAndGet() }
+    }
+
+    /** For tests asserting the in-flight cap's behaviour around wedged handlers. */
+    internal fun inFlightToolCallsForTest(): Int = inFlightToolCalls.get()
+
+    private fun releaseSlotOnce(released: AtomicBoolean) {
+        if (released.compareAndSet(false, true)) inFlightToolCalls.decrementAndGet()
     }
 
     private fun toolError(callId: String, message: String): ServerMessage.VoiceToolResult =
@@ -776,9 +816,6 @@ internal class VoiceCallService(
          */
         const val MAX_IN_FLIGHT_TOOL_CALLS = 4
 
-        /** See [VoiceToolTimeouts] — the whole deadline ladder, and why the order matters. */
-        fun toolBudgetMs(tool: String): Long = VoiceToolTimeouts.hostMs(tool)
-
         /** OpenAI call ids are ~30 chars; this is generous and bounds what we echo back. */
         const val MAX_CALL_ID_CHARS = 200
 
@@ -787,6 +824,9 @@ internal class VoiceCallService(
 
         /** How often a service with live calls checks whether any have aged out. */
         const val EXPIRY_SWEEP_MS = 30_000L
+
+        /** Grace after a tool's budget before its slot is reclaimed regardless of the handler. */
+        const val SLOT_RECLAIM_GRACE_MS = 5_000L
 
         /**
          * Reasons that describe the ASKING CONNECTION rather than the host's configuration, and so

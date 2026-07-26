@@ -381,6 +381,64 @@ class VoiceCallServiceTest {
         )
     }
 
+    /**
+     * A handler that never returns must not permanently consume an in-flight slot.
+     *
+     * withTimeout is COOPERATIVE — it fires at a suspension point, and an MCP handler doing
+     * non-suspending CPU work has none. search_output hands a model-supplied regex to Regex() and
+     * scans per line; a nested quantifier against a long line backtracks effectively forever. The
+     * viewer's backstop answers the model and the host logs "releasing the slot", but the `finally`
+     * that actually releases it never runs. Four of those and every later tool on the share answers
+     * "Too many tool calls in flight" for the life of the process — the outage the cap exists to
+     * prevent, caused by the cap itself.
+     *
+     * Every other timeout test in this file uses a cancellable delay, which is why this was invisible.
+     */
+    @Test
+    fun `a handler that ignores cancellation still gives its slot back`() {
+        val wedged = java.util.concurrent.CountDownLatch(1)
+        val started = java.util.concurrent.CountDownLatch(1)
+        val svc = VoiceCallService(
+            executor = object : VoiceToolExecutor {
+                override fun tools(): List<VoiceToolDef> = VoiceToolCatalog.ALL
+                override fun contextSnapshot(defaultTabId: String?): String = ""
+                override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?): String {
+                    started.countDown()
+                    // Uninterruptible on purpose: this is what a backtracking regex looks like to
+                    // the coroutine machinery. No suspension point, so nothing can cancel it.
+                    wedged.await()
+                    return "{}"
+                }
+            },
+            scope = CoroutineScope(Dispatchers.Default),
+            settings = { TerminalSettings.DEFAULT },
+            loadKey = { "sk-test" },
+            mintTimestamps = ArrayDeque(),
+            sharedCalls = LinkedHashMap(),
+            toolBudgetMs = { 200L }, // the real 110s would make this a test nobody keeps
+        )
+        val token = assertNotNull(svc.openCall())
+        try {
+            val replies = mutableListOf<ServerMessage>()
+            svc.handleToolCall(
+                ClientMessage.VoiceToolCall("wedged", "read_scrollback", "{}", callToken = token),
+                canControl = true, defaultTabId = "t1",
+            ) { synchronized(replies) { replies.add(it) } }
+            assertTrue(started.await(10, java.util.concurrent.TimeUnit.SECONDS), "the handler ran")
+            assertEquals(1, svc.inFlightToolCallsForTest(), "it holds a slot while it runs")
+
+            // The handler is STILL wedged — never cancelled, never returning — and the slot comes
+            // back anyway. That is the whole point: capacity cannot depend on the handler finishing.
+            assertTrue(
+                awaitReply { svc.inFlightToolCallsForTest() == 0 },
+                "the slot was never reclaimed; four of these would refuse every later call forever",
+            )
+            assertEquals(1L, wedged.count, "and the handler really is still stuck")
+        } finally {
+            wedged.countDown()
+        }
+    }
+
     @Test
     fun `voiceStart without control is refused server-side`() {
         val replies = mutableListOf<ServerMessage>()

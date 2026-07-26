@@ -615,10 +615,37 @@ class BossTermMcpServer(
             val firstRow = -snapshot.historyLinesCount
             val lastRowExclusive = snapshot.height
             var row = firstRow
+            // A WALL-CLOCK deadline, checked per line, plus a per-line width clip.
+            //
+            // `pattern` comes from a model (and, on a voice call, from whatever an agent was talked
+            // into by scrollback it read). Regex backtracking is not interruptible: a nested
+            // quantifier like (a+)+b against a long run of one character runs effectively forever
+            // inside a single findAll, with no suspension point for withTimeout to land on. That
+            // pinned a thread AND — until the callers grew a slot reclaim — permanently consumed one
+            // of four in-flight tool slots. This bounds the accidental case at its source; the
+            // reclaim covers what is left.
+            val deadline = System.nanoTime() + SEARCH_SCAN_BUDGET_MS * 1_000_000
+            var timedOut = false
             outer@ while (row < lastRowExclusive) {
-                val lineText = snapshot.getLine(row).text
+                if (System.nanoTime() > deadline) {
+                    timedOut = true
+                    truncated = true
+                    break@outer
+                }
+                // Clipped, not skipped: a 200k-character line is almost always a progress bar or
+                // base64, and it is exactly the input that makes backtracking explode.
+                val lineText = snapshot.getLine(row).text.let {
+                    if (it.length > SEARCH_MAX_LINE_CHARS) it.take(SEARCH_MAX_LINE_CHARS) else it
+                }
                 for (m in regex.findAll(lineText)) {
                     if (matches.size >= maxMatches) {
+                        truncated = true
+                        break@outer
+                    }
+                    if (System.nanoTime() > deadline) {
+                        // Also checked INSIDE the match loop: one line can produce enough matches to
+                        // blow the budget on its own.
+                        timedOut = true
                         truncated = true
                         break@outer
                     }
@@ -650,6 +677,7 @@ class BossTermMcpServer(
                 buildJsonObject {
                     put("matches", positions)
                     put("truncated", truncated)
+                    if (timedOut) put("timedOut", SEARCH_TIMEOUT_HINT)
                     put("historyLinesCount", snapshot.historyLinesCount)
                     put("height", snapshot.height)
                     if (!includeLineText) put("includeLineText", false)
@@ -665,6 +693,7 @@ class BossTermMcpServer(
                     put("rowCounts", counts)
                     put("totalMatches", matches.size)
                     put("truncated", truncated)
+                    if (timedOut) put("timedOut", SEARCH_TIMEOUT_HINT)
                     put("historyLinesCount", snapshot.historyLinesCount)
                     put("height", snapshot.height)
                     put("shortened", "rowCounts: hit counts per row")
@@ -674,6 +703,7 @@ class BossTermMcpServer(
                 buildJsonObject {
                     put("totalMatches", matches.size)
                     put("truncated", truncated)
+                    if (timedOut) put("timedOut", SEARCH_TIMEOUT_HINT)
                     put("historyLinesCount", snapshot.historyLinesCount)
                     put("height", snapshot.height)
                     put("shortened", "totals only")
@@ -2432,6 +2462,22 @@ class BossTermMcpServer(
     data class ManageToolsListResult(val tools: List<ManageToolItem>)
 
     companion object {
+        /**
+         * Wall-clock budget for one search_output scan.
+         *
+         * The pattern is model-supplied and regex backtracking is not interruptible, so neither
+         * withTimeout nor job cancellation can stop a pathological one — the deadline has to be
+         * checked by the loop itself.
+         */
+        const val SEARCH_SCAN_BUDGET_MS = 8_000L
+
+        /** Per-line clip. A line longer than this is a progress bar or base64, not prose. */
+        const val SEARCH_MAX_LINE_CHARS = 8_000
+
+        /** Told to the agent so it rewrites the pattern rather than retrying the same one. */
+        const val SEARCH_TIMEOUT_HINT =
+            "the scan hit its time budget — narrow the pattern (avoid nested quantifiers) or search fewer lines"
+
         private const val DEFAULT_SCROLLBACK_LINES = 200
         private const val DEFAULT_SEARCH_MAX_MATCHES = 50
         private const val DEFAULT_DEBUG_CHUNKS = 100

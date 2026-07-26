@@ -572,6 +572,8 @@ internal class HostVoiceCallController(
         touchActivity()
         _state.update { it.copy(working = true, activity = describeTool(name, argsJson)) }
         val timeoutMs = toolTimeoutMs(name)
+        /** Whoever gets there first: the job completing, or the reclaim below. */
+        val slotReleased = java.util.concurrent.atomic.AtomicBoolean(false)
         val job = scope.launch(parent) {
             val watchdog = scope.launch(parent) {
                 delay(timeoutMs)
@@ -602,9 +604,26 @@ internal class HostVoiceCallController(
         }
         toolJobs[callId] = job
         job.invokeOnCompletion {
-            inFlightTools.decrementAndGet()
+            releaseSlotOnce(slotReleased)
             toolJobs.remove(callId)
         }
+
+        // Same reclaim as the share path: invokeOnCompletion needs the job to COMPLETE, and a
+        // handler doing non-suspending CPU work (a pathological regex in search_output, say) never
+        // lets cancellation land — so the watchdog answers the model, toolJobs[callId].cancel()
+        // returns without stopping anything, and the slot is gone for good. Four of those and the
+        // cap that protects the host becomes the outage it was written to prevent.
+        scope.launch(parent) {
+            delay(timeoutMs + SLOT_RECLAIM_GRACE_MS)
+            if (slotReleased.compareAndSet(false, true)) {
+                log.warn("Voice tool {} never returned; reclaiming its slot", name)
+                inFlightTools.decrementAndGet()
+            }
+        }
+    }
+
+    private fun releaseSlotOnce(released: java.util.concurrent.atomic.AtomicBoolean) {
+        if (released.compareAndSet(false, true)) inFlightTools.decrementAndGet()
     }
 
     /** Answer a call we refused outright, so the round doesn't hang waiting for it. */
@@ -797,6 +816,9 @@ internal class HostVoiceCallController(
 
         /** Coarse tick: neither ceiling needs second-level precision. */
         const val LIMIT_TICK_MS = 5_000L
+
+        /** Grace after a tool's watchdog before its slot is reclaimed regardless of the handler. */
+        const val SLOT_RECLAIM_GRACE_MS = 5_000L
 
         /** Dedupe history kept per call; beyond this the oldest completed ids are dropped. */
         const val SEEN_CALLS_LIMIT = 400

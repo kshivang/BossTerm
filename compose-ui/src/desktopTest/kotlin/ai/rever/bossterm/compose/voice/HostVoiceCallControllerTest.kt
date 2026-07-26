@@ -798,34 +798,62 @@ class HostVoiceCallControllerTest {
     }
 
     /**
-     * The microphone stays open while the agent talks, because interrupting it must work.
+     * PCM16 frames at a chosen loudness, so these tests exercise the real levels a room produces.
      *
-     * This surface has no acoustic echo cancellation, and an earlier attempt to stop the agent
-     * hearing itself withheld the microphone for the whole of every reply. It did stop the loop, and
-     * it also made barge-in impossible — the reported self-loop turned out not to be reproducible,
-     * and the cure was worse than the disease. Interruption runs off the server's own
-     * `speech_started`, which never arrives if the frames carrying that speech were never sent.
+     * A frame of `byteArrayOf(5, 6)` is silence as far as [pcm16Rms] is concerned, so asserting on
+     * one proves nothing about a gate whose entire job is comparing loudnesses.
+     */
+    private fun frameAt(rms: Float): ByteArray {
+        val amplitude = (rms * Short.MAX_VALUE).toInt().toShort()
+        val out = ByteArray(1920)
+        for (i in out.indices step 2) {
+            out[i] = (amplitude.toInt() and 0xFF).toByte()
+            out[i + 1] = ((amplitude.toInt() shr 8) and 0xFF).toByte()
+        }
+        return out
+    }
+
+    /**
+     * Talking over the agent reaches the server; the agent's own echo does not.
+     *
+     * Both blanket answers were tried on real calls and both failed — see [VoiceDuplexGate]. This
+     * pins the middle: the frames carrying a real interruption must be SENT, because barge-in runs
+     * off the server's `speech_started` and that cannot fire for frames withheld locally.
      */
     @Test
-    fun `the microphone keeps flowing while the agent is talking`() {
+    fun `talking over the agent gets through while its echo does not`() {
         val transport = FakeTransport()
         val audio = FakeAudio()
         val c = controller(transport, audio)
         c.start()
         assertTrue(await { c.state.value.phase == HostCallPhase.Live })
 
+        // The user's turn: the server confirms these frames are their voice, which is what calibrates
+        // the gate. Around 0.10 RMS — VoiceAudioIo puts conversational speech at 0.05-0.15.
+        transport.deliver("""{"type":"input_audio_buffer.speech_started"}""")
+        repeat(20) { audio.emit(frameAt(0.10f)) }
+        transport.deliver("""{"type":"input_audio_buffer.speech_stopped"}""")
+
         transport.deliver("""{"type":"response.output_audio.delta","delta":"AAAA"}""")
         assertTrue(await { c.state.value.speaking })
-        val before = transport.sentOfType("input_audio_buffer.append").size
-        audio.emit(byteArrayOf(5, 6))
-        assertTrue(
-            await { transport.sentOfType("input_audio_buffer.append").size > before },
-            "withholding these frames is what broke barge-in",
+
+        // The reply coming back off the room, attenuated. None of it may reach the server.
+        val beforeEcho = transport.sentOfType("input_audio_buffer.append").size
+        repeat(40) { audio.emit(frameAt(0.04f)) }
+        Thread.sleep(120)
+        assertEquals(
+            beforeEcho,
+            transport.sentOfType("input_audio_buffer.append").size,
+            "sending the agent its own voice is what makes it interrupt itself",
         )
 
-        // And the server's verdict on them still stops playback mid-reply.
-        transport.deliver("""{"type":"input_audio_buffer.speech_started"}""")
-        assertTrue(await { !c.state.value.speaking }, "speech_started must cut the agent off")
+        // The user cutting in, at the level the server already agreed is their voice.
+        repeat(6) { audio.emit(frameAt(0.10f)) }
+        assertTrue(
+            await { transport.sentOfType("input_audio_buffer.append").size > beforeEcho },
+            "withholding these frames is what broke barge-in",
+        )
+        assertTrue(await { !c.state.value.speaking }, "and playback must stop locally, immediately")
         assertTrue(audio.flushes > 0, "queued audio must be dropped, not played out after the cut")
         c.end()
     }

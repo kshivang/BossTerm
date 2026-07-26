@@ -260,7 +260,7 @@ internal class HostVoiceCallController(
             try {
                 audio.startCapture(
                     onChunk = { chunk ->
-                        if (!_state.value.muted) {
+                        if (!_state.value.muted && admit(chunk)) {
                             transport.send(
                                 buildJsonObject {
                                     put("type", "input_audio_buffer.append")
@@ -364,6 +364,46 @@ internal class HostVoiceCallController(
         lastActivityMs = nowMs()
     }
 
+    /**
+     * Should this microphone frame be sent?
+     *
+     * While the agent is silent, always: this is where the user's own level gets measured, and the
+     * server's `speech_started`/`speech_stopped` say which of those frames are actually their voice.
+     *
+     * While the agent is talking, [VoiceDuplexGate] decides. That is the whole of the echo problem —
+     * see its KDoc for why neither "always" nor "never" survived contact with a real call.
+     */
+    private fun admit(chunk: ByteArray): Boolean {
+        val level = pcm16Rms(chunk)
+        if (!_state.value.speaking) {
+            if (userSpeechConfirmed) duplex.observeUserSpeech(level)
+            return true
+        }
+        return when (duplex.classify(level)) {
+            Duplex.WITHHOLD -> false
+            Duplex.PASS -> true
+            Duplex.INTERRUPTED -> {
+                // Stop the agent the way speech_started would, and let the rest of the sentence
+                // through so the model receives the whole utterance rather than its second half.
+                log.info(
+                    "Boss Calling: user interrupted (level={} bar={} echo={} user={})",
+                    "%.3f".format(level), "%.3f".format(duplex.lastBar),
+                    "%.3f".format(duplex.echoEstimate()), "%.3f".format(duplex.userEstimate()),
+                )
+                runCatching { audio.flushPlayback() }
+                drainWatcher?.cancel()
+                drainWatcher = null
+                _state.update { it.copy(speaking = false) }
+                true
+            }
+        }
+    }
+
+    private val duplex = VoiceDuplexGate()
+
+    /** Set between the server's speech_started and speech_stopped — see [admit]. */
+    @Volatile private var userSpeechConfirmed = false
+
     /** Is a tool call still outstanding? Read by the idle cut-off — see [startLimits]. */
     private fun toolsPending(): Boolean = synchronized(roundLock) { pendingCalls.isNotEmpty() }
 
@@ -463,6 +503,7 @@ internal class HostVoiceCallController(
                 val b64 = event["delta"]?.jsonPrimitive?.content ?: return
                 val pcm = runCatching { Base64.getDecoder().decode(b64) }.getOrNull() ?: return
                 touchActivity()
+                if (!_state.value.speaking) duplex.beginAgentTurn()
                 _state.update { if (it.speaking) it else it.copy(speaking = true) }
                 audio.play(pcm)
             }
@@ -476,11 +517,19 @@ internal class HostVoiceCallController(
             // instead of letting the two of them talk over each other.
             "input_audio_buffer.speech_started" -> {
                 touchActivity()
+                // The server has ruled on frames we let through: whatever the microphone hears until
+                // speech_stopped is the user's voice, by its judgement rather than ours. That window
+                // is what calibrates the gate — see VoiceDuplexGate.
+                userSpeechConfirmed = true
                 // Barge-in empties the queue, so "still audible" is answered immediately: clear now.
                 audio.flushPlayback()
                 drainWatcher?.cancel()
                 drainWatcher = null
                 _state.update { it.copy(speaking = false) }
+            }
+
+            "input_audio_buffer.speech_stopped" -> {
+                userSpeechConfirmed = false
             }
 
             "response.function_call_arguments.done" -> handleFunctionCall(

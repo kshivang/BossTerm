@@ -263,7 +263,6 @@ internal class VoiceCallService(
         //     concurrent callers to reach, and closing it means holding the map's lock across
         //     retirePreviousCall — a caller-supplied callback — which is a worse trade than the
         //     race. Stated rather than fixed, so the next reader does not assume it is airtight;
-        
         //  3. the budget is PEEKED first (see 1) and every refusal below refunds, which is how "no
         //     refusal consumes one of the mints it rations" is actually achieved — this used to say
         //     the budget was spent last, which describes the opposite of the code.

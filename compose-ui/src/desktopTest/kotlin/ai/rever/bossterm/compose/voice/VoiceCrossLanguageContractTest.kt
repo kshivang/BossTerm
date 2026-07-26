@@ -4,6 +4,7 @@ import ai.rever.bossterm.compose.share.NodeHarness
 import kotlinx.serialization.json.JsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -186,6 +187,31 @@ class VoiceCrossLanguageContractTest {
                 "viewer-harness.cjs must render $tool's caption for both a short and a long input",
             )
         }
+    }
+
+    /**
+     * The dedupe trims must agree.
+     *
+     * The host drops the OLDEST completed id; the viewer used to keep only what was pending, which
+     * discards every finished id and lets a replayed call_id re-execute its tool. One mirror carried
+     * a written explanation of why the other was wrong, which is exactly the drift this class exists
+     * to catch.
+     */
+    @Test
+    fun `both surfaces trim their dedupe history the same way`() {
+        assertTrue(
+            viewerJs.contains("VOICE_SEEN_CALLS_LIMIT = ${HostVoiceCallController.SEEN_CALLS_LIMIT}"),
+            "viewer.js must use the same dedupe limit as HostVoiceCallController",
+        )
+        val trim = viewerJs.substringAfter("function voiceHandleFunctionCall").substringBefore("\n  }")
+        assertTrue(
+            trim.contains("delete voice.seenCalls["),
+            "viewer.js must DROP the oldest completed id, not rebuild from pending",
+        )
+        assertFalse(
+            trim.contains("voice.seenCalls = keep"),
+            "keeping only pending ids lets a replayed call_id re-execute its tool",
+        )
     }
 
     private companion object {

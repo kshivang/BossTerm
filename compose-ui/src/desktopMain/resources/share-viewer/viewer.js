@@ -445,6 +445,8 @@
   // abandoned tab would otherwise run to the server's ceiling. Anything that means the call is in
   // use — the agent talking, the user talking, a tool running — pushes the deadline out.
   var VOICE_IDLE_MS = 10 * 60 * 1000;
+  // Mirrors HostVoiceCallController.SEEN_CALLS_LIMIT.
+  var VOICE_SEEN_CALLS_LIMIT = 400;
   // Connecting has two phases with different owners: the host mints (its own OpenAI timeout is 15s,
   // so allow for that plus the round-trip to us), then the browser negotiates SDP with OpenAI.
   var VOICE_MINT_TIMEOUT_MS = 20000;
@@ -506,7 +508,7 @@
       case "unauthorized":
         return "The host's OpenAI key was rejected — check it in BossTerm Settings.";
       case "not_controller":
-        return "You need control of this session to call — request control first.";
+        return "You need control of this session to call — asking the host now.";
       case "rate_limited":
         return "Too many call attempts — wait a moment and try again.";
       case "stale_call":
@@ -545,12 +547,20 @@
   // response.done's output[] — handle both, dedupe by call_id.
   function voiceHandleFunctionCall(callId, name, argsJson) {
     if (!callId || voice.seenCalls[callId]) return;
-    // Dedupe set, trimmed so a long call can't grow it without bound: ids only need to outlive
-    // their own round, and anything still pending is preserved.
-    if (Object.keys(voice.seenCalls).length > 400) {
-      var keep = {};
-      Object.keys(voice.pending).forEach(function (id) { keep[id] = true; });
-      voice.seenCalls = keep;
+    // Dedupe set, trimmed so a long call can't grow it without bound — dropping the OLDEST
+    // completed id rather than keeping only what is pending. Keeping only pending discarded every
+    // finished id, so a replayed call_id would re-execute its tool; the host fixed that and this
+    // mirror had not. Object keys iterate in insertion order, so the first non-pending key is the
+    // oldest. VoiceCrossLanguageContractTest pins the two together.
+    var seen = Object.keys(voice.seenCalls);
+    while (seen.length > VOICE_SEEN_CALLS_LIMIT) {
+      var oldest = null;
+      for (var i = 0; i < seen.length; i++) {
+        if (!voice.pending[seen[i]]) { oldest = seen[i]; break; }
+      }
+      if (oldest === null) break; // everything left is still in flight
+      delete voice.seenCalls[oldest];
+      seen = Object.keys(voice.seenCalls);
     }
     voice.seenCalls[callId] = true;
     voice.pending[callId] = true;
@@ -3063,6 +3073,10 @@
         connectRealtime(m); break;
       case "voiceError":
         toast(voiceErrorText(m));
+        // Actually ASK. The Call button is offered to a view-only viewer because clicking it is
+        // supposed to be a real path to control — but nothing sent the request, so they granted
+        // microphone access, got nothing, and were told to do a thing the button had not done.
+        if (m.code === "not_controller") sendMsg({ t: "requestControl" });
         // A refusal that belongs to a DIFFERENT (older or duplicate) request must not tear down the
         // call that is already running: rate_limited is a duplicate start, and stale_call is a frame
         // from a call that is already gone arriving while a new one is live. Only errors that mean

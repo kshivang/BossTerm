@@ -13,6 +13,7 @@ import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import ai.rever.bossterm.compose.voice.GuiVoiceToolExecutor
 import ai.rever.bossterm.compose.voice.VoiceAgentStorage
+import ai.rever.bossterm.compose.voice.RemoteVoiceCalls
 import ai.rever.bossterm.compose.voice.VoiceCallService
 import ai.rever.bossterm.compose.voice.voiceCallTokenMatches
 import ai.rever.bossterm.compose.window.WindowManager
@@ -103,6 +104,9 @@ class MirrorShare(
         )
     }
 
+    /** Set the first time a viewer actually places a call — see [stop]. */
+    @Volatile private var voiceStarted = false
+
     private val voiceService by lazy {
         VoiceCallService(
             executor = voiceExecutor,
@@ -111,27 +115,8 @@ class MirrorShare(
             // voice.json on every settings emission (status is recomputed per share).
             keyPresent = { VoiceAgentStorage.keyPresentFlow.value },
             sessionName = { sessionName.value },
-            onCallActivity = ::notifyVoiceCall,
+            onCallActivity = { started -> RemoteVoiceCalls.onActivity(sessionName.value, started) },
         )
-    }
-
-    /**
-     * A voice call is remote hands on this machine, and the feature ships enabled — so the host
-     * gets the same treatment as an approval request rather than only the terminal scrolling by
-     * itself. Same channel as [SessionShareManager.notifyApprovalRequest].
-     */
-    private fun notifyVoiceCall(started: Boolean) {
-        runCatching {
-            NotificationService.showNotification(
-                title = "BossTerm — Boss Calling",
-                message = if (started) {
-                    "A viewer started a voice call on \"${sessionName.value}\" — the agent can read and run commands here"
-                } else {
-                    "The voice call on \"${sessionName.value}\" ended"
-                },
-                withSound = started,
-            )
-        }
     }
 
     /** The tabs this share covers — the only ids the voice agent may ever target. */
@@ -212,7 +197,14 @@ class MirrorShare(
         voiceJob?.cancel()
         // Retire the calls riding THIS share (and nothing else — the live-call map is process-wide,
         // so clearing it would take other shares' calls down with it).
-        runCatching {
+        //
+        // Only if a call was ever ATTEMPTED. There is nothing to retire otherwise: closeCalls only
+        // touches entries this service opened, and the executor's MCP server is built by tools()/
+        // execute(), which only run during a call. Unconditionally, teardown of a share that never
+        // saw a call still forced the executor lazy — harmless (dispose() no-ops on an unbuilt
+        // server) but against the "no MCP machinery until a viewer calls" intent. Note the SERVICE
+        // itself may already exist either way: status() is sent to every viewer on admit.
+        if (voiceStarted) runCatching {
             viewers.forEach { vc ->
                 voiceService.closeCall(vc.voiceCallToken)
                 vc.voiceCallToken = null
@@ -447,6 +439,7 @@ class MirrorShare(
             is ClientMessage.Focus -> { rememberVoiceTab(vc, msg.tabId); return }
             is ClientMessage.VoiceStart -> {
                 rememberVoiceTab(vc, msg.activeTabId)
+                voiceStarted = true
                 voiceService.handleStart(
                     msg,
                     vc.canControl,

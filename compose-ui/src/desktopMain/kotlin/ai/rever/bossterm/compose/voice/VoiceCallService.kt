@@ -131,13 +131,19 @@ internal class VoiceCallService(
         msg: ClientMessage.VoiceStart,
         canControl: Boolean,
         /**
-         * Whether this connection's frames are confidential (E2E-encrypted, or over TLS).
+         * Whether this connection completed the E2E handshake — specifically that, not "is the
+         * transport encrypted".
          *
-         * The reply to a successful start carries the ephemeral `ek_…` secret, so on a plain
-         * `ws://` LAN share spoken by a legacy plaintext client it would cross the wire in the
-         * clear. The stock viewer already hides the Call button outside a secure context — but that
-         * is the client policing itself, and the host will mint for anything that asks. Defaults to
-         * true so existing callers are unchanged; both servers pass their real value.
+         * The reply to a successful start carries the ephemeral `ek_…` secret. TLS alone is the
+         * weaker guarantee for a shared session: these links are routinely published through a
+         * tunnel (cloudflared, localhost.run) that TERMINATES TLS, so the relay would see the secret
+         * in plaintext. The `#k` fragment never leaves the browser, so an E2E-encrypted frame stream
+         * is the only state in which handing over a secret is sound — and a `wss://` viewer that
+         * skipped the Kex is refused on purpose, not by oversight.
+         *
+         * The stock viewer also hides its Call button outside a secure context, but that is the
+         * client policing itself; the host will mint for anything that asks. Defaults to true so
+         * existing callers are unchanged; both servers pass their real value.
          */
         confidential: Boolean = true,
         /**
@@ -172,6 +178,14 @@ internal class VoiceCallService(
         // it is bounded — but the claim that these are the free checks and only loadKey() touches
         // disk was not true here. The key READ (and its decrypt-shaped JSON parse) is still deferred
         // to the coroutine below; what stays here is what has to gate the reservation.
+        // Nothing below may reserve anything on a scope that is already going away: the Ktor receive
+        // loop runs on the CALL's scope, not this one, so a voiceStart frame can still be dispatched
+        // after MirrorShare.stop() cancelled `coro`. handleToolCall has always checked this; here it
+        // was the one bail-out that didn't, and the consequences were worse — see the launch below.
+        if (!scope.isActive) {
+            reply(ServerMessage.VoiceError(code = "disabled"))
+            return
+        }
         // Before anything that costs money or reveals configuration: this connection cannot be
         // trusted with a secret, whatever its role.
         if (!confidential) {
@@ -211,7 +225,14 @@ internal class VoiceCallService(
             return
         }
         onCallTokenChanged(token)
-        scope.launch {
+        // Backstop, mirroring handleToolCall's: the check above closes the common case, but a
+        // cancellation landing between it and here means `launch` schedules a body that never runs —
+        // no reply, no refund, no closeCall. The token then held one of the PROCESS-WIDE live-call
+        // slots for the full duration ceiling, denying capacity to every other share, and
+        // removeViewer could not recover it because stop() had already emptied `viewers`.
+        val bodyRan = AtomicBoolean(false)
+        val job = scope.launch {
+            bodyRan.set(true)
             val key = loadKey()
             if (key == null) {
                 closeCall(token)
@@ -284,6 +305,14 @@ internal class VoiceCallService(
                     clearCallTokenIfCurrent(token)
                     reply(ServerMessage.VoiceError(code = "mint_failed", message = result.message))
                 }
+            }
+        }
+        job.invokeOnCompletion {
+            if (!bodyRan.get()) {
+                // The body never started, so nothing inside it can have cleaned up.
+                closeCall(token)
+                clearCallTokenIfCurrent(token)
+                refundMint(mintReservation)
             }
         }
     }

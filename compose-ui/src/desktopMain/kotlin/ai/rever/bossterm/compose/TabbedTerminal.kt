@@ -86,6 +86,7 @@ import ai.rever.bossterm.compose.share.CallSegmentState
 import ai.rever.bossterm.compose.voice.HostCallBar
 import ai.rever.bossterm.compose.voice.HostCallPhase
 import ai.rever.bossterm.compose.voice.HostVoiceCall
+import ai.rever.bossterm.compose.voice.RemoteVoiceCalls
 import ai.rever.bossterm.compose.voice.VoiceAgentStorage
 import ai.rever.bossterm.compose.voice.VoiceKeyDialog
 import ai.rever.bossterm.compose.voice.segmentState
@@ -2138,6 +2139,9 @@ fun TabbedTerminal(
             }
                 .distinctUntilChanged()
         }.collectAsState(CallSegmentState.Hidden)
+        // Platform-independent: the "a viewer started a call" notification does nothing off macOS,
+        // and the Call pill only ever reflects THIS host's own call.
+        val remoteVoiceCalls by RemoteVoiceCalls.active.collectAsState()
         var voiceKeyPrompt by remember { mutableStateOf(false) }
         // The active tab's remote session while it's still view-only — drives the read-only
         // pill, stacked in this same column so it sits BELOW the MCP/Sharing pills.
@@ -2186,6 +2190,7 @@ fun TabbedTerminal(
                         ))
                     },
                     showSharing = showSharingStatus,
+                    remoteCalls = remoteVoiceCalls,
                     // Count in-process shares AND daemon-hosted shares (one is always empty depending
                     // on mode), so the pill lights whenever anything is actually being shared.
                     sharingCount = sharedTabIds.size + daemonShareState.shares.size,

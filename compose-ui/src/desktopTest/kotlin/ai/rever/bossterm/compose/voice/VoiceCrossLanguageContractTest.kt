@@ -91,8 +91,11 @@ class VoiceCrossLanguageContractTest {
             .findAll(viewerJs.substringAfter("function voiceDescribeTool").substringBefore("\n  }"))
             .map { it.groupValues[1] }
             .toSet()
-        // The catalog is the source of truth for what can ever be called.
-        val shareTools = VoiceToolCatalog.ALL.filterNot { it.guiOnly }.map { it.name }
+        // EVERY catalog tool, including guiOnly ones: those are absent from the DAEMON surface, but
+        // a MirrorShare share is the common case and advertises them, so the viewer can be asked to
+        // caption any of them. Filtering to !guiOnly here is what let list_panes and get_last_command
+        // fall through to "Running: get_last_command…" on the surface this test exists to protect.
+        val shareTools = VoiceToolCatalog.ALL.map { it.name }
         val missing = shareTools.filterNot { it in describedInViewer || it in ORIENTING_TOOLS }
         assertEquals(
             emptyList(),

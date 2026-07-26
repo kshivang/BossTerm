@@ -341,6 +341,14 @@ internal class HostVoiceCallController(
     }
 
     private fun fail(message: String) {
+        // Cancel the ceiling watcher, exactly as end() does. Relying on its `while (active)` check
+        // was not enough: that runs AFTER delay(LIMIT_TICK_MS), so one more tick fires against a call
+        // that already failed — and since startLimits() is only reached again when a redial goes
+        // Live, the stale watcher keeps its old startedAt/lastActivityMs through the next call's
+        // Connecting phase. The visible symptom is endWith clobbering a real error ("The host's
+        // OpenAI key was rejected") with "Call ended — nothing happened for 10 minutes".
+        limitJob?.cancel()
+        limitJob = null
         startJob?.cancel()
         startJob = null
         callJob?.cancel()
@@ -638,6 +646,8 @@ internal class HostVoiceCallController(
             "search_output" -> arg("pattern")?.let { "Searching for “${it.take(32)}”…" } ?: "Searching…"
             "send_input" -> "Typing…"
             "send_signal" -> arg("signal")?.let { "Sending $it…" } ?: "Sending a signal…"
+            "get_last_command" -> "Checking the last command…"
+            "list_panes" -> "Looking at the split panes…"
             else -> "Working…"
         }
     }

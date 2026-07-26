@@ -454,8 +454,8 @@
       case "too_many_calls":
         return "This session already has as many voice calls as it allows.";
       case "insecure_transport":
-        return "This link isn't encrypted, so the host won't start a call on it — open the share " +
-          "link with its #k secret, or over https.";
+        return "This session isn't end-to-end encrypted, so the host won't put a call secret on " +
+          "it — reopen the full share link, including the #k part after the '#'.";
       default:
         return "Couldn't start the call" + (m.message ? ": " + m.message : ".");
     }
@@ -472,6 +472,8 @@
       if (name === "send_input" && a.text)
         return "Typing: " + a.text.slice(0, 40).replace(/\n/g, "⏎") + "…";
       if (name === "send_signal" && a.signal) return "Sending " + a.signal + "…";
+      if (name === "get_last_command") return "Checking the last command…";
+      if (name === "list_panes") return "Looking at the split panes…";
     } catch (e) {}
     return "Running: " + name + "…";
   }

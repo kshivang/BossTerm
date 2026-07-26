@@ -46,6 +46,16 @@ fun StatusStrip(
     showSharing: Boolean,
     sharingCount: Int,
     onSharingClick: () -> Unit,
+    /**
+     * Live voice calls started by REMOTE viewers.
+     *
+     * Rendered on the Sharing segment rather than the Call one, because it is a property of the
+     * share, not of this host's own call — and because it must be visible even when Boss Calling's
+     * own indicator is switched off. It is the host's only platform-independent signal that someone
+     * else's agent is reading and running commands here: the notification behind it does nothing
+     * outside macOS.
+     */
+    remoteCalls: Int = 0,
     modifier: Modifier = Modifier,
     call: CallSegmentState = CallSegmentState.Hidden,
     onCallClick: () -> Unit = {},
@@ -70,8 +80,20 @@ fun StatusStrip(
                 Text("|", color = Color(0xFF555555), fontSize = 12.sp)
             }
             if (showSharing) {
-                val label = if (sharingCount > 1) "Sharing ($sharingCount)" else "Sharing"
-                Segment(dot = if (sharingCount > 0) ON else OFF, label = label, onClick = onSharingClick)
+                val label = when {
+                    // A remote call outranks the viewer count: "someone is talking to an agent that
+                    // can run commands here" is the more urgent fact about this share.
+                    remoteCalls > 1 -> "Sharing · $remoteCalls calls"
+                    remoteCalls == 1 -> "Sharing · on a call"
+                    sharingCount > 1 -> "Sharing ($sharingCount)"
+                    else -> "Sharing"
+                }
+                val dot = when {
+                    remoteCalls > 0 -> LIVE_TALK
+                    sharingCount > 0 -> ON
+                    else -> OFF
+                }
+                Segment(dot = dot, label = label, onClick = onSharingClick)
             }
             if ((showMcp || showSharing) && showCall) {
                 Text("|", color = Color(0xFF555555), fontSize = 12.sp)

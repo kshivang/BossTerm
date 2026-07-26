@@ -30,6 +30,7 @@ import ai.rever.bossterm.compose.notification.NotificationService
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.voice.StampCachedValue
 import ai.rever.bossterm.compose.voice.VoiceAgentStorage
+import ai.rever.bossterm.compose.voice.RemoteVoiceCalls
 import ai.rever.bossterm.compose.voice.VoiceCallService
 import ai.rever.bossterm.compose.voice.voiceCallTokenMatches
 import ai.rever.bossterm.terminal.model.TerminalModelListener
@@ -281,7 +282,7 @@ class DaemonShareServer(
                 sessionName = { name },
                 // The daemon is exactly the case where nobody is looking at a window, so the
                 // "remote hands arrived" signal matters more here, not less.
-                onCallActivity = { started -> notifyVoiceCall(name, started) },
+                onCallActivity = { started -> RemoteVoiceCalls.onActivity(name, started) },
             )
         }
 
@@ -1095,19 +1096,6 @@ class DaemonShareServer(
     }
 
     /** Same host-facing signal MirrorShare sends, for daemon-hosted shares. */
-    private fun notifyVoiceCall(shareName: String, started: Boolean) {
-        runCatching {
-            NotificationService.showNotification(
-                title = "BossTerm — Boss Calling",
-                message = if (started) {
-                    "A viewer started a voice call on \"$shareName\" — the agent can read and run commands here"
-                } else {
-                    "The voice call on \"$shareName\" ended"
-                },
-                withSound = started,
-            )
-        }
-    }
 
     /**
      * Keep browser viewers' Call button honest while they stay connected.

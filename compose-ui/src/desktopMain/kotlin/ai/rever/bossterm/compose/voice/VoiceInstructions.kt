@@ -70,15 +70,27 @@ private fun builtInRules(names: Set<String>, confirmationWording: String): Strin
         )
         appendLine(
             "- If run_command reports that shell integration is missing, fall back to " +
-                "send_input (with a trailing newline) plus read_scrollback — don't tell the " +
-                "user the feature is broken."
+                "send_input plus read_scrollback — don't tell the user the feature is broken."
         )
     } else if ("send_input" in names) {
         // An embedder with allowWriteTools = false has neither; describe what the surface DOES have
         // rather than dropping write guidance entirely, and say nothing when it has no write tools.
         appendLine(
-            "- Run shell commands by typing them with send_input (include a trailing \\n " +
-                "to submit), then read_scrollback to see the result; send_signal ctrl_c to interrupt."
+            "- Run shell commands by typing them with send_input, then read_scrollback to see the " +
+                "result; send_signal ctrl_c to interrupt."
+        )
+    }
+    if ("send_input" in names) {
+        // send_input writes to the shell's stdin verbatim and presses nothing — its own contract puts
+        // the newline on the caller. Without it the text sits at the prompt, unrun, and the agent then
+        // reads a scrollback showing no result and reports the command as having failed or hung. Stated
+        // once, as its own rule, because it applies to every use of the tool: shell commands, a REPL, a
+        // y/n prompt, a password.
+        appendLine(
+            "- send_input types text but does not press Enter. End every send with \\r\\n to submit " +
+                "it — shell commands, REPL lines, and answers to interactive prompts alike. Text " +
+                "without it just sits at the prompt unexecuted, which reads as a hung command rather " +
+                "than a missing keystroke. Send \\r\\n on its own to press Enter with no text."
         )
     }
     appendLine(

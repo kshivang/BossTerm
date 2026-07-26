@@ -56,6 +56,32 @@ class VoiceInstructionsTest {
         assertTrue(rules.contains("typing them with send_input"), rules)
     }
 
+    /**
+     * send_input presses nothing on its own — the agent has to submit what it types.
+     *
+     * Its contract puts the newline on the caller, so text sent without one sits at the prompt unrun.
+     * The agent then reads a scrollback with no result and reports the command as hung or failed, which
+     * is a much more confusing outcome than a missing keystroke. Told to the agent wherever the tool is
+     * available, not only in the fallback branch that first mentioned it.
+     */
+    @Test
+    fun `the agent is told that send_input needs a newline to submit`() {
+        for (surface in listOf(fullToolset, fullToolset - "run_command")) {
+            val rules = voiceAgentRules(surface, confirmationWording = "verbal")
+            assertTrue(rules.contains("does not press Enter"), rules)
+            // Both characters, together: a bare \n submits in most shells but not every interactive
+            // program, and CRLF is what a terminal actually sends for Enter.
+            assertTrue(rules.contains("""\r\n"""), "the exact sequence must be named: $rules")
+        }
+    }
+
+    @Test
+    fun `a surface with no write tools is not told about submitting input`() {
+        val readOnly = VoiceToolCatalog.ALL.filter { !it.write }.map { it.name }.toSet()
+        val rules = voiceAgentRules(readOnly, confirmationWording = "verbal")
+        assertFalse(rules.contains("does not press Enter"), rules)
+    }
+
     @Test
     fun `optional read tools are only named when the surface has them`() {
         val minimal = voiceAgentRules(setOf("read_scrollback"), confirmationWording = "verbal")

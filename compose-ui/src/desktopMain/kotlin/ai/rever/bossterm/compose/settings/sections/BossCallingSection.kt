@@ -141,15 +141,6 @@ internal fun BossCallingSection(
                         "always keep the curated set: a guest's tool arguments are filtered against " +
                         "it, and that filter is what keeps them inside the shared session.",
             )
-            SettingsToggle(
-                label = "Don't listen while the agent is talking",
-                checked = settings.voiceEchoSuppression,
-                onCheckedChange = { onSettingsChange(settings.copy(voiceEchoSuppression = it)) },
-                description = "On speakers, your microphone hears the agent's own voice and it ends " +
-                        "up talking to itself. In-app calls have no echo cancellation, so the fix is " +
-                        "to stop listening while it speaks. Turn this off if you're on headphones — " +
-                        "there's no echo to cancel, and you'll be able to interrupt it by talking.",
-            )
             SettingsDropdown(
                 label = "Microphone sensitivity",
                 options = VoiceTurnDetection.ALL.map { VoiceTurnDetection.label(it) },

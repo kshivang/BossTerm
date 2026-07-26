@@ -260,7 +260,7 @@ internal class HostVoiceCallController(
             try {
                 audio.startCapture(
                     onChunk = { chunk ->
-                        if (!_state.value.muted && !echoSuppressed()) {
+                        if (!_state.value.muted) {
                             transport.send(
                                 buildJsonObject {
                                     put("type", "input_audio_buffer.append")
@@ -364,32 +364,6 @@ internal class HostVoiceCallController(
         lastActivityMs = nowMs()
     }
 
-    /**
-     * Should this mic frame be withheld because the agent is talking?
-     *
-     * There is NO acoustic echo cancellation on this surface. The browser gets AEC free from
-     * WebRTC's audio pipeline; `javax.sound.sampled` gives us a raw capture line, so on speakers the
-     * microphone hears the agent's own voice, ships it back, and the model answers itself — a
-     * self-sustaining loop that no VAD threshold can fix, because the input really is speech.
-     *
-     * Half-duplex is the standard answer when you have no AEC: don't listen while you talk. The cost
-     * is that you cannot interrupt by speaking, so it is a setting — with headphones there is no
-     * echo path and full duplex is strictly better.
-     *
-     * The tail matters: playback lags the "speaking" flag by whatever is still queued plus the
-     * line's own buffer, and room reverb outlives both.
-     */
-    private fun echoSuppressed(): Boolean {
-        if (!settings().voiceEchoSuppression) return false
-        if (_state.value.speaking) return true
-        val stillAudible = runCatching { audio.queuedPlaybackMs() }.getOrDefault(0)
-        if (stillAudible > 0) return true
-        return nowMs() - lastAgentAudioMs < ECHO_TAIL_MS
-    }
-
-    /** When the agent last produced audio — the echo tail is measured from here. */
-    @Volatile private var lastAgentAudioMs = 0L
-
     /** Is a tool call still outstanding? Read by the idle cut-off — see [startLimits]. */
     private fun toolsPending(): Boolean = synchronized(roundLock) { pendingCalls.isNotEmpty() }
 
@@ -489,7 +463,6 @@ internal class HostVoiceCallController(
                 val b64 = event["delta"]?.jsonPrimitive?.content ?: return
                 val pcm = runCatching { Base64.getDecoder().decode(b64) }.getOrNull() ?: return
                 touchActivity()
-                lastAgentAudioMs = nowMs()
                 _state.update { if (it.speaking) it else it.copy(speaking = true) }
                 audio.play(pcm)
             }
@@ -858,14 +831,6 @@ internal class HostVoiceCallController(
 
         /** Coarse tick: neither ceiling needs second-level precision. */
         const val LIMIT_TICK_MS = 5_000L
-
-        /**
-         * How long after the agent's last audio the microphone stays withheld.
-         *
-         * Covers room reverb and the speaker's own latency — without it the first frames after a
-         * reply still carry the tail of that reply and start the loop again.
-         */
-        const val ECHO_TAIL_MS = 400L
 
         /** Grace after a tool's watchdog before its slot is reclaimed regardless of the handler. */
         const val SLOT_RECLAIM_GRACE_MS = 5_000L

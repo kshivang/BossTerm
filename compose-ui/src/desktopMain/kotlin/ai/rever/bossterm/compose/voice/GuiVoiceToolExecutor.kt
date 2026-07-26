@@ -34,6 +34,30 @@ import kotlinx.serialization.json.put
  * `list_tabs` / `get_active_tab` are answered directly from [McpTerminalRegistry], filtered to
  * [inScopeTabIds], so the agent never sees tabs outside the share.
  */
+/**
+ * Whether the agent's command may go to the pane the user is watching.
+ *
+ * Pure, because every one of these branches is a behavioural decision about typing into someone's
+ * live shell and none of them were reachable in a test while this was buried in a registry lookup.
+ * The [hasSeenPrompt] one in particular shipped wrong: keying idleness off an empty BLOCK LIST meant
+ * the commonest case of all — open a terminal, start a call, ask for a command — always fell back
+ * to the scratch split, because a pane where nothing has run yet has no blocks. That is exactly the
+ * pane most obviously free to use.
+ */
+internal fun shouldUseFocusedPane(
+    /** False for a share: a remote caller never takes the host's pane. */
+    mayUseFocusedPane: Boolean,
+    settingEnabled: Boolean,
+    /** OSC 133 has reported at least a prompt here, so "busy" is answerable at all. */
+    hasSeenPrompt: Boolean,
+    lastBlockRunning: Boolean,
+): Boolean {
+    if (!mayUseFocusedPane) return false
+    if (!settingEnabled) return false
+    if (!hasSeenPrompt) return false // no shell integration: cannot tell busy from idle
+    return !lastBlockRunning
+}
+
 internal class GuiVoiceToolExecutor(
     private val inScopeTabIds: () -> Set<String>,
     /**
@@ -154,14 +178,17 @@ internal class GuiVoiceToolExecutor(
      * busy from idle, and run_command needs OSC 133 anyway.
      */
     private fun idleFocusedPaneId(tabId: String): String? {
-        if (!mayUseFocusedPane) return null // a remote caller never takes the host's pane
-        if (!settings().voiceRunInFocusedPane) return null
         val state = registry.findState(tabId) ?: return null
         val session = state.findSession(tabId, paneId = null) ?: return null
-        val blocks = session.commandBlockTracker?.blocks?.value ?: return null
-        if (blocks.isEmpty()) return null // no evidence shell integration is reporting
-        if (blocks.last().state == BlockState.RUNNING) return null
-        return session.id
+        val tracker = session.commandBlockTracker ?: return null
+        val blocks = tracker.blocks.value
+        val usable = shouldUseFocusedPane(
+            mayUseFocusedPane = mayUseFocusedPane,
+            settingEnabled = settings().voiceRunInFocusedPane,
+            hasSeenPrompt = tracker.hasSeenPrompt,
+            lastBlockRunning = blocks.isNotEmpty() && blocks.last().state == BlockState.RUNNING,
+        )
+        return if (usable) session.id else null
     }
 
     override fun dispose() {

@@ -59,6 +59,17 @@ internal interface VoiceAudioIo {
      */
     fun flushPlayback()
 
+    /**
+     * How much decoded audio is still waiting for the speaker.
+     *
+     * The Realtime API says `response.output_audio.done` when it has finished SENDING, which is not
+     * when the user has finished HEARING: up to PLAY_QUEUE_CHUNKS × ~40ms (≈4s) can still be queued.
+     * Clearing "speaking" on that event flipped the bar to "Listening…" while Boss was audibly
+     * mid-sentence. The viewer has no equivalent problem — `output_audio_buffer.stopped` is
+     * playback-accurate — so this is what lets the two surfaces agree.
+     */
+    fun queuedPlaybackChunks(): Int
+
     /** Stop both directions and release the lines. */
     fun stop()
 }
@@ -247,6 +258,8 @@ internal class JavaSoundVoiceAudioIo(
         playQueue.clear()
         runCatching { playback?.flush() }
     }
+
+    override fun queuedPlaybackChunks(): Int = playQueue.size
 
     /** Open the speaker line + its drain thread on first use. Null when there is no output device. */
     /**

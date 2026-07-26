@@ -755,7 +755,17 @@ class DaemonShareServer(
         // taps/collectors so the outbox only carries output produced AFTER the snapshot (no double paint).
         send(themeMessage())
         send(mcpStatusMessage())
-        send(def.voiceService.status(withReason = canControl, confidential = serverCipher != null))
+        send(
+            def.voiceService.status(
+                withReason = canControl,
+                confidential = serverCipher != null,
+                // The daemon has NO mid-session control upgrade: requestControl falls through to
+                // `if (!vc.canControl) return`. Advertising a Call button to a view-only viewer here
+                // sends them to a confirm dialog and then an approval nobody will ever be asked for.
+                // MirrorShare does have that path, so it keeps offering the button.
+                callable = canControl,
+            )
+        )
         send(layoutFor(def))
 
         val vc = DaemonShareConnection(
@@ -1135,6 +1145,7 @@ class DaemonShareServer(
                         val msg = def.voiceService.status(
                             withReason = viewer.canControl,
                             confidential = viewer.confidential,
+                            callable = viewer.canControl, // no control upgrade on this surface
                         )
                         viewer.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(msg)))
                     }

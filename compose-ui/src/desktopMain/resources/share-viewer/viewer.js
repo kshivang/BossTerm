@@ -328,12 +328,12 @@
       }
       voice.mic = stream;
       sendMsg({ t: "voiceStart", activeTabId: activeTabId });
-      voice.watchdog = setTimeout(function () {
-        if (voice.state === "connecting") {
-          toast("Couldn't establish the voice connection — your network may block WebRTC.");
-          endCall(true);
-        }
-      }, 15000);
+      // Phase ONE of connecting: the host mints. Its own HTTP timeout to OpenAI is 15s, so sharing
+      // one 15s budget across mint AND the SDP round-trip meant a merely-slow mint lost the race
+      // reliably — and told the caller their network blocks WebRTC, which is the wrong cause, while
+      // the host had already been billed for the session. Two phases, two budgets; the timer is
+      // restarted when voiceSession arrives (see armSdpWatchdog).
+      voiceArmWatchdog(VOICE_MINT_TIMEOUT_MS, "The host didn't answer in time — try again.");
     }).catch(function () {
       voice.state = "idle"; // release the claim so the button comes back
       updateVoiceBar();
@@ -438,6 +438,19 @@
   // abandoned tab would otherwise run to the server's ceiling. Anything that means the call is in
   // use — the agent talking, the user talking, a tool running — pushes the deadline out.
   var VOICE_IDLE_MS = 10 * 60 * 1000;
+  // Connecting has two phases with different owners: the host mints (its own OpenAI timeout is 15s,
+  // so allow for that plus the round-trip to us), then the browser negotiates SDP with OpenAI.
+  var VOICE_MINT_TIMEOUT_MS = 20000;
+  var VOICE_SDP_TIMEOUT_MS = 15000;
+  function voiceArmWatchdog(ms, message) {
+    if (voice.watchdog) clearTimeout(voice.watchdog);
+    voice.watchdog = setTimeout(function () {
+      if (voice.state === "connecting") {
+        toast(message);
+        endCall(true);
+      }
+    }, ms);
+  }
   function voiceTouch() {
     voice.lastActivity = Date.now();
   }
@@ -3030,6 +3043,12 @@
         updateVoiceBar();
         break;
       case "voiceSession":
+        // Phase TWO: the mint landed, so SDP gets its own clock rather than whatever was left of
+        // the mint's.
+        voiceArmWatchdog(
+          VOICE_SDP_TIMEOUT_MS,
+          "Couldn't establish the voice connection — your network may block WebRTC."
+        );
         connectRealtime(m); break;
       case "voiceError":
         toast(voiceErrorText(m));

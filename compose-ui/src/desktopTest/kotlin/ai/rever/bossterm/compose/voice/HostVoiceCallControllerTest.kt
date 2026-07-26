@@ -87,7 +87,10 @@ class HostVoiceCallControllerTest {
         var lineMuted = false
         override fun setCaptureMuted(muted: Boolean) { lineMuted = muted }
         override fun play(pcm: ByteArray) { played.add(pcm) }
-        override fun flushPlayback() { flushes += 1 }
+        override fun flushPlayback() { flushes += 1; queued = 0 }
+        /** Decoded audio the speaker has not reached yet — drives the "still audible" wait. */
+        @Volatile var queued = 0
+        override fun queuedPlaybackChunks(): Int = queued
         override fun stop() { stopped = true; capturing = false }
 
         /** Pretend the mic produced a frame. */
@@ -640,6 +643,53 @@ class HostVoiceCallControllerTest {
             "a call ended during connect must never reach Live; it did",
         )
         assertTrue(await { !audio.capturing }, "and must not be left holding the mic")
+    }
+
+    /**
+     * `response.output_audio.done` means the API finished SENDING, not that the user finished
+     * HEARING: up to ~4s can still be in the play queue. Clearing "speaking" on the event flipped the
+     * bar to "Listening…" while Boss was audibly mid-sentence. The viewer has no equivalent problem
+     * because output_audio_buffer.stopped is playback-accurate — this is what makes the two agree.
+     */
+    @Test
+    fun `speaking stays true until the speaker has actually drained`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val c = controller(transport, audio)
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+
+        transport.deliver("""{"type":"response.output_audio.delta","delta":"AAAA"}""")
+        assertTrue(await { c.state.value.speaking }, "the agent is talking")
+
+        audio.queued = 3 // three chunks still ahead of the speaker
+        transport.deliver("""{"type":"response.output_audio.done"}""")
+        Thread.sleep(200)
+        assertTrue(c.state.value.speaking, "still audible, so still 'Speaking'")
+
+        audio.queued = 0
+        assertTrue(await { !c.state.value.speaking }, "and clears once the speaker catches up")
+        c.end()
+    }
+
+    /** Barge-in empties the queue, so the answer is immediate rather than after a drain. */
+    @Test
+    fun `barge-in clears speaking at once`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val c = controller(transport, audio)
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+
+        transport.deliver("""{"type":"response.output_audio.delta","delta":"AAAA"}""")
+        assertTrue(await { c.state.value.speaking })
+        audio.queued = 5
+        transport.deliver("""{"type":"response.output_audio.done"}""")
+        transport.deliver("""{"type":"input_audio_buffer.speech_started"}""")
+
+        assertTrue(await { !c.state.value.speaking }, "the user is talking; the agent is not")
+        assertEquals(0, audio.queued, "and what was queued is dropped, not played over them")
+        c.end()
     }
 
     @Test

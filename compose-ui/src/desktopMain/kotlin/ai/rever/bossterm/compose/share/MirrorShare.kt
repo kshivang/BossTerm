@@ -13,6 +13,7 @@ import ai.rever.bossterm.compose.tabs.TerminalTab
 import ai.rever.bossterm.compose.voice.GuiVoiceToolExecutor
 import ai.rever.bossterm.compose.voice.VoiceAgentStorage
 import ai.rever.bossterm.compose.voice.RemoteVoiceCalls
+import ai.rever.bossterm.compose.voice.StampCachedValue
 import ai.rever.bossterm.compose.voice.VoiceCallService
 import ai.rever.bossterm.compose.voice.voiceCallTokenMatches
 import ai.rever.bossterm.compose.window.WindowManager
@@ -102,6 +103,12 @@ class MirrorShare(
             anchorTabId = { tabId },
         )
     }
+
+    /** Cross-process key presence, on the same stamp cache the daemon uses. See [voiceService]. */
+    private val keyOnDisk = StampCachedValue(
+        stamp = { VoiceAgentStorage.keyStamp() },
+        read = { VoiceAgentStorage.keyPresent() },
+    )
 
     /**
      * Set once a call has actually been PLACED on this share — see [stop].

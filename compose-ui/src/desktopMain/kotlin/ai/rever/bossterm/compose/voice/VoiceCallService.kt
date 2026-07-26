@@ -123,6 +123,14 @@ internal class VoiceCallService(
          * only fail. Required arguments turn that into a compile error at every site.
          */
         confidential: Boolean,
+        /**
+         * Whether this viewer could start a call AT ALL on this surface.
+         *
+         * Defaults true because on a share with a mid-session control upgrade a view-only viewer
+         * SHOULD see the button — clicking it asks for control, which is a real path. The daemon has
+         * no such path, so offering it there leads to a dialog and then silence.
+         */
+        callable: Boolean = true,
     ): ServerMessage.VoiceStatus {
         val s = settings()
         val reason = when {
@@ -131,6 +139,7 @@ internal class VoiceCallService(
             !s.voiceCallEnabled || !s.voiceCallShareEnabled -> "disabled"
             !keyPresent() -> "no_key"
             !confidential -> "insecure_transport"
+            !callable -> "not_controller"
             else -> null
         }
         return ServerMessage.VoiceStatus(

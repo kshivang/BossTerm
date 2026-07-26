@@ -148,6 +148,26 @@ internal class HostVoiceCallController(
      */
     private val toolJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
 
+    /**
+     * Waits for the speaker to drain before clearing `speaking`.
+     *
+     * One at a time, and cancelled by barge-in and by teardown: a second response can start while
+     * the previous one is still draining, and the newer one owns the flag.
+     */
+    @Volatile private var drainWatcher: Job? = null
+
+    private fun clearSpeakingWhenAudible() {
+        drainWatcher?.cancel()
+        drainWatcher = scope.launch {
+            // Bounded: a wedged speaker must not leave the bar stuck on "Speaking" for the call.
+            val deadline = nowMs() + MAX_DRAIN_WAIT_MS
+            while (_state.value.active && audio.queuedPlaybackChunks() > 0 && nowMs() < deadline) {
+                delay(DRAIN_POLL_MS)
+            }
+            _state.update { it.copy(speaking = false) }
+        }
+    }
+
     /** Fires [onTerminal] exactly once per call — end(), fail() and endWith() all funnel here. */
     private val terminalReported = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -334,6 +354,8 @@ internal class HostVoiceCallController(
         val wasActive = _state.value.active
         limitJob?.cancel()
         limitJob = null
+        drainWatcher?.cancel()
+        drainWatcher = null
         // State FIRST: transport.close() triggers the socket's onClose, and with the state still
         // "active" that callback would flip a deliberately-ended call to Error.
         _state.value = HostCallState()
@@ -359,6 +381,8 @@ internal class HostVoiceCallController(
         // OpenAI key was rejected") with "Call ended — nothing happened for 10 minutes".
         limitJob?.cancel()
         limitJob = null
+        drainWatcher?.cancel()
+        drainWatcher = null
         startJob?.cancel()
         startJob = null
         callJob?.cancel()
@@ -392,13 +416,19 @@ internal class HostVoiceCallController(
                 audio.play(pcm)
             }
 
-            "response.output_audio.done" -> _state.update { it.copy(speaking = false) }
+            // The API has finished SENDING, which is not when the user has finished HEARING —
+            // see VoiceAudioIo.queuedPlaybackChunks. Clear once the speaker actually drains, or the
+            // bar reads "Listening…" while Boss is audibly mid-sentence.
+            "response.output_audio.done" -> clearSpeakingWhenAudible()
 
             // Barge-in: the user started talking, so drop whatever the agent still has queued
             // instead of letting the two of them talk over each other.
             "input_audio_buffer.speech_started" -> {
                 touchActivity()
+                // Barge-in empties the queue, so "still audible" is answered immediately: clear now.
                 audio.flushPlayback()
+                drainWatcher?.cancel()
+                drainWatcher = null
                 _state.update { it.copy(speaking = false) }
             }
 
@@ -683,11 +713,24 @@ internal class HostVoiceCallController(
     internal companion object {
         val json = Json { ignoreUnknownKeys = true }
 
-        /** Hard ceiling on one in-app call, mirroring the share path's. */
-        const val MAX_CALL_DURATION_MS = 60 * 60 * 1000L
+        /**
+         * Hard ceiling on one in-app call — deliberately SHORTER than OpenAI's own 60-minute session
+         * cap, not equal to it.
+         *
+         * At exactly 60 minutes it was a coin flip whether the user saw "Call ended — reached the 60
+         * minute limit" or an opaque session_expired rendered as "Connection closed". Same discipline
+         * as [VoiceToolTimeouts]: whoever should explain the outcome has to get there first.
+         */
+        const val MAX_CALL_DURATION_MS = 55 * 60 * 1000L
 
         /** No agent audio, user speech or tool call for this long → hang up. */
         const val IDLE_TIMEOUT_MS = 10 * 60 * 1000L
+
+        /** How often the drain watcher checks the speaker queue. */
+        const val DRAIN_POLL_MS = 60L
+
+        /** Ceiling on that wait, so a wedged speaker cannot pin the bar on "Speaking". */
+        const val MAX_DRAIN_WAIT_MS = 8_000L
 
         /** Coarse tick: neither ceiling needs second-level precision. */
         const val LIMIT_TICK_MS = 5_000L

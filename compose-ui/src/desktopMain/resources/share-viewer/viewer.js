@@ -343,6 +343,13 @@
   voiceMuteEl.onclick = function () {
     if (!voice.mic) return;
     voice.muted = !voice.muted;
+    // enabled=false, NOT track.stop(). The in-app surface stops its capture line so the OS
+    // microphone indicator clears, and VoiceAudioIo.setCaptureMuted's KDoc argues that case well —
+    // but it does not transfer to the browser. stop() ends a track permanently, so unmuting would
+    // need another getUserMedia plus sender.replaceTrack, mid-call, each with its own failure modes
+    // on a path where the cost of getting it wrong is a call that can no longer hear you. So the
+    // tab's recording dot stays lit while muted here. A deliberate difference between the surfaces,
+    // not an oversight — worth revisiting if the re-acquire can be made reliable.
     voice.mic.getAudioTracks().forEach(function (t) { t.enabled = !voice.muted; });
     updateVoiceBar();
   };

@@ -135,7 +135,9 @@ class BossTermMcpServer(
     private val undisablableTools: Set<String> = UNDISABLABLE_TOOLS
 
     // Hold the live Server so applyDisabledSet can mutate it.
-    private var serverRef: Server? = null
+    // @Volatile: written by createServer() outside toolsLock, read under it by the accessors. Boss
+    // Calling is what introduced concurrent readers — four in-flight tool calls plus applyDisabledSet.
+    @Volatile private var serverRef: Server? = null
 
     // Serializes concurrent applyDisabledSet callers. Two paths invoke it: the
     // manage_tools MCP handler (no external lock) and the BossTermMcpManager

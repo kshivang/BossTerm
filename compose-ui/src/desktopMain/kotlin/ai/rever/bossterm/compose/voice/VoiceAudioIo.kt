@@ -43,6 +43,10 @@ internal interface VoiceAudioIo {
      * orange dot on macOS, the tray icon on Windows) stayed lit for the whole muted stretch. For a
      * feature whose trust story is "you can see what it is doing", a Mute button that leaves the
      * indicator on invites exactly the conclusion it is meant to prevent.
+     *
+     * The share viewer deliberately does NOT match this: in a browser, releasing the track means
+     * ending it and re-acquiring on unmute, which is a mid-call risk this argument does not justify.
+     * See the comment on `voiceMuteEl.onclick` in viewer.js.
      */
     fun setCaptureMuted(muted: Boolean)
 

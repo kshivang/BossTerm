@@ -142,10 +142,13 @@ internal class VoiceCallService(
          * skipped the Kex is refused on purpose, not by oversight.
          *
          * The stock viewer also hides its Call button outside a secure context, but that is the
-         * client policing itself; the host will mint for anything that asks. Defaults to true so
-         * existing callers are unchanged; both servers pass their real value.
+         * client policing itself; the host will mint for anything that asks.
+         *
+         * REQUIRED, like [canControl] beside it. A default of `true` on the parameter that decides
+         * whether a credential goes onto a possibly-TLS-terminated tunnel is fail-open, and the
+         * "existing callers" it would spare are exactly the two this feature introduced.
          */
-        confidential: Boolean = true,
+        confidential: Boolean,
         /**
          * Called with the new token the moment a slot is reserved (BEFORE the mint, so a viewer that
          * drops mid-mint still has its reservation retired). The caller records it on the connection.
@@ -328,8 +331,6 @@ internal class VoiceCallService(
         defaultTabId: String?,
         reply: (ServerMessage) -> Unit,
     ) {
-        // The master switch is a kill switch: re-read it here, not just at status/start, so
-        // turning Boss Calling off stops an agent that is already mid-call.
         // Remote input: the result is clamped, but callId is echoed verbatim into VoiceToolResult and
         // a large enough frame would trip the control lane's overflow (closing the connection).
         if (msg.callId.length > MAX_CALL_ID_CHARS || msg.argsJson.length > MAX_ARGS_CHARS) {
@@ -337,12 +338,12 @@ internal class VoiceCallService(
             reply(toolError(msg.callId.take(MAX_CALL_ID_CHARS), "That tool call was too large."))
             return
         }
-        val current = settings()
-        if (!current.voiceCallEnabled || !current.voiceCallShareEnabled) {
-            closeCalls()
-            reply(toolError(msg.callId, "Boss Calling was turned off on the host"))
-            return
-        }
+        // NOTE the master-switch re-read is NOT here — it moved into the coroutine below, beside
+        // executor.tools(). On the daemon, settings() is a stat plus (when the stamp moves or trust
+        // ticks expire) a full read+parse of settings.json under a monitor the 5s status poller also
+        // takes, and this runs on the share socket's receive loop. It bought almost nothing:
+        // pollVoiceStatus already calls closeCalls() within 5s of a toggle, after which isLiveCall
+        // below refuses every subsequent call anyway. The check still happens before the tool runs.
         if (!isLiveCall(msg.callToken)) {
             reply(toolError(msg.callId, "No active call — start a call before using tools"))
             return
@@ -382,6 +383,14 @@ internal class VoiceCallService(
         val job = scope.launch {
             bodyRan.set(true)
             try {
+                // The kill switch, re-read off the receive loop. Still before anything executes, so
+                // turning Boss Calling off stops an agent that is already mid-call.
+                val current = settings()
+                if (!current.voiceCallEnabled || !current.voiceCallShareEnabled) {
+                    closeCalls()
+                    reply(toolError(msg.callId, "Boss Calling was turned off on the host"))
+                    return@launch
+                }
                 // Off-thread: this is where an unadvertised tool is actually refused (the surface can
                 // differ from the catalog — a read-only embedder config, a daemon share).
                 if (executor.tools().none { it.name == def.name }) {
@@ -518,14 +527,6 @@ internal class VoiceCallService(
      * pill reads "on a call" for the rest of the process — on the counter whose entire purpose is
      * being a signal the host can trust.
      */
-    /**
-     * The announcement step alone, for tests that need to interleave it with a close.
-     *
-     * The race it guards lives BETWEEN two lock acquisitions, so driving it through handleStart would
-     * mean racing a real mint — this names the step instead.
-     */
-    internal fun announceCallForTest(token: String) = announceCall(token)
-
     private fun announceCall(token: String) {
         val marked = synchronized(liveCalls) {
             val call = liveCalls[token] ?: return@synchronized false
@@ -534,6 +535,14 @@ internal class VoiceCallService(
         }
         if (marked) onCallActivity(true)
     }
+
+    /**
+     * The announcement step alone, for tests that need to interleave it with a close.
+     *
+     * The race it guards lives BETWEEN two lock acquisitions, so driving it through handleStart would
+     * mean racing a real mint — this names the step instead.
+     */
+    internal fun announceCallForTest(token: String) = announceCall(token)
 
     /**
      * True for a token this host minted and that hasn't aged out. Tokens issued before this field
@@ -667,6 +676,14 @@ internal class VoiceCallService(
          * sessions an hour, none of them revocable; six still lets someone with a flaky connection
          * redial roughly every 100 seconds indefinitely, which is well past what dialling a phone
          * looks like.
+         *
+         * Shared PROCESS-WIDE, which makes it a cross-share DENIAL and not merely a spend cap: one
+         * viewer redial-looping on share A locks out a legitimate caller on share B for the rest of
+         * the window, and both see the same undifferentiated `rate_limited`. Deliberate — the budget
+         * protects one API key, and per-share budgets would multiply the ceiling by the number of
+         * shares — but a real tradeoff rather than an oversight. A per-connection sub-budget under
+         * this one would keep the ceiling while making starvation local to whoever caused it. The
+         * in-app surface is unaffected: it does not mint.
          */
         const val MINT_MIN_GAP_MS = 3_000L
         const val MINT_WINDOW_MS = 10 * 60 * 1000L

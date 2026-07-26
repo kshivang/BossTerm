@@ -43,6 +43,17 @@ class VoiceCallServiceTest {
             """{"ok":true,"tool":"$name","defaultTabId":"$defaultTabId"}"""
     }
 
+    /** Records what actually reached the executor, for "refused before it ran" assertions. */
+    private class RecordingExecutor : VoiceToolExecutor {
+        val ran: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
+        override fun tools(): List<VoiceToolDef> = VoiceToolCatalog.ALL
+        override fun contextSnapshot(defaultTabId: String?): String = ""
+        override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?): String {
+            ran.add(name)
+            return "{}"
+        }
+    }
+
     private fun service(
         enabled: Boolean = true,
         key: String? = "sk-test",
@@ -113,7 +124,7 @@ class VoiceCallServiceTest {
         assertEquals("disabled", svc.status().reason, "viewers are told it's unavailable")
 
         val replies = mutableListOf<ServerMessage>()
-        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { replies.add(it) }
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = true) { replies.add(it) }
         assertEquals("disabled", (replies.single() as ServerMessage.VoiceError).code)
 
         // Both default on, so the stock install still serves viewers.
@@ -204,7 +215,7 @@ class VoiceCallServiceTest {
     @Test
     fun `voiceStart without control is refused server-side`() {
         val replies = mutableListOf<ServerMessage>()
-        service().handleStart(ClientMessage.VoiceStart(), canControl = false) { replies.add(it) }
+        service().handleStart(ClientMessage.VoiceStart(), canControl = false, confidential = true) { replies.add(it) }
         val err = replies.single()
         assertIs<ServerMessage.VoiceError>(err)
         assertEquals("not_controller", err.code)
@@ -224,7 +235,7 @@ class VoiceCallServiceTest {
         fun codesFrom(svc: VoiceCallService): List<String> {
             val replies = mutableListOf<ServerMessage>()
             repeat(2) {
-                svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { r ->
+                svc.handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = true) { r ->
                     synchronized(replies) { replies.add(r) }
                 }
                 Thread.sleep(250) // the bail-outs under test are inside scope.launch
@@ -304,11 +315,11 @@ class VoiceCallServiceTest {
     @Test
     fun `voiceStart validates enabled and key before minting`() {
         val replies = mutableListOf<ServerMessage>()
-        service(enabled = false).handleStart(ClientMessage.VoiceStart(), canControl = true) { replies.add(it) }
+        service(enabled = false).handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = true) { replies.add(it) }
         assertEquals("disabled", (replies.single() as ServerMessage.VoiceError).code)
 
         replies.clear()
-        service(key = null).handleStart(ClientMessage.VoiceStart(), canControl = true) { replies.add(it) }
+        service(key = null).handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = true) { replies.add(it) }
         assertEquals("no_key", (replies.single() as ServerMessage.VoiceError).code)
     }
 
@@ -400,8 +411,9 @@ class VoiceCallServiceTest {
     @Test
     fun `turning Boss Calling off stops tools on a call already in progress`() {
         var enabled = true
+        val executor = RecordingExecutor()
         val svc = VoiceCallService(
-            executor = FakeExecutor(),
+            executor = executor,
             scope = CoroutineScope(Dispatchers.Default),
             settings = { TerminalSettings.DEFAULT.copy(voiceCallEnabled = enabled) },
             loadKey = { "sk-test" },
@@ -414,11 +426,20 @@ class VoiceCallServiceTest {
         svc.handleToolCall(
             ClientMessage.VoiceToolCall("c9", "read_scrollback", "{}", callToken = token),
             canControl = true, defaultTabId = "t1",
-        ) { replies.add(it) }
-        val refused = replies.single()
+        ) { synchronized(replies) { replies.add(it) } }
+
+        // The refusal arrives from the coroutine, not the caller's thread: the switch is re-read
+        // beside executor.tools() rather than on the socket's receive loop, where on the daemon it
+        // was a stat plus a possible read+parse of settings.json. Still before the tool runs.
+        assertTrue(
+            awaitReply { synchronized(replies) { replies.isNotEmpty() } },
+            "a disabled host must still answer the call",
+        )
+        val refused = synchronized(replies) { replies.single() }
         assertIs<ServerMessage.VoiceToolResult>(refused)
         assertTrue(refused.isError)
         assertTrue(refused.resultJson.contains("turned off"), refused.resultJson)
+        assertEquals(emptyList(), executor.ran, "and the tool itself never ran")
     }
 
     /**
@@ -438,16 +459,16 @@ class VoiceCallServiceTest {
             sharedCalls = LinkedHashMap(),
         )
         val replies = mutableListOf<ServerMessage>()
-        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { replies.add(it) }
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = true) { replies.add(it) }
         // First one is admitted (it goes on to mint asynchronously — no error reply here).
         assertTrue(replies.none { it is ServerMessage.VoiceError }, "the first mint must be allowed")
 
-        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { replies.add(it) }
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = true) { replies.add(it) }
         assertEquals("rate_limited", (replies.last() as ServerMessage.VoiceError).code)
 
         clock += 5_000 // past the minimum gap
         replies.clear()
-        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { replies.add(it) }
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = true) { replies.add(it) }
         assertTrue(replies.none { it is ServerMessage.VoiceError }, "a later attempt is allowed again")
     }
 
@@ -575,6 +596,7 @@ class VoiceCallServiceTest {
         svc.handleStart(
             ClientMessage.VoiceStart(),
             canControl = true,
+            confidential = true,
             onCallTokenChanged = { reserved = it },
         ) {}
         assertTrue(reserved != null, "the slot is reserved before the mint, not after it")
@@ -685,6 +707,7 @@ class VoiceCallServiceTest {
         svc.handleStart(
             ClientMessage.VoiceStart(),
             canControl = true,
+            confidential = true,
             onCallTokenChanged = { connectionToken = it },
             clearCallTokenIfCurrent = { stale -> if (connectionToken == stale) connectionToken = null },
         ) {}
@@ -734,7 +757,7 @@ class VoiceCallServiceTest {
         }
         val svc = service(broker = VoiceSessionBroker(baseUrl = "", httpOverride = client))
         val reply = CompletableDeferred<ServerMessage>()
-        svc.handleStart(ClientMessage.VoiceStart(activeTabId = "t1"), canControl = true) { reply.complete(it) }
+        svc.handleStart(ClientMessage.VoiceStart(activeTabId = "t1"), canControl = true, confidential = true) { reply.complete(it) }
         val r = withTimeout(5000) { reply.await() }
         assertIs<ServerMessage.VoiceSession>(r)
         assertEquals("ek_stub_1", r.clientSecret)
@@ -761,7 +784,7 @@ class VoiceCallServiceTest {
         }
         val svc = service(broker = VoiceSessionBroker(baseUrl = "", httpOverride = client))
         val reply = CompletableDeferred<ServerMessage>()
-        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { reply.complete(it) }
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = true) { reply.complete(it) }
         val r = withTimeout(5000) { reply.await() }
         assertIs<ServerMessage.VoiceError>(r)
         assertEquals("mint_failed", r.code)
@@ -791,7 +814,7 @@ class VoiceCallServiceTest {
             sharedCalls = LinkedHashMap(),
         )
         val reply = CompletableDeferred<ServerMessage>()
-        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { reply.complete(it) }
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = true) { reply.complete(it) }
         withTimeout(5000) { reply.await() }
         Thread.sleep(150) // let any stray callback land
         assertTrue(synchronized(activity) { activity.isEmpty() }, "saw $activity")
@@ -812,7 +835,7 @@ class VoiceCallServiceTest {
             }
         }
         val svc = service(broker = VoiceSessionBroker(baseUrl = "", httpOverride = client))
-        svc.handleStart(ClientMessage.VoiceStart(activeTabId = "t1"), canControl = true) {}
+        svc.handleStart(ClientMessage.VoiceStart(activeTabId = "t1"), canControl = true, confidential = true) {}
         val body = withTimeout(5000) { captured.await() }
 
         val expires = body["expires_after"]!!.jsonObject
@@ -864,7 +887,7 @@ class VoiceCallServiceTest {
         }
         val svc = service(broker = VoiceSessionBroker(baseUrl = "", httpOverride = client))
         val reply = CompletableDeferred<ServerMessage>()
-        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { reply.complete(it) }
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = true) { reply.complete(it) }
         val r = withTimeout(5000) { reply.await() }
         assertIs<ServerMessage.VoiceSession>(r)
         assertEquals("ek_beta_shape", r.clientSecret)
@@ -882,7 +905,7 @@ class VoiceCallServiceTest {
         }
         val svc = service(broker = VoiceSessionBroker(baseUrl = "", httpOverride = client))
         val replies = mutableListOf<ServerMessage>()
-        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { synchronized(replies) { replies.add(it) } }
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = true) { synchronized(replies) { replies.add(it) } }
 
         assertTrue(
             awaitReply { synchronized(replies) { replies.any { it is ServerMessage.VoiceError } } },
@@ -900,7 +923,7 @@ class VoiceCallServiceTest {
         }
         val svc = service(broker = VoiceSessionBroker(baseUrl = "", httpOverride = client))
         val reply = CompletableDeferred<ServerMessage>()
-        svc.handleStart(ClientMessage.VoiceStart(), canControl = true) { reply.complete(it) }
+        svc.handleStart(ClientMessage.VoiceStart(), canControl = true, confidential = true) { reply.complete(it) }
         val r = withTimeout(5000) { reply.await() }
         assertIs<ServerMessage.VoiceError>(r)
         assertEquals("unauthorized", r.code)

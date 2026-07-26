@@ -226,7 +226,11 @@ internal class JdkRealtimeTransport(
         // Wait briefly for the writer to fall out of its loop. It may already be inside a
         // sendText().join() that neither `open = false` nor interrupt() can retract, and a reusable
         // transport means the next connect() would otherwise overlap that window.
-        writer?.let { w ->
+        // Never join ourselves. The writer's own terminal-send-failure path calls onClosed, which the
+        // controller turns into fail() → close() — so `w` can BE the current thread. That survived by
+        // accident: interrupt() sets the flag, join() throws InterruptedException immediately, and
+        // runCatching swallowed it. Deliberate now, because accidents like that stop working quietly.
+        writer?.takeIf { it !== Thread.currentThread() }?.let { w ->
             w.interrupt()
             runCatching { w.join(WRITER_SHUTDOWN_MS) }
         }

@@ -121,6 +121,11 @@ internal object HostVoiceCall {
      */
     internal fun releaseIfCurrent(ended: HostVoiceCallController) {
         if (controller !== ended) return
+        // mirrorJob deliberately keeps running. A call that failed sits in Error, and that state has
+        // to keep reaching the UI so the bar can offer its Dismiss — cancelling the collector here
+        // would freeze the pill on whatever it last showed. It is cheap, and the next
+        // start()/end()/dismissError() replaces or cancels it. (A collector cannot cancel itself
+        // from inside its own collect anyway.)
         controller = null
         killSwitchJob?.cancel()
         killSwitchJob = null

@@ -14,9 +14,17 @@ import java.nio.file.attribute.PosixFilePermission
 
 /** The Boss Calling secrets persisted to `~/.bossterm/voice.json`. */
 @Serializable
-data class StoredVoiceConfig(
+internal data class StoredVoiceConfig(
     val openaiApiKey: String,
-)
+) {
+    /**
+     * The whole premise of this file is that the key is never logged — and a data class's generated
+     * toString() renders it in full, so that invariant was held by every present and future caller
+     * remembering not to print the object. Structural now rather than conventional. `internal` for
+     * the same reason: it was the one public type in an internal object's API.
+     */
+    override fun toString(): String = "StoredVoiceConfig(openaiApiKey=***)"
+}
 
 /**
  * Persists the Boss Calling (voice agent) OpenAI API key to `~/.bossterm/voice.json` —

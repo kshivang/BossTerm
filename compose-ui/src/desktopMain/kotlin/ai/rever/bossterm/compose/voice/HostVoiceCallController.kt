@@ -64,7 +64,17 @@ internal class HostVoiceCallController(
     private val scope: CoroutineScope,
     private val executor: VoiceToolExecutor,
     private val transport: RealtimeTransport = JdkRealtimeTransport(),
-    private val audio: VoiceAudioIo = JavaSoundVoiceAudioIo(),
+    /**
+     * Built PER CALL, not injected once.
+     *
+     * JavaSoundVoiceAudioIo latches `disposed` and serves exactly one call — deliberately, because
+     * clearing that latch is what let an end-during-agent-speech resurrect the capture loop and leak
+     * a line and a thread. But its transport sibling IS reusable (the whole generation counter
+     * exists for that), so an instance here read as reusable too, and the contract was held only by
+     * HostVoiceCall happening to construct a fresh controller each time. A factory makes it
+     * impossible to violate rather than merely documented.
+     */
+    private val newAudio: () -> VoiceAudioIo = { JavaSoundVoiceAudioIo() },
     private val settings: () -> TerminalSettings = { SettingsManager.instance.settings.value },
     private val loadKey: () -> String? = { VoiceAgentStorage.load()?.openaiApiKey?.takeIf { it.isNotBlank() } },
     /** Injected in tests so the ceilings can be exercised without waiting them out. */
@@ -90,6 +100,9 @@ internal class HostVoiceCallController(
 
     private val log = LoggerFactory.getLogger(HostVoiceCallController::class.java)
 
+    /** This call's audio. Replaced on each [start] — see [newAudio]. */
+    @Volatile private var audio: VoiceAudioIo = newAudio()
+
     private val _state = MutableStateFlow(HostCallState())
     val state: StateFlow<HostCallState> = _state.asStateFlow()
 
@@ -104,7 +117,7 @@ internal class HostVoiceCallController(
     // Tool-round bookkeeping, mirroring the viewer: a response.create while a response is still
     // generating is rejected (conversation_already_has_active_response), and one response can ask
     // for several tools — so exactly one follow-up turn per round, once all of them have answered.
-    private val seenCalls = HashSet<String>()
+    private val seenCalls = LinkedHashSet<String>()
     private val pendingCalls = HashSet<String>()
     private var responseOpen = false
     private var outputsOwed = 0
@@ -188,6 +201,9 @@ internal class HostVoiceCallController(
         _state.value = HostCallState(phase = HostCallPhase.Connecting)
         _level.value = 0f
         terminalReported.set(false)
+        // Fresh per call: the previous one is disposed and would refuse startCapture, surfacing its
+        // internal check message ("this VoiceAudioIo has already been stopped") on the call bar.
+        audio = newAudio()
         callJob = SupervisorJob()
         inFlightTools.set(0)
         synchronized(roundLock) {
@@ -521,7 +537,13 @@ internal class HostVoiceCallController(
         }
         synchronized(roundLock) {
             // Trimmed so a long call can't grow it without bound; anything pending is preserved.
-            if (seenCalls.size > 400) seenCalls.retainAll(pendingCalls)
+            // Drop the OLDEST completed id, keeping recent history, rather than retaining only what
+            // is pending: trimming to pendingCalls discarded every finished id, so a replayed
+            // call_id would re-execute its tool. LinkedHashSet iterates in insertion order.
+            while (seenCalls.size > SEEN_CALLS_LIMIT) {
+                val oldest = seenCalls.firstOrNull { it !in pendingCalls } ?: break
+                seenCalls.remove(oldest)
+            }
             if (!seenCalls.add(callId)) return
             pendingCalls.add(callId)
             responseOpen = true // a function call only exists inside a response
@@ -772,6 +794,9 @@ internal class HostVoiceCallController(
 
         /** Coarse tick: neither ceiling needs second-level precision. */
         const val LIMIT_TICK_MS = 5_000L
+
+        /** Dedupe history kept per call; beyond this the oldest completed ids are dropped. */
+        const val SEEN_CALLS_LIMIT = 400
 
         /** Concurrent tool calls, matching [VoiceCallService]'s cap. */
         const val MAX_IN_FLIGHT_TOOLS = 4

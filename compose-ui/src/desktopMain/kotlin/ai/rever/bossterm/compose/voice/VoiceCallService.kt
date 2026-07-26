@@ -580,6 +580,13 @@ internal class VoiceCallService(
      */
     @Volatile private var sweeper: Job? = null
 
+    /** Paired with [ensureSweeper] under the same monitor — the field had one writer outside it. */
+    @Synchronized
+    private fun stopSweeper() {
+        sweeper?.cancel()
+        sweeper = null
+    }
+
     @Synchronized
     private fun ensureSweeper() {
         // Check-then-act otherwise: openCall() is reachable from two shares' receive loops at once,
@@ -730,8 +737,7 @@ internal class VoiceCallService(
      * shares' live calls down with it.
      */
     fun closeCalls() {
-        sweeper?.cancel()
-        sweeper = null
+        stopSweeper()
         val announced = synchronized(liveCalls) {
             val mine = liveCalls.filterValues { it.owner === this }
             mine.keys.forEach { liveCalls.remove(it) }

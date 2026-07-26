@@ -96,7 +96,10 @@ internal fun BossCallingSection(
             onCheckedChange = { onSettingsChange(settings.copy(voiceCallShareEnabled = it)) },
             description = "Let someone holding a control-share link start a voice call that can run " +
                     "commands here. Turn this off to keep Boss Calling for yourself in this window " +
-                    "only — a different trust boundary from calling your own terminal.",
+                    "only — a different trust boundary from calling your own terminal. Their call is " +
+                    "billed to your OpenAI key, and because the audio runs between their browser and " +
+                    "OpenAI you cannot end it from here: stopping the share cuts the agent's access " +
+                    "to this machine, but not the session they already started.",
             enabled = settings.voiceCallEnabled,
         )
         if (statusLine) VoiceAvailabilityLine(settings, keyPresentOverride)

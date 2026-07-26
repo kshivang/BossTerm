@@ -121,7 +121,7 @@ class HostVoiceCallControllerTest {
         scope = CoroutineScope(Dispatchers.Default),
         executor = executor,
         transport = transport,
-        audio = audio,
+        newAudio = { audio },
         settings = { TerminalSettings.DEFAULT.copy(voiceCallEnabled = enabled) },
         loadKey = { key },
         nowMs = clock,
@@ -293,7 +293,7 @@ class HostVoiceCallControllerTest {
             scope = CoroutineScope(Dispatchers.Default),
             executor = slow,
             transport = transport,
-            audio = audio,
+            newAudio = { audio },
             settings = { TerminalSettings.DEFAULT },
             loadKey = { "sk-test" },
             toolTimeoutMs = { 150L },
@@ -398,7 +398,7 @@ class HostVoiceCallControllerTest {
             scope = CoroutineScope(Dispatchers.Default),
             executor = FakeExecutor(),
             transport = slowConnect,
-            audio = audio,
+            newAudio = { audio },
             settings = { TerminalSettings.DEFAULT },
             loadKey = { "sk-test" },
         )
@@ -496,7 +496,7 @@ class HostVoiceCallControllerTest {
             scope = CoroutineScope(Dispatchers.Default),
             executor = FakeExecutor(),
             transport = transport,
-            audio = audio,
+            newAudio = { audio },
             settings = {
                 TerminalSettings.DEFAULT.copy(voiceCallEnabled = reads.incrementAndGet() <= 2)
             },
@@ -541,7 +541,7 @@ class HostVoiceCallControllerTest {
                 scope = CoroutineScope(Dispatchers.Default),
                 executor = FakeExecutor(),
                 transport = FakeTransport(),
-                audio = audio,
+                newAudio = { audio },
                 settings = { TerminalSettings.DEFAULT },
                 loadKey = { "sk-test" },
                 nowMs = { clock },
@@ -572,7 +572,7 @@ class HostVoiceCallControllerTest {
         scope = CoroutineScope(Dispatchers.Default),
         executor = FakeExecutor(),
         transport = transport,
-        audio = audio,
+        newAudio = { audio },
         settings = { TerminalSettings.DEFAULT },
         loadKey = { key },
         onTerminal = onTerminal,
@@ -625,7 +625,7 @@ class HostVoiceCallControllerTest {
             scope = CoroutineScope(Dispatchers.Default),
             executor = FakeExecutor(),
             transport = transport,
-            audio = audio,
+            newAudio = { audio },
             settings = {
                 // The re-check is the first settings() read after the mic opens — i.e. precisely
                 // between the guard and the state transition.
@@ -717,7 +717,7 @@ class HostVoiceCallControllerTest {
             scope = CoroutineScope(Dispatchers.Default),
             executor = FakeExecutor(),
             transport = refusing,
-            audio = FakeAudio(),
+            newAudio = { FakeAudio() },
             settings = { TerminalSettings.DEFAULT },
             loadKey = { "sk-bad" },
         )

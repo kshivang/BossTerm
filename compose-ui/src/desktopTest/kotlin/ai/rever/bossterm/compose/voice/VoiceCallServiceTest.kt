@@ -3,6 +3,9 @@ package ai.rever.bossterm.compose.voice
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.share.ClientMessage
 import ai.rever.bossterm.compose.share.ServerMessage
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receiveText
@@ -231,6 +234,46 @@ class VoiceCallServiceTest {
         // And an available host has nothing to redact either way.
         assertEquals(null, service().status(withReason = true).reason)
         assertEquals(null, service().status(withReason = false).reason)
+    }
+
+    /**
+     * No VoiceError that reaches a viewer may carry a JVM class name.
+     *
+     * The 5xx path is careful about this — OpenAI's prose and x-request-id are logged host-side and
+     * the viewer gets a bare status code — but the catch-all returned
+     * "Could not reach OpenAI (SSLHandshakeException)" verbatim through mint_failed. It is only a
+     * class name, but it tells a stranger about the host's network and tells them nothing they can
+     * act on, which is the asymmetry the careful branch was written to avoid.
+     */
+    @Test
+    fun `no error message handed to a viewer names a JVM class`() {
+        // A REFUSED connection, not a 404: a 404 takes the HTTP-status branch, which never carried a
+        // class name, so routing to a stub would have passed this test without exercising anything.
+        // Port 1 is not listenable; the client throws and the catch-all runs.
+        val failing = HttpClient(CIO) {
+            expectSuccess = false
+            install(HttpTimeout) { connectTimeoutMillis = 1_000; requestTimeoutMillis = 2_000 }
+        }
+        val svc = service(broker = VoiceSessionBroker(baseUrl = "http://127.0.0.1:1", httpOverride = failing))
+        val replies = mutableListOf<ServerMessage>()
+        svc.handleStart(
+            ClientMessage.VoiceStart(),
+            canControl = true,
+            confidential = true,
+        ) { synchronized(replies) { replies.add(it) } }
+
+        assertTrue(awaitReply { synchronized(replies) { replies.any { it is ServerMessage.VoiceError } } })
+        val messages = synchronized(replies) {
+            replies.filterIsInstance<ServerMessage.VoiceError>().mapNotNull { it.message }
+        }
+        assertTrue(messages.isNotEmpty(), "the catch-all branch must actually have run")
+        for (message in messages) {
+            assertFalse(
+                Regex("[A-Z][A-Za-z]*(Exception|Error|Throwable)").containsMatchIn(message),
+                "a viewer must not be told the host's exception type: $message",
+            )
+        }
+        failing.close()
     }
 
     @Test

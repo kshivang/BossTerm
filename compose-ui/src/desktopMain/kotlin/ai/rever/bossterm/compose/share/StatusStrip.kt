@@ -1,6 +1,10 @@
 package ai.rever.bossterm.compose.share
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.TooltipArea
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -97,7 +101,23 @@ fun StatusStrip(
                     sharingCount > 0 -> ON
                     else -> OFF
                 }
-                Segment(dot = dot, label = label, onClick = onSharingClick)
+                Segment(
+                    dot = dot,
+                    label = label,
+                    onClick = onSharingClick,
+                    // Say what the host can and cannot do. The indicator is deliberately not an
+                    // action: the call's audio is browser-to-OpenAI and the host is not a party to
+                    // it, so nothing here can hang it up. Stopping the share cuts the agent's TOOLS
+                    // immediately, which is the part that touches this machine. An indicator that
+                    // looks actionable and isn't is worse than one that explains itself.
+                    tooltip = if (remoteCalls > 0) {
+                        "A viewer is in a voice call with this session's agent. Stopping the share " +
+                            "cuts the agent's access to this machine immediately — their audio " +
+                            "session runs browser-to-OpenAI and cannot be ended from here."
+                    } else {
+                        null
+                    },
+                )
             }
             if ((showMcp || showSharing || remoteCalls > 0) && showCall) {
                 Text("|", color = Color(0xFF555555), fontSize = 12.sp)
@@ -128,13 +148,37 @@ fun StatusStrip(
 }
 
 @Composable
-private fun Segment(dot: Color, label: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier.clickable(onClick = onClick),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(5.dp)
+@OptIn(ExperimentalFoundationApi::class)
+private fun Segment(dot: Color, label: String, onClick: () -> Unit, tooltip: String? = null) {
+    val row = @Composable {
+        Row(
+            modifier = Modifier.clickable(onClick = onClick),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Box(Modifier.size(7.dp).background(dot, CircleShape))
+            Text(label, color = Color(0xFFCCCCCC), fontSize = 11.sp)
+        }
+    }
+    if (tooltip == null) {
+        row()
+        return
+    }
+    TooltipArea(
+        tooltip = {
+            Text(
+                text = tooltip,
+                color = Color(0xFFDDDDDD),
+                fontSize = 11.sp,
+                modifier = Modifier
+                    .widthIn(max = 320.dp)
+                    .background(Color(0xFF2B2B2B), RoundedCornerShape(6.dp))
+                    .border(1.dp, Color(0xFF505050), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+            )
+        },
+        delayMillis = 350,
     ) {
-        Box(Modifier.size(7.dp).background(dot, CircleShape))
-        Text(label, color = Color(0xFFCCCCCC), fontSize = 11.sp)
+        row()
     }
 }

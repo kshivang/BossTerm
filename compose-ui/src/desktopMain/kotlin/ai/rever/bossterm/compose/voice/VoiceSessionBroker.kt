@@ -118,8 +118,13 @@ internal class VoiceSessionBroker(
                 }
             }
         }.getOrElse {
+            // The class name stays HOST-side. It reaches the viewer verbatim through
+            // VoiceError.message and voiceErrorText's default branch, and "the remote caller gets
+            // only the status code" was the whole point of the careful 5xx handling above — a
+            // SocketTimeoutException vs an SSLHandshakeException tells a stranger about the host's
+            // network either way, and tells them nothing they can act on.
             log.warn("Voice session mint failed: {}", it.javaClass.simpleName)
-            MintResult.Failed("Could not reach OpenAI (${it.javaClass.simpleName})")
+            MintResult.Failed("Could not reach OpenAI")
         }
     }
 

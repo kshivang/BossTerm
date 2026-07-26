@@ -68,6 +68,24 @@ class VoiceContextSnapshotTest {
         assertTrue(noted.contains("list_tabs"), "and points at the tool that can see the rest")
     }
 
+    /**
+     * The same fields go out in TOOL RESULTS (list_tabs, get_active_tab), not just the system
+     * prompt. JSON encoding stops structural breakout there and clampToolResult bounds the total, so
+     * it is the weaker surface — but "these fields are terminal-controlled" is the same sentence, and
+     * a 4 KB OSC-0 title used to go through whole.
+     */
+    @Test
+    fun `the same clipping applies wherever a title leaves the host`() {
+        val hostile = "x".repeat(4096)
+        val clipped = VoiceContextSnapshot.field(hostile)
+        assertTrue(clipped.length <= VoiceContextSnapshot.MAX_FIELD_CHARS)
+
+        // The executors call exactly this for tool-result titles/cwds, so the bound is shared rather
+        // than reimplemented — that was the point of routing both through one function.
+        assertEquals(clipped, VoiceContextSnapshot.field(hostile), "deterministic for both callers")
+        assertFalse(VoiceContextSnapshot.field("tab\ntitle").contains('\n'))
+    }
+
     @Test
     fun `an empty scope with hidden entries still explains itself`() {
         val noted = VoiceContextSnapshot.withOverflowNote("", shown = 0, total = 3)

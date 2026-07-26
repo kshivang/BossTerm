@@ -119,8 +119,8 @@ internal class DaemonVoiceToolExecutor(
                 if (s.id !in scope) continue
                 add(buildJsonObject {
                     put("id", s.id)
-                    put("title", s.title)
-                    s.cwd?.let { put("cwd", it) }
+                    put("title", VoiceContextSnapshot.field(s.title))
+                    VoiceContextSnapshot.field(s.cwd).takeIf { it.isNotEmpty() }?.let { put("cwd", it) }
                     put("isActive", s.id == viewing)
                 })
             }
@@ -136,8 +136,8 @@ internal class DaemonVoiceToolExecutor(
         }.toString()
         return buildJsonObject {
             put("id", s.id)
-            put("title", s.title)
-            s.cwd?.let { put("cwd", it) }
+            put("title", VoiceContextSnapshot.field(s.title))
+            VoiceContextSnapshot.field(s.cwd).takeIf { it.isNotEmpty() }?.let { put("cwd", it) }
             put("isActive", s.id == viewing)
         }.toString()
     }

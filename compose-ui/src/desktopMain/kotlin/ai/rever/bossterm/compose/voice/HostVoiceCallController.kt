@@ -7,6 +7,7 @@ import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -353,12 +354,19 @@ internal class HostVoiceCallController(
         startJob = null
         callJob?.cancel()
         callJob = null
-        runCatching { audio.stop() }
-        runCatching { transport.close() }
-        runCatching { executor.dispose() }
+        // State and the terminal signal FIRST and synchronously, then the blocking parts off-thread.
+        // fail() is reachable from the JDK WebSocket reader thread (onClose/onError) and from the
+        // startLimits ticker on Dispatchers.Default, and transport.close() joins the writer for up to
+        // WRITER_SHUTDOWN_MS while audio.stop() closes two lines. HostVoiceCall.end() already routes
+        // to IO for exactly this reason; the self-terminating paths were the inconsistent ones.
         _state.value = HostCallState(phase = HostCallPhase.Error, error = message)
         _level.value = 0f
         reportTerminal()
+        scope.launch(Dispatchers.IO) {
+            runCatching { audio.stop() }
+            runCatching { transport.close() }
+            runCatching { executor.dispose() }
+        }
     }
 
     /** One server event. Runs on the transport's callback thread. */

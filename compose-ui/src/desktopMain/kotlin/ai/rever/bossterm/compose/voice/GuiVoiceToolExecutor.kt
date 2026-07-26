@@ -91,11 +91,18 @@ internal class GuiVoiceToolExecutor(
     /**
      * The private server with the user's CURRENT tool disables applied.
      *
+     * @Synchronized, not merely @Volatile: compare, store and apply were three steps with up to four
+     * tool calls running concurrently, so two threads crossing a settings change could leave the
+     * server on the OLDER set while the field claimed the newer one — and nothing would re-apply
+     * until the next change, leaving a tool the user just disabled callable. That is exactly the
+     * invariant this method exists to establish.
+     *
      * `createServer()` reads `disabledMcpTools` once, and only [BossTermMcpManager] drives
      * `applyDisabledSet` on its own instance — so this one froze the disables as they stood at the
      * first voice call. That matters because `manage_tools` exists to toggle them at runtime:
      * disabling run_command mid-session left it callable by voice until the app restarted.
      */
+    @Synchronized
     private fun server(): BossTermMcpServer {
         serverInstance // force construction on first use
         val disabled = settings().disabledMcpTools.toSet()
@@ -106,18 +113,28 @@ internal class GuiVoiceToolExecutor(
         return wrapper
     }
 
+    /**
+     * The advertised surface AND the disabled set it was computed from, as one consistent pair.
+     *
+     * Reading them separately let the two disagree: tools() took its own `settings()` snapshot after
+     * server() had already applied a different one, so a tool could be filtered against a disabled
+     * set the server was not actually on.
+     */
+    @Synchronized
+    private fun surface(): Pair<BossTermMcpServer, Set<String>> = server() to (appliedDisabled ?: emptySet())
+
     /** The registered handler name for a catalog tool (the embedder may prefix them). */
     private fun handlerName(tool: String): String = mcpConfig.toolNamePrefix + tool
 
     override fun tools(): List<VoiceToolDef> {
         // Via the wrapper, not the raw SDK map: it is not thread-safe and this runs concurrently
         // with applyDisabledSet and with up to four in-flight tool calls.
-        val registered = server().toolNames()
+        val (wrapper, disabled) = surface()
+        val registered = wrapper.toolNames()
         // LOCAL_TOOLS are answered from the registry rather than through a handler, so they skipped
         // the disabled check that the class KDoc claims carries over "for free" — a user who turned
         // list_tabs off via manage_tools still had it callable by voice, still listing every in-scope
         // tab's title and cwd. Read-only and scope-filtered, but the invariant was stated and untrue.
-        val disabled = settings().disabledMcpTools.toSet()
         return VoiceToolCatalog.ALL.filter {
             if (it.name in LOCAL_TOOLS) handlerName(it.name) !in disabled && it.name !in disabled
             else handlerName(it.name) in registered
@@ -262,8 +279,8 @@ internal class GuiVoiceToolExecutor(
                 if (tab.id !in scope) continue
                 add(buildJsonObject {
                     put("id", tab.id)
-                    put("title", tab.title.value)
-                    tab.workingDirectory.value?.let { put("cwd", it) }
+                    put("title", VoiceContextSnapshot.field(tab.title.value))
+                    VoiceContextSnapshot.field(tab.workingDirectory.value).takeIf { it.isNotEmpty() }?.let { put("cwd", it) }
                     put("isActive", registry.findState(tab.id)?.activeTabId == tab.id)
                 })
             }
@@ -277,8 +294,8 @@ internal class GuiVoiceToolExecutor(
         }.toString()
         return buildJsonObject {
             put("id", tab.id)
-            put("title", tab.title.value)
-            tab.workingDirectory.value?.let { put("cwd", it) }
+            put("title", VoiceContextSnapshot.field(tab.title.value))
+            VoiceContextSnapshot.field(tab.workingDirectory.value).takeIf { it.isNotEmpty() }?.let { put("cwd", it) }
             put("isActive", registry.findState(tab.id)?.activeTabId == tab.id)
         }.toString()
     }

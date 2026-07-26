@@ -410,7 +410,7 @@
       if (voice.state === "idle") return;
       if (Date.now() - voice.lastActivity >= VOICE_IDLE_MS) {
         endCall(true);
-        toast("Call ended after 10 minutes with nothing happening.", 6000);
+        toast("Call ended after " + (VOICE_IDLE_MS / 60000) + " minutes with nothing happening.", 6000);
       }
     }, 15000);
   }
@@ -452,6 +452,8 @@
         return "Couldn't start the call" + (m.message ? ": " + m.message : ".");
     }
   }
+  // NOTE: mirrored by HostVoiceCallController.describeTool for the in-app surface — a new tool needs
+  // a line in BOTH (and its schema in VoiceToolCatalog, and its handler in the executors).
   function voiceDescribeTool(name, argsJson) {
     try {
       var a = JSON.parse(argsJson || "{}");

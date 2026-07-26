@@ -41,9 +41,14 @@ class HostVoiceCallControllerTest {
         }
 
         val evictableFlags = mutableListOf<Boolean>()
-        override fun send(json: String, evictable: Boolean) {
+        /** Mirrors the contract: guaranteed frames report acceptance, and [refuseSends] simulates
+         *  a stalled socket so the caller's handling of a dropped protocol frame is exercisable. */
+        var refuseSends = false
+        override fun send(json: String, evictable: Boolean): Boolean {
+            if (refuseSends && !evictable) return false
             sent.add(json)
             evictableFlags.add(evictable)
+            return true
         }
         override fun close() { closed = true }
 
@@ -278,6 +283,27 @@ class HostVoiceCallControllerTest {
         c.end()
     }
 
+    /**
+     * The protocol lane is advertised as guaranteed, so a refused function_call_output must end the
+     * call rather than leave it quiet: the round is already settled locally, which makes a dropped
+     * frame indistinguishable from a hang.
+     */
+    @Test
+    fun `a dropped tool result ends the call instead of going quiet`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val c = controller(transport, audio)
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+
+        transport.refuseSends = true // stalled socket: the guaranteed lane has no room
+        transport.deliver(
+            """{"type":"response.function_call_arguments.done","call_id":"c1","name":"read_scrollback","arguments":"{}"}"""
+        )
+        assertTrue(await { c.state.value.phase == HostCallPhase.Error }, "a lost result must not be silent")
+        assertTrue(c.state.value.error?.contains("Lost the connection") == true, c.state.value.error ?: "")
+    }
+
     @Test
     fun `a duplicated call id is executed once`() {
         val transport = FakeTransport()
@@ -334,7 +360,7 @@ class HostVoiceCallControllerTest {
             ) {
                 gate.await() // park mid-connect, like a slow network
             }
-            override fun send(json: String, evictable: Boolean) {}
+            override fun send(json: String, evictable: Boolean) = true
             override fun close() { closed = true }
         }
         val audio = FakeAudio()

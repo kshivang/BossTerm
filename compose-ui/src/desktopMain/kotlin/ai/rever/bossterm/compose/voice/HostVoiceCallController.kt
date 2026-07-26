@@ -170,7 +170,20 @@ internal class HostVoiceCallController(
             }
             // Re-check after every suspension point: the user may have hung up while we waited.
             if (_state.value.phase != HostCallPhase.Connecting) return@launch
-            transport.send(sessionUpdate(s).toString())
+            // Guarded for the same reason the share path guards it: sessionUpdate() calls
+            // executor.tools(), which forces the private MCP server's construction on first use. A
+            // throw here escaped onto a SupervisorJob scope with no handler — the state stayed pinned
+            // at "Calling…", the Realtime socket was already open and BILLING, and startLimits()
+            // never ran, so neither ceiling was armed. The one failure mode with nothing behind it.
+            try {
+                transport.send(sessionUpdate(s).toString())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.warn("Voice session config failed: {}", e.javaClass.simpleName)
+                fail("Couldn't configure the call (${e.javaClass.simpleName})")
+                return@launch
+            }
             try {
                 audio.startCapture(
                     onChunk = { chunk ->
@@ -408,7 +421,10 @@ internal class HostVoiceCallController(
                 outputsOwed += 1
                 pendingCalls.isEmpty()
             }
-            transport.send(
+            // The round is already settled locally, so a dropped output wedges the call with only a
+            // log line — indistinguishable from a hang. The lane is advertised as guaranteed, so treat
+            // a refusal the way BoundedViewerOutbox.sendControl treats overflow: end it, don't limp.
+            val delivered = transport.send(
                 buildJsonObject {
                     put("type", "conversation.item.create")
                     putJsonObject("item") {
@@ -418,6 +434,10 @@ internal class HostVoiceCallController(
                     }
                 }.toString()
             )
+            if (!delivered) {
+                fail("Lost the connection to OpenAI mid-call.")
+                return@launch
+            }
             if (done) _state.update { it.copy(working = false, activity = null) }
             maybeRequestResponse()
         }.also { job -> job.invokeOnCompletion { inFlightTools.decrementAndGet() } }
@@ -450,7 +470,6 @@ internal class HostVoiceCallController(
      * The browser path has had this since a lost reply could pin it at "Working…"; the in-app path
      * had no watchdog at all, so a wedged tool left the call silent with no recovery but End call.
      */
-
     private fun toolTimedOut(callId: String, tool: String) {
         // Claim first, same as the success path, so exactly one of the two answers this call.
         val settled = synchronized(roundLock) {
@@ -524,6 +543,10 @@ internal class HostVoiceCallController(
      * The host is talking about their own machine, so the framing differs from the share viewer's:
      * no remote guest, and "the terminal in front of you" is literally true.
      */
+    /**
+     * NOTE: the sibling of [ai.rever.bossterm.compose.voice.VoiceCallService]'s share-viewer template.
+     * The framing differs deliberately (owner vs remote guest); the RULES should not drift apart.
+     */
     private fun hostInstructions(tools: List<VoiceToolDef>): String {
         val names = tools.map { it.name }.toSet()
         val snapshot = runCatching { executor.contextSnapshot(null) }.getOrDefault("")
@@ -556,6 +579,7 @@ internal class HostVoiceCallController(
         }
     }
 
+    /** NOTE: mirrored by `voiceDescribeTool` in viewer.js for the share surface — keep both in step. */
     private fun describeTool(name: String, argsJson: String?): String {
         val args = runCatching { json.parseToJsonElement(argsJson ?: "{}").jsonObject }.getOrNull()
         fun arg(key: String) = args?.get(key)?.jsonPrimitive?.content

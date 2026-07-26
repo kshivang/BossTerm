@@ -165,7 +165,7 @@ internal class VoiceCallService(
         //  2. retire before reserving, so a redial reclaims its own slot instead of being refused at
         //     capacity;
         //  3. spend the budget last, so neither refusal consumes one of the mints it rations.
-        if (!canMint()) {
+        if (!tryReserveMint()) {
             log.warn("Voice session mint refused: rate limit")
             reply(ServerMessage.VoiceError(code = "rate_limited"))
             return
@@ -174,10 +174,10 @@ internal class VoiceCallService(
         val token = openCall()
         if (token == null) {
             log.warn("Voice call refused: {} calls already live", MAX_LIVE_CALLS)
+            refundMint() // it never reached OpenAI, so it must not spend the budget
             reply(ServerMessage.VoiceError(code = "too_many_calls"))
             return
         }
-        recordMint()
         onCallTokenChanged(token)
         scope.launch {
             // Everything from here on must either reply or hand the slot back. executor.tools() can
@@ -361,32 +361,50 @@ internal class VoiceCallService(
      * path costs money, so this is the spend limiter — a reconnect loop or a viewer holding the
      * button cannot run up the bill.
      */
-    private fun canMint(): Boolean = synchronized(mintTimestamps) {
+    /**
+     * Claim one mint from the budget, or false when the gap or the window cap says no.
+     *
+     * Peek and record are ONE critical section: split across two, two concurrent voiceStart frames
+     * could both pass the gap check and the cap before either appended, so neither was actually
+     * enforced. A caller that then refuses the call [refundMint]s.
+     */
+    private fun tryReserveMint(): Boolean = synchronized(mintTimestamps) {
         val now = nowMs()
         while (mintTimestamps.isNotEmpty() && now - mintTimestamps.first() > MINT_WINDOW_MS) {
             mintTimestamps.removeFirst()
         }
         val lastMint = mintTimestamps.lastOrNull()
         if (lastMint != null && now - lastMint < MINT_MIN_GAP_MS) return false
-        mintTimestamps.size < MAX_MINTS_PER_WINDOW
+        if (mintTimestamps.size >= MAX_MINTS_PER_WINDOW) return false
+        mintTimestamps.addLast(now)
+        true
     }
 
-    /** Spend one mint from the budget. Separate from [canMint] so a refusal costs nothing. */
-    private fun recordMint() = synchronized(mintTimestamps) { mintTimestamps.addLast(nowMs()) }
+    /** Hand a reserved mint back — the call was refused before it reached OpenAI. */
+    private fun refundMint() = synchronized(mintTimestamps) { mintTimestamps.removeLastOrNull() }
 
     /**
      * Register a freshly minted call and hand back the token the viewer must echo on tool calls.
      * Internal rather than private so tests can open a call without standing up a mint server.
      */
-    internal fun openCall(): String? = synchronized(liveCalls) {
+    internal fun openCall(): String? {
+        // Report expiries this sweep retires: nothing else sweeps periodically, so a call that hits
+        // the ceiling and isn't followed by a tool call was only reaped here — silently, breaking the
+        // "ended always pairs started" invariant for the exact case that pairing exists to cover.
+        val token = synchronized(liveCalls) { openCallLocked() }
+        flushExpiredAnnouncements()
+        return token
+    }
+
+    private fun openCallLocked(): String? {
         val now = nowMs()
-        expireOwnCalls(now)
+        expiredAnnouncements += expireOwnCalls(now)
         // Refuse rather than evict: dropping the oldest token left that caller's audio running while
         // every tool answered "No active call", with no way back but hanging up and redialling.
-        if (liveCalls.size >= MAX_LIVE_CALLS) return@synchronized null
+        if (liveCalls.size >= MAX_LIVE_CALLS) return null
         val token = UUID.randomUUID().toString()
         liveCalls[token] = LiveCall(issuedAt = now, owner = this)
-        token
+        return token
     }
 
     /** Mark a reserved call as one the host was told about (so retiring it reports "ended"). */
@@ -401,11 +419,24 @@ internal class VoiceCallService(
      * reaching the session.
      */
     private fun isLiveCall(token: String?): Boolean {
-        val expiredAnnounced = synchronized(liveCalls) { expireOwnCalls(nowMs()) }
-        // Report the end OUTSIDE the lock: the ceiling is the one path that used to retire a call
-        // without its paired "ended" notification, which is doing security work.
-        repeat(expiredAnnounced) { onCallActivity(false) }
-        return synchronized(liveCalls) { isLiveCallLocked(token) }
+        val live = synchronized(liveCalls) {
+            expiredAnnouncements += expireOwnCalls(nowMs())
+            isLiveCallLocked(token)
+        }
+        flushExpiredAnnouncements()
+        return live
+    }
+
+    /** Pending "call ended" reports from ceiling expiries, fired outside the lock. */
+    private var expiredAnnouncements = 0
+
+    private fun flushExpiredAnnouncements() {
+        val pending = synchronized(liveCalls) {
+            val n = expiredAnnouncements
+            expiredAnnouncements = 0
+            n
+        }
+        repeat(pending) { onCallActivity(false) }
     }
 
     /**
@@ -453,7 +484,6 @@ internal class VoiceCallService(
         if (wasAnnounced) onCallActivity(false)
     }
 
-    /** Invalidate every live call — the host revoked the feature, or the last viewer left. */
     /**
      * Invalidate the calls THIS service issued — the host revoked the feature, or the share stopped.
      * Deliberately not `liveCalls.clear()`: the map is process-wide, and clearing it took other

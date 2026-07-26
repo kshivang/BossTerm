@@ -36,7 +36,8 @@ internal interface RealtimeTransport {
      * `function_call_output` wedges that tool round permanently (the round is already settled, so
      * `response.create` fires against a call the model never got an output for).
      */
-    fun send(json: String, evictable: Boolean = false)
+    /** @return false when a GUARANTEED frame could not be queued; evictable sends always return true. */
+    fun send(json: String, evictable: Boolean = false): Boolean
 
     fun close()
 }
@@ -179,8 +180,8 @@ internal class JdkRealtimeTransport : RealtimeTransport {
         }, "boss-voice-ws-writer").apply { isDaemon = true; start() }
     }
 
-    override fun send(json: String, evictable: Boolean) {
-        if (!open) return
+    override fun send(json: String, evictable: Boolean): Boolean {
+        if (!open) return false
         if (evictable) {
             // Drop the oldest audio when the socket can't keep up: stale mic chunks are worth less
             // than an unbounded queue, and losing one is inaudible.
@@ -188,13 +189,15 @@ internal class JdkRealtimeTransport : RealtimeTransport {
                 outgoingAudio.poll()
                 outgoingAudio.offer(json)
             }
-            return
+            return true
         }
         // Protocol frames are guaranteed while the lane has room; past it the socket is hopelessly
         // behind, so surface it rather than silently dropping a tool result.
         if (!outgoing.offer(json)) {
             log.warn("Voice control queue full ({}); dropping a protocol frame", OUTGOING_CAPACITY)
+            return false
         }
+        return true
     }
 
     override fun close() {

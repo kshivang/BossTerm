@@ -1118,6 +1118,20 @@ data class TerminalSettings(
     val voiceEchoSuppression: Boolean = true,
 
     /**
+     * Give the IN-APP voice agent every registered MCP tool, not the curated nine.
+     *
+     * The curated [ai.rever.bossterm.compose.voice.VoiceToolCatalog] exists for the SHARE surface,
+     * where the caller is a guest and the argument allowlist is doing real security work — that
+     * surface is unaffected by this and keeps the catalog. In-app, the caller is the machine's owner,
+     * who already reaches the whole MCP surface from their own endpoint; withholding
+     * `read_debug_console` or `show_image` from them buys nothing.
+     *
+     * Schemas come from the server, so a tool added to BossTermMcpServer reaches the agent with no
+     * second edit. Write tools are still classified by the server's own read/write split.
+     */
+    val voiceExposeAllTools: Boolean = true,
+
+    /**
      * Show the "Call BossTerm" segment in the tab-bar status strip. Its own toggle, like
      * [mcpShowStatusIndicator] and [sessionSharingShowIndicator]: because Boss Calling ships
      * enabled, without this a new pill would appear for everyone — including users who had

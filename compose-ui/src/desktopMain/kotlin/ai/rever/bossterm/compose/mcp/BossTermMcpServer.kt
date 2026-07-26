@@ -243,6 +243,37 @@ class BossTermMcpServer(
         serverRef?.tools?.keys?.toSet().orEmpty()
     }
 
+    /**
+     * Every tool currently registered, with its real description and input schema.
+     *
+     * For callers that want to advertise the WHOLE MCP surface rather than a hand-written subset —
+     * Boss Calling's in-app agent. Taking the schema from the server rather than restating it means
+     * a tool added to this class reaches the voice agent with no second edit, and the two cannot
+     * describe the same tool differently.
+     *
+     * [RegisteredToolInfo.write] comes from this class's own read/write split, so a caller can still
+     * gate mutations without classifying tools itself.
+     */
+    fun registeredToolInfo(): List<RegisteredToolInfo> = synchronized(toolsLock) {
+        serverRef?.tools?.values.orEmpty().map { registered ->
+            val tool = registered.tool
+            RegisteredToolInfo(
+                name = tool.name,
+                description = tool.description.orEmpty(),
+                properties = tool.inputSchema.properties ?: kotlinx.serialization.json.JsonObject(emptyMap()),
+                required = tool.inputSchema.required.orEmpty(),
+                write = writeToolRegistrations.containsKey(stripPrefix(tool.name)),
+            )
+        }
+    }
+
+    private fun stripPrefix(name: String): String =
+        if (config.toolNamePrefix.isNotEmpty() && name.startsWith(config.toolNamePrefix)) {
+            name.removePrefix(config.toolNamePrefix)
+        } else {
+            name
+        }
+
     /** The handler registered for [name], resolved under [toolsLock]. Null when not registered. */
     fun handlerFor(name: String): (suspend (CallToolRequest) -> CallToolResult)? =
         synchronized(toolsLock) { serverRef?.tools?.get(name)?.handler }
@@ -2460,6 +2491,15 @@ class BossTermMcpServer(
 
     @Serializable
     data class ManageToolsListResult(val tools: List<ManageToolItem>)
+
+    /** One registered MCP tool, as the voice surface needs to see it. */
+    data class RegisteredToolInfo(
+        val name: String,
+        val description: String,
+        val properties: kotlinx.serialization.json.JsonObject,
+        val required: List<String>,
+        val write: Boolean,
+    )
 
     companion object {
         /**

@@ -14,6 +14,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.put
 
 /**
@@ -150,10 +152,35 @@ internal class GuiVoiceToolExecutor(
     /** The registered handler name for a catalog tool (the embedder may prefix them). */
     private fun handlerName(tool: String): String = mcpConfig.toolNamePrefix + tool
 
+    /**
+     * Every registered MCP tool as a [VoiceToolDef], schema and all.
+     *
+     * In-app only: [mayUseFocusedPane] marks the surface whose caller is the machine's owner. A
+     * share keeps the curated catalog, where the declaredParameters allowlist is what stops
+     * `panel: "new_tab"` escaping the share's scope.
+     */
+    private fun allRegisteredTools(disabled: Set<String>): List<VoiceToolDef> =
+        server().registeredToolInfo()
+            .filter { it.name !in disabled && handlerName(it.name) !in disabled }
+            .map { info ->
+                VoiceToolDef(
+                    name = info.name,
+                    description = info.description,
+                    parameters = buildJsonObject {
+                        put("type", "object")
+                        put("properties", info.properties)
+                        putJsonArray("required") { info.required.forEach { add(it) } }
+                    },
+                    write = info.write,
+                )
+            }
+
     override fun tools(): List<VoiceToolDef> {
         // Via the wrapper, not the raw SDK map: it is not thread-safe and this runs concurrently
         // with applyDisabledSet and with up to four in-flight tool calls.
         val (wrapper, disabled) = surface()
+        // The whole surface, when the owner asked for it. A share never takes this path.
+        if (mayUseFocusedPane && settings().voiceExposeAllTools) return allRegisteredTools(disabled)
         val registered = wrapper.toolNames()
         // LOCAL_TOOLS are answered from the registry rather than through a handler, so they skipped
         // the disabled check that the class KDoc claims carries over "for free" — a user who turned
@@ -269,6 +296,9 @@ internal class GuiVoiceToolExecutor(
         // `panel: "new_tab"` would run the command in a tab the share doesn't mirror, undercutting
         // the "targets are limited to the share" guarantee even though a controller could open a tab
         // by other means.
+        // The allowlist is whatever the def DECLARES, which works for both kinds without a branch:
+        // a catalog def declares the curated set (deliberately withholding `panel`, `working_dir`
+        // and `pane_id` from the model), an MCP-derived def declares the server's own schema.
         val allowed = VoiceToolCatalog.declaredParameters(def)
         val effectiveArgs = buildJsonObject {
             args.forEach { (k, v) -> if (k != "tab_id" && k in allowed) put(k, v) }

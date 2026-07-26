@@ -133,6 +133,15 @@ internal fun BossCallingSection(
                         "to keep every agent command in its own split.",
             )
             SettingsToggle(
+                label = "Give the agent every MCP tool",
+                checked = settings.voiceExposeAllTools,
+                onCheckedChange = { onSettingsChange(settings.copy(voiceExposeAllTools = it)) },
+                description = "In-app calls advertise your whole MCP tool surface — the same tools " +
+                        "your editor or CLI agent gets — instead of a curated nine. Share viewers " +
+                        "always keep the curated set: a guest's tool arguments are filtered against " +
+                        "it, and that filter is what keeps them inside the shared session.",
+            )
+            SettingsToggle(
                 label = "Don't listen while the agent is talking",
                 checked = settings.voiceEchoSuppression,
                 onCheckedChange = { onSettingsChange(settings.copy(voiceEchoSuppression = it)) },

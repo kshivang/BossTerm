@@ -76,9 +76,10 @@ internal class CompositeVoiceToolExecutor(
      * Used only when an enumeration fails, so a source that blips for one call does not blank its
      * whole surface — the model would then get "unknown tool" for something it can see in its own
      * list. Not a cache: a successful enumeration always replaces it, including a successful empty
-     * one (a plugin really being unloaded).
+     * one (a plugin really being unloaded). Paired with the base names it was merged against, so a
+     * stale surface cannot be reused once BossTerm's own set has moved under it.
      */
-    @Volatile private var lastGood: List<ExternalVoiceTool>? = null
+    @Volatile private var lastGood: Pair<Set<String>, ExternalSurface>? = null
 
     override fun tools(): List<VoiceToolDef> {
         val baseTools = base.tools()
@@ -143,8 +144,14 @@ internal class CompositeVoiceToolExecutor(
         // Only the keys the tool declared, exactly as the base executor does with its own schemas.
         // This is also what strips `voice_confirm` before the source ever sees it: the confirmation
         // argument is the host's, not the tool's.
+        // Minus the confirmation argument, always. It is normally absent from the source's schema and
+        // so dropped by the allowlist for free — but a source that happens to declare a parameter of
+        // that name would otherwise be handed the host's token, and "the confirmation argument is
+        // the host's, not the tool's" has to hold whatever the source calls its parameters.
         val declared = hit.source.properties.keys
-        val clean = buildJsonObject { args.forEach { (k, v) -> if (k in declared) put(k, v) } }
+        val clean = buildJsonObject {
+            args.forEach { (k, v) -> if (k in declared && k != VoiceConfirmationGate.CONFIRM_ARG) put(k, v) }
+        }
 
         // ONE budget for the whole gated round-trip. An approval wait beside the tool's own timeout
         // rather than inside it is what made the worst case 220s against a 120s watchdog — see
@@ -230,39 +237,75 @@ internal class CompositeVoiceToolExecutor(
         }
     }
 
-    /** The external half of the surface for this enumeration. */
-    private fun external(baseTools: List<VoiceToolDef>): ExternalSurface = mergeExternalTools(
-        baseNames = baseTools.mapTo(mutableSetOf()) { it.name },
-        external = enumerate(),
-        prefix = runCatching { source.namePrefix }.getOrDefault(""),
-        policy = runCatching { source.policy }.getOrDefault(VoiceToolPolicy()),
-    )
+
+    private fun external(baseTools: List<VoiceToolDef>): ExternalSurface {
+        val baseNames = baseTools.mapTo(mutableSetOf()) { it.name }
+        return enumerate(baseNames)
+    }
 
     /**
-     * The source's live tool list, or the last good one if it cannot produce one in time.
+     * The merged external surface, or the last good one if the source cannot produce it in time.
      *
-     * A [VoiceToolSource] enumerates synchronously — that is the shape an embedder's registry
-     * actually has, and making it suspend would push a coroutine boundary into every implementation
-     * to buy nothing. Which means a hang has to be handled by not waiting on it, hence the pool: the
-     * calling thread gives up at the deadline and the wedged one is left to the JVM. That thread is
-     * genuinely leaked until the source returns, which is why the pool is cached and its threads are
-     * daemons.
+     * The WHOLE merge runs inside the deadline, not just [VoiceToolSource.tools]. Everything here is
+     * embedder code — the `namePrefix` and `policy` getters, and `excludeExtra`/`irreversibleExtra`
+     * once per tool, up to a hundred times — and `runCatching` answers a predicate that THROWS while
+     * doing nothing at all about one that hangs. The isolation argument for a hot-swappable
+     * classloader applies to a predicate exactly as much as to `tools()`.
+     *
+     * Where that mattered most is session config: `sessionUpdate` calls `executor.tools()` on the
+     * connect coroutine, with the socket already open and billing and `startLimits()` not yet armed,
+     * and that path has a try/catch but no watchdog. A wedged classifier there hung the call at
+     * "Calling…" with nothing to end it.
+     *
+     * A [VoiceToolSource] enumerates synchronously — the shape an embedder's registry actually has —
+     * so a hang can only be handled by not waiting on it: the calling thread gives up at the
+     * deadline and the wedged one is left to the JVM, which is why the pool is cached and its
+     * threads are daemons.
      */
-    private fun enumerate(): List<ExternalVoiceTool> {
+    private fun enumerate(baseNames: Set<String>): ExternalSurface {
         val future = try {
-            ENUMERATION.submit(Callable { source.tools() })
+            ENUMERATION.submit(
+                Callable {
+                    // The getters are still guarded individually, not just by the deadline: one that
+                    // THROWS should degrade to the default policy — which still excludes secret
+                    // names — rather than cost the whole external surface. The deadline is what
+                    // handles the other half, a getter that hangs.
+                    mergeExternalTools(
+                        baseNames = baseNames,
+                        external = source.tools(),
+                        prefix = runCatching { source.namePrefix }.getOrDefault(""),
+                        policy = runCatching { source.policy }.getOrDefault(VoiceToolPolicy()),
+                    )
+                }
+            )
         } catch (t: Throwable) {
             log.warn("Could not enumerate voice tool source: {}", t.toString())
-            return lastGood.orEmpty()
+            return lastGoodFor(baseNames)
         }
         return try {
-            future.get(enumerateTimeoutMs, TimeUnit.MILLISECONDS).also { lastGood = it }
+            future.get(enumerateTimeoutMs, TimeUnit.MILLISECONDS).also {
+                lastGood = baseNames to it
+            }
         } catch (t: Throwable) {
             if (t is InterruptedException) Thread.currentThread().interrupt()
             future.cancel(true)
             log.warn("Voice tool source enumeration failed: {}", t.toString())
-            lastGood.orEmpty()
+            lastGoodFor(baseNames)
         }
+    }
+
+    /**
+     * The cached surface, but only if it was merged against the SAME base names.
+     *
+     * A surface is merged relative to what BossTerm advertises, and that moves — `manage_tools` can
+     * disable a tool mid-call. Reusing one computed against a different base could let an external
+     * tool occupy a name BossTerm has since taken back, which is the one thing the merge exists to
+     * prevent. Cheap to be strict: the base set changes rarely, and the alternative to reuse is an
+     * empty external surface for one call.
+     */
+    private fun lastGoodFor(baseNames: Set<String>): ExternalSurface {
+        val (names, surface) = lastGood ?: return ExternalSurface.EMPTY
+        return if (names == baseNames) surface else ExternalSurface.EMPTY
     }
 
     internal companion object {

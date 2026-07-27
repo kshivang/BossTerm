@@ -68,8 +68,11 @@ enum class VoiceToolCollisionPolicy {
  * anything on the surface and say nothing about it in their names. Those need the source's own
  * [ExternalVoiceTool.irreversible] flag or an [irreversibleExtra] rule — see the worked example in
  * the PR that introduced this file.
+ *
+ * Deliberately not a `data class`: it holds lambdas, so a generated `equals`/`hashCode` would be
+ * identity comparison wearing the costume of value equality, and nothing here needs either.
  */
-data class VoiceToolPolicy(
+class VoiceToolPolicy(
     /** Additional hard-exclusion rule. Widens the built-in one; can never narrow it. */
     val excludeExtra: (ExternalVoiceTool) -> Boolean = { false },
     /** Additional confirmation rule. Widens the built-in one; can never narrow it. */

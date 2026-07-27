@@ -24,6 +24,58 @@ class VoiceToolSafetyTest {
 
     private val noArgs = JsonObject(emptyMap())
 
+    // -------------------------------------------------- the shadowing invariant
+
+    /**
+     * A rejected external tool must never make BossTerm's own tool of that name stop working.
+     *
+     * Every exit is covered here on purpose. It was fixed once, for the collision branch, and left
+     * wrong on the other three — and no test noticed because every tier-1 and ceiling test ran
+     * against an empty base, where there is nothing to shadow. The ceiling case is the alarming one:
+     * it needs no embedder mistake at all, just more than `maxExternalTools` tools with a re-export
+     * sitting after the cut, which is decided by plugin registration order.
+     */
+    @Test
+    fun `no rejection path can make BossTerm's own tool refuse`() {
+        val rejections = mapOf(
+            "tier-1 exclusion" to VoiceToolPolicy(excludeExtra = { it.name == "run_command" }),
+            "a throwing classifier" to VoiceToolPolicy(excludeExtra = { error("embedder bug") }),
+            "the ceiling" to VoiceToolPolicy(maxExternalTools = 0),
+            "an unusable name" to VoiceToolPolicy(),
+        )
+        for ((why, policy) in rejections) {
+            val base = FakeBaseExecutor(listOf("run_command", "read_scrollback"))
+            val source = FakeToolSource(
+                list = listOf(externalTool("run_command"), externalTool("!!!")),
+                policy = policy,
+            )
+            val exec = composite(base, source)
+
+            assertEquals(
+                listOf("run_command", "read_scrollback"),
+                exec.tools().map { it.name },
+                "$why: BossTerm's own tools must still be advertised",
+            )
+            assertEquals(
+                """{"from":"base"}""",
+                runBlocking { exec.execute("run_command", noArgs, null) },
+                "$why: run_command must still reach BossTerm's own implementation",
+            )
+            assertTrue(source.calls.isEmpty(), "$why: the external tool must not have been called")
+        }
+    }
+
+    /** The same, for a source that lists one tool twice and BossTerm owns that name. */
+    @Test
+    fun `a duplicated external name does not disable BossTerm's tool either`() {
+        val base = FakeBaseExecutor(listOf("run_command"))
+        val source = FakeToolSource(listOf(externalTool("run_command"), externalTool("run_command")))
+        val exec = composite(base, source)
+
+        assertEquals(listOf("run_command"), exec.tools().map { it.name })
+        assertEquals("""{"from":"base"}""", runBlocking { exec.execute("run_command", noArgs, null) })
+    }
+
     // ---------------------------------------------------------------- tier 1
 
     /** The five named on BossConsole's surface, plus the two the same pattern catches. */
@@ -220,6 +272,40 @@ class VoiceToolSafetyTest {
         assertEquals(true, replay["confirmation_required"]?.jsonPrimitive?.content?.toBoolean())
         assertNotEquals(token, replay[VoiceConfirmationGate.CONFIRM_ARG]!!.jsonPrimitive.content)
         assertEquals(1, source.calls.size)
+    }
+
+    /**
+     * Single use has to survive concurrency, because concurrency is the normal case: the controller
+     * admits four tool calls at once. Two calls sharing a tool, arguments and token could both pass
+     * the checks before either consumed the token, and both run an irreversible operation off one
+     * confirmation.
+     */
+    @Test
+    fun `two concurrent redemptions of one token run the tool once`() {
+        repeat(20) {
+            val gate = VoiceConfirmationGate()
+            val source = FakeToolSource(listOf(externalTool("git_discard")))
+            val exec = composite(FakeBaseExecutor(emptyList()), source, gate)
+
+            val token = parse(runBlocking { exec.execute("git_discard", noArgs, null) })[
+                VoiceConfirmationGate.CONFIRM_ARG
+            ]!!.jsonPrimitive.content
+            gate.agentSpoke(); gate.userSpoke()
+
+            val start = java.util.concurrent.CountDownLatch(1)
+            val results = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val threads = (1..4).map {
+                Thread {
+                    start.await()
+                    results += runBlocking { exec.execute("git_discard", withToken(token), null) }
+                }.apply { start() }
+            }
+            start.countDown()
+            threads.forEach { it.join(10_000) }
+
+            assertEquals(1, source.calls.size, "the tool ran ${source.calls.size} times on one token")
+            assertEquals(1, results.count { !it.contains("confirmation_required") }, results.toString())
+        }
     }
 
     /** Confirming "discard the docs folder" must not authorise discarding the repository. */

@@ -35,6 +35,13 @@ import java.util.concurrent.atomic.AtomicLong
  * from the very utterance that caused it, and the next attempt redeems against an announcement that
  * never happened. Requiring an agent turn in between closes it — an agent turn is the announcement.
  *
+ * How weak is "an agent turn"? It can be satisfied by the same response that made the call: a model
+ * that emits audio and a function call together finishes that audio after the mint, and that counts.
+ * Deliberately — the agent did say something before the user answered, which is the property being
+ * checked — but it is *a* turn, not provably *the* announcement. Pinning it to content would mean
+ * reading the audio, and the thing that reads the audio is the model whose judgement the gate exists
+ * to doubt.
+ *
  * Both signals are the Realtime server's own judgement rather than ours:
  * `input_audio_buffer.speech_stopped` for the user, `response.output_audio.done` for the agent.
  * [HostVoiceCallController] pumps both.
@@ -130,7 +137,14 @@ internal class VoiceConfirmationGate(
         if (lastUserTurn <= lastAgentTurn) {
             return Decision.Confirm(token, "Wait for the user to answer, then call again.")
         }
-        pending.remove(token) // single use
+        // Atomically, and this is not fussiness: four tool calls can be in flight at once
+        // (MAX_IN_FLIGHT_TOOLS), so a read here and a remove there let two calls with the same tool,
+        // arguments and token both pass the checks above before either consumed it — and both run an
+        // irreversible operation off one confirmation. remove(key, value) is the compare-and-delete
+        // that makes exactly one of them the winner.
+        if (!pending.remove(token, held)) {
+            return Decision.Confirm(mint(fingerprint), "That confirmation was already used.")
+        }
         return Decision.Allowed
     }
 

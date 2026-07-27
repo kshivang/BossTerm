@@ -30,7 +30,16 @@ internal fun externalTool(
     sensitive: Boolean = false,
 ) = ExternalVoiceTool(name, description, properties, required, write, irreversible, sensitive)
 
-/** BossTerm's half of the surface. */
+/**
+ * BossTerm's half of the surface.
+ *
+ * The default is deliberately NON-EMPTY and deliberately overlaps the names tests give their fake
+ * sources. Almost every tier-1 and ceiling test used to pass `emptyList()`, and that is precisely
+ * what hid the bug where an excluded or dropped external name made BossTerm's own tool of that name
+ * refuse for the rest of the call: with no base tools there was nothing to shadow. A base that
+ * overlaps by default checks the invariant everywhere by construction instead of in the one test
+ * that thought to look.
+ */
 internal class FakeBaseExecutor(
     private val names: List<String> = listOf("run_command", "read_scrollback"),
     private val result: String = """{"from":"base"}""",

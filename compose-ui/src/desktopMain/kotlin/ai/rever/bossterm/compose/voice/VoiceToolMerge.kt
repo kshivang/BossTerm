@@ -10,16 +10,18 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 /** One external tool as the model sees it, plus the mapping back to the source. */
-internal data class AdvertisedExternalTool(
+internal class AdvertisedExternalTool(
     /** What OpenAI is told the tool is called. */
     val advertisedName: String,
     /** The source's own tool, with the source's own name — what [VoiceToolSource.call] gets back. */
     val source: ExternalVoiceTool,
     /** Confirmation-gated ([VoiceToolPolicy.isIrreversible]). */
     val gated: Boolean,
-    /** The advertised definition, schema and all. */
-    val def: VoiceToolDef,
-)
+    defProvider: () -> VoiceToolDef,
+) {
+    /** The advertised definition, schema and all. Built on demand — only [tools] needs it. */
+    val def: VoiceToolDef by lazy(LazyThreadSafetyMode.PUBLICATION, defProvider)
+}
 
 /**
  * The external half of one enumeration: what is advertised, and what is not and why.
@@ -45,6 +47,11 @@ internal data class ExternalSurface(
     val dropped: Set<String>,
 ) {
     val byAdvertisedName: Map<String, AdvertisedExternalTool> = advertised.associateBy { it.advertisedName }
+
+    companion object {
+        /** What an enumeration that failed with no usable fallback contributes: nothing. */
+        val EMPTY = ExternalSurface(emptyList(), emptySet(), emptySet())
+    }
 
     /** Why [name] is refused, or null if this surface has nothing to say about it. */
     fun refusalFor(name: String): String? = when (name) {
@@ -106,17 +113,39 @@ internal object VoiceToolNaming {
  * @param baseNames the names BossTerm's own executor is advertising this enumeration.
  * @param external the source's live list, in its declared order (which the ceiling respects).
  */
+private val log = LoggerFactory.getLogger("ai.rever.bossterm.compose.voice.VoiceToolMerge")
+
 internal fun mergeExternalTools(
     baseNames: Set<String>,
     external: List<ExternalVoiceTool>,
     prefix: String,
     policy: VoiceToolPolicy,
 ): ExternalSurface {
-    val log = LoggerFactory.getLogger("ai.rever.bossterm.compose.voice.VoiceToolMerge")
     val advertised = mutableListOf<AdvertisedExternalTool>()
     val excluded = mutableSetOf<String>()
     val dropped = mutableSetOf<String>()
     val taken = baseNames.toMutableSet()
+
+    /**
+     * Record a rejection, under the source's own name AND the one it would have been advertised
+     * under — but NEVER under a name BossTerm itself owns.
+     *
+     * The exception is the whole point. These sets are what [ExternalSurface.refusalFor] answers
+     * from, and [CompositeVoiceToolExecutor.execute] consults it BEFORE falling through to the base
+     * executor. So recording a base name here does not merely mis-explain a refusal: it makes
+     * BossTerm's own tool uncallable for the rest of the call, while still advertised, because the
+     * advertisement comes from `base.tools()` untouched.
+     *
+     * This was fixed once for the collision branch and left wrong on the other three exits, which is
+     * how the ceiling could take out `run_command` purely on plugin registration order, and a
+     * throwing `excludeExtra` could refuse all thirteen re-exported BossTerm tools with "it returns
+     * secret material". One guard, used by every exit, instead of the same reasoning re-derived four
+     * times — it has already been missed twice.
+     */
+    fun refuse(into: MutableSet<String>, raw: String, wanted: String) {
+        if (raw !in baseNames) into += raw
+        if (wanted.isNotEmpty() && wanted !in baseNames) into += wanted
+    }
 
     val usePrefix = policy.onNameCollision == VoiceToolCollisionPolicy.PrefixExternal &&
         prefix.isNotBlank()
@@ -135,21 +164,19 @@ internal fun mergeExternalTools(
     for (tool in external) {
         val wanted = wantedNameFor(tool)
         if (policy.isExcluded(tool)) {
-            excluded += tool.name
-            if (wanted.isNotEmpty()) excluded += wanted
+            refuse(excluded, tool.name, wanted)
             logOnce(log, "excl:${tool.name}", "Voice tool ${tool.name} is withheld from the agent: " +
                 "it returns secret material")
             continue
         }
         if (advertised.size >= policy.maxExternalTools) {
-            dropped += tool.name
-            if (wanted.isNotEmpty()) dropped += wanted
+            refuse(dropped, tool.name, wanted)
             logOnce(log, "cap:${tool.name}", "Voice tool ${tool.name} dropped: over the " +
                 "${policy.maxExternalTools}-tool ceiling for the external surface")
             continue
         }
         if (wanted.isEmpty()) {
-            dropped += tool.name
+            refuse(dropped, tool.name, wanted)
             logOnce(log, "name:${tool.name}", "Voice tool ${tool.name} dropped: no legal function " +
                 "name can be made from it")
             continue
@@ -158,7 +185,7 @@ internal fun mergeExternalTools(
         // offer the model two names for one implementation and call back with the same source name
         // for both — a duplicate, not a second tool.
         if (!seenSourceNames.add(tool.name)) {
-            dropped += tool.name
+            refuse(dropped, tool.name, wanted)
             logOnce(log, "dup:${tool.name}", "Voice tool ${tool.name} dropped: the source listed " +
                 "it more than once")
             continue
@@ -170,19 +197,17 @@ internal fun mergeExternalTools(
         // hundred and six, each one a second route to the other implementation, past BossTerm's
         // scope check and focused-pane logic, under a name the agent's instructions never mention.
         if (!usePrefix && wanted in baseNames) {
-            // Deliberately NOT recorded in `dropped`. That set makes a name refused outright, and
-            // this name is not refused — it belongs to BossTerm's own tool, which must keep working.
-            // Recording it here made `run_command` throw "not available" instead of reaching the
-            // base executor, i.e. dropping the external duplicate took the real tool with it.
+            // refuse() filters both names out here by construction — `wanted` IS a base name — which
+            // is exactly the invariant every other exit needs and used to lack.
+            refuse(dropped, tool.name, wanted)
             logOnce(log, "clash:${tool.name}", "Voice tool ${tool.name} dropped: BossTerm already " +
                 "advertises $wanted, and its own implementation is the one the agent is told about")
             continue
         }
         val name = disambiguate(wanted, taken)
         if (name == null) {
-            dropped += tool.name
-            dropped += wanted
-            logOnce(log, "clash:${tool.name}", "Voice tool ${tool.name} dropped: $wanted is taken " +
+            refuse(dropped, tool.name, wanted)
+            logOnce(log, "exhausted:${tool.name}", "Voice tool ${tool.name} dropped: $wanted is taken " +
                 "and no distinct name was free")
             continue
         }
@@ -198,7 +223,10 @@ internal fun mergeExternalTools(
             advertisedName = name,
             source = tool,
             gated = gated,
-            def = definitionFor(name, tool, gated),
+            // Lazily: execute() runs this whole merge before every tool call and reads only
+            // byAdvertisedName/gated/source, so building 64 parameter schemas per call — inside a
+            // live call — bought nothing. tools() forces them, which is the one caller that needs them.
+            defProvider = { definitionFor(name, tool, gated) },
         )
     }
     return ExternalSurface(advertised, excluded, dropped)
@@ -233,6 +261,16 @@ private const val MAX_DISAMBIGUATION_SUFFIX = 9
 
 /** The advertised definition: the source's own schema, plus the confirmation argument when gated. */
 private fun definitionFor(name: String, tool: ExternalVoiceTool, gated: Boolean): VoiceToolDef {
+    // A source that declares its OWN `voice_confirm` would have it overwritten here, and — because
+    // the argument allowlist is the source's declared keys — the host's token would then be
+    // forwarded to it, contradicting "the confirmation argument is the host's, not the tool's".
+    // Warn rather than drop the tool: the collision is the source's to fix and losing the tool over
+    // a parameter name is a worse trade than losing that parameter.
+    if (gated && VoiceConfirmationGate.CONFIRM_ARG in tool.properties) {
+        logOnce(log, "confirmarg:${tool.name}", "Voice tool ${tool.name} declares a " +
+            "${VoiceConfirmationGate.CONFIRM_ARG} parameter; the host's confirmation argument " +
+            "takes that name and the tool's own will not be passed through")
+    }
     val properties = if (!gated) tool.properties else JsonObject(
         tool.properties + (
             VoiceConfirmationGate.CONFIRM_ARG to buildJsonObject {

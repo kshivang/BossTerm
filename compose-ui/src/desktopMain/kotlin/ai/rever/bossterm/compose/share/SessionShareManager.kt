@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -409,31 +410,38 @@ object SessionShareManager {
         if (!lifecycle.isActive) lifecycle = SupervisorJob() // re-arm after a shutdown
         if (watcherJob?.isActive == true) return
         watcherJob = scope.launch {
-            settingsManager.settings
-                .map { it.sessionSharingEnabled to it.shareTailscaleMode }
-                .distinctUntilChanged()
-                .collect { (enabled, mode) ->
-                    if (!enabled) { stopAll(); return@collect }
-                    // EAGER prefetch: as soon as cloudflare sharing is enabled, fetch cloudflared in
-                    // the background so the first share doesn't pay the download. No-op when a
-                    // bundled/PATH/managed binary already works; single-flight via prefetchJob.
-                    if (mode == "cloudflare" && prefetchJob?.isActive != true) {
-                        prefetchJob = launch(Dispatchers.IO) {
-                            if (!CloudflaredExposer.isInstalled() && CloudflaredExposer.canAutoInstall()) {
-                                log.info("Prefetching cloudflared for session sharing…")
-                                val ok = CloudflaredExposer.ensureInstalled()
-                                log.info("cloudflared prefetch {}", if (ok) "ready" else "failed (will retry at share time)")
+            // supervisorScope so the launches below are children of THIS watcher — cancelled with
+            // it, and never adopted by a re-armed lifecycle — without a failure in one of them
+            // cancelling the collect. `launch` builds a plain Job, so without this a throwing
+            // pre-warm or prefetch would silently kill the settings observer for good: no
+            // pre-warm, no teardown on disable, and nothing logged.
+            supervisorScope {
+                settingsManager.settings
+                    .map { it.sessionSharingEnabled to it.shareTailscaleMode }
+                    .distinctUntilChanged()
+                    .collect { (enabled, mode) ->
+                        if (!enabled) { stopAll(); return@collect }
+                        // EAGER prefetch: as soon as cloudflare sharing is enabled, fetch cloudflared in
+                        // the background so the first share doesn't pay the download. No-op when a
+                        // bundled/PATH/managed binary already works; single-flight via prefetchJob.
+                        if (mode == "cloudflare" && prefetchJob?.isActive != true) {
+                            prefetchJob = launch(Dispatchers.IO) {
+                                if (!CloudflaredExposer.isInstalled() && CloudflaredExposer.canAutoInstall()) {
+                                    log.info("Prefetching cloudflared for session sharing…")
+                                    val ok = CloudflaredExposer.ensureInstalled()
+                                    log.info("cloudflared prefetch {}", if (ok) "ready" else "failed (will retry at share time)")
+                                }
                             }
                         }
+                        // PRE-WARM: bind the engine and bring the tunnel up now, before the user shares,
+                        // so the verified public URL is already published when the share dialog opens
+                        // (the QR shows the Cloudflare link instantly instead of after a 5-15s verify).
+                        // Unqualified launch: a child of THIS watcher, not of whatever [lifecycle]
+                        // resolves to at the moment it runs. Cancelling the watcher takes it with it,
+                        // and a re-arm between the check above and here cannot adopt it.
+                        if (mode != "off") launch { prewarmRemote() }
                     }
-                    // PRE-WARM: bind the engine and bring the tunnel up now, before the user shares,
-                    // so the verified public URL is already published when the share dialog opens
-                    // (the QR shows the Cloudflare link instantly instead of after a 5-15s verify).
-                    // Unqualified launch: a child of THIS watcher, not of whatever [lifecycle]
-                    // resolves to at the moment it runs. Cancelling the watcher takes it with it,
-                    // and a re-arm between the check above and here cannot adopt it.
-                    if (mode != "off") launch { prewarmRemote() }
-                }
+            }
         }
     }
 
@@ -797,6 +805,7 @@ object SessionShareManager {
     }
 
     private fun stopAll() {
+        if (shuttingDown) { log.debug("Ignoring stopAll(): the manager is shut down"); return }
         scope.launch {
             mutex.withLock {
                 sharesByTab.values.forEach { it.stop() }
@@ -832,9 +841,11 @@ object SessionShareManager {
      * follows. Everything else queued there — pre-warm, establish, respawn, the cloudflared
      * prefetch — is *setup*, so cancelling it is the point, not a cost.
      *
-     * Idempotent, and safe when nothing ever started. The one thing it can leave outstanding is
-     * the `share-late-bind-stop` thread in [ensureEngineLocked], on the narrow path where a bind
-     * completed while this was running — a thread stopping a server beats a server nobody stops.
+     * Idempotent, and safe when nothing ever started. Two things can outlive it, both bounded: the
+     * `share-late-bind-stop` thread in [ensureEngineLocked], on the narrow path where a bind
+     * completed while this was running (a thread stopping a server beats a server nobody stops),
+     * and a [stopEngineLocked] already inside its NonCancellable fence — which is why that function
+     * refuses to start one once this has latched.
      */
     fun shutdown() {
         val (embedder, fitted) = shutdownLocked()
@@ -1051,6 +1062,11 @@ object SessionShareManager {
 
     private suspend fun stopEngineLocked() {
         val e = engine ?: return
+        // shutdown() does all of this itself, inline — and the NonCancellable fence below means
+        // that once we enter it, cancellation is no longer a lever: a teardown started here would
+        // go on to spawn a `tailscale` child process and stop the engine after shutdown() returned,
+        // inside the classloader being unloaded.
+        if (shuttingDown) return
         val port = boundPort // captured: shutdown() can null the field while we are stopping
         // NonCancellable for the whole teardown, not just the engine stop. [shutdown] cancels this
         // scope, and this function runs on it; a cancel landing anywhere in here leaves the job

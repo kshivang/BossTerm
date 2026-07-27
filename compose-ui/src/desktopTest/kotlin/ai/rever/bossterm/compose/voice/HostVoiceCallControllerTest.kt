@@ -934,6 +934,40 @@ class HostVoiceCallControllerTest {
         c.end()
     }
 
+    /**
+     * The status strip is the user's only sight of what the agent decided to do before it happens,
+     * and with an embedder source there can be a hundred tools with no hand-written caption.
+     *
+     * Both halves matter and a mutation sweep found neither was pinned: captioning an embedder tool
+     * by name, AND leaving BossTerm's own on the shared "Working…" that
+     * [VoiceCrossLanguageContractTest] holds `viewer.js` to. Getting the second wrong would break
+     * the cross-language contract from a direction that test cannot see, since it captions an
+     * unstarted controller.
+     */
+    @Test
+    fun `an embedder tool is captioned by name and BossTerm's own are not`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val executor = object : VoiceToolExecutor {
+            override fun tools(): List<VoiceToolDef> = VoiceToolCatalog.ALL + VoiceToolDef(
+                name = "git_status",
+                description = "Working-tree status.",
+                parameters = kotlinx.serialization.json.buildJsonObject { },
+                write = false,
+            )
+            override fun contextSnapshot(defaultTabId: String?): String = ""
+            override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?) = "{}"
+        }
+        val c = controller(transport, audio, executor)
+        c.start()
+        assertTrue(await { transport.sentOfType("session.update").isNotEmpty() })
+
+        assertEquals("Running git status…", c.describeTool("git_status", "{}"))
+        assertEquals("Working…", c.describeTool("list_tabs", "{}"), "curated tools keep the shared caption")
+        assertEquals("Working…", c.describeTool("never_advertised", "{}"))
+        c.end()
+    }
+
     @Test
     fun `ending releases the mic and the socket`() {
         val transport = FakeTransport()

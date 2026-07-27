@@ -429,6 +429,27 @@ class VoiceToolSafetyTest {
         assertTrue(source.calls.isEmpty())
     }
 
+    /**
+     * The actual invariant behind the approval fix: approval and the call it authorises come out of
+     * ONE budget. Spending 250ms in the modal must leave the tool 150ms of a 400ms budget, not hand
+     * it a fresh 400ms on top — which is exactly how the worst case reached 220s against a 120s
+     * watchdog.
+     */
+    @Test
+    fun `approval spends the tool's budget rather than adding to it`() {
+        val source = FakeToolSource(
+            list = listOf(externalTool("git_discard")),
+            policy = VoiceToolPolicy(approve = { _, _ -> kotlinx.coroutines.delay(250); true }),
+            onCall = { _, _ -> kotlinx.coroutines.delay(250); """{"ok":true}""" },
+        )
+        val exec = composite(FakeBaseExecutor(emptyList()), source, callTimeoutMs = 400L)
+
+        val failure = assertFailsWith<VoiceToolException> {
+            runBlocking { exec.execute("git_discard", noArgs, null) }
+        }
+        assertTrue(failure.message!!.contains("timed out"), failure.message!!)
+    }
+
     /** The approval rung has to fit inside the tool budget it is a slice of. */
     @Test
     fun `the approval slice is smaller than the budget it comes out of`() {

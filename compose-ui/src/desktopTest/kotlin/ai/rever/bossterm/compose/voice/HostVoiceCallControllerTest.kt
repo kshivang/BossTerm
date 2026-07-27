@@ -891,13 +891,17 @@ class HostVoiceCallControllerTest {
     }
 
     /**
-     * The controller's one contribution to the confirmation interlock: it is the only thing that
-     * knows the user has spoken. Without this line an irreversible embedder tool can never be
+     * The controller's contribution to the confirmation interlock: it is the only thing that knows
+     * either party has spoken. Without these two lines an irreversible embedder tool can never be
      * confirmed — and, worse, nothing else in the suite would notice, because every other test of
      * [VoiceConfirmationGate] pumps it by hand.
+     *
+     * Both signals, in order: the agent's announcement (`response.output_audio.done`) and then the
+     * user's answer (`input_audio_buffer.speech_stopped`). The user's alone is not enough — see the
+     * barge-in case in [VoiceToolSafetyTest].
      */
     @Test
-    fun `the user finishing a sentence is what unlocks a pending confirmation`() {
+    fun `the agent announcing and the user answering is what unlocks a pending confirmation`() {
         val transport = FakeTransport()
         val audio = FakeAudio()
         val gate = VoiceConfirmationGate()
@@ -910,14 +914,22 @@ class HostVoiceCallControllerTest {
         val token = (minted as VoiceConfirmationGate.Decision.Confirm).token
         assertTrue(
             gate.redeem("git_discard", args, token) is VoiceConfirmationGate.Decision.Confirm,
-            "redeemable before the user said anything",
+            "redeemable before anyone said anything",
         )
 
+        // The agent says what it is about to do.
+        transport.deliver("""{"type":"response.output_audio.done"}""")
+        assertTrue(
+            gate.redeem("git_discard", args, token) is VoiceConfirmationGate.Decision.Confirm,
+            "redeemable before the user answered",
+        )
+
+        // The user answers.
         transport.deliver("""{"type":"input_audio_buffer.speech_stopped"}""")
 
         assertTrue(
             await { gate.redeem("git_discard", args, token) is VoiceConfirmationGate.Decision.Allowed },
-            "speech_stopped must reach the gate",
+            "both speech signals must reach the gate",
         )
         c.end()
     }

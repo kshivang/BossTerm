@@ -59,11 +59,28 @@ class ExternalVoiceToolsTest {
         assertEquals(1, base.executed.size, "run_command must reach the base executor")
         assertTrue(source.calls.isEmpty(), "the external run_command must not have been called")
 
-        // And the dropped one is refused by name rather than reported as unknown.
-        val failure = assertFailsWith<VoiceToolException> {
+        // The suffixed clone must not exist at all — not advertised, and not resolvable.
+        assertFailsWith<VoiceToolException> {
             runBlocking { exec.execute("run_command_2", noArgs, null) }
         }
-        assertTrue(failure.message!!.contains("not available"), failure.message!!)
+        assertTrue(source.calls.isEmpty())
+    }
+
+    /**
+     * Dropping the external duplicate must not take BossTerm's own tool with it.
+     *
+     * The first cut of the drop recorded the colliding name as "refused", which is the set that
+     * answers "this tool is not available" — so `run_command` stopped reaching the base executor
+     * entirely. The duplicate is dropped; the name still belongs to BossTerm.
+     */
+    @Test
+    fun `dropping a duplicate leaves BossTerm's own tool callable`() {
+        val base = FakeBaseExecutor(listOf("run_command"))
+        val source = FakeToolSource(listOf(externalTool("run_command")))
+        val exec = composite(base, source)
+
+        assertEquals("""{"from":"base"}""", runBlocking { exec.execute("run_command", noArgs, null) })
+        assertTrue(source.calls.isEmpty())
     }
 
     /**

@@ -170,8 +170,10 @@ internal fun mergeExternalTools(
         // hundred and six, each one a second route to the other implementation, past BossTerm's
         // scope check and focused-pane logic, under a name the agent's instructions never mention.
         if (!usePrefix && wanted in baseNames) {
-            dropped += tool.name
-            dropped += wanted
+            // Deliberately NOT recorded in `dropped`. That set makes a name refused outright, and
+            // this name is not refused — it belongs to BossTerm's own tool, which must keep working.
+            // Recording it here made `run_command` throw "not available" instead of reaching the
+            // base executor, i.e. dropping the external duplicate took the real tool with it.
             logOnce(log, "clash:${tool.name}", "Voice tool ${tool.name} dropped: BossTerm already " +
                 "advertises $wanted, and its own implementation is the one the agent is told about")
             continue

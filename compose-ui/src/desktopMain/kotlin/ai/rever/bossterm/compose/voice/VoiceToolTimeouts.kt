@@ -13,6 +13,10 @@ package ai.rever.bossterm.compose.voice
  *         < viewer watchdog      (VIEWER) — a pure backstop if the host never replies at all
  * ```
  *
+ * [APPROVAL_MS] is not another rung: it is a slice of EXEC, spent before the handler is called at
+ * all. It has to be inside rather than beside, or a gated tool's approval and its execution add up
+ * past the watchdog — see its own doc.
+ *
  * Each layer must be strictly longer than the one inside it, or the outer one fires first and
  * reports the wrong cause: equal host and viewer deadlines made "who answers a tool finishing on the
  * boundary" a coin flip, and an executor net BELOW the host budget would blame the handler for a
@@ -28,6 +32,21 @@ internal object VoiceToolTimeouts {
 
     /** Executor-level safety net: the MCP handler never returned at all. */
     fun execMs(tool: String): Long = if (tool == LONG_TOOL) 610_000L else 100_000L
+
+    /**
+     * How long a host approval modal ([VoiceToolPolicy.approve]) may sit unanswered.
+     *
+     * Inside [execMs], not beside it: approval and the call it authorises share ONE budget, so a
+     * gated tool cannot cost approval + execution and overrun the watchdog between them. It was
+     * beside it, at 120s — exactly [inAppMs] — which made the worst case 220s against a 120s
+     * watchdog, and the failure it produced was the least good one available: a user who read the
+     * dialog for 70 seconds and pressed Approve got the tool cancelled mid-flight while the model
+     * was told it had timed out. On a tool whose whole point is that it cannot be undone.
+     *
+     * 45s is a person reading one sentence and deciding, with room to spare; overrunning it is a
+     * refusal, and the round is answered long before the watchdog wants it.
+     */
+    const val APPROVAL_MS = 45_000L
 
     /**
      * How long the HOST waits before reclaiming the slot and answering the model.

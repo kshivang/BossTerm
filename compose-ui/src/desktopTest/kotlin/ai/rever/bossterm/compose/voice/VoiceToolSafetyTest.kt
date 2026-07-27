@@ -184,8 +184,14 @@ class VoiceToolSafetyTest {
 
         val tooSoon = parse(runBlocking { exec.execute("git_discard", withToken(token), null) })
         assertEquals(true, tooSoon["confirmation_required"]?.jsonPrimitive?.content?.toBoolean())
-        assertTrue(tooSoon["instruction"]!!.jsonPrimitive.content.contains("Wait for the user"))
+        assertTrue(tooSoon["instruction"]!!.jsonPrimitive.content.contains("Say what you are about to do"))
         assertTrue(source.calls.isEmpty())
+
+        gate.agentSpoke()
+        val announcedOnly = parse(runBlocking { exec.execute("git_discard", withToken(token), null) })
+        assertEquals(true, announcedOnly["confirmation_required"]?.jsonPrimitive?.content?.toBoolean())
+        assertTrue(announcedOnly["instruction"]!!.jsonPrimitive.content.contains("Wait for the user"))
+        assertTrue(source.calls.isEmpty(), "announcing to nobody is not confirmation")
 
         gate.userSpoke()
 
@@ -207,7 +213,7 @@ class VoiceToolSafetyTest {
         val token = parse(runBlocking { exec.execute("git_discard", noArgs, null) })[
             VoiceConfirmationGate.CONFIRM_ARG
         ]!!.jsonPrimitive.content
-        gate.userSpoke()
+        gate.agentSpoke(); gate.userSpoke()
         runBlocking { exec.execute("git_discard", withToken(token), null) }
 
         val replay = parse(runBlocking { exec.execute("git_discard", withToken(token), null) })
@@ -225,7 +231,7 @@ class VoiceToolSafetyTest {
 
         val minted = runBlocking { exec.execute("git_discard", buildJsonObject { put("path", "docs") }, null) }
         val token = parse(minted)[VoiceConfirmationGate.CONFIRM_ARG]!!.jsonPrimitive.content
-        gate.userSpoke()
+        gate.agentSpoke(); gate.userSpoke()
 
         val swapped = parse(
             runBlocking {
@@ -246,7 +252,7 @@ class VoiceToolSafetyTest {
         val gate = VoiceConfirmationGate()
         val source = FakeToolSource(listOf(externalTool("git_discard")))
         val exec = composite(FakeBaseExecutor(emptyList()), source, gate)
-        gate.userSpoke()
+        gate.agentSpoke(); gate.userSpoke()
 
         val answer = parse(runBlocking { exec.execute("git_discard", withToken("0123456789abcdef"), null) })
         assertEquals(true, answer["confirmation_required"]?.jsonPrimitive?.content?.toBoolean())
@@ -263,7 +269,7 @@ class VoiceToolSafetyTest {
         val token = parse(runBlocking { exec.execute("git_discard", noArgs, null) })[
             VoiceConfirmationGate.CONFIRM_ARG
         ]!!.jsonPrimitive.content
-        gate.userSpoke()
+        gate.agentSpoke(); gate.userSpoke()
         now += VoiceConfirmationGate.TOKEN_TTL_MS + 1
 
         val answer = parse(runBlocking { exec.execute("git_discard", withToken(token), null) })
@@ -280,7 +286,7 @@ class VoiceToolSafetyTest {
         val token = parse(runBlocking { exec.execute("git_discard", noArgs, null) })[
             VoiceConfirmationGate.CONFIRM_ARG
         ]!!.jsonPrimitive.content
-        gate.userSpoke()
+        gate.agentSpoke(); gate.userSpoke()
         exec.dispose()
 
         val answer = parse(runBlocking { exec.execute("git_discard", withToken(token), null) })
@@ -354,6 +360,107 @@ class VoiceToolSafetyTest {
         )
         val def = composite(FakeBaseExecutor(emptyList()), source).tools().single()
         assertTrue(def.description.contains("cannot be undone"), def.description)
+    }
+
+    /**
+     * The barge-in hole the agent-turn requirement closes.
+     *
+     * The user is already talking when the model emits its call, so `speech_stopped` fires after the
+     * mint from the very utterance that caused it. "The user has spoken" was literally true and the
+     * agent had announced nothing.
+     */
+    @Test
+    fun `the tail of the utterance that triggered the call does not confirm it`() {
+        val gate = VoiceConfirmationGate()
+        val source = FakeToolSource(listOf(externalTool("git_discard")))
+        val exec = composite(FakeBaseExecutor(emptyList()), source, gate)
+
+        val token = parse(runBlocking { exec.execute("git_discard", noArgs, null) })[
+            VoiceConfirmationGate.CONFIRM_ARG
+        ]!!.jsonPrimitive.content
+
+        // Barge-in: the user's interrupting utterance ends AFTER the token was minted.
+        gate.userSpoke()
+
+        val answer = parse(runBlocking { exec.execute("git_discard", withToken(token), null) })
+        assertEquals(true, answer["confirmation_required"]?.jsonPrimitive?.content?.toBoolean())
+        assertTrue(source.calls.isEmpty(), "redeemed against an announcement that never happened")
+    }
+
+    /** Order, not just occurrence: the user has to answer the agent, not precede it. */
+    @Test
+    fun `a user turn before the agent's announcement does not count`() {
+        val gate = VoiceConfirmationGate()
+        val source = FakeToolSource(listOf(externalTool("git_discard")))
+        val exec = composite(FakeBaseExecutor(emptyList()), source, gate)
+
+        val token = parse(runBlocking { exec.execute("git_discard", noArgs, null) })[
+            VoiceConfirmationGate.CONFIRM_ARG
+        ]!!.jsonPrimitive.content
+        gate.userSpoke()
+        gate.agentSpoke() // agent speaks last: nobody has answered it
+
+        val answer = parse(runBlocking { exec.execute("git_discard", withToken(token), null) })
+        assertEquals(true, answer["confirmation_required"]?.jsonPrimitive?.content?.toBoolean())
+        assertTrue(source.calls.isEmpty())
+    }
+
+    /**
+     * An approval that outlives its slice is a refusal, and it must happen inside the tool's own
+     * budget — a modal waiting *beside* the budget put the worst case past the controller's
+     * watchdog, so a user who read the dialog slowly and pressed Approve got the tool cancelled
+     * mid-flight while the model was told it had timed out.
+     */
+    @Test
+    fun `a slow approver loses the round instead of overrunning the watchdog`() {
+        val source = FakeToolSource(
+            list = listOf(externalTool("git_discard")),
+            policy = VoiceToolPolicy(approve = { _, _ -> kotlinx.coroutines.delay(60_000); true }),
+        )
+        // The whole budget is 200ms here; the approval slice is min(APPROVAL_MS, budget).
+        val exec = composite(FakeBaseExecutor(emptyList()), source, callTimeoutMs = 200L)
+
+        val started = System.currentTimeMillis()
+        val answer = parse(runBlocking { exec.execute("git_discard", noArgs, null) })
+        val elapsed = System.currentTimeMillis() - started
+
+        assertEquals(true, answer["refused"]?.jsonPrimitive?.content?.toBoolean())
+        assertTrue(elapsed < 5_000, "the approval wait was not bounded by the budget (${elapsed}ms)")
+        assertTrue(source.calls.isEmpty())
+    }
+
+    /** The approval rung has to fit inside the tool budget it is a slice of. */
+    @Test
+    fun `the approval slice is smaller than the budget it comes out of`() {
+        for (tool in VoiceToolTimeouts.LADDER_SAMPLES) {
+            assertTrue(
+                VoiceToolTimeouts.APPROVAL_MS < VoiceToolTimeouts.execMs(tool),
+                "approval must leave the tool some of its own budget for $tool",
+            )
+            assertTrue(
+                VoiceToolTimeouts.execMs(tool) < VoiceToolTimeouts.inAppMs(tool),
+                "approval + call must still land inside the in-app watchdog for $tool",
+            )
+        }
+    }
+
+    /** Under prefixing, the advertised form carries the prefix — refusal has to know that. */
+    @Test
+    fun `an excluded tool is refused by its prefixed name too`() {
+        val source = FakeToolSource(
+            list = listOf(externalTool("secret_get")),
+            namePrefix = "boss_",
+            policy = VoiceToolPolicy(onNameCollision = VoiceToolCollisionPolicy.PrefixExternal),
+        )
+        val exec = composite(FakeBaseExecutor(emptyList()), source)
+
+        for (named in listOf("secret_get", "boss_secret_get")) {
+            val failure = assertFailsWith<VoiceToolException> {
+                runBlocking { exec.execute(named, noArgs, null) }
+            }
+            assertTrue(failure.message!!.contains("secret material"), "$named: ${failure.message}")
+        }
+        assertTrue(source.calls.isEmpty())
     }
 
     private fun withToken(token: String) = buildJsonObject { put(VoiceConfirmationGate.CONFIRM_ARG, token) }

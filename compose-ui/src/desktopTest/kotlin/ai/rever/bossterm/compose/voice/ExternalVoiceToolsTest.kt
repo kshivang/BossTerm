@@ -37,21 +37,53 @@ class ExternalVoiceToolsTest {
         assertEquals(names.size, names.toSet().size, "duplicate advertised name: $names")
     }
 
+    /**
+     * Pins the EXACT advertised list, not a count.
+     *
+     * Counting `run_command` and finding one was the assertion this test used to make, and it was
+     * satisfied by a surface that also advertised `run_command_2` — a second route to the external
+     * implementation, past the scope check, under a name the agent's instructions never mention.
+     * The count was true and the surface was wrong.
+     */
     @Test
     fun `a colliding external tool is dropped and the BossTerm one keeps the name`() {
         val base = FakeBaseExecutor(listOf("run_command", "read_scrollback"))
         val source = FakeToolSource(listOf(externalTool("run_command"), externalTool("git_status")))
         val exec = composite(base, source)
 
-        val names = exec.tools().map { it.name }
-        assertEquals(1, names.count { it == "run_command" }, names.toString())
-        assertTrue("git_status" in names)
+        assertEquals(listOf("run_command", "read_scrollback", "git_status"), exec.tools().map { it.name })
 
         // Not merely deduped in the list — the call has to land on BossTerm's implementation, the
         // one with the scope check and the focused-pane logic in front of it.
         runBlocking { exec.execute("run_command", buildJsonObject { put("script", "ls") }, null) }
         assertEquals(1, base.executed.size, "run_command must reach the base executor")
         assertTrue(source.calls.isEmpty(), "the external run_command must not have been called")
+
+        // And the dropped one is refused by name rather than reported as unknown.
+        val failure = assertFailsWith<VoiceToolException> {
+            runBlocking { exec.execute("run_command_2", noArgs, null) }
+        }
+        assertTrue(failure.message!!.contains("not available"), failure.message!!)
+    }
+
+    /**
+     * The measured case: 13 of the 106 tools on BossConsole's surface are BossTerm's own, re-exported
+     * by terminal-tab. Every one of them must lose its slot, not take a suffixed one — including the
+     * ceiling arithmetic, since duplicates that survive push real tools off the end.
+     */
+    @Test
+    fun `every collision is dropped, and the freed slots go to real tools`() {
+        val baseNames = listOf("run_command", "read_scrollback", "list_tabs", "send_input")
+        val base = FakeBaseExecutor(baseNames)
+        val source = FakeToolSource(
+            list = baseNames.map { externalTool(it) } + (1..3).map { externalTool("git_$it") },
+            policy = VoiceToolPolicy(maxExternalTools = 3),
+        )
+
+        val names = composite(base, source).tools().map { it.name }
+
+        assertEquals(baseNames + listOf("git_1", "git_2", "git_3"), names)
+        assertTrue(names.none { it.endsWith("_2") && it != "git_2" }, names.toString())
     }
 
     @Test
@@ -67,11 +99,31 @@ class ExternalVoiceToolsTest {
         assertTrue(source.calls.isEmpty())
     }
 
+    /**
+     * A source listing one tool twice gets it advertised once — not once plus a `_2` clone that
+     * calls back with the same source name, which is what a count-based assertion here used to let
+     * through.
+     */
     @Test
-    fun `two source tools with one name do not both claim it`() {
+    fun `a source that lists one tool twice gets it advertised once`() {
         val source = FakeToolSource(listOf(externalTool("git_status"), externalTool("git_status")))
-        val names = composite(FakeBaseExecutor(emptyList()), source).tools().map { it.name }
-        assertEquals(1, names.count { it == "git_status" }, names.toString())
+        assertEquals(
+            listOf("git_status"),
+            composite(FakeBaseExecutor(emptyList()), source).tools().map { it.name },
+        )
+    }
+
+    /** But two genuinely different tools whose names only sanitise alike keep both. */
+    @Test
+    fun `distinct tools that sanitise to the same name are disambiguated`() {
+        val source = FakeToolSource(listOf(externalTool("git.status"), externalTool("git status")))
+        val exec = composite(FakeBaseExecutor(emptyList()), source)
+
+        val names = exec.tools().map { it.name }
+        assertEquals(listOf("git_status", "git_status_2"), names)
+
+        runBlocking { exec.execute("git_status_2", noArgs, null) }
+        assertEquals("git status", source.calls.single().first, "the suffixed one is the second tool")
     }
 
     @Test

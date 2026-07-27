@@ -162,6 +162,9 @@ internal class HostVoiceCallController(
     /** In-flight tool calls, capped like the share path's MAX_IN_FLIGHT_TOOL_CALLS. */
     private val inFlightTools = AtomicInteger(0)
 
+    /** Advertised names BossTerm does not own — see [genericCaption]. Empty until the session is configured. */
+    @Volatile private var uncaptionedToolNames: Set<String> = emptySet()
+
     /**
      * The coroutine running each pending tool, so the watchdog can CANCEL it rather than just answer
      * the model.
@@ -523,7 +526,12 @@ internal class HostVoiceCallController(
             // The API has finished SENDING, which is not when the user has finished HEARING —
             // see VoiceAudioIo.queuedPlaybackChunks. Clear once the speaker actually drains, or the
             // bar reads "Listening…" while Boss is audibly mid-sentence.
-            "response.output_audio.done" -> clearSpeakingWhenAudible()
+            "response.output_audio.done" -> {
+                // The agent has had its say. That is the "announcement" half of the confirmation
+                // interlock — see VoiceConfirmationGate for why a user turn alone was not enough.
+                confirmations?.agentSpoke()
+                clearSpeakingWhenAudible()
+            }
 
             // Barge-in: the user started talking, so drop whatever the agent still has queued
             // instead of letting the two of them talk over each other.
@@ -777,6 +785,12 @@ internal class HostVoiceCallController(
 
     private fun sessionUpdate(s: TerminalSettings): JsonObject {
         val tools = executor.tools()
+        // Remembered so describeTool can caption a tool BossTerm has never heard of without asking
+        // the executor — which, with an embedder source behind it, would re-enumerate the whole
+        // surface to draw one line of status text.
+        uncaptionedToolNames = tools.mapNotNullTo(mutableSetOf()) { def ->
+            def.name.takeIf { it !in CURATED_TOOL_NAMES }
+        }
         return buildJsonObject {
             put("type", "session.update")
             putJsonObject("session") {
@@ -860,12 +874,34 @@ internal class HostVoiceCallController(
             "send_signal" -> arg("signal")?.let { "Sending $it…" } ?: "Sending a signal…"
             "get_last_command" -> "Checking the last command…"
             "list_panes" -> "Looking at the split panes…"
-            else -> "Working…"
+            else -> genericCaption(name)
         }
+    }
+
+    /**
+     * Caption for a tool with no case above.
+     *
+     * "Working…" for anything BossTerm knows about, which is what the share viewer's mirror says and
+     * what [ai.rever.bossterm.compose.voice.VoiceCrossLanguageContractTest] pins in both languages.
+     * An EMBEDDER's tool gets its name instead: the status strip is the user's only sight of what
+     * the agent decided to do before it happens, and this PR's whole argument for the confirmation
+     * tier is that two probabilistic steps sit between what the user said and what gets called —
+     * "Working…" sixty-four times over is not a view of that.
+     *
+     * Only for names this call actually advertised and BossTerm does not own, so the JS contract is
+     * untouched by construction rather than by luck: a share keeps the curated catalog, so viewer.js
+     * can never be asked to caption one of these.
+     */
+    private fun genericCaption(name: String): String {
+        if (name !in uncaptionedToolNames) return "Working…"
+        return "Running ${clipPlain(name.replace('_', ' '), 40)}…"
     }
 
     internal companion object {
         val json = Json { ignoreUnknownKeys = true }
+
+        /** BossTerm's own tool names — everything the viewer's mirror is also expected to caption. */
+        val CURATED_TOOL_NAMES: Set<String> = VoiceToolCatalog.ALL.mapTo(mutableSetOf()) { it.name }
 
         /**
          * Hard ceiling on one in-app call — deliberately SHORTER than OpenAI's own 60-minute session

@@ -31,26 +31,27 @@ internal data class AdvertisedExternalTool(
  */
 internal data class ExternalSurface(
     val advertised: List<AdvertisedExternalTool>,
-    /** Source names refused outright (tier 1). */
+    /**
+     * Tier-1 refusals. Holds BOTH the source's own name and the name the tool *would* have been
+     * advertised under, because the model can arrive at either: the advertised one from an earlier
+     * enumeration that still offered the tool, the raw one from a sibling tool's description or the
+     * terminal itself. Stored at merge time rather than recomputed per lookup — recomputing meant
+     * re-deriving the advertised form from the raw name, which is not even possible under
+     * [VoiceToolCollisionPolicy.PrefixExternal], where the advertised form carries a prefix the
+     * lookup knew nothing about. An excluded tool went unrefused by its prefixed name there.
+     */
     val excluded: Set<String>,
-    /** Source names left out for collision, ceiling or an unusable name. */
+    /** Same, for tools left out for collision, ceiling or an unusable name. */
     val dropped: Set<String>,
 ) {
     val byAdvertisedName: Map<String, AdvertisedExternalTool> = advertised.associateBy { it.advertisedName }
 
-
-    /**
-     * Why [name] is refused, or null if this surface has nothing to say about it.
-     *
-     * Matched against the source's own name AND the name it would have been advertised under,
-     * because the model can arrive at either: the advertised one from an earlier enumeration that
-     * still offered the tool, the raw one from a sibling tool's description or the terminal itself.
-     */
-    fun refusalFor(name: String): String? = when {
-        excluded.any { it == name || VoiceToolNaming.advertise(it) == name } ->
+    /** Why [name] is refused, or null if this surface has nothing to say about it. */
+    fun refusalFor(name: String): String? = when (name) {
+        in excluded ->
             "$name is withheld from the voice agent: it returns secret material, and a voice call " +
                 "sends everything it touches through a third-party service."
-        dropped.any { it == name || VoiceToolNaming.advertise(it) == name } ->
+        in dropped ->
             "$name is not available to the voice agent on this host."
         else -> null
     }
@@ -124,31 +125,63 @@ internal fun mergeExternalTools(
             "colliding tools will be dropped instead")
     }
 
+    // Computed before the exclusion check, not after, so a refused tool can be refused by the name
+    // the model would have seen as well as by its own.
+    fun wantedNameFor(tool: ExternalVoiceTool) =
+        VoiceToolNaming.advertise(if (usePrefix) prefix + tool.name else tool.name)
+
+    val seenSourceNames = mutableSetOf<String>()
+
     for (tool in external) {
+        val wanted = wantedNameFor(tool)
         if (policy.isExcluded(tool)) {
             excluded += tool.name
+            if (wanted.isNotEmpty()) excluded += wanted
             logOnce(log, "excl:${tool.name}", "Voice tool ${tool.name} is withheld from the agent: " +
                 "it returns secret material")
             continue
         }
         if (advertised.size >= policy.maxExternalTools) {
             dropped += tool.name
+            if (wanted.isNotEmpty()) dropped += wanted
             logOnce(log, "cap:${tool.name}", "Voice tool ${tool.name} dropped: over the " +
                 "${policy.maxExternalTools}-tool ceiling for the external surface")
             continue
         }
-        val wanted = VoiceToolNaming.advertise(if (usePrefix) prefix + tool.name else tool.name)
         if (wanted.isEmpty()) {
             dropped += tool.name
             logOnce(log, "name:${tool.name}", "Voice tool ${tool.name} dropped: no legal function " +
                 "name can be made from it")
             continue
         }
+        // One tool, listed twice by its own source. Advertising the second as `git_status_2` would
+        // offer the model two names for one implementation and call back with the same source name
+        // for both — a duplicate, not a second tool.
+        if (!seenSourceNames.add(tool.name)) {
+            dropped += tool.name
+            logOnce(log, "dup:${tool.name}", "Voice tool ${tool.name} dropped: the source listed " +
+                "it more than once")
+            continue
+        }
+        // THE DROP RULE. This is what [VoiceToolCollisionPolicy.DropExternal] means, and it was
+        // documented here — in disambiguate's KDoc, no less — before it was written: without it a
+        // colliding tool fell through to the suffix loop and was advertised as `run_command_2`. On
+        // the surface this was measured against that is not a corner case but thirteen of the
+        // hundred and six, each one a second route to the other implementation, past BossTerm's
+        // scope check and focused-pane logic, under a name the agent's instructions never mention.
+        if (!usePrefix && wanted in baseNames) {
+            dropped += tool.name
+            dropped += wanted
+            logOnce(log, "clash:${tool.name}", "Voice tool ${tool.name} dropped: BossTerm already " +
+                "advertises $wanted, and its own implementation is the one the agent is told about")
+            continue
+        }
         val name = disambiguate(wanted, taken)
         if (name == null) {
             dropped += tool.name
-            logOnce(log, "clash:${tool.name}", "Voice tool ${tool.name} dropped: " +
-                "$wanted is already taken" + if (usePrefix) "" else " by BossTerm's own surface")
+            dropped += wanted
+            logOnce(log, "clash:${tool.name}", "Voice tool ${tool.name} dropped: $wanted is taken " +
+                "and no distinct name was free")
             continue
         }
         // Only the SURPRISING renames. Under PrefixExternal every tool is renamed by design, and a
@@ -172,18 +205,29 @@ internal fun mergeExternalTools(
 /**
  * [wanted] if it is free, else `wanted_2`… — and null once even that fails.
  *
- * Under the default policy a base collision is dropped before it gets here; this covers the
- * prefixing mode and the (unlikely, but silent if unhandled) case of two source tools whose names
- * differ only in characters the grammar does not allow.
+ * By the time this runs the two collisions that should NOT be suffixed are already gone: a base
+ * collision under the default policy, and a source that listed one tool twice. What is left is a
+ * genuine clash between distinct tools — two source names that differ only in characters the
+ * grammar disallows (`a.b` and `a b` both sanitise to `a_b`), or a prefixed name meeting a base
+ * tool under [VoiceToolCollisionPolicy.PrefixExternal], where the embedder asked for both.
  */
 private fun disambiguate(wanted: String, taken: Set<String>): String? {
     if (wanted !in taken) return wanted
-    for (n in 2..9) {
+    for (n in 2..MAX_DISAMBIGUATION_SUFFIX) {
         val candidate = VoiceToolNaming.advertise("${wanted}_$n")
         if (candidate !in taken) return candidate
     }
     return null
 }
+
+/**
+ * How far the suffix loop goes before giving up and dropping the tool.
+ *
+ * Small on purpose. Distinct tools colliding after sanitisation is already unusual; eight of them
+ * colliding is a source with a naming problem, and `thing_9` tells the model nothing useful about
+ * which of nine near-identical tools it is picking. Dropping and logging beats advertising noise.
+ */
+private const val MAX_DISAMBIGUATION_SUFFIX = 9
 
 /** The advertised definition: the source's own schema, plus the confirmation argument when gated. */
 private fun definitionFor(name: String, tool: ExternalVoiceTool, gated: Boolean): VoiceToolDef {
@@ -220,15 +264,18 @@ private fun definitionFor(name: String, tool: ExternalVoiceTool, gated: Boolean)
 }
 
 /**
- * Log [message] the first time [key] is seen.
+ * WARN the first time [key] is seen in this process, DEBUG every time after.
  *
- * Enumeration runs before every tool call, and a surface with thirteen collisions would otherwise
- * put thirteen identical warnings in the log per call. The set is process-wide and bounded; the
- * point of these lines is that a dropped tool is discoverable at all, not that it is counted.
+ * Enumeration runs before every tool call, so warning each time would put thirteen identical lines
+ * in the log per call. Warning only once, though, quietly weakened the claim this logging exists to
+ * make: "every dropped tool is logged by name" was true once per process, and a plugin reload that
+ * changed WHICH tools were dropped went unmentioned because the key had been seen before. The
+ * downgrade keeps one loud line per distinct cause and leaves the per-call record at a level that
+ * can be turned on when someone is actually looking for it.
  */
 private val loggedKeys = ConcurrentHashMap.newKeySet<String>()
 
 internal fun logOnce(log: org.slf4j.Logger, key: String, message: String) {
     if (loggedKeys.size > 500) loggedKeys.clear()
-    if (loggedKeys.add(key)) log.warn(message)
+    if (loggedKeys.add(key)) log.warn(message) else log.debug(message)
 }

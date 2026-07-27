@@ -64,6 +64,8 @@ internal class CompositeVoiceToolExecutor(
     private val enumerateTimeoutMs: Long = DEFAULT_ENUMERATE_TIMEOUT_MS,
     /** The innermost rung of the existing ladder; the controller's watchdog sits outside it. */
     private val callTimeoutMs: (String) -> Long = { VoiceToolTimeouts.execMs(it) },
+    /** Injected so a slow approval can be exercised without one. */
+    private val nowMs: () -> Long = { System.currentTimeMillis() },
 ) : VoiceToolExecutor {
 
     private val log = LoggerFactory.getLogger(CompositeVoiceToolExecutor::class.java)
@@ -117,7 +119,14 @@ internal class CompositeVoiceToolExecutor(
     }
 
     override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?): String {
-        val surface = external(base.tools())
+        // Off the Default dispatcher, for the reason the call below is: [enumerate] BLOCKS, up to
+        // enumerateTimeoutMs, and this runs on the coroutine handling the function call — which
+        // HostVoiceCall puts on Dispatchers.Default, along with the call's state machine, the drain
+        // watcher and the limit ticker. Four concurrent tool calls (MAX_IN_FLIGHT_TOOLS) against a
+        // wedged source would otherwise hold four Default threads for two seconds each, which on a
+        // small machine is the whole pool. tools() has no such option — it is a non-suspend override
+        // — but nothing in a call's hot path goes through it.
+        val surface = withContext(Dispatchers.IO) { external(base.tools()) }
         val hit = surface.byAdvertisedName[name]
         if (hit == null) {
             // Refuse by NAME, not merely by absence. A hard-excluded tool must be answered as
@@ -137,12 +146,20 @@ internal class CompositeVoiceToolExecutor(
         val declared = hit.source.properties.keys
         val clean = buildJsonObject { args.forEach { (k, v) -> if (k in declared) put(k, v) } }
 
+        // ONE budget for the whole gated round-trip. An approval wait beside the tool's own timeout
+        // rather than inside it is what made the worst case 220s against a 120s watchdog — see
+        // VoiceToolTimeouts.APPROVAL_MS. Whatever the modal spends, the call gets the rest.
+        val budgetMs = callTimeoutMs(hit.source.name)
+        val startedAtMs = nowMs()
         if (hit.gated) {
-            confirmationRefusal(hit, args, clean)?.let { return it }
+            val approvalBudget = minOf(VoiceToolTimeouts.APPROVAL_MS, budgetMs)
+            confirmationRefusal(hit, args, clean, approvalBudget)?.let { return it }
         }
+        val remainingMs = budgetMs - (nowMs() - startedAtMs)
+        if (remainingMs <= 0) throw VoiceToolException("Tool $name timed out")
 
         val result: String? = try {
-            withTimeoutOrNull(callTimeoutMs(hit.source.name)) {
+            withTimeoutOrNull(remainingMs) {
                 // The embedder's call may block; keep that off the Default dispatcher the call's
                 // state machine runs on. It also means the timeout above can only fire if the source
                 // suspends — a source that blocks outright is caught by the controller's watchdog,
@@ -173,11 +190,12 @@ internal class CompositeVoiceToolExecutor(
         hit: AdvertisedExternalTool,
         rawArgs: JsonObject,
         clean: JsonObject,
+        approvalBudgetMs: Long,
     ): String? {
         val approve = runCatching { source.policy.approve }.getOrNull()
         if (approve != null) {
             val ok = try {
-                withTimeoutOrNull(APPROVAL_TIMEOUT_MS) { approve(hit.source.name, clean) }
+                withTimeoutOrNull(approvalBudgetMs) { approve(hit.source.name, clean) }
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
@@ -187,6 +205,8 @@ internal class CompositeVoiceToolExecutor(
             // Null (timed out) and false are the same answer, and it is the safe one: an approval
             // nobody gave is not an approval.
             if (ok == true) return null
+            // A modal that overran its slice loses the round rather than the call: the model is
+            // told it was not approved, which is true, and it can ask again.
             return buildJsonObject {
                 put("refused", true)
                 put("reason", "The user did not approve that.")
@@ -255,9 +275,6 @@ internal class CompositeVoiceToolExecutor(
          * the top of each tool call) do not become the reason a call feels slow.
          */
         const val DEFAULT_ENUMERATE_TIMEOUT_MS = 2_000L
-
-        /** A host approval dialog nobody answers must not hold a tool slot for the whole call. */
-        const val APPROVAL_TIMEOUT_MS = 120_000L
 
         /** Daemon threads: one wedged enumeration must not keep the JVM alive at shutdown. */
         private val ENUMERATION = Executors.newCachedThreadPool { r ->

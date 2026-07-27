@@ -101,6 +101,12 @@ data class ExternalVoiceTool(
  *   [CompositeVoiceToolExecutor] — but a source that misbehaves loses tools, so don't rely on it.
  * - **[call] receives the source's OWN [ExternalVoiceTool.name]**, never the advertised one.
  * - **[call] returns a JSON string.** Over 40 KiB is clamped ([clampToolResult]); blank becomes `{}`.
+ * - **[ai.rever.bossterm.compose.mcp.BossTermMcpConfig.allowWriteTools] does not reach this
+ *   surface.** It withholds BossTerm's *own* write tools; an [ExternalVoiceTool] with `write = true`
+ *   is advertised regardless. That is deliberate — the source owns its tools and their policy, and
+ *   BossTerm cannot know whether an embedder's read-only MCP endpoint was meant to constrain the
+ *   embedder's own product — but it surprises anyone who set `allowWriteTools = false` expecting a
+ *   read-only voice surface. If that is what you want, filter [tools] yourself.
  */
 interface VoiceToolSource {
 

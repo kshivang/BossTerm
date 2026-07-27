@@ -222,9 +222,11 @@ fun TabbedTerminal(
      * tabs.
      */
     isActive: Boolean = true,
-    voiceToolSource: VoiceToolSource? = null,
     modifier: Modifier = Modifier,
-    platformServices: PlatformServices = getPlatformServices()
+    platformServices: PlatformServices = getPlatformServices(),
+    // Last on purpose: every other parameter keeps its position, so a downstream caller passing
+    // arguments positionally is not broken by this one being added.
+    voiceToolSource: VoiceToolSource? = null,
 ) {
     // Settings integration
     val settingsManager = remember { SettingsManager.instance }

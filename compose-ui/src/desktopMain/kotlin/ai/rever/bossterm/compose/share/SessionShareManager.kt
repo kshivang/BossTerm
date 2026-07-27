@@ -18,7 +18,6 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -73,6 +72,11 @@ object SessionShareManager {
      * process-wide singleton; tests point this at a throwaway manager so exercising the
      * pre-warm / shutdown paths can neither read nor rewrite a developer's real
      * `~/.bossterm/settings.json`.
+     *
+     * NOTE: this covers THIS class's reads only. [MirrorShare] still resolves the singleton
+     * directly (~10 sites, one of them a write), so a future test that gets as far as constructing
+     * a share would read — and could rewrite — the developer's real settings file. Extend the seam
+     * there before writing one.
      */
     @Volatile
     internal var settingsManagerOverrideForTest: SettingsManager? = null
@@ -90,6 +94,19 @@ object SessionShareManager {
      * coroutine may bind".
      */
     @Volatile private var shuttingDown = false
+
+    /**
+     * Bumped by every [shutdown]. [shuttingDown] alone is not a sound basis for a re-check inside a
+     * long operation, because [start] clears it: a dispose/re-init cycle that completes while a bind
+     * is still in flight would leave the binder's re-check reading `false` and adopting a server the
+     * manager no longer knows about. The epoch only ever moves forward — the same tool, for the same
+     * "did someone supersede me while I was working" question, as [remoteOp].
+     */
+    private val shutdownEpoch = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** True if a [shutdown] has begun, or has begun *and finished*, since [epoch] was taken. */
+    private fun supersededByShutdown(epoch: Int): Boolean =
+        shuttingDown || shutdownEpoch.get() != epoch
 
     /**
      * Embedder hook for "Fit host to my screen" when BossTerm is hosted inside
@@ -486,6 +503,7 @@ object SessionShareManager {
         val settings = settingsManager.settings.value
         if (!settings.sessionSharingEnabled) return null
         return mutex.withLock {
+            val epoch = shutdownEpoch.get()
             if (!ensureEngineLocked(settings)) return@withLock null
             val share = sharesByTab[tabId] ?: MirrorShare(tabId, scope, onEnded = { unshare(tabId) }).also {
                 it.start()
@@ -499,7 +517,7 @@ object SessionShareManager {
             // land anywhere above, including between a check and the registration. A MirrorShare
             // left behind a shut-down manager runs observer coroutines on its OWN scope, which our
             // cancelChildren() never reaches — it would keep observing terminal state forever.
-            if (shuttingDown) {
+            if (supersededByShutdown(epoch)) {
                 log.warn("Share for {} was registered while shutting down — reverting", tabId)
                 unregisterShareLocked(tabId, share)
                 return@withLock null
@@ -537,7 +555,7 @@ object SessionShareManager {
      * remote access is off. Runs off the UI thread.
      */
     fun refreshRemoteLink() {
-        if (shuttingDown) return
+        if (shuttingDown) { log.debug("Ignoring refreshRemoteLink(): the manager is shut down"); return }
         scope.launch {
             val port = boundPort ?: return@launch
             val mode = settingsManager.settings.value.shareTailscaleMode
@@ -554,7 +572,7 @@ object SessionShareManager {
      * isn't active (no bound port) this is a no-op; the persisted setting applies next share.
      */
     fun applyRemoteMode(mode: String) {
-        if (shuttingDown) return
+        if (shuttingDown) { log.debug("Ignoring applyRemoteMode({}): the manager is shut down", mode); return }
         scope.launch {
             val port = boundPort ?: return@launch
             val op = claimRemoteOp() // supersede any in-flight establish (it will bail + self-clean)
@@ -724,13 +742,12 @@ object SessionShareManager {
 
     /** Stop sharing [tabId]; stops the server if it was the last share. */
     fun unshare(tabId: String) {
-        if (shuttingDown) return // shutdown() already stopped and cleared every share, inline
+        // shutdown() already stopped and cleared every share, inline.
+        if (shuttingDown) { log.debug("Ignoring unshare({}): the manager is shut down", tabId); return }
         scope.launch {
             mutex.withLock {
                 val share = sharesByTab[tabId] ?: return@withLock
                 unregisterShareLocked(tabId, share)
-                failPendingFor(tabId)
-                releaseEmbeddedFit(tabId) // sharing stopped → restore any fit-resized host window
                 // Keep the engine + tunnel warm when sharing stays enabled with a remote provider,
                 // so a re-share is instant; otherwise tear down as before.
                 if (sharesByTab.isEmpty() && !keepWarm()) stopEngineLocked()
@@ -748,6 +765,8 @@ object SessionShareManager {
         sharesByToken.remove(share.viewToken)
         sharesByToken.remove(share.controlToken)
         grants.values.removeIf { it.shareId == share.viewToken }
+        failPendingFor(tabId)
+        releaseEmbeddedFit(tabId) // sharing stopped → restore any fit-resized host window
         runCatching { share.stop() }
         _sharedTabIds.value = sharesByTab.keys.toSet()
     }
@@ -794,8 +813,11 @@ object SessionShareManager {
      */
     @Synchronized
     fun shutdown() {
-        // 1. Latch first, so an uninterruptible binder refuses (see [shuttingDown]).
+        // 1. Latch first, so an uninterruptible binder refuses (see [shuttingDown]), and bump the
+        //    epoch so a binder that started before this call can tell it has been superseded even
+        //    if a re-init clears the latch under it.
         shuttingDown = true
+        shutdownEpoch.incrementAndGet()
         // 2. Supersede any in-flight remote establish. Cancellation cannot do this job:
         //    cloudflared's awaitUrl/awaitReady are plain blocking calls, so an establish
         //    sitting in one keeps running until its next suspension point. The op token is
@@ -875,6 +897,7 @@ object SessionShareManager {
             return false
         }
         if (engine != null) return true
+        val epoch = shutdownEpoch.get()
         val host = resolveBindHost(settings)
         val desiredPort = settings.sessionSharingPort
         for (offset in 0 until MAX_PORT_FALLBACK) {
@@ -934,7 +957,9 @@ object SessionShareManager {
                 // its whole teardown while we were binding, reading a still-null engine and leaving
                 // ours alive behind it. Bounded (200ms grace / 800ms cap) and loud, because a server
                 // that outlives its manager is exactly the leak this guard exists to prevent.
-                if (shuttingDown) {
+                // Against the epoch, not just the latch: a dispose/re-init that completed while we
+                // were binding would have cleared the latch (see [shutdownEpoch]).
+                if (supersededByShutdown(epoch)) {
                     log.warn(
                         "Session-sharing server bound on {}:{} while shutting down — stopping it again",
                         host, port
@@ -983,29 +1008,27 @@ object SessionShareManager {
 
     private suspend fun stopEngineLocked() {
         val e = engine ?: return
-        // Tear down any active remote-access exposure first (best-effort, off the UI thread).
-        // Bump the op so an in-flight establish bails + self-cleans instead of racing teardown.
-        claimRemoteOp()
-        withContext(Dispatchers.IO) { teardownRemoteAccess(boundPort) }
-        try {
-            // NonCancellable: [shutdown] cancels this scope, and this teardown runs on it. Being
-            // cancelled between "decided to stop the engine" and "stopped it" would run the finally
-            // below — clearing [engine] — while the server is still bound, and shutdown() would then
-            // find nothing left to stop. Bounded by the same 300ms/1000ms stop budget, so the
-            // uninterruptible stretch stays short.
-            withContext(Dispatchers.IO + NonCancellable) { e.stop(300, 1000) }
-            log.info("Session-sharing server stopped (port {})", boundPort)
-        } catch (c: CancellationException) {
-            // Defensive: NonCancellable above means the outer cancel can't surface inside this
-            // try today. If a future edit adds a cancellable suspension point here, a deliberate
-            // cancellation must propagate rather than be logged as a stop failure.
-            throw c
-        } catch (t: Throwable) {
-            log.warn("Error stopping session-sharing server: {}", t.message)
-        } finally {
-            engine = null
-            boundPort = null
-            boundHost = null
+        // NonCancellable for the whole teardown, not just the engine stop. [shutdown] cancels this
+        // scope, and this function runs on it; a cancel landing anywhere in here leaves the job
+        // half-done — on the remote teardown, a Tailscale mapping stays published and the `finally`
+        // never runs, so [engine] stays set; on the stop, the `finally` clears [engine] while the
+        // server is still bound and shutdown() then finds nothing to stop. Neither is worth the
+        // interruptibility: everything below is teardown we have already committed to, and it is
+        // bounded by the CLI timeouts plus the 300ms/1000ms stop budget.
+        withContext(Dispatchers.IO + NonCancellable) {
+            // Bump the op so an in-flight establish bails + self-cleans instead of racing teardown.
+            claimRemoteOp()
+            teardownRemoteAccess(boundPort)
+            try {
+                e.stop(300, 1000)
+                log.info("Session-sharing server stopped (port {})", boundPort)
+            } catch (t: Throwable) {
+                log.warn("Error stopping session-sharing server: {}", t.message)
+            } finally {
+                engine = null
+                boundPort = null
+                boundHost = null
+            }
         }
     }
 

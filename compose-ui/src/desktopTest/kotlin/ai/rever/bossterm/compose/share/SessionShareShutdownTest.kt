@@ -30,9 +30,10 @@ import kotlin.test.assertTrue
  * BossTerm is embedded in a plugin whose classloader is closing, runs against dead classes.
  *
  * ### How these tests are kept honest
- * - The share server binds by scanning `sessionSharingPort .. +9`, so every test reserves a run of
- *   **ten consecutive free ports** and asserts over the whole range. "Nothing bound" is therefore a
- *   real observation, not an artefact of the manager failing to find a port.
+ * - The share server binds by scanning forward from `sessionSharingPort`, so every test reserves a
+ *   run of [portRange] consecutive free ports — the production constant, not a copy of it — and
+ *   asserts over the whole range. "Nothing bound" is therefore a real observation, not an artefact
+ *   of the manager failing to find a port.
  * - Asserting "free" by probing (rather than by holding the ports) means a test cannot pass
  *   vacuously by making the bind impossible in the first place.
  * - No test shuts down on a timer: [awaitPrewarmLaunched] waits for the pre-warm coroutine to
@@ -51,7 +52,8 @@ import kotlin.test.assertTrue
  *
  * [SessionShareManager] is a singleton, so every test tears it back down in [tearDown] — including
  * clearing the shutdown latch, which is why re-arming gets its own test rather than riding on test
- * ordering.
+ * ordering. That, and the two process-wide singletons this class drives, mean these tests assume
+ * sequential execution within the JVM; they would need rethinking under in-JVM parallelism.
  */
 class SessionShareShutdownTest {
 
@@ -60,9 +62,6 @@ class SessionShareShutdownTest {
          *  resolves to "no remote link" without launching a process). */
         const val TEST_REMOTE_MODE = "test-no-provider"
 
-        /** How long the manager's ports are scanned over — mirrors `MAX_PORT_FALLBACK`. */
-        const val PORT_RANGE = 10
-
         /** Generous upper bound for "the pre-warm would have bound by now". */
         const val SETTLE_MS = 2_000L
 
@@ -70,6 +69,16 @@ class SessionShareShutdownTest {
          *  watcher, plus the pre-warm the watcher launched. */
         const val SCOPE_CHILDREN_WITH_PREWARM = 2
     }
+
+    /**
+     * How many ports the manager scans from `sessionSharingPort`. Read from the production constant
+     * rather than duplicated, so widening the fallback can't silently leave these assertions
+     * covering less than the manager can reach.
+     */
+    private val portRange: Int =
+        SessionShareManager::class.java.getDeclaredField("MAX_PORT_FALLBACK")
+            .apply { isAccessible = true }
+            .getInt(SessionShareManager)
 
     private val settingsDir = createTempDirectory("session-share-shutdown-test").toFile()
 
@@ -125,7 +134,7 @@ class SessionShareShutdownTest {
 
         assertTrue(
             awaitUntil(SETTLE_MS) { !rangeIsFree() },
-            "the pre-warm should have bound the share server in $basePort..${basePort + PORT_RANGE - 1}"
+            "the pre-warm should have bound the share server in $basePort..${basePort + portRange - 1}"
         )
     }
 
@@ -145,7 +154,7 @@ class SessionShareShutdownTest {
 
         assertTrue(
             rangeIsFree(),
-            "nothing may bind after shutdown(): ports $basePort..${basePort + PORT_RANGE - 1} " +
+            "nothing may bind after shutdown(): ports $basePort..${basePort + portRange - 1} " +
                 "must all still be free"
         )
     }
@@ -263,7 +272,7 @@ class SessionShareShutdownTest {
     }
 
     /** True while every port the manager could bind is still free. */
-    private fun rangeIsFree(): Boolean = (basePort until basePort + PORT_RANGE).all { portIsFree(it) }
+    private fun rangeIsFree(): Boolean = (basePort until basePort + portRange).all { portIsFree(it) }
 
     private fun portIsFree(port: Int): Boolean = runCatching {
         ServerSocket().use { ss ->
@@ -274,7 +283,7 @@ class SessionShareShutdownTest {
     }.getOrDefault(false)
 
     /**
-     * A base port with [PORT_RANGE] consecutive free ports after it, so the manager's port-fallback
+     * A base port with [portRange] consecutive free ports after it, so the manager's port-fallback
      * scan cannot land outside the range these tests assert on.
      *
      * Deliberately kept well below 32768 — and the scan below can only add ~2200 — so the window
@@ -286,19 +295,19 @@ class SessionShareShutdownTest {
         // floorMod, not %: nanoTime's origin is arbitrary and it is allowed to be negative.
         var candidate = 20_000 + Math.floorMod(System.nanoTime(), 10_000L).toInt()
         repeat(200) {
-            if ((candidate until candidate + PORT_RANGE).all { portIsFree(it) } &&
+            if ((candidate until candidate + portRange).all { portIsFree(it) } &&
                 portIsFree(candidate + 100) // the stand-in MCP port
             ) {
                 return candidate
             }
-            candidate += PORT_RANGE + 1
+            candidate += portRange + 1
         }
-        error("could not reserve $PORT_RANGE consecutive free ports for the test")
+        error("could not reserve $portRange consecutive free ports for the test")
     }
 
     private suspend fun awaitUntil(timeoutMs: Long, predicate: () -> Boolean): Boolean {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000  // nanoTime: monotonic
+        while (System.nanoTime() < deadline) {
             if (predicate()) return true
             delay(25)
         }

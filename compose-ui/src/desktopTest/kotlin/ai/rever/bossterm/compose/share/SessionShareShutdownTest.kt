@@ -68,8 +68,10 @@ class SessionShareShutdownTest {
         const val SETTLE_MS = 2_000L
 
         /** Active jobs under the manager's lifecycle once the pre-warm is in flight: the settings
-         *  watcher, plus the pre-warm nested inside it. */
-        const val SCOPE_CHILDREN_WITH_PREWARM = 2
+         *  watcher, the supervisorScope it collects inside, and the pre-warm nested in that. Counted
+         *  transitively — the point is that waiting on it proves the *pre-warm* exists, not just the
+         *  watcher, so this must track the real depth of the tree. */
+        const val SCOPE_CHILDREN_WITH_PREWARM = 3
     }
 
     /**

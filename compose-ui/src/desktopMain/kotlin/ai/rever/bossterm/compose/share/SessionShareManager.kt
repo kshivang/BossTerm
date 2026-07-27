@@ -156,6 +156,9 @@ object SessionShareManager {
      * handled (caller skips the standalone window-resize path), false otherwise.
      */
     internal fun requestEmbeddedFit(tabId: String, deltaWidthPx: Float, deltaHeightPx: Float): Boolean {
+        // Refuse once shutdown has drained [fitActiveTabs]: a fit registered after that is one
+        // nothing will ever undo, on an embedder we have already let go of.
+        if (shuttingDown) return false
         val embedder = fitHostEmbedder ?: return false
         fitActiveTabs.add(tabId)
         runCatching { embedder.onFitHost(tabId, deltaWidthPx, deltaHeightPx) }

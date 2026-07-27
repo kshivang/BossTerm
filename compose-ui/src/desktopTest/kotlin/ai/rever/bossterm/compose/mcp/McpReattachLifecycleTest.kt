@@ -98,9 +98,9 @@ class McpReattachLifecycleTest {
 
     /**
      * The tighter form of the first test: not just "gets cancelled eventually", but "is already
-     * cancelled AND finished unwinding by the time [BossTermMcpManager.stop] returns, and never
-     * resumes". That is the property an embedder needs — `dispose()` returning is the moment the
-     * host is free to close this classloader, and anything that wakes up afterwards faults on it.
+     * cancelled by the time [BossTermMcpManager.stop] returns, and never resumes". That is the
+     * property an embedder needs — `dispose()` returning is the moment the host is free to close
+     * this classloader, and anything that wakes up afterwards faults on it.
      *
      * Deliberately not wrapped in `runBlocking`: `stop()` is called from a plain thread, the way
      * an embedder's `dispose()` calls it.
@@ -124,12 +124,54 @@ class McpReattachLifecycleTest {
         manager.stop()
 
         assertTrue(job.isCancelled, "stop() must cancel the in-flight fan-out")
-        assertTrue(
-            job.isCompleted,
-            "stop() must not return while cancelled work is still unwinding — the host closes " +
-                "the classloader the moment dispose() returns"
-        )
         assertFalse(resumed.get(), "cancelled work must not resume after stop() returned")
+    }
+
+    /**
+     * Cancelling is not the same as having finished. Real in-flight work has something to unwind —
+     * `McpCliAttacher`'s fan-out holds process handles and half-written CLI configs — and until
+     * that unwinding is done the coroutine is still executing code out of this classloader. The
+     * host closes it the moment `dispose()` returns, so `stop()` drains before returning.
+     *
+     * The unwind is a blocking sleep in a `finally`, sized well inside `STOP_DRAIN_MS`: without the
+     * drain, `stop()` returns while the sleep is still going and the flag is unset.
+     *
+     * The drain is deliberately bounded and best-effort — it is sized to let a cancellation land,
+     * not to wait out `McpCliAttacher`'s 15s process timeout, whose uninterruptible stretch is made
+     * safe by eager class-preloading (#331) instead.
+     */
+    @Test
+    fun `stop waits for cancelled work to finish unwinding`() {
+        val manager = newManager()
+        McpTerminalRegistry.markAttached(McpAttachTarget.CLAUDE_CODE)
+        val entered = CountDownLatch(1)
+        val unwound = AtomicBoolean(false)
+        manager.reattachBodyOverrideForTest = {
+            try {
+                entered.countDown()
+                delay(30_000) // parked; cancellation lands here and runs the finally
+            } finally {
+                Thread.sleep(UNWIND_MS)
+                unwound.set(true)
+            }
+        }
+
+        manager.launchAutoReattach(port = 7699)
+        assertNotNull(manager.reattachJob)
+        assertTrue(entered.await(5, TimeUnit.SECONDS), "the fan-out never started")
+
+        manager.stop()
+
+        assertTrue(
+            unwound.get(),
+            "stop() returned while cancelled work was still unwinding — the host closes the " +
+                "classloader the moment dispose() returns"
+        )
+    }
+
+    private companion object {
+        /** Simulated unwind cost of a cancelled fan-out. Comfortably inside `STOP_DRAIN_MS`. */
+        private const val UNWIND_MS = 120L
     }
 
     /**

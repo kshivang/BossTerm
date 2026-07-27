@@ -86,6 +86,16 @@ internal class HostVoiceCallController(
      */
     private val toolTimeoutMs: (String) -> Long = { name -> VoiceToolTimeouts.inAppMs(name) },
     /**
+     * The confirmation interlock in front of irreversible tools, when one is in play.
+     *
+     * The controller does not consult it — the executor does. What it contributes is the one signal
+     * the executor cannot see: that the user has actually said something. Held here rather than
+     * derived inside the executor because "the user spoke" is a Realtime protocol event, and the
+     * protocol is this class's subject. Null on a surface with no embedder tools, where nothing is
+     * gated.
+     */
+    private val confirmations: VoiceConfirmationGate? = null,
+    /**
      * Called once when this call reaches a terminal state, however it got there — the user hung up,
      * a ceiling fired, or it failed.
      *
@@ -532,6 +542,11 @@ internal class HostVoiceCallController(
 
             "input_audio_buffer.speech_stopped" -> {
                 userSpeechConfirmed = false
+                // The user has said something and finished saying it. This is what makes a
+                // confirmation token redeemable — see VoiceConfirmationGate for why the agent
+                // confirming with itself, inside one turn, must not be enough. The SERVER's
+                // judgement of what was speech, deliberately, rather than our own level gate.
+                confirmations?.userSpoke()
             }
 
             "response.function_call_arguments.done" -> handleFunctionCall(

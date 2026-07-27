@@ -127,6 +127,7 @@ class HostVoiceCallControllerTest {
         key: String? = "sk-test",
         enabled: Boolean = true,
         clock: () -> Long = { System.currentTimeMillis() },
+        confirmations: VoiceConfirmationGate? = null,
     ) = HostVoiceCallController(
         scope = CoroutineScope(Dispatchers.Default),
         executor = executor,
@@ -135,6 +136,7 @@ class HostVoiceCallControllerTest {
         settings = { TerminalSettings.DEFAULT.copy(voiceCallEnabled = enabled) },
         loadKey = { key },
         nowMs = clock,
+        confirmations = confirmations,
     )
 
     /**
@@ -886,6 +888,38 @@ class HostVoiceCallControllerTest {
         clock += HostVoiceCallController.LIMIT_TICK_MS
         assertTrue(await { c.state.value.phase == HostCallPhase.Error }, "the ceiling must end it")
         assertTrue(c.state.value.error?.contains("minute limit") == true, c.state.value.error ?: "")
+    }
+
+    /**
+     * The controller's one contribution to the confirmation interlock: it is the only thing that
+     * knows the user has spoken. Without this line an irreversible embedder tool can never be
+     * confirmed — and, worse, nothing else in the suite would notice, because every other test of
+     * [VoiceConfirmationGate] pumps it by hand.
+     */
+    @Test
+    fun `the user finishing a sentence is what unlocks a pending confirmation`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val gate = VoiceConfirmationGate()
+        val c = controller(transport, audio, confirmations = gate)
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+
+        val args = JsonObject(emptyMap())
+        val minted = gate.redeem("git_discard", args, null)
+        val token = (minted as VoiceConfirmationGate.Decision.Confirm).token
+        assertTrue(
+            gate.redeem("git_discard", args, token) is VoiceConfirmationGate.Decision.Confirm,
+            "redeemable before the user said anything",
+        )
+
+        transport.deliver("""{"type":"input_audio_buffer.speech_stopped"}""")
+
+        assertTrue(
+            await { gate.redeem("git_discard", args, token) is VoiceConfirmationGate.Decision.Allowed },
+            "speech_stopped must reach the gate",
+        )
+        c.end()
     }
 
     @Test

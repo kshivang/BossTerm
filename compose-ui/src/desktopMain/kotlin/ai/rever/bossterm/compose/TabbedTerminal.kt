@@ -89,6 +89,7 @@ import ai.rever.bossterm.compose.voice.HostVoiceCall
 import ai.rever.bossterm.compose.voice.RemoteVoiceCalls
 import ai.rever.bossterm.compose.voice.VoiceAgentStorage
 import ai.rever.bossterm.compose.voice.VoiceKeyDialog
+import ai.rever.bossterm.compose.voice.VoiceToolSource
 import ai.rever.bossterm.compose.voice.segmentState
 import ai.rever.bossterm.compose.ui.ProperTerminal
 
@@ -163,6 +164,14 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  * @param hyperlinkRegistry Custom hyperlink pattern registry for per-instance hyperlink customization.
  *                          Use this to add custom patterns (e.g., JIRA ticket IDs, custom URLs).
  *                          Default: global HyperlinkDetector.registry
+ * @param voiceToolSource Embedder tools offered to the in-app voice agent ("Call BossTerm") on top of
+ *                        BossTerm's own. Its `tools()` is called fresh whenever the agent's tool list
+ *                        is built — at call start and before every tool call — so tools that come and
+ *                        go at runtime (plugin load/unload) are picked up without restarting the call.
+ *                        If null, the agent gets only BossTerm's tools, as the standalone app does.
+ *                        Shared sessions are never affected; they keep the curated catalog.
+ *                        Use case: a host whose own features (git, browser, plugins) should be
+ *                        reachable by voice — see [ai.rever.bossterm.compose.voice.VoiceToolSource].
  * @param modifier Compose modifier for the terminal container
  * @param platformServices Custom platform services
  */
@@ -205,6 +214,7 @@ fun TabbedTerminal(
      * tabs.
      */
     isActive: Boolean = true,
+    voiceToolSource: VoiceToolSource? = null,
     modifier: Modifier = Modifier,
     platformServices: PlatformServices = getPlatformServices()
 ) {
@@ -2244,7 +2254,7 @@ fun TabbedTerminal(
                             CallSegmentState.Speaking,
                             CallSegmentState.Working ->
                                 HostVoiceCall.end()
-                            else -> HostVoiceCall.start()
+                            else -> HostVoiceCall.start(voiceToolSource)
                         }
                     },
                 )
@@ -2254,7 +2264,7 @@ fun TabbedTerminal(
                         onDismiss = { voiceKeyPrompt = false },
                         onSaved = {
                             voiceKeyPrompt = false
-                            HostVoiceCall.start()
+                            HostVoiceCall.start(voiceToolSource)
                         },
                     )
                 }

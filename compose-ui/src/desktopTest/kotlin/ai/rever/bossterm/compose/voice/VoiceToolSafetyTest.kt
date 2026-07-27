@@ -1,0 +1,341 @@
+package ai.rever.bossterm.compose.voice
+
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
+import kotlin.test.assertTrue
+
+/**
+ * The two safety tiers over an embedder's tools.
+ *
+ * Tier 1 is absolute: a tool that returns secret material is never advertised and never executed,
+ * because every word of a voice call goes through a third-party realtime API and is then said out
+ * loud. Tier 2 is an interlock, not a rule the model is asked to follow.
+ */
+class VoiceToolSafetyTest {
+
+    private val noArgs = JsonObject(emptyMap())
+
+    // ---------------------------------------------------------------- tier 1
+
+    /** The five named on BossConsole's surface, plus the two the same pattern catches. */
+    @Test
+    fun `secret tools are absent from the advertised surface`() {
+        val secrets = listOf(
+            "secret_get", "my_secret_get", "secret_search", "secrets_list", "my_secrets_list",
+            "secret_create", "secret_delete",
+        )
+        val source = FakeToolSource(secrets.map { externalTool(it) } + externalTool("git_status"))
+
+        val names = composite(FakeBaseExecutor(emptyList()), source).tools().map { it.name }
+
+        assertEquals(listOf("git_status"), names, "a secret tool reached the agent")
+    }
+
+    @Test
+    fun `a secret tool is refused when the model names it anyway`() {
+        val source = FakeToolSource(listOf(externalTool("secret_get"), externalTool("git_status")))
+        val exec = composite(FakeBaseExecutor(emptyList()), source)
+
+        val failure = assertFailsWith<VoiceToolException> {
+            runBlocking { exec.execute("secret_get", buildJsonObject { put("name", "OPENAI") }, null) }
+        }
+        assertTrue(failure.message!!.contains("secret material"), failure.message!!)
+        assertTrue(source.calls.isEmpty(), "the source must never have been asked")
+    }
+
+    /** The tool's author knows things a name pattern cannot. */
+    @Test
+    fun `a tool the source flags sensitive is excluded whatever it is called`() {
+        val source = FakeToolSource(listOf(externalTool("vault_read", sensitive = true), externalTool("git_status")))
+        val exec = composite(FakeBaseExecutor(emptyList()), source)
+
+        assertEquals(listOf("git_status"), exec.tools().map { it.name })
+        assertFailsWith<VoiceToolException> { runBlocking { exec.execute("vault_read", noArgs, null) } }
+    }
+
+    /**
+     * The embedder's rule is what makes this expressible without BossTerm holding a list of
+     * BossConsole tool names: `rpa_run` says nothing about itself, and only the host knows.
+     */
+    @Test
+    fun `an embedder rule widens the exclusion`() {
+        val source = FakeToolSource(
+            list = listOf(externalTool("kubectl_exec"), externalTool("git_status")),
+            policy = VoiceToolPolicy(excludeExtra = { it.name.endsWith("_exec") }),
+        )
+        val exec = composite(FakeBaseExecutor(emptyList()), source)
+
+        assertEquals(listOf("git_status"), exec.tools().map { it.name })
+        assertFailsWith<VoiceToolException> { runBlocking { exec.execute("kubectl_exec", noArgs, null) } }
+    }
+
+    /** An embedder rule cannot un-exclude what BossTerm caught: the tiers only ever widen. */
+    @Test
+    fun `an embedder rule cannot re-admit a secret tool`() {
+        val source = FakeToolSource(
+            list = listOf(externalTool("secret_get")),
+            policy = VoiceToolPolicy(excludeExtra = { false }),
+        )
+        assertTrue(composite(FakeBaseExecutor(emptyList()), source).tools().isEmpty())
+    }
+
+    /** A classifier that blew up has told us nothing, and nothing is not permission. */
+    @Test
+    fun `a throwing exclusion rule fails closed`() {
+        val source = FakeToolSource(
+            list = listOf(externalTool("git_status")),
+            policy = VoiceToolPolicy(excludeExtra = { error("embedder bug") }),
+        )
+        assertTrue(composite(FakeBaseExecutor(emptyList()), source).tools().isEmpty())
+    }
+
+    @Test
+    fun `the built-in patterns catch what they claim to`() {
+        for (name in listOf("secret_get", "my_secret_get", "secrets_list", "api_key_get", "get_password")) {
+            assertTrue(VoiceToolPolicy.returnsSecretMaterial(name), name)
+        }
+        // …and are anchored on segments, so ordinary tools survive.
+        for (name in listOf("tokenize", "list_tabs", "run_command", "git_status")) {
+            assertFalse(VoiceToolPolicy.returnsSecretMaterial(name), name)
+        }
+    }
+
+    // ---------------------------------------------------------------- tier 2
+
+    @Test
+    fun `destructive tools are advertised, marked, and carry the confirmation argument`() {
+        val destructive = listOf("git_discard", "plugin_disable", "role_delete", "user_role_remove")
+        val source = FakeToolSource(destructive.map { externalTool(it) })
+        val defs = composite(FakeBaseExecutor(emptyList()), source).tools()
+
+        assertEquals(destructive, defs.map { it.name }, "gated is not hidden")
+        for (def in defs) {
+            assertTrue(def.description.contains("cannot be undone"), def.description)
+            val props = def.parameters["properties"]!!.jsonObject
+            assertTrue(VoiceConfirmationGate.CONFIRM_ARG in props, "${def.name} has no way to confirm")
+        }
+    }
+
+    /** `write` cannot tell these apart, which is the whole argument for a second classification. */
+    @Test
+    fun `a write tool that is merely a write is not gated`() {
+        val source = FakeToolSource(listOf(externalTool("git_stage", write = true)))
+        val def = composite(FakeBaseExecutor(emptyList()), source).tools().single()
+        assertFalse(def.description.contains("cannot be undone"), def.description)
+        assertFalse(VoiceConfirmationGate.CONFIRM_ARG in def.parameters["properties"]!!.jsonObject)
+    }
+
+    @Test
+    fun `the first call to a destructive tool does not run it`() {
+        val source = FakeToolSource(listOf(externalTool("git_discard")))
+        val exec = composite(FakeBaseExecutor(emptyList()), source)
+
+        val answer = runBlocking { exec.execute("git_discard", noArgs, null) }.let(::parse)
+
+        assertEquals(true, answer["confirmation_required"]?.jsonPrimitive?.content?.toBoolean())
+        assertTrue(answer[VoiceConfirmationGate.CONFIRM_ARG]!!.jsonPrimitive.content.isNotBlank())
+        assertTrue(source.calls.isEmpty(), "it ran anyway")
+    }
+
+    /**
+     * The property the interlock exists for. Two calls inside one turn is the agent confirming with
+     * itself — precisely the failure mode a *misheard* instruction produces, because the only
+     * evidence the user meant it is the user answering.
+     */
+    @Test
+    fun `a token cannot be redeemed until the user has spoken`() {
+        val gate = VoiceConfirmationGate()
+        val source = FakeToolSource(listOf(externalTool("git_discard")))
+        val exec = composite(FakeBaseExecutor(emptyList()), source, gate)
+
+        val token = parse(runBlocking { exec.execute("git_discard", noArgs, null) })[
+            VoiceConfirmationGate.CONFIRM_ARG
+        ]!!.jsonPrimitive.content
+
+        val tooSoon = parse(runBlocking { exec.execute("git_discard", withToken(token), null) })
+        assertEquals(true, tooSoon["confirmation_required"]?.jsonPrimitive?.content?.toBoolean())
+        assertTrue(tooSoon["instruction"]!!.jsonPrimitive.content.contains("Wait for the user"))
+        assertTrue(source.calls.isEmpty())
+
+        gate.userSpoke()
+
+        val result = runBlocking { exec.execute("git_discard", withToken(token), null) }
+        assertEquals("""{"from":"source"}""", result)
+        assertEquals("git_discard", source.calls.single().first)
+        assertFalse(
+            VoiceConfirmationGate.CONFIRM_ARG in source.calls.single().second,
+            "the confirmation argument is the host's, not the tool's",
+        )
+    }
+
+    @Test
+    fun `a token is single use`() {
+        val gate = VoiceConfirmationGate()
+        val source = FakeToolSource(listOf(externalTool("git_discard")))
+        val exec = composite(FakeBaseExecutor(emptyList()), source, gate)
+
+        val token = parse(runBlocking { exec.execute("git_discard", noArgs, null) })[
+            VoiceConfirmationGate.CONFIRM_ARG
+        ]!!.jsonPrimitive.content
+        gate.userSpoke()
+        runBlocking { exec.execute("git_discard", withToken(token), null) }
+
+        val replay = parse(runBlocking { exec.execute("git_discard", withToken(token), null) })
+        assertEquals(true, replay["confirmation_required"]?.jsonPrimitive?.content?.toBoolean())
+        assertNotEquals(token, replay[VoiceConfirmationGate.CONFIRM_ARG]!!.jsonPrimitive.content)
+        assertEquals(1, source.calls.size)
+    }
+
+    /** Confirming "discard the docs folder" must not authorise discarding the repository. */
+    @Test
+    fun `a token is bound to the arguments it was minted for`() {
+        val gate = VoiceConfirmationGate()
+        val source = FakeToolSource(listOf(externalTool("git_discard", properties = props("path"))))
+        val exec = composite(FakeBaseExecutor(emptyList()), source, gate)
+
+        val minted = runBlocking { exec.execute("git_discard", buildJsonObject { put("path", "docs") }, null) }
+        val token = parse(minted)[VoiceConfirmationGate.CONFIRM_ARG]!!.jsonPrimitive.content
+        gate.userSpoke()
+
+        val swapped = parse(
+            runBlocking {
+                exec.execute(
+                    "git_discard",
+                    buildJsonObject { put("path", "/"); put(VoiceConfirmationGate.CONFIRM_ARG, token) },
+                    null,
+                )
+            }
+        )
+        assertEquals(true, swapped["confirmation_required"]?.jsonPrimitive?.content?.toBoolean())
+        assertTrue(swapped["instruction"]!!.jsonPrimitive.content.contains("different operation"))
+        assertTrue(source.calls.isEmpty())
+    }
+
+    @Test
+    fun `a fabricated token does not pass`() {
+        val gate = VoiceConfirmationGate()
+        val source = FakeToolSource(listOf(externalTool("git_discard")))
+        val exec = composite(FakeBaseExecutor(emptyList()), source, gate)
+        gate.userSpoke()
+
+        val answer = parse(runBlocking { exec.execute("git_discard", withToken("0123456789abcdef"), null) })
+        assertEquals(true, answer["confirmation_required"]?.jsonPrimitive?.content?.toBoolean())
+        assertTrue(source.calls.isEmpty())
+    }
+
+    @Test
+    fun `an expired token does not pass`() {
+        var now = 0L
+        val gate = VoiceConfirmationGate(nowMs = { now })
+        val source = FakeToolSource(listOf(externalTool("git_discard")))
+        val exec = composite(FakeBaseExecutor(emptyList()), source, gate)
+
+        val token = parse(runBlocking { exec.execute("git_discard", noArgs, null) })[
+            VoiceConfirmationGate.CONFIRM_ARG
+        ]!!.jsonPrimitive.content
+        gate.userSpoke()
+        now += VoiceConfirmationGate.TOKEN_TTL_MS + 1
+
+        val answer = parse(runBlocking { exec.execute("git_discard", withToken(token), null) })
+        assertEquals(true, answer["confirmation_required"]?.jsonPrimitive?.content?.toBoolean())
+        assertTrue(source.calls.isEmpty())
+    }
+
+    @Test
+    fun `hanging up clears outstanding confirmations`() {
+        val gate = VoiceConfirmationGate()
+        val source = FakeToolSource(listOf(externalTool("git_discard")))
+        val exec = composite(FakeBaseExecutor(emptyList()), source, gate)
+
+        val token = parse(runBlocking { exec.execute("git_discard", noArgs, null) })[
+            VoiceConfirmationGate.CONFIRM_ARG
+        ]!!.jsonPrimitive.content
+        gate.userSpoke()
+        exec.dispose()
+
+        val answer = parse(runBlocking { exec.execute("git_discard", withToken(token), null) })
+        assertEquals(true, answer["confirmation_required"]?.jsonPrimitive?.content?.toBoolean())
+        assertTrue(source.calls.isEmpty())
+    }
+
+    // ------------------------------------------------- tier 2, host approval
+
+    @Test
+    fun `a host approver replaces the in-band protocol`() {
+        val asked = mutableListOf<String>()
+        val source = FakeToolSource(
+            list = listOf(externalTool("git_discard")),
+            policy = VoiceToolPolicy(approve = { name, _ -> asked += name; true }),
+        )
+        val exec = composite(FakeBaseExecutor(emptyList()), source)
+
+        // No token, no speech: the host said yes, and that is a better answer than either.
+        assertEquals("""{"from":"source"}""", runBlocking { exec.execute("git_discard", noArgs, null) })
+        assertEquals(listOf("git_discard"), asked)
+    }
+
+    @Test
+    fun `a refusing or broken approver stops the call`() {
+        val no = FakeToolSource(
+            list = listOf(externalTool("git_discard")),
+            policy = VoiceToolPolicy(approve = { _, _ -> false }),
+        )
+        val execNo = composite(FakeBaseExecutor(emptyList()), no)
+        assertEquals(true, parse(runBlocking { execNo.execute("git_discard", noArgs, null) })["refused"]
+            ?.jsonPrimitive?.content?.toBoolean())
+        assertTrue(no.calls.isEmpty())
+
+        val broken = FakeToolSource(
+            list = listOf(externalTool("git_discard")),
+            policy = VoiceToolPolicy(approve = { _, _ -> error("dialog blew up") }),
+        )
+        val execBroken = composite(FakeBaseExecutor(emptyList()), broken)
+        assertEquals(true, parse(runBlocking { execBroken.execute("git_discard", noArgs, null) })["refused"]
+            ?.jsonPrimitive?.content?.toBoolean())
+        assertTrue(broken.calls.isEmpty())
+    }
+
+    // ------------------------------------------------------------ classifier
+
+    @Test
+    fun `the destructive pattern catches the obvious names and admits it cannot catch the rest`() {
+        for (name in listOf("git_discard", "plugin_disable", "role_delete", "user_role_remove", "secret_delete")) {
+            assertTrue(VoiceToolPolicy.looksIrreversible(name), name)
+        }
+        // Documented limitation, asserted so it cannot quietly become false: these are as
+        // destructive as anything on the surface and their names say nothing. Only the source's own
+        // flag or the embedder's rule reaches them.
+        for (name in listOf("rpa_run", "evolver_evolve")) {
+            assertFalse(VoiceToolPolicy.looksIrreversible(name), "$name is not name-classifiable")
+        }
+        val source = FakeToolSource(
+            list = listOf(externalTool("rpa_run"), externalTool("evolver_evolve")),
+            policy = VoiceToolPolicy(irreversibleExtra = { it.name in setOf("rpa_run", "evolver_evolve") }),
+        )
+        val defs = composite(FakeBaseExecutor(emptyList()), source).tools()
+        assertTrue(defs.all { it.description.contains("cannot be undone") }, defs.map { it.description }.toString())
+    }
+
+    @Test
+    fun `a throwing destructive rule fails closed too`() {
+        val source = FakeToolSource(
+            list = listOf(externalTool("git_status")),
+            policy = VoiceToolPolicy(irreversibleExtra = { error("embedder bug") }),
+        )
+        val def = composite(FakeBaseExecutor(emptyList()), source).tools().single()
+        assertTrue(def.description.contains("cannot be undone"), def.description)
+    }
+
+    private fun withToken(token: String) = buildJsonObject { put(VoiceConfirmationGate.CONFIRM_ARG, token) }
+
+    private fun parse(json: String) = kotlinx.serialization.json.Json.parseToJsonElement(json).jsonObject
+}

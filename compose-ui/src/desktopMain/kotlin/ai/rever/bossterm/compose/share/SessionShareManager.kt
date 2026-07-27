@@ -18,12 +18,15 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -64,6 +67,28 @@ object SessionShareManager {
     private val log = LoggerFactory.getLogger(SessionShareManager::class.java)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
+
+    /**
+     * @suppress Test seam: where settings are read from. Production always resolves the
+     * process-wide singleton; tests point this at a throwaway manager so exercising the
+     * pre-warm / shutdown paths can neither read nor rewrite a developer's real
+     * `~/.bossterm/settings.json`.
+     */
+    internal var settingsManagerOverrideForTest: SettingsManager? = null
+    private val settingsManager: SettingsManager
+        get() = settingsManagerOverrideForTest ?: SettingsManager.instance
+
+    /**
+     * Latched by [shutdown] before it tears anything down; cleared by [start].
+     *
+     * Cancelling the manager's scope is what stops in-flight work, but it can't stop *all*
+     * of it: cancellation is cooperative, and [ensureEngineLocked] contains no suspension
+     * point, so a pre-warm that has already passed its last one runs to completion no matter
+     * what. This flag is the authority such an uninterruptible binder checks — it is what
+     * makes "shut down" mean "no server may be bound", rather than merely "no *waiting*
+     * coroutine may bind".
+     */
+    @Volatile private var shuttingDown = false
 
     /**
      * Embedder hook for "Fit host to my screen" when BossTerm is hosted inside
@@ -108,6 +133,9 @@ object SessionShareManager {
      *  remote-driven fit is active on that tab, it's released (window restores). */
     fun notifyHostInteraction(tabId: String) = releaseEmbeddedFit(tabId)
 
+    // @Volatile: written by whichever coroutine wins the bind (under [mutex]) and read by
+    // [shutdown], which is synchronous and therefore cannot take the mutex.
+    @Volatile
     private var engine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     @Volatile private var boundPort: Int? = null
     private var boundHost: String? = null
@@ -278,7 +306,7 @@ object SessionShareManager {
      * Cloudflare Quick Tunnel, or a custom public URL), since LAN/Serve reach is trusted.
      */
     private fun requiresApproval(): Boolean {
-        val s = SettingsManager.instance.settings.value
+        val s = settingsManager.settings.value
         return when (s.sessionSharingApprovalScope) {
             "all" -> true
             "off" -> false
@@ -293,7 +321,7 @@ object SessionShareManager {
      * tears everything down (the settings observer's stopAll, and applyRemoteMode).
      */
     private fun keepWarm(): Boolean {
-        val s = SettingsManager.instance.settings.value
+        val s = settingsManager.settings.value
         return s.sessionSharingEnabled && s.shareTailscaleMode != "off"
     }
 
@@ -319,11 +347,18 @@ object SessionShareManager {
         val e2eCode: String? = null,
     )
 
-    /** Begin observing settings. Idempotent. Call once from main(). */
+    /**
+     * Begin observing settings. Idempotent. Call once from main().
+     *
+     * Also re-arms the manager after a [shutdown]: the singleton outlives one embedder's
+     * lifecycle (bossterm-app and the BossConsole terminal plugin both call [start]/[shutdown]),
+     * so shutting down must not leave it permanently inert.
+     */
     fun start() {
+        shuttingDown = false
         if (watcherJob?.isActive == true) return
         watcherJob = scope.launch {
-            SettingsManager.instance.settings
+            settingsManager.settings
                 .map { it.sessionSharingEnabled to it.shareTailscaleMode }
                 .distinctUntilChanged()
                 .collect { (enabled, mode) ->
@@ -405,7 +440,8 @@ object SessionShareManager {
      * inline establish kick in [ensureEngineLocked] fires once per lifecycle). Off the UI thread.
      */
     private suspend fun prewarmRemote() {
-        val settings = SettingsManager.instance.settings.value
+        if (shuttingDown) return
+        val settings = settingsManager.settings.value
         if (!settings.sessionSharingEnabled || settings.shareTailscaleMode == "off") return
         // Let the BossTerm MCP server claim its port FIRST. It shares the 7676+ range with the
         // share server; pre-warm runs at app launch concurrently with the MCP server, so if both
@@ -417,6 +453,11 @@ object SessionShareManager {
         if (settings.mcpEnabled) {
             withTimeoutOrNull(5000) { McpTerminalRegistry.runningPort.first { it != null } }
         }
+        // The wait above is the widest window in this manager's whole lifecycle — up to 5s of
+        // suspended coroutine holding a live intent to bind a server. [shutdown] cancels this
+        // scope, so normally we never get here after it; this re-check covers the sliver where
+        // the wait completed just as shutdown ran, and keeps the "Pre-warming…" log honest.
+        if (shuttingDown) return
         mutex.withLock {
             if (engine == null) log.info("Pre-warming session-sharing remote access ({})", settings.shareTailscaleMode)
             ensureEngineLocked(settings) // binds the server + kicks establishRemote once
@@ -430,7 +471,7 @@ object SessionShareManager {
      * when sharing is disabled or the server can't bind. Idempotent per [tabId].
      */
     suspend fun share(tabId: String, scope: ShareScope = ShareScope.TAB): ShareInfo? {
-        val settings = SettingsManager.instance.settings.value
+        val settings = settingsManager.settings.value
         if (!settings.sessionSharingEnabled) return null
         return mutex.withLock {
             if (!ensureEngineLocked(settings)) return@withLock null
@@ -476,7 +517,7 @@ object SessionShareManager {
     fun refreshRemoteLink() {
         scope.launch {
             val port = boundPort ?: return@launch
-            val mode = SettingsManager.instance.settings.value.shareTailscaleMode
+            val mode = settingsManager.settings.value.shareTailscaleMode
             if (mode == "off") return@launch
             val op = claimRemoteOp()
             withContext(Dispatchers.IO) { establishRemote(mode, port, op) }
@@ -557,7 +598,7 @@ object SessionShareManager {
         proc.onExit().thenAccept {
             scope.launch {
                 if (!isCurrentRemoteOp(op)) return@launch // a cooperative teardown/switch superseded us
-                val s = SettingsManager.instance.settings.value
+                val s = settingsManager.settings.value
                 if (!s.sessionSharingEnabled || s.shareTailscaleMode != "cloudflare") return@launch
                 if (engine == null) return@launch
                 delay(2000) // brief backoff; a teardown during this window bumps the op
@@ -687,22 +728,56 @@ object SessionShareManager {
      * and any Tailscale serve/funnel mapping without the coroutine scope (which would
      * not drain at process exit). Crucially this tears down the Tailscale tunnel so it
      * isn't left published after the app quits. Best-effort; every step is guarded.
+     *
+     * Also called by an embedder that is unloading BossTerm — the BossConsole terminal
+     * plugin's `dispose()` — where "after shutdown" means "inside a classloader that is
+     * being closed", and any straggler coroutine that wakes up is running against dead
+     * classes. Hence the ordering below.
+     *
+     * **Ordering: stop the manager before stopping the server, not after.** The first
+     * three statements latch the shutdown, supersede any in-flight remote operation, and
+     * cancel this manager's own in-flight work; only then does the teardown proper run.
+     * Doing it the other way round leaves the entire engine-stop window — up to 800ms, and
+     * ending with the port freed — open for a parked [prewarmRemote] to wake and re-bind the
+     * server behind a manager that has already declared itself down. Nothing is lost by
+     * going first: this function performs every teardown step itself, inline, and the only
+     * cleanup-shaped bodies on the scope ([unshare], [stopAll]) are strict subsets of what
+     * follows. Everything else queued there — pre-warm, establish, respawn, the cloudflared
+     * prefetch — is *setup*, so cancelling it is the point, not a cost.
+     *
+     * Idempotent, and safe when nothing ever started.
      */
     fun shutdown() {
-        runCatching { watcherJob?.cancel() }
+        // 1. Latch first, so an uninterruptible binder refuses (see [shuttingDown]).
+        shuttingDown = true
+        // 2. Supersede any in-flight remote establish. Cancellation cannot do this job:
+        //    cloudflared's awaitUrl/awaitReady are plain blocking calls, so an establish
+        //    sitting in one keeps running until its next suspension point. The op token is
+        //    what makes it bail and destroy its own tunnel instead of adopting one after
+        //    we've torn down.
+        claimRemoteOp()
+        // 3. Cancel our own in-flight work. A parked prewarmRemote() is the one that matters:
+        //    it sleeps up to 5s waiting for the MCP port and then binds the server.
+        //    cancelChildren rather than cancel() so [start] can re-arm the singleton — a
+        //    cancelled scope would be dead for the rest of the process.
+        runCatching { scope.coroutineContext.cancelChildren() }
+        runCatching { watcherJob?.cancel() } // subsumed by the above; explicit for intent
+        watcherJob = null
+        prefetchJob = null
         sharesByTab.values.forEach { runCatching { it.stop() } }
         sharesByTab.clear()
         sharesByToken.clear()
         grants.clear()
         failAllPending()
         _sharedTabIds.value = emptySet()
-        claimRemoteOp() // cancel any in-flight establish before tearing down
         teardownRemoteAccess(boundPort)
-        val e = engine ?: return
-        runCatching { e.stop(200, 800) }
+        // Clear the bookkeeping before the (bounded, up to 1s) engine stop, so a second
+        // shutdown() — or anything reading boundPort — never sees a half-torn-down manager.
+        val e = engine
         engine = null
         boundPort = null
         boundHost = null
+        if (e != null) runCatching { e.stop(200, 800) }
     }
 
     // ---- engine lifecycle (mutex-guarded) ----
@@ -740,8 +815,19 @@ object SessionShareManager {
         }
     }
 
-    /** Start the engine if not already running. Returns true if running afterwards. */
+    /**
+     * Start the engine if not already running. Returns true if running afterwards.
+     *
+     * Refuses outright once [shutdown] has latched. This function has no suspension point, so
+     * cancellation cannot reach a pre-warm that is already inside it — and a pre-warm that woke
+     * a moment before the cancel landed still arrives here holding a live intent to bind. The
+     * latch turns both into a no-op. It also covers a [share] racing an embedder's dispose.
+     */
     private fun ensureEngineLocked(settings: TerminalSettings): Boolean {
+        if (shuttingDown) {
+            log.debug("Session-sharing engine start refused: the manager is shutting down")
+            return false
+        }
         if (engine != null) return true
         val host = resolveBindHost(settings)
         val desiredPort = settings.sessionSharingPort
@@ -797,6 +883,22 @@ object SessionShareManager {
                 engine = started
                 boundPort = port
                 boundHost = host
+                // Adopt, then re-check — the same shape establishCloudflareVerified uses for its
+                // tunnel. [shutdown] is synchronous and so cannot take this mutex; it may have run
+                // its whole teardown while we were binding, reading a still-null engine and leaving
+                // ours alive behind it. Bounded (200ms grace / 800ms cap) and loud, because a server
+                // that outlives its manager is exactly the leak this guard exists to prevent.
+                if (shuttingDown) {
+                    log.warn(
+                        "Session-sharing server bound on {}:{} while shutting down — stopping it again",
+                        host, port
+                    )
+                    engine = null
+                    boundPort = null
+                    boundHost = null
+                    runCatching { started.stop(200, 800) }
+                    return false
+                }
                 log.info("Session-sharing server bound on {}:{} (bind={})", host, port, settings.sessionSharingBind)
                 // Phase 3: expose remotely via the configured provider, if any. Best-effort —
                 // failure just leaves us on the LAN/loopback URL. Run it OFF the share path
@@ -834,8 +936,16 @@ object SessionShareManager {
         claimRemoteOp()
         withContext(Dispatchers.IO) { teardownRemoteAccess(boundPort) }
         try {
-            withContext(Dispatchers.IO) { e.stop(300, 1000) }
+            // NonCancellable: [shutdown] cancels this scope, and this teardown runs on it. Being
+            // cancelled between "decided to stop the engine" and "stopped it" would run the finally
+            // below — clearing [engine] — while the server is still bound, and shutdown() would then
+            // find nothing left to stop. Bounded by the same 300ms/1000ms stop budget, so the
+            // uninterruptible stretch stays short.
+            withContext(Dispatchers.IO + NonCancellable) { e.stop(300, 1000) }
             log.info("Session-sharing server stopped (port {})", boundPort)
+        } catch (c: CancellationException) {
+            // Deliberate cancellation is not a failure — never log it as one.
+            throw c
         } catch (t: Throwable) {
             log.warn("Error stopping session-sharing server: {}", t.message)
         } finally {
@@ -1033,7 +1143,7 @@ object SessionShareManager {
      */
     private fun buildUrl(token: String): String? {
         val base = remoteUrl?.let { "${it.trimEnd('/')}/?t=$token" }
-            ?: SettingsManager.instance.settings.value.sessionSharingPublicUrl.takeIf { it.isNotBlank() }
+            ?: settingsManager.settings.value.sessionSharingPublicUrl.takeIf { it.isNotBlank() }
                 ?.let { "${it.trimEnd('/')}/?t=$token" }
             ?: boundPort?.let { "http://${advertisedHost()}:$it/?t=$token" }
             ?: return null
@@ -1069,7 +1179,7 @@ object SessionShareManager {
      */
     private fun requireE2E(): Boolean {
         val url = remoteUrl
-            ?: SettingsManager.instance.settings.value.sessionSharingPublicUrl.takeIf { it.isNotBlank() }
+            ?: settingsManager.settings.value.sessionSharingPublicUrl.takeIf { it.isNotBlank() }
             ?: return false
         return e2eCapable(url)
     }

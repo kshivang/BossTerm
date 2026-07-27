@@ -32,8 +32,13 @@ private val Amber = Color(0xFFE5A54B)
 private val Danger = Color(0xFFD9534F)
 
 /**
- * The in-app call strip, shown under the status pills while a "Call BossTerm" call is up: a live
- * microphone level meter, what the agent is doing, Mute and End.
+ * The in-app call strip, shown under the status pills while a call is up: a live microphone level
+ * meter, what the agent is doing, Mute and End.
+ *
+ * Deliberately name-free — every string here is about the call in progress ("Listening…", "End
+ * call"), not about the product — so it reads the same whatever an embedder called the pill above
+ * it (`TabbedTerminal`'s `callLabel`). "Boss is speaking" names the AGENT, which is called Boss on
+ * both surfaces and in both builds.
  *
  * The meter is real mic loudness (from [HostVoiceCall.level]) rather than a canned animation — with
  * no browser tab to look at, it is the only way to tell "it can't hear me" from "it's thinking".
@@ -137,7 +142,7 @@ private fun BarButton(label: String, onClick: () -> Unit, tint: Color = Label) {
  * The two settings are separate parameters because they mean different things, and one combined
  * `pillEnabled` flag could not express both rules at once:
  *  - [featureEnabled] off (Boss Calling itself) hides everything except a call already in progress,
- *    so turning it off doesn't leave a "Call BossTerm · failed" pill with nothing behind it, and
+ *    so turning it off doesn't leave a "… · failed" pill with nothing behind it, and
  *    doesn't strand a live call with no way to end it;
  *  - [indicatorEnabled] off (just the pill) additionally keeps [CallSegmentState.Failed] visible —
  *    the error segment is the only place the failure can be dismissed, so hiding it left the call

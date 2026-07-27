@@ -163,6 +163,13 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  * @param hyperlinkRegistry Custom hyperlink pattern registry for per-instance hyperlink customization.
  *                          Use this to add custom patterns (e.g., JIRA ticket IDs, custom URLs).
  *                          Default: global HyperlinkDetector.registry
+ * @param callLabel What Boss Calling's in-app button is called: the status-strip pill, the key
+ *                  prompt behind it, and the settings copy that describes it. Null (the default)
+ *                  renders "Call BossTerm", so standalone output is unchanged.
+ *                  Use case: an embedder whose users have never heard of BossTerm —
+ *                  `callLabel = "Call Boss"` inside BossConsole. This renames the BUTTON only;
+ *                  "Boss Calling" is the feature's name and is fixed, as is the share viewer's own
+ *                  Call button (a static web asset, possibly served by the daemon).
  * @param modifier Compose modifier for the terminal container
  * @param platformServices Custom platform services
  */
@@ -188,6 +195,7 @@ fun TabbedTerminal(
     onContextMenuOpenAsync: (suspend () -> Unit)? = null,
     settingsOverride: TerminalSettingsOverride? = null,
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
+    callLabel: String? = null,
     /**
      * Whether the terminal is currently "active" from the host's
      * perspective — i.e. the surrounding panel/tab is the one the user
@@ -937,6 +945,9 @@ fun TabbedTerminal(
     // Popup menu for the MCP status segment (same menu the old MCP pill showed).
     val mcpMenu = remember { ai.rever.bossterm.compose.features.ContextMenuController() }
     val mcpServerLabel = LocalBossTermMcpConfig.current?.displayName ?: "BossTerm"
+    // Resolved once here, not at each of the four sites that render it, so the pill, the key prompt
+    // it opens and the share windows' Boss Calling panel can never disagree about the name.
+    val resolvedCallLabel = ai.rever.bossterm.compose.share.resolveCallLabel(callLabel)
     var attachStatus by remember { mutableStateOf<AttachStatus?>(null) }
     var mcpAttaching by remember { mutableStateOf(false) }
     // Session sharing (issue #276): dialog state + live set of shared tab ids.
@@ -2114,8 +2125,9 @@ fun TabbedTerminal(
         // QR/links dialog if already shared). Shown per its own toggle.
         val showMcpStatus = settings.mcpShowStatusIndicator
         val showSharingStatus = settings.sessionSharingShowIndicator
-        // In-app voice call ("Call BossTerm"): the pill sits beside Sharing and drives the one call
-        // this app can have; the strip below it appears while that call is up.
+        // In-app voice call: the pill sits beside Sharing and drives the one call this app can
+        // have; the strip below it appears while that call is up. Its wording is the embedder's
+        // (the `callLabel` parameter) — "Call BossTerm" standalone.
         //
         // Subscribed as a DERIVED, distinct-until-changed flow rather than the raw call state: this
         // lambda owns the terminal rendering path, and the call state carries fields that change
@@ -2231,6 +2243,7 @@ fun TabbedTerminal(
                         }
                     },
                     call = callSegment,
+                    callLabel = resolvedCallLabel,
                     onCallClick = {
                         // One click is the whole interaction: ask for a key if there isn't one,
                         // start when idle, end when live, clear a failure when it failed.
@@ -2256,6 +2269,7 @@ fun TabbedTerminal(
                             voiceKeyPrompt = false
                             HostVoiceCall.start()
                         },
+                        callLabel = resolvedCallLabel,
                     )
                 }
                 attachStatus?.let { status ->
@@ -2359,6 +2373,7 @@ fun TabbedTerminal(
             onRefreshLink = { ai.rever.bossterm.compose.share.SessionShareManager.refreshRemoteLink() },
             sessionName = ai.rever.bossterm.compose.share.SessionShareManager.sessionNameFor(info.tabId) ?: "",
             onSessionNameChange = { ai.rever.bossterm.compose.share.SessionShareManager.setSessionName(info.tabId, it) },
+            callLabel = resolvedCallLabel,
         )
     }
 
@@ -2372,6 +2387,7 @@ fun TabbedTerminal(
             focusedSessionId = tabController.activeTab?.remotePaneId,
             onDismiss = { daemonShareOpen = false },
             focusTick = shareFocusTick,
+            callLabel = resolvedCallLabel,
         )
     }
 

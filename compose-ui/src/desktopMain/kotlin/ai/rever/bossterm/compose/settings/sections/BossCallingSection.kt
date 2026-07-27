@@ -13,6 +13,7 @@ import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.SettingsDropdown
 import ai.rever.bossterm.compose.settings.components.SettingsSection
 import ai.rever.bossterm.compose.settings.components.SettingsToggle
+import ai.rever.bossterm.compose.share.DEFAULT_CALL_LABEL
 import ai.rever.bossterm.compose.voice.StampCachedValue
 import ai.rever.bossterm.compose.voice.VoiceTurnDetection
 import ai.rever.bossterm.compose.voice.StoredVoiceConfig
@@ -56,6 +57,57 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
+ * The share viewer's Call button, spelled out.
+ *
+ * The three lines that talk about what a VIEWER sees name it literally, not through the embedder's
+ * `callLabel`: the viewer's button is a static web asset (`share-viewer/index.html`), possibly
+ * served by the daemon, and it does not follow the embedder. Under BossConsole the in-app pill says
+ * "Call Boss" and these still, correctly, say "Call BossTerm" — this panel's whole job is answering
+ * "why is there no Call button?", and it can only do that by naming the button the person is
+ * actually looking for.
+ */
+private const val VIEWER_CALL_LABEL = "Call BossTerm"
+
+/*
+ * The three strings below are the only settings copy that names the IN-APP call button, so they are
+ * functions of the label rather than literals: an embedder's rename has to reach the settings that
+ * describe the button, not just the button. They are separate from the composable so a test can
+ * assert both halves — that standalone reads exactly as it always did, and that a set label lands in
+ * all three.
+ */
+
+/**
+ * Why you would turn Boss Calling on at all, and what it costs.
+ *
+ * This is the one line that names BOTH call surfaces, and they can disagree — the embedder renames
+ * the in-app pill and the viewer's button stays [VIEWER_CALL_LABEL]. So it collapses to the shorter
+ * "in this window and in the share viewer" only when the two really are one name, which is every
+ * standalone build; an embedder gets both names instead of a sentence that is half wrong.
+ */
+internal fun bossCallingEnableDescription(callLabel: String): String =
+    (if (callLabel == VIEWER_CALL_LABEL) {
+        "Show a \"$callLabel\" button — in this window and in the share viewer — "
+    } else {
+        "Show a \"$callLabel\" button in this window, and a \"$VIEWER_CALL_LABEL\" button in the " +
+                "share viewer, "
+    }) +
+            "that starts a voice conversation with an AI agent (OpenAI Realtime) able to " +
+            "inspect this session and run commands. Starting a call sends your tab titles " +
+            "and working directories to OpenAI, and anything the agent then reads from the " +
+            "terminal goes with it. On, but idle until you set the API key below; calling " +
+            "from a share also requires control of it."
+
+/** The status-strip toggle. */
+internal fun bossCallingIndicatorLabel(callLabel: String): String = "Show the $callLabel indicator"
+
+/** …and what turning it off actually costs you. */
+internal fun bossCallingIndicatorDescription(callLabel: String): String =
+    "Show the \"$callLabel\" segment in the tab-bar status strip, " +
+            "alongside the MCP and Sharing indicators. It is also how you START a call " +
+            "from this window, so turning it off leaves calling available only to share " +
+            "viewers."
+
+/**
  * The "Boss Calling (voice)" controls, shared by Settings → Session Sharing and the Share window.
  *
  * It lives in both places on purpose: the Share window is where a host is actually handing out a
@@ -63,8 +115,14 @@ import kotlinx.coroutines.withContext
  * unavailable) is impossible to debug from the viewer's side. [showAgentOptions] drops the
  * model/voice pickers for the compact Share-window rendering.
  *
+ * The SECTION keeps its name ("Boss Calling") in every build — that is the feature. Only copy about
+ * the in-app button follows [callLabel].
+ *
  * @param statusLine rendered under the toggle — the Share window uses it to say, in the host's own
  *   words, whether viewers can call right now.
+ * @param callLabel what the in-app call button is called on this host, already resolved. Reaches
+ *   here from `TabbedTerminal`'s `callLabel` by way of the Share window; the standalone Settings
+ *   window leaves it at [DEFAULT_CALL_LABEL], which is what standalone renders anyway.
  */
 @Composable
 internal fun BossCallingSection(
@@ -78,18 +136,14 @@ internal fun BossCallingSection(
      * wrong in the daemon's share window.
      */
     keyPresentOverride: Boolean? = null,
+    callLabel: String = DEFAULT_CALL_LABEL,
 ) {
     SettingsSection(title = "Boss Calling (voice)") {
         SettingsToggle(
             label = "Enable Boss Calling",
             checked = settings.voiceCallEnabled,
             onCheckedChange = { onSettingsChange(settings.copy(voiceCallEnabled = it)) },
-            description = "Show a \"Call BossTerm\" button — in this window and in the share viewer — " +
-                    "that starts a voice conversation with an AI agent (OpenAI Realtime) able to " +
-                    "inspect this session and run commands. Starting a call sends your tab titles " +
-                    "and working directories to OpenAI, and anything the agent then reads from the " +
-                    "terminal goes with it. On, but idle until you set the API key below; calling " +
-                    "from a share also requires control of it."
+            description = bossCallingEnableDescription(callLabel)
         )
         SettingsToggle(
             label = "Allow calls from share viewers",
@@ -106,13 +160,10 @@ internal fun BossCallingSection(
         if (statusLine) VoiceAvailabilityLine(settings, keyPresentOverride)
         if (showAgentOptions) {
             SettingsToggle(
-                label = "Show the Call BossTerm indicator",
+                label = bossCallingIndicatorLabel(callLabel),
                 checked = settings.voiceShowStatusIndicator,
                 onCheckedChange = { onSettingsChange(settings.copy(voiceShowStatusIndicator = it)) },
-                description = "Show the \"Call BossTerm\" segment in the tab-bar status strip, " +
-                        "alongside the MCP and Sharing indicators. It is also how you START a call " +
-                        "from this window, so turning it off leaves calling available only to share " +
-                        "viewers."
+                description = bossCallingIndicatorDescription(callLabel)
             )
             SettingsDropdown(
                 label = "Model",
@@ -245,7 +296,11 @@ private fun VoiceAgentInstructionsField(value: String, onChange: (String) -> Uni
  *    would land in the one panel whose entire job is answering "why is there no Call button?".
  */
 @Composable
-internal fun BossCallingSection(showAgentOptions: Boolean = true, statusLine: Boolean = true) {
+internal fun BossCallingSection(
+    showAgentOptions: Boolean = true,
+    statusLine: Boolean = true,
+    callLabel: String = DEFAULT_CALL_LABEL,
+) {
     val inMemory by SettingsManager.instance.settings.collectAsState()
     val settingsCache = remember {
         StampCachedValue(
@@ -288,6 +343,7 @@ internal fun BossCallingSection(showAgentOptions: Boolean = true, statusLine: Bo
         showAgentOptions = showAgentOptions,
         statusLine = statusLine,
         keyPresentOverride = keyOnDisk,
+        callLabel = callLabel,
     )
 }
 
@@ -305,10 +361,10 @@ private fun VoiceAvailabilityLine(settings: TerminalSettings, keyPresentOverride
     val (text, color) = when {
         !settings.voiceCallEnabled -> "Off — no calls from this window or from viewers." to TextMuted
         !settings.voiceCallShareEnabled ->
-            "In-app only — viewers see no Call BossTerm button." to TextMuted
-        !keyPresent -> "No API key yet — viewers see no Call BossTerm button until you add one below." to Danger
+            "In-app only — viewers see no $VIEWER_CALL_LABEL button." to TextMuted
+        !keyPresent -> "No API key yet — viewers see no $VIEWER_CALL_LABEL button until you add one below." to Danger
         // The viewer shows the button to every device; control is enforced when they click it.
-        else -> "Ready — viewers see the Call BossTerm button (calling needs control)." to AccentColor
+        else -> "Ready — viewers see the $VIEWER_CALL_LABEL button (calling needs control)." to AccentColor
     }
     Text(text = text, color = color, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp))
 }

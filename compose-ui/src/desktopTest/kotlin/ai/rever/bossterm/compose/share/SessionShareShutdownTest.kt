@@ -4,6 +4,7 @@ import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import java.io.File
@@ -66,8 +67,8 @@ class SessionShareShutdownTest {
         /** Generous upper bound for "the pre-warm would have bound by now". */
         const val SETTLE_MS = 2_000L
 
-        /** Children the manager's scope holds once the pre-warm is in flight: the settings
-         *  watcher, plus the pre-warm the watcher launched. */
+        /** Active jobs under the manager's lifecycle once the pre-warm is in flight: the settings
+         *  watcher, plus the pre-warm nested inside it. */
         const val SCOPE_CHILDREN_WITH_PREWARM = 2
     }
 
@@ -114,9 +115,11 @@ class SessionShareShutdownTest {
         SessionShareManager.fitHostEmbedder = null
         SessionShareManager.shutdown()
         SessionShareManager.settingsManagerOverrideForTest = null
-        // shutdown() latches the singleton shut, and it outlives this class. Leaving it latched
-        // would make a later test's share() return a silent null that looks like a product bug.
+        // shutdown() latches the singleton shut and kills its lifecycle job, and the singleton
+        // outlives this class: left that way, a later test's share() returns a silent null and its
+        // launches go nowhere, both of which read as product bugs. Re-arm the way start() does.
         setShuttingDown(false)
+        resetLifecycle()
         McpTerminalRegistry.setStopped()
         settingsDir.deleteRecursively()
     }
@@ -311,10 +314,15 @@ class SessionShareShutdownTest {
         )
     }
 
-    /** Active children of the manager's lifecycle job. Reflection because the job is an internal
-     *  implementation detail we nevertheless need to make an assertion about. */
-    private fun managerScopeChildren(): Int =
-        (readPrivate("lifecycle") as Job).children.count { it.isActive }
+    /**
+     * Active jobs anywhere under the manager's lifecycle job. Counted transitively: the pre-warm is
+     * launched as a child of the settings watcher, not of the lifecycle job directly. Reflection
+     * because the job is an internal implementation detail we nevertheless need to assert about.
+     */
+    private fun managerScopeChildren(): Int {
+        fun count(job: Job): Int = job.children.sumOf { (if (it.isActive) 1 else 0) + count(it) }
+        return count(readPrivate("lifecycle") as Job)
+    }
 
     /** True when the manager holds no engine — the deterministic counterpart to [rangeIsFree],
      *  which depends on nothing else on the machine grabbing one of the probed ports. */
@@ -324,6 +332,13 @@ class SessionShareShutdownTest {
         SessionShareManager::class.java.getDeclaredField(name)
             .apply { isAccessible = true }
             .get(SessionShareManager)
+
+    /** Install a fresh lifecycle job, as [SessionShareManager.start] would. */
+    private fun resetLifecycle() {
+        SessionShareManager::class.java.getDeclaredField("lifecycle")
+            .apply { isAccessible = true }
+            .set(SessionShareManager, SupervisorJob())
+    }
 
     /** Clear the shutdown latch so the singleton isn't left inert for the rest of the JVM. */
     private fun setShuttingDown(value: Boolean) {

@@ -418,7 +418,7 @@ object SessionShareManager {
                     // the background so the first share doesn't pay the download. No-op when a
                     // bundled/PATH/managed binary already works; single-flight via prefetchJob.
                     if (mode == "cloudflare" && prefetchJob?.isActive != true) {
-                        prefetchJob = scope.launch(Dispatchers.IO) {
+                        prefetchJob = launch(Dispatchers.IO) {
                             if (!CloudflaredExposer.isInstalled() && CloudflaredExposer.canAutoInstall()) {
                                 log.info("Prefetching cloudflared for session sharing…")
                                 val ok = CloudflaredExposer.ensureInstalled()
@@ -429,7 +429,10 @@ object SessionShareManager {
                     // PRE-WARM: bind the engine and bring the tunnel up now, before the user shares,
                     // so the verified public URL is already published when the share dialog opens
                     // (the QR shows the Cloudflare link instantly instead of after a 5-15s verify).
-                    if (mode != "off") scope.launch { prewarmRemote() }
+                    // Unqualified launch: a child of THIS watcher, not of whatever [lifecycle]
+                    // resolves to at the moment it runs. Cancelling the watcher takes it with it,
+                    // and a re-arm between the check above and here cannot adopt it.
+                    if (mode != "off") launch { prewarmRemote() }
                 }
         }
     }
@@ -833,8 +836,16 @@ object SessionShareManager {
      * the `share-late-bind-stop` thread in [ensureEngineLocked], on the narrow path where a bind
      * completed while this was running — a thread stopping a server beats a server nobody stops.
      */
-    @Synchronized
     fun shutdown() {
+        val (embedder, fitted) = shutdownLocked()
+        // Host callbacks OUTSIDE the monitor: an embedder that marshals this onto its UI thread
+        // would deadlock against a start() already running there.
+        fitted.forEach { runCatching { embedder?.onRestoreHostSize(it) } }
+    }
+
+    /** [shutdown]'s body. Returns the embedder + the tabs whose host fit it still has to undo. */
+    @Synchronized
+    private fun shutdownLocked(): Pair<FitHostEmbedder?, List<String>> {
         // 1. Latch first, so an uninterruptible binder refuses (see [shuttingDown]), and bump the
         //    epoch so a binder that started before this call can tell it has been superseded even
         //    if a re-init clears the latch under it.
@@ -853,11 +864,12 @@ object SessionShareManager {
         lifecycle.cancel()
         watcherJob = null
         prefetchJob = null
-        // Release any fit-resized host window BEFORE dropping the embedder that has to undo it,
-        // then drop it: it belongs to the host disposing us, and holding it pins that host (and,
-        // when this class outlives one embedder, its classloader).
-        fitActiveTabs.toList().forEach { releaseEmbeddedFit(it) }
-        fitActiveTabs.clear() // belt: releaseEmbeddedFit already removes each one
+        // Hand the caller any fit-resized host window still to be undone, and drop the embedder:
+        // it belongs to the host disposing us, and holding it pins that host (and, when this class
+        // outlives one embedder, its classloader). The callbacks themselves run outside the monitor.
+        val embedder = fitHostEmbedder
+        val fitted = fitActiveTabs.toList()
+        fitActiveTabs.clear()
         fitHostEmbedder = null
         sharesByTab.values.forEach { runCatching { it.stop() } }
         sharesByTab.clear()
@@ -873,6 +885,7 @@ object SessionShareManager {
         boundPort = null
         boundHost = null
         if (e != null) runCatching { e.stop(200, 800) }
+        return embedder to fitted
     }
 
     // ---- engine lifecycle (mutex-guarded) ----
@@ -1049,7 +1062,7 @@ object SessionShareManager {
         withContext(Dispatchers.IO + NonCancellable) {
             // Bump the op so an in-flight establish bails + self-cleans instead of racing teardown.
             claimRemoteOp()
-            teardownRemoteAccess(boundPort)
+            teardownRemoteAccess(port)
             try {
                 e.stop(300, 1000)
                 log.info("Session-sharing server stopped (port {})", port)

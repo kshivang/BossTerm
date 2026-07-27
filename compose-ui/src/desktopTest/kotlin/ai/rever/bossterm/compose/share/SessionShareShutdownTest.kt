@@ -3,13 +3,14 @@ package ai.rever.bossterm.compose.share
 import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.io.path.createTempDirectory
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -109,6 +110,8 @@ class SessionShareShutdownTest {
 
     @AfterTest
     fun tearDown() {
+        SessionShareManager.afterBindBeforeRecheckForTest = null
+        SessionShareManager.fitHostEmbedder = null
         SessionShareManager.shutdown()
         SessionShareManager.settingsManagerOverrideForTest = null
         // shutdown() latches the singleton shut, and it outlives this class. Leaving it latched
@@ -152,6 +155,7 @@ class SessionShareShutdownTest {
         McpTerminalRegistry.setRunning(mcpPort)
         delay(SETTLE_MS)
 
+        assertTrue(engineIsNull(), "the manager must hold no engine after shutdown()")
         assertTrue(
             rangeIsFree(),
             "nothing may bind after shutdown(): ports $basePort..${basePort + portRange - 1} " +
@@ -201,7 +205,7 @@ class SessionShareShutdownTest {
         SessionShareManager.shutdown() // must not throw, must not resurrect anything
 
         assertTrue(
-            awaitUntil(SETTLE_MS) { rangeIsFree() },
+            awaitUntil(SETTLE_MS) { engineIsNull() && rangeIsFree() },
             "a double shutdown() must leave the share server stopped"
         )
     }
@@ -221,6 +225,62 @@ class SessionShareShutdownTest {
         assertTrue(
             awaitUntil(SETTLE_MS) { !rangeIsFree() },
             "start() must clear the shutdown latch so the manager binds again"
+        )
+    }
+
+    @Test
+    fun `a bind that loses to a shutdown plus re-init is undone`() = runBlocking {
+        // Drive the one interleaving that the shutdown latch alone cannot survive: the shutdown
+        // lands while the socket is listening but before `engine` is assigned — so it stops nothing
+        // — and a re-init then clears the latch under the binder. Only the monotonic epoch can tell
+        // the binder it has been superseded. Injected rather than raced, so there is no wall clock
+        // in this test.
+        val reachedRecheck = CountDownLatch(1)
+        SessionShareManager.afterBindBeforeRecheckForTest = {
+            SessionShareManager.afterBindBeforeRecheckForTest = null // fire once
+            SessionShareManager.shutdown()
+            setShuttingDown(false) // what a re-initialising embedder's start() does to the latch
+            // CIO binds its listening socket asynchronously, so block here until the port is
+            // demonstrably taken. Without this the end-state assertion below could be satisfied by
+            // the pre-bind state and pass whatever the guard does.
+            check(blockingAwaitUntil(SETTLE_MS) { !rangeIsFree() }) { "the listening socket never came up" }
+            reachedRecheck.countDown()
+        }
+        SessionShareManager.start()
+        awaitPrewarmLaunched()
+        McpTerminalRegistry.setRunning(mcpPort)
+
+        assertTrue(
+            reachedRecheck.await(SETTLE_MS, TimeUnit.MILLISECONDS),
+            "the pre-warm should have bound a server and reached the re-check"
+        )
+        // The port is bound as of this line. Only the guard can free it again.
+        assertTrue(
+            awaitUntil(SETTLE_MS) { engineIsNull() && rangeIsFree() },
+            "a server bound across a shutdown must be stopped again, not left running with no " +
+                "manager holding it"
+        )
+    }
+
+    @Test
+    fun `shutdown restores an active host fit and drops the embedder`() {
+        var restored: String? = null
+        SessionShareManager.fitHostEmbedder = object : SessionShareManager.FitHostEmbedder {
+            override fun onFitHost(tabId: String, deltaWidthPx: Float, deltaHeightPx: Float) = Unit
+            override fun onRestoreHostSize(tabId: String) { restored = tabId }
+        }
+        SessionShareManager.requestEmbeddedFit("fitted-tab", 120f, 80f)
+
+        SessionShareManager.shutdown()
+
+        assertEquals(
+            "fitted-tab", restored,
+            "shutdown must tell the embedder to undo a fit-resized host window"
+        )
+        assertNull(
+            SessionShareManager.fitHostEmbedder,
+            "shutdown must drop the embedder it was handed — holding it pins the host that is " +
+                "disposing us"
         )
     }
 
@@ -251,13 +311,14 @@ class SessionShareShutdownTest {
         )
     }
 
-    /** Active children of the manager's private scope. Reflection because the scope is an internal
+    /** Active children of the manager's lifecycle job. Reflection because the job is an internal
      *  implementation detail we nevertheless need to make an assertion about. */
-    private fun managerScopeChildren(): Int {
-        val scope = readPrivate("scope") as CoroutineScope
-        val job = scope.coroutineContext[Job] ?: return 0
-        return job.children.count { it.isActive }
-    }
+    private fun managerScopeChildren(): Int =
+        (readPrivate("lifecycle") as Job).children.count { it.isActive }
+
+    /** True when the manager holds no engine — the deterministic counterpart to [rangeIsFree],
+     *  which depends on nothing else on the machine grabbing one of the probed ports. */
+    private fun engineIsNull(): Boolean = readPrivate("engine") == null
 
     private fun readPrivate(name: String): Any? =
         SessionShareManager::class.java.getDeclaredField(name)
@@ -303,6 +364,17 @@ class SessionShareShutdownTest {
             candidate += portRange + 1
         }
         error("could not reserve $portRange consecutive free ports for the test")
+    }
+
+    /** [awaitUntil] for callers that cannot suspend — the production test seam runs on a plain
+     *  binder thread. */
+    private fun blockingAwaitUntil(timeoutMs: Long, predicate: () -> Boolean): Boolean {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        while (System.nanoTime() < deadline) {
+            if (predicate()) return true
+            Thread.sleep(25)
+        }
+        return predicate()
     }
 
     private suspend fun awaitUntil(timeoutMs: Long, predicate: () -> Boolean): Boolean {

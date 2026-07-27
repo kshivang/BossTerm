@@ -19,13 +19,13 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -64,7 +64,19 @@ import java.util.concurrent.ConcurrentHashMap
 object SessionShareManager {
 
     private val log = LoggerFactory.getLogger(SessionShareManager::class.java)
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Parent job for everything this manager launches, replaced by [start] and cancelled by
+     * [shutdown] — one job per embedder lifecycle.
+     *
+     * Not a long-lived job plus `cancelChildren()`: that cancels the children that exist, but the
+     * `SupervisorJob` stays Active, so a `scope.launch` already past its guard (the settings
+     * watcher's, notably) still produces a live child *after* shutdown cancelled everything. A
+     * cancelled job makes every later launch inert, which is the guarantee we actually want; a
+     * fresh job in [start] is what lets the singleton re-arm for the next embedder.
+     */
+    @Volatile private var lifecycle: CompletableJob = SupervisorJob()
+    private val scope: CoroutineScope get() = CoroutineScope(lifecycle + Dispatchers.IO)
     private val mutex = Mutex()
 
     /**
@@ -94,6 +106,15 @@ object SessionShareManager {
      * coroutine may bind".
      */
     @Volatile private var shuttingDown = false
+
+    /**
+     * @suppress Test seam: invoked by [ensureEngineLocked] after the socket is listening but before
+     * [engine] is assigned — the one interleaving where a concurrent shutdown reads a null [engine],
+     * stops nothing, and leaves the adopt-then-re-check as the only thing standing between us and a
+     * bound server nobody owns. Lets that be driven deterministically instead of by wall clock.
+     */
+    @Volatile
+    internal var afterBindBeforeRecheckForTest: (() -> Unit)? = null
 
     /**
      * Bumped by every [shutdown]. [shuttingDown] alone is not a sound basis for a re-check inside a
@@ -385,6 +406,7 @@ object SessionShareManager {
     @Synchronized
     fun start() {
         shuttingDown = false
+        if (!lifecycle.isActive) lifecycle = SupervisorJob() // re-arm after a shutdown
         if (watcherJob?.isActive == true) return
         watcherJob = scope.launch {
             settingsManager.settings
@@ -518,7 +540,7 @@ object SessionShareManager {
             // left behind a shut-down manager runs observer coroutines on its OWN scope, which our
             // cancelChildren() never reaches — it would keep observing terminal state forever.
             if (supersededByShutdown(epoch)) {
-                log.warn("Share for {} was registered while shutting down — reverting", tabId)
+                log.warn("Share for {} lost a race with shutdown — tearing it back down", tabId)
                 unregisterShareLocked(tabId, share)
                 return@withLock null
             }
@@ -825,13 +847,18 @@ object SessionShareManager {
         //    we've torn down.
         claimRemoteOp()
         // 3. Cancel our own in-flight work. A parked prewarmRemote() is the one that matters:
-        //    it sleeps up to 5s waiting for the MCP port and then binds the server.
-        //    cancelChildren rather than cancel() so [start] can re-arm the singleton — a
-        //    cancelled scope would be dead for the rest of the process.
-        scope.coroutineContext.cancelChildren()
-        watcherJob?.cancel() // subsumed by the above; explicit for intent
+        //    it sleeps up to 5s waiting for the MCP port and then binds the server. Cancelling the
+        //    lifecycle job — not just its children — also makes any launch that slips through
+        //    afterwards inert; [start] installs a fresh one.
+        lifecycle.cancel()
         watcherJob = null
         prefetchJob = null
+        // Release any fit-resized host window BEFORE dropping the embedder that has to undo it,
+        // then drop it: it belongs to the host disposing us, and holding it pins that host (and,
+        // when this class outlives one embedder, its classloader).
+        fitActiveTabs.toList().forEach { releaseEmbeddedFit(it) }
+        fitActiveTabs.clear() // belt: releaseEmbeddedFit already removes each one
+        fitHostEmbedder = null
         sharesByTab.values.forEach { runCatching { it.stop() } }
         sharesByTab.clear()
         sharesByToken.clear()
@@ -949,6 +976,9 @@ object SessionShareManager {
                     }
                 }
                 started.start(wait = false)
+                // @suppress Test seam: the only point where a shutdown can interleave such that it
+                // sees a still-null [engine] and stops nothing. Production leaves it null.
+                afterBindBeforeRecheckForTest?.invoke()
                 engine = started
                 boundPort = port
                 boundHost = host
@@ -1008,6 +1038,7 @@ object SessionShareManager {
 
     private suspend fun stopEngineLocked() {
         val e = engine ?: return
+        val port = boundPort // captured: shutdown() can null the field while we are stopping
         // NonCancellable for the whole teardown, not just the engine stop. [shutdown] cancels this
         // scope, and this function runs on it; a cancel landing anywhere in here leaves the job
         // half-done — on the remote teardown, a Tailscale mapping stays published and the `finally`
@@ -1021,7 +1052,7 @@ object SessionShareManager {
             teardownRemoteAccess(boundPort)
             try {
                 e.stop(300, 1000)
-                log.info("Session-sharing server stopped (port {})", boundPort)
+                log.info("Session-sharing server stopped (port {})", port)
             } catch (t: Throwable) {
                 log.warn("Error stopping session-sharing server: {}", t.message)
             } finally {

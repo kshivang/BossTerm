@@ -139,7 +139,9 @@ object SessionShareManager {
     @Volatile
     private var engine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     @Volatile private var boundPort: Int? = null
-    private var boundHost: String? = null
+    // @Volatile for the same reason as [boundPort]: cleared by [shutdown] off-thread, read from
+    // Ktor/IO threads via advertisedHost().
+    @Volatile private var boundHost: String? = null
     // Remote access (Phase 3): the published public/tunnel URL + which provider is live.
     // [activeRemoteMode] mirrors a TerminalSettings.shareTailscaleMode value:
     // "off" | "serve" | "funnel" (Tailscale) | "cloudflare" (Cloudflare Quick Tunnel).
@@ -356,7 +358,14 @@ object SessionShareManager {
      * Also re-arms the manager after a [shutdown]: the singleton outlives one embedder's
      * lifecycle (bossterm-app and the BossConsole terminal plugin both call [start]/[shutdown]),
      * so shutting down must not leave it permanently inert.
+     *
+     * `@Synchronized` with [shutdown] so the pair is ordered: without it a shutdown racing a start
+     * could cancel the freshly-launched watcher and then null [watcherJob], leaving the manager
+     * latch-clear but with no settings observer — no pre-warm, no teardown on disable, nothing
+     * logged. Unreachable from bossterm-app's start-once/stop-in-the-hook shape, but the embedded
+     * plugin's dispose/re-init path is exactly where it would show up.
      */
+    @Synchronized
     fun start() {
         shuttingDown = false
         if (watcherJob?.isActive == true) return
@@ -478,18 +487,22 @@ object SessionShareManager {
         if (!settings.sessionSharingEnabled) return null
         return mutex.withLock {
             if (!ensureEngineLocked(settings)) return@withLock null
-            // ensureEngineLocked returns early when the engine is already up, which skips its own
-            // post-bind re-check — and [shutdown] cannot take this mutex, so it may have torn
-            // everything down between that read and here. Re-check before registering a share:
-            // a started MirrorShare behind a shut-down manager is the same straggler hazard as a
-            // late bind, just with terminal observers instead of a socket.
-            if (shuttingDown) return@withLock null
             val share = sharesByTab[tabId] ?: MirrorShare(tabId, scope, onEnded = { unshare(tabId) }).also {
                 it.start()
                 sharesByToken[it.viewToken] = TokenRef(it, canControl = false)
                 sharesByToken[it.controlToken] = TokenRef(it, canControl = true)
                 sharesByTab[tabId] = it
                 _sharedTabIds.value = sharesByTab.keys.toSet()
+            }
+            // Adopt, then re-check — the same shape [ensureEngineLocked] uses for the engine.
+            // A pre-check would not do: [shutdown] deliberately does not take this mutex, so it can
+            // land anywhere above, including between a check and the registration. A MirrorShare
+            // left behind a shut-down manager runs observer coroutines on its OWN scope, which our
+            // cancelChildren() never reaches — it would keep observing terminal state forever.
+            if (shuttingDown) {
+                log.warn("Share for {} was registered while shutting down — reverting", tabId)
+                unregisterShareLocked(tabId, share)
+                return@withLock null
             }
             val url = buildUrl(share.viewToken) ?: return@withLock null
             val controlUrl = buildUrl(share.controlToken) ?: url
@@ -654,7 +667,11 @@ object SessionShareManager {
         }
         var refreshes = 0
         // Already runs on Dispatchers.IO (manager scope / caller's withContext), so the
-        // blocking awaitUrl/awaitReady don't need their own withContext.
+        // blocking awaitUrl/awaitReady don't need their own withContext. That is now
+        // load-bearing rather than merely tidy: [shutdown] cancels this scope, and the loop
+        // below has no try/finally around its tunnel — leak-safety rests on reaching one of the
+        // tunnel.destroy() exits. Wrapping these blocking calls in a withContext would add a
+        // cancellable suspension point and leak a cloudflared process on cancel.
         while (isCurrentRemoteOp(op)) {
             val tunnel = CloudflaredExposer.start(port) ?: return null
             val url = tunnel.awaitUrl()
@@ -710,19 +727,29 @@ object SessionShareManager {
         if (shuttingDown) return // shutdown() already stopped and cleared every share, inline
         scope.launch {
             mutex.withLock {
-                val share = sharesByTab.remove(tabId) ?: return@withLock
-                sharesByToken.remove(share.viewToken)
-                sharesByToken.remove(share.controlToken)
-                grants.values.removeIf { it.shareId == share.viewToken }
+                val share = sharesByTab[tabId] ?: return@withLock
+                unregisterShareLocked(tabId, share)
                 failPendingFor(tabId)
                 releaseEmbeddedFit(tabId) // sharing stopped → restore any fit-resized host window
-                share.stop()
-                _sharedTabIds.value = sharesByTab.keys.toSet()
                 // Keep the engine + tunnel warm when sharing stays enabled with a remote provider,
                 // so a re-share is instant; otherwise tear down as before.
                 if (sharesByTab.isEmpty() && !keepWarm()) stopEngineLocked()
             }
         }
+    }
+
+    /**
+     * Drop [share]'s registrations and stop it. Callers hold [mutex]. Shared by [unshare] and by
+     * [share]'s revert path, so a share that loses a race with [shutdown] is torn down exactly the
+     * way an ordinary unshare tears one down.
+     */
+    private fun unregisterShareLocked(tabId: String, share: MirrorShare) {
+        sharesByTab.remove(tabId)
+        sharesByToken.remove(share.viewToken)
+        sharesByToken.remove(share.controlToken)
+        grants.values.removeIf { it.shareId == share.viewToken }
+        runCatching { share.stop() }
+        _sharedTabIds.value = sharesByTab.keys.toSet()
     }
 
     private fun stopAll() {
@@ -761,8 +788,11 @@ object SessionShareManager {
      * follows. Everything else queued there — pre-warm, establish, respawn, the cloudflared
      * prefetch — is *setup*, so cancelling it is the point, not a cost.
      *
-     * Idempotent, and safe when nothing ever started.
+     * Idempotent, and safe when nothing ever started. The one thing it can leave outstanding is
+     * the `share-late-bind-stop` thread in [ensureEngineLocked], on the narrow path where a bind
+     * completed while this was running — a thread stopping a server beats a server nobody stops.
      */
+    @Synchronized
     fun shutdown() {
         // 1. Latch first, so an uninterruptible binder refuses (see [shuttingDown]).
         shuttingDown = true
@@ -776,8 +806,8 @@ object SessionShareManager {
         //    it sleeps up to 5s waiting for the MCP port and then binds the server.
         //    cancelChildren rather than cancel() so [start] can re-arm the singleton — a
         //    cancelled scope would be dead for the rest of the process.
-        runCatching { scope.coroutineContext.cancelChildren() }
-        runCatching { watcherJob?.cancel() } // subsumed by the above; explicit for intent
+        scope.coroutineContext.cancelChildren()
+        watcherJob?.cancel() // subsumed by the above; explicit for intent
         watcherJob = null
         prefetchJob = null
         sharesByTab.values.forEach { runCatching { it.stop() } }

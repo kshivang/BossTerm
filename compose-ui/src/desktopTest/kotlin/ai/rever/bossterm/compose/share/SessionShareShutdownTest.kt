@@ -49,8 +49,9 @@ import kotlin.test.assertTrue
  *   makes; `MirrorShare` still reads the process singleton directly, which no path here reaches
  *   because every share these tests attempt is refused before one is constructed.
  *
- * [SessionShareManager] is a singleton, so every test tears it back down in [tearDown]; the fact
- * that the tests pass in any order is itself coverage of `start()` re-arming after `shutdown()`.
+ * [SessionShareManager] is a singleton, so every test tears it back down in [tearDown] — including
+ * clearing the shutdown latch, which is why re-arming gets its own test rather than riding on test
+ * ordering.
  */
 class SessionShareShutdownTest {
 
@@ -197,6 +198,24 @@ class SessionShareShutdownTest {
     }
 
     @Test
+    fun `start re-arms the manager after shutdown`() = runBlocking {
+        SessionShareManager.start()
+        awaitPrewarmLaunched()
+        SessionShareManager.shutdown()
+
+        // The embedder loading BossTerm again — a plugin dispose/re-init cycle. If the latch stuck,
+        // sharing would be inert for the rest of the host process with nothing logged anywhere.
+        SessionShareManager.start()
+        awaitPrewarmLaunched()
+        McpTerminalRegistry.setRunning(mcpPort)
+
+        assertTrue(
+            awaitUntil(SETTLE_MS) { !rangeIsFree() },
+            "start() must clear the shutdown latch so the manager binds again"
+        )
+    }
+
+    @Test
     fun `shutdown with nothing started is safe`() {
         // No start(), no share, no engine — the state an embedder is in when it disposes BossTerm
         // without the user ever having enabled sharing.
@@ -264,7 +283,8 @@ class SessionShareShutdownTest {
      * reasons that have nothing to do with session sharing.
      */
     private fun reserveFreeRange(): Int {
-        var candidate = 20_000 + (System.nanoTime() % 10_000).toInt()
+        // floorMod, not %: nanoTime's origin is arbitrary and it is allowed to be negative.
+        var candidate = 20_000 + Math.floorMod(System.nanoTime(), 10_000L).toInt()
         repeat(200) {
             if ((candidate until candidate + PORT_RANGE).all { portIsFree(it) } &&
                 portIsFree(candidate + 100) // the stand-in MCP port

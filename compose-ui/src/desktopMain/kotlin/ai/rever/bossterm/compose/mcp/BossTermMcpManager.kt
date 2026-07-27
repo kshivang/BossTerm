@@ -22,19 +22,24 @@ import kotlinx.serialization.json.put
 import io.ktor.server.sse.SSE
 import io.modelcontextprotocol.kotlin.sdk.server.mcp
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.io.IOException
@@ -46,6 +51,8 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.Optional
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Lifecycle wrapper that brings up the BossTerm in-process MCP server on a
@@ -62,8 +69,9 @@ import java.util.concurrent.ConcurrentHashMap
  *    pair. Toggling `mcpEnabled` brings the server up/down; changing
  *    `mcpPort` while enabled performs a stop-then-start.
  *  - On [stop] the watcher is cancelled and any running Ktor engine is
- *    stopped asynchronously on a background coroutine. Caller does not
- *    block.
+ *    stopped **before the call returns** — bounded by [STOP_BUDGET_MS], so an
+ *    embedder unloading this instance's classloader cannot outrun the
+ *    teardown. See [stop] for the ordering and the cost.
  *  - The server always binds to `127.0.0.1` — never `0.0.0.0`.
  *  - Every request must arrive with a `Host` header pointing at a loopback
  *    name (`127.0.0.1` or `localhost`, optionally with the bound port).
@@ -100,19 +108,61 @@ class BossTermMcpManager(
     // Null when no engine is running.
     private var runningServer: BossTermMcpServer? = null
 
+    /**
+     * Parent job for **everything this manager launches**, replaced by [start] and cancelled by
+     * [stop] — one job per embedder lifecycle. A child of [parentScope]'s job, so an embedder
+     * that cancels its own scope still tears us down (the behaviour we had when every coroutine
+     * was launched directly on [parentScope]).
+     *
+     * Not `parentScope` itself: [stop] must be able to cancel our in-flight work without
+     * cancelling an embedder scope it does not own — `bossterm-app` shares one `mcpScope` with
+     * its daemon-fallback wiring. And not a long-lived job plus `cancelChildren()`: that cancels
+     * the children that exist, but the job stays Active, so a `launch` already past its guard
+     * still produces a live child *after* [stop] cancelled everything. A cancelled job makes
+     * every later launch inert — the guarantee we actually want — and a fresh job in [start] is
+     * what lets a manager re-arm.
+     *
+     * Cancelling this also supersedes the mutex-guarded `reattachJob?.cancel()` that #331 added:
+     * cancelling the parent reaches the current fan-out *and* any that a straggler manages to
+     * launch afterwards, which no read-then-cancel of a single reference can do.
+     */
+    @Volatile private var lifecycle: CompletableJob = SupervisorJob(parentScope.coroutineContext[Job])
+
+    /** Everything this manager launches. Inherits [parentScope]'s dispatcher, not its job. */
+    private val scope: CoroutineScope get() = CoroutineScope(parentScope.coroutineContext + lifecycle)
+
+    /**
+     * Latched by [stop] before it tears anything down; cleared by [start].
+     *
+     * Cancelling [lifecycle] is what stops in-flight work, but it cannot stop *all* of it.
+     * [reconcile] reaches [startEngineLocked] through `mutex.withLock`, and `Mutex.lock()` has an
+     * uncontended fast path that returns without checking cancellation — so a cancelled collector
+     * can still take the lock, and [startEngineLocked] has no suspension point at all once it
+     * has. It would then bind a fresh engine behind a manager that has already declared itself
+     * down. This flag is the authority that binder checks: it is what makes "stopped" mean "no
+     * engine may be bound", not merely "no *waiting* coroutine may bind".
+     */
+    @Volatile private var stopping = false
+
+    /**
+     * Bumped by every [start] and every [stop]. [stopping] alone is not a sound basis for the
+     * teardown's re-check, because [start] clears it — and [stop]'s wait is *bounded*, so a
+     * teardown it gave up on can still be sitting on [mutex] when the embedder re-arms this
+     * manager. Without the epoch that teardown would wake up and stop the engine the new
+     * lifecycle had just bound. The counter only moves forward, so "am I still the current
+     * lifecycle's teardown" is a single comparison.
+     */
+    private val lifecycleEpoch = AtomicInteger(0)
+
     private var watcherJob: Job? = null
     private var disabledToolsWatcherJob: Job? = null
     private var preferredShellWatcherJob: Job? = null
 
-    // In-flight auto-reattach fan-out (see launchAutoReattach). Tracked so stop()
-    // can cancel it: when an embedding host unloads this instance's classloader
-    // (BOSS plugin hot-swap/update), an orphaned reattach coroutine that keeps
-    // running past dispose crashes with NoClassDefFoundError on its next lazy
-    // class load. Also cancelled by the next launchAutoReattach so two fan-outs
-    // never race each other's CLI-config rewrites. Unlike the watcher jobs above
-    // (written only from single-threaded start()), this is written under [mutex]
-    // from reconcile — so stop() cancels it inside the same lock, giving the
-    // read a happens-before edge and closing the assign-vs-cancel race.
+    // In-flight auto-reattach fan-out (see launchAutoReattach). Cancelled by the next
+    // launchAutoReattach so two fan-outs never race each other's CLI-config rewrites, and — as a
+    // child of [lifecycle] — by stop(): when an embedding host unloads this instance's
+    // classloader (BOSS plugin hot-swap/update), an orphaned reattach coroutine that keeps
+    // running past dispose crashes with NoClassDefFoundError on its next lazy class load (#331).
     // Internal (not private) for the lifecycle tests.
     internal var reattachJob: Job? = null
 
@@ -161,9 +211,21 @@ class BossTermMcpManager(
         registry.setMcpConfig(config)
     }
 
-    /** Begin observing settings. Idempotent. Safe to call multiple times. */
+    /**
+     * Begin observing settings. Idempotent. Safe to call multiple times.
+     *
+     * Also re-arms the manager after a [stop]: a cancelled [lifecycle] makes every later launch
+     * inert, so without a fresh job a restarted manager would observe nothing. `@Synchronized`
+     * with [stop] so the pair is ordered — otherwise a start racing a stop could install a fresh
+     * lifecycle only for the stop to cancel it, leaving a cleared latch and no watcher.
+     */
+    @Synchronized
     fun start() {
         if (watcherJob?.isActive == true) return
+
+        if (!lifecycle.isActive) lifecycle = SupervisorJob(parentScope.coroutineContext[Job])
+        stopping = false
+        lifecycleEpoch.incrementAndGet()
 
         // Hydrate the runtime attached-targets set from persisted settings so
         // the indicator/menu reflect prior-session state immediately, and
@@ -199,7 +261,7 @@ class BossTermMcpManager(
             }
         }
 
-        watcherJob = parentScope.launch {
+        watcherJob = scope.launch {
             // Before the first bind (and thus the first auto-reattach),
             // reconcile the persisted set against the CLIs' own config files
             // (adopt entries we're missing, prune ones the user removed) —
@@ -221,7 +283,7 @@ class BossTermMcpManager(
         // start/stop (which also holds the mutex). The actual SDK-mutation race is
         // serialized internally by BossTermMcpServer.applyDisabledSet via its own
         // toolsLock — that's what makes the concurrent manage_tools-handler path safe.
-        disabledToolsWatcherJob = parentScope.launch {
+        disabledToolsWatcherJob = scope.launch {
             settingsManager.settings
                 .map { it.disabledMcpTools }
                 .distinctUntilChanged()
@@ -238,7 +300,7 @@ class BossTermMcpManager(
         // setting changes — no client restart. Write when opted in AND an
         // engine is bound; delete otherwise. Also clears any stale marker left
         // by a prior kill -9 when the setting is (or has become) off.
-        preferredShellWatcherJob = parentScope.launch {
+        preferredShellWatcherJob = scope.launch {
             settingsManager.settings
                 .map { it.mcpRunCommandPreferredShell }
                 .distinctUntilChanged()
@@ -253,53 +315,145 @@ class BossTermMcpManager(
     }
 
     /**
-     * Cancel the watcher and stop the Ktor engine on a background coroutine.
-     * Returns immediately — does not block the caller's thread. Idempotent.
+     * Cancel the watchers, cancel in-flight work, and stop the Ktor engine —
+     * **synchronously**. Idempotent, and safe when nothing ever started.
+     *
+     * This used to fire the teardown onto [parentScope] and return. An embedder unloading
+     * BossTerm — the BossConsole `terminal-tab` plugin's `dispose()` — then closed this
+     * instance's classloader while that coroutine was still queued, and it died on its next
+     * first-time class load:
+     *
+     *     WARN PluginClassLoader: Attempt to load class from unloading classloader
+     *       {className=…BossTermMcpManager$stopRunningEngineLocked$1, state=UNLOADED}
+     *
+     * followed by LinkageErrors from Ktor classes resolving across two loaders. Nothing the
+     * teardown coroutine can do about it from the inside; the fix is for `dispose()` not to
+     * return until the teardown has happened. (`bossterm-app` had the same bug in a milder
+     * form: its shutdown hook calls `stop()` and then `mcpScope.cancel()` on the next line,
+     * which cancelled the teardown before it ran.)
+     *
+     * **Ordering: stop the manager before stopping the server, not after.** [beginStop] latches
+     * [stopping], bumps [lifecycleEpoch] and cancels [lifecycle] *before* the teardown proper
+     * runs. Doing it the other way round leaves the whole engine-stop window — up to
+     * [STOP_TIMEOUT_DISPOSE_MS], ending with the port freed — open for a straggler to reconcile
+     * its way into a fresh bind behind a manager that has already declared itself down. Nothing
+     * is lost by going first: everything queued on [lifecycle] is setup or upkeep (settings
+     * watchers, the CLI reattach fan-out, the streamable-session sweeper, the `closeAll`
+     * warm-up), never cleanup — the teardown below performs every cleanup step itself, inline.
+     *
+     * **Bounded, not blocking.** A hang here would be worse than the leak, so the teardown runs
+     * on a detached thread and this waits [STOP_BUDGET_MS] for it. Cancelling a `join` is
+     * instantaneous, which a `withTimeout` *around* the teardown would not be: `engine.stop` is
+     * a blocking JDK-level call, and a timeout wrapped around it cannot return until it does.
+     * On expiry we log at ERROR and abandon the teardown — strictly better than today's
+     * unconditional abandonment, but it is a real (rare) residual, hence the loud log.
+     *
+     * **Cost.** The embedder may call this on the EDT, so the budget is small and split:
+     *  - Engine stop: [STOP_GRACE_DISPOSE_MS]/[STOP_TIMEOUT_DISPOSE_MS], deliberately tighter
+     *    than the [STOP_GRACE_MS]/[STOP_TIMEOUT_MS] used by [reconcile]. A long-lived SSE client
+     *    (Claude Code holds one open continuously) counts as an in-flight call, so Ktor waits out
+     *    the full grace period every time — that grace is the dominant term. Draining it politely
+     *    is worth 500ms while the app keeps running and only the port is changing; on dispose
+     *    every client is about to lose the endpoint regardless, so 200ms is not just faster, it
+     *    is the right semantics.
+     *  - Drain: [STOP_DRAIN_MS] for the cancelled work to actually finish. Sized to let a
+     *    cancellation land at a suspension point, *not* to wait out `McpCliAttacher`'s 15s
+     *    uninterruptible `waitFor` — that stretch is covered by its eager class-preload (#331),
+     *    not by waiting.
+     *
+     * Typical: a few ms with no engine, ~200ms with an SSE client attached. Worst case: exactly
+     * [STOP_BUDGET_MS].
      */
     fun stop() {
-        watcherJob?.cancel()
+        val teardown = beginStop()
+        val drained = runBlocking {
+            withTimeoutOrNull(STOP_BUDGET_MS) { teardown.join() } != null
+        }
+        if (!drained) {
+            log.error(
+                "BossTerm MCP teardown did not finish within {}ms; abandoning it. If this instance " +
+                    "is being unloaded, the straggler may still fault on a closed classloader.",
+                STOP_BUDGET_MS
+            )
+        }
+    }
+
+    /**
+     * [stop]'s state transition, plus the detached teardown it returns for [stop] to wait on.
+     *
+     * `@Synchronized` with [start] only — deliberately not for the wait, which happens outside
+     * the monitor so a concurrent [start] is never blocked for the full budget. That interleaving
+     * is what [lifecycleEpoch] exists for.
+     */
+    @Synchronized
+    private fun beginStop(): Job {
+        // 1. Latch first, so an uninterruptible binder refuses (see [stopping]), and bump the
+        //    epoch so this teardown can tell whether it has been superseded by the time it runs.
+        stopping = true
+        val epoch = lifecycleEpoch.incrementAndGet()
+        // 2. Cancel our own in-flight work. Cancelling the job — not just its children — also
+        //    makes any launch that slips through afterwards inert; [start] installs a fresh one.
+        val cancelled = lifecycle
+        cancelled.cancel()
         watcherJob = null
-        disabledToolsWatcherJob?.cancel()
         disabledToolsWatcherJob = null
-        preferredShellWatcherJob?.cancel()
         preferredShellWatcherJob = null
-        // Async shutdown so callers (including Compose onDispose on the UI
-        // thread) don't block waiting for Ktor's grace period. The reattach
-        // fan-out is cancelled inside the lock — its writer (launchAutoReattach,
-        // reached from reconcile) assigns under the same mutex, so cancelling
-        // here can't race a concurrent assignment or read a stale reference.
-        // No new fan-out can start after this block: watcherJob (the only
-        // reconcile trigger) was cancelled synchronously above.
-        // Nothing in this coroutine may escape uncaught: it runs AFTER stop()
-        // (and, in an embedding host, dispose()) has returned, and a plugin
-        // hot-swap closes this instance's classloader at that point — so any
-        // first-time lazy class load in the teardown path throws
-        // NoClassDefFoundError from the closed loader and would crash the host
-        // (this killed BOSS via StreamableMcpSessions.closeAll's state-machine
-        // class; same failure mode as the #331 reattach orphan). Plain
-        // try/catch on purpose: it compiles inline and needs no class of its
-        // own. Cleanup past the failure point is forfeited, which is fine —
-        // the engine stop has already been requested and the instance is dying.
-        parentScope.launch(Dispatchers.IO) {
+
+        // 3. Teardown, off the caller's thread so [stop] can abandon it on expiry.
+        //
+        // A dedicated thread rather than Dispatchers.IO: IO is capped at 64 workers and BossTerm
+        // pins several per shell session, so a saturated pool would spend the entire budget
+        // never dispatching us. One short-lived daemon thread per manager lifecycle is cheap.
+        //
+        // Nothing in this coroutine may escape uncaught: in an embedding host it can outlive
+        // dispose() (on the abandon path), and a plugin hot-swap closes this instance's
+        // classloader at that point — so any first-time lazy class load in the teardown path
+        // throws NoClassDefFoundError from the closed loader and would crash the host (this
+        // killed BOSS via StreamableMcpSessions.closeAll's state-machine class; same failure mode
+        // as the #331 reattach orphan). Plain try/catch on purpose: it compiles inline and needs
+        // no class of its own. Cleanup past the failure point is forfeited, which is fine — the
+        // engine stop has already been requested and the instance is dying.
+        val dispatcher = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "bossterm-mcp-stop").apply { isDaemon = true }
+        }.asCoroutineDispatcher()
+        val job = CoroutineScope(dispatcher).launch {
             try {
                 mutex.withLock {
-                    reattachJob?.cancel()
+                    if (lifecycleEpoch.get() != epoch) {
+                        // [stop] gave up on us and the embedder has since re-armed this manager.
+                        // The engine we can see now belongs to the new lifecycle; stopping it
+                        // would break a manager that is legitimately running.
+                        log.warn("MCP teardown superseded by a newer start()/stop(); leaving the engine alone")
+                        return@withLock
+                    }
                     reattachJob = null
-                    stopRunningEngineLocked()
+                    stopRunningEngineLocked(STOP_GRACE_DISPOSE_MS, STOP_TIMEOUT_DISPOSE_MS)
+                }
+                // Best-effort drain: the cancel above lands at the next suspension point, and
+                // this is what makes "stop() returned" mean "that already happened" for
+                // everything cancellable. Bounded and non-fatal — see [stop] for what is
+                // deliberately NOT waited out here.
+                if (withTimeoutOrNull(STOP_DRAIN_MS) { cancelled.join() } == null) {
+                    log.info(
+                        "MCP in-flight work still draining after {}ms (likely a CLI reattach inside " +
+                            "its uninterruptible process wait); continuing",
+                        STOP_DRAIN_MS
+                    )
                 }
             } catch (e: CancellationException) {
-                // parentScope cancellation, not a teardown failure — let the
-                // coroutine complete as cancelled rather than mis-logging it
-                // below. Rethrowing needs no lazy load: CancellationException
+                // Not a teardown failure — let the coroutine complete as cancelled rather than
+                // mis-logging it below. Rethrowing needs no lazy load: CancellationException
                 // aliases the (parent-loader) JDK class.
                 throw e
             } catch (t: Throwable) {
-                // Full stack on purpose: anything landing here is an unknown
-                // failure mode, and the trace is what identifies the next
-                // StreamableMcpSessions-style lazy-load site.
-                log.warn("MCP engine teardown after stop() failed (classloader likely closed)", t)
+                // Full stack on purpose: anything landing here is an unknown failure mode, and
+                // the trace is what identifies the next StreamableMcpSessions-style lazy-load
+                // site.
+                log.warn("MCP engine teardown during stop() failed (classloader likely closed)", t)
             }
         }
+        job.invokeOnCompletion { dispatcher.close() }
+        return job
     }
 
     private suspend fun reconcile(desired: McpRuntimeConfig) {
@@ -350,7 +504,18 @@ class BossTermMcpManager(
         HardFailed,
     }
 
-    private fun startEngineLocked(desiredPort: Int) {
+    // internal (not private) so McpEngineTeardownTest can drive the post-stop bind attempt that
+    // cancellation cannot reach; production callers hold [mutex].
+    internal fun startEngineLocked(desiredPort: Int) {
+        // Refuse outright once [stop] has latched. This function has no suspension point, so
+        // cancellation cannot reach a reconcile that is already inside it — and a reconcile that
+        // took [mutex]'s uncontended fast path after the cancel landed still arrives here holding
+        // a live intent to bind. The latch turns both into a no-op, which is what stops a bind
+        // from slipping into the window [stop]'s teardown is about to open by freeing the port.
+        if (stopping) {
+            log.info("BossTerm MCP bind refused: manager is stopping")
+            return
+        }
         // Try the user's configured port first, then walk sequential ports up to
         // MAX_PORT_FALLBACK_ATTEMPTS - 1 more. EADDRINUSE triggers fallback;
         // EACCES (permission denied — privileged ports on Linux/macOS), other
@@ -571,7 +736,7 @@ class BossTermMcpManager(
             // observe a freshly-minted session, closing it is the same benign
             // eviction the idle sweeper and session cap already impose — the
             // client sees 404 and re-initializes.
-            parentScope.launch {
+            scope.launch {
                 // On the fresh empty map closeAll cannot throw — this guard
                 // exists so no future change to closeAll can ever cancel
                 // parentScope (not guaranteed to be a SupervisorJob) from a
@@ -590,7 +755,7 @@ class BossTermMcpManager(
             // Streamable HTTP clients that vanish without DELETE (crashed or
             // just exited, as codex does per invocation) leave sessions behind;
             // sweep them so a long-running app doesn't accrete one per run.
-            streamableSweeperJob = parentScope.launch {
+            streamableSweeperJob = scope.launch {
                 while (true) {
                     delay(STREAMABLE_SWEEP_INTERVAL_MS)
                     // evictIdle contains its own per-transport failure handling;
@@ -734,7 +899,7 @@ class BossTermMcpManager(
         // A rebind supersedes any still-running fan-out from the previous bind —
         // let the newer port win instead of racing two writers over CLI configs.
         reattachJob?.cancel()
-        reattachJob = parentScope.launch(Dispatchers.IO) {
+        reattachJob = scope.launch(Dispatchers.IO) {
             reattachBodyOverrideForTest?.let { it(port); return@launch }
             // One identity probe per distinct registered port (several CLIs
             // usually point at the same default), before the fan-out.
@@ -785,14 +950,24 @@ class BossTermMcpManager(
         }
     }
 
-    // internal (not private) for McpEngineTeardownTest; production callers
-    // hold [mutex].
-    internal suspend fun stopRunningEngineLocked() {
+    /**
+     * Stop the running engine and clear every field that describes it.
+     *
+     * [graceMs]/[timeoutMs] default to the reconcile-path budget; [stop] passes a tighter one
+     * because it is synchronous and may be on the EDT — see [stop] for why a shorter grace is
+     * also the right semantics there.
+     *
+     * internal (not private) for McpEngineTeardownTest; production callers hold [mutex].
+     */
+    internal suspend fun stopRunningEngineLocked(
+        graceMs: Long = STOP_GRACE_MS,
+        timeoutMs: Long = STOP_TIMEOUT_MS
+    ) {
         val engine = runningEngine ?: return
         val port = runningPort
         try {
             withContext(Dispatchers.IO) {
-                engine.stop(STOP_GRACE_MS, STOP_TIMEOUT_MS)
+                engine.stop(graceMs, timeoutMs)
             }
             log.info("BossTerm MCP server stopped (port {})", port)
         } catch (e: Throwable) {
@@ -918,8 +1093,37 @@ class BossTermMcpManager(
          */
         private const val STREAMABLE_IDLE_TTL_MS = 2 * 60 * 60 * 1000L
         private const val STREAMABLE_SWEEP_INTERVAL_MS = 15 * 60 * 1000L
+        /**
+         * Engine-stop budget on the [reconcile] path (MCP toggled off, port changed). The app
+         * keeps running and a client may be mid-request, so draining politely is worth the wait.
+         */
         private const val STOP_GRACE_MS = 500L
         private const val STOP_TIMEOUT_MS = 1500L
+
+        /**
+         * Engine-stop budget on the [stop] path. Tighter because [stop] is synchronous and the
+         * embedder may call it on the EDT — and because on dispose every client is losing the
+         * endpoint anyway, so there is nothing to drain politely *for*. Same numbers
+         * `SessionShareManager.shutdown` settled on for its own synchronous teardown.
+         */
+        private const val STOP_GRACE_DISPOSE_MS = 200L
+        private const val STOP_TIMEOUT_DISPOSE_MS = 800L
+
+        /**
+         * How long [stop]'s teardown waits for cancelled in-flight work to finish. Enough for a
+         * cancellation to land at a suspension point on a loaded machine; deliberately far short
+         * of `McpCliAttacher`'s 15s process timeout, whose uninterruptible stretch is made safe
+         * by eager class-preloading (#331) rather than by waiting it out.
+         */
+        private const val STOP_DRAIN_MS = 250L
+
+        /**
+         * Hard ceiling on how long [stop] blocks its caller. Covers
+         * [STOP_TIMEOUT_DISPOSE_MS] + [STOP_DRAIN_MS] plus contention on [mutex] (an in-flight
+         * reconcile mid-port-walk), with headroom. On expiry the teardown is abandoned and
+         * logged at ERROR: a hang in dispose() would be worse than the leak it prevents.
+         */
+        private const val STOP_BUDGET_MS = 1_500L
 
         /**
          * How many sequential ports to try when the user's configured `mcpPort`

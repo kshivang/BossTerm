@@ -1118,7 +1118,8 @@ data class TerminalSettings(
     val voiceExposeAllTools: Boolean = true,
 
     /**
-     * Show the "Call BossTerm" segment in the tab-bar status strip. Its own toggle, like
+     * Show the call segment ("Call BossTerm", or whatever an embedder passed as `TabbedTerminal`'s
+     * `callLabel`) in the tab-bar status strip. Its own toggle, like
      * [mcpShowStatusIndicator] and [sessionSharingShowIndicator]: because Boss Calling ships
      * enabled, without this a new pill would appear for everyone — including users who had
      * deliberately turned the other two off to reclaim that corner.

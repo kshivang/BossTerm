@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.voice
 
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.share.DEFAULT_CALL_LABEL
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
@@ -43,15 +44,22 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Asked for in place when someone clicks "Call BossTerm" with no key stored: sending them off to
+ * Asked for in place when someone clicks the call pill with no key stored: sending them off to
  * hunt through Settings for the one thing standing between them and a call is the wrong answer, so
  * the key is collected right here and the call starts as soon as it saves.
  *
  * Storage is the same chmod-600 `~/.bossterm/voice.json` the settings field writes, so a key added
  * here shows as set everywhere else too.
+ *
+ * The title is the pill's own wording (`TabbedTerminal`'s `callLabel`) — this dialog IS that click,
+ * and a prompt titled with a product name the user has never seen would not look like one.
  */
 @Composable
-internal fun VoiceKeyDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
+internal fun VoiceKeyDialog(
+    onDismiss: () -> Unit,
+    onSaved: () -> Unit,
+    callLabel: String = DEFAULT_CALL_LABEL,
+) {
     var input by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
@@ -82,7 +90,7 @@ internal fun VoiceKeyDialog(onDismiss: () -> Unit, onSaved: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = BackgroundColor,
-        title = { Text("Call BossTerm", color = TextPrimary, fontSize = 15.sp) },
+        title = { Text(callLabel, color = TextPrimary, fontSize = 15.sp) },
         text = {
             Column(modifier = Modifier.width(380.dp)) {
                 Text(

@@ -101,6 +101,11 @@ fun ShareWindow(
     /** The share's name as viewers see it (default: the username). */
     sessionName: String = "",
     onSessionNameChange: (String) -> Unit = {},
+    /**
+     * What the IN-APP call button is called on this host (`TabbedTerminal`'s `callLabel`, resolved).
+     * The Boss Calling panel below names it; the viewer's own button is unaffected.
+     */
+    callLabel: String = DEFAULT_CALL_LABEL,
 ) {
     val clipboard = LocalClipboardManager.current
     val loopbackOnly = info.url.contains("://127.0.0.1") || info.url.contains("://localhost")
@@ -284,7 +289,7 @@ fun ShareWindow(
                 // to can do. Self-persisting (this window carries no settings snapshot), and it
                 // reports whether the Call button is actually reachable — without a key the
                 // viewer shows nothing at all, which is undebuggable from the far end.
-                BossCallingSection(showAgentOptions = false)
+                BossCallingSection(showAgentOptions = false, callLabel = callLabel)
                 Spacer(Modifier.height(20.dp))
 
                 RemoteAccessSetupSection(

@@ -38,6 +38,40 @@ class VoiceToolSourceIsolationTest {
         assertEquals(listOf("run_command"), composite(base, source).tools().map { it.name })
     }
 
+    /**
+     * The invocation path is where catching [Throwable] is actually load-bearing: the source is
+     * called directly, so a [LinkageError] from a swapped classloader lands in that frame rather
+     * than boxed in an `ExecutionException` the way the enumeration path's Future would box it.
+     */
+    @Test
+    fun `a tool call that throws an Error is contained too`() {
+        val source = FakeToolSource(
+            list = listOf(externalTool("git_status")),
+            onCall = { _, _ -> throw NoClassDefFoundError("plugin classloader swapped") },
+        )
+        val exec = composite(FakeBaseExecutor(listOf("run_command")), source)
+
+        val result = runBlocking { exec.execute("git_status", noArgs, null) }
+        assertTrue(result.contains("\"error\""), result)
+        // …and the rest of the surface is still usable afterwards.
+        assertEquals("""{"from":"base"}""", runBlocking { exec.execute("run_command", noArgs, null) })
+    }
+
+    /**
+     * An illegal function name loses the whole session, not one tool — and BossTerm's own names can
+     * be illegal today, because `BossTermMcpConfig.toolNamePrefix` is embedder input that nothing
+     * validates before it is concatenated onto every built-in name.
+     */
+    @Test
+    fun `a base tool with an illegal name is withheld rather than killing the session`() {
+        val base = FakeBaseExecutor(listOf("run_command", "my host_read_scrollback"))
+        val exec = composite(base, FakeToolSource(listOf(externalTool("git_status"))))
+
+        val names = exec.tools().map { it.name }
+        assertEquals(listOf("run_command", "git_status"), names)
+        for (n in names) assertTrue(VoiceToolNaming.LEGAL.matches(n), "illegal name advertised: $n")
+    }
+
     @Test
     fun `a source that hangs on enumeration does not hang the call`() {
         val base = FakeBaseExecutor(listOf("run_command"))

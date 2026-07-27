@@ -45,9 +45,16 @@ import java.util.concurrent.TimeUnit
  *
  * The source is embedder code — in BossConsole's case, plugin code behind a hot-swappable
  * classloader — reached from inside a live phone call. It is treated accordingly: enumeration runs
- * on a pool thread with a deadline and falls back to the last good list, invocation gets the
- * existing [VoiceToolTimeouts] rung, and both catch [Throwable] rather than [Exception] because a
- * hot-reloaded classloader's characteristic failure is a [LinkageError], not an exception.
+ * on a pool thread with a deadline and falls back to the last good list, and invocation gets the
+ * existing [VoiceToolTimeouts] rung.
+ *
+ * Both catch [Throwable] rather than [Exception], because a hot-reloaded classloader's
+ * characteristic failure is a [LinkageError] rather than an exception — but only one of the two
+ * needs it. [execute] calls the source directly, so an `Error` lands in that frame; [enumerate]
+ * goes through a [java.util.concurrent.Future], which boxes anything the callable threw in an
+ * `ExecutionException`. Said here because a mutation test proved it: narrowing the enumeration
+ * catch to `Exception` changes nothing and no test can see it, while narrowing the invocation one
+ * is caught immediately.
  */
 internal class CompositeVoiceToolExecutor(
     private val base: VoiceToolExecutor,
@@ -73,7 +80,32 @@ internal class CompositeVoiceToolExecutor(
 
     override fun tools(): List<VoiceToolDef> {
         val baseTools = base.tools()
-        return baseTools + external(baseTools).advertised.map { it.def }
+        return (baseTools + external(baseTools).advertised.map { it.def }).filter { legalName(it.name) }
+    }
+
+    /**
+     * Last gate before a name reaches OpenAI.
+     *
+     * An illegal function name does not fail as one broken tool: the whole `session.update` is
+     * rejected, so EVERY tool disappears, the call dies, and the cause is a `session.tools[n].name`
+     * string in a Realtime error field. Worth a check at the point the array is assembled.
+     *
+     * The external half is sanitised at the merge and cannot fail this. The BASE half can, today:
+     * [ai.rever.bossterm.compose.mcp.BossTermMcpConfig.toolNamePrefix] is embedder input,
+     * `BossTermMcpServer.toolName` concatenates it straight onto every built-in name, and nothing
+     * validates it — so a prefix with a space in it names all thirteen illegally. Dropping the
+     * offenders and keeping the call is strictly better than losing the surface, and it is only
+     * half a fix: the standalone path (no [VoiceToolSource], so no decorator) still has the flaw,
+     * which belongs with the config rather than here.
+     */
+    private fun legalName(name: String): Boolean {
+        if (VoiceToolNaming.LEGAL.matches(name)) return true
+        logOnce(
+            log, "illegal:$name",
+            "Voice tool \"$name\" is not a legal OpenAI function name and is withheld; the whole " +
+                "session would otherwise be rejected. Check the embedder's MCP toolNamePrefix.",
+        )
+        return false
     }
 
     override fun contextSnapshot(defaultTabId: String?): String = base.contextSnapshot(defaultTabId)

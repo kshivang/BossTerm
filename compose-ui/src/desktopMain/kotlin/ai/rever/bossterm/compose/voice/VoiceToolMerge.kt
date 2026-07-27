@@ -38,6 +38,7 @@ internal data class ExternalSurface(
 ) {
     val byAdvertisedName: Map<String, AdvertisedExternalTool> = advertised.associateBy { it.advertisedName }
 
+
     /**
      * Why [name] is refused, or null if this surface has nothing to say about it.
      *
@@ -52,10 +53,6 @@ internal data class ExternalSurface(
         dropped.any { it == name || VoiceToolNaming.advertise(it) == name } ->
             "$name is not available to the voice agent on this host."
         else -> null
-    }
-
-    companion object {
-        val EMPTY = ExternalSurface(emptyList(), emptySet(), emptySet())
     }
 }
 
@@ -154,7 +151,10 @@ internal fun mergeExternalTools(
                 "$wanted is already taken" + if (usePrefix) "" else " by BossTerm's own surface")
             continue
         }
-        if (name != tool.name) {
+        // Only the SURPRISING renames. Under PrefixExternal every tool is renamed by design, and a
+        // line per tool says nothing about 106 of them; what earns a line is a name that had to be
+        // sanitised or disambiguated to fit.
+        if (name != (if (usePrefix) prefix + tool.name else tool.name)) {
             logOnce(log, "rename:${tool.name}", "Voice tool ${tool.name} advertised as $name")
         }
         taken += name
@@ -228,7 +228,7 @@ private fun definitionFor(name: String, tool: ExternalVoiceTool, gated: Boolean)
  */
 private val loggedKeys = ConcurrentHashMap.newKeySet<String>()
 
-private fun logOnce(log: org.slf4j.Logger, key: String, message: String) {
+internal fun logOnce(log: org.slf4j.Logger, key: String, message: String) {
     if (loggedKeys.size > 500) loggedKeys.clear()
     if (loggedKeys.add(key)) log.warn(message)
 }

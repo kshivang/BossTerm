@@ -15,9 +15,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * Process-wide handle for the in-app ("Call BossTerm") voice call, so the pill in any window can
- * show and drive the one call this app has — mirroring how [ai.rever.bossterm.compose.share.SessionShareManager]
- * owns sharing state for the whole app.
+ * Process-wide handle for the in-app voice call, so the pill in any window can show and drive the
+ * one call this app has — mirroring how [ai.rever.bossterm.compose.share.SessionShareManager] owns
+ * sharing state for the whole app.
+ *
+ * Deliberately unnamed here: what the pill says is the embedder's `callLabel`, so writing "Call
+ * BossTerm" into this KDoc would go stale the first time a host set it to anything else.
  *
  * There is deliberately ONE call at a time: it owns the microphone and the speakers.
  */

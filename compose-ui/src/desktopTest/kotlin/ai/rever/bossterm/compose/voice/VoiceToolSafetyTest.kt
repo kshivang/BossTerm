@@ -125,6 +125,27 @@ class VoiceToolSafetyTest {
         }
     }
 
+    /**
+     * The flag, not the name — `rpa_run` is exactly the case the pattern cannot reach, so a source
+     * that knows must be able to say so and have it mean something.
+     *
+     * Written because a mutation survived: deleting `tool.irreversible ||` from the policy broke
+     * nothing, since every gated tool in this file until now was gated by its NAME.
+     */
+    @Test
+    fun `a tool the source flags irreversible is gated whatever it is called`() {
+        val source = FakeToolSource(listOf(externalTool("rpa_run", irreversible = true)))
+        val exec = composite(FakeBaseExecutor(emptyList()), source)
+
+        val def = exec.tools().single()
+        assertTrue(def.description.contains("cannot be undone"), def.description)
+        assertTrue(VoiceConfirmationGate.CONFIRM_ARG in def.parameters["properties"]!!.jsonObject)
+
+        val answer = parse(runBlocking { exec.execute("rpa_run", noArgs, null) })
+        assertEquals(true, answer["confirmation_required"]?.jsonPrimitive?.content?.toBoolean())
+        assertTrue(source.calls.isEmpty(), "an irreversible tool ran without confirmation")
+    }
+
     /** `write` cannot tell these apart, which is the whole argument for a second classification. */
     @Test
     fun `a write tool that is merely a write is not gated`() {

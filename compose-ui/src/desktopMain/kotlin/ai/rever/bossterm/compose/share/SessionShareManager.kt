@@ -74,6 +74,7 @@ object SessionShareManager {
      * pre-warm / shutdown paths can neither read nor rewrite a developer's real
      * `~/.bossterm/settings.json`.
      */
+    @Volatile
     internal var settingsManagerOverrideForTest: SettingsManager? = null
     private val settingsManager: SettingsManager
         get() = settingsManagerOverrideForTest ?: SettingsManager.instance
@@ -196,7 +197,9 @@ object SessionShareManager {
     /** Tab ids currently being shared — drives the UI indicator + Share/Stop menu state. */
     val sharedTabIds: StateFlow<Set<String>> = _sharedTabIds.asStateFlow()
 
-    private var watcherJob: Job? = null
+    // @Volatile: written by [shutdown] from a shutdown-hook / embedder-dispose thread while
+    // [start] reads and writes it from another.
+    @Volatile private var watcherJob: Job? = null
 
     // Eager cloudflared prefetch: when sharing is enabled in cloudflare mode we fetch the binary
     // in the background so the first share is instant. @Volatile + the isActive guard keep it
@@ -475,6 +478,12 @@ object SessionShareManager {
         if (!settings.sessionSharingEnabled) return null
         return mutex.withLock {
             if (!ensureEngineLocked(settings)) return@withLock null
+            // ensureEngineLocked returns early when the engine is already up, which skips its own
+            // post-bind re-check — and [shutdown] cannot take this mutex, so it may have torn
+            // everything down between that read and here. Re-check before registering a share:
+            // a started MirrorShare behind a shut-down manager is the same straggler hazard as a
+            // late bind, just with terminal observers instead of a socket.
+            if (shuttingDown) return@withLock null
             val share = sharesByTab[tabId] ?: MirrorShare(tabId, scope, onEnded = { unshare(tabId) }).also {
                 it.start()
                 sharesByToken[it.viewToken] = TokenRef(it, canControl = false)
@@ -515,6 +524,7 @@ object SessionShareManager {
      * remote access is off. Runs off the UI thread.
      */
     fun refreshRemoteLink() {
+        if (shuttingDown) return
         scope.launch {
             val port = boundPort ?: return@launch
             val mode = settingsManager.settings.value.shareTailscaleMode
@@ -531,6 +541,7 @@ object SessionShareManager {
      * isn't active (no bound port) this is a no-op; the persisted setting applies next share.
      */
     fun applyRemoteMode(mode: String) {
+        if (shuttingDown) return
         scope.launch {
             val port = boundPort ?: return@launch
             val op = claimRemoteOp() // supersede any in-flight establish (it will bail + self-clean)
@@ -596,6 +607,10 @@ object SessionShareManager {
      */
     private fun registerRespawn(proc: Process, port: Int, op: Int) {
         proc.onExit().thenAccept {
+            // This callback runs on a ForkJoinPool thread OUTSIDE the scope, so [shutdown]'s
+            // cancellation cannot reach it — a cloudflared process exiting after shutdown would
+            // otherwise schedule a fresh coroutine inside a classloader that is being unloaded.
+            if (shuttingDown) return@thenAccept
             scope.launch {
                 if (!isCurrentRemoteOp(op)) return@launch // a cooperative teardown/switch superseded us
                 val s = settingsManager.settings.value
@@ -692,6 +707,7 @@ object SessionShareManager {
 
     /** Stop sharing [tabId]; stops the server if it was the last share. */
     fun unshare(tabId: String) {
+        if (shuttingDown) return // shutdown() already stopped and cleared every share, inline
         scope.launch {
             mutex.withLock {
                 val share = sharesByTab.remove(tabId) ?: return@withLock
@@ -896,7 +912,13 @@ object SessionShareManager {
                     engine = null
                     boundPort = null
                     boundHost = null
-                    runCatching { started.stop(200, 800) }
+                    // Off-thread: this function runs synchronously on the caller's thread, and
+                    // share() reaches it from a rememberCoroutineScope (the Compose UI thread) —
+                    // the very reason the establish kick below is pushed off this path. A plain
+                    // daemon thread rather than the scope, which shutdown() has just cancelled.
+                    Thread { runCatching { started.stop(200, 800) } }
+                        .apply { isDaemon = true; name = "share-late-bind-stop" }
+                        .start()
                     return false
                 }
                 log.info("Session-sharing server bound on {}:{} (bind={})", host, port, settings.sessionSharingBind)
@@ -944,7 +966,9 @@ object SessionShareManager {
             withContext(Dispatchers.IO + NonCancellable) { e.stop(300, 1000) }
             log.info("Session-sharing server stopped (port {})", boundPort)
         } catch (c: CancellationException) {
-            // Deliberate cancellation is not a failure — never log it as one.
+            // Defensive: NonCancellable above means the outer cancel can't surface inside this
+            // try today. If a future edit adds a cancellable suspension point here, a deliberate
+            // cancellation must propagate rather than be logged as a stop failure.
             throw c
         } catch (t: Throwable) {
             log.warn("Error stopping session-sharing server: {}", t.message)

@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.share
 import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -34,16 +35,19 @@ import kotlin.test.assertTrue
  *   real observation, not an artefact of the manager failing to find a port.
  * - Asserting "free" by probing (rather than by holding the ports) means a test cannot pass
  *   vacuously by making the bind impossible in the first place.
- * - [`pre-warm binds the share server once the MCP port is known`] is the positive control. It
- *   proves the pre-warm really is parked at the moment the other tests shut down (nothing is bound
- *   before the MCP port is published, something is bound right after), and it fails if a fix
- *   over-reaches and leaves the manager permanently inert.
+ * - No test shuts down on a timer: [awaitPrewarmLaunched] waits for the pre-warm coroutine to
+ *   actually exist on the manager's scope, so "shutdown during an in-flight pre-warm" cannot
+ *   degrade into "shutdown before the pre-warm ever started".
+ * - [`pre-warm binds the share server once the MCP port is known`] is the positive control: nothing
+ *   is bound while the pre-warm is parked, something is bound once the MCP port is published. It
+ *   fails if a fix over-reaches and leaves the manager permanently inert.
  * - The remote-provider mode is [TEST_REMOTE_MODE]: any value other than `"off"` arms the pre-warm,
  *   and an unrecognised one makes `establishRemote`'s `when` fall through to `null`. So these tests
  *   exercise the bind without ever shelling out to `tailscale` or `cloudflared`.
  * - Settings come from a throwaway [SettingsManager] injected via
- *   [SessionShareManager.settingsManagerOverrideForTest], so nothing here can read or rewrite a
- *   developer's real `~/.bossterm/settings.json`.
+ *   [SessionShareManager.settingsManagerOverrideForTest]. That covers every read the manager itself
+ *   makes; `MirrorShare` still reads the process singleton directly, which no path here reaches
+ *   because every share these tests attempt is refused before one is constructed.
  *
  * [SessionShareManager] is a singleton, so every test tears it back down in [tearDown]; the fact
  * that the tests pass in any order is itself coverage of `start()` re-arming after `shutdown()`.
@@ -58,16 +62,15 @@ class SessionShareShutdownTest {
         /** How long the manager's ports are scanned over — mirrors `MAX_PORT_FALLBACK`. */
         const val PORT_RANGE = 10
 
-        /** Long enough for the settings watcher to collect and park the pre-warm in its MCP wait;
-         *  far short of that wait's own 5s budget. Validated by the positive-control test. */
-        const val PARK_MS = 400L
-
         /** Generous upper bound for "the pre-warm would have bound by now". */
         const val SETTLE_MS = 2_000L
+
+        /** Children the manager's scope holds once the pre-warm is in flight: the settings
+         *  watcher, plus the pre-warm the watcher launched. */
+        const val SCOPE_CHILDREN_WITH_PREWARM = 2
     }
 
     private val settingsDir = createTempDirectory("session-share-shutdown-test").toFile()
-        .apply { deleteOnExit() }
 
     private var basePort = 0
     private lateinit var settings: SettingsManager
@@ -98,7 +101,11 @@ class SessionShareShutdownTest {
     fun tearDown() {
         SessionShareManager.shutdown()
         SessionShareManager.settingsManagerOverrideForTest = null
+        // shutdown() latches the singleton shut, and it outlives this class. Leaving it latched
+        // would make a later test's share() return a silent null that looks like a product bug.
+        setShuttingDown(false)
         McpTerminalRegistry.setStopped()
+        settingsDir.deleteRecursively()
     }
 
     // ---- positive control -------------------------------------------------------------------
@@ -106,7 +113,7 @@ class SessionShareShutdownTest {
     @Test
     fun `pre-warm binds the share server once the MCP port is known`() = runBlocking {
         SessionShareManager.start()
-        delay(PARK_MS)
+        awaitPrewarmLaunched()
         assertTrue(
             rangeIsFree(),
             "the pre-warm must still be parked in its MCP wait — nothing may bind before the " +
@@ -126,7 +133,7 @@ class SessionShareShutdownTest {
     @Test
     fun `shutdown during an in-flight pre-warm prevents a late re-bind`() = runBlocking {
         SessionShareManager.start()
-        delay(PARK_MS) // pre-warm is now parked in its MCP wait (see the positive control)
+        awaitPrewarmLaunched() // it exists and is waiting on the MCP port — not merely "soon"
 
         SessionShareManager.shutdown()
 
@@ -145,12 +152,7 @@ class SessionShareShutdownTest {
     @Test
     fun `shutdown cancels the manager's own in-flight work`() = runBlocking {
         SessionShareManager.start()
-        delay(PARK_MS)
-        assertTrue(
-            managerScopeChildren() > 0,
-            "expected in-flight work (the settings watcher and a parked pre-warm) on the " +
-                "manager's scope"
-        )
+        awaitPrewarmLaunched()
 
         SessionShareManager.shutdown()
 
@@ -168,9 +170,9 @@ class SessionShareShutdownTest {
         SessionShareManager.shutdown()
 
         // share() reaches the binder without suspending anywhere cancellation could catch it, so
-        // only the shutdown latch can stop it. Guarded because an un-refused share would go on to
-        // build a MirrorShare against terminal state this test never created.
-        val info = runCatching { SessionShareManager.share("tab-after-shutdown") }.getOrNull()
+        // only the shutdown latch can stop it. Called directly, not guarded: the point is a *clean*
+        // refusal, so an exception here should fail rather than read as a pass.
+        val info = SessionShareManager.share("tab-after-shutdown")
 
         assertNull(info, "share() must return null once the manager has been shut down")
         assertTrue(rangeIsFree(), "share() after shutdown() must not bind a server")
@@ -181,7 +183,7 @@ class SessionShareShutdownTest {
     @Test
     fun `shutdown is idempotent`() = runBlocking {
         SessionShareManager.start()
-        delay(PARK_MS)
+        awaitPrewarmLaunched()
         McpTerminalRegistry.setRunning(mcpPort)
         assertTrue(awaitUntil(SETTLE_MS) { !rangeIsFree() }, "expected a bound server to tear down")
 
@@ -206,13 +208,39 @@ class SessionShareShutdownTest {
 
     // ---- helpers ----------------------------------------------------------------------------
 
+    /**
+     * Block until the settings watcher has launched the pre-warm, so a test that shuts down "during
+     * an in-flight pre-warm" really does. The pre-warm cannot bind before the MCP port is published,
+     * so once its coroutine exists it is either in that wait or about to enter it — either way it is
+     * live work on the manager's scope, which is what the shutdown has to deal with.
+     */
+    private suspend fun awaitPrewarmLaunched() {
+        assertTrue(
+            awaitUntil(SETTLE_MS) { managerScopeChildren() >= SCOPE_CHILDREN_WITH_PREWARM },
+            "the settings watcher should have launched the pre-warm onto the manager's scope " +
+                "(saw ${managerScopeChildren()} active children, expected " +
+                "$SCOPE_CHILDREN_WITH_PREWARM)"
+        )
+    }
+
     /** Active children of the manager's private scope. Reflection because the scope is an internal
      *  implementation detail we nevertheless need to make an assertion about. */
     private fun managerScopeChildren(): Int {
-        val field = SessionShareManager::class.java.getDeclaredField("scope").apply { isAccessible = true }
-        val scope = field.get(SessionShareManager) as kotlinx.coroutines.CoroutineScope
+        val scope = readPrivate("scope") as CoroutineScope
         val job = scope.coroutineContext[Job] ?: return 0
         return job.children.count { it.isActive }
+    }
+
+    private fun readPrivate(name: String): Any? =
+        SessionShareManager::class.java.getDeclaredField(name)
+            .apply { isAccessible = true }
+            .get(SessionShareManager)
+
+    /** Clear the shutdown latch so the singleton isn't left inert for the rest of the JVM. */
+    private fun setShuttingDown(value: Boolean) {
+        SessionShareManager::class.java.getDeclaredField("shuttingDown")
+            .apply { isAccessible = true }
+            .setBoolean(SessionShareManager, value)
     }
 
     /** True while every port the manager could bind is still free. */
@@ -226,10 +254,17 @@ class SessionShareShutdownTest {
         true
     }.getOrDefault(false)
 
-    /** A base port with [PORT_RANGE] consecutive free ports after it, so the manager's port-fallback
-     *  scan cannot land outside the range these tests assert on. */
+    /**
+     * A base port with [PORT_RANGE] consecutive free ports after it, so the manager's port-fallback
+     * scan cannot land outside the range these tests assert on.
+     *
+     * Deliberately kept well below 32768 — and the scan below can only add ~2200 — so the window
+     * never overlaps Linux's default ephemeral range (32768-60999). Otherwise an unrelated outbound
+     * connection from the test JVM could occupy one of these ports mid-assertion and fail a test for
+     * reasons that have nothing to do with session sharing.
+     */
     private fun reserveFreeRange(): Int {
-        var candidate = 20_000 + (System.nanoTime() % 30_000).toInt()
+        var candidate = 20_000 + (System.nanoTime() % 10_000).toInt()
         repeat(200) {
             if ((candidate until candidate + PORT_RANGE).all { portIsFree(it) } &&
                 portIsFree(candidate + 100) // the stand-in MCP port

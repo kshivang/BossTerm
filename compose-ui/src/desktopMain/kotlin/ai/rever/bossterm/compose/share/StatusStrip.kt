@@ -28,18 +28,57 @@ import androidx.compose.ui.unit.sp
  * `● MCP | ● Sharing | ● Call BossTerm`. Each segment's dot is color-coded (green = on/active,
  * amber = busy, gray = off/idle) and is clickable. Replaces the separate pills so status reads on
  * one line. Each segment is shown only when its own toggle is enabled.
+ *
+ * The call segment's wording is the embedder's — see `TabbedTerminal`'s `callLabel` parameter.
  */
 private val ON = Color(0xFF4CAF50)
 private val OFF = Color(0xFF6B6B6B)
 private val BUSY = Color(0xFFE5A54B)
 private val LIVE_TALK = Color(0xFF4A90E2)
 
-/** What the Call BossTerm segment should show — derived from the in-app call state. */
+/**
+ * What the in-app call button says when the embedder has not renamed it — i.e. always, in plain
+ * `bossterm-app`.
+ *
+ * "Boss Calling" is the FEATURE and is fixed everywhere (the settings section, the macOS microphone
+ * prompt, the docs). This is only what the button is CALLED, which is the one part an embedder is
+ * putting in front of users who have never heard of BossTerm.
+ */
+const val DEFAULT_CALL_LABEL: String = "Call BossTerm"
+
+/**
+ * The embedder's `callLabel` resolved for rendering — never blank.
+ *
+ * `null` means "standalone", matching `contextMenuItemsProvider` and friends. Blank is folded into
+ * the same case rather than rendering an empty pill: an embedder computing this from its own
+ * branding should get BossTerm's name back, not a dot with nothing after it.
+ */
+internal fun resolveCallLabel(callLabel: String?): String =
+    callLabel?.trim()?.takeUnless { it.isEmpty() } ?: DEFAULT_CALL_LABEL
+
+/** What the call segment should show — derived from the in-app call state. */
 enum class CallSegmentState {
     Hidden,
     /** Enabled but no API key yet — the pill still shows, and clicking it asks for one. */
     NeedsKey,
     Ready, Connecting, Live, Speaking, Working, Failed,
+}
+
+/**
+ * The call segment's text, all in one place so the label an embedder sets reaches every state and
+ * not just the idle one.
+ *
+ * [CallSegmentState.NeedsKey] deliberately reads the same as [CallSegmentState.Ready]: "set this up"
+ * is the click, not a warning to stare at. [CallSegmentState.Connecting] deliberately drops the
+ * label — "Calling…" is the whole story at that moment, and it is the one state that stays coherent
+ * whatever the product is called.
+ */
+internal fun callSegmentLabel(state: CallSegmentState, callLabel: String): String = when (state) {
+    CallSegmentState.Connecting -> "Calling…"
+    CallSegmentState.Working -> "$callLabel · working"
+    CallSegmentState.Speaking, CallSegmentState.Live -> "$callLabel · live"
+    CallSegmentState.Failed -> "$callLabel · failed"
+    else -> callLabel
 }
 
 @Composable
@@ -63,6 +102,11 @@ fun StatusStrip(
     modifier: Modifier = Modifier,
     call: CallSegmentState = CallSegmentState.Hidden,
     onCallClick: () -> Unit = {},
+    /**
+     * What the call segment is called. Already resolved — hosts pass `TabbedTerminal`'s `callLabel`
+     * through [resolveCallLabel], so this is never null and never blank.
+     */
+    callLabel: String = DEFAULT_CALL_LABEL,
 ) {
     val showCall = call != CallSegmentState.Hidden
     if (!showMcp && !showSharing && !showCall) return
@@ -131,15 +175,7 @@ fun StatusStrip(
                         CallSegmentState.Failed -> Color(0xFFD9534F)
                         else -> OFF
                     },
-                    // NeedsKey deliberately reads the same as Ready: "set this up" is the click,
-                    // not a warning to stare at.
-                    label = when (call) {
-                        CallSegmentState.Connecting -> "Calling…"
-                        CallSegmentState.Working -> "Call BossTerm · working"
-                        CallSegmentState.Speaking, CallSegmentState.Live -> "Call BossTerm · live"
-                        CallSegmentState.Failed -> "Call BossTerm · failed"
-                        else -> "Call BossTerm"
-                    },
+                    label = callSegmentLabel(call, callLabel),
                     onClick = onCallClick,
                 )
             }

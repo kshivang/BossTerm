@@ -14,6 +14,7 @@ import ai.rever.bossterm.compose.settings.components.SettingsSection
 import ai.rever.bossterm.compose.settings.components.SettingsTextField
 import ai.rever.bossterm.compose.settings.sections.BossCallingSection
 import ai.rever.bossterm.compose.settings.theme.BossUiTheme
+import ai.rever.bossterm.compose.share.DEFAULT_CALL_LABEL
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -83,6 +84,12 @@ fun DaemonShareWindow(
     focusedSessionId: String?,
     onDismiss: () -> Unit,
     focusTick: Int = 0,
+    /**
+     * What the IN-APP call button is called in the GUI hosting this window (`TabbedTerminal`'s
+     * `callLabel`, resolved). The daemon serving the share is a separate process and has no
+     * embedder, but this window is composed by the GUI, so its Boss Calling copy follows the GUI.
+     */
+    callLabel: String = DEFAULT_CALL_LABEL,
 ) {
     val clipboard = LocalClipboardManager.current
     val shareState by DaemonShareClient.state.collectAsState()
@@ -145,7 +152,7 @@ fun DaemonShareWindow(
                 if (share == null) {
                     StartSection(scope, focusedSessionId)
                 } else {
-                    ShareDetails(share, pending, clipboard)
+                    ShareDetails(share, pending, clipboard, callLabel)
                 }
             }
             // Pinned footer — always visible without scrolling.
@@ -227,6 +234,7 @@ private fun ShareDetails(
     share: DaemonAttachProtocol.ShareView,
     pending: List<DaemonAttachProtocol.PendingApproval>,
     clipboard: ClipboardManager,
+    callLabel: String,
 ) {
     // Viewer-facing label for this share (the remote group header). Defaults to username_machine on the
     // daemon side; editing it round-trips via SetShareName. (Parity with the non-daemon ShareWindow.)
@@ -302,7 +310,7 @@ private fun ShareDetails(
 
     // Same controls as the GUI share window: the daemon serves voice calls too (with the smaller
     // headless tool surface), and this is the window a daemon host is looking at.
-    BossCallingSection(showAgentOptions = false)
+    BossCallingSection(showAgentOptions = false, callLabel = callLabel)
     Spacer(Modifier.height(20.dp))
 
     RemoteAccessSection(share)

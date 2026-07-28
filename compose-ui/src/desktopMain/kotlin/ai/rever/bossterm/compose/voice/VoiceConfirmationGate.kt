@@ -73,7 +73,16 @@ internal class VoiceConfirmationGate(
     @Volatile private var lastAgentTurn = 0L
     @Volatile private var lastUserTurn = 0L
 
-    private data class Pending(val fingerprint: String, val mintedAtTurn: Long, val expiresAtMs: Long)
+    private data class Pending(
+        val fingerprint: String,
+        val mintedAtTurn: Long,
+        /** Strictly increasing per mint — see the eviction comment for why the turn is not enough. */
+        val mintSeq: Long,
+        val expiresAtMs: Long,
+    )
+
+    /** Counts mints, not turns. */
+    private val mintSeq = AtomicLong(0)
 
     private val pending = ConcurrentHashMap<String, Pending>()
 
@@ -155,16 +164,18 @@ internal class VoiceConfirmationGate(
 
     private fun mint(fingerprint: String): String {
         val token = ByteArray(8).also { RANDOM.nextBytes(it) }.joinToString("") { "%02x".format(it) }
-        pending[token] = Pending(fingerprint, turnSeq.get(), nowMs() + TOKEN_TTL_MS)
+        pending[token] = Pending(fingerprint, turnSeq.get(), mintSeq.incrementAndGet(), nowMs() + TOKEN_TTL_MS)
         // Unbounded growth would need a model that asks for hundreds of confirmations in one call,
         // but a per-call map with no ceiling is the kind of thing that only looks fine.
         if (pending.size > MAX_PENDING) {
-            // Tie-broken on the turn counter, not just the expiry. Several tokens minted inside one
+            // Tie-broken on a MINT counter, not the turn counter. Several tokens minted inside one
             // clock tick share an expiry — guaranteed under an injected clock, likely under a real
             // one — and ConcurrentHashMap's iteration order is unspecified, so "oldest" could evict
-            // the token this call just minted. It fails closed into a re-mint either way; being
-            // exact costs one comparator.
-            pending.entries.sortedWith(compareBy({ it.value.expiresAtMs }, { it.value.mintedAtTurn }))
+            // the token this call just minted. The turn counter does not break that tie: it only
+            // advances on speech events, so a run of gated calls with nobody talking ties on both
+            // keys and the comparator is a no-op over unspecified order. It fails closed into a
+            // re-mint either way; being exact costs one counter.
+            pending.entries.sortedWith(compareBy({ it.value.expiresAtMs }, { it.value.mintSeq }))
                 .take(pending.size - MAX_PENDING)
                 .forEach { pending.remove(it.key) }
         }

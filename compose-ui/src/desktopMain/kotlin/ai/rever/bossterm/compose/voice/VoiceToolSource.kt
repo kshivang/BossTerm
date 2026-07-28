@@ -109,6 +109,15 @@ data class ExternalVoiceTool(
  *   [CompositeVoiceToolExecutor] — but a source that misbehaves loses tools, so don't rely on it.
  * - **[call] receives the source's OWN [ExternalVoiceTool.name]**, never the advertised one.
  * - **[call] returns a JSON string.** Over 40 KiB is clamped ([clampToolResult]); blank becomes `{}`.
+ * - **A tool has about 100 seconds**, and cannot currently ask for more.
+ *   [VoiceToolTimeouts.execMs] gives every name but BossTerm's own `run_command` the same budget,
+ *   and the call's watchdog fires at 120s, so a source whose work runs for minutes — an RPA run, an
+ *   agentic evolve — is answered with "that tool did not answer in time" while it carries on in the
+ *   background. A per-tool `timeoutMs` was considered and deliberately not added: clamped under the
+ *   watchdog it would buy about nineteen seconds, which does not help the tools that motivate it,
+ *   and the version that would help requires the watchdog to take its deadline from the tool as
+ *   well. That is a change to the call's own timeout ladder rather than to this seam. Until then,
+ *   a long-running tool should return promptly with a handle and let the agent poll.
  * - **[ai.rever.bossterm.compose.mcp.BossTermMcpConfig.allowWriteTools] does not reach this
  *   surface.** It withholds BossTerm's *own* write tools; an [ExternalVoiceTool] with `write = true`
  *   is advertised regardless. That is deliberate — the source owns its tools and their policy, and

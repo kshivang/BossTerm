@@ -426,6 +426,34 @@ class VoiceToolSafetyTest {
         assertEquals(setOf("path"), source.calls.single().second.keys)
     }
 
+    /**
+     * Overflow must evict the OLDEST token, never the one just minted.
+     *
+     * Untested until now, and the tie-break it relies on was overstated: tokens minted inside one
+     * clock tick share an expiry, and the turn counter only advances on speech, so a run of gated
+     * calls with nobody talking tied on both keys and the comparator was a no-op over unspecified
+     * map order. Fixed clock and no speech between mints is exactly that case.
+     */
+    @Test
+    fun `overflowing the pending map does not evict the token just minted`() {
+        val gate = VoiceConfirmationGate(nowMs = { 0L })
+        val args = JsonObject(emptyMap())
+
+        lateinit var newest: String
+        repeat(VoiceConfirmationGate.MAX_PENDING + 1) { i ->
+            newest = (gate.redeem("tool_$i", args, null)
+                as VoiceConfirmationGate.Decision.Confirm).token
+        }
+        gate.agentSpoke()
+        gate.userSpoke()
+
+        val last = VoiceConfirmationGate.MAX_PENDING
+        assertTrue(
+            gate.redeem("tool_$last", args, newest) is VoiceConfirmationGate.Decision.Allowed,
+            "the most recently minted token was evicted by the overflow it caused",
+        )
+    }
+
     /** Confirming "discard the docs folder" must not authorise discarding the repository. */
     @Test
     fun `a token is bound to the arguments it was minted for`() {
@@ -673,6 +701,41 @@ class VoiceToolSafetyTest {
             runBlocking { exec.execute("git_discard", noArgs, null) }
         }
         assertTrue(failure.message!!.contains("timed out"), failure.message!!)
+    }
+
+    /**
+     * The executor's budget and the controller's watchdog must key off the SAME name.
+     *
+     * They did not: the budget used the source's own name and the watchdog the advertised one, so
+     * under prefixing a source tool called `run_command` took `execMs("run_command")` = 610s inside
+     * a watchdog of `inAppMs("boss_run_command")` = 120s — the ladder inverted, and the user is told
+     * the handler hung by the layer that was supposed to be outermost.
+     */
+    @Test
+    fun `the tool budget is keyed off the advertised name, not the source's`() {
+        val asked = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val source = FakeToolSource(
+            list = listOf(externalTool("run_command")),
+            namePrefix = "boss_",
+            policy = VoiceToolPolicy(onNameCollision = VoiceToolCollisionPolicy.PrefixExternal),
+        )
+        val exec = CompositeVoiceToolExecutor(
+            base = FakeBaseExecutor(listOf("run_command")),
+            source = source,
+            confirmations = VoiceConfirmationGate(),
+            callTimeoutMs = { name -> asked += name; 1_000L },
+        )
+
+        runBlocking { exec.execute("boss_run_command", noArgs, null) }
+
+        assertEquals(listOf("boss_run_command"), asked, "budgeted off the wrong name")
+        // The ladder holds for whatever name it was keyed off, which is the property that matters.
+        for (name in asked) {
+            assertTrue(
+                VoiceToolTimeouts.execMs(name) < VoiceToolTimeouts.inAppMs(name),
+                "ladder inverted for $name",
+            )
+        }
     }
 
     /** The approval rung has to fit inside the tool budget it is a slice of. */

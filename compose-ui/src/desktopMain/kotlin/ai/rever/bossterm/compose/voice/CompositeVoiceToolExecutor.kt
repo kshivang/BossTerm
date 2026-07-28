@@ -108,6 +108,10 @@ internal class CompositeVoiceToolExecutor(
     override fun externalAdvertisedNames(): Set<String> = externalNames
 
     override fun toolNames(): Set<String> {
+        // Deliberately NOT legalName-filtered, where tools() is. The filter exists to keep an
+        // illegal name out of the array sent to OpenAI; this set is the merge's view of what names
+        // are taken, and a base tool with an illegal name still occupies its name as far as
+        // collision detection is concerned. Filtering here would let an external tool claim it.
         val baseNames = base.toolNames()
         return baseNames + externalFor(baseNames).advertised.map { it.advertisedName }
     }
@@ -130,7 +134,7 @@ internal class CompositeVoiceToolExecutor(
     private fun legalName(name: String): Boolean {
         if (VoiceToolNaming.LEGAL.matches(name)) return true
         logOnce(
-            log, "illegal:$name",
+            log, "$sourceKey|illegal:$name",
             "Voice tool \"$name\" is not a legal OpenAI function name and is withheld; the whole " +
                 "session would otherwise be rejected. Check the embedder's MCP toolNamePrefix.",
         )
@@ -161,7 +165,9 @@ internal class CompositeVoiceToolExecutor(
             // guess off a sibling tool, or something it read in the terminal. "Unknown tool" would
             // read as a glitch worth retrying.
             surface.refusalFor(name)?.let {
-                log.warn("Voice tool {} refused: {}", name, it)
+                // Once, not per attempt: a model reaching repeatedly for a tool it saw advertised in
+                // an older session is expected, and everything else in the feature dedupes.
+                logOnce(log, "$sourceKey|refused:$name", "Voice tool $name refused: $it")
                 throw VoiceToolException(it)
             }
             return base.execute(name, args, defaultTabId)
@@ -182,7 +188,14 @@ internal class CompositeVoiceToolExecutor(
         // ONE budget for the whole gated round-trip. An approval wait beside the tool's own timeout
         // rather than inside it is what made the worst case 220s against a 120s watchdog — see
         // VoiceToolTimeouts.APPROVAL_MS. Whatever the modal spends, the call gets the rest.
-        val budgetMs = callTimeoutMs(hit.source.name)
+        // Keyed off the ADVERTISED name, because that is what the controller's watchdog keys off
+        // (HostVoiceCallController.handleFunctionCall sees only the name the model used). Keyed off
+        // the source's own name the two could disagree, and under PrefixExternal they did: a source
+        // tool `run_command` advertised as `boss_run_command` took execMs("run_command") = 610s
+        // inside a watchdog of inAppMs("boss_run_command") = 120s, inverting the ladder
+        // VoiceToolTimeouts exists to state — the outer layer fires first and blames the handler for
+        // a deadline the inner budget never imposed. Agreeing by construction beats asserting it.
+        val budgetMs = callTimeoutMs(hit.advertisedName)
         val startedAtMs = nowMs()
         if (hit.gated) {
             val approvalBudget = minOf(VoiceToolTimeouts.APPROVAL_MS, budgetMs)

@@ -66,8 +66,8 @@ enum class VoiceToolCollisionPolicy {
  * The name patterns below are a floor, not a classifier. They catch `secret_get`, `role_delete`,
  * `git_discard`; they cannot catch `rpa_run` or `evolver_evolve`, which are as destructive as
  * anything on the surface and say nothing about it in their names. Those need the source's own
- * [ExternalVoiceTool.irreversible] flag or an [irreversibleExtra] rule — see the worked example in
- * the PR that introduced this file.
+ * [ExternalVoiceTool.irreversible] flag or an [irreversibleExtra] rule — [VoiceToolSource]'s KDoc
+ * carries a worked example.
  *
  * Deliberately not a `data class`: it holds lambdas, so a generated `equals`/`hashCode` would be
  * identity comparison wearing the costume of value equality, and nothing here needs either.

@@ -85,6 +85,24 @@ class FullToolSurfaceTest {
     }
 
     /**
+     * The same, where the curated filter actually removes something.
+     *
+     * Under the default config every catalog tool is registered, so the filter is the identity and
+     * an implementation that skipped it entirely would still agree — a mutation proving exactly that
+     * survived. A read-only embedder is the case with teeth: the write tools are never registered,
+     * so `tools()` drops them and a `toolNames()` that returned the whole catalog would not.
+     */
+    @Test
+    fun `toolNames agrees with tools when the embedder is read-only`() {
+        McpTerminalRegistry.setMcpConfig(BossTermMcpConfig(allowWriteTools = false))
+        val exec = executor(mayUseFocusedPane = true, exposeAll = false)
+
+        val names = exec.tools().mapTo(mutableSetOf()) { it.name }
+        assertFalse("send_input" in names, "a read-only embedder must not advertise write tools")
+        assertEquals(names, exec.toolNames())
+    }
+
+    /**
      * Schemas come from the server, so the agent is told what each tool really takes — and the
      * argument allowlist, which filters on exactly these keys, stays meaningful.
      */

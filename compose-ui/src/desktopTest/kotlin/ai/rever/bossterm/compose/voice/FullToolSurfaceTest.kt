@@ -62,6 +62,29 @@ class FullToolSurfaceTest {
     }
 
     /**
+     * `toolNames()` exists only to skip building a definition per tool, so the one thing it must
+     * never do is disagree with `tools()`.
+     *
+     * It is the base-name set the merge computes collisions from, so a disagreement is not a
+     * cosmetic drift: names missing from it stop being recognised as BossTerm's, and an embedder's
+     * tool of the same name is then advertised alongside — the shadowing this seam exists to
+     * prevent. Both modes, because the override branches the same way `tools()` does.
+     */
+    @Test
+    fun `toolNames agrees with tools in every mode`() {
+        for (exposeAll in listOf(true, false)) {
+            for (inApp in listOf(true, false)) {
+                val exec = executor(mayUseFocusedPane = inApp, exposeAll = exposeAll)
+                assertEquals(
+                    exec.tools().mapTo(mutableSetOf()) { it.name },
+                    exec.toolNames(),
+                    "exposeAll=$exposeAll inApp=$inApp",
+                )
+            }
+        }
+    }
+
+    /**
      * Schemas come from the server, so the agent is told what each tool really takes — and the
      * argument allowlist, which filters on exactly these keys, stays meaningful.
      */

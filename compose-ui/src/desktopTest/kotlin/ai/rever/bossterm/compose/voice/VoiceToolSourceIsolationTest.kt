@@ -92,6 +92,71 @@ class VoiceToolSourceIsolationTest {
     }
 
     /**
+     * The deadline has to cover the embedder's POLICY code, not just its tool list.
+     *
+     * `runCatching` answers a classifier that throws and does nothing for one that hangs, and the
+     * hot-swappable-classloader argument applies to a predicate exactly as much as to `tools()`.
+     * This is also the worst place for it: `sessionUpdate` calls `tools()` on the connect coroutine
+     * with the socket already open and billing and `startLimits()` not yet armed — a try/catch and
+     * no watchdog.
+     */
+    @Test
+    fun `a hanging classifier does not hang the call`() {
+        val wedged = java.util.concurrent.CountDownLatch(1)
+        val source = FakeToolSource(
+            list = listOf(externalTool("git_status")),
+            policy = VoiceToolPolicy(
+                excludeExtra = { wedged.await(30, java.util.concurrent.TimeUnit.SECONDS); false },
+            ),
+        )
+        val exec = composite(FakeBaseExecutor(listOf("run_command")), source, enumerateTimeoutMs = 100L)
+
+        val started = System.currentTimeMillis()
+        val names = exec.tools().map { it.name }
+        val elapsed = System.currentTimeMillis() - started
+
+        assertEquals(listOf("run_command"), names)
+        assertTrue(elapsed < 3_000, "waited ${elapsed}ms on a wedged classifier")
+        wedged.countDown()
+    }
+
+    /**
+     * The cached fallback is only good for the base set it was merged against.
+     *
+     * A surface is merged relative to what BossTerm advertises, and that moves — `manage_tools` can
+     * disable a tool mid-call, and it can come back. Reusing a surface merged against a different
+     * base could let an external tool sit on a name BossTerm has since taken back, which is the one
+     * thing the merge exists to prevent.
+     */
+    @Test
+    fun `a stale surface is not reused once BossTerm's own tools have changed`() {
+        var fail = false
+        var baseNames = listOf("run_command")
+        val base = object : VoiceToolExecutor {
+            override fun tools() = baseNames.map {
+                VoiceToolDef(it, "base $it", kotlinx.serialization.json.buildJsonObject { }, write = false)
+            }
+            override fun contextSnapshot(defaultTabId: String?) = ""
+            override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?) = "{}"
+        }
+        val source = FakeToolSource(
+            list = listOf(externalTool("git_status")),
+            enumerate = { if (fail) error("transient") },
+        )
+        val exec = composite(base, source)
+        assertEquals(listOf("run_command", "git_status"), exec.tools().map { it.name })
+
+        fail = true
+        baseNames = listOf("run_command", "read_scrollback")
+
+        assertEquals(
+            listOf("run_command", "read_scrollback"),
+            exec.tools().map { it.name },
+            "a surface merged against the old base set was reused against a new one",
+        )
+    }
+
+    /**
      * A source that blips once must not blank a surface the model can still see in its own tool
      * list — the model would get "unknown tool" for something it was told exists.
      */

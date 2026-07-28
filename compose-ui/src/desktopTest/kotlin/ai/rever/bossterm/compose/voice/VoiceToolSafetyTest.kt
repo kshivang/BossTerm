@@ -281,31 +281,67 @@ class VoiceToolSafetyTest {
      * confirmation.
      */
     @Test
-    fun `two concurrent redemptions of one token run the tool once`() {
-        repeat(20) {
+    fun `two concurrent redemptions of one token allow exactly one`() {
+        // Straight at the gate rather than through the executor: the race is a few instructions
+        // wide, so it wants many tightly-synchronised attempts, and driving 200 of those through a
+        // full enumeration would load the machine enough to time out unrelated tests in the next
+        // class — which it did, the first time this was written.
+        repeat(200) { attempt ->
             val gate = VoiceConfirmationGate()
-            val source = FakeToolSource(listOf(externalTool("git_discard")))
-            val exec = composite(FakeBaseExecutor(emptyList()), source, gate)
+            val args = JsonObject(emptyMap())
+            val token = (gate.redeem("git_discard", args, null)
+                as VoiceConfirmationGate.Decision.Confirm).token
+            gate.agentSpoke()
+            gate.userSpoke()
 
-            val token = parse(runBlocking { exec.execute("git_discard", noArgs, null) })[
-                VoiceConfirmationGate.CONFIRM_ARG
-            ]!!.jsonPrimitive.content
-            gate.agentSpoke(); gate.userSpoke()
-
-            val start = java.util.concurrent.CountDownLatch(1)
-            val results = java.util.Collections.synchronizedList(mutableListOf<String>())
-            val threads = (1..4).map {
+            val barrier = java.util.concurrent.CyclicBarrier(2)
+            val allowed = java.util.concurrent.atomic.AtomicInteger()
+            val threads = (1..2).map {
                 Thread {
-                    start.await()
-                    results += runBlocking { exec.execute("git_discard", withToken(token), null) }
+                    barrier.await()
+                    if (gate.redeem("git_discard", args, token) is VoiceConfirmationGate.Decision.Allowed) {
+                        allowed.incrementAndGet()
+                    }
                 }.apply { start() }
             }
-            start.countDown()
-            threads.forEach { it.join(10_000) }
+            threads.forEach { it.join(5_000) }
 
-            assertEquals(1, source.calls.size, "the tool ran ${source.calls.size} times on one token")
-            assertEquals(1, results.count { !it.contains("confirmation_required") }, results.toString())
+            assertEquals(1, allowed.get(), "attempt $attempt: ${allowed.get()} calls cleared one token")
         }
+    }
+
+    /**
+     * "The confirmation argument is the host's, not the tool's" has to hold even when the source
+     * happens to declare a parameter of that name — otherwise the allowlist, which is the source's
+     * own declared keys, hands the host's token straight back to it.
+     */
+    @Test
+    fun `a source declaring its own voice_confirm never receives the host's token`() {
+        val gate = VoiceConfirmationGate()
+        val source = FakeToolSource(
+            listOf(
+                externalTool(
+                    "git_discard",
+                    properties = props("path", VoiceConfirmationGate.CONFIRM_ARG),
+                )
+            )
+        )
+        val exec = composite(FakeBaseExecutor(emptyList()), source, gate)
+
+        val args = buildJsonObject { put("path", "docs") }
+        val token = parse(runBlocking { exec.execute("git_discard", args, null) })[
+            VoiceConfirmationGate.CONFIRM_ARG
+        ]!!.jsonPrimitive.content
+        gate.agentSpoke(); gate.userSpoke()
+
+        runBlocking {
+            exec.execute(
+                "git_discard",
+                buildJsonObject { put("path", "docs"); put(VoiceConfirmationGate.CONFIRM_ARG, token) },
+                null,
+            )
+        }
+        assertEquals(setOf("path"), source.calls.single().second.keys)
     }
 
     /** Confirming "discard the docs folder" must not authorise discarding the repository. */

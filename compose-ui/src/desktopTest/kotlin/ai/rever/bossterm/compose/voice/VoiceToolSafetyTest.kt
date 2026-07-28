@@ -163,6 +163,9 @@ class VoiceToolSafetyTest {
         val spellings = listOf(
             "secret_get", "secret-get", "secret.get", "getSecret", "get_secret",
             "mySecretGet", "secret/get", "SECRET-GET", "api-key-get", "apiKeyGet",
+            // An acronym run before the word: only the acronym-boundary rule reaches this one, since
+            // the plain camelCase split leaves `awssecret` as a single segment.
+            "AWSSecretGet",
         )
         for (name in spellings) {
             assertTrue(VoiceToolPolicy.returnsSecretMaterial(name), "not caught: $name")

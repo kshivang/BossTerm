@@ -248,6 +248,48 @@ class VoiceToolSourceIsolationTest {
         assertFailsWith<VoiceToolException> { runBlocking { exec.execute("git_status", noArgs, null) } }
     }
 
+    /**
+     * A property object whose `type` is not a string is still an invalid schema, and the stakes are
+     * the same rejected session — `is JsonObject` alone does not catch it.
+     */
+    @Test
+    fun `a property with a non-string type is withheld`() {
+        val source = FakeToolSource(
+            listOf(
+                externalTool(
+                    "git_status",
+                    properties = kotlinx.serialization.json.buildJsonObject {
+                        putJsonObject("path") { put("type", kotlinx.serialization.json.JsonPrimitive(123)) }
+                        putJsonObject("depth") { put("type", "integer") }
+                    },
+                )
+            )
+        )
+        val def = composite(FakeBaseExecutor(emptyList()), source).tools().single()
+        assertEquals(setOf("depth"), def.parameters["properties"]!!.jsonObject.keys)
+    }
+
+    /**
+     * The tool ceiling bounds COUNT; one plugin projecting every repo or role name into an enum
+     * ships a schema orders of magnitude past anything measured while sitting under it.
+     */
+    @Test
+    fun `a tool with an enormous schema is dropped and refused`() {
+        val huge = kotlinx.serialization.json.buildJsonObject {
+            putJsonObject("repo") {
+                put("type", "string")
+                put("description", "x".repeat(100_000))
+            }
+        }
+        val source = FakeToolSource(
+            listOf(externalTool("git_status", properties = huge), externalTool("git_log"))
+        )
+        val exec = composite(FakeBaseExecutor(emptyList()), source)
+
+        assertEquals(listOf("git_log"), exec.tools().map { it.name })
+        assertFailsWith<VoiceToolException> { runBlocking { exec.execute("git_status", noArgs, null) } }
+    }
+
     /** But a tool that declares no parameters at all is perfectly legitimate. */
     @Test
     fun `a no-argument tool survives`() {

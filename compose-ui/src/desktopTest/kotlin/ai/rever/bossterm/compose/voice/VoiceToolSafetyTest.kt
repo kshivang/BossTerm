@@ -646,6 +646,38 @@ class VoiceToolSafetyTest {
         assertTrue(source.calls.isEmpty(), "redeemed against an announcement that never happened")
     }
 
+    /**
+     * The agent acknowledging its own tool call must not invalidate the answer it just got.
+     *
+     * A Realtime response can carry an audio item and a function call together, and
+     * `response.output_audio.done` arrives before `response.function_call_arguments.done` — so the
+     * model's "okay, discarding now" preamble lands between the user's "yes" and the redemption, in
+     * the very response that redeems. Comparing against the LATEST agent turn refused that, told the
+     * model to wait for the user, and got another acknowledgement on the next attempt: a livelock,
+     * intermittent because it turns on output-item ordering.
+     */
+    @Test
+    fun `the agent acknowledging after the user answers still redeems`() {
+        val gate = VoiceConfirmationGate()
+        val source = FakeToolSource(listOf(externalTool("git_discard")))
+        val exec = composite(FakeBaseExecutor(emptyList()), source, gate)
+
+        val token = parse(runBlocking { exec.execute("git_discard", noArgs, null) })[
+            VoiceConfirmationGate.CONFIRM_ARG
+        ]!!.jsonPrimitive.content
+
+        gate.agentSpoke()   // "I am about to discard the docs folder."
+        gate.userSpoke()    // "yes"
+        gate.agentSpoke()   // "okay, discarding now" — same response as the call below
+
+        assertEquals(
+            """{"from":"source"}""",
+            runBlocking { exec.execute("git_discard", withToken(token), null) },
+            "the agent's own acknowledgement invalidated the confirmation it had just been given",
+        )
+        assertEquals("git_discard", source.calls.single().first)
+    }
+
     /** Order, not just occurrence: the user has to answer the agent, not precede it. */
     @Test
     fun `a user turn before the agent's announcement does not count`() {

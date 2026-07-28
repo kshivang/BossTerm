@@ -73,6 +73,25 @@ internal class VoiceConfirmationGate(
     @Volatile private var lastAgentTurn = 0L
     @Volatile private var lastUserTurn = 0L
 
+    /**
+     * What [lastAgentTurn] was when the user last finished speaking — i.e. the agent turn the user
+     * was answering.
+     *
+     * Comparing the user's turn against the LATEST agent turn instead deadlocked, and did it in the
+     * most ordinary case there is: a Realtime response can carry an audio item and a function call
+     * together, and `response.output_audio.done` arrives before
+     * `response.function_call_arguments.done`, so the model's own "okay, discarding now" preamble —
+     * in the very response that redeems — moved the goalposts past the answer it was acknowledging.
+     * Told to wait for the user, it asks again, the user answers again, it acknowledges again. A
+     * livelock rather than a refusal, and an intermittent one, since it turns on output-item order
+     * within a response.
+     *
+     * Frozen at the moment of the answer, the question becomes the one actually being asked: had the
+     * agent spoken since the token was minted, *by the time the user replied*? Nothing the agent says
+     * afterwards can change that answer.
+     */
+    @Volatile private var agentTurnBeforeLastUser = 0L
+
     private data class Pending(
         val fingerprint: String,
         val mintedAtTurn: Long,
@@ -96,6 +115,8 @@ internal class VoiceConfirmationGate(
 
     /** The Realtime server says the user just finished speaking. */
     fun userSpoke() {
+        // Captured BEFORE the increment, so it is the agent turn this answer followed.
+        agentTurnBeforeLastUser = lastAgentTurn
         lastUserTurn = turnSeq.incrementAndGet()
     }
 
@@ -139,11 +160,14 @@ internal class VoiceConfirmationGate(
         // Agent first, then user, both after the mint. Anything else is the agent confirming with
         // itself — or, in a barge-in, redeeming against the tail of the utterance that triggered
         // the call. Keep the token alive either way: the announcement may still be coming.
-        val announced = lastAgentTurn > held.mintedAtTurn
-        if (!announced) {
+        //
+        // Two checks rather than one so the agent is told which half is missing, and the second is
+        // deliberately NOT "the user spoke after the latest agent turn" — see
+        // [agentTurnBeforeLastUser] for the livelock that produced.
+        if (lastAgentTurn <= held.mintedAtTurn) {
             return Decision.Confirm(token, "Say what you are about to do first, out loud.")
         }
-        if (lastUserTurn <= lastAgentTurn) {
+        if (agentTurnBeforeLastUser <= held.mintedAtTurn) {
             return Decision.Confirm(token, "Wait for the user to answer, then call again.")
         }
         // Atomically, and this is not fussiness: four tool calls can be in flight at once

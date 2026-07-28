@@ -1,6 +1,8 @@
 package ai.rever.bossterm.compose.voice
 
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -237,6 +239,34 @@ internal fun mergeExternalTools(
     return ExternalSurface(advertised, refusals)
 }
 
+/**
+ * How much rendered JSON one tool's `properties` may contribute.
+ *
+ * Four KiB is roughly 2.7x the largest tool object measured on BossConsole's live surface (`cli`, at
+ * 1,915 bytes including its description), so it is generous against real tools and still bounds the
+ * pathological case. It is a per-tool cap rather than a total because the merge sees one tool at a
+ * time; the tool ceiling is the other half of the bound, and the two together put the worst case in
+ * the same order as the surface already measured rather than an unbounded multiple of it.
+ */
+private const val MAX_SCHEMA_CHARS = 4 * 1024
+
+/**
+ * Whether a property's `type` is something OpenAI can read.
+ *
+ * Deliberately shallow. `{"path": {"type": 123}}` passes an `is JsonObject` check and is still an
+ * invalid schema, and the stakes are a rejected `session.update` — the whole surface gone, the call
+ * dead. But BossTerm is not going to become a JSON Schema validator: the accepted subset is not
+ * documented in the detail that would take, and a validator stricter than OpenAI's silently drops
+ * working tools, which is the same harm in the other direction. So this checks the one invariant
+ * that is unambiguous and certainly fatal — `type`, when present, must be a string — and leaves
+ * everything below that (enum contents, nested schemas, `$ref`) to OpenAI, whose answer is
+ * authoritative in a way a guess here would not be.
+ */
+private fun JsonElement.hasUsableType(): Boolean {
+    val type = (this as? JsonObject)?.get("type") ?: return true
+    return type is JsonPrimitive && type.isString
+}
+
 /** A tool's parameter schema, after everything unusable has been taken out of it. */
 private class SanitisedSchema(val properties: JsonObject, val required: List<String>)
 
@@ -261,12 +291,24 @@ private class SanitisedSchema(val properties: JsonObject, val required: List<Str
  * a no-argument tool is a legitimate thing to be.
  */
 private fun sanitisedSchema(sourceKey: String, tool: ExternalVoiceTool): SanitisedSchema? {
-    val usable = tool.properties.filterValues { it is JsonObject }
+    val usable = tool.properties.filterValues { it is JsonObject && it.hasUsableType() }
     if (tool.properties.isNotEmpty() && usable.isEmpty()) return null
+    // Bytes, not just shape. MAX_DESCRIPTION_CHARS exists because a tool COUNT does not bound a
+    // payload, and `properties` is usually the larger half of a tool object — one plugin projecting
+    // every repository, host or role name into an `enum` ships a schema orders of magnitude past
+    // anything measured, while sitting comfortably under the tool ceiling. Rendered once here rather
+    // than guessed from the map size, because that is what actually goes on the wire.
+    val rendered = JsonObject(usable).toString()
+    if (rendered.length > MAX_SCHEMA_CHARS) {
+        logOnce(log, sourceKey + "hugeschema:${tool.name}", "Voice tool ${tool.name} dropped: its " +
+            "parameter schema is ${rendered.length} chars, over the ${MAX_SCHEMA_CHARS} cap")
+        return null
+    }
     if (usable.size != tool.properties.size) {
         val bad = tool.properties.keys - usable.keys
         logOnce(log, sourceKey + "badprops:${tool.name}", "Voice tool ${tool.name}: parameters $bad are not " +
-            "JSON-schema objects and are withheld; OpenAI would reject the whole session for them")
+            "usable JSON-schema objects and are withheld; OpenAI would reject the whole session " +
+            "for them")
     }
     val required = tool.required.filter { it in usable }
     if (required.size != tool.required.size) {

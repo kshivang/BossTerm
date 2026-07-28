@@ -86,6 +86,16 @@ internal class HostVoiceCallController(
      */
     private val toolTimeoutMs: (String) -> Long = { name -> VoiceToolTimeouts.inAppMs(name) },
     /**
+     * The confirmation interlock in front of irreversible tools, when one is in play.
+     *
+     * The controller does not consult it — the executor does. What it contributes is the one signal
+     * the executor cannot see: that the user has actually said something. Held here rather than
+     * derived inside the executor because "the user spoke" is a Realtime protocol event, and the
+     * protocol is this class's subject. Null on a surface with no embedder tools, where nothing is
+     * gated.
+     */
+    private val confirmations: VoiceConfirmationGate? = null,
+    /**
      * Called once when this call reaches a terminal state, however it got there — the user hung up,
      * a ceiling fired, or it failed.
      *
@@ -151,6 +161,9 @@ internal class HostVoiceCallController(
 
     /** In-flight tool calls, capped like the share path's MAX_IN_FLIGHT_TOOL_CALLS. */
     private val inFlightTools = AtomicInteger(0)
+
+    /** Advertised names BossTerm does not own — see [genericCaption]. Empty until the session is configured. */
+    @Volatile private var uncaptionedToolNames: Set<String> = emptySet()
 
     /**
      * The coroutine running each pending tool, so the watchdog can CANCEL it rather than just answer
@@ -513,7 +526,12 @@ internal class HostVoiceCallController(
             // The API has finished SENDING, which is not when the user has finished HEARING —
             // see VoiceAudioIo.queuedPlaybackChunks. Clear once the speaker actually drains, or the
             // bar reads "Listening…" while Boss is audibly mid-sentence.
-            "response.output_audio.done" -> clearSpeakingWhenAudible()
+            "response.output_audio.done" -> {
+                // The agent has had its say. That is the "announcement" half of the confirmation
+                // interlock — see VoiceConfirmationGate for why a user turn alone was not enough.
+                confirmations?.agentSpoke()
+                clearSpeakingWhenAudible()
+            }
 
             // Barge-in: the user started talking, so drop whatever the agent still has queued
             // instead of letting the two of them talk over each other.
@@ -532,6 +550,11 @@ internal class HostVoiceCallController(
 
             "input_audio_buffer.speech_stopped" -> {
                 userSpeechConfirmed = false
+                // The user has said something and finished saying it. This is what makes a
+                // confirmation token redeemable — see VoiceConfirmationGate for why the agent
+                // confirming with itself, inside one turn, must not be enough. The SERVER's
+                // judgement of what was speech, deliberately, rather than our own level gate.
+                confirmations?.userSpoke()
             }
 
             "response.function_call_arguments.done" -> handleFunctionCall(
@@ -762,6 +785,12 @@ internal class HostVoiceCallController(
 
     private fun sessionUpdate(s: TerminalSettings): JsonObject {
         val tools = executor.tools()
+        // Asked of the executor, not derived from the catalog. Deriving it was wrong on the DEFAULT
+        // configuration: voiceExposeAllTools is on, so the in-app surface advertises the whole MCP
+        // registry, most of which is outside VoiceToolCatalog — and every one of those BossTerm-owned
+        // tools was being captioned "Running read debug console…" instead of "Working…", with no
+        // embedder source involved at all.
+        uncaptionedToolNames = runCatching { executor.externalAdvertisedNames() }.getOrDefault(emptySet())
         return buildJsonObject {
             put("type", "session.update")
             putJsonObject("session") {
@@ -845,8 +874,29 @@ internal class HostVoiceCallController(
             "send_signal" -> arg("signal")?.let { "Sending $it…" } ?: "Sending a signal…"
             "get_last_command" -> "Checking the last command…"
             "list_panes" -> "Looking at the split panes…"
-            else -> "Working…"
+            else -> genericCaption(name)
         }
+    }
+
+    /**
+     * Caption for a tool with no case above.
+     *
+     * "Working…" for anything BossTerm owns, which is what the share viewer's mirror says and what
+     * [ai.rever.bossterm.compose.voice.VoiceCrossLanguageContractTest] pins in both languages. An
+     * EMBEDDER's tool gets its name instead: the status strip is the user's only sight of what the
+     * agent decided to do before it happens, and this PR's whole argument for the confirmation tier
+     * is that two probabilistic steps sit between what the user said and what gets called —
+     * "Working…" sixty-four times over is not a view of that.
+     *
+     * "Owns" is answered by the executor ([VoiceToolExecutor.externalAdvertisedNames]), not by
+     * checking the curated catalog. The catalog is the SHARE surface; the in-app one advertises the
+     * whole MCP registry by default, so a catalog check called most of BossTerm's own tools foreign.
+     * The JS contract is safe for a structural reason rather than this one: a share keeps the
+     * curated catalog and has no embedder source, so viewer.js can never be asked to caption one.
+     */
+    private fun genericCaption(name: String): String {
+        if (name !in uncaptionedToolNames) return "Working…"
+        return "Running ${clipPlain(name.replace('_', ' '), 40)}…"
     }
 
     internal companion object {

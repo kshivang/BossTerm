@@ -15,9 +15,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * Process-wide handle for the in-app ("Call BossTerm") voice call, so the pill in any window can
- * show and drive the one call this app has — mirroring how [ai.rever.bossterm.compose.share.SessionShareManager]
- * owns sharing state for the whole app.
+ * Process-wide handle for the in-app voice call, so the pill in any window can show and drive the
+ * one call this app has — mirroring how [ai.rever.bossterm.compose.share.SessionShareManager] owns
+ * sharing state for the whole app.
+ *
+ * Deliberately unnamed here: what the pill says is the embedder's `callLabel`, so writing "Call
+ * BossTerm" into this KDoc would go stale the first time a host set it to anything else.
  *
  * There is deliberately ONE call at a time: it owns the microphone and the speakers.
  */
@@ -44,8 +47,14 @@ internal object HostVoiceCall {
      * The tool scope is every registered tab rather than one share's subset: the caller here is the
      * machine's owner, talking about their own terminal, and this is the same surface their MCP
      * endpoint already exposes.
+     *
+     * [toolSource] is the embedder's own tool surface, passed down from
+     * [ai.rever.bossterm.compose.TabbedTerminal]'s `voiceToolSource` parameter — taken per call
+     * rather than registered once, so a host that swaps it (a plugin reload replacing the registry
+     * behind it) is picked up by the next call with nothing to unregister. Null leaves the surface
+     * exactly as the standalone app has it.
      */
-    fun start() {
+    fun start(toolSource: VoiceToolSource? = null) {
         val existing = controller
         if (existing != null && existing.state.value.active) return
         // `created` so the terminal callback can name the controller it belongs to: the release must
@@ -55,15 +64,24 @@ internal object HostVoiceCall {
         // let an end-during-agent-speech resurrect the capture loop and leak a line and a thread per
         // call), so reusing a controller would start a call whose audio can never open.
         var created: HostVoiceCallController? = null
+        val ownTools = GuiVoiceToolExecutor(
+            inScopeTabIds = { McpTerminalRegistry.allTabs().map { it.id }.toSet() },
+            anchorTabId = { activeTabId() },
+            // The caller IS the person at the keyboard, so their commands belong in the pane
+            // they are looking at. A share's executor deliberately leaves this false.
+            mayUseFocusedPane = true,
+        )
+        // One gate per call, shared by the executor that mints tokens and the controller that
+        // reports the user speaking. Built even without a source so the wiring has no second shape.
+        val confirmations = VoiceConfirmationGate()
         val c = HostVoiceCallController(
             scope = scope,
-            executor = GuiVoiceToolExecutor(
-                inScopeTabIds = { McpTerminalRegistry.allTabs().map { it.id }.toSet() },
-                anchorTabId = { activeTabId() },
-                // The caller IS the person at the keyboard, so their commands belong in the pane
-                // they are looking at. A share's executor deliberately leaves this false.
-                mayUseFocusedPane = true,
+            executor = if (toolSource == null) ownTools else CompositeVoiceToolExecutor(
+                base = ownTools,
+                source = toolSource,
+                confirmations = confirmations,
             ),
+            confirmations = confirmations,
             onTerminal = { created?.let { releaseIfCurrent(it) } },
         )
         created = c

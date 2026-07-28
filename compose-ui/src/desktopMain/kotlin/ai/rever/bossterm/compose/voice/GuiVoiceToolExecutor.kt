@@ -159,9 +159,23 @@ internal class GuiVoiceToolExecutor(
      * share keeps the curated catalog, where the declaredParameters allowlist is what stops
      * `panel: "new_tab"` escaping the share's scope.
      */
-    private fun allRegisteredTools(disabled: Set<String>): List<VoiceToolDef> =
+    private fun registeredForVoice(disabled: Set<String>) =
         server().registeredToolInfo()
             .filter { it.name !in disabled && handlerName(it.name) !in disabled }
+
+    /** The curated tools this surface may advertise, given [disabled] and what is [registered]. */
+    private fun curatedForVoice(disabled: Set<String>, registered: Set<String>) =
+        // LOCAL_TOOLS are answered from the registry rather than through a handler, so they skipped
+        // the disabled check that the class KDoc claims carries over "for free" — a user who turned
+        // list_tabs off via manage_tools still had it callable by voice, still listing every in-scope
+        // tab's title and cwd. Read-only and scope-filtered, but the invariant was stated and untrue.
+        VoiceToolCatalog.ALL.filter {
+            if (it.name in LOCAL_TOOLS) handlerName(it.name) !in disabled && it.name !in disabled
+            else handlerName(it.name) in registered
+        }
+
+    private fun allRegisteredTools(disabled: Set<String>): List<VoiceToolDef> =
+        registeredForVoice(disabled)
             .map { info ->
                 VoiceToolDef(
                     name = info.name,
@@ -181,15 +195,27 @@ internal class GuiVoiceToolExecutor(
         val (wrapper, disabled) = surface()
         // The whole surface, when the owner asked for it. A share never takes this path.
         if (mayUseFocusedPane && settings().voiceExposeAllTools) return allRegisteredTools(disabled)
-        val registered = wrapper.toolNames()
-        // LOCAL_TOOLS are answered from the registry rather than through a handler, so they skipped
-        // the disabled check that the class KDoc claims carries over "for free" — a user who turned
-        // list_tabs off via manage_tools still had it callable by voice, still listing every in-scope
-        // tab's title and cwd. Read-only and scope-filtered, but the invariant was stated and untrue.
-        return VoiceToolCatalog.ALL.filter {
-            if (it.name in LOCAL_TOOLS) handlerName(it.name) !in disabled && it.name !in disabled
-            else handlerName(it.name) in registered
+        return curatedForVoice(disabled, wrapper.toolNames())
+    }
+
+    /**
+     * The advertised NAMES, without materialising a [VoiceToolDef] for each.
+     *
+     * Worth overriding rather than taking the interface default, which maps over [tools]: the
+     * decorator asks for the base names before every tool call, and with `voiceExposeAllTools` on
+     * (the in-app default) the default implementation would build a full definition — schema object
+     * and all — for every registered MCP tool, only to read the names off them. `execute` then calls
+     * [tools] again for real, so the wasted pass was per call, four at a time.
+     *
+     * Shares the two filters with [tools] rather than restating them, because a second copy of "what
+     * this surface may advertise" is exactly the drift this file has been corrected for before.
+     */
+    override fun toolNames(): Set<String> {
+        val (wrapper, disabled) = surface()
+        if (mayUseFocusedPane && settings().voiceExposeAllTools) {
+            return registeredForVoice(disabled).mapTo(mutableSetOf()) { it.name }
         }
+        return curatedForVoice(disabled, wrapper.toolNames()).mapTo(mutableSetOf()) { it.name }
     }
 
     /**

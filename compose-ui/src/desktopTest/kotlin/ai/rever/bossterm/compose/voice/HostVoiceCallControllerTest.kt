@@ -127,6 +127,7 @@ class HostVoiceCallControllerTest {
         key: String? = "sk-test",
         enabled: Boolean = true,
         clock: () -> Long = { System.currentTimeMillis() },
+        confirmations: VoiceConfirmationGate? = null,
     ) = HostVoiceCallController(
         scope = CoroutineScope(Dispatchers.Default),
         executor = executor,
@@ -135,6 +136,7 @@ class HostVoiceCallControllerTest {
         settings = { TerminalSettings.DEFAULT.copy(voiceCallEnabled = enabled) },
         loadKey = { key },
         nowMs = clock,
+        confirmations = confirmations,
     )
 
     /**
@@ -886,6 +888,114 @@ class HostVoiceCallControllerTest {
         clock += HostVoiceCallController.LIMIT_TICK_MS
         assertTrue(await { c.state.value.phase == HostCallPhase.Error }, "the ceiling must end it")
         assertTrue(c.state.value.error?.contains("minute limit") == true, c.state.value.error ?: "")
+    }
+
+    /**
+     * The controller's contribution to the confirmation interlock: it is the only thing that knows
+     * either party has spoken. Without these two lines an irreversible embedder tool can never be
+     * confirmed — and, worse, nothing else in the suite would notice, because every other test of
+     * [VoiceConfirmationGate] pumps it by hand.
+     *
+     * Both signals, in order: the agent's announcement (`response.output_audio.done`) and then the
+     * user's answer (`input_audio_buffer.speech_stopped`). The user's alone is not enough — see the
+     * barge-in case in [VoiceToolSafetyTest].
+     */
+    @Test
+    fun `the agent announcing and the user answering is what unlocks a pending confirmation`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val gate = VoiceConfirmationGate()
+        val c = controller(transport, audio, confirmations = gate)
+        c.start()
+        assertTrue(await { c.state.value.phase == HostCallPhase.Live })
+
+        val args = JsonObject(emptyMap())
+        val minted = gate.redeem("git_discard", args, null)
+        val token = (minted as VoiceConfirmationGate.Decision.Confirm).token
+        assertTrue(
+            gate.redeem("git_discard", args, token) is VoiceConfirmationGate.Decision.Confirm,
+            "redeemable before anyone said anything",
+        )
+
+        // The agent says what it is about to do.
+        transport.deliver("""{"type":"response.output_audio.done"}""")
+        assertTrue(
+            gate.redeem("git_discard", args, token) is VoiceConfirmationGate.Decision.Confirm,
+            "redeemable before the user answered",
+        )
+
+        // The user answers.
+        transport.deliver("""{"type":"input_audio_buffer.speech_stopped"}""")
+
+        assertTrue(
+            await { gate.redeem("git_discard", args, token) is VoiceConfirmationGate.Decision.Allowed },
+            "both speech signals must reach the gate",
+        )
+        c.end()
+    }
+
+    /**
+     * The status strip is the user's only sight of what the agent decided to do before it happens,
+     * and with an embedder source there can be a hundred tools with no hand-written caption.
+     *
+     * Both halves matter and a mutation sweep found neither was pinned: captioning an embedder tool
+     * by name, AND leaving BossTerm's own on the shared "Working…" that
+     * [VoiceCrossLanguageContractTest] holds `viewer.js` to. Getting the second wrong would break
+     * the cross-language contract from a direction that test cannot see, since it captions an
+     * unstarted controller.
+     */
+    @Test
+    fun `an embedder tool is captioned by name and BossTerm's own are not`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        // The default in-app configuration: voiceExposeAllTools is ON, so BossTerm advertises its
+        // whole MCP registry, not the curated catalog. `show_image` and `read_debug_console` are
+        // BossTerm's own and outside VoiceToolCatalog — deciding ownership by checking the catalog
+        // called them foreign and captioned them "Running show image…", with no embedder source
+        // present at all. Ownership comes from the executor now.
+        val bossTermsOwn = VoiceToolCatalog.ALL.map { it.name } + listOf("show_image", "read_debug_console")
+        val executor = object : VoiceToolExecutor {
+            override fun tools(): List<VoiceToolDef> =
+                (bossTermsOwn + "git_status").map {
+                    VoiceToolDef(it, "d", kotlinx.serialization.json.buildJsonObject { }, write = false)
+                }
+            override fun externalAdvertisedNames(): Set<String> = setOf("git_status")
+            override fun contextSnapshot(defaultTabId: String?): String = ""
+            override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?) = "{}"
+        }
+        val c = controller(transport, audio, executor)
+        c.start()
+        assertTrue(await { transport.sentOfType("session.update").isNotEmpty() })
+
+        assertEquals("Running git status…", c.describeTool("git_status", "{}"))
+        assertEquals("Working…", c.describeTool("list_tabs", "{}"), "curated tools keep the shared caption")
+        assertEquals("Working…", c.describeTool("show_image", "{}"), "BossTerm's own, outside the catalog")
+        assertEquals("Working…", c.describeTool("read_debug_console", "{}"))
+        assertEquals("Working…", c.describeTool("never_advertised", "{}"))
+        c.end()
+    }
+
+    /** With no embedder source at all, nothing may be captioned by name. */
+    @Test
+    fun `the standalone surface captions nothing by name`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val executor = object : VoiceToolExecutor {
+            override fun tools(): List<VoiceToolDef> =
+                listOf("show_image", "read_debug_console", "manage_tools").map {
+                    VoiceToolDef(it, "d", kotlinx.serialization.json.buildJsonObject { }, write = false)
+                }
+            override fun contextSnapshot(defaultTabId: String?): String = ""
+            override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?) = "{}"
+        }
+        val c = controller(transport, audio, executor)
+        c.start()
+        assertTrue(await { transport.sentOfType("session.update").isNotEmpty() })
+
+        for (name in listOf("show_image", "read_debug_console", "manage_tools")) {
+            assertEquals("Working…", c.describeTool(name, "{}"), name)
+        }
+        c.end()
     }
 
     @Test

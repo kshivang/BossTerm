@@ -100,6 +100,10 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 - `VoiceAgentStorage.kt` — the chmod-600 key file
 - `VoiceAgentCustomization.kt` — the embedder seam for the agent's instructions (the button's label
   is a `TabbedTerminal` parameter instead, alongside `contextMenuItems`)
+- `VoiceToolSource.kt` — the EMBEDDER's tool surface (`TabbedTerminal(voiceToolSource = …)`), merged
+  into the in-app agent's tools by `CompositeVoiceToolExecutor`. In-app only; shares keep the
+  curated catalog. `VoiceToolPolicy.kt` holds the two safety tiers (never-advertise vs
+  confirmation-gated) and `VoiceConfirmationGate.kt` the speech interlock behind the second
 - Two surfaces, one tool set: the viewer path is browser↔OpenAI over WebRTC with an ephemeral secret;
   the in-app path is host↔OpenAI over WebSocket with the standard key. They key "agent is speaking"
   off *different* event families (`output_audio_buffer.*` vs `response.output_audio.*`), so a change

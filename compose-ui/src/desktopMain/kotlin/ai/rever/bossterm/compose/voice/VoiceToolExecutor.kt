@@ -59,6 +59,19 @@ interface VoiceToolExecutor {
     fun tools(): List<VoiceToolDef>
 
     /**
+     * Of the names [tools] just returned, the ones contributed by an embedder rather than BossTerm.
+     *
+     * Empty for every executor but the composite one, which is the only thing that knows: a caller
+     * looking at a name cannot tell an embedder's tool from one of BossTerm's, and guessing from
+     * [VoiceToolCatalog] gets it wrong the moment the in-app surface advertises the whole MCP
+     * registry — which it does by default.
+     *
+     * Used for the call bar's caption, where the distinction is the whole point: BossTerm's tools
+     * have hand-written captions that `viewer.js` mirrors, and an embedder's have nothing but a name.
+     */
+    fun externalAdvertisedNames(): Set<String> = emptySet()
+
+    /**
      * A short plain-text snapshot of the session (tab list + the viewer's current tab) baked
      * into the agent's instructions so it starts oriented. May be stale — the agent is told
      * to use tools for fresh data.

@@ -34,34 +34,31 @@ internal class AdvertisedExternalTool(
 internal data class ExternalSurface(
     val advertised: List<AdvertisedExternalTool>,
     /**
-     * Tier-1 refusals. Holds BOTH the source's own name and the name the tool *would* have been
-     * advertised under, because the model can arrive at either: the advertised one from an earlier
-     * enumeration that still offered the tool, the raw one from a sibling tool's description or the
-     * terminal itself. Stored at merge time rather than recomputed per lookup — recomputing meant
-     * re-deriving the advertised form from the raw name, which is not even possible under
-     * [VoiceToolCollisionPolicy.PrefixExternal], where the advertised form carries a prefix the
-     * lookup knew nothing about. An excluded tool went unrefused by its prefixed name there.
+     * Refused names → the phrase to say about them.
+     *
+     * Keyed by BOTH the source's own name and the one the tool would have been advertised under,
+     * because the model can arrive at either: the advertised one from an earlier enumeration that
+     * still offered the tool, the raw one from a sibling tool's description or the terminal itself.
+     * Recorded at merge time rather than recomputed per lookup — recomputing meant re-deriving the
+     * advertised form from the raw name, which is not even possible under
+     * [VoiceToolCollisionPolicy.PrefixExternal], where that form carries a prefix the lookup knew
+     * nothing about, so an excluded tool went unrefused by its prefixed name there.
+     *
+     * A phrase per name, not one phrase for the whole set: the agent says this out loud, and
+     * "it returns secret material" is the wrong thing to say about a tool an embedder's own rule
+     * happened to reject.
      */
-    val excluded: Set<String>,
-    /** Same, for tools left out for collision, ceiling or an unusable name. */
-    val dropped: Set<String>,
+    val refusals: Map<String, String>,
 ) {
     val byAdvertisedName: Map<String, AdvertisedExternalTool> = advertised.associateBy { it.advertisedName }
 
     companion object {
         /** What an enumeration that failed with no usable fallback contributes: nothing. */
-        val EMPTY = ExternalSurface(emptyList(), emptySet(), emptySet())
+        val EMPTY = ExternalSurface(emptyList(), emptyMap())
     }
 
     /** Why [name] is refused, or null if this surface has nothing to say about it. */
-    fun refusalFor(name: String): String? = when (name) {
-        in excluded ->
-            "$name is withheld from the voice agent: it returns secret material, and a voice call " +
-                "sends everything it touches through a third-party service."
-        in dropped ->
-            "$name is not available to the voice agent on this host."
-        else -> null
-    }
+    fun refusalFor(name: String): String? = refusals[name]?.let { "$name $it" }
 }
 
 /**
@@ -103,6 +100,8 @@ internal object VoiceToolNaming {
     }
 }
 
+private val log = LoggerFactory.getLogger("ai.rever.bossterm.compose.voice.VoiceToolMerge")
+
 /**
  * Merge an embedder's tools into the surface BossTerm already advertises.
  *
@@ -113,8 +112,6 @@ internal object VoiceToolNaming {
  * @param baseNames the names BossTerm's own executor is advertising this enumeration.
  * @param external the source's live list, in its declared order (which the ceiling respects).
  */
-private val log = LoggerFactory.getLogger("ai.rever.bossterm.compose.voice.VoiceToolMerge")
-
 internal fun mergeExternalTools(
     baseNames: Set<String>,
     external: List<ExternalVoiceTool>,
@@ -122,8 +119,7 @@ internal fun mergeExternalTools(
     policy: VoiceToolPolicy,
 ): ExternalSurface {
     val advertised = mutableListOf<AdvertisedExternalTool>()
-    val excluded = mutableSetOf<String>()
-    val dropped = mutableSetOf<String>()
+    val refusals = mutableMapOf<String, String>()
     val taken = baseNames.toMutableSet()
 
     /**
@@ -142,9 +138,9 @@ internal fun mergeExternalTools(
      * secret material". One guard, used by every exit, instead of the same reasoning re-derived four
      * times — it has already been missed twice.
      */
-    fun refuse(into: MutableSet<String>, raw: String, wanted: String) {
-        if (raw !in baseNames) into += raw
-        if (wanted.isNotEmpty() && wanted !in baseNames) into += wanted
+    fun refuse(raw: String, wanted: String, reason: String) {
+        if (raw !in baseNames) refusals[raw] = reason
+        if (wanted.isNotEmpty() && wanted !in baseNames) refusals[wanted] = reason
     }
 
     val usePrefix = policy.onNameCollision == VoiceToolCollisionPolicy.PrefixExternal &&
@@ -163,20 +159,20 @@ internal fun mergeExternalTools(
 
     for (tool in external) {
         val wanted = wantedNameFor(tool)
-        if (policy.isExcluded(tool)) {
-            refuse(excluded, tool.name, wanted)
-            logOnce(log, "excl:${tool.name}", "Voice tool ${tool.name} is withheld from the agent: " +
-                "it returns secret material")
+        val exclusion = policy.exclusionReason(tool)
+        if (exclusion != null) {
+            refuse(tool.name, wanted, exclusion)
+            logOnce(log, "excl:${tool.name}", "Voice tool ${tool.name} ${exclusion}")
             continue
         }
         if (advertised.size >= policy.maxExternalTools) {
-            refuse(dropped, tool.name, wanted)
+            refuse(tool.name, wanted, VoiceToolPolicy.UNAVAILABLE_REASON)
             logOnce(log, "cap:${tool.name}", "Voice tool ${tool.name} dropped: over the " +
                 "${policy.maxExternalTools}-tool ceiling for the external surface")
             continue
         }
         if (wanted.isEmpty()) {
-            refuse(dropped, tool.name, wanted)
+            refuse(tool.name, wanted, VoiceToolPolicy.UNAVAILABLE_REASON)
             logOnce(log, "name:${tool.name}", "Voice tool ${tool.name} dropped: no legal function " +
                 "name can be made from it")
             continue
@@ -185,7 +181,7 @@ internal fun mergeExternalTools(
         // offer the model two names for one implementation and call back with the same source name
         // for both — a duplicate, not a second tool.
         if (!seenSourceNames.add(tool.name)) {
-            refuse(dropped, tool.name, wanted)
+            refuse(tool.name, wanted, VoiceToolPolicy.UNAVAILABLE_REASON)
             logOnce(log, "dup:${tool.name}", "Voice tool ${tool.name} dropped: the source listed " +
                 "it more than once")
             continue
@@ -199,14 +195,14 @@ internal fun mergeExternalTools(
         if (!usePrefix && wanted in baseNames) {
             // refuse() filters both names out here by construction — `wanted` IS a base name — which
             // is exactly the invariant every other exit needs and used to lack.
-            refuse(dropped, tool.name, wanted)
+            refuse(tool.name, wanted, VoiceToolPolicy.UNAVAILABLE_REASON)
             logOnce(log, "clash:${tool.name}", "Voice tool ${tool.name} dropped: BossTerm already " +
                 "advertises $wanted, and its own implementation is the one the agent is told about")
             continue
         }
         val name = disambiguate(wanted, taken)
         if (name == null) {
-            refuse(dropped, tool.name, wanted)
+            refuse(tool.name, wanted, VoiceToolPolicy.UNAVAILABLE_REASON)
             logOnce(log, "exhausted:${tool.name}", "Voice tool ${tool.name} dropped: $wanted is taken " +
                 "and no distinct name was free")
             continue
@@ -229,7 +225,7 @@ internal fun mergeExternalTools(
             defProvider = { definitionFor(name, tool, gated) },
         )
     }
-    return ExternalSurface(advertised, excluded, dropped)
+    return ExternalSurface(advertised, refusals)
 }
 
 /**

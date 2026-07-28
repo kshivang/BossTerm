@@ -150,6 +150,85 @@ class VoiceToolSafetyTest {
         assertTrue(composite(FakeBaseExecutor(emptyList()), source).tools().isEmpty())
     }
 
+    /**
+     * The floor has to understand more than one naming convention, because the whole premise of the
+     * seam is names from a registry BossTerm has never seen.
+     *
+     * The `secret.get` row is the one that gives the game away: the merge sanitises it to
+     * `secret_get` for advertisement, so before this the name the model finally saw was exactly the
+     * one the pattern would have matched a moment earlier.
+     */
+    @Test
+    fun `secret tools are caught whatever the separator`() {
+        val spellings = listOf(
+            "secret_get", "secret-get", "secret.get", "getSecret", "get_secret",
+            "mySecretGet", "secret/get", "SECRET-GET", "api-key-get", "apiKeyGet",
+        )
+        for (name in spellings) {
+            assertTrue(VoiceToolPolicy.returnsSecretMaterial(name), "not caught: $name")
+            val source = FakeToolSource(listOf(externalTool(name), externalTool("git_status")))
+            val exec = composite(FakeBaseExecutor(emptyList()), source)
+            assertEquals(listOf("git_status"), exec.tools().map { it.name }, "advertised: $name")
+            // …and refused by the sanitised name it would have been advertised under, too.
+            for (asked in setOf(name, VoiceToolNaming.advertise(name))) {
+                assertFailsWith<VoiceToolException>("$name via $asked") {
+                    runBlocking { exec.execute(asked, noArgs, null) }
+                }
+            }
+            assertTrue(source.calls.isEmpty(), name)
+        }
+    }
+
+    @Test
+    fun `destructive tools are gated whatever the separator`() {
+        for (name in listOf("git-discard", "git.discard", "gitDiscard", "role-delete", "deleteUser")) {
+            assertTrue(VoiceToolPolicy.looksIrreversible(name), "not gated: $name")
+            val source = FakeToolSource(listOf(externalTool(name)))
+            val def = composite(FakeBaseExecutor(emptyList()), source).tools().single()
+            assertTrue(def.description.contains("cannot be undone"), "$name: ${def.description}")
+        }
+    }
+
+    /** Normalising must not start matching things that merely contain the letters. */
+    @Test
+    fun `normalisation does not over-match ordinary names`() {
+        for (name in listOf("tokenize", "list_tabs", "run-command", "gitStatus", "discardable_notes")) {
+            assertFalse(VoiceToolPolicy.returnsSecretMaterial(name), name)
+        }
+        for (name in listOf("list_tabs", "runCommand", "git-status", "undelete_all")) {
+            assertFalse(VoiceToolPolicy.looksIrreversible(name), name)
+        }
+    }
+
+    /**
+     * The agent says the refusal out loud, so "it returns secret material" must not be what it says
+     * about a tool the EMBEDDER's rule rejected — least of all in the fail-closed case, where a
+     * classifier that throws rejects the entire surface on account of an embedder bug.
+     */
+    @Test
+    fun `an embedder exclusion is not described as a secret leak`() {
+        val source = FakeToolSource(
+            list = listOf(externalTool("kubectl_exec")),
+            policy = VoiceToolPolicy(excludeExtra = { it.name.endsWith("_exec") }),
+        )
+        val exec = composite(FakeBaseExecutor(emptyList()), source)
+
+        val failure = assertFailsWith<VoiceToolException> {
+            runBlocking { exec.execute("kubectl_exec", noArgs, null) }
+        }
+        assertFalse(failure.message!!.contains("secret material"), failure.message!!)
+        assertTrue(failure.message!!.contains("host's policy"), failure.message!!)
+
+        // But a genuinely secret-looking one still says so.
+        val secret = FakeToolSource(listOf(externalTool("secret_get")))
+        val secretExec = composite(FakeBaseExecutor(emptyList()), secret)
+        assertTrue(
+            assertFailsWith<VoiceToolException> {
+                runBlocking { secretExec.execute("secret_get", noArgs, null) }
+            }.message!!.contains("secret material")
+        )
+    }
+
     @Test
     fun `the built-in patterns catch what they claim to`() {
         for (name in listOf("secret_get", "my_secret_get", "secrets_list", "api_key_get", "get_password")) {

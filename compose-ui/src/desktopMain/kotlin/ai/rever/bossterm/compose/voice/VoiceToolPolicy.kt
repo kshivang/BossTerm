@@ -98,12 +98,23 @@ class VoiceToolPolicy(
 ) {
 
     /** Tier 1: never advertised, never executed. */
-    fun isExcluded(tool: ExternalVoiceTool): Boolean =
-        tool.sensitive ||
-            returnsSecretMaterial(tool.name) ||
-            // Fail closed: a classifier that blew up has told us nothing, and "nothing" must not
-            // resolve to "advertise the secret tool".
-            runCatching { excludeExtra(tool) }.getOrDefault(true)
+    fun isExcluded(tool: ExternalVoiceTool): Boolean = exclusionReason(tool) != null
+
+    /**
+     * WHY [tool] is excluded, or null if it is not — because the answer is said out loud.
+     *
+     * A single reason string meant the agent told the user "that returns secret material" about
+     * anything the embedder's own rule rejected, and in the fail-closed case (a classifier that
+     * throws excludes everything) it said it about the entire surface, on account of an embedder
+     * bug. Wrong, and alarming in a specific way that invites the user to go looking for a leak.
+     */
+    fun exclusionReason(tool: ExternalVoiceTool): String? = when {
+        tool.sensitive || returnsSecretMaterial(tool.name) -> SECRET_REASON
+        // Fail closed: a classifier that blew up has told us nothing, and "nothing" must not
+        // resolve to "advertise the secret tool".
+        runCatching { excludeExtra(tool) }.getOrDefault(true) -> HOST_POLICY_REASON
+        else -> null
+    }
 
     /** Tier 2: advertised, but confirmation-gated. */
     fun isIrreversible(tool: ExternalVoiceTool): Boolean =
@@ -112,6 +123,17 @@ class VoiceToolPolicy(
             runCatching { irreversibleExtra(tool) }.getOrDefault(true)
 
     companion object {
+
+        /** Said out loud when a tool is withheld for tier 1 proper. */
+        const val SECRET_REASON =
+            "is withheld from the voice agent: it returns secret material, and a voice call sends " +
+                "everything it touches through a third-party service."
+
+        /** Said out loud when the EMBEDDER's own rule withheld it — no claim about why. */
+        const val HOST_POLICY_REASON = "is withheld from the voice agent by this host's policy."
+
+        /** Said out loud for a tool left out for collision, ceiling or an unusable name. */
+        const val UNAVAILABLE_REASON = "is not available to the voice agent on this host."
 
         /**
          * Default ceiling on the external surface.
@@ -158,10 +180,36 @@ class VoiceToolPolicy(
             RegexOption.IGNORE_CASE,
         )
 
-        /** True when [name] looks like it hands back a credential. */
-        fun returnsSecretMaterial(name: String): Boolean = SECRET_SEGMENTS.containsMatchIn(name)
+        /**
+         * [name] reduced to lowercase `_`-separated segments, so the patterns above see the same
+         * tool however its author spelled it.
+         *
+         * Both patterns anchor on `_`, and they ran against the RAW name — which meant they
+         * understood exactly one naming convention. `secret_get` was excluded; `secret-get`,
+         * `secret.get` and `getSecret` were not. Hyphens and dots are not exotic in a tool registry,
+         * and the premise of this whole seam is accepting names from a registry BossTerm has never
+         * seen. The `secret.get` case is the one that gives the game away: [VoiceToolNaming.advertise]
+         * sanitises it to `secret_get` for advertisement, so the name the model finally sees is the
+         * one that would have matched the pattern the tool was checked against a moment earlier.
+         *
+         * Normalising is a pure widening — it can only ever match more — which is the direction this
+         * floor is already committed to: a read tool wrongly excluded costs a capability, a secret
+         * tool wrongly advertised costs a credential.
+         */
+        fun segments(name: String): String = name
+            // camelCase and PascalCase boundaries, including the acronym case (`HTTPGet` → `HTTP_Get`).
+            .replace(Regex("(?<=[a-z0-9])(?=[A-Z])"), "_")
+            .replace(Regex("(?<=[A-Z])(?=[A-Z][a-z])"), "_")
+            // Anything that is not alphanumeric is a separator: `-`, `.`, `/`, `:`, spaces.
+            .replace(Regex("[^A-Za-z0-9]+"), "_")
+            .lowercase()
 
-        /** True when [name] looks like it destroys something with no undo. */
-        fun looksIrreversible(name: String): Boolean = IRREVERSIBLE_SEGMENTS.containsMatchIn(name)
+        /** True when [name] looks like it hands back a credential, however it is spelled. */
+        fun returnsSecretMaterial(name: String): Boolean =
+            SECRET_SEGMENTS.containsMatchIn(segments(name))
+
+        /** True when [name] looks like it destroys something with no undo, however it is spelled. */
+        fun looksIrreversible(name: String): Boolean =
+            IRREVERSIBLE_SEGMENTS.containsMatchIn(segments(name))
     }
 }

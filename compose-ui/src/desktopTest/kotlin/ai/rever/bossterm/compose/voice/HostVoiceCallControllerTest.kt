@@ -948,13 +948,18 @@ class HostVoiceCallControllerTest {
     fun `an embedder tool is captioned by name and BossTerm's own are not`() {
         val transport = FakeTransport()
         val audio = FakeAudio()
+        // The default in-app configuration: voiceExposeAllTools is ON, so BossTerm advertises its
+        // whole MCP registry, not the curated catalog. `show_image` and `read_debug_console` are
+        // BossTerm's own and outside VoiceToolCatalog — deciding ownership by checking the catalog
+        // called them foreign and captioned them "Running show image…", with no embedder source
+        // present at all. Ownership comes from the executor now.
+        val bossTermsOwn = VoiceToolCatalog.ALL.map { it.name } + listOf("show_image", "read_debug_console")
         val executor = object : VoiceToolExecutor {
-            override fun tools(): List<VoiceToolDef> = VoiceToolCatalog.ALL + VoiceToolDef(
-                name = "git_status",
-                description = "Working-tree status.",
-                parameters = kotlinx.serialization.json.buildJsonObject { },
-                write = false,
-            )
+            override fun tools(): List<VoiceToolDef> =
+                (bossTermsOwn + "git_status").map {
+                    VoiceToolDef(it, "d", kotlinx.serialization.json.buildJsonObject { }, write = false)
+                }
+            override fun externalAdvertisedNames(): Set<String> = setOf("git_status")
             override fun contextSnapshot(defaultTabId: String?): String = ""
             override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?) = "{}"
         }
@@ -964,7 +969,32 @@ class HostVoiceCallControllerTest {
 
         assertEquals("Running git status…", c.describeTool("git_status", "{}"))
         assertEquals("Working…", c.describeTool("list_tabs", "{}"), "curated tools keep the shared caption")
+        assertEquals("Working…", c.describeTool("show_image", "{}"), "BossTerm's own, outside the catalog")
+        assertEquals("Working…", c.describeTool("read_debug_console", "{}"))
         assertEquals("Working…", c.describeTool("never_advertised", "{}"))
+        c.end()
+    }
+
+    /** With no embedder source at all, nothing may be captioned by name. */
+    @Test
+    fun `the standalone surface captions nothing by name`() {
+        val transport = FakeTransport()
+        val audio = FakeAudio()
+        val executor = object : VoiceToolExecutor {
+            override fun tools(): List<VoiceToolDef> =
+                listOf("show_image", "read_debug_console", "manage_tools").map {
+                    VoiceToolDef(it, "d", kotlinx.serialization.json.buildJsonObject { }, write = false)
+                }
+            override fun contextSnapshot(defaultTabId: String?): String = ""
+            override suspend fun execute(name: String, args: JsonObject, defaultTabId: String?) = "{}"
+        }
+        val c = controller(transport, audio, executor)
+        c.start()
+        assertTrue(await { transport.sentOfType("session.update").isNotEmpty() })
+
+        for (name in listOf("show_image", "read_debug_console", "manage_tools")) {
+            assertEquals("Working…", c.describeTool(name, "{}"), name)
+        }
         c.end()
     }
 

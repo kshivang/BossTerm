@@ -159,7 +159,12 @@ internal class VoiceConfirmationGate(
         // Unbounded growth would need a model that asks for hundreds of confirmations in one call,
         // but a per-call map with no ceiling is the kind of thing that only looks fine.
         if (pending.size > MAX_PENDING) {
-            pending.entries.sortedBy { it.value.expiresAtMs }
+            // Tie-broken on the turn counter, not just the expiry. Several tokens minted inside one
+            // clock tick share an expiry — guaranteed under an injected clock, likely under a real
+            // one — and ConcurrentHashMap's iteration order is unspecified, so "oldest" could evict
+            // the token this call just minted. It fails closed into a re-mint either way; being
+            // exact costs one comparator.
+            pending.entries.sortedWith(compareBy({ it.value.expiresAtMs }, { it.value.mintedAtTurn }))
                 .take(pending.size - MAX_PENDING)
                 .forEach { pending.remove(it.key) }
         }

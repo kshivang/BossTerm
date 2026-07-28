@@ -81,10 +81,25 @@ internal class CompositeVoiceToolExecutor(
      */
     @Volatile private var lastGood: Pair<Set<String>, ExternalSurface>? = null
 
+    /** See [externalAdvertisedNames]. */
+    @Volatile private var externalNames: Set<String> = emptySet()
+
     override fun tools(): List<VoiceToolDef> {
         val baseTools = base.tools()
-        return (baseTools + external(baseTools).advertised.map { it.def }).filter { legalName(it.name) }
+        val ext = external(baseTools)
+        externalNames = ext.advertised.mapTo(mutableSetOf()) { it.advertisedName }
+        return (baseTools + ext.advertised.map { it.def }).filter { legalName(it.name) }
     }
+
+    /**
+     * The advertised names that came from the embedder, as of the last [tools] call.
+     *
+     * Only this class can answer it: [base] does not know the source exists, and the caller cannot
+     * tell an embedder tool from one of BossTerm's own by looking at a name. Cached from [tools]
+     * rather than recomputed, because the one caller asks for it immediately after configuring the
+     * session and re-enumerating would run the whole merge again for a set already in hand.
+     */
+    override fun externalAdvertisedNames(): Set<String> = externalNames
 
     /**
      * Last gate before a name reaches OpenAI.
@@ -199,10 +214,19 @@ internal class CompositeVoiceToolExecutor(
         clean: JsonObject,
         approvalBudgetMs: Long,
     ): String? {
-        val approve = runCatching { source.policy.approve }.getOrNull()
+        // Both on IO, for the reason source.call is: an approver IS a modal dialog, and dialogs
+        // block — invokeAndWait, runBlocking, showConfirmDialog — rather than suspend. So
+        // withTimeoutOrNull has no suspension point to cancel at, the budget does not bind, and the
+        // thread stays pinned for as long as the dialog is up. Four of those on Dispatchers.Default
+        // is four of the threads the call's own state machine, drain watcher and limit ticker run
+        // on. Off that dispatcher it is a slow tool call; on it, it is the call freezing. (The
+        // policy getter goes with it: it is embedder code outside the enumeration deadline.)
+        val approve = withContext(Dispatchers.IO) { runCatching { source.policy.approve }.getOrNull() }
         if (approve != null) {
             val ok = try {
-                withTimeoutOrNull(approvalBudgetMs) { approve(hit.source.name, clean) }
+                withTimeoutOrNull(approvalBudgetMs) {
+                    withContext(Dispatchers.IO) { approve(hit.source.name, clean) }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
@@ -319,7 +343,16 @@ internal class CompositeVoiceToolExecutor(
          */
         const val DEFAULT_ENUMERATE_TIMEOUT_MS = 2_000L
 
-        /** Daemon threads: one wedged enumeration must not keep the JVM alive at shutdown. */
+        /**
+         * Daemon threads: one wedged enumeration must not keep the JVM alive at shutdown.
+         *
+         * Cached and unbounded, deliberately. A source that ignores interrupts leaks one thread per
+         * enumeration for the life of the process, which is real — but the alternative is worse: a
+         * bounded pool turns that leak into a stall, where the first wedged enumeration takes the
+         * external surface down with it for every later call. An unbounded pool of daemon threads
+         * degrades; a bounded one fails. The cached pool reaps anything idle for a minute, so the
+         * leak is exactly as large as the number of enumerations a broken source was asked for.
+         */
         private val ENUMERATION = Executors.newCachedThreadPool { r ->
             Thread(r, "voice-tool-source").apply { isDaemon = true }
         }

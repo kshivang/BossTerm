@@ -785,12 +785,12 @@ internal class HostVoiceCallController(
 
     private fun sessionUpdate(s: TerminalSettings): JsonObject {
         val tools = executor.tools()
-        // Remembered so describeTool can caption a tool BossTerm has never heard of without asking
-        // the executor — which, with an embedder source behind it, would re-enumerate the whole
-        // surface to draw one line of status text.
-        uncaptionedToolNames = tools.mapNotNullTo(mutableSetOf()) { def ->
-            def.name.takeIf { it !in CURATED_TOOL_NAMES }
-        }
+        // Asked of the executor, not derived from the catalog. Deriving it was wrong on the DEFAULT
+        // configuration: voiceExposeAllTools is on, so the in-app surface advertises the whole MCP
+        // registry, most of which is outside VoiceToolCatalog — and every one of those BossTerm-owned
+        // tools was being captioned "Running read debug console…" instead of "Working…", with no
+        // embedder source involved at all.
+        uncaptionedToolNames = runCatching { executor.externalAdvertisedNames() }.getOrDefault(emptySet())
         return buildJsonObject {
             put("type", "session.update")
             putJsonObject("session") {
@@ -881,16 +881,18 @@ internal class HostVoiceCallController(
     /**
      * Caption for a tool with no case above.
      *
-     * "Working…" for anything BossTerm knows about, which is what the share viewer's mirror says and
-     * what [ai.rever.bossterm.compose.voice.VoiceCrossLanguageContractTest] pins in both languages.
-     * An EMBEDDER's tool gets its name instead: the status strip is the user's only sight of what
-     * the agent decided to do before it happens, and this PR's whole argument for the confirmation
-     * tier is that two probabilistic steps sit between what the user said and what gets called —
+     * "Working…" for anything BossTerm owns, which is what the share viewer's mirror says and what
+     * [ai.rever.bossterm.compose.voice.VoiceCrossLanguageContractTest] pins in both languages. An
+     * EMBEDDER's tool gets its name instead: the status strip is the user's only sight of what the
+     * agent decided to do before it happens, and this PR's whole argument for the confirmation tier
+     * is that two probabilistic steps sit between what the user said and what gets called —
      * "Working…" sixty-four times over is not a view of that.
      *
-     * Only for names this call actually advertised and BossTerm does not own, so the JS contract is
-     * untouched by construction rather than by luck: a share keeps the curated catalog, so viewer.js
-     * can never be asked to caption one of these.
+     * "Owns" is answered by the executor ([VoiceToolExecutor.externalAdvertisedNames]), not by
+     * checking the curated catalog. The catalog is the SHARE surface; the in-app one advertises the
+     * whole MCP registry by default, so a catalog check called most of BossTerm's own tools foreign.
+     * The JS contract is safe for a structural reason rather than this one: a share keeps the
+     * curated catalog and has no embedder source, so viewer.js can never be asked to caption one.
      */
     private fun genericCaption(name: String): String {
         if (name !in uncaptionedToolNames) return "Working…"
@@ -899,9 +901,6 @@ internal class HostVoiceCallController(
 
     internal companion object {
         val json = Json { ignoreUnknownKeys = true }
-
-        /** BossTerm's own tool names — everything the viewer's mirror is also expected to caption. */
-        val CURATED_TOOL_NAMES: Set<String> = VoiceToolCatalog.ALL.mapTo(mutableSetOf()) { it.name }
 
         /**
          * Hard ceiling on one in-app call — deliberately SHORTER than OpenAI's own 60-minute session

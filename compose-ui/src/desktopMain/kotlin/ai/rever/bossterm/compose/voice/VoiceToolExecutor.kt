@@ -59,6 +59,16 @@ interface VoiceToolExecutor {
     fun tools(): List<VoiceToolDef>
 
     /**
+     * The advertised names only.
+     *
+     * Defaults to mapping over [tools], which is right for an executor whose [tools] is cheap. An
+     * implementation where it is not should override this: the composite asks for the base names
+     * before every tool call, and building a definition per tool to read its name off is the kind of
+     * waste that hides inside a network-bound call.
+     */
+    fun toolNames(): Set<String> = tools().mapTo(mutableSetOf()) { it.name }
+
+    /**
      * Of the names [tools] just returned, the ones contributed by an embedder rather than BossTerm.
      *
      * Empty for every executor but the composite one, which is the only thing that knows: a caller

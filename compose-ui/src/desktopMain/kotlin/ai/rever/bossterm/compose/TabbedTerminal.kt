@@ -171,6 +171,8 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  *                  `callLabel = "Call Boss"` inside BossConsole. This renames the BUTTON only;
  *                  "Boss Calling" is the feature's name and is fixed, as is the share viewer's own
  *                  Call button (a static web asset, possibly served by the daemon).
+ * @param modifier Compose modifier for the terminal container
+ * @param platformServices Custom platform services
  * @param voiceToolSource Embedder tools offered to the in-app voice agent on top of BossTerm's own.
  *                        Its `tools()` is called fresh whenever the agent's tool list is built — at
  *                        call start and before every tool call — so tools that come and go at
@@ -179,8 +181,6 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  *                        Shared sessions are never affected; they keep the curated catalog.
  *                        Use case: a host whose own features (git, browser, plugins) should be
  *                        reachable by voice — see [ai.rever.bossterm.compose.voice.VoiceToolSource].
- * @param modifier Compose modifier for the terminal container
- * @param platformServices Custom platform services
  */
 @Composable
 fun TabbedTerminal(

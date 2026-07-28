@@ -3,6 +3,9 @@ package ai.rever.bossterm.compose.voice
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -186,6 +189,89 @@ class VoiceToolSourceIsolationTest {
 
         source.list = emptyList()
         assertTrue(exec.tools().isEmpty(), "the fallback outlived a real unregistration")
+    }
+
+    /**
+     * A malformed schema kills the call by the same route an illegal NAME does — OpenAI rejects the
+     * whole `session.update`, every tool disappears, and it happens at session config, before the
+     * watchdog that would explain it exists. `properties` is a raw JsonObject from embedder code and
+     * went into the advertised schema untouched.
+     */
+    @Test
+    fun `a property that is not a schema object is withheld, not advertised`() {
+        val source = FakeToolSource(
+            listOf(
+                externalTool(
+                    "git_status",
+                    properties = kotlinx.serialization.json.buildJsonObject {
+                        put("path", kotlinx.serialization.json.JsonPrimitive("string"))
+                        putJsonObject("depth") { put("type", "integer") }
+                    },
+                    required = listOf("path", "depth"),
+                )
+            )
+        )
+        val def = composite(FakeBaseExecutor(emptyList()), source).tools().single()
+
+        val props = def.parameters["properties"]!!.jsonObject
+        assertEquals(setOf("depth"), props.keys, "a non-object property reached the advertised schema")
+        // `required` naming a property that is no longer there is itself a rejected session.
+        assertEquals("""["depth"]""", def.parameters["required"].toString())
+    }
+
+    @Test
+    fun `a required name with no matching property is dropped`() {
+        val source = FakeToolSource(
+            listOf(externalTool("git_status", properties = props("path"), required = listOf("path", "ghost")))
+        )
+        val def = composite(FakeBaseExecutor(emptyList()), source).tools().single()
+        assertEquals("""["path"]""", def.parameters["required"].toString())
+    }
+
+    /** Declared parameters, none of them usable: the schema no longer describes the tool. */
+    @Test
+    fun `a tool whose whole schema is malformed is dropped and refused`() {
+        val source = FakeToolSource(
+            listOf(
+                externalTool(
+                    "git_status",
+                    properties = kotlinx.serialization.json.buildJsonObject {
+                        put("path", kotlinx.serialization.json.JsonPrimitive("string"))
+                    },
+                ),
+                externalTool("git_log"),
+            )
+        )
+        val exec = composite(FakeBaseExecutor(emptyList()), source)
+
+        assertEquals(listOf("git_log"), exec.tools().map { it.name })
+        assertFailsWith<VoiceToolException> { runBlocking { exec.execute("git_status", noArgs, null) } }
+    }
+
+    /** But a tool that declares no parameters at all is perfectly legitimate. */
+    @Test
+    fun `a no-argument tool survives`() {
+        val source = FakeToolSource(
+            listOf(externalTool("git_status", properties = JsonObject(emptyMap())))
+        )
+        assertEquals(
+            listOf("git_status"),
+            composite(FakeBaseExecutor(emptyList()), source).tools().map { it.name },
+        )
+    }
+
+    /**
+     * The ceiling bounds tool COUNT, and the byte measurements behind its default assume
+     * BossConsole-sized descriptions. Without a per-description cap a source can sit under the
+     * ceiling and still ship a quarter of a megabyte of session config every turn.
+     */
+    @Test
+    fun `an enormous description is clamped`() {
+        val source = FakeToolSource(
+            listOf(externalTool("git_status", description = "x".repeat(50_000)))
+        )
+        val def = composite(FakeBaseExecutor(emptyList()), source).tools().single()
+        assertTrue(def.description.length < 2_000, "description was ${def.description.length} chars")
     }
 
     @Test

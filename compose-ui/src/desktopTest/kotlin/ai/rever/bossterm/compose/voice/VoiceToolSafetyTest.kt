@@ -500,6 +500,27 @@ class VoiceToolSafetyTest {
 
     // ------------------------------------------------- tier 2, host approval
 
+    /**
+     * With an approver installed the token handshake never runs, so advertising it describes a
+     * mechanism that does not exist — on up to sixty-four tools.
+     */
+    @Test
+    fun `an approver installed means the token protocol is not advertised`() {
+        val source = FakeToolSource(
+            list = listOf(externalTool("git_discard")),
+            policy = VoiceToolPolicy(approve = { _, _ -> true }),
+        )
+        val def = composite(FakeBaseExecutor(emptyList()), source).tools().single()
+
+        assertFalse(
+            VoiceConfirmationGate.CONFIRM_ARG in def.parameters["properties"]!!.jsonObject,
+            "a token parameter was advertised for a tool the host approves by dialog",
+        )
+        assertTrue(def.description.contains("cannot be undone"), def.description)
+        assertTrue(def.description.contains("asked to approve"), def.description)
+        assertFalse(def.description.contains("spoken confirmation"), def.description)
+    }
+
     @Test
     fun `a host approver replaces the in-band protocol`() {
         val asked = mutableListOf<String>()

@@ -7,7 +7,6 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import org.slf4j.LoggerFactory
 import java.security.MessageDigest
-import java.util.concurrent.ConcurrentHashMap
 
 /** One external tool as the model sees it, plus the mapping back to the source. */
 internal class AdvertisedExternalTool(
@@ -113,6 +112,8 @@ private val log = LoggerFactory.getLogger("ai.rever.bossterm.compose.voice.Voice
  * @param external the source's live list, in its declared order (which the ceiling respects).
  */
 internal fun mergeExternalTools(
+    /** Namespaces the log dedupe so two sources in one process do not share slots. */
+    sourceKey: String = "",
     baseNames: Set<String>,
     external: List<ExternalVoiceTool>,
     prefix: String,
@@ -146,7 +147,7 @@ internal fun mergeExternalTools(
     val usePrefix = policy.onNameCollision == VoiceToolCollisionPolicy.PrefixExternal &&
         prefix.isNotBlank()
     if (policy.onNameCollision == VoiceToolCollisionPolicy.PrefixExternal && prefix.isBlank()) {
-        logOnce(log, "blank-prefix", "Voice tool source asked for prefixing but declared no namePrefix; " +
+        logOnce(log, sourceKey + "blank-prefix", "Voice tool source asked for prefixing but declared no namePrefix; " +
             "colliding tools will be dropped instead")
     }
 
@@ -162,18 +163,18 @@ internal fun mergeExternalTools(
         val exclusion = policy.exclusionReason(tool)
         if (exclusion != null) {
             refuse(tool.name, wanted, exclusion)
-            logOnce(log, "excl:${tool.name}", "Voice tool ${tool.name} ${exclusion}")
+            logOnce(log, sourceKey + "excl:${tool.name}", "Voice tool ${tool.name} ${exclusion}")
             continue
         }
         if (advertised.size >= policy.maxExternalTools) {
             refuse(tool.name, wanted, VoiceToolPolicy.UNAVAILABLE_REASON)
-            logOnce(log, "cap:${tool.name}", "Voice tool ${tool.name} dropped: over the " +
+            logOnce(log, sourceKey + "cap:${tool.name}", "Voice tool ${tool.name} dropped: over the " +
                 "${policy.maxExternalTools}-tool ceiling for the external surface")
             continue
         }
         if (wanted.isEmpty()) {
             refuse(tool.name, wanted, VoiceToolPolicy.UNAVAILABLE_REASON)
-            logOnce(log, "name:${tool.name}", "Voice tool ${tool.name} dropped: no legal function " +
+            logOnce(log, sourceKey + "name:${tool.name}", "Voice tool ${tool.name} dropped: no legal function " +
                 "name can be made from it")
             continue
         }
@@ -182,7 +183,7 @@ internal fun mergeExternalTools(
         // for both — a duplicate, not a second tool.
         if (!seenSourceNames.add(tool.name)) {
             refuse(tool.name, wanted, VoiceToolPolicy.UNAVAILABLE_REASON)
-            logOnce(log, "dup:${tool.name}", "Voice tool ${tool.name} dropped: the source listed " +
+            logOnce(log, sourceKey + "dup:${tool.name}", "Voice tool ${tool.name} dropped: the source listed " +
                 "it more than once")
             continue
         }
@@ -196,14 +197,14 @@ internal fun mergeExternalTools(
             // refuse() filters both names out here by construction — `wanted` IS a base name — which
             // is exactly the invariant every other exit needs and used to lack.
             refuse(tool.name, wanted, VoiceToolPolicy.UNAVAILABLE_REASON)
-            logOnce(log, "clash:${tool.name}", "Voice tool ${tool.name} dropped: BossTerm already " +
+            logOnce(log, sourceKey + "clash:${tool.name}", "Voice tool ${tool.name} dropped: BossTerm already " +
                 "advertises $wanted, and its own implementation is the one the agent is told about")
             continue
         }
         val name = disambiguate(wanted, taken)
         if (name == null) {
             refuse(tool.name, wanted, VoiceToolPolicy.UNAVAILABLE_REASON)
-            logOnce(log, "exhausted:${tool.name}", "Voice tool ${tool.name} dropped: $wanted is taken " +
+            logOnce(log, sourceKey + "exhausted:${tool.name}", "Voice tool ${tool.name} dropped: $wanted is taken " +
                 "and no distinct name was free")
             continue
         }
@@ -211,10 +212,18 @@ internal fun mergeExternalTools(
         // line per tool says nothing about 106 of them; what earns a line is a name that had to be
         // sanitised or disambiguated to fit.
         if (name != (if (usePrefix) prefix + tool.name else tool.name)) {
-            logOnce(log, "rename:${tool.name}", "Voice tool ${tool.name} advertised as $name")
+            logOnce(log, sourceKey + "rename:${tool.name}", "Voice tool ${tool.name} advertised as $name")
+        }
+        val schema = sanitisedSchema(sourceKey, tool)
+        if (schema == null) {
+            refuse(tool.name, wanted, VoiceToolPolicy.UNAVAILABLE_REASON)
+            logOnce(log, sourceKey + "schema:${tool.name}", "Voice tool ${tool.name} dropped: none of its " +
+                "declared parameters are JSON-schema objects")
+            continue
         }
         taken += name
         val gated = policy.isIrreversible(tool)
+        val hostApproves = policy.approve != null
         advertised += AdvertisedExternalTool(
             advertisedName = name,
             source = tool,
@@ -222,10 +231,49 @@ internal fun mergeExternalTools(
             // Lazily: execute() runs this whole merge before every tool call and reads only
             // byAdvertisedName/gated/source, so building 64 parameter schemas per call — inside a
             // live call — bought nothing. tools() forces them, which is the one caller that needs them.
-            defProvider = { definitionFor(name, tool, gated) },
+            defProvider = { definitionFor(sourceKey, name, tool, gated, schema, hostApproves) },
         )
     }
     return ExternalSurface(advertised, refusals)
+}
+
+/** A tool's parameter schema, after everything unusable has been taken out of it. */
+private class SanitisedSchema(val properties: JsonObject, val required: List<String>)
+
+/**
+ * [tool]'s schema reduced to what OpenAI will actually accept, or null if nothing coherent is left.
+ *
+ * [legalName] makes the argument for why this exists and then only applies it to the NAME: an
+ * illegal function name does not fail as one broken tool, the whole `session.update` is rejected,
+ * every tool disappears and the call dies with the cause in a Realtime error field. Exactly the same
+ * is true of the rest of the tool object, and nothing checked it — [ExternalVoiceTool.properties] is
+ * a raw `JsonObject` from embedder code and went straight into `parameters.properties`, so
+ * `{"path": "string"}` (a string where a schema object belongs) killed the call by the same route,
+ * before the watchdog that would explain it exists.
+ *
+ * Not hypothetical for the caller this was built for: the worked example casts `.jsonObject` over
+ * whatever a plugin happened to register.
+ *
+ * Each property value must be a JSON object; the rest are dropped by name. `required` is intersected
+ * with what survives, because a `required` entry naming a property that is not there is itself a
+ * rejected session. A tool that declared parameters and has none left is dropped entirely — its
+ * schema no longer describes it — while a tool that declared none in the first place is fine, since
+ * a no-argument tool is a legitimate thing to be.
+ */
+private fun sanitisedSchema(sourceKey: String, tool: ExternalVoiceTool): SanitisedSchema? {
+    val usable = tool.properties.filterValues { it is JsonObject }
+    if (tool.properties.isNotEmpty() && usable.isEmpty()) return null
+    if (usable.size != tool.properties.size) {
+        val bad = tool.properties.keys - usable.keys
+        logOnce(log, sourceKey + "badprops:${tool.name}", "Voice tool ${tool.name}: parameters $bad are not " +
+            "JSON-schema objects and are withheld; OpenAI would reject the whole session for them")
+    }
+    val required = tool.required.filter { it in usable }
+    if (required.size != tool.required.size) {
+        logOnce(log, sourceKey + "badrequired:${tool.name}", "Voice tool ${tool.name}: required names " +
+            "${tool.required.toSet() - required.toSet()} have no matching parameter and are dropped")
+    }
+    return SanitisedSchema(JsonObject(usable), required)
 }
 
 /**
@@ -256,19 +304,31 @@ private fun disambiguate(wanted: String, taken: Set<String>): String? {
 private const val MAX_DISAMBIGUATION_SUFFIX = 9
 
 /** The advertised definition: the source's own schema, plus the confirmation argument when gated. */
-private fun definitionFor(name: String, tool: ExternalVoiceTool, gated: Boolean): VoiceToolDef {
-    // A source that declares its OWN `voice_confirm` would have it overwritten here, and — because
-    // the argument allowlist is the source's declared keys — the host's token would then be
-    // forwarded to it, contradicting "the confirmation argument is the host's, not the tool's".
-    // Warn rather than drop the tool: the collision is the source's to fix and losing the tool over
-    // a parameter name is a worse trade than losing that parameter.
-    if (gated && VoiceConfirmationGate.CONFIRM_ARG in tool.properties) {
-        logOnce(log, "confirmarg:${tool.name}", "Voice tool ${tool.name} declares a " +
+private fun definitionFor(
+    sourceKey: String,
+    name: String,
+    tool: ExternalVoiceTool,
+    gated: Boolean,
+    schema: SanitisedSchema,
+    hostApproves: Boolean,
+): VoiceToolDef {
+    // The in-band handshake is only advertised when it is the one that will actually run. With an
+    // approver installed, confirmationRefusal short-circuits to the modal and never mints a token —
+    // so telling the model about a token protocol it will never see is describing a mechanism that
+    // does not exist, on up to sixty-four tools.
+    val advertiseToken = gated && !hostApproves
+    if (advertiseToken && VoiceConfirmationGate.CONFIRM_ARG in schema.properties) {
+        // A source that declares its OWN `voice_confirm` would have it overwritten here, and —
+        // because the argument allowlist is the source's declared keys — the host's token would then
+        // be forwarded to it, contradicting "the confirmation argument is the host's, not the
+        // tool's". Warn rather than drop the tool: the collision is the source's to fix, and losing
+        // the tool over a parameter name is a worse trade than losing that parameter.
+        logOnce(log, sourceKey + "confirmarg:${tool.name}", "Voice tool ${tool.name} declares a " +
             "${VoiceConfirmationGate.CONFIRM_ARG} parameter; the host's confirmation argument " +
             "takes that name and the tool's own will not be passed through")
     }
-    val properties = if (!gated) tool.properties else JsonObject(
-        tool.properties + (
+    val properties = if (!advertiseToken) schema.properties else JsonObject(
+        schema.properties + (
             VoiceConfirmationGate.CONFIRM_ARG to buildJsonObject {
                 put("type", "string")
                 put(
@@ -283,35 +343,64 @@ private fun definitionFor(name: String, tool: ExternalVoiceTool, gated: Boolean)
     return VoiceToolDef(
         name = name,
         // Said in the description rather than only in the Rules block because the Rules are one
-        // paragraph the model reads once, while this sits on the tool it is about to pick.
-        description = if (gated) {
-            tool.description.trimEnd().let { if (it.isEmpty()) it else "$it " } +
-                "This cannot be undone and requires spoken confirmation."
-        } else {
-            tool.description
+        // paragraph the model reads once, while this sits on the tool it is about to pick. The
+        // wording follows the mechanism: a token handshake it must drive, or a dialog it will wait on.
+        description = buildString {
+            append(clampDescription(tool.description).trimEnd())
+            if (gated) {
+                if (isNotEmpty()) append(' ')
+                append(
+                    if (hostApproves) "This cannot be undone; the user will be asked to approve it."
+                    else "This cannot be undone and requires spoken confirmation."
+                )
+            }
         },
         parameters = buildJsonObject {
             put("type", "object")
             put("properties", properties)
-            putJsonArray("required") { tool.required.forEach { add(it) } }
+            putJsonArray("required") { schema.required.forEach { add(it) } }
         },
         write = tool.write,
     )
 }
 
 /**
- * WARN the first time [key] is seen in this process, DEBUG every time after.
+ * Cap on one advertised description.
  *
- * Enumeration runs before every tool call, so warning each time would put thirteen identical lines
- * in the log per call. Warning only once, though, quietly weakened the claim this logging exists to
+ * [VoiceToolPolicy.maxExternalTools] bounds the tool COUNT, and the volume measurements behind its
+ * default assume descriptions the size BossConsole writes (a few hundred bytes). Nothing bounded the
+ * bytes, so a source with 4 KB descriptions ships a quarter of a megabyte of session config on every
+ * turn while sitting comfortably under the ceiling — the ceiling would not be bounding what it is
+ * documented to bound. Same reasoning and the same shape as [clampToolResult], one layer earlier.
+ */
+private const val MAX_DESCRIPTION_CHARS = 1_024
+
+private fun clampDescription(description: String): String =
+    if (description.length <= MAX_DESCRIPTION_CHARS) description
+    else description.take(MAX_DESCRIPTION_CHARS - 1).trimEnd() + "…"
+
+/**
+ * WARN the first time [key] is seen, DEBUG every time after.
+ *
+ * Enumeration runs before every tool call, so warning each time would put thirteen identical lines in
+ * the log per call. Warning only once, though, quietly weakened the claim this logging exists to
  * make: "every dropped tool is logged by name" was true once per process, and a plugin reload that
  * changed WHICH tools were dropped went unmentioned because the key had been seen before. The
- * downgrade keeps one loud line per distinct cause and leaves the per-call record at a level that
- * can be turned on when someone is actually looking for it.
+ * downgrade keeps one loud line per distinct cause and leaves the per-call record at a level that can
+ * be turned on when someone is looking for it.
+ *
+ * A bounded LRU rather than a set with a size check: the set was cleared wholesale on overflow, which
+ * re-warned an entire surface in a burst instead of evicting the least recently seen, and the
+ * check-then-clear-then-add sequence raced across enumeration-pool threads. Callers namespace their
+ * keys, so two sources in one process do not share slots.
  */
-private val loggedKeys = ConcurrentHashMap.newKeySet<String>()
+private const val MAX_LOGGED_KEYS = 512
+
+private val loggedKeys = object : LinkedHashMap<String, Unit>(64, 0.75f, true) {
+    override fun removeEldestEntry(eldest: Map.Entry<String, Unit>): Boolean = size > MAX_LOGGED_KEYS
+}
 
 internal fun logOnce(log: org.slf4j.Logger, key: String, message: String) {
-    if (loggedKeys.size > 500) loggedKeys.clear()
-    if (loggedKeys.add(key)) log.warn(message) else log.debug(message)
+    val firstTime = synchronized(loggedKeys) { loggedKeys.put(key, Unit) == null }
+    if (firstTime) log.warn(message) else log.debug(message)
 }

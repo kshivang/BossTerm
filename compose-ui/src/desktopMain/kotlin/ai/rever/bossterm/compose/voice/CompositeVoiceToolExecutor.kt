@@ -71,6 +71,12 @@ internal class CompositeVoiceToolExecutor(
     private val log = LoggerFactory.getLogger(CompositeVoiceToolExecutor::class.java)
 
     /**
+     * Namespaces this source's log dedupe, so two [ai.rever.bossterm.compose.TabbedTerminal]s with
+     * different sources in one process do not share "already warned about that name" slots.
+     */
+    private val sourceKey: String = Integer.toHexString(System.identityHashCode(source))
+
+    /**
      * The last list the source successfully returned.
      *
      * Used only when an enumeration fails, so a source that blips for one call does not blank its
@@ -86,7 +92,7 @@ internal class CompositeVoiceToolExecutor(
 
     override fun tools(): List<VoiceToolDef> {
         val baseTools = base.tools()
-        val ext = external(baseTools)
+        val ext = externalFor(baseTools.mapTo(mutableSetOf()) { it.name })
         externalNames = ext.advertised.mapTo(mutableSetOf()) { it.advertisedName }
         return (baseTools + ext.advertised.map { it.def }).filter { legalName(it.name) }
     }
@@ -100,6 +106,11 @@ internal class CompositeVoiceToolExecutor(
      * session and re-enumerating would run the whole merge again for a set already in hand.
      */
     override fun externalAdvertisedNames(): Set<String> = externalNames
+
+    override fun toolNames(): Set<String> {
+        val baseNames = base.toolNames()
+        return baseNames + externalFor(baseNames).advertised.map { it.advertisedName }
+    }
 
     /**
      * Last gate before a name reaches OpenAI.
@@ -142,7 +153,7 @@ internal class CompositeVoiceToolExecutor(
         // wedged source would otherwise hold four Default threads for two seconds each, which on a
         // small machine is the whole pool. tools() has no such option — it is a non-suspend override
         // — but nothing in a call's hot path goes through it.
-        val surface = withContext(Dispatchers.IO) { external(base.tools()) }
+        val surface = withContext(Dispatchers.IO) { externalFor(base.toolNames()) }
         val hit = surface.byAdvertisedName[name]
         if (hit == null) {
             // Refuse by NAME, not merely by absence. A hard-excluded tool must be answered as
@@ -262,10 +273,7 @@ internal class CompositeVoiceToolExecutor(
     }
 
 
-    private fun external(baseTools: List<VoiceToolDef>): ExternalSurface {
-        val baseNames = baseTools.mapTo(mutableSetOf()) { it.name }
-        return enumerate(baseNames)
-    }
+    private fun externalFor(baseNames: Set<String>): ExternalSurface = enumerate(baseNames)
 
     /**
      * The merged external surface, or the last good one if the source cannot produce it in time.
@@ -295,6 +303,7 @@ internal class CompositeVoiceToolExecutor(
                     // names — rather than cost the whole external surface. The deadline is what
                     // handles the other half, a getter that hangs.
                     mergeExternalTools(
+                        sourceKey = sourceKey,
                         baseNames = baseNames,
                         external = source.tools(),
                         prefix = runCatching { source.namePrefix }.getOrDefault(""),

@@ -40,7 +40,15 @@ data class ExternalVoiceTool(
     val write: Boolean = false,
     /** Destroys something unrecoverably — confirmation-gated. See [VoiceToolPolicy]. */
     val irreversible: Boolean = false,
-    /** Returns secret material — never advertised, never executed. See [VoiceToolPolicy]. */
+    /**
+     * Returns secret material: withheld from the advertised surface, and refused by name if the
+     * model asks for it anyway. See [VoiceToolPolicy].
+     *
+     * "Withheld and refused" rather than "never executed", because the honest claim is the narrower
+     * one: a tool that becomes sensitive while enumeration is failing stays reachable through the
+     * last good surface until an enumeration succeeds. Narrow, and the alternative — treating a
+     * failed enumeration as an empty surface — costs the whole external toolset over one blip.
+     */
     val sensitive: Boolean = false,
 )
 

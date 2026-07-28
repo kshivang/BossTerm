@@ -439,18 +439,24 @@ class VoiceToolSafetyTest {
         val gate = VoiceConfirmationGate(nowMs = { 0L })
         val args = JsonObject(emptyMap())
 
-        lateinit var newest: String
-        repeat(VoiceConfirmationGate.MAX_PENDING + 1) { i ->
-            newest = (gate.redeem("tool_$i", args, null)
-                as VoiceConfirmationGate.Decision.Confirm).token
+        val tokens = (0..VoiceConfirmationGate.MAX_PENDING).map { i ->
+            (gate.redeem("tool_$i", args, null) as VoiceConfirmationGate.Decision.Confirm).token
         }
         gate.agentSpoke()
         gate.userSpoke()
 
+        // The newest survives…
         val last = VoiceConfirmationGate.MAX_PENDING
         assertTrue(
-            gate.redeem("tool_$last", args, newest) is VoiceConfirmationGate.Decision.Allowed,
+            gate.redeem("tool_$last", args, tokens[last]) is VoiceConfirmationGate.Decision.Allowed,
             "the most recently minted token was evicted by the overflow it caused",
+        )
+        // …and the one that went is specifically the OLDEST. Asserting which one is what makes this
+        // discriminating: a comparator that ties over unspecified map order also leaves exactly one
+        // token evicted, so counting survivors cannot tell the two apart.
+        assertTrue(
+            gate.redeem("tool_0", args, tokens[0]) is VoiceConfirmationGate.Decision.Confirm,
+            "the oldest token survived the overflow, so something newer was evicted instead",
         )
     }
 

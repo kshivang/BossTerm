@@ -202,6 +202,10 @@ class VoiceToolPolicy(
             .replace(Regex("(?<=[A-Z])(?=[A-Z][a-z])"), "_")
             // Anything that is not alphanumeric is a separator: `-`, `.`, `/`, `:`, spaces.
             .replace(Regex("[^A-Za-z0-9]+"), "_")
+            // Belt-and-braces: both patterns are already IGNORE_CASE, so removing this changes no
+            // behaviour and a mutation proving as much survives on purpose. It stays because this
+            // function is a general normalisation, and the next caller may not be a case-insensitive
+            // regex.
             .lowercase()
 
         /** True when [name] looks like it hands back a credential, however it is spelled. */

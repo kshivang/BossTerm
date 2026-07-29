@@ -7,6 +7,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -62,6 +65,10 @@ import ai.rever.bossterm.compose.vcs.GitUtils
 import ai.rever.bossterm.compose.vcs.VersionControlMenuProvider
 import ai.rever.bossterm.compose.shell.ShellCustomizationMenuProvider
 import ai.rever.bossterm.compose.menu.MenuActions
+import ai.rever.bossterm.compose.tabs.SidebarRevealCloseDelayMs
+import ai.rever.bossterm.compose.tabs.SidebarRevealOpenDelayMs
+import ai.rever.bossterm.compose.tabs.hoverRevealTarget
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -183,6 +190,20 @@ import ai.rever.bossterm.compose.ui.ProperTerminal
  *                        Use case: a host whose own features (git, browser, plugins) should be
  *                        reachable by voice — see [ai.rever.bossterm.compose.voice.VoiceToolSource].
  */
+
+/**
+ * Wiring only the sidebar's overlay-drawer instance of the tab bar needs — the in-flow bar
+ * and the top bar pass null. See SidebarHoverReveal.kt for the reveal itself.
+ */
+private data class SidebarDrawerHooks(
+    /** Retract the drawer: picking a pane, or the chevron once the drawer is pinned. */
+    val onDismiss: () -> Unit,
+    /** Pin it open. Null once pinned, which is what puts the collapse chevron back. */
+    val onPin: (() -> Unit)?,
+    /** Menu / rename / drag in flight inside the drawer — blocks hover-driven retraction. */
+    val onBusyChange: (Boolean) -> Unit
+)
+
 @Composable
 fun TabbedTerminal(
     state: TabbedTerminalState? = null,
@@ -1175,9 +1196,12 @@ fun TabbedTerminal(
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val tabBarOnLeft = settings.tabBarPosition == "left"
         // collapsed renders the left bar as the slim icon rail; onToggleCollapse backs the
-        // chevron. onDrawerDismiss is non-null only for the narrow-window overlay drawer
-        // instance — selecting a pane then also closes the drawer (share-viewer behavior).
-        val tabBarComposable: @Composable (collapsed: Boolean, onToggleCollapse: () -> Unit, onDrawerDismiss: (() -> Unit)?) -> Unit = { collapsed, onToggleCollapse, onDrawerDismiss ->
+        // chevron. `drawer` is non-null only for the overlay drawer instance.
+        val tabBarComposable: @Composable (
+            collapsed: Boolean,
+            onToggleCollapse: () -> Unit,
+            drawer: SidebarDrawerHooks?
+        ) -> Unit = { collapsed, onToggleCollapse, drawer ->
             // Tab bar (show when multiple tabs or alwaysShowTabBar is set).
             if (tabBarVisible) {
             val summaryMode = settings.tabBarSummaryMode
@@ -1445,7 +1469,7 @@ fun TabbedTerminal(
                 activeTabIndex = tabController.activeTabIndex,
                 focusedPaneId = focusedPaneId,
                 onPaneSelected = { tabIndex, paneId ->
-                    onDrawerDismiss?.invoke()
+                    drawer?.onDismiss?.invoke()
                     tabController.switchToTab(tabIndex)
                     tabController.tabs.getOrNull(tabIndex)?.let { t -> splitStates[t.id]?.setFocusedPane(paneId) }
                 },
@@ -1564,7 +1588,9 @@ fun TabbedTerminal(
                               else ai.rever.bossterm.compose.tabs.TabBarOrientation.TOP,
                 verticalWidth = settings.tabBarVerticalWidth.dp,
                 collapsed = collapsed,
-                onToggleCollapse = if (tabBarOnLeft) onToggleCollapse else null
+                onToggleCollapse = if (tabBarOnLeft) onToggleCollapse else null,
+                onPin = if (tabBarOnLeft) drawer?.onPin else null,
+                onTransientInteraction = drawer?.onBusyChange
             )
             }
         }
@@ -2029,18 +2055,63 @@ fun TabbedTerminal(
             // narrow window the bar is forced down to the icon rail and the expand chevron
             // opens the full bar as an overlay drawer instead of pushing the terminal; in a
             // wide window the chevron toggles a persisted in-flow collapse.
+            //
+            // Whichever way the rail was reached, hovering it reveals the full bar as the
+            // same overlay drawer (see SidebarHoverReveal.kt) so the terminal is never
+            // resized. `tabBarHoverExpand` off restores the chevron-only behavior.
             val narrow = maxWidth < ai.rever.bossterm.compose.tabs.TabBarAutoCollapseWidth
+            val railShown = narrow || settings.tabBarCollapsed
+            val hoverExpand = settings.tabBarHoverExpand
+            // Two independent reasons the drawer can be open, kept apart on purpose:
+            // only the chevron-opened one installs the click-catcher below, so a
+            // hover-revealed drawer never swallows the click that focuses the terminal.
             var drawerOpen by remember { mutableStateOf(false) }
+            var hoverRevealed by remember { mutableStateOf(false) }
+            // Dismissing a reveal (picking a pane, or the chevron once pinned) sticks until
+            // the pointer leaves — otherwise it slides straight back in under the cursor.
+            var revealSuppressed by remember { mutableStateOf(false) }
+            // The revealed bar has a menu, rename, or drag in flight; retracting would
+            // dispose the composition that owns it, so hover stops being the only vote.
+            var drawerBusy by remember { mutableStateOf(false) }
+            val railHover = remember { MutableInteractionSource() }
+            val drawerHover = remember { MutableInteractionSource() }
+            val pointerOnRail by railHover.collectIsHoveredAsState()
+            val pointerOnDrawer by drawerHover.collectIsHoveredAsState()
+            val revealTarget = hoverRevealTarget(
+                enabled = hoverExpand,
+                railShown = railShown,
+                pointerOnRail = pointerOnRail,
+                pointerOnDrawer = pointerOnDrawer,
+                drawerBusy = drawerBusy
+            )
+            LaunchedEffect(revealTarget, revealSuppressed) {
+                val reveal = revealTarget && !revealSuppressed
+                if (reveal == hoverRevealed) return@LaunchedEffect
+                delay(if (reveal) SidebarRevealOpenDelayMs else SidebarRevealCloseDelayMs)
+                hoverRevealed = reveal
+            }
+            // Re-arm on the pointer-left edge, so a dismissal can't be undone by the very
+            // hover that is still sitting on the strip.
+            val pointerInSidebar = pointerOnRail || pointerOnDrawer
+            LaunchedEffect(pointerInSidebar) { if (!pointerInSidebar) revealSuppressed = false }
             LaunchedEffect(narrow) { if (!narrow) drawerOpen = false }
+            LaunchedEffect(railShown, hoverExpand) {
+                if (!railShown || !hoverExpand) {
+                    hoverRevealed = false
+                    revealSuppressed = false
+                }
+            }
             Row(modifier = Modifier.fillMaxSize()) {
-                tabBarComposable(
-                    narrow || settings.tabBarCollapsed,
-                    {
-                        if (narrow) drawerOpen = true
-                        else settingsManager.updateSetting { copy(tabBarCollapsed = !tabBarCollapsed) }
-                    },
-                    null
-                )
+                Box(modifier = Modifier.hoverable(railHover, enabled = hoverExpand && railShown)) {
+                    tabBarComposable(
+                        railShown,
+                        {
+                            if (narrow) drawerOpen = true
+                            else settingsManager.updateSetting { copy(tabBarCollapsed = !tabBarCollapsed) }
+                        },
+                        null
+                    )
+                }
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) { mainContent() }
             }
             if (narrow && drawerOpen) {
@@ -2049,14 +2120,38 @@ fun TabbedTerminal(
                     detectTapGestures(onPress = { drawerOpen = false })
                 })
             }
-            if (narrow) {
+            if (railShown) {
+                val dismissDrawer = {
+                    drawerOpen = false
+                    hoverRevealed = false
+                    if (pointerInSidebar) revealSuppressed = true
+                }
+                // A drawer that only exists because the pointer is here offers a pin instead
+                // of the collapse chevron: pinning turns it into the real bar (wide) or makes
+                // it stay put until dismissed (narrow, where the rail is forced by width).
+                val pinDrawer: (() -> Unit)? = if (hoverRevealed && !drawerOpen) {
+                    {
+                        if (narrow) drawerOpen = true
+                        else settingsManager.updateSetting { copy(tabBarCollapsed = false) }
+                    }
+                } else null
                 AnimatedVisibility(
-                    visible = drawerOpen,
+                    visible = drawerOpen || hoverRevealed,
                     modifier = Modifier.align(Alignment.CenterStart).fillMaxHeight(),
                     enter = slideInHorizontally(initialOffsetX = { -it }),
                     exit = slideOutHorizontally(targetOffsetX = { -it })
                 ) {
-                    tabBarComposable(false, { drawerOpen = false }, { drawerOpen = false })
+                    Box(modifier = Modifier.hoverable(drawerHover, enabled = hoverExpand && railShown)) {
+                        tabBarComposable(
+                            false,
+                            dismissDrawer,
+                            SidebarDrawerHooks(
+                                onDismiss = dismissDrawer,
+                                onPin = pinDrawer,
+                                onBusyChange = { drawerBusy = it }
+                            )
+                        )
+                    }
                 }
             }
         } else {

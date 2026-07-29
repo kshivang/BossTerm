@@ -87,13 +87,44 @@ class AIAssistantLaunchCommandTest {
         assertEquals("ollama\n", provider.getLaunchCommand(ollama))
     }
 
+    /**
+     * The real invariant: a CLI with no auto-mode flag must not advertise one. Not every agent has
+     * a flag — opencode's TUI has none at all (see the OPENCODE entry's comment) — so requiring one
+     * everywhere would just pressure the next person into inventing a plausible-looking string,
+     * which is how `--auto-approve` got in there in the first place.
+     */
     @Test
-    fun `every AI assistant declares an auto-mode flag`() {
-        // A blank flag would make the menu's "(Auto)" label a lie.
-        AIAssistants.AI_ASSISTANTS.forEach { assistant ->
+    fun `no assistant advertises an auto-mode it cannot enable`() {
+        (AIAssistants.AI_ASSISTANTS + AIAssistants.LOCAL_MODEL_RUNTIMES).forEach { assistant ->
+            if (assistant.yoloFlag.isBlank()) {
+                assertEquals(
+                    "",
+                    assistant.yoloLabel,
+                    "${assistant.id} has no yoloFlag but declares yoloLabel " +
+                        "'${assistant.yoloLabel}' — the menu would render an auto-mode that " +
+                        "nothing enables"
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `opencode launches bare because its TUI has no auto-approve flag`() {
+        // Regression guard for the invalid `--auto-approve` we used to append: opencode 1.15.0's
+        // TUI validates arguments strictly, so a bogus flag doesn't degrade gracefully — it prints
+        // the usage banner and never starts the agent. Same for `--auto` and the run-only
+        // `--dangerously-skip-permissions`.
+        val opencode = builtin(AIAssistantIds.OPENCODE)
+        assertEquals("opencode\n", provider.getLaunchCommand(opencode))
+        // Auto-mode ON must not change that — this is the path the menu actually takes.
+        assertEquals(
+            "opencode\n",
+            provider.getLaunchCommand(opencode, AIAssistantConfigData(yoloEnabled = true))
+        )
+        listOf("--auto-approve", "--auto", "--dangerously-skip-permissions").forEach { rejected ->
             assertFalse(
-                assistant.yoloFlag.isBlank(),
-                "${assistant.id} has no yoloFlag — the menu would show an auto-mode it can't enable"
+                opencode.yoloFlag.contains(rejected),
+                "opencode's TUI rejects '$rejected' — it must not be in the launch command"
             )
         }
     }

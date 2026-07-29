@@ -236,8 +236,28 @@ object AIAssistants {
             id = AIAssistantIds.OPENCODE,
             displayName = "OpenCode",
             command = "opencode",
-            yoloFlag = "--auto-approve",
-            yoloLabel = "Auto",
+            // No auto-mode flag: opencode's TUI — which is what we launch — has none.
+            // Verified against opencode 1.15.0 by probing the installed binary; the TUI
+            // validates its arguments strictly, so all three candidates print the usage
+            // banner and never start:
+            //   --auto-approve                 was our value here; not a flag in any form
+            //   --dangerously-skip-permissions valid ONLY for `opencode run` (headless one-shot)
+            //   --auto                         claimed by opencode.ai/docs/permissions, but
+            //                                  rejected by 1.15.0 — the docs are ahead of or
+            //                                  diverged from the shipped CLI
+            // A known-valid flag (--pure) starts the TUI and blocks instead of printing the
+            // banner, which is how those three were confirmed rejected rather than accepted.
+            //
+            // Auto-approve in the TUI is a session/config concern instead: the command palette's
+            // "Enable auto-approve permissions", or the `permission` key in
+            // ~/.config/opencode/opencode.json ("allow" | "ask" | "deny" per tool). The binary
+            // also carries an OPENCODE_PERMISSION string, but that is undocumented and unverified
+            // — do NOT put it here without proving a real tool call is auto-approved by it.
+            //
+            // yoloLabel must stay blank alongside a blank flag, or the menu renders
+            // "OpenCode (Auto)" for an auto-mode that isn't being enabled.
+            yoloFlag = "",
+            yoloLabel = "",
             installCommand = "curl -fsSL https://opencode.ai/install | bash",
             npmInstallCommand = "npm install -g opencode-ai",
             websiteUrl = "https://github.com/anomalyco/opencode",

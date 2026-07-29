@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.HorizontalSplit
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VerticalSplit
@@ -316,6 +317,20 @@ fun TabBar(
     collapsed: Boolean = false,
     /** Vertical bar only: collapse/expand chevron next to "Add remote" (and atop the rail). Null hides it. */
     onToggleCollapse: (() -> Unit)? = null,
+    /**
+     * Vertical bar only: marks this instance as a transient hover reveal over the collapsed
+     * rail (see SidebarHoverReveal.kt). The bottom collapse chevron becomes a pin that keeps
+     * the bar open; once pinned the bar is the real one again and the chevron returns.
+     */
+    onPin: (() -> Unit)? = null,
+    /**
+     * Reports whether an interaction that outlives a single click is in flight: a context
+     * menu, an inline rename, or a tab drag. All of it is state owned by this composition,
+     * so an owner that disposes the bar on its own schedule (the hover reveal, which
+     * retracts when the pointer leaves) must keep it alive while this is true — otherwise
+     * "Rename…" silently does nothing and a drag past the edge is dropped.
+     */
+    onTransientInteraction: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     // Context menu controller for chip right-click menu
@@ -448,6 +463,25 @@ fun TabBar(
 
     // Remote group box currently renaming its header inline (by RemoteTabGroup.id).
     var editingRemoteId by remember { mutableStateOf<String?>(null) }
+
+    // Everything above that survives past a single click, reported upward so a hover-driven
+    // owner doesn't dispose this composition mid-interaction. Disposal reports false —
+    // whoever is still listening must not be left holding a stale "busy".
+    val menuOnScreen by contextMenuController.menuVisible
+    val transientInteraction = menuOnScreen || editingPaneId != null ||
+        editingRemoteId != null || draggedTabIndex != null
+    // The callback arrives fresh on every recomposition, so hold it by reference rather than
+    // keying the effects on it — otherwise they restart constantly.
+    val reportInteraction by rememberUpdatedState(onTransientInteraction)
+    LaunchedEffect(transientInteraction) { reportInteraction?.invoke(transientInteraction) }
+    DisposableEffect(Unit) {
+        onDispose {
+            reportInteraction?.invoke(false)
+            // A native popup is a separate AWT window: nothing else takes it down when the
+            // bar it belongs to goes away, leaving a menu orphaned over the terminal.
+            contextMenuController.hideMenu()
+        }
+    }
 
     // Right-click menu on a remote group's HEADER — local customization of the box
     // (name + accent color) plus Disconnect. Nothing here touches the host.
@@ -1060,15 +1094,19 @@ fun TabBar(
                         )
                         Text("Add remote", color = Color(0xFFB0B0B0), fontSize = 12.sp)
                     }
-                    onToggleCollapse?.let { toggle ->
+                    // A hover reveal pins itself open; the real bar collapses. Same slot, so
+                    // the icon is the state: pin = "this will go away", chevron = "it's mine".
+                    (onPin ?: onToggleCollapse)?.let { action ->
                         IconButton(
-                            onClick = toggle,
+                            onClick = action,
                             modifier = Modifier.size(28.dp)
                                 .consumeSecondaryPress()
                         ) {
                             Icon(
-                                imageVector = Icons.Default.ChevronLeft,
-                                contentDescription = "Collapse sidebar",
+                                imageVector = if (onPin != null) Icons.Default.PushPin
+                                              else Icons.Default.ChevronLeft,
+                                contentDescription = if (onPin != null) "Keep sidebar open"
+                                                     else "Collapse sidebar",
                                 tint = barMuted,
                                 modifier = Modifier.size(18.dp)
                             )

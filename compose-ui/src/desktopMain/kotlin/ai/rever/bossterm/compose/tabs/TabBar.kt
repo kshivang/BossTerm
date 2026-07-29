@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.HorizontalSplit
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VerticalSplit
@@ -316,6 +317,12 @@ fun TabBar(
     collapsed: Boolean = false,
     /** Vertical bar only: collapse/expand chevron next to "Add remote" (and atop the rail). Null hides it. */
     onToggleCollapse: (() -> Unit)? = null,
+    /**
+     * Vertical bar only: marks this instance as a transient hover reveal over the collapsed
+     * rail (see SidebarHoverReveal.kt). The bottom collapse chevron becomes a pin that keeps
+     * the bar open; once pinned the bar is the real one again and the chevron returns.
+     */
+    onPin: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     // Context menu controller for chip right-click menu
@@ -1060,15 +1067,19 @@ fun TabBar(
                         )
                         Text("Add remote", color = Color(0xFFB0B0B0), fontSize = 12.sp)
                     }
-                    onToggleCollapse?.let { toggle ->
+                    // A hover reveal pins itself open; the real bar collapses. Same slot, so
+                    // the icon is the state: pin = "this will go away", chevron = "it's mine".
+                    (onPin ?: onToggleCollapse)?.let { action ->
                         IconButton(
-                            onClick = toggle,
+                            onClick = action,
                             modifier = Modifier.size(28.dp)
                                 .consumeSecondaryPress()
                         ) {
                             Icon(
-                                imageVector = Icons.Default.ChevronLeft,
-                                contentDescription = "Collapse sidebar",
+                                imageVector = if (onPin != null) Icons.Default.PushPin
+                                              else Icons.Default.ChevronLeft,
+                                contentDescription = if (onPin != null) "Keep sidebar open"
+                                                     else "Collapse sidebar",
                                 tint = barMuted,
                                 modifier = Modifier.size(18.dp)
                             )

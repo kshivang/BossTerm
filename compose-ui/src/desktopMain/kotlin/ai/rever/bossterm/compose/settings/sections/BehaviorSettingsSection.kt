@@ -103,6 +103,14 @@ fun BehaviorSettingsSection(
                 enabled = settings.tabBarPosition == "left"
             )
             SettingsToggle(
+                label = "Expand Sidebar on Hover",
+                checked = settings.tabBarHoverExpand,
+                onCheckedChange = { onSettingsChange(settings.copy(tabBarHoverExpand = it)) },
+                description = "Reveal the full sidebar while the pointer rests on the collapsed strip " +
+                    "(narrow window or manually collapsed). Off = use the chevron",
+                enabled = settings.tabBarPosition == "left"
+            )
+            SettingsToggle(
                 label = "Summary Mode",
                 checked = settings.tabBarSummaryMode,
                 onCheckedChange = { onSettingsChange(settings.copy(tabBarSummaryMode = it)) },

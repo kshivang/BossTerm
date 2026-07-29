@@ -467,6 +467,14 @@ data class TerminalSettings(
     val tabBarCollapsed: Boolean = false,
 
     /**
+     * Reveal the full vertical bar as an overlay drawer while the pointer rests on the
+     * collapsed rail — whether the rail was forced by a narrow window or collapsed with
+     * the chevron. The terminal is never resized; the bar floats over it and retracts
+     * when the pointer leaves. Off = the chevron is the only way to reveal it.
+     */
+    val tabBarHoverExpand: Boolean = true,
+
+    /**
      * Summary mode (Warp's VerticalTabsSummaryMode): show one chip per tab
      * (the active pane, labeled with the tab's title) instead of one chip per
      * split pane. Off = per-pane chips (default).

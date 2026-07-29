@@ -25,6 +25,7 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.ai.AIAssistantIds
+import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -138,7 +139,7 @@ data class OnboardingSelections(
     val shellCustomization: ShellCustomizationChoice = ShellCustomizationChoice.STARSHIP,
     val installGit: Boolean = true,
     val installGitHubCLI: Boolean = true,
-    val aiAssistants: Set<String> = AIAssistantIds.ALL_AI_ASSISTANTS
+    val aiAssistants: Set<String> = AIAssistants.DEFAULT_ONBOARDING_SELECTION
 )
 
 /**
@@ -165,12 +166,17 @@ data class InstalledTools(
     // Version control
     val git: Boolean = false,
     val gh: Boolean = false,
-    // AI assistants
-    val claudeCode: Boolean = false,
-    val gemini: Boolean = false,
-    val codex: Boolean = false,
-    val opencode: Boolean = false
+    /**
+     * AI assistants, keyed by [ai.rever.bossterm.compose.ai.AIAssistantIds]. A map rather than one
+     * field per CLI: the wizard used to carry four booleans and six `when (id)` blocks that had to
+     * be edited in lockstep for every new assistant, which is exactly how a registered CLI ends up
+     * invisible in onboarding. Populated by iterating the registry, so it can't fall behind.
+     */
+    val aiAssistants: Map<String, Boolean> = emptyMap()
 ) {
+    /** Installed state for [assistantId]; false when detection hasn't seen it. */
+    fun isAiInstalled(assistantId: String): Boolean = aiAssistants[assistantId] == true
+
     val hasAnyShellCustomization: Boolean
         get() = starship || ohMyZsh || prezto || ohMyPosh
 
@@ -621,18 +627,7 @@ private fun hasAnySelection(selections: OnboardingSelections, installed: Install
     }
     if (selections.installGit && !installed.git) return true
     if (selections.installGitHubCLI && !installed.gh) return true
-    if (selections.aiAssistants.isNotEmpty()) {
-        selections.aiAssistants.forEach { id ->
-            val aiInstalled = when (id) {
-                AIAssistantIds.CLAUDE_CODE -> installed.claudeCode
-                AIAssistantIds.GEMINI_CLI -> installed.gemini
-                AIAssistantIds.CODEX -> installed.codex
-                AIAssistantIds.OPENCODE -> installed.opencode
-                else -> true
-            }
-            if (!aiInstalled) return true
-        }
-    }
+    if (selections.aiAssistants.any { !installed.isAiInstalled(it) }) return true
     return false
 }
 
@@ -664,11 +659,9 @@ suspend fun detectInstalledTools(): InstalledTools = withContext(Dispatchers.IO)
         // Version control
         git = isCommandInstalled("git"),
         gh = isCommandInstalled("gh"),
-        // AI assistants
-        claudeCode = isCommandInstalled("claude"),
-        gemini = isCommandInstalled("gemini"),
-        codex = isCommandInstalled("codex"),
-        opencode = isCommandInstalled("opencode")
+        // AI assistants + local model runtimes, straight from the registry.
+        aiAssistants = (AIAssistants.AI_ASSISTANTS + AIAssistants.LOCAL_MODEL_RUNTIMES)
+            .associate { it.id to isCommandInstalled(it.command) }
     )
 }
 
@@ -1036,29 +1029,27 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
         }
     }
 
-    // AI Assistants (npm-based with node check)
-    val aiToInstall = mutableListOf<Pair<String, String>>() // id to npm package
-    selections.aiAssistants.forEach { id ->
-        val aiInstalled = when (id) {
-            AIAssistantIds.CLAUDE_CODE -> installed.claudeCode
-            AIAssistantIds.GEMINI_CLI -> installed.gemini
-            AIAssistantIds.CODEX -> installed.codex
-            AIAssistantIds.OPENCODE -> installed.opencode
-            else -> true
+    // AI Assistants. Which install method each one uses comes from the registry rather than a
+    // hardcoded table here, and follows the same precedence as ToolCommandProvider: a native
+    // installer script wins over npm when the entry declares one. That matters for the CLIs that
+    // ship as a single binary (Kimi Code, Grok Build, Hermes) — npm is not their supported path,
+    // and Hermes has no npm package at all.
+    val missingAi = selections.aiAssistants
+        .filterNot { installed.isAiInstalled(it) }
+        .mapNotNull { AIAssistants.findById(it) }
+
+    // id to npm package, for the ones that really are npm-installed. Batched into a single
+    // `npm install -g` below so the node check and cleanup happen once.
+    val aiToInstall = missingAi
+        .filter { it.installCommand.startsWith("npm install -g ") }
+        .map { it.id to it.installCommand.removePrefix("npm install -g ") }
+
+    // Everything else runs its own installer (curl script, brew cask, winget).
+    missingAi
+        .filterNot { it.installCommand.startsWith("npm install -g ") }
+        .forEach { assistant ->
+            assistant.installCommand.takeIf { it.isNotBlank() }?.let(userCommands::add)
         }
-        if (!aiInstalled) {
-            val npmPkg = when (id) {
-                AIAssistantIds.CLAUDE_CODE -> "@anthropic-ai/claude-code"
-                AIAssistantIds.GEMINI_CLI -> "@google/gemini-cli"
-                AIAssistantIds.CODEX -> "@openai/codex"
-                AIAssistantIds.OPENCODE -> "opencode-ai"
-                else -> null
-            }
-            if (npmPkg != null) {
-                aiToInstall.add(id to npmPkg)
-            }
-        }
-    }
 
     if (aiToInstall.isNotEmpty()) {
         val npmPackages = aiToInstall.joinToString(" ") { it.second }

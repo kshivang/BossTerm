@@ -125,7 +125,12 @@ fun AIAssistantSettingsSection(
                 }
             }
 
-            AIAssistants.BUILTIN.forEach { assistant ->
+            // AI assistants + local model runtimes, open-source-first. This used to iterate
+            // BUILTIN, which put every registered tool — git, brew, docker, tmux, fzf — in the
+            // "AI assistants" list; they have their own settings surfaces.
+            val configurable = AIAssistants.AI_ASSISTANTS_OSS_FIRST.filter { it.isBuiltIn } +
+                AIAssistants.LOCAL_MODEL_RUNTIMES.filter { it.isBuiltIn }
+            configurable.forEach { assistant ->
                 val isInstalled = installationStatus[assistant.id] ?: false
                 val config = settings.aiAssistantConfigs[assistant.id] ?: AIAssistantConfigData()
 
@@ -296,6 +301,17 @@ private fun AIAssistantConfigCard(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     StatusBadge(isInstalled = isInstalled)
+                    // Provenance next to the name: the license the CLI itself ships under, plus
+                    // whether it can be pointed at local/open-weight models. Both come from the
+                    // registry and are what the open-source-first ordering sorts on.
+                    if (assistant.license.isNotBlank()) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        InfoBadge(text = assistant.license)
+                    }
+                    if (assistant.localModels) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        InfoBadge(text = "Local models")
+                    }
                     if (!assistant.isBuiltIn) {
                         Spacer(modifier = Modifier.width(6.dp))
                         CustomBadge()
@@ -651,6 +667,24 @@ private fun CustomBadge() {
             fontSize = 10.sp,
             fontWeight = FontWeight.Medium,
             color = AccentColor
+        )
+    }
+}
+
+/** Neutral metadata chip — license ("MIT") or capability ("Local models"). */
+@Composable
+private fun InfoBadge(text: String) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(TextMuted.copy(alpha = 0.15f))
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = text,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+            color = TextSecondary
         )
     }
 }

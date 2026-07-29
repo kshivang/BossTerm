@@ -76,6 +76,86 @@ class McpRegistrationScannerTest {
     }
 
     @Test
+    fun `detects kimi code json registration`() {
+        val home = tempHome()
+        home.write(
+            ".kimi-code/mcp.json",
+            """{"mcpServers": {"boss": {"url": "http://127.0.0.1:7677", "transport": "sse"}}}"""
+        )
+        assertEquals(setOf(McpAttachTarget.KIMI_CODE), present(McpRegistrationScanner.scan("boss", home)))
+    }
+
+    @Test
+    fun `detects grok toml registration in the same shape as codex`() {
+        val home = tempHome()
+        // Exactly what `grok mcp add boss --url … --type sse` writes (verified against grok 0.2.3).
+        home.write(
+            ".grok/config.toml",
+            """
+            [mcp_servers.boss]
+            url = "http://127.0.0.1:7677"
+            type = "sse"
+            enabled = true
+            """.trimIndent()
+        )
+        assertEquals(setOf(McpAttachTarget.GROK), present(McpRegistrationScanner.scan("boss", home)))
+    }
+
+    @Test
+    fun `detects hermes yaml registration`() {
+        val home = tempHome()
+        home.write(
+            ".hermes/config.yaml",
+            """
+            model: hermes-4
+            mcp_servers:
+              other:
+                command: npx
+                args: ["-y", "something"]
+              boss:
+                url: "http://127.0.0.1:7677"
+                enabled: true
+            logging:
+              level: info
+            """.trimIndent()
+        )
+        assertEquals(setOf(McpAttachTarget.HERMES), present(McpRegistrationScanner.scan("boss", home)))
+    }
+
+    @Test
+    fun `hermes url outside our server block is ignored`() {
+        val home = tempHome()
+        home.write(
+            ".hermes/config.yaml",
+            """
+            mcp_servers:
+              other:
+                url: "http://127.0.0.1:9999"
+            gateway:
+              url: "http://127.0.0.1:7677"
+            """.trimIndent()
+        )
+        assertTrue(present(McpRegistrationScanner.scan("boss", home)).isEmpty())
+    }
+
+    @Test
+    fun `hermes remote url is not adopted`() {
+        val home = tempHome()
+        home.write(
+            ".hermes/config.yaml",
+            """
+            mcp_servers:
+              boss:
+                url: "https://mcp.example.com/sse"
+            """.trimIndent()
+        )
+        assertEquals(
+            Presence.ABSENT,
+            McpRegistrationScanner.scan("boss", home)[McpAttachTarget.HERMES]
+        )
+    }
+
+    @Test
     fun `detects codex toml registration`() {
         val home = tempHome()
         home.write(

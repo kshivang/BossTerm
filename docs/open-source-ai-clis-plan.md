@@ -2,6 +2,28 @@
 
 Worktree: `.worktrees/bossterm-oss-clis`, branch `oss-ai-clis`, based on `origin/master` @ `7d2e187b`.
 
+## Status
+
+PRs 1–4, 6 and 7 below are **implemented on this branch**; `./gradlew compileKotlinDesktop` is clean
+across all modules and `:compose-ui:desktopTest` is 868/868 green. Two deviations from the plan as
+first written, both noted inline in the sections they affect:
+
+- `McpRegistrationScanner.codexTomlLoopbackUrl` was **renamed** `tomlMcpServersLoopbackUrl` now that
+  Codex and Grok Build share it, and the per-CLI config paths moved into a new `CliConfigPaths` so
+  the in-process writer and the scanner can't disagree about where a file lives.
+- PR 5 landed partially: Ollama is a first-class `LOCAL_MODEL_RUNTIME` with its own menu (run a
+  model / installed models / start server), detection, and install command. The "export
+  `OPENAI_BASE_URL` before launching a tier-1 agent" convenience is **not** done — it needs a
+  per-assistant provider setting to be worth wiring, and the existing custom-command setting already
+  covers the manual path.
+
+Still outstanding, and both need a real binary rather than more code:
+
+- **Kimi Code is unverified against a live install** (it isn't on this machine). Its flag names and
+  `mcp.json` shape come from upstream docs. See Risks 1–2.
+- **`hermes mcp add` has not been run end-to-end** through the attach button, only inspected via
+  `--help`. The interactive-prompt behavior under a closed stdin is still an assumption.
+
 ## Goal
 
 BossTerm supports four AI CLIs today (Claude Code, Codex, Gemini CLI, OpenCode). This plan adds
@@ -37,7 +59,7 @@ MCP integration, per CLI:
 
 | CLI | Non-interactive `mcp add` | Config file the scanner must read |
 |---|---|---|
-| Grok Build | ✅ `grok mcp add {NAME} --url {URL} --type sse` / `grok mcp remove {NAME}` (also `list`, `doctor`) — **verified v0.2.3** | `~/.grok/config.toml` → `[mcp_servers.<name>]` with `url` / `type` / `enabled`. **Byte-identical in shape to Codex's TOML** — `McpRegistrationScanner.codexTomlLoopbackUrl` is reusable as-is with a different path. |
+| Grok Build | ✅ `grok mcp add {NAME} --url {URL} --type sse` / `grok mcp remove {NAME}` (also `list`, `doctor`) — **verified v0.2.3** | `~/.grok/config.toml` → `[mcp_servers.<name>]` with `url` / `type` / `enabled`. **Byte-identical in shape to Codex's TOML** — the existing minimal TOML scan is reusable as-is with a different path (now `McpRegistrationScanner.tomlMcpServersLoopbackUrl`). |
 | Hermes Agent | ✅ `hermes mcp add {NAME} --url {URL}` / `hermes mcp remove {NAME}` (also `list`, `test`, `configure`) — **verified v0.13.0** | `~/.hermes/config.yaml` → `mcp_servers:` → `<name>:` → `url:` (YAML) |
 | Kimi Code CLI | ❌ none — MCP is configured conversationally via the `/mcp-config` TUI | `~/.kimi-code/mcp.json` → `mcpServers.<name>` = `{ "url": …, "transport": "sse" }` (project-local: `.kimi-code/mcp.json`) |
 | Ollama | n/a — Ollama is an MCP *nothing*; it serves models, it doesn't consume tools | n/a |
@@ -123,8 +145,8 @@ into a single `command -v a b c …` invocation and parse the result.
 New `McpAttachTarget` entries with frozen persistence keys `GROK`, `HERMES`, `KIMI_CODE`:
 
 - **GROK** — `grok mcp add {NAME} --url {URL} --type sse`, remove `grok mcp remove {NAME}`; SSE root
-  URL (default `registrationUrl`). Scanner: reuse `codexTomlLoopbackUrl` against `~/.grok/config.toml`
-  (rename it to `tomlMcpServersLoopbackUrl` now that it serves two CLIs).
+  URL (default `registrationUrl`). Scanner: reuse the Codex TOML scan against `~/.grok/config.toml`,
+  renamed `tomlMcpServersLoopbackUrl` now that it serves two CLIs.
 - **HERMES** — `hermes mcp add {NAME} --url {URL}` / `hermes mcp remove {NAME}`. Scanner: minimal
   indent-aware YAML scan of `~/.hermes/config.yaml` (`mcp_servers:` → `<name>:` → `url:`), same
   spirit as the existing hand-rolled TOML scan — no new YAML dependency.

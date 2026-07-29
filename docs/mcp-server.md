@@ -488,20 +488,41 @@ endpoint URL stays current across restarts.
 Commands run under the hood (from
 [`McpCliAttacher`](../compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/mcp/McpCliAttacher.kt)):
 
-| CLI         | Command                                                                   |
-|-------------|---------------------------------------------------------------------------|
-| Claude Code | `claude mcp add --scope user --transport sse <name> <url>`                |
-| Codex       | `codex mcp add <name> --url <url>`                                        |
-| Gemini CLI  | `gemini mcp add <name> <url> --transport sse --scope user`                |
-| OpenCode    | Scripted edit of `~/.config/opencode/opencode.json` via a `node -e` shim. |
+Listed in the open-source-first order the UI renders them
+(`McpAttachTarget.ossFirst`): fully-open stacks, then open clients on vendor
+models, then proprietary.
+
+| CLI           | License    | Command                                                                       |
+|---------------|------------|-------------------------------------------------------------------------------|
+| Hermes Agent  | MIT        | `hermes mcp add <name> --url <url>`                                           |
+| Kimi Code CLI | MIT        | In-process merge into `~/.kimi-code/mcp.json` (no scriptable `mcp add`).      |
+| OpenCode      | MIT        | Scripted edit of `~/.config/opencode/opencode.json` via a `node -e` shim.     |
+| Codex         | Apache-2.0 | `codex mcp add <name> --url <url>`                                            |
+| Gemini CLI    | Apache-2.0 | `gemini mcp add <name> <url> --transport sse --scope user`                    |
+| Grok Build    | Apache-2.0 | `grok mcp add <name> --url <url> --type sse`                                  |
+| Claude Code   | —          | `claude mcp add --scope user --transport sse <name> <url>`                    |
 
 `<name>` is the embedder's `BossTermMcpConfig.serverName` (default
 `"bossterm"`) and `<url>` is `http://127.0.0.1:<port>/`.
 
+Two CLIs have no non-interactive `mcp add` at all, and they're handled
+differently on purpose. OpenCode ships as an npm package, so `node` is
+guaranteed present and a `node -e` shim can edit its config. Kimi Code ships as
+a single self-contained binary whose whole premise is not needing Node, so its
+config is merged **in this process** by `McpConfigFileEditor` — parse, set only
+`mcpServers.<name>`, write via a temp file + rename, leaving everything else in
+the file untouched.
+
 If the CLI binary is missing, the shell-out fails, or the operation times
-out (15 s), the corresponding config snippet is dropped onto the clipboard
+out, the corresponding config snippet is dropped onto the clipboard
 instead, and an amber "exit N — config copied to clipboard" status is shown
-under the button. **Codex caveat**: registration succeeds with codex-cli 0.130,
+under the button. The timeout is per target (`McpAttachTarget.timeoutSeconds`):
+15 s by default, 45 s for Hermes, whose `mcp add` is a Python process that
+performs live tool discovery against the URL before it returns.
+
+**Grok caveat**: `grok mcp add` does not validate `--type` at write time — a
+wrong transport is accepted into `config.toml` and only fails when the CLI
+tries to connect. `grok mcp doctor` diagnoses that. **Codex caveat**: registration succeeds with codex-cli 0.130,
 but Codex currently speaks streamable HTTP only, so the runtime connection
 will fail against the SSE endpoint until BossTerm's MCP SDK is upgraded.
 

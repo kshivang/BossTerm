@@ -399,6 +399,22 @@ echo "Run 'source ${"$"}HOME/.cargo/env' to update your current shell"
         }
 
         /**
+         * Get platform-aware install command for Ollama.
+         *
+         * macOS gets the cask (it ships a menu-bar app plus the `ollama` binary); Linux uses the
+         * official installer script, which also registers the systemd service. No sudo wrapper is
+         * needed on either — the script prompts for its own when it needs one.
+         */
+        fun getOllamaInstallCommand(): String {
+            return when {
+                ShellCustomizationUtils.isMacOS() -> "brew install --cask ollama"
+                ShellCustomizationUtils.isWindows() ->
+                    "winget install Ollama.Ollama --accept-source-agreements --accept-package-agreements"
+                else -> "curl -fsSL https://ollama.com/install.sh | sh"
+            }
+        }
+
+        /**
          * Get Linux install command with package manager detection.
          * Tries apt, dnf, then pacman in order.
          * Uses BOSSTERM_SUDO_PWD environment variable for password if available.

@@ -38,6 +38,7 @@ import androidx.compose.ui.text.AnnotatedString
 import kotlinx.coroutines.delay
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.ai.AIAssistants
+import ai.rever.bossterm.compose.ai.ToolCategory
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
@@ -896,20 +897,24 @@ fun AIAssistantsStep(
         val id: String,
         val name: String,
         val description: String,
-        val isInstalled: Boolean
+        val isInstalled: Boolean,
+        val license: String,
+        val openSource: Boolean
     )
 
-    // Build assistants list from the registry with installed status
-    val assistants = AIAssistants.AI_ASSISTANTS.map { definition ->
-        val isInstalled = when (definition.id) {
-            AIAssistantIds.CLAUDE_CODE -> installedTools.claudeCode
-            AIAssistantIds.GEMINI_CLI -> installedTools.gemini
-            AIAssistantIds.CODEX -> installedTools.codex
-            AIAssistantIds.OPENCODE -> installedTools.opencode
-            else -> false
+    // Build the list from the registry, open-source-first, with installed status. Local model
+    // runtimes come last: Ollama isn't an assistant, it's what makes the open ones run offline.
+    val assistants = (AIAssistants.AI_ASSISTANTS_OSS_FIRST + AIAssistants.LOCAL_MODEL_RUNTIMES)
+        .map { definition ->
+            AIAssistant(
+                id = definition.id,
+                name = definition.displayName,
+                description = definition.description,
+                isInstalled = installedTools.isAiInstalled(definition.id),
+                license = definition.license,
+                openSource = definition.openSource
+            )
         }
-        AIAssistant(definition.id, definition.displayName, definition.description, isInstalled)
-    }
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
@@ -935,7 +940,13 @@ fun AIAssistantsStep(
                 description = assistant.description,
                 isChecked = isSelected,
                 isDisabled = assistant.isInstalled,
-                badge = if (assistant.isInstalled) "Installed" else null,
+                // "Installed" still wins the badge slot — it's the actionable state. Otherwise
+                // show the license, which is the open-source signal at the point of choice.
+                badge = when {
+                    assistant.isInstalled -> "Installed"
+                    assistant.license.isNotBlank() -> assistant.license
+                    else -> null
+                },
                 onCheckedChange = { checked ->
                     if (!assistant.isInstalled) {
                         val newSet = if (checked) {
@@ -1015,20 +1026,22 @@ fun ReviewStep(
         }
 
         // AI Assistants
-        selections.aiAssistants.forEach { id ->
-            val isInstalled = when (id) {
-                AIAssistantIds.CLAUDE_CODE -> installedTools.claudeCode
-                AIAssistantIds.GEMINI_CLI -> installedTools.gemini
-                AIAssistantIds.CODEX -> installedTools.codex
-                AIAssistantIds.OPENCODE -> installedTools.opencode
-                else -> true
-            }
-            if (!isInstalled) {
+        selections.aiAssistants
+            .filterNot { installedTools.isAiInstalled(it) }
+            .forEach { id ->
                 // Get display name from registry, fallback to ID
-                val name = AIAssistants.findById(id)?.displayName ?: id
-                ReviewItem(category = "AI Assistant", value = name, willInstall = true)
+                val definition = AIAssistants.findById(id)
+                val category = if (definition?.category == ToolCategory.LOCAL_MODEL_RUNTIME) {
+                    "Local Models"
+                } else {
+                    "AI Assistant"
+                }
+                ReviewItem(
+                    category = category,
+                    value = definition?.displayName ?: id,
+                    willInstall = true
+                )
             }
-        }
 
         // Show message if nothing to install
         val hasInstalls = hasAnyInstallation(selections, installedTools)
@@ -1078,16 +1091,7 @@ private fun hasAnyInstallation(selections: OnboardingSelections, installed: Inst
     }
     if (selections.installGit && !installed.git) return true
     if (selections.installGitHubCLI && !installed.gh) return true
-    selections.aiAssistants.forEach { id ->
-        val aiInstalled = when (id) {
-            AIAssistantIds.CLAUDE_CODE -> installed.claudeCode
-            AIAssistantIds.GEMINI_CLI -> installed.gemini
-            AIAssistantIds.CODEX -> installed.codex
-            AIAssistantIds.OPENCODE -> installed.opencode
-            else -> true
-        }
-        if (!aiInstalled) return true
-    }
+    if (selections.aiAssistants.any { !installed.isAiInstalled(it) }) return true
     return false
 }
 

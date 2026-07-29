@@ -255,13 +255,13 @@ data class RemoteNestedGroup(
     val windowSections: List<RemoteWindowSection> = emptyList(),
 )
 
-/** AI assistants offered in the remote chip menu — same set the browser viewer mirrors. */
-private val REMOTE_AI_ASSISTANTS = listOf(
-    "claude-code" to "Claude Code",
-    "codex" to "Codex",
-    "gemini-cli" to "Gemini CLI",
-    "opencode" to "OpenCode",
-)
+/**
+ * AI assistants offered in the remote chip menu — same set the browser viewer mirrors, derived from
+ * the tool registry in open-source-first order so the three lists can't drift apart.
+ */
+private val REMOTE_AI_ASSISTANTS: List<Pair<String, String>>
+    get() = ai.rever.bossterm.compose.ai.AIAssistants.AI_ASSISTANTS_OSS_FIRST
+        .map { it.id to it.displayName }
 
 /**
  * Tab bar component for multiple terminal sessions.

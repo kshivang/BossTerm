@@ -77,8 +77,16 @@ internal object McpRegistrationScanner {
                 jsonLoopbackUrl(File(home, ".gemini/settings.json"), "mcpServers", serverName)
             McpAttachTarget.OPENCODE ->
                 jsonLoopbackUrl(File(home, ".config/opencode/opencode.json"), "mcp", serverName)
+            McpAttachTarget.KIMI_CODE ->
+                jsonLoopbackUrl(CliConfigPaths.kimiMcpJson(home), "mcpServers", serverName)
             McpAttachTarget.CODEX ->
-                codexTomlLoopbackUrl(File(home, ".codex/config.toml"), serverName)
+                tomlMcpServersLoopbackUrl(File(home, ".codex/config.toml"), serverName)
+            // Grok Build's config.toml uses the same [mcp_servers.<name>] + url shape as Codex,
+            // so the same minimal scan serves both.
+            McpAttachTarget.GROK ->
+                tomlMcpServersLoopbackUrl(CliConfigPaths.grokConfigToml(home), serverName)
+            McpAttachTarget.HERMES ->
+                hermesYamlLoopbackUrl(CliConfigPaths.hermesConfigYaml(home), serverName)
         }
 
     /**
@@ -99,11 +107,11 @@ internal object McpRegistrationScanner {
 
     /**
      * Minimal TOML scan for `[mcp_servers.<serverName>]` followed by a
-     * loopback `url = "…"` before the next section header. Codex's config is
-     * machine-written with this exact shape; a full TOML parser isn't worth
-     * the dependency.
+     * loopback `url = "…"` before the next section header. Codex's and Grok
+     * Build's configs are both machine-written with this exact shape; a full
+     * TOML parser isn't worth the dependency.
      */
-    internal fun codexTomlLoopbackUrl(file: File, serverName: String): String? {
+    internal fun tomlMcpServersLoopbackUrl(file: File, serverName: String): String? {
         if (!file.isFile) return null
         var inSection = false
         for (rawLine in file.readLines()) {
@@ -124,6 +132,70 @@ internal object McpRegistrationScanner {
                 }
                 return url.takeIf(::isLoopbackUrl)
             }
+        }
+        return null
+    }
+
+    /**
+     * Minimal indentation-aware YAML scan for Hermes Agent's `config.yaml`:
+     *
+     * ```yaml
+     * mcp_servers:
+     *   bossterm:
+     *     url: "http://127.0.0.1:7677"
+     * ```
+     *
+     * Same trade-off as the TOML scan — Hermes writes this block itself via
+     * `hermes mcp add`, and the whole file is a user config we only ever READ, so a YAML
+     * dependency (and the risk of reformatting someone's hand-tuned config) isn't warranted.
+     *
+     * Deliberately narrow: it only follows block mappings with space indentation, which is what
+     * the CLI emits. A hand-written flow-style entry (`mcp_servers: {bossterm: {...}}`) reads as
+     * absent rather than being half-parsed — the conservative direction, since ABSENT only means
+     * "we won't adopt it", while a wrong PRESENT would suppress a real re-attach.
+     */
+    internal fun hermesYamlLoopbackUrl(file: File, serverName: String): String? {
+        if (!file.isFile) return null
+        val lines = file.readLines()
+
+        var serversIndent = -1   // indent of the `mcp_servers:` key, -1 until seen
+        var entryIndent = -1     // indent of the `<serverName>:` key inside it, -1 until seen
+        for (rawLine in lines) {
+            if (rawLine.isBlank() || rawLine.trimStart().startsWith("#")) continue
+            val indent = rawLine.takeWhile { it == ' ' }.length
+            val key = rawLine.trim().substringBefore(':').trim().trim('"', '\'')
+
+            if (entryIndent >= 0) {
+                // Inside our server's block until the first line at or left of its key.
+                if (indent <= entryIndent) {
+                    entryIndent = -1
+                    // Fall through: this same line may start a sibling server or leave the block.
+                } else if (key == "url") {
+                    val raw = rawLine.trim().substringAfter(':').trim()
+                    val url = when {
+                        raw.startsWith("\"") -> raw.drop(1).substringBefore('"')
+                        raw.startsWith("'") -> raw.drop(1).substringBefore('\'')
+                        else -> raw.substringBefore('#').trim()
+                    }
+                    return url.takeIf(::isLoopbackUrl)
+                } else {
+                    continue
+                }
+            }
+
+            if (serversIndent >= 0) {
+                if (indent <= serversIndent) {
+                    // Left the mcp_servers block without finding the entry.
+                    serversIndent = -1
+                } else if (key == serverName) {
+                    entryIndent = indent
+                    continue
+                } else {
+                    continue
+                }
+            }
+
+            if (indent == 0 && key == "mcp_servers") serversIndent = indent
         }
         return null
     }

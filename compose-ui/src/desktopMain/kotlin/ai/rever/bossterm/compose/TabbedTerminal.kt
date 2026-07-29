@@ -49,6 +49,7 @@ import ai.rever.bossterm.compose.mcp.McpCliAttacher
 import ai.rever.bossterm.compose.mcp.McpStatusIndicator
 import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.ai.AIAssistantDefinition
+import ai.rever.bossterm.compose.ai.AIAssistantIds
 import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.ai.AICommandInterceptor
 import ai.rever.bossterm.compose.ai.ToolCommandProvider
@@ -530,13 +531,15 @@ fun TabbedTerminal(
         }
 
         menuActions?.apply {
-            // AI Assistants - launch or show install dialog
-            onLaunchClaudeCode = {
-                val assistant = AIAssistants.findById("claude-code")
+            // AI Assistants - launch the registry entry, or offer to install it first.
+            // One id-keyed hook for every CLI: adding an assistant to AIAssistants.BUILTIN is
+            // enough for it to appear in and work from the menu.
+            onLaunchAssistant = { assistantId ->
+                val assistant = AIAssistants.findById(assistantId)
                 if (assistant != null) {
-                    val isInstalled = aiState.detector.installationStatus.value["claude-code"] ?: false
+                    val isInstalled = aiState.detector.installationStatus.value[assistantId] ?: false
                     if (isInstalled) {
-                        val config = settings.aiAssistantConfigs["claude-code"]
+                        val config = settings.aiAssistantConfigs[assistantId]
                         writeToTerminal(aiState.launcher.getLaunchCommand(assistant, config))
                     } else {
                         val resolved = aiState.launcher.resolveInstallCommands(assistant)
@@ -545,72 +548,39 @@ fun TabbedTerminal(
                             installCommand = resolved.command,
                             npmCommand = resolved.npmFallback,
                             terminalWriter = writeToTerminal,
-                            commandToRunAfter = "claude",
+                            // Re-run what the user actually asked for once the install finishes.
+                            commandToRunAfter = assistant.command,
                             clearLine = null  // No line to clear when launched from menu
                         )
                     }
                 }
             }
-            onLaunchGemini = {
-                val assistant = AIAssistants.findById("gemini-cli")
-                if (assistant != null) {
-                    val isInstalled = aiState.detector.installationStatus.value["gemini-cli"] ?: false
-                    if (isInstalled) {
-                        val config = settings.aiAssistantConfigs["gemini-cli"]
-                        writeToTerminal(aiState.launcher.getLaunchCommand(assistant, config))
-                    } else {
-                        val resolved = aiState.launcher.resolveInstallCommands(assistant)
-                        toolWizardParams = ToolInstallWizardParams(
-                            tool = assistant,
-                            installCommand = resolved.command,
-                            npmCommand = resolved.npmFallback,
-                            terminalWriter = writeToTerminal,
-                            commandToRunAfter = "gemini",
-                            clearLine = null
-                        )
-                    }
+            // Ollama isn't an agent: "launching" it means running a model, or starting the
+            // server that the local-model-capable assistants then talk to. Each action offers
+            // the install wizard first when Ollama isn't present, same as the assistants.
+            fun runOllama(argsOrNull: String?) {
+                val ollama = AIAssistants.findById(AIAssistantIds.OLLAMA) ?: return
+                val isInstalled = aiState.detector.installationStatus.value[AIAssistantIds.OLLAMA] ?: false
+                if (!isInstalled) {
+                    val resolved = aiState.launcher.resolveInstallCommands(ollama)
+                    toolWizardParams = ToolInstallWizardParams(
+                        tool = ollama,
+                        installCommand = resolved.command,
+                        npmCommand = resolved.npmFallback,
+                        terminalWriter = writeToTerminal,
+                        commandToRunAfter = ollama.command,
+                        clearLine = null
+                    )
+                    return
                 }
+                // A null args means "let the user finish the line" — no trailing newline.
+                writeToTerminal(
+                    if (argsOrNull == null) "${ollama.command} run " else "${ollama.command} $argsOrNull\n"
+                )
             }
-            onLaunchCodex = {
-                val assistant = AIAssistants.findById("codex")
-                if (assistant != null) {
-                    val isInstalled = aiState.detector.installationStatus.value["codex"] ?: false
-                    if (isInstalled) {
-                        val config = settings.aiAssistantConfigs["codex"]
-                        writeToTerminal(aiState.launcher.getLaunchCommand(assistant, config))
-                    } else {
-                        val resolved = aiState.launcher.resolveInstallCommands(assistant)
-                        toolWizardParams = ToolInstallWizardParams(
-                            tool = assistant,
-                            installCommand = resolved.command,
-                            npmCommand = resolved.npmFallback,
-                            terminalWriter = writeToTerminal,
-                            commandToRunAfter = "codex",
-                            clearLine = null
-                        )
-                    }
-                }
-            }
-            onLaunchOpenCode = {
-                val assistant = AIAssistants.findById("opencode")
-                if (assistant != null) {
-                    val isInstalled = aiState.detector.installationStatus.value["opencode"] ?: false
-                    if (isInstalled) {
-                        val config = settings.aiAssistantConfigs["opencode"]
-                        writeToTerminal(aiState.launcher.getLaunchCommand(assistant, config))
-                    } else {
-                        val resolved = aiState.launcher.resolveInstallCommands(assistant)
-                        toolWizardParams = ToolInstallWizardParams(
-                            tool = assistant,
-                            installCommand = resolved.command,
-                            npmCommand = resolved.npmFallback,
-                            terminalWriter = writeToTerminal,
-                            commandToRunAfter = "opencode",
-                            clearLine = null
-                        )
-                    }
-                }
-            }
+            onRunLocalModel = { model -> runOllama(model?.let { "run $it" }) }
+            onStartLocalModelServer = { runOllama("serve") }
+            onListLocalModels = { runOllama("list") }
 
             // Git commands (path-aware using GitUtils)
             onGitInit = { writeToTerminal("git ${GitUtils.Commands.INIT}\n") }
@@ -1881,14 +1851,13 @@ fun TabbedTerminal(
                             items = items + ContextMenuSubmenu(
                                 id = "remote_ai_assistants",
                                 label = "AI Assistant",
-                                items = listOf(
-                                    "claude-code" to "Claude Code",
-                                    "codex" to "Codex",
-                                    "gemini-cli" to "Gemini CLI",
-                                    "opencode" to "OpenCode",
-                                ).map { (aid, label) ->
+                                // Registry-derived, open-source-first — same set and order the
+                                // share viewer mirrors. The host resolves the id to ITS configured
+                                // command, so listing one the remote lacks just no-ops there.
+                                items = AIAssistants.AI_ASSISTANTS_OSS_FIRST.map { assistant ->
+                                    val aid = assistant.id
                                     ContextMenuItem(
-                                        id = "remote_ai_$aid", label = label,
+                                        id = "remote_ai_$aid", label = assistant.displayName,
                                         action = { remoteForActive.launchAI(activeTab.id, splitState.focusedPaneId, aid) }
                                     )
                                 }
@@ -1925,7 +1894,7 @@ fun TabbedTerminal(
                             ContextMenuSubmenu(
                                 id = "mcp_attach_submenu",
                                 label = "Attach BossTerm MCP to…",
-                                items = McpAttachTarget.entries.map { target ->
+                                items = McpAttachTarget.ossFirst.map { target ->
                                     val prefix = if (target in attached) "✓ " else ""
                                     ContextMenuItem(
                                         id = "mcp_attach_${target.name}",
@@ -2617,7 +2586,7 @@ private fun remoteMcpMenuItems(
 ): List<ai.rever.bossterm.compose.features.ContextMenuController.MenuElement> {
     val attached = st.attached.toSet()
     fun gate(act: () -> Unit) { if (s.canControlState.value) act() else onNeedControl() }
-    val attachSub = ai.rever.bossterm.compose.mcp.McpAttachTarget.entries.map { t ->
+    val attachSub = ai.rever.bossterm.compose.mcp.McpAttachTarget.ossFirst.map { t ->
         ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
             id = "rmcp_att_${t.persistenceKey}",
             label = (if (t.persistenceKey in attached) "✓ " else "") + t.displayName,

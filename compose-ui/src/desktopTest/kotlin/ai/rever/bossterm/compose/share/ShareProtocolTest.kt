@@ -158,7 +158,10 @@ class ShareProtocolTest {
         // viewer.js can't read the Kotlin enum, so MCP_TARGETS there hardcodes these keys/labels.
         // If a target is renamed/added/removed, this trips CI as a reminder to update viewer.js.
         val keys = ai.rever.bossterm.compose.mcp.McpAttachTarget.entries.map { it.persistenceKey }.toSet()
-        assertEquals(setOf("CLAUDE_CODE", "CODEX", "GEMINI", "OPENCODE"), keys)
+        assertEquals(
+            setOf("CLAUDE_CODE", "CODEX", "GEMINI", "OPENCODE", "KIMI_CODE", "GROK", "HERMES"),
+            keys
+        )
     }
 
     @Test

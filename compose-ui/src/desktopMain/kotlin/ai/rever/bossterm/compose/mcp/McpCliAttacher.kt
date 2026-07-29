@@ -1,13 +1,19 @@
 package ai.rever.bossterm.compose.mcp
 
+import ai.rever.bossterm.compose.ai.AIAssistantIds
+import ai.rever.bossterm.compose.ai.AIAssistants
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
+import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+
+/** Top-level key holding server declarations in Kimi Code CLI's `mcp.json`. */
+private const val KIMI_CONTAINER_KEY = "mcpServers"
 
 // Node one-liners that edit ~/.config/opencode/opencode.json directly —
 // OpenCode's own `mcp add` is an interactive TUI prompt with no scripted
@@ -50,12 +56,20 @@ private const val OPENCODE_REMOVE_SCRIPT = "" +
  * — plain `http://127.0.0.1:<port>` for most CLIs, the `${VAR:-port}`
  * env-expanded form for Claude Code, and the streamable HTTP `/mcp` URL for Codex.
  *
- * Tested CLI shapes (last verified May 2026):
- *  - Claude Code: `claude mcp add --transport sse <name> <url>` (verified)
+ * Tested CLI shapes:
+ *  - Claude Code: `claude mcp add --transport sse <name> <url>` (verified May 2026)
  *  - Codex 0.130: `codex mcp add <name> --url <url>/mcp` (streamable HTTP)
- *  - Gemini 0.28: `gemini mcp add <name> --transport sse <url>` (verified)
+ *  - Gemini 0.28: `gemini mcp add <name> --transport sse <url>` (verified May 2026)
  *  - OpenCode 1.1: `opencode mcp add` is interactive in this version, no
- *      flags accepted — will exit non-zero, clipboard fallback fires.
+ *      flags accepted — we edit `opencode.json` via a node one-liner instead.
+ *  - Grok Build 0.2.3: `grok mcp add <name> --url <url> --type sse` (verified
+ *      July 2026 by round-tripping add/remove under a sandboxed `GROK_HOME`)
+ *  - Hermes Agent 0.13.0: `hermes mcp add <name> --url <url>` (verified July
+ *      2026 from `hermes mcp add --help`)
+ *  - Kimi Code CLI: no scriptable `mcp add` at all — MCP is configured
+ *      conversationally via `/mcp-config`, so we write `~/.kimi-code/mcp.json`
+ *      in-process. NOT via a node one-liner like OpenCode: Kimi ships as a
+ *      single self-contained binary and explicitly does not require Node.
  *
  * If any best-effort command turns out to have a different subcommand
  * in your installed version, the clipboard fallback path handles it
@@ -68,23 +82,39 @@ enum class McpAttachTarget(
      * Stable string written into settings.json's `mcpAttachedTo` set.
      * Keep these values frozen across enum renames — old persisted state
      * depends on them. New targets must pick a fresh, non-colliding key.
+     *
+     * Declaration ORDER is not persisted anywhere, so it's safe to reorder;
+     * UI surfaces render [ossFirst] rather than `entries` anyway.
      */
     val persistenceKey: String,
+    /**
+     * The [ai.rever.bossterm.compose.ai.AIAssistants] id this target attaches to. Links the two
+     * registries so openness ordering and install/detect state come from one place —
+     * `AttachTargetCoverageTest` asserts the mapping stays total in both directions.
+     */
+    val assistantId: String,
     /** Command run first to remove any existing entry. Errors ignored. `{NAME}` is replaced. */
     private val removeCommand: List<String>?,
     /**
      * Primary command. `{URL}` and `{NAME}` get replaced at call time. `null`
      * marks the CLI as having no non-interactive `mcp add` form — the attach
-     * helper skips the shell-out entirely and goes straight to the clipboard
-     * fallback. (Currently OpenCode, which only exposes a TUI prompt.)
+     * helper then tries [attachInProcess], and failing that falls back to the
+     * clipboard. (Currently Kimi Code, which only exposes a TUI prompt.)
      */
     private val addCommand: List<String>?,
     /** Help text + ready-to-paste config when the shell-out fails or is skipped. */
-    private val clipboardFallback: String
+    private val clipboardFallback: String,
+    /**
+     * Per-target ceiling for a single shell-out. Most `mcp add` implementations just rewrite a
+     * config file and return in milliseconds; Hermes is a Python CLI that performs live tool
+     * discovery against the URL on add, so it gets a longer budget than the shared default.
+     */
+    val timeoutSeconds: Long = DEFAULT_PROCESS_TIMEOUT_SECONDS
 ) {
     CLAUDE_CODE(
         displayName = "Claude Code",
         persistenceKey = "CLAUDE_CODE",
+        assistantId = AIAssistantIds.CLAUDE_CODE,
         // `--scope user` is critical: without it, `claude mcp add` writes
         // to the LOCAL (project-cwd) scope, so the entry only works when
         // Claude Code is launched from the BossTerm directory. With user
@@ -126,6 +156,7 @@ enum class McpAttachTarget(
     CODEX(
         displayName = "Codex",
         persistenceKey = "CODEX",
+        assistantId = AIAssistantIds.CODEX,
         // codex-cli 0.130 uses `--url <url>` and only supports streamable
         // HTTP (no SSE client), so it gets BossTerm's /mcp endpoint rather
         // than the SSE root used by Claude/Gemini/OpenCode. An older note
@@ -146,6 +177,7 @@ enum class McpAttachTarget(
     GEMINI(
         displayName = "Gemini CLI",
         persistenceKey = "GEMINI",
+        assistantId = AIAssistantIds.GEMINI_CLI,
         // Verified against `gemini mcp add --help` (gemini-cli 0.28.x):
         //   Usage: gemini mcp add [options] <name> <commandOrUrl> [args...]
         // The previous "{NAME} --transport sse {URL}" order had Gemini
@@ -174,6 +206,7 @@ enum class McpAttachTarget(
     OPENCODE(
         displayName = "OpenCode",
         persistenceKey = "OPENCODE",
+        assistantId = AIAssistantIds.OPENCODE,
         // opencode 1.x's `mcp add` is an interactive TUI prompt with no
         // scriptable form. Workaround: edit `~/.config/opencode/opencode.json`
         // directly via a tiny node one-liner. node is guaranteed to be on
@@ -199,7 +232,83 @@ enum class McpAttachTarget(
               }
             }
         """.trimIndent()
-    );
+    ),
+    GROK(
+        displayName = "Grok Build",
+        persistenceKey = "GROK",
+        assistantId = AIAssistantIds.GROK_BUILD,
+        // Verified against grok 0.2.3 by round-tripping add/remove with a sandboxed
+        // GROK_HOME: `add` writes [mcp_servers.<name>] with url/type/enabled into
+        // config.toml, `remove` deletes the section. Note that --type is NOT validated
+        // at add time (a bogus value is accepted and only fails on connect), so `sse`
+        // here has to be right; `grok mcp doctor` diagnoses a mismatch.
+        removeCommand = listOf("grok", "mcp", "remove", "{NAME}"),
+        addCommand = listOf("grok", "mcp", "add", "{NAME}", "--url", "{URL}", "--type", "sse"),
+        clipboardFallback = """
+            # Append to ~/.grok/config.toml
+            [mcp_servers.{NAME}]
+            url = "{URL}"
+            type = "sse"
+            enabled = true
+        """.trimIndent()
+    ),
+    HERMES(
+        displayName = "Hermes Agent",
+        persistenceKey = "HERMES",
+        assistantId = AIAssistantIds.HERMES,
+        // Verified against Hermes Agent 0.13.0 (`hermes mcp add --help`):
+        //   hermes mcp add [--url URL] [--command CMD] [--args ...] [--auth ...] name
+        // `add` performs live tool discovery against the URL, which is why this target
+        // raises the process timeout — a cold Python start plus a discovery round-trip
+        // does not reliably fit in the 15s the other CLIs need.
+        removeCommand = listOf("hermes", "mcp", "remove", "{NAME}"),
+        addCommand = listOf("hermes", "mcp", "add", "{NAME}", "--url", "{URL}"),
+        clipboardFallback = """
+            # Merge into ~/.hermes/config.yaml
+            mcp_servers:
+              {NAME}:
+                url: "{URL}"
+                enabled: true
+        """.trimIndent(),
+        timeoutSeconds = 45L
+    ),
+    KIMI_CODE(
+        displayName = "Kimi Code CLI",
+        persistenceKey = "KIMI_CODE",
+        assistantId = AIAssistantIds.KIMI_CODE,
+        // Kimi Code has no non-interactive `mcp add` — MCP servers are added
+        // conversationally through the `/mcp-config` TUI. So both directions are
+        // handled in-process by McpConfigFileEditor (see attachInProcess below);
+        // these command slots stay null.
+        removeCommand = null,
+        addCommand = null,
+        clipboardFallback = """
+            // Merge into ~/.kimi-code/mcp.json
+            {
+              "mcpServers": {
+                "{NAME}": {
+                  "url": "{URL}",
+                  "transport": "sse"
+                }
+              }
+            }
+        """.trimIndent()
+    ) {
+        override fun attachInProcess(name: String, url: String, home: File): Boolean =
+            McpConfigFileEditor.putServer(
+                file = CliConfigPaths.kimiMcpJson(home),
+                containerKey = KIMI_CONTAINER_KEY,
+                serverName = name,
+                entry = McpConfigFileEditor.remoteEntry(url, transport = "sse")
+            )
+
+        override fun detachInProcess(name: String, home: File): Boolean =
+            McpConfigFileEditor.removeServer(
+                CliConfigPaths.kimiMcpJson(home),
+                KIMI_CONTAINER_KEY,
+                name
+            )
+    };
 
     /**
      * The URL string registered with this CLI for a server named [serverName]
@@ -209,6 +318,19 @@ enum class McpAttachTarget(
      */
     open fun registrationUrl(serverName: String, port: Int): String =
         "http://127.0.0.1:$port"
+
+    /**
+     * Register in-process instead of shelling out, for CLIs whose only `mcp add` is interactive.
+     *
+     * Returns true when the CLI's config now carries the registration, false when the write failed
+     * (malformed existing config, unwritable path) so the caller can fall back to the clipboard.
+     * `null` — the default — means this target has no in-process path and should use
+     * [resolvedAddCommand].
+     */
+    open fun attachInProcess(name: String, url: String, home: File): Boolean? = null
+
+    /** The [attachInProcess] counterpart. Idempotent: true when the entry is absent afterwards. */
+    open fun detachInProcess(name: String, home: File): Boolean? = null
 
     fun resolvedAddCommand(name: String, url: String): List<String>? =
         addCommand?.map { it.replace("{NAME}", name).replace("{URL}", url) }
@@ -223,6 +345,28 @@ enum class McpAttachTarget(
         /** Look up a target by its stable [persistenceKey]. Null if unknown. */
         fun fromPersistenceKey(key: String): McpAttachTarget? =
             entries.firstOrNull { it.persistenceKey == key }
+
+        /** Look up the target that attaches to [assistantId]. Null when that CLI has none. */
+        fun forAssistant(assistantId: String): McpAttachTarget? =
+            entries.firstOrNull { it.assistantId == assistantId }
+
+        /**
+         * Attach targets ordered open-source-first, matching the AI menu and settings list: fully
+         * open stacks, then open clients on vendor models, then proprietary. Ordering comes from the
+         * tool registry via [assistantId], so it can't drift from what the rest of the UI shows.
+         *
+         * All UI surfaces should render this rather than `entries`.
+         */
+        val ossFirst: List<McpAttachTarget>
+            get() = entries.sortedWith(
+                compareBy(
+                    { AIAssistants.findById(it.assistantId)?.openness?.ordinal ?: Int.MAX_VALUE },
+                    { it.displayName }
+                )
+            )
+
+        /** Shared ceiling for a single `mcp add`/`mcp remove` shell-out. */
+        const val DEFAULT_PROCESS_TIMEOUT_SECONDS = 15L
     }
 }
 
@@ -255,8 +399,9 @@ object McpCliAttacher {
 
     private val log = LoggerFactory.getLogger(McpCliAttacher::class.java)
 
-    /** Per-process timeout for any single shell-out. */
-    private const val PROCESS_TIMEOUT_SECONDS = 15L
+    /** Home directory the in-process config editors write under. */
+    private val home: File
+        get() = File(System.getProperty("user.home").orEmpty())
 
     init {
         // Force-load the classes attach() needs on the stretch between
@@ -307,17 +452,40 @@ object McpCliAttacher {
                 // outer catch would still reach a CopiedToClipboard).
                 target.resolvedRemoveCommand(serverName)?.let { removeCmd ->
                     try {
-                        runProcess(removeCmd)
+                        runProcess(removeCmd, target.timeoutSeconds)
                     } catch (_: Throwable) {
                         // ignore: idempotency convenience only
                     }
                 }
+                // In-process targets get the same courtesy: clear any stale entry
+                // before writing, so a changed port can't leave two registrations.
+                target.detachInProcess(serverName, home)
+
+                // CLIs with no scriptable `mcp add` can still have an in-process
+                // path (Kimi Code: we own the JSON merge). Try that before the
+                // clipboard, since it's a real one-click attach for the user.
+                target.attachInProcess(serverName, url, home)?.let { wrote ->
+                    if (wrote) {
+                        log.info("Attach succeeded for {} (config written in-process)", target.displayName)
+                        return@withContext McpAttachResult.Success(target, "config written")
+                    }
+                    log.warn(
+                        "In-process config write for {} failed; {}",
+                        target.displayName,
+                        if (quiet) "quiet mode — clipboard untouched" else "copying fallback to clipboard"
+                    )
+                    if (!quiet) copyToClipboard(target.resolvedClipboard(serverName, url))
+                    val suffix = if (quiet) "" else " — config copied to clipboard"
+                    return@withContext McpAttachResult.CopiedToClipboard(
+                        target,
+                        "could not write config$suffix"
+                    )
+                }
 
                 val cmd = target.resolvedAddCommand(serverName, url)
                 if (cmd == null) {
-                    // CLI has no non-interactive `mcp add` (e.g. OpenCode TUI
-                    // prompt). Skip the shell-out and drop the config snippet
-                    // on the clipboard so the user can paste it manually.
+                    // No scriptable `mcp add` and no in-process path — drop the
+                    // config snippet on the clipboard so the user can paste it.
                     log.info(
                         "{} has no scriptable `mcp add` — {}",
                         target.displayName,
@@ -331,13 +499,13 @@ object McpCliAttacher {
                     )
                 }
                 log.info("Attaching {} via: {}", target.displayName, cmd.joinToString(" "))
-                val result = runProcess(cmd)
+                val result = runProcess(cmd, target.timeoutSeconds)
                 if (result.exitCode == 0) {
                     log.info("Attach succeeded for {}", target.displayName)
                     McpAttachResult.Success(target, result.output.trim().take(160))
                 } else {
                     val baseReason = if (result.timedOut) {
-                        "timed out after ${PROCESS_TIMEOUT_SECONDS}s"
+                        "timed out after ${target.timeoutSeconds}s"
                     } else {
                         "exit ${result.exitCode}"
                     }
@@ -378,7 +546,8 @@ object McpCliAttacher {
     private data class ProcessOutcome(val exitCode: Int, val output: String, val timedOut: Boolean)
 
     /**
-     * Run [cmd] with a hard 15s timeout. Closes the child's stdin immediately
+     * Run [cmd] with a hard [timeoutSeconds] timeout (the target's
+     * [McpAttachTarget.timeoutSeconds]). Closes the child's stdin immediately
      * to defuse interactive prompts, and waits for the process before reading
      * stdout — so a hung CLI gets killed by destroyForcibly instead of
      * stalling our read forever. The caller decides how to interpret
@@ -394,7 +563,7 @@ object McpCliAttacher {
      * `PATH`, where none of these CLIs are findable and every attach would
      * otherwise die with "CLI not found".
      */
-    private fun runProcess(cmd: List<String>): ProcessOutcome {
+    private fun runProcess(cmd: List<String>, timeoutSeconds: Long): ProcessOutcome {
         val resolved = listOf(CliBinaryResolver.resolve(cmd.first())) + cmd.drop(1)
         val process = ProcessBuilder(resolved).redirectErrorStream(true).start()
         try {
@@ -408,11 +577,11 @@ object McpCliAttacher {
             // output is at most a few lines of status text — far below the OS
             // pipe buffer (~64 KB on Linux, ~8 KB on small Windows shells). If a
             // future CLI ever spams more than that without exiting, it would
-            // block on its write and we'd hit the 15 s timeout instead of a
-            // clean read. If that becomes a problem, drain inputStream on a
-            // worker thread alongside the waitFor.
+            // block on its write and we'd hit the timeout instead of a clean
+            // read. If that becomes a problem, drain inputStream on a worker
+            // thread alongside the waitFor.
             val finished = try {
-                process.waitFor(PROCESS_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
             } catch (e: InterruptedException) {
                 // Coroutine cancelled while we waited; rethrow as cancellation
                 // so callers don't mistake it for a CLI failure.

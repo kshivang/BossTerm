@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose.onboarding
 
+import ai.rever.bossterm.compose.ai.AIAssistantIds
+import ai.rever.bossterm.compose.ai.AIAssistants
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -9,7 +11,10 @@ import kotlin.test.assertTrue
  * Guards the onboarding wizard's generated tool-install script (the in-app "Welcome to BossTerm"
  * flow). [buildInstallCommand] is platform-sensitive (it reads `os.name`), so on each CI OS this
  * exercises that OS's branch with the wizard's default selections (Zsh + Starship + git + gh +
- * all AI assistants) and nothing pre-installed — the realistic "accept defaults" install.
+ * the fully-open AI assistants) and nothing pre-installed — the realistic "accept defaults" install.
+ *
+ * Note that the defaults are all *script*-installed CLIs now, so the npm-hardening guard gets its
+ * own scenario that explicitly selects an npm-installed assistant.
  *
  * Catches the class of bugs we've actually shipped: malformed shell (the bash that won't parse),
  * the missing-`/usr/local/bin` Starship abort, and the AI-CLI `npm install -g` EACCES when npm's
@@ -22,6 +27,15 @@ class OnboardingInstallScriptTest {
 
     private fun defaultScript(): String =
         buildInstallCommand(OnboardingSelections(), InstalledTools())
+
+    /** The default script plus Codex, whose registry entry installs via `npm install -g`. */
+    private fun scriptWithNpmAssistant(): String =
+        buildInstallCommand(
+            OnboardingSelections(
+                aiAssistants = AIAssistants.DEFAULT_ONBOARDING_SELECTION + AIAssistantIds.CODEX
+            ),
+            InstalledTools()
+        )
 
     @Test
     fun `default install script is syntactically valid`() {
@@ -51,18 +65,41 @@ class OnboardingInstallScriptTest {
             script.contains("[ -d /usr/local/bin ]"),
             "Starship install must guard /usr/local/bin existence:\n$script"
         )
-        // AI-CLI npm global install must go through the writability-gated \$NPM_SUDO with npm
-        // resolved to an absolute path (\$NPM_BIN) — a bare `npm install -g` EACCES'es on a
-        // root-owned prefix, and a bare `sudo npm` can hit command-not-found under env_reset.
-        assertTrue(
-            script.contains("\$NPM_SUDO \"\$NPM_BIN\" install -g"),
-            "AI-CLI npm install must use \$NPM_SUDO + resolved \$NPM_BIN:\n$script"
-        )
         // Defaults include Starship → sudo is pre-authed so the guarded sudo calls run unattended.
         assertTrue(
             script.contains("Authenticating administrator access"),
             "script should authenticate sudo upfront when it contains sudo steps:\n$script"
         )
+    }
+
+    @Test
+    fun `npm-installed assistants keep the EACCES hardening`() {
+        if (isWindows) return
+        val script = scriptWithNpmAssistant()
+        // AI-CLI npm global install must go through the writability-gated $NPM_SUDO with npm
+        // resolved to an absolute path ($NPM_BIN) — a bare `npm install -g` EACCES'es on a
+        // root-owned prefix, and a bare `sudo npm` can hit command-not-found under env_reset.
+        assertTrue(
+            script.contains("\$NPM_SUDO \"\$NPM_BIN\" install -g"),
+            "AI-CLI npm install must use \$NPM_SUDO + resolved \$NPM_BIN:\n$script"
+        )
+    }
+
+    @Test
+    fun `script-installed assistants use their own installers`() {
+        if (isWindows) return
+        val script = defaultScript()
+        // The single-binary CLIs (Kimi Code, Hermes) are not npm packages — Hermes has no npm
+        // package at all — so onboarding must run their installer scripts rather than silently
+        // dropping them from the batch, which is what the old npm-only path did.
+        AIAssistants.AI_ASSISTANTS
+            .filter { it.id in OnboardingSelections().aiAssistants }
+            .forEach { assistant ->
+                assertTrue(
+                    script.contains(assistant.installCommand),
+                    "${assistant.id} was selected by default but its install command is missing:\n$script"
+                )
+            }
     }
 
     /**

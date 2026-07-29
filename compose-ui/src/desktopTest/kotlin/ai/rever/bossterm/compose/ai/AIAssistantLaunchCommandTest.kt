@@ -55,4 +55,62 @@ class AIAssistantLaunchCommandTest {
             provider.getLaunchCommand(builtin(AIAssistantIds.CODEX), AIAssistantConfigData(customYoloFlag = "--my-flag"))
         )
     }
+
+    /**
+     * The open-source CLIs' auto-mode flags, verified against the installed binaries in July 2026:
+     * `grok 0.2.3 --help` lists `--always-approve`, and the Kimi Code / Hermes docs both use
+     * `--yolo`. Pinned here because each is a different word for the same thing and a wrong guess
+     * fails only when a user clicks Launch.
+     */
+    @Test
+    fun `open source assistants launch with their own auto-mode flags`() {
+        assertEquals(
+            "grok --always-approve\n",
+            provider.getLaunchCommand(builtin(AIAssistantIds.GROK_BUILD))
+        )
+        assertEquals(
+            "kimi --yolo\n",
+            provider.getLaunchCommand(builtin(AIAssistantIds.KIMI_CODE))
+        )
+        assertEquals(
+            "hermes --yolo\n",
+            provider.getLaunchCommand(builtin(AIAssistantIds.HERMES))
+        )
+    }
+
+    @Test
+    fun `ollama has no auto-mode flag to add`() {
+        // Ollama runs models; there are no tool calls to approve. A stray flag here would be
+        // appended to every launch and break it.
+        val ollama = builtin(AIAssistantIds.OLLAMA)
+        assertEquals("", ollama.yoloFlag)
+        assertEquals("ollama\n", provider.getLaunchCommand(ollama))
+    }
+
+    @Test
+    fun `every AI assistant declares an auto-mode flag`() {
+        // A blank flag would make the menu's "(Auto)" label a lie.
+        AIAssistants.AI_ASSISTANTS.forEach { assistant ->
+            assertFalse(
+                assistant.yoloFlag.isBlank(),
+                "${assistant.id} has no yoloFlag — the menu would show an auto-mode it can't enable"
+            )
+        }
+    }
+
+    @Test
+    fun `open source assistants carry their license and source`() {
+        // The openness ordering and the UI badges both read these, so an entry that forgets them
+        // silently sorts as proprietary.
+        AIAssistants.AI_ASSISTANTS.filter { it.openSource }.forEach { assistant ->
+            assertFalse(
+                assistant.license.isBlank(),
+                "${assistant.id} is marked openSource but declares no license"
+            )
+            assertFalse(
+                assistant.sourceUrl.isBlank(),
+                "${assistant.id} is marked openSource but declares no sourceUrl"
+            )
+        }
+    }
 }

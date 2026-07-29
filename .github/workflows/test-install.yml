@@ -435,8 +435,31 @@ jobs:
           export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" || true
           command -v starship && starship --version
           command -v git && git --version
-          # AI CLIs install under the npm global prefix/bin — add it to PATH and assert at
-          # least one resolves, so this job truly proves the install produced runnable tools.
-          export PATH="$(npm prefix -g 2>/dev/null)/bin:$PATH"
+
+          # The AI CLIs the wizard installs by default come from the tool registry, and each
+          # installer picks its own prefix, so cover all of them: npm's global bin for the
+          # npm-packaged CLIs, plus the per-tool dirs the single-binary installers use. (These
+          # are appended to ~/.bashrc by the installers, which this non-login shell doesn't read.)
+          export PATH="$(npm prefix -g 2>/dev/null)/bin:$HOME/.local/bin:$HOME/.opencode/bin:$HOME/.kimi-code/bin:$HOME/.grok/bin:$HOME/.hermes/bin:$PATH"
           npm ls -g --depth=0 2>/dev/null || true
-          command -v claude && echo "✓ claude CLI installed"
+
+          # Expected commands are emitted by OnboardingInstallScriptTest from the registry rather
+          # than hardcoded here — a hardcoded CLI silently goes stale when the default selection
+          # changes, and a workflow file is not where that gets noticed.
+          EXPECTED="onboarding-install.sh.expected-commands"
+          test -s "$EXPECTED" || { echo "::error::emitter produced no expected-commands list"; exit 1; }
+          echo "----- expected commands -----"; cat "$EXPECTED"
+          MISSING=""
+          while read -r cmd; do
+            [ -n "$cmd" ] || continue
+            if command -v "$cmd" >/dev/null 2>&1; then
+              echo "✓ $cmd -> $(command -v "$cmd")"
+            else
+              echo "✗ $cmd not found"
+              MISSING="$MISSING $cmd"
+            fi
+          done < "$EXPECTED"
+          if [ -n "$MISSING" ]; then
+            echo "::error::default onboarding install did not produce runnable:$MISSING"
+            exit 1
+          fi

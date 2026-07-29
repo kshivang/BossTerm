@@ -106,11 +106,24 @@ class OnboardingInstallScriptTest {
      * Not an assertion — when `BOSSTERM_EMIT_INSTALL_SCRIPT` is set, writes the generated
      * default install script to that path so the CI live-install job can execute it. A no-op
      * (passes) otherwise, so it's harmless in the normal test run.
+     *
+     * Alongside it, writes `<path>.expected-commands`: the command name of every tool the default
+     * selection installs, one per line. The live job asserts each of those resolves afterwards.
+     * Emitting the list from the registry rather than hardcoding a CLI in the workflow is the point
+     * — the previous version asserted `command -v claude`, which silently became wrong the moment
+     * the default selection changed, and the workflow is not somewhere that drift gets noticed.
      */
     @Test
     fun `emit install script for CI when requested`() {
         val target = System.getenv("BOSSTERM_EMIT_INSTALL_SCRIPT") ?: return
         File(target).writeText(defaultScript())
         assertTrue(File(target).length() > 0)
+
+        val selection = OnboardingSelections().aiAssistants
+        val commands = (AIAssistants.AI_ASSISTANTS + AIAssistants.LOCAL_MODEL_RUNTIMES)
+            .filter { it.id in selection }
+            .map { it.command }
+        File("$target.expected-commands").writeText(commands.joinToString("\n", postfix = "\n"))
+        assertTrue(commands.isNotEmpty(), "default onboarding selection installs no AI tools")
     }
 }

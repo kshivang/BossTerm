@@ -49,8 +49,9 @@ Skiko can't read a typeface out of the jar (classloader issues), so bundled font
 disk first. Extract via `extractBundledFont()` in `compose-ui/.../util/FontUtils.kt` — do NOT go
 back to a per-launch `File.createTempFile`:
 
-- `classLoader.getResourceAsStream("fonts/…​.ttf")` → `~/.bossterm/fonts/<name>-<sha256-12>.ttf`
-  (content-addressed, written once per font per upgrade, atomic temp+rename) → `Font(file = …)`
+- `classLoader.getResourceAsStream("fonts/….ttf")` → `~/.bossterm/fonts/<name>-<sha256-12>.ttf`
+  (content-addressed, written once per font per upgrade, fsync + atomic rename, superseded copies
+  pruned on the write path so a warm launch stays zero-I/O) → `Font(file = …)`
 - A fresh multi-megabyte file per launch is the worst case for endpoint-security scanning, and
   Skia's font path calls `dlsym` (CoreText weight mapping) — see the deadlock note below
 

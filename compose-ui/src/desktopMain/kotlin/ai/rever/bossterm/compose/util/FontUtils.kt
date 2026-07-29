@@ -173,7 +173,9 @@ internal fun extractBundledFont(resourcePath: String): java.io.File? {
         ?.use { it.readBytes() }
         ?: return null
 
-    val baseName = resourcePath.substringAfterLast('/').substringBeforeLast('.')
+    val fileName = resourcePath.substringAfterLast('/')
+    val baseName = fileName.substringBeforeLast('.')
+    val extension = fileName.substringAfterLast('.', missingDelimiterValue = "ttf")
     val digest = java.security.MessageDigest.getInstance("SHA-256")
         .digest(bytes)
         .take(6)
@@ -183,19 +185,28 @@ internal fun extractBundledFont(resourcePath: String): java.io.File? {
     // fall back to the old per-launch temp file rather than failing to load a font at all.
     val cached = runCatching {
         val dir = java.io.File(BossTermPaths.dir(), "fonts").apply { mkdirs() }
-        java.io.File(dir, "$baseName-$digest.ttf").takeIf { it.parentFile?.isDirectory == true }
+        java.io.File(dir, "$baseName-$digest.$extension").takeIf { it.parentFile?.isDirectory == true }
     }.getOrNull()
 
     if (cached != null) {
-        // Size check, not a re-hash: a partial file from a killed write is the failure mode worth
-        // catching, and the name already pins the content.
+        // Catches a truncated copy (a write killed partway). Deliberately NOT a corruption check:
+        // the name states the intended content, nothing here verifies the bytes match it. The
+        // durable write below is what keeps a same-length-but-garbage file from happening, since
+        // such a file would pass this check on every later launch.
         if (cached.isFile && cached.length() == bytes.size.toLong()) return cached
         // Unique temp + atomic rename, so two BossTerm launches racing here can't publish a torn
         // file to the shared path (same rationale as SettingsManager.writeToFileLocked).
         val published = runCatching {
             val tmp = java.io.File.createTempFile(".$baseName", ".tmp", cached.parentFile)
             try {
-                tmp.writeBytes(bytes)
+                // fsync before the rename: a rename is atomic for *ordering*, not durability, and
+                // delayed allocation can otherwise publish a correctly-sized file with unwritten
+                // extents after a power loss. Truncation self-heals via the length check above;
+                // same-length garbage would be sticky until the bundled font itself changes.
+                java.io.FileOutputStream(tmp).use { out ->
+                    out.write(bytes)
+                    out.fd.sync()
+                }
                 runCatching {
                     java.nio.file.Files.move(
                         tmp.toPath(), cached.toPath(),
@@ -208,6 +219,25 @@ internal fun extractBundledFont(resourcePath: String): java.io.File? {
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING,
                     )
                 }
+                // Write path only, so a warm launch stays zero-I/O: drop the previous version's
+                // copy and any orphaned temp. The hash in the name invalidates for *lookup* but
+                // never evicts, and `finally` below can't run if the JVM is SIGKILLed mid-write —
+                // which is exactly what someone does to a launch that shows no window.
+                runCatching {
+                    // An orphan is only orphaned if nobody is mid-write: another launch racing us
+                    // has a temp of its own in here, so temps are pruned by age, superseded copies
+                    // immediately. Deleting a file Skia has mapped is safe on POSIX (unlink) and
+                    // simply fails on Windows, which the per-file runCatching absorbs.
+                    val tempCutoff = System.currentTimeMillis() - 3_600_000
+                    cached.parentFile?.listFiles { f ->
+                        f != cached && f.isFile && when {
+                            f.name.startsWith("$baseName-") && f.name.endsWith(".$extension") -> true
+                            f.name.startsWith(".$baseName") && f.name.endsWith(".tmp") ->
+                                f.lastModified() < tempCutoff
+                            else -> false
+                        }
+                    }?.forEach { stale -> runCatching { stale.delete() } }
+                }
                 cached
             } finally {
                 runCatching { if (tmp.exists()) tmp.delete() }
@@ -216,7 +246,7 @@ internal fun extractBundledFont(resourcePath: String): java.io.File? {
         if (published != null) return published
     }
 
-    return java.io.File.createTempFile(baseName, ".ttf").also { temp ->
+    return java.io.File.createTempFile(baseName, ".$extension").also { temp ->
         temp.deleteOnExit()
         temp.writeBytes(bytes)
     }
@@ -243,12 +273,18 @@ private fun loadBundledSymbolFont(): FontFamily {
 }
 
 /**
+ * The bundled terminal font, resolved once. [loadTerminalFont] falls back here on every system-font
+ * miss and is itself behind `remember(settings.fontName)`, so without this the 2.5 MB inflate + hash
+ * would be re-paid on the composition thread each time the font setting changes.
+ */
+private val bundledFontFile: java.io.File? by lazy { extractBundledFont("fonts/MesloLGSNF-Regular.ttf") }
+
+/**
  * Load the bundled MesloLGS Nerd Font.
  */
 private fun loadBundledFont(): FontFamily {
     return try {
-        val fontFile = extractBundledFont("fonts/MesloLGSNF-Regular.ttf")
-            ?: return FontFamily.Monospace
+        val fontFile = bundledFontFile ?: return FontFamily.Monospace
 
         FontFamily(
             androidx.compose.ui.text.platform.Font(

@@ -24,11 +24,7 @@ class BundledFontExtractionTest {
     @BeforeTest
     fun redirectBossTermDir() {
         previousDir = System.getProperty(BossTermPaths.SETTINGS_DIR_PROPERTY)
-        dir = File.createTempFile("bossterm-font-test", "").let {
-            it.delete()
-            it.mkdirs()
-            it
-        }
+        dir = java.nio.file.Files.createTempDirectory("bossterm-font-test").toFile()
         System.setProperty(BossTermPaths.SETTINGS_DIR_PROPERTY, dir.absolutePath)
     }
 
@@ -55,19 +51,61 @@ class BundledFontExtractionTest {
     @Test
     fun `second launch reuses the file instead of rewriting it`() {
         val first = assertNotNull(extractBundledFont(resource))
-        val stamp = first.lastModified()
         val bytes = first.readBytes()
+        // Back-date well past any filesystem timestamp granularity: at 1-second resolution a
+        // same-second rewrite would compare equal and pass while doing exactly what we forbid.
+        val backdated = System.currentTimeMillis() - 60_000
+        assertTrue(first.setLastModified(backdated), "could not back-date the cache file")
 
         val second = assertNotNull(extractBundledFont(resource))
 
         assertEquals(first.absolutePath, second.absolutePath)
-        assertEquals(stamp, second.lastModified(), "cache was rewritten on the second call")
+        assertEquals(backdated, second.lastModified(), "cache was rewritten on the second call")
         assertTrue(bytes.contentEquals(second.readBytes()))
         // Exactly one copy, and no temp left behind by the publish.
         assertEquals(
             listOf(first.name),
             File(dir, "fonts").listFiles()!!.map { it.name }.sorted()
         )
+    }
+
+    @Test
+    fun `publishing prunes a superseded copy and an orphaned temp`() {
+        val current = assertNotNull(extractBundledFont(resource))
+        val fonts = File(dir, "fonts")
+        // A previous version's copy, and a temp orphaned by a killed write (back-dated past the
+        // age guard that protects a concurrent launch's in-flight temp).
+        val superseded = File(fonts, "MesloLGSNF-Regular-000000000000.ttf").apply { writeBytes(ByteArray(16)) }
+        val orphanTemp = File(fonts, ".MesloLGSNF-Regular999.tmp").apply {
+            writeBytes(ByteArray(16))
+            setLastModified(System.currentTimeMillis() - 7_200_000)
+        }
+        val freshTemp = File(fonts, ".MesloLGSNF-Regular111.tmp").apply { writeBytes(ByteArray(16)) }
+        // Force a republish: truncating is what makes the length check miss.
+        current.writeBytes(ByteArray(8))
+
+        assertNotNull(extractBundledFont(resource))
+
+        assertTrue(!superseded.exists(), "old-hash copy was left behind")
+        assertTrue(!orphanTemp.exists(), "orphaned temp was left behind")
+        assertTrue(freshTemp.exists(), "a concurrent launch's in-flight temp must not be deleted")
+    }
+
+    @Test
+    fun `an unusable cache dir still yields a font file`() {
+        // Point the store at a regular file so mkdirs() cannot succeed.
+        val notADir = File.createTempFile("bossterm-not-a-dir", "")
+        System.setProperty(BossTermPaths.SETTINGS_DIR_PROPERTY, notADir.absolutePath)
+        try {
+            val file = assertNotNull(extractBundledFont(resource), "fallback must still produce a font")
+            assertTrue(file.isFile && file.length() > 0)
+            assertTrue(
+                file.parentFile.absolutePath != File(notADir, "fonts").absolutePath,
+                "expected the temp fallback, not the unusable cache path"
+            )
+        } finally {
+            notADir.delete()
+        }
     }
 
     @Test

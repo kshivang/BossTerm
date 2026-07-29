@@ -143,6 +143,7 @@
     // Open client + open/local models, alphabetical
     { key: "HERMES", label: "Hermes Agent" },
     { key: "KIMI_CODE", label: "Kimi Code CLI" },
+    { key: "OPENCLAW", label: "OpenClaw" },
     { key: "OPENCODE", label: "OpenCode" },
     // Open client, vendor models
     { key: "CODEX", label: "Codex" },
@@ -1276,6 +1277,7 @@
   var AI_ASSISTANTS = [
     { id: "hermes", label: "Hermes Agent" },
     { id: "kimi-code", label: "Kimi Code CLI" },
+    { id: "openclaw", label: "OpenClaw" },
     { id: "opencode", label: "OpenCode" },
     { id: "codex", label: "Codex" },
     { id: "gemini-cli", label: "Gemini CLI" },

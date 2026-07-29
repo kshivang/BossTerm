@@ -496,6 +496,7 @@ models, then proprietary.
 |---------------|------------|-------------------------------------------------------------------------------|
 | Hermes Agent  | MIT        | `hermes mcp add <name> --url <url>`                                           |
 | Kimi Code CLI | MIT        | In-process merge into `~/.kimi-code/mcp.json` (no scriptable `mcp add`).      |
+| OpenClaw      | MIT        | `openclaw mcp add <name> --url <url> --transport sse` (docs-only, see below)   |
 | OpenCode      | MIT        | Scripted edit of `~/.config/opencode/opencode.json` via a `node -e` shim.     |
 | Codex         | Apache-2.0 | `codex mcp add <name> --url <url>`                                            |
 | Gemini CLI    | Apache-2.0 | `gemini mcp add <name> <url> --transport sse --scope user`                    |
@@ -522,7 +523,16 @@ performs live tool discovery against the URL before it returns.
 
 **Grok caveat**: `grok mcp add` does not validate `--type` at write time — a
 wrong transport is accepted into `config.toml` and only fails when the CLI
-tries to connect. `grok mcp doctor` diagnoses that. **Codex caveat**: registration succeeds with codex-cli 0.130,
+tries to connect. `grok mcp doctor` diagnoses that.
+
+**OpenClaw caveat**: its `mcp` subcommand is newer than some installed builds
+(2026.3.13 has none; npm latest is 2026.7.1-2), so the shell-out is expected to
+fail on older installs and drop the config snippet on the clipboard instead. Its
+servers also nest one level deeper than every other CLI —
+`mcp.servers.<name>` in `~/.openclaw/openclaw.json` — which is why
+`jsonLoopbackUrl` walks a container *path* rather than a single key. Watch out
+when probing OpenClaw: `openclaw <unknown> --help` prints top-level help and
+exits **0**, so an exit code alone never proves a subcommand exists. **Codex caveat**: registration succeeds with codex-cli 0.130,
 but Codex currently speaks streamable HTTP only, so the runtime connection
 will fail against the SSE endpoint until BossTerm's MCP SDK is upgraded.
 

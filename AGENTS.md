@@ -149,8 +149,8 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 - **Clipboard**: Copy-on-select, middle-click paste
 - **Mouse**: vim/tmux support, Shift bypasses
 - **AI Menu**: open-source-first (`AIAssistants.AI_ASSISTANTS_OSS_FIRST`) — Hermes Agent, Kimi Code
-  CLI, OpenCode, then Codex, Gemini CLI, Grok Build, then Claude Code. Ordering is derived from each
-  entry's `openSource`/`localModels` flags, not declaration order. Adding a CLI means ONE entry in
+  CLI, OpenClaw, OpenCode, then Codex, Gemini CLI, Grok Build, then Claude Code. Ordering is derived
+  from each entry's `openSource`/`localModels` flags, not declaration order. Adding a CLI means ONE entry in
   `AIAssistants.BUILTIN` plus (if it speaks MCP) one `McpAttachTarget` — everything else (menus,
   detection, onboarding, settings, remote/share menus) reads the registry. `AttachTargetCoverageTest`
   fails the build if the two registries drift apart

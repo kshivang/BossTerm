@@ -61,7 +61,11 @@ enum class OpennessTier {
  *
  * @property id Unique identifier for the tool (e.g., "claude-code")
  * @property displayName Human-readable name shown in menus (e.g., "Claude Code")
- * @property command The CLI command to launch the tool (e.g., "claude")
+ * @property command The CLI command to launch the tool (e.g., "claude"). This is also what gets
+ *   detected on `PATH`, so it must stay a bare binary name — subcommands go in [launchArgs].
+ * @property launchArgs Subcommand/arguments always appended to [command] when launching, regardless
+ *   of auto mode (e.g. `tui` for OpenClaw, whose bare command prints help instead of starting an
+ *   interactive session). Blank for CLIs whose bare command is the agent.
  * @property category Category of the tool (AI_ASSISTANT or VERSION_CONTROL)
  * @property yoloFlag The flag to enable auto/YOLO mode (e.g., "--dangerously-skip-permissions")
  * @property yoloEnv Shell env-var prefix that enables auto mode for CLIs that have no flag for it,
@@ -89,6 +93,7 @@ data class AIAssistantDefinition(
     val id: String,
     val displayName: String,
     val command: String,
+    val launchArgs: String = "",
     val category: ToolCategory = ToolCategory.AI_ASSISTANT,
     val yoloFlag: String = "",
     val yoloEnv: String = "",
@@ -132,7 +137,10 @@ data class AIAssistantConfig(
      * Get the effective command to run.
      */
     fun getCommand(assistant: AIAssistantDefinition): String =
-        customCommand?.takeIf { it.isNotBlank() } ?: assistant.command
+        customCommand?.takeIf { it.isNotBlank() }
+            ?: listOf(assistant.command, assistant.launchArgs)
+                .filter { it.isNotBlank() }
+                .joinToString(" ")
 
     /**
      * Get the effective YOLO flag.
@@ -166,6 +174,7 @@ object AIAssistantIds {
     const val KIMI_CODE = "kimi-code"
     const val GROK_BUILD = "grok-build"
     const val HERMES = "hermes"
+    const val OPENCLAW = "openclaw"
 
     // Local Model Runtimes
     const val OLLAMA = "ollama"
@@ -202,7 +211,7 @@ object AIAssistantIds {
      * All AI assistant IDs (coding assistants only).
      */
     val ALL_AI_ASSISTANTS = setOf(
-        CLAUDE_CODE, GEMINI_CLI, CODEX, OPENCODE, KIMI_CODE, GROK_BUILD, HERMES
+        CLAUDE_CODE, GEMINI_CLI, CODEX, OPENCODE, KIMI_CODE, GROK_BUILD, HERMES, OPENCLAW
     )
 
     /**
@@ -312,6 +321,39 @@ object AIAssistants {
                 "~/.kimi-code/bin/kimi",
                 "~/.local/bin/kimi",
                 "/usr/local/bin/kimi"
+            )
+        ),
+        AIAssistantDefinition(
+            id = AIAssistantIds.OPENCLAW,
+            displayName = "OpenClaw",
+            command = "openclaw",
+            // Bare `openclaw` prints help — `tui` is the interactive terminal session (verified
+            // against 2026.3.13). It connects to OpenClaw's Gateway rather than running the agent
+            // in-process, so the gateway has to be up; the CLI says so when it isn't.
+            launchArgs = "tui",
+            // OpenClaw's YOLO is normally PERSISTENT config (`exec-policy preset yolo` rewrites
+            // tools.exec + the approvals defaults), which would loosen the user's exec policy
+            // everywhere, not just in this terminal. This uses the documented SESSION-scoped
+            // override delivered through `tui --message` instead, so auto mode behaves like the
+            // other CLIs' per-session flags and ~/.openclaw/openclaw.json is left alone.
+            // NOTE: docs-only — unverifiable on this machine, whose install (2026.3.13) predates
+            // both `mcp` and `exec-policy` (npm latest is 2026.7.1-2). Needs a live-gateway check.
+            yoloFlag = "--message '/exec security=full ask=off'",
+            yoloLabel = "Auto",
+            installCommand = "curl -fsSL https://openclaw.ai/install.sh | bash",
+            npmInstallCommand = "npm install -g openclaw@latest",
+            websiteUrl = "https://github.com/openclaw/openclaw",
+            description = "Personal assistant agent — gateway-based, runs on local models too",
+            // Standard 24-line MIT; GitHub reports NOASSERTION only because the file ends with a
+            // pointer to THIRD_PARTY_NOTICES.md.
+            license = "MIT",
+            sourceUrl = "https://github.com/openclaw/openclaw",
+            openSource = true,
+            localModels = true,
+            extraDetectPaths = listOf(
+                "/opt/homebrew/bin/openclaw",
+                "~/.local/bin/openclaw",
+                "/usr/local/bin/openclaw"
             )
         ),
         AIAssistantDefinition(

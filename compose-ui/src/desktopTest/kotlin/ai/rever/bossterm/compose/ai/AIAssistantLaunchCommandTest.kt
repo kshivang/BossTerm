@@ -124,6 +124,45 @@ class AIAssistantLaunchCommandTest {
     }
 
     @Test
+    fun `openclaw launches its tui subcommand with a session-scoped yolo`() {
+        // Bare `openclaw` prints help, so launchArgs carries the `tui` subcommand. Its auto mode
+        // is deliberately the SESSION override rather than `exec-policy preset yolo`, which would
+        // permanently rewrite the user's exec policy outside BossTerm.
+        val openclaw = builtin(AIAssistantIds.OPENCLAW)
+        assertEquals("openclaw", openclaw.command, "command must stay a bare binary name for PATH detection")
+        assertEquals(
+            "openclaw tui --message '/exec security=full ask=off'\n",
+            provider.getLaunchCommand(openclaw)
+        )
+        // Auto mode off still has to launch a usable session, i.e. keep the subcommand.
+        assertEquals(
+            "openclaw tui\n",
+            provider.getLaunchCommand(openclaw, AIAssistantConfigData(yoloEnabled = false))
+        )
+        // A custom command replaces the whole invocation, subcommand included.
+        assertEquals(
+            "my-claw\n",
+            provider.getLaunchCommand(
+                openclaw,
+                AIAssistantConfigData(customCommand = "my-claw", yoloEnabled = false)
+            )
+        )
+    }
+
+    @Test
+    fun `launch args never leak into a bare-command assistant`() {
+        // Guard the new field: only OpenClaw needs a subcommand today, and appending a stray one
+        // to e.g. claude would break every launch.
+        AIAssistants.AI_ASSISTANTS.filter { it.launchArgs.isBlank() }.forEach { assistant ->
+            assertEquals(
+                assistant.command,
+                provider.getLaunchCommand(assistant, AIAssistantConfigData(yoloEnabled = false)).trim(),
+                "${assistant.id} declares no launchArgs but its bare launch command changed"
+            )
+        }
+    }
+
+    @Test
     fun `local model runtimes advertise no auto mode`() {
         // Ollama runs models; there are no tool calls to approve, so a label here would be a lie.
         AIAssistants.LOCAL_MODEL_RUNTIMES.forEach { runtime ->

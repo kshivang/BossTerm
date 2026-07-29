@@ -72,13 +72,16 @@ internal object McpRegistrationScanner {
     internal fun registeredLoopbackUrl(target: McpAttachTarget, serverName: String, home: File): String? =
         when (target) {
             McpAttachTarget.CLAUDE_CODE ->
-                jsonLoopbackUrl(File(home, ".claude.json"), "mcpServers", serverName)
+                jsonLoopbackUrl(File(home, ".claude.json"), "mcpServers", serverName = serverName)
             McpAttachTarget.GEMINI ->
-                jsonLoopbackUrl(File(home, ".gemini/settings.json"), "mcpServers", serverName)
+                jsonLoopbackUrl(File(home, ".gemini/settings.json"), "mcpServers", serverName = serverName)
             McpAttachTarget.OPENCODE ->
-                jsonLoopbackUrl(File(home, ".config/opencode/opencode.json"), "mcp", serverName)
+                jsonLoopbackUrl(File(home, ".config/opencode/opencode.json"), "mcp", serverName = serverName)
             McpAttachTarget.KIMI_CODE ->
-                jsonLoopbackUrl(CliConfigPaths.kimiMcpJson(home), "mcpServers", serverName)
+                jsonLoopbackUrl(CliConfigPaths.kimiMcpJson(home), "mcpServers", serverName = serverName)
+            // OpenClaw nests servers one level deeper: mcp → servers → <name>.
+            McpAttachTarget.OPENCLAW ->
+                jsonLoopbackUrl(CliConfigPaths.openclawConfigJson(home), "mcp", "servers", serverName = serverName)
             McpAttachTarget.CODEX ->
                 tomlMcpServersLoopbackUrl(File(home, ".codex/config.toml"), serverName)
             // Grok Build's config.toml uses the same [mcp_servers.<name>] + url shape as Codex,
@@ -90,17 +93,22 @@ internal object McpRegistrationScanner {
         }
 
     /**
-     * The loopback `url`/`httpUrl` of `<containerKey>.<serverName>` in [file],
-     * or null when the file/entry is absent or the URL isn't loopback. Gemini
-     * writes `httpUrl`, the others `url`; checking both keeps one code path
-     * for all three JSON configs.
+     * The loopback `url`/`httpUrl` of `<containerPath…>.<serverName>` in [file], or null when the
+     * file/entry is absent or the URL isn't loopback. Gemini writes `httpUrl`, the others `url`;
+     * checking both keeps one code path for every JSON config.
+     *
+     * [containerPath] is walked in order, so a nested container works too — most CLIs keep servers
+     * one level down (`mcpServers`, `mcp`), while OpenClaw nests them under `mcp` → `servers`.
      */
-    internal fun jsonLoopbackUrl(file: File, containerKey: String, serverName: String): String? {
+    internal fun jsonLoopbackUrl(file: File, vararg containerPath: String, serverName: String): String? {
         if (!file.isFile) return null
         val text = file.readText()
         if (text.isBlank()) return null
-        val root = json.parseToJsonElement(text).jsonObject
-        val entry = root[containerKey]?.jsonObject?.get(serverName)?.jsonObject ?: return null
+        var container = json.parseToJsonElement(text).jsonObject
+        for (key in containerPath) {
+            container = container[key]?.jsonObject ?: return null
+        }
+        val entry = container[serverName]?.jsonObject ?: return null
         val url = (entry["url"] ?: entry["httpUrl"])?.jsonPrimitive?.content ?: return null
         return url.takeIf(::isLoopbackUrl)
     }

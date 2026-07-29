@@ -24,6 +24,17 @@ internal object CliConfigPaths {
     /** Hermes Agent — `~/.hermes/config.yaml`, or `$HERMES_HOME/config.yaml`. */
     fun hermesConfigYaml(home: File): File = resolve(home, "HERMES_HOME", ".hermes", "config.yaml")
 
+    /**
+     * OpenClaw — `~/.openclaw/openclaw.json` (path confirmed via `openclaw config file`), or
+     * `$OPENCLAW_CONFIG_PATH`, which points at the file itself rather than a directory.
+     */
+    fun openclawConfigJson(home: File): File {
+        if (isRealUserHome(home)) {
+            System.getenv("OPENCLAW_CONFIG_PATH")?.takeIf { it.isNotBlank() }?.let { return File(it) }
+        }
+        return File(File(home, ".openclaw"), "openclaw.json")
+    }
+
     private fun resolve(home: File, envVar: String, dirName: String, fileName: String): File {
         if (isRealUserHome(home)) {
             System.getenv(envVar)?.takeIf { it.isNotBlank() }?.let { return File(it, fileName) }

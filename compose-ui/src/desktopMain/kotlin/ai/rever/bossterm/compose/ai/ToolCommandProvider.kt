@@ -28,7 +28,13 @@ class ToolCommandProvider {
      * Build the launch command with YOLO flag if enabled.
      */
     private fun buildLaunchCommand(assistant: AIAssistantDefinition, config: AIAssistantConfigData?): String {
-        val baseCommand = config?.customCommand?.takeIf { it.isNotBlank() } ?: assistant.command
+        // A custom command replaces the binary AND its subcommand — the user is specifying the
+        // whole invocation at that point, so launchArgs would be second-guessing them.
+        val custom = config?.customCommand?.takeIf { it.isNotBlank() }
+        val baseCommand = custom
+            ?: listOf(assistant.command, assistant.launchArgs)
+                .filter { it.isNotBlank() }
+                .joinToString(" ")
         val yoloFlag = config?.customYoloFlag?.takeIf { it.isNotBlank() } ?: assistant.yoloFlag
         val yoloEnabled = config?.yoloEnabled ?: true  // Default to YOLO mode enabled
 

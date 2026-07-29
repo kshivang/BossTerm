@@ -86,6 +86,32 @@ class McpRegistrationScannerTest {
     }
 
     @Test
+    fun `detects openclaw nested mcp servers registration`() {
+        val home = tempHome()
+        // OpenClaw nests one level deeper than the others: mcp → servers → <name>.
+        home.write(
+            ".openclaw/openclaw.json",
+            """{"gateway":{"port":18789},"mcp":{"servers":{"boss":{"url":"http://127.0.0.1:7677","transport":"sse","enabled":true}}}}"""
+        )
+        assertEquals(setOf(McpAttachTarget.OPENCLAW), present(McpRegistrationScanner.scan("boss", home)))
+    }
+
+    @Test
+    fun `openclaw entry at the wrong nesting level is not adopted`() {
+        val home = tempHome()
+        // A flat `mcp.<name>` (OpenCode's shape) must NOT read as an OpenClaw registration —
+        // otherwise the nested walk would silently accept the wrong file layout.
+        home.write(
+            ".openclaw/openclaw.json",
+            """{"mcp":{"boss":{"url":"http://127.0.0.1:7677"}}}"""
+        )
+        assertEquals(
+            Presence.ABSENT,
+            McpRegistrationScanner.scan("boss", home)[McpAttachTarget.OPENCLAW]
+        )
+    }
+
+    @Test
     fun `detects grok toml registration in the same shape as codex`() {
         val home = tempHome()
         // Exactly what `grok mcp add boss --url … --type sse` writes (verified against grok 0.2.3).

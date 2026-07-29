@@ -272,6 +272,41 @@ enum class McpAttachTarget(
         """.trimIndent(),
         timeoutSeconds = 45L
     ),
+    OPENCLAW(
+        displayName = "OpenClaw",
+        persistenceKey = "OPENCLAW",
+        assistantId = AIAssistantIds.OPENCLAW,
+        // Per docs.openclaw.ai/tools/mcp: `openclaw mcp add <name> --url <url> --transport
+        // streamable-http|sse`, stored under the nested `mcp.servers.<name>` key of
+        // ~/.openclaw/openclaw.json.
+        //
+        // NOT verified against a binary: the install on this machine (2026.3.13) has no `mcp`
+        // subcommand at all — npm latest is 2026.7.1-2, so the docs are simply ahead of it. On such
+        // an older build the add exits non-zero and the clipboard fallback fires with the exact
+        // config snippet, which is the right degradation. Beware that `openclaw <unknown> --help`
+        // prints top-level help and exits 0, so an exit code from a --help probe proves nothing
+        // about whether a subcommand exists.
+        removeCommand = listOf("openclaw", "mcp", "remove", "{NAME}"),
+        addCommand = listOf(
+            "openclaw", "mcp", "add", "{NAME}",
+            "--url", "{URL}",
+            "--transport", "sse"
+        ),
+        clipboardFallback = """
+            // Merge into ~/.openclaw/openclaw.json
+            {
+              "mcp": {
+                "servers": {
+                  "{NAME}": {
+                    "url": "{URL}",
+                    "transport": "sse",
+                    "enabled": true
+                  }
+                }
+              }
+            }
+        """.trimIndent()
+    ),
     KIMI_CODE(
         displayName = "Kimi Code CLI",
         persistenceKey = "KIMI_CODE",

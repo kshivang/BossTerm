@@ -81,6 +81,7 @@ Location: `~/.bossterm/settings.json`
 | `tabBarVerticalWidth` | Float | `180` | Width (dp) of the left tab bar |
 | `tabBarCollapsed` | Boolean | `false` | Left tab bar collapsed to the slim icon strip |
 | `tabBarHoverExpand` | Boolean | `true` | Hovering the collapsed strip reveals the full bar as an overlay drawer |
+| `tabBarSummaryMode` | Boolean | `false` | One chip per tab instead of one per split pane |
 
 ### Performance Settings
 

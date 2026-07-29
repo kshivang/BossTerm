@@ -82,6 +82,16 @@ class ContextMenuController {
     private val _menuState = mutableStateOf(MenuState())
     val menuState: State<MenuState> = _menuState
 
+    private val _menuVisible = mutableStateOf(false)
+
+    /**
+     * True while a menu is on screen, native popup included — [menuState] only tracks the
+     * Compose fallback. A native popup swallows the pointer, so callers whose lifetime is
+     * driven by hover (the sidebar's hover reveal) need this to know not to disappear from
+     * under the menu they own.
+     */
+    val menuVisible: State<Boolean> = _menuVisible
+
     /**
      * Show context menu at screen coordinates using native AWT popup
      */
@@ -105,6 +115,7 @@ class ContextMenuController {
                 y = y,
                 items = items
             )
+            _menuVisible.value = true
         }
     }
 
@@ -132,6 +143,7 @@ class ContextMenuController {
             override fun popupMenuWillBecomeInvisible(e: javax.swing.event.PopupMenuEvent?) {
                 // Update state when popup is dismissed (by any means)
                 _menuState.value = MenuState()
+                _menuVisible.value = false
                 currentPopup = null
             }
             override fun popupMenuCanceled(e: javax.swing.event.PopupMenuEvent?) {}
@@ -139,6 +151,7 @@ class ContextMenuController {
 
         // Store reference for future dismissal
         currentPopup = popup
+        _menuVisible.value = true
 
         // Find the window to use as invoker - prefer focused window, but find window at mouse position if not focused
         var targetWindow: Window? = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusedWindow
@@ -179,6 +192,7 @@ class ContextMenuController {
             currentPopup = null
         }
         _menuState.value = MenuState()
+        _menuVisible.value = false
     }
 
     /**

@@ -30,10 +30,14 @@ internal const val SidebarRevealCloseDelayMs = 250L
  * @param pointerOnRail pointer is over the rail.
  * @param pointerOnDrawer pointer is over the revealed drawer — true during the handoff,
  *   and what keeps the drawer open while the user reaches for a tab chip.
+ * @param drawerBusy the revealed bar has an interaction in flight that outlives a click —
+ *   a context menu, an inline rename, a tab drag. Retracting would dispose the composition
+ *   that owns it, so hover alone must not decide; see TabBar's onTransientInteraction.
  */
 internal fun hoverRevealTarget(
     enabled: Boolean,
     railShown: Boolean,
     pointerOnRail: Boolean,
-    pointerOnDrawer: Boolean
-): Boolean = enabled && railShown && (pointerOnRail || pointerOnDrawer)
+    pointerOnDrawer: Boolean,
+    drawerBusy: Boolean = false
+): Boolean = enabled && railShown && (pointerOnRail || pointerOnDrawer || drawerBusy)

@@ -31,6 +31,31 @@ class SidebarHoverRevealTest {
     }
 
     @Test
+    fun `an interaction in flight holds the drawer open with the pointer gone`() {
+        // Context menu, inline rename, or a tab drag: the drawer owns that state, so
+        // retracting would silently discard it.
+        assertTrue(
+            hoverRevealTarget(
+                enabled = true, railShown = true,
+                pointerOnRail = false, pointerOnDrawer = false, drawerBusy = true
+            )
+        )
+        // Not a way around the other two gates, though.
+        assertFalse(
+            hoverRevealTarget(
+                enabled = false, railShown = true,
+                pointerOnRail = false, pointerOnDrawer = false, drawerBusy = true
+            )
+        )
+        assertFalse(
+            hoverRevealTarget(
+                enabled = true, railShown = false,
+                pointerOnRail = false, pointerOnDrawer = false, drawerBusy = true
+            )
+        )
+    }
+
+    @Test
     fun `retract is slower than reveal so the rail to drawer handoff survives`() {
         assertTrue(SidebarRevealCloseDelayMs > SidebarRevealOpenDelayMs)
     }

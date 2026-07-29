@@ -3,6 +3,26 @@ package ai.rever.bossterm.compose.ai
 import kotlinx.serialization.Serializable
 
 /**
+ * OpenCode's auto-approve, as a shell env prefix — its TUI has no auto-approve flag, so this is the
+ * equivalent of the other CLIs' `--dangerously-skip-permissions`.
+ *
+ * Every permission key set to "allow". The bare-string form the config file documents
+ * (`"permission": "allow"`) is NOT usable here: config.ts does
+ * `mergeDeep(result.permission ?? {}, JSON.parse(OPENCODE_PERMISSION))`, and deep-merging a string
+ * into an object spreads it per character — `OPENCODE_PERMISSION='"allow"'` resolves to
+ * `{"0":"a","1":"l","2":"l","3":"o","4":"w"}`, which looks configured and approves nothing.
+ * Confirmed both ways with `opencode debug config` against opencode 1.15.0; the explicit object
+ * below resolves to all 13 keys = "allow".
+ *
+ * Single-quoted so the JSON's double quotes survive zsh/bash/fish alike.
+ */
+private const val OPENCODE_YOLO_ENV = "OPENCODE_PERMISSION='" +
+    """{"read":"allow","edit":"allow","glob":"allow","grep":"allow","bash":"allow",""" +
+    """"task":"allow","skill":"allow","lsp":"allow","question":"allow","webfetch":"allow",""" +
+    """"websearch":"allow","external_directory":"allow","doom_loop":"allow"}""" +
+    "'"
+
+/**
  * Category of tool definition.
  */
 enum class ToolCategory {
@@ -44,6 +64,11 @@ enum class OpennessTier {
  * @property command The CLI command to launch the tool (e.g., "claude")
  * @property category Category of the tool (AI_ASSISTANT or VERSION_CONTROL)
  * @property yoloFlag The flag to enable auto/YOLO mode (e.g., "--dangerously-skip-permissions")
+ * @property yoloEnv Shell env-var prefix that enables auto mode for CLIs that have no flag for it,
+ *   e.g. `OPENCODE_PERMISSION='{…}'`. Prepended to the command when auto mode is on, so the launch
+ *   line becomes `VAR='value' cmd`. Must be shell-safe as written (quote it here). Most CLIs leave
+ *   this blank and use [yoloFlag]; a CLI may set either, and OpenCode is the case that needs this
+ *   one because its TUI accepts no auto-approve argument at all.
  * @property yoloLabel Label for YOLO mode (e.g., "Auto Mode")
  * @property installCommand Command to install the tool
  * @property npmInstallCommand Alternative npm install command
@@ -66,6 +91,7 @@ data class AIAssistantDefinition(
     val command: String,
     val category: ToolCategory = ToolCategory.AI_ASSISTANT,
     val yoloFlag: String = "",
+    val yoloEnv: String = "",
     val yoloLabel: String = "Auto",
     val installCommand: String = "",
     val npmInstallCommand: String? = null,
@@ -120,11 +146,11 @@ data class AIAssistantConfig(
     fun buildFullCommand(assistant: AIAssistantDefinition): String {
         val baseCommand = getCommand(assistant)
         val flag = getYoloFlag(assistant)
-        return if (yoloEnabled && flag.isNotBlank()) {
-            "$baseCommand $flag"
-        } else {
-            baseCommand
-        }
+        if (!yoloEnabled) return baseCommand
+        // Mirrors ToolCommandProvider.buildLaunchCommand: auto mode may be a flag, an env prefix,
+        // or both. Keep the two in step.
+        val withFlag = if (flag.isNotBlank()) "$baseCommand $flag" else baseCommand
+        return if (assistant.yoloEnv.isNotBlank()) "${assistant.yoloEnv} $withFlag" else withFlag
     }
 }
 
@@ -236,10 +262,10 @@ object AIAssistants {
             id = AIAssistantIds.OPENCODE,
             displayName = "OpenCode",
             command = "opencode",
-            // No auto-mode flag: opencode's TUI — which is what we launch — has none.
-            // Verified against opencode 1.15.0 by probing the installed binary; the TUI
-            // validates its arguments strictly, so all three candidates print the usage
-            // banner and never start:
+            // Auto mode comes from an env var, not a flag — opencode's TUI accepts NO
+            // auto-approve argument. Verified against opencode 1.15.0 by probing the installed
+            // binary; the TUI validates its arguments strictly, so all three candidates print the
+            // usage banner and never start:
             //   --auto-approve                 was our value here; not a flag in any form
             //   --dangerously-skip-permissions valid ONLY for `opencode run` (headless one-shot)
             //   --auto                         claimed by opencode.ai/docs/permissions, but
@@ -247,17 +273,10 @@ object AIAssistants {
             //                                  diverged from the shipped CLI
             // A known-valid flag (--pure) starts the TUI and blocks instead of printing the
             // banner, which is how those three were confirmed rejected rather than accepted.
-            //
-            // Auto-approve in the TUI is a session/config concern instead: the command palette's
-            // "Enable auto-approve permissions", or the `permission` key in
-            // ~/.config/opencode/opencode.json ("allow" | "ask" | "deny" per tool). The binary
-            // also carries an OPENCODE_PERMISSION string, but that is undocumented and unverified
-            // — do NOT put it here without proving a real tool call is auto-approved by it.
-            //
-            // yoloLabel must stay blank alongside a blank flag, or the menu renders
-            // "OpenCode (Auto)" for an auto-mode that isn't being enabled.
+            // OPENCODE_PERMISSION is the documented equivalent — see OPENCODE_YOLO_ENV.
             yoloFlag = "",
-            yoloLabel = "",
+            yoloEnv = OPENCODE_YOLO_ENV,
+            yoloLabel = "Auto",
             installCommand = "curl -fsSL https://opencode.ai/install | bash",
             npmInstallCommand = "npm install -g opencode-ai",
             websiteUrl = "https://github.com/anomalyco/opencode",

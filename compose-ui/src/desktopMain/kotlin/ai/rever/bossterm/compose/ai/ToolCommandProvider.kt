@@ -32,11 +32,13 @@ class ToolCommandProvider {
         val yoloFlag = config?.customYoloFlag?.takeIf { it.isNotBlank() } ?: assistant.yoloFlag
         val yoloEnabled = config?.yoloEnabled ?: true  // Default to YOLO mode enabled
 
-        return if (yoloEnabled && yoloFlag.isNotBlank()) {
-            "$baseCommand $yoloFlag"
-        } else {
-            baseCommand
-        }
+        if (!yoloEnabled) return baseCommand
+
+        // A CLI enables auto mode with a flag, an env var, or (in principle) both. The env prefix
+        // exists because OpenCode's TUI has no auto-approve argument at all — see its registry
+        // entry. Order matters: `VAR='…' cmd --flag`.
+        val withFlag = if (yoloFlag.isNotBlank()) "$baseCommand $yoloFlag" else baseCommand
+        return if (assistant.yoloEnv.isNotBlank()) "${assistant.yoloEnv} $withFlag" else withFlag
     }
 
     /**

@@ -5,6 +5,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 /**
  * Pins the launch commands the AI Assistant context menu writes to the PTY.
@@ -88,44 +89,96 @@ class AIAssistantLaunchCommandTest {
     }
 
     /**
-     * The real invariant: a CLI with no auto-mode flag must not advertise one. Not every agent has
-     * a flag — opencode's TUI has none at all (see the OPENCODE entry's comment) — so requiring one
-     * everywhere would just pressure the next person into inventing a plausible-looking string,
-     * which is how `--auto-approve` got in there in the first place.
+     * Every coding agent must have a working `--dangerously-skip-permissions` equivalent — via a
+     * flag, or an env prefix when the CLI offers no flag. What it must NOT do is advertise "(Auto)"
+     * while enabling nothing, which is what the invalid `--auto-approve` did for OpenCode.
      */
     @Test
-    fun `no assistant advertises an auto-mode it cannot enable`() {
-        (AIAssistants.AI_ASSISTANTS + AIAssistants.LOCAL_MODEL_RUNTIMES).forEach { assistant ->
-            if (assistant.yoloFlag.isBlank()) {
-                assertEquals(
-                    "",
-                    assistant.yoloLabel,
-                    "${assistant.id} has no yoloFlag but declares yoloLabel " +
-                        "'${assistant.yoloLabel}' — the menu would render an auto-mode that " +
-                        "nothing enables"
+    fun `every AI assistant can actually enable auto mode`() {
+        AIAssistants.AI_ASSISTANTS.forEach { assistant ->
+            assertTrue(
+                assistant.yoloFlag.isNotBlank() || assistant.yoloEnv.isNotBlank(),
+                "${assistant.id} has no auto-mode mechanism — every agent needs a flag or an " +
+                    "env prefix. If the CLI genuinely has neither, find its real mechanism " +
+                    "rather than inventing a plausible-looking flag"
+            )
+            assertTrue(
+                assistant.yoloLabel.isNotBlank(),
+                "${assistant.id} can enable auto mode but has no yoloLabel to show for it"
+            )
+            // The mechanism has to reach the command the menu writes to the PTY.
+            val launched = provider.getLaunchCommand(assistant).trim()
+            if (assistant.yoloEnv.isNotBlank()) {
+                assertTrue(
+                    launched.startsWith(assistant.yoloEnv),
+                    "${assistant.id}'s env prefix is missing from its launch command: $launched"
+                )
+            }
+            if (assistant.yoloFlag.isNotBlank()) {
+                assertTrue(
+                    launched.contains(assistant.yoloFlag),
+                    "${assistant.id}'s yolo flag is missing from its launch command: $launched"
                 )
             }
         }
     }
 
     @Test
-    fun `opencode launches bare because its TUI has no auto-approve flag`() {
+    fun `local model runtimes advertise no auto mode`() {
+        // Ollama runs models; there are no tool calls to approve, so a label here would be a lie.
+        AIAssistants.LOCAL_MODEL_RUNTIMES.forEach { runtime ->
+            assertEquals("", runtime.yoloFlag)
+            assertEquals("", runtime.yoloEnv)
+            assertEquals("", runtime.yoloLabel)
+        }
+    }
+
+    @Test
+    fun `opencode enables auto mode via OPENCODE_PERMISSION, not a flag`() {
         // Regression guard for the invalid `--auto-approve` we used to append: opencode 1.15.0's
         // TUI validates arguments strictly, so a bogus flag doesn't degrade gracefully — it prints
         // the usage banner and never starts the agent. Same for `--auto` and the run-only
-        // `--dangerously-skip-permissions`.
+        // `--dangerously-skip-permissions`. The env var is the documented equivalent.
         val opencode = builtin(AIAssistantIds.OPENCODE)
-        assertEquals("opencode\n", provider.getLaunchCommand(opencode))
-        // Auto-mode ON must not change that — this is the path the menu actually takes.
         assertEquals(
-            "opencode\n",
-            provider.getLaunchCommand(opencode, AIAssistantConfigData(yoloEnabled = true))
+            "OPENCODE_PERMISSION='{\"read\":\"allow\",\"edit\":\"allow\",\"glob\":\"allow\"," +
+                "\"grep\":\"allow\",\"bash\":\"allow\",\"task\":\"allow\",\"skill\":\"allow\"," +
+                "\"lsp\":\"allow\",\"question\":\"allow\",\"webfetch\":\"allow\"," +
+                "\"websearch\":\"allow\",\"external_directory\":\"allow\"," +
+                "\"doom_loop\":\"allow\"}' opencode\n",
+            provider.getLaunchCommand(opencode)
         )
         listOf("--auto-approve", "--auto", "--dangerously-skip-permissions").forEach { rejected ->
             assertFalse(
                 opencode.yoloFlag.contains(rejected),
                 "opencode's TUI rejects '$rejected' — it must not be in the launch command"
             )
+        }
+        // Auto mode OFF must drop the env prefix entirely, or it isn't really off.
+        assertEquals(
+            "opencode\n",
+            provider.getLaunchCommand(opencode, AIAssistantConfigData(yoloEnabled = false))
+        )
+    }
+
+    /**
+     * `OPENCODE_PERMISSION` is `JSON.parse`d and **deep-merged** into opencode's `permission`
+     * config, so the bare-string form the config file documents (`"permission": "allow"`) is a trap
+     * here: merging a string into an object spreads it per character, resolving to
+     * `{"0":"a","1":"l",…}` — configured-looking and approving nothing. Verified against opencode
+     * 1.15.0 with `opencode debug config`. The value must stay a JSON object.
+     */
+    @Test
+    fun `opencode auto-mode env is a json object of allow values`() {
+        val env = builtin(AIAssistantIds.OPENCODE).yoloEnv
+        val json = env.substringAfter("OPENCODE_PERMISSION='").removeSuffix("'")
+        assertTrue(json.startsWith("{") && json.endsWith("}"), "must be a JSON object, got: $json")
+        // Every key opencode documents, all set to allow — this IS the skip-all-permissions mode.
+        listOf(
+            "read", "edit", "glob", "grep", "bash", "task", "skill", "lsp",
+            "question", "webfetch", "websearch", "external_directory", "doom_loop"
+        ).forEach { key ->
+            assertTrue(json.contains("\"$key\":\"allow\""), "missing \"$key\":\"allow\" in $json")
         }
     }
 

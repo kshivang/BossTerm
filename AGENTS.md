@@ -45,8 +45,40 @@ Do NOT include AI co-author attribution in commits unless the user explicitly re
 ## Critical Technical Patterns
 
 ### Font Loading
-Skiko has classloader issues. Use InputStream + temp file:
-- `classLoader.getResourceAsStream("fonts/MesloLGSNF-Regular.ttf")` → temp file → `Font(file = tempFile)`
+Skiko can't read a typeface out of the jar (classloader issues), so bundled fonts must land on
+disk first. Extract via `extractBundledFont()` in `compose-ui/.../util/FontUtils.kt` — do NOT go
+back to a per-launch `File.createTempFile`:
+
+- `classLoader.getResourceAsStream("fonts/…​.ttf")` → `~/.bossterm/fonts/<name>-<sha256-12>.ttf`
+  (content-addressed, written once per font per upgrade, atomic temp+rename) → `Font(file = …)`
+- A fresh multi-megabyte file per launch is the worst case for endpoint-security scanning, and
+  Skia's font path calls `dlsym` (CoreText weight mapping) — see the deadlock note below
+
+### Launch hangs with a window that never appears (macOS)
+Symptom: the process is alive, logs look healthy (MCP bound, settings saved), but no window paints,
+and the JVM sits near 0% CPU. This is not Gatekeeper, MDM policy, or a failed launch — it is
+**dyld loader-lock contention**:
+
+```
+AWT-EventQueue-0  Skia font load → SkCTFontGetNSFontWeightMapping → dlsym
+                  → withLoadersReadLock → __ulock_wait2        (blocked)
+other thread      dlopen → Loader::mapSegments → fcntl          (holds the WRITE lock,
+                  ^ code-signature validation on first map       stalled in the kernel)
+```
+
+Anything that stalls that first-map signature check — an EDR/endpoint-security extension scanning
+a newly written file is the common one — blocks the event thread before the first frame.
+
+Diagnose (do not guess at MDM):
+```bash
+jcmd <pid> Thread.print | grep -A4 '"AWT-EventQueue-0"'   # _nMakeFromFile / dlsym at the top?
+sample <pid> 3 -file /tmp/s.txt                           # native leaf: __ulock_wait2 under dyld?
+ps -p <pid> -o %cpu=,time=,etime=                         # blocked (low CPU, high elapsed) vs spinning
+```
+It clears itself once the scan returns; signature results are cached per file, so warm launches are
+fine and a clean build re-arms it. Note that querying windows via `osascript`/System Events makes
+macOS `dlopen` the accessibility bundles into the target — that adds a waiter on the very same lock
+and reports `0 windows` as a false negative. Use `jcmd`/`sample` instead.
 
 ### Emoji Rendering
 Skia ignores variation selectors (U+FE0F). Peek-ahead to detect, switch to `FontFamily.Default`, render as unit.
@@ -145,4 +177,4 @@ state.write("cmd\n", tabId = "id")   // Target tab by ID
 See `.claude/rules/shell-integration.md` for OSC 7/133 setup.
 
 ---
-*Last Updated: January 12, 2026*
+*Last Updated: July 28, 2026*

@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.util
 
+import ai.rever.bossterm.compose.daemon.BossTermPaths
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -149,25 +150,89 @@ val cachedSTIXMathFont: FontFamily? by lazy {
 }
 
 /**
+ * Extract a bundled font resource to a file Skia can open, reusing the previous launch's copy.
+ *
+ * Skiko can't read a typeface straight out of the jar (classloader issues), so the bytes have to
+ * land on disk first. Doing that with [java.io.File.createTempFile] means every launch hands the
+ * OS a brand-new multi-megabyte file — the worst case for an endpoint-security agent, which scans
+ * it on first map. That scan happens inside dyld's loader lock (Skia's font path calls `dlsym`
+ * for the CoreText weight mapping), so a slow scan doesn't just delay the font: it blocks the AWT
+ * event thread before the window ever paints. Observed in the wild as a launch that shows no
+ * window for minutes while the process sits at ~0% CPU.
+ *
+ * So the copy is content-addressed and persistent: `~/.bossterm/fonts/<name>-<sha256-12>.ttf`.
+ * Same bytes, same path, so the scanner sees a familiar file and the write only happens once per
+ * font per upgrade. The hash in the name is what makes a new bundled font invalidate the old copy
+ * without needing a version check.
+ *
+ * @return the on-disk font file, or null if the resource is missing.
+ */
+internal fun extractBundledFont(resourcePath: String): java.io.File? {
+    val bytes = object {}.javaClass.classLoader
+        ?.getResourceAsStream(resourcePath)
+        ?.use { it.readBytes() }
+        ?: return null
+
+    val baseName = resourcePath.substringAfterLast('/').substringBeforeLast('.')
+    val digest = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(bytes)
+        .take(6)
+        .joinToString("") { "%02x".format(it) }
+
+    // Cache under the BossTerm dir. If anything about it is unusable (read-only home, sandbox),
+    // fall back to the old per-launch temp file rather than failing to load a font at all.
+    val cached = runCatching {
+        val dir = java.io.File(BossTermPaths.dir(), "fonts").apply { mkdirs() }
+        java.io.File(dir, "$baseName-$digest.ttf").takeIf { it.parentFile?.isDirectory == true }
+    }.getOrNull()
+
+    if (cached != null) {
+        // Size check, not a re-hash: a partial file from a killed write is the failure mode worth
+        // catching, and the name already pins the content.
+        if (cached.isFile && cached.length() == bytes.size.toLong()) return cached
+        // Unique temp + atomic rename, so two BossTerm launches racing here can't publish a torn
+        // file to the shared path (same rationale as SettingsManager.writeToFileLocked).
+        val published = runCatching {
+            val tmp = java.io.File.createTempFile(".$baseName", ".tmp", cached.parentFile)
+            try {
+                tmp.writeBytes(bytes)
+                runCatching {
+                    java.nio.file.Files.move(
+                        tmp.toPath(), cached.toPath(),
+                        java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    )
+                }.getOrElse {
+                    java.nio.file.Files.move(
+                        tmp.toPath(), cached.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    )
+                }
+                cached
+            } finally {
+                runCatching { if (tmp.exists()) tmp.delete() }
+            }
+        }.getOrNull()
+        if (published != null) return published
+    }
+
+    return java.io.File.createTempFile(baseName, ".ttf").also { temp ->
+        temp.deleteOnExit()
+        temp.writeBytes(bytes)
+    }
+}
+
+/**
  * Load the bundled Noto Sans Symbols 2 font for symbol fallback.
  */
 private fun loadBundledSymbolFont(): FontFamily {
     return try {
-        val fontStream = object {}.javaClass.classLoader
-            ?.getResourceAsStream("fonts/NotoSansSymbols2-Regular.ttf")
+        val fontFile = extractBundledFont("fonts/NotoSansSymbols2-Regular.ttf")
             ?: return FontFamily.Default
-
-        val tempFile = java.io.File.createTempFile("NotoSansSymbols2", ".ttf")
-        tempFile.deleteOnExit()
-        fontStream.use { input ->
-            tempFile.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
 
         FontFamily(
             androidx.compose.ui.text.platform.Font(
-                file = tempFile,
+                file = fontFile,
                 weight = FontWeight.Normal
             )
         )
@@ -182,21 +247,12 @@ private fun loadBundledSymbolFont(): FontFamily {
  */
 private fun loadBundledFont(): FontFamily {
     return try {
-        val fontStream = object {}.javaClass.classLoader
-            ?.getResourceAsStream("fonts/MesloLGSNF-Regular.ttf")
+        val fontFile = extractBundledFont("fonts/MesloLGSNF-Regular.ttf")
             ?: return FontFamily.Monospace
-
-        val tempFile = java.io.File.createTempFile("MesloLGSNF", ".ttf")
-        tempFile.deleteOnExit()
-        fontStream.use { input ->
-            tempFile.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
 
         FontFamily(
             androidx.compose.ui.text.platform.Font(
-                file = tempFile,
+                file = fontFile,
                 weight = FontWeight.Normal
             )
         )

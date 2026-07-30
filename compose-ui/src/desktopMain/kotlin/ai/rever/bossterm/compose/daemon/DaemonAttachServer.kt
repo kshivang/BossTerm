@@ -223,7 +223,13 @@ class DaemonAttachServer(
             try {
                 send(DaemonAttachProtocol.Server.Snapshot(
                     core.id,
-                    TerminalSnapshotEncoder.encode(core.textBuffer.createSnapshot(), core.terminal.cursorX, core.terminal.cursorY),
+                    TerminalSnapshotEncoder.encode(
+                        snapshot = core.textBuffer.createSnapshot(),
+                        cursorX = core.terminal.cursorX,
+                        cursorY = core.terminal.cursorY,
+                        cursorVisible = core.display.cursorVisible,
+                        cursorShape = core.display.cursorShape,
+                    ),
                     sz.columns, sz.rows,
                 ))
                 synchronized(preludeLock) {

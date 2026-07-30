@@ -21,13 +21,18 @@ class ToolCommandProvider {
         assistant: AIAssistantDefinition,
         config: AIAssistantConfigData? = null
     ): String {
-        return "${buildLaunchCommand(assistant, config)}\n"
+        return "${launchCommandText(assistant, config)}\n"
     }
 
     /**
-     * Build the launch command with YOLO flag if enabled.
+     * The launch command as text, without the trailing newline that submits it.
+     *
+     * Public because "what would launching this look like?" is needed in places that aren't writing
+     * to the PTY right now — notably the install wizard's `commandToRunAfter`, which used to pass
+     * the bare `assistant.command` and so ran `openclaw` (prints help) instead of `openclaw tui`
+     * after installing. One implementation, so those can't drift.
      */
-    private fun buildLaunchCommand(assistant: AIAssistantDefinition, config: AIAssistantConfigData?): String {
+    fun launchCommandText(assistant: AIAssistantDefinition, config: AIAssistantConfigData?): String {
         // A custom command replaces the binary AND its subcommand — the user is specifying the
         // whole invocation at that point, so launchArgs would be second-guessing them.
         val custom = config?.customCommand?.takeIf { it.isNotBlank() }
@@ -52,8 +57,9 @@ class ToolCommandProvider {
      * Uses native script when available, otherwise npm with auto Node.js installation.
      */
     fun getInstallCommand(assistant: AIAssistantDefinition): String {
-        // If native script is available (curl | bash), use it
-        if (assistant.installCommand.startsWith("curl")) {
+        // Prefer the tool's own installer when it ships one. Keyed off the declared InstallKind
+        // rather than sniffing for a "curl" prefix — the string only looked reliable.
+        if (assistant.installKind == InstallKind.SHELL_SCRIPT && !ShellCustomizationUtils.isWindows()) {
             return "${assistant.installCommand}\n"
         }
         // If no npm package defined (VCS tools like git/gh), use installCommand directly

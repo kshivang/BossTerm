@@ -57,6 +57,43 @@ enum class OpennessTier {
 }
 
 /**
+ * What kind of thing [AIAssistantDefinition.installCommand] is.
+ *
+ * Declared rather than sniffed. Onboarding used to classify by
+ * `installCommand.startsWith("npm install -g ")` and treat everything else as runnable as-is, which
+ * silently emitted `curl … | bash` into a Windows PowerShell chain — no `bash` there, and `|` is an
+ * object pipeline, so the whole `&&`-joined chain died including git/gh/starship.
+ */
+enum class InstallKind {
+    /**
+     * A POSIX shell installer (`curl … | bash`). Unix-only: on Windows the entry must fall back to
+     * [AIAssistantDefinition.npmInstallCommand], and is uninstallable there without one.
+     */
+    SHELL_SCRIPT,
+
+    /** `npm install -g <pkg>`. Works anywhere npm does, Windows included, and batches with others. */
+    NPM,
+
+    /**
+     * Already resolved for the running OS by [ToolCommandProvider] (brew / winget / apt / …), so it
+     * runs as-is on every platform. The default, because that's how every non-AI tool is defined.
+     */
+    PLATFORM_NATIVE
+}
+
+/**
+ * How a tool should be installed on the platform being targeted — the resolved form of
+ * [AIAssistantDefinition.installKind] plus the Windows fallback.
+ */
+sealed interface ResolvedInstall {
+    /** Install via npm. Callers batch these into one `npm install -g a b c` with a single node check. */
+    data class Npm(val packageName: String) : ResolvedInstall
+
+    /** Run this command as-is. */
+    data class Command(val command: String) : ResolvedInstall
+}
+
+/**
  * Definition of a CLI tool that can be integrated with BossTerm.
  *
  * @property id Unique identifier for the tool (e.g., "claude-code")
@@ -75,7 +112,10 @@ enum class OpennessTier {
  *   one because its TUI accepts no auto-approve argument at all.
  * @property yoloLabel Label for YOLO mode (e.g., "Auto Mode")
  * @property installCommand Command to install the tool
- * @property npmInstallCommand Alternative npm install command
+ * @property installKind What kind of command [installCommand] is — see [InstallKind]. Consumers
+ *   must branch on this rather than inspecting the command string.
+ * @property npmInstallCommand Alternative npm install command. For a [InstallKind.SHELL_SCRIPT]
+ *   entry this is also the Windows install path, since the script can't run there.
  * @property websiteUrl URL for "Learn more" action
  * @property description Brief description of the tool
  * @property isBuiltIn Whether this is a built-in tool (vs custom)
@@ -99,6 +139,7 @@ data class AIAssistantDefinition(
     val yoloEnv: String = "",
     val yoloLabel: String = "Auto",
     val installCommand: String = "",
+    val installKind: InstallKind = InstallKind.PLATFORM_NATIVE,
     val npmInstallCommand: String? = null,
     val websiteUrl: String = "",
     val description: String = "",
@@ -120,47 +161,43 @@ data class AIAssistantDefinition(
     /** [extraDetectPaths] with `~/` expanded against [home]. */
     fun resolvedDetectPaths(home: String): List<String> =
         extraDetectPaths.map { if (it.startsWith("~/")) "$home/${it.removePrefix("~/")}" else it }
-}
 
-/**
- * Per-assistant configuration stored in settings.
- */
-@Serializable
-data class AIAssistantConfig(
-    val assistantId: String,
-    val enabled: Boolean = true,
-    val yoloEnabled: Boolean = true,
-    val customCommand: String? = null,
-    val customYoloFlag: String? = null
-) {
-    /**
-     * Get the effective command to run.
-     */
-    fun getCommand(assistant: AIAssistantDefinition): String =
-        customCommand?.takeIf { it.isNotBlank() }
-            ?: listOf(assistant.command, assistant.launchArgs)
-                .filter { it.isNotBlank() }
-                .joinToString(" ")
+    /** The npm package this entry installs, from either install field. Null when it isn't on npm. */
+    val npmPackage: String?
+        get() = listOfNotNull(npmInstallCommand, installCommand)
+            .firstOrNull { it.startsWith(NPM_GLOBAL_PREFIX) }
+            ?.removePrefix(NPM_GLOBAL_PREFIX)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
 
     /**
-     * Get the effective YOLO flag.
+     * How to install this tool on the target platform, or null when it can't be installed there.
+     *
+     * A [InstallKind.SHELL_SCRIPT] entry falls back to npm on Windows; if it has no npm package
+     * either — Hermes, which upstream ships for Linux/macOS/WSL2 only — the answer is null, and the
+     * caller is expected to report that rather than emit an unrunnable command.
      */
-    fun getYoloFlag(assistant: AIAssistantDefinition): String =
-        customYoloFlag?.takeIf { it.isNotBlank() } ?: assistant.yoloFlag
+    fun resolveInstall(isWindows: Boolean): ResolvedInstall? {
+        val asCommand = installCommand.takeIf { it.isNotBlank() }?.let(ResolvedInstall::Command)
+        return when (installKind) {
+            InstallKind.NPM -> npmPackage?.let(ResolvedInstall::Npm) ?: asCommand
+            InstallKind.PLATFORM_NATIVE -> asCommand
+            InstallKind.SHELL_SCRIPT ->
+                if (isWindows) npmPackage?.let(ResolvedInstall::Npm) else asCommand
+        }
+    }
 
-    /**
-     * Build the full command with YOLO mode if enabled.
-     */
-    fun buildFullCommand(assistant: AIAssistantDefinition): String {
-        val baseCommand = getCommand(assistant)
-        val flag = getYoloFlag(assistant)
-        if (!yoloEnabled) return baseCommand
-        // Mirrors ToolCommandProvider.buildLaunchCommand: auto mode may be a flag, an env prefix,
-        // or both. Keep the two in step.
-        val withFlag = if (flag.isNotBlank()) "$baseCommand $flag" else baseCommand
-        return if (assistant.yoloEnv.isNotBlank()) "${assistant.yoloEnv} $withFlag" else withFlag
+    private companion object {
+        const val NPM_GLOBAL_PREFIX = "npm install -g "
     }
 }
+
+// NOTE: an `AIAssistantConfig` @Serializable type used to live here, with its own getCommand /
+// getYoloFlag / buildFullCommand. It had no callers anywhere: the type settings actually persists is
+// AIAssistantConfigData, and the launch line is built by ToolCommandProvider.launchCommandText. It
+// was a third copy of the auto-mode rules kept in step only by a comment — the same shape of
+// duplication that let OpenCode's invalid `--auto-approve` survive. Removed along with
+// AIAssistants.defaultConfigs(), its only reference.
 
 /**
  * Constants for AI assistant IDs to avoid magic strings.
@@ -287,6 +324,7 @@ object AIAssistants {
             yoloEnv = OPENCODE_YOLO_ENV,
             yoloLabel = "Auto",
             installCommand = "curl -fsSL https://opencode.ai/install | bash",
+            installKind = InstallKind.SHELL_SCRIPT,
             npmInstallCommand = "npm install -g opencode-ai",
             websiteUrl = "https://github.com/anomalyco/opencode",
             description = "Open-source AI coding assistant",
@@ -304,12 +342,20 @@ object AIAssistants {
             id = AIAssistantIds.KIMI_CODE,
             displayName = "Kimi Code CLI",
             command = "kimi",
-            // Verified against the kimi-code docs: --yolo auto-approves regular tool calls and
-            // still gates sensitive files. -y / --yes / --auto-approve are hidden aliases.
+            // Verified against a live kimi 0.30.0 (`kimi --help`): "-y, --yolo  Auto-approve regular
+            // tool calls; the agent may still ask questions." (`--auto` is the stronger fully
+            // autonomous mode.) There is no `kimi mcp` subcommand at all, which is why this target
+            // writes its config in-process — see McpAttachTarget.KIMI_CODE.
+            //
+            // On the two-projects-one-binary hazard: the installer resolves it upstream. A
+            // pre-existing Python `kimi-cli` shim on PATH is renamed to `kimi-legacy`, so `kimi` is
+            // unambiguously kimi-code after install.
             yoloFlag = "--yolo",
             yoloLabel = "YOLO",
             // Single self-contained binary — no Node required, unlike the npm-shipped CLIs.
+            // Installs to ~/.kimi-code/bin/kimi (confirmed) and prepends it to PATH.
             installCommand = "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
+            installKind = InstallKind.SHELL_SCRIPT,
             npmInstallCommand = "npm install -g @moonshot-ai/kimi-code",
             websiteUrl = "https://github.com/MoonshotAI/kimi-code",
             description = "Moonshot AI's open-source terminal coding agent",
@@ -341,6 +387,7 @@ object AIAssistants {
             yoloFlag = "--message '/exec security=full ask=off'",
             yoloLabel = "Auto",
             installCommand = "curl -fsSL https://openclaw.ai/install.sh | bash",
+            installKind = InstallKind.SHELL_SCRIPT,
             npmInstallCommand = "npm install -g openclaw@latest",
             websiteUrl = "https://github.com/openclaw/openclaw",
             description = "Personal assistant agent — gateway-based, runs on local models too",
@@ -363,6 +410,9 @@ object AIAssistants {
             yoloFlag = "--yolo",
             yoloLabel = "YOLO",
             installCommand = "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+            // No npm package upstream, and the installer targets Linux/macOS/WSL2 — so this entry
+            // resolves to "can't install" on native Windows rather than to a broken command.
+            installKind = InstallKind.SHELL_SCRIPT,
             npmInstallCommand = null,
             websiteUrl = "https://github.com/NousResearch/hermes-agent",
             description = "Nous Research's agent — 20+ providers, local models included",
@@ -385,6 +435,7 @@ object AIAssistants {
             yoloFlag = "--always-approve",
             yoloLabel = "Auto Approve",
             installCommand = "curl -fsSL https://x.ai/cli/install.sh | bash",
+            installKind = InstallKind.SHELL_SCRIPT,
             npmInstallCommand = "npm install -g @xai-official/grok",
             websiteUrl = "https://github.com/xai-org/grok-build",
             description = "xAI's coding agent — Apache-2.0 client, xAI models",
@@ -406,6 +457,7 @@ object AIAssistants {
             yoloFlag = "--sandbox danger-full-access",
             yoloLabel = "Full Auto",
             installCommand = "npm install -g @openai/codex",
+            installKind = InstallKind.NPM,
             npmInstallCommand = "npm install -g @openai/codex",
             websiteUrl = "https://github.com/openai/codex",
             description = "OpenAI's coding assistant",
@@ -425,6 +477,7 @@ object AIAssistants {
             yoloFlag = "-y",
             yoloLabel = "Auto",
             installCommand = "npm install -g @google/gemini-cli",
+            installKind = InstallKind.NPM,
             npmInstallCommand = "npm install -g @google/gemini-cli",
             websiteUrl = "https://github.com/google-gemini/gemini-cli",
             description = "Google's AI coding assistant",
@@ -445,6 +498,9 @@ object AIAssistants {
             yoloFlag = "--dangerously-skip-permissions",
             yoloLabel = "Auto Mode",
             installCommand = "curl -fsSL https://claude.ai/install.sh | bash",
+            // Windows resolves to the npm package, which is how onboarding installed Claude Code on
+            // every platform before the registry took over — no Windows regression.
+            installKind = InstallKind.SHELL_SCRIPT,
             npmInstallCommand = "npm install -g @anthropic-ai/claude-code",
             websiteUrl = "https://docs.anthropic.com/en/docs/claude-code",
             description = "Anthropic's AI coding assistant",
@@ -812,10 +868,4 @@ object AIAssistants {
      * Find an assistant by its command name.
      */
     fun findByCommand(command: String): AIAssistantDefinition? = ALL.find { it.command == command }
-
-    /**
-     * Create default configs for all assistants.
-     */
-    fun defaultConfigs(): Map<String, AIAssistantConfig> =
-        ALL.associate { it.id to AIAssistantConfig(assistantId = it.id) }
 }

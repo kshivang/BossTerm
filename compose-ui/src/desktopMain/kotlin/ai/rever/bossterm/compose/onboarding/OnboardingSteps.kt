@@ -1025,20 +1025,22 @@ fun ReviewStep(
             ReviewItem(category = "Version Control", value = "GitHub CLI", willInstall = true)
         }
 
-        // AI Assistants
+        // AI Assistants. Unknown ids are dropped rather than listed under their raw id: a stale id
+        // persisted from an older build is silently skipped by buildInstallCommand's
+        // `mapNotNull { findById(it) }`, so showing it here as "will install" would promise
+        // something the script won't do.
         selections.aiAssistants
             .filterNot { installedTools.isAiInstalled(it) }
-            .forEach { id ->
-                // Get display name from registry, fallback to ID
-                val definition = AIAssistants.findById(id)
-                val category = if (definition?.category == ToolCategory.LOCAL_MODEL_RUNTIME) {
+            .mapNotNull { AIAssistants.findById(it) }
+            .forEach { definition ->
+                val category = if (definition.category == ToolCategory.LOCAL_MODEL_RUNTIME) {
                     "Local Models"
                 } else {
                     "AI Assistant"
                 }
                 ReviewItem(
                     category = category,
-                    value = definition?.displayName ?: id,
+                    value = definition.displayName,
                     willInstall = true
                 )
             }

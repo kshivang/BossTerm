@@ -17,6 +17,15 @@ class AIAssistantLaunchCommandTest {
 
     private val provider = ToolCommandProvider()
 
+    /**
+     * The AI assistants we ship. Deliberately not `AIAssistants.AI_ASSISTANTS`, which appends
+     * process-wide custom entries: a user's own CLI has no obligation to declare an auto-mode
+     * mechanism or a license, so asserting over that list would hold only until some other test
+     * registers one, then fail by execution order.
+     */
+    private fun builtinAssistants(): List<AIAssistantDefinition> =
+        AIAssistants.BUILTIN.filter { it.category == ToolCategory.AI_ASSISTANT }
+
     private fun builtin(id: String): AIAssistantDefinition {
         val assistant = AIAssistants.BUILTIN.find { it.id == id }
         assertNotNull(assistant, "missing built-in assistant: $id")
@@ -94,8 +103,8 @@ class AIAssistantLaunchCommandTest {
      * while enabling nothing, which is what the invalid `--auto-approve` did for OpenCode.
      */
     @Test
-    fun `every AI assistant can actually enable auto mode`() {
-        AIAssistants.AI_ASSISTANTS.forEach { assistant ->
+    fun `every built-in AI assistant can actually enable auto mode`() {
+        builtinAssistants().forEach { assistant ->
             assertTrue(
                 assistant.yoloFlag.isNotBlank() || assistant.yoloEnv.isNotBlank(),
                 "${assistant.id} has no auto-mode mechanism — every agent needs a flag or an " +
@@ -153,7 +162,7 @@ class AIAssistantLaunchCommandTest {
     fun `launch args never leak into a bare-command assistant`() {
         // Guard the new field: only OpenClaw needs a subcommand today, and appending a stray one
         // to e.g. claude would break every launch.
-        AIAssistants.AI_ASSISTANTS.filter { it.launchArgs.isBlank() }.forEach { assistant ->
+        builtinAssistants().filter { it.launchArgs.isBlank() }.forEach { assistant ->
             assertEquals(
                 assistant.command,
                 provider.getLaunchCommand(assistant, AIAssistantConfigData(yoloEnabled = false)).trim(),
@@ -225,7 +234,7 @@ class AIAssistantLaunchCommandTest {
     fun `open source assistants carry their license and source`() {
         // The openness ordering and the UI badges both read these, so an entry that forgets them
         // silently sorts as proprietary.
-        AIAssistants.AI_ASSISTANTS.filter { it.openSource }.forEach { assistant ->
+        builtinAssistants().filter { it.openSource }.forEach { assistant ->
             assertFalse(
                 assistant.license.isBlank(),
                 "${assistant.id} is marked openSource but declares no license"

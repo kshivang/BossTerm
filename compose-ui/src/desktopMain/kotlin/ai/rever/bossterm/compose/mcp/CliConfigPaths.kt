@@ -24,6 +24,14 @@ internal object CliConfigPaths {
     /** Hermes Agent — `~/.hermes/config.yaml`, or `$HERMES_HOME/config.yaml`. */
     fun hermesConfigYaml(home: File): File = resolve(home, "HERMES_HOME", ".hermes", "config.yaml")
 
+    /** OpenCode — `~/.config/opencode/opencode.json`, or `$OPENCODE_CONFIG` (the file itself). */
+    fun opencodeConfigJson(home: File): File {
+        if (isRealUserHome(home)) {
+            System.getenv("OPENCODE_CONFIG")?.takeIf { it.isNotBlank() }?.let { return File(it) }
+        }
+        return File(File(home, ".config/opencode"), "opencode.json")
+    }
+
     /**
      * OpenClaw — `~/.openclaw/openclaw.json` (path confirmed via `openclaw config file`), or
      * `$OPENCLAW_CONFIG_PATH`, which points at the file itself rather than a directory.

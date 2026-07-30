@@ -161,6 +161,11 @@ class AIAssistantDetector {
      * Login (not interactive) mode: profile files carry the PATH exports we need without the
      * prompt/rc machinery that can hang a headless spawn. Returns the subset that resolved; any
      * failure or timeout returns an empty set, so detection degrades to the filesystem passes.
+     *
+     * The probe body is POSIX (`command -v x >/dev/null 2>&1 && echo x || true`), which covers
+     * sh/bash/zsh/fish. A csh/tcsh login shell can't parse it and returns nothing, so those users
+     * get the filesystem passes only — acceptable, since a tool in one of the declared or common
+     * install dirs is still found, and csh as a login shell is vanishingly rare.
      */
     private fun lookupInLoginShell(commands: List<String>): Set<String> {
         if (commands.isEmpty()) return emptySet()

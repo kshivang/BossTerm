@@ -497,7 +497,7 @@ models, then proprietary.
 | Hermes Agent  | MIT        | `hermes mcp add <name> --url <url>`                                           |
 | Kimi Code CLI | MIT        | In-process merge into `~/.kimi-code/mcp.json` (no scriptable `mcp add`).      |
 | OpenClaw      | MIT        | `openclaw mcp add <name> --url <url> --transport sse` (docs-only, see below)   |
-| OpenCode      | MIT        | Scripted edit of `~/.config/opencode/opencode.json` via a `node -e` shim.     |
+| OpenCode      | MIT        | In-process merge into `~/.config/opencode/opencode.json` (no scriptable `mcp add`). |
 | Codex         | Apache-2.0 | `codex mcp add <name> --url <url>`                                            |
 | Gemini CLI    | Apache-2.0 | `gemini mcp add <name> <url> --transport sse --scope user`                    |
 | Grok Build    | Apache-2.0 | `grok mcp add <name> --url <url> --type sse`                                  |
@@ -506,13 +506,20 @@ models, then proprietary.
 `<name>` is the embedder's `BossTermMcpConfig.serverName` (default
 `"bossterm"`) and `<url>` is `http://127.0.0.1:<port>/`.
 
-Two CLIs have no non-interactive `mcp add` at all, and they're handled
-differently on purpose. OpenCode ships as an npm package, so `node` is
-guaranteed present and a `node -e` shim can edit its config. Kimi Code ships as
-a single self-contained binary whose whole premise is not needing Node, so its
-config is merged **in this process** by `McpConfigFileEditor` — parse, set only
-`mcpServers.<name>`, write via a temp file + rename, leaving everything else in
-the file untouched.
+Two CLIs — OpenCode and Kimi Code — expose no non-interactive `mcp add` at all
+(both configure MCP through a TUI prompt). For those, the config is merged **in
+this process** by `McpConfigFileEditor`: parse, set only the one server key,
+write via a temp file + atomic rename with the original file's permissions
+preserved, leaving everything else in the file untouched.
+
+OpenCode's used to be a `node -e` one-liner instead, justified by "OpenCode ships
+as an npm package, so node is always there". That stopped being true when its
+`curl … | bash` installer became the default install path — a user can now have
+`opencode` without `node` — so both variants are handled the same way. The
+written shapes differ because the CLIs' parsers do: OpenCode wants
+`{type: "remote", url, enabled: true}` under `mcp`, Kimi Code wants
+`{transport: "sse", url}` under `mcpServers` (its schema is a discriminated union
+on `transport`, and a bare `url` would default to `http`, not sse).
 
 If the CLI binary is missing, the shell-out fails, or the operation times
 out, the corresponding config snippet is dropped onto the clipboard

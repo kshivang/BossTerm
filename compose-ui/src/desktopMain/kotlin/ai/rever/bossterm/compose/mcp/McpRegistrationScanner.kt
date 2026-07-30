@@ -76,7 +76,7 @@ internal object McpRegistrationScanner {
             McpAttachTarget.GEMINI ->
                 jsonLoopbackUrl(File(home, ".gemini/settings.json"), "mcpServers", serverName = serverName)
             McpAttachTarget.OPENCODE ->
-                jsonLoopbackUrl(File(home, ".config/opencode/opencode.json"), "mcp", serverName = serverName)
+                jsonLoopbackUrl(CliConfigPaths.opencodeConfigJson(home), "mcp", serverName = serverName)
             McpAttachTarget.KIMI_CODE ->
                 jsonLoopbackUrl(CliConfigPaths.kimiMcpJson(home), "mcpServers", serverName = serverName)
             // OpenClaw nests servers one level deeper: mcp → servers → <name>.
@@ -167,6 +167,7 @@ internal object McpRegistrationScanner {
         val lines = file.readLines()
 
         var serversIndent = -1   // indent of the `mcp_servers:` key, -1 until seen
+        var childIndent = -1     // indent shared by mcp_servers' DIRECT children, -1 until seen
         var entryIndent = -1     // indent of the `<serverName>:` key inside it, -1 until seen
         for (rawLine in lines) {
             if (rawLine.isBlank() || rawLine.trimStart().startsWith("#")) continue
@@ -195,10 +196,15 @@ internal object McpRegistrationScanner {
                 if (indent <= serversIndent) {
                     // Left the mcp_servers block without finding the entry.
                     serversIndent = -1
-                } else if (key == serverName) {
-                    entryIndent = indent
-                    continue
+                    childIndent = -1
                 } else {
+                    // The first line deeper than `mcp_servers:` fixes the indent its direct
+                    // children sit at. Matching the name at ANY deeper indent would let
+                    // `mcp_servers: other: env: bossterm:` adopt the next `url:` in that block —
+                    // a false PRESENT, which is the harmful direction: it suppresses a real
+                    // re-attach, where a false ABSENT only declines to adopt.
+                    if (childIndent < 0) childIndent = indent
+                    if (indent == childIndent && key == serverName) entryIndent = indent
                     continue
                 }
             }

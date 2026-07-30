@@ -15,34 +15,15 @@ import java.util.concurrent.TimeUnit
 /** Top-level key holding server declarations in Kimi Code CLI's `mcp.json`. */
 private const val KIMI_CONTAINER_KEY = "mcpServers"
 
-// Node one-liners that edit ~/.config/opencode/opencode.json directly —
-// OpenCode's own `mcp add` is an interactive TUI prompt with no scripted
-// form. Each script takes argv positional[s]: NAME (and URL for the add
-// variant). Node is guaranteed to be on PATH wherever `opencode` is
-// installed (OpenCode ships as an npm package), so the dependency is
-// essentially free.
-//
-// Kept as top-level file-private constants because Kotlin enum entries
-// can't reference their own companion-object members at construction
-// time — the companion initializes after the entries.
-private const val OPENCODE_ADD_SCRIPT = "" +
-    "const fs=require('fs'),os=require('os'),p=require('path');" +
-    "const f=os.homedir()+'/.config/opencode/opencode.json';" +
-    "fs.mkdirSync(p.dirname(f),{recursive:true});" +
-    "const c=fs.existsSync(f)&&fs.statSync(f).size>0?JSON.parse(fs.readFileSync(f,'utf8')):{};" +
-    "c.mcp=c.mcp||{};" +
-    "c.mcp[process.argv[1]]={type:'remote',url:process.argv[2],enabled:true};" +
-    "fs.writeFileSync(f,JSON.stringify(c,null,2));" +
-    "console.log('Wrote '+f);"
+/** Top-level key holding server declarations in OpenCode's `opencode.json`. */
+private const val OPENCODE_CONTAINER_KEY = "mcp"
 
-private const val OPENCODE_REMOVE_SCRIPT = "" +
-    "const fs=require('fs'),os=require('os');" +
-    "const f=os.homedir()+'/.config/opencode/opencode.json';" +
-    "if(!fs.existsSync(f))process.exit(0);" +
-    "const c=JSON.parse(fs.readFileSync(f,'utf8')||'{}');" +
-    "if(!c.mcp||!c.mcp[process.argv[1]])process.exit(0);" +
-    "delete c.mcp[process.argv[1]];" +
-    "fs.writeFileSync(f,JSON.stringify(c,null,2));"
+// OpenCode's attach used to be a pair of `node -e` one-liners that edited opencode.json, justified
+// by "node is guaranteed wherever opencode is, because OpenCode ships as an npm package". That
+// stopped being true on this branch: OpenCode's primary installCommand is now its
+// `curl … | bash` installer, and that's what onboarding runs by default — so a user can easily have
+// `opencode` without `node`. McpConfigFileEditor does the same merge on the JVM with no external
+// dependency, so both scripts are gone.
 
 /**
  * One-click attach helper that registers this BossTerm MCP endpoint with a
@@ -207,19 +188,11 @@ enum class McpAttachTarget(
         displayName = "OpenCode",
         persistenceKey = "OPENCODE",
         assistantId = AIAssistantIds.OPENCODE,
-        // opencode 1.x's `mcp add` is an interactive TUI prompt with no
-        // scriptable form. Workaround: edit `~/.config/opencode/opencode.json`
-        // directly via a tiny node one-liner. node is guaranteed to be on
-        // PATH whenever `opencode` is installed (opencode ships as an npm
-        // package), so the dependency is essentially free.
-        removeCommand = listOf(
-            "node", "-e", OPENCODE_REMOVE_SCRIPT,
-            "{NAME}"
-        ),
-        addCommand = listOf(
-            "node", "-e", OPENCODE_ADD_SCRIPT,
-            "{NAME}", "{URL}"
-        ),
+        // opencode 1.x's `mcp add` is an interactive TUI prompt with no scriptable form, so the
+        // config is merged in-process (see attachInProcess below and the note at the top of this
+        // file about why this is no longer a `node -e` shim).
+        removeCommand = null,
+        addCommand = null,
         clipboardFallback = """
             // Merge into ~/.config/opencode/opencode.json
             {
@@ -232,7 +205,22 @@ enum class McpAttachTarget(
               }
             }
         """.trimIndent()
-    ),
+    ) {
+        override fun attachInProcess(name: String, url: String, home: File): Boolean =
+            McpConfigFileEditor.putServer(
+                file = CliConfigPaths.opencodeConfigJson(home),
+                containerKey = OPENCODE_CONTAINER_KEY,
+                serverName = name,
+                entry = McpConfigFileEditor.remoteEntry(url, type = "remote", enabled = true)
+            )
+
+        override fun detachInProcess(name: String, home: File): Boolean =
+            McpConfigFileEditor.removeServer(
+                CliConfigPaths.opencodeConfigJson(home),
+                OPENCODE_CONTAINER_KEY,
+                name
+            )
+    },
     GROK(
         displayName = "Grok Build",
         persistenceKey = "GROK",
@@ -311,10 +299,16 @@ enum class McpAttachTarget(
         displayName = "Kimi Code CLI",
         persistenceKey = "KIMI_CODE",
         assistantId = AIAssistantIds.KIMI_CODE,
-        // Kimi Code has no non-interactive `mcp add` — MCP servers are added
-        // conversationally through the `/mcp-config` TUI. So both directions are
-        // handled in-process by McpConfigFileEditor (see attachInProcess below);
-        // these command slots stay null.
+        // Kimi Code has no `mcp` subcommand at all (confirmed against kimi 0.30.0) — MCP servers are
+        // added conversationally through the `/mcp-config` TUI. Both directions are handled
+        // in-process by McpConfigFileEditor; these command slots stay null.
+        //
+        // The written shape is verified against the binary's own zod schema, not inferred:
+        //   McpJsonFileSchema      = object({ mcpServers: record(string(), McpServerConfigSchema) })
+        //   McpServerSseConfigSchema = object({ transport: literal("sse"), url: string().url(), … })
+        // and the preprocessor defaults a bare `url` to transport "http" — so `transport: "sse"` has
+        // to be written explicitly for the SSE endpoint we register. Note `kimi doctor` validates
+        // only config.toml and tui.toml, so it can't be used to check this file.
         removeCommand = null,
         addCommand = null,
         clipboardFallback = """
@@ -392,13 +386,23 @@ enum class McpAttachTarget(
          *
          * All UI surfaces should render this rather than `entries`.
          */
-        val ossFirst: List<McpAttachTarget>
-            get() = entries.sortedWith(
+        val ossFirst: List<McpAttachTarget> by lazy {
+            // Computed once, not per read. Every attach menu, the status tooltip and the remote
+            // menu read this during composition, and the comparator used to call
+            // AIAssistants.findById per comparison — which rebuilds `BUILTIN + _customAssistants`
+            // and linear-scans it. That was ~24 list allocations per recomposition for an ordering
+            // that only depends on the built-in registry, which never changes at runtime.
+            //
+            // Safe to cache for exactly that reason: openness comes from BUILTIN, and a custom
+            // assistant can't introduce an attach target.
+            val tierById = AIAssistants.BUILTIN.associate { it.id to it.openness.ordinal }
+            entries.sortedWith(
                 compareBy(
-                    { AIAssistants.findById(it.assistantId)?.openness?.ordinal ?: Int.MAX_VALUE },
+                    { tierById[it.assistantId] ?: Int.MAX_VALUE },
                     { it.displayName }
                 )
             )
+        }
 
         /** Shared ceiling for a single `mcp add`/`mcp remove` shell-out. */
         const val DEFAULT_PROCESS_TIMEOUT_SECONDS = 15L

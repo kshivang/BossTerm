@@ -53,6 +53,10 @@ class MenuActions {
      * Run a local model in the focused pane. A non-null [model] runs it directly; null leaves
      * `ollama run ` on the command line unterminated so the user can type the model themselves —
      * enumerating installed models would mean shelling out while the menu is opening.
+     *
+     * The built-in menu only ever passes null (that's the "Run a Model…" item). The parameter is
+     * kept because this is embedder-facing API and "run this specific model" is the obvious
+     * programmatic use — an embedder with its own model picker needs it.
      */
     var onRunLocalModel: ((model: String?) -> Unit)? = null
 

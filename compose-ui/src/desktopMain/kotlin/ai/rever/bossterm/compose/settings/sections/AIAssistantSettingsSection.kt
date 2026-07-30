@@ -126,8 +126,16 @@ fun AIAssistantSettingsSection(
             }
 
             // AI assistants + local model runtimes, open-source-first. This used to iterate
-            // BUILTIN, which put every registered tool — git, brew, docker, tmux, fzf — in the
-            // "AI assistants" list; they have their own settings surfaces.
+            // BUILTIN, which listed every registered tool — git, brew, docker, kubectl, tmux, fzf —
+            // under "AI Assistants".
+            //
+            // Be aware of what that means: nothing else in the app iterates VCS_TOOLS,
+            // PACKAGE_MANAGERS, CONTAINER_TOOLS, LANGUAGE_RUNTIMES or CLI_UTILITIES, so those tools
+            // now have NO per-tool settings surface at all — this is a deliberate removal, not a
+            // move. A custom command someone already saved for, say, `git` stays in
+            // aiAssistantConfigs and is still honored by ToolCommandProvider and MirrorShare; it
+            // just can't be edited from here any more. If that turns out to matter, the fix is a
+            // second "CLI tools" section rather than putting them back in this list.
             val configurable = AIAssistants.AI_ASSISTANTS_OSS_FIRST.filter { it.isBuiltIn } +
                 AIAssistants.LOCAL_MODEL_RUNTIMES.filter { it.isBuiltIn }
             configurable.forEach { assistant ->

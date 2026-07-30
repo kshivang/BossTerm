@@ -7,6 +7,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * Adds/removes an MCP server entry in a CLI's JSON config, in this process.
@@ -93,17 +96,37 @@ internal object McpConfigFileEditor {
         }
     }
 
-    /** Write [root] to [file] via a same-directory temp file + rename. */
+    /**
+     * Write [root] to [file] via a same-directory temp file + atomic rename, so a crash mid-write
+     * can't truncate someone's config.
+     *
+     * Preserves the existing file's permissions. `createTempFile` makes an owner-only (0600) file,
+     * and moving that over the target would silently tighten the mode of a config the user may have
+     * deliberately made group-readable — a surprising side effect of "add an MCP server".
+     */
     private fun write(file: File, root: JsonObject): Boolean {
         return try {
             file.parentFile?.mkdirs()
+            val existingPermissions = runCatching {
+                if (file.isFile) Files.getPosixFilePermissions(file.toPath()) else null
+            }.getOrNull()
+
             val temp = File.createTempFile("mcp-config", ".json", file.parentFile)
             try {
                 temp.writeText(json.encodeToString(JsonObject.serializer(), root) + "\n")
-                if (!temp.renameTo(file)) {
-                    // Cross-device or an existing target Windows won't clobber: fall back to a
-                    // plain copy, which is still better than leaving the registration unwritten.
-                    temp.copyTo(file, overwrite = true)
+                existingPermissions?.let {
+                    runCatching { Files.setPosixFilePermissions(temp.toPath(), it) }
+                }
+                try {
+                    Files.move(
+                        temp.toPath(),
+                        file.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE
+                    )
+                } catch (_: AtomicMoveNotSupportedException) {
+                    // Some filesystems (and Windows when the target is open) refuse an atomic move.
+                    Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
                 }
                 log.info("Wrote MCP registration to {}", file)
                 true
@@ -116,9 +139,22 @@ internal object McpConfigFileEditor {
         }
     }
 
-    /** A remote (HTTP/SSE) server entry: `{"url": …, "transport": "sse"}` when [transport] is set. */
-    fun remoteEntry(url: String, transport: String? = null): JsonObject = buildJsonObject {
+    /**
+     * A remote server entry. The CLIs agree on `url` and disagree on everything else, so the caller
+     * spells out the shape its CLI's parser actually accepts:
+     *  - Kimi Code wants `transport: "sse"` (its zod schema is a discriminated union on `transport`,
+     *    and a bare `url` would default to `http`, not sse).
+     *  - OpenCode wants `type: "remote"` plus `enabled: true`.
+     */
+    fun remoteEntry(
+        url: String,
+        transport: String? = null,
+        type: String? = null,
+        enabled: Boolean? = null
+    ): JsonObject = buildJsonObject {
+        if (type != null) put("type", type)
         put("url", url)
         if (transport != null) put("transport", transport)
+        if (enabled != null) put("enabled", enabled)
     }
 }

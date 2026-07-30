@@ -2,27 +2,17 @@
 
 Worktree: `.worktrees/bossterm-oss-clis`, branch `oss-ai-clis`, based on `origin/master` @ `7d2e187b`.
 
-## Status
+This document is kept for the **verified-facts table** and the method behind it. The phase-by-phase
+plan below is history — the work landed in PR #354 and the code is the current authority. Don't treat
+the PR breakdown as a to-do list.
 
-PRs 1–4, 6 and 7 below are **implemented on this branch**; `./gradlew compileKotlinDesktop` is clean
-across all modules and `:compose-ui:desktopTest` is 868/868 green. Two deviations from the plan as
-first written, both noted inline in the sections they affect:
+Still unverified against a running binary, and therefore the only genuinely open risks:
 
-- `McpRegistrationScanner.codexTomlLoopbackUrl` was **renamed** `tomlMcpServersLoopbackUrl` now that
-  Codex and Grok Build share it, and the per-CLI config paths moved into a new `CliConfigPaths` so
-  the in-process writer and the scanner can't disagree about where a file lives.
-- PR 5 landed partially: Ollama is a first-class `LOCAL_MODEL_RUNTIME` with its own menu (run a
-  model / installed models / start server), detection, and install command. The "export
-  `OPENAI_BASE_URL` before launching a tier-1 agent" convenience is **not** done — it needs a
-  per-assistant provider setting to be worth wiring, and the existing custom-command setting already
-  covers the manual path.
-
-Still outstanding, and both need a real binary rather than more code:
-
-- **Kimi Code is unverified against a live install** (it isn't on this machine). Its flag names and
-  `mcp.json` shape come from upstream docs. See Risks 1–2.
-- **`hermes mcp add` has not been run end-to-end** through the attach button, only inspected via
-  `--help`. The interactive-prompt behavior under a closed stdin is still an assumption.
+- **`openclaw`'s `mcp` and `exec-policy` subcommands.** The installed build (2026.3.13) has neither;
+  npm latest is 2026.7.1-2, so the docs are ahead of it. An older build exits non-zero and the
+  clipboard fallback fires with the right snippet, which is the correct degradation.
+- **`hermes mcp add` end-to-end through the attach button.** Only `--help` was inspected. Its
+  behavior under a closed stdin (it can prompt for tool selection) is still an assumption.
 
 ## Goal
 
@@ -42,15 +32,33 @@ so the open-source stack leads instead of trailing.
 
 ## Verified CLI facts
 
-Everything below was verified on 2026-07-28, not taken from memory. `grok`, `hermes`, and `ollama`
-are installed on this machine and were probed directly with `--help`; `grok mcp add`/`remove` were
-round-tripped under a sandboxed `GROK_HOME=/tmp/grokprobe` (the real `~/.grok/config.toml` was
-confirmed untouched afterwards). `kimi` is **not** installed locally — its rows come from upstream
-docs and still need a live check (see Risks).
+Everything below was verified against installed binaries, not taken from docs or memory.
+
+The methods, because they're reusable and each one caught something a plausible guess got wrong:
+
+- **Sandboxed HOME for config-writing subcommands.** `GROK_HOME=/tmp/probe grok mcp add …` exercises
+  the real code path without touching the user's config; verify the real file afterwards. Same for
+  `KIMI_CODE_HOME`, `HERMES_HOME`, `OPENCLAW_CONFIG_PATH`. (`CliConfigPaths` honors these in
+  production but ignores them when a test passes an explicit home, so a developer with one exported
+  doesn't get their config rewritten by a test run.)
+- **Flag validity by probing the TUI**, not by reading docs: run the binary with the candidate flag
+  and `</dev/null` under `perl -e 'alarm 10; exec @ARGV'` (macOS has no `timeout`). An immediate
+  usage banner means rejected; hanging with no output means accepted. Always include a known-good
+  flag as a positive control, or "banner" might just mean "not a TTY".
+- **Ask the CLI to resolve its own config** where it can: `opencode debug config` is what caught the
+  `OPENCODE_PERMISSION` character-spread bug.
+- **Read the binary's own schema** when there's no such command. Kimi Code is a bundled single file,
+  so `strings` yields its zod definitions verbatim — that's how the `mcp.json` shape below is
+  confirmed rather than assumed. Note `kimi doctor` validates only `config.toml` and `tui.toml`, so
+  its "all config files are valid" says nothing about `mcp.json`; trusting it would have been a
+  false positive.
+- **Confirm the endpoint AND the publisher.** Every install URL was fetched (200 + real content) and
+  every npm name resolved with `npm view`: `@moonshot-ai/kimi-code` → 0.30.0 from
+  `MoonshotAI/kimi-code`, matching the installed binary; `openclaw` → `openclaw/openclaw`.
 
 | CLI | id | binary | License / repo | Install | Auto/YOLO flag |
 |---|---|---|---|---|---|
-| Kimi Code CLI | `kimi-code` | `kimi` | MIT — `MoonshotAI/kimi-code` | `curl -fsSL https://code.kimi.com/kimi-code/install.sh \| bash` (single binary, no Node) · npm `@moonshot-ai/kimi-code` | `--yolo` (hidden aliases `-y`, `--yes`, `--auto-approve`; `--auto` = auto permission mode) |
+| Kimi Code CLI | `kimi-code` | `kimi` | MIT — `MoonshotAI/kimi-code` | `curl -fsSL https://code.kimi.com/kimi-code/install.sh \| bash` → `~/.kimi-code/bin/kimi` (single binary, no Node) · npm `@moonshot-ai/kimi-code` | `-y` / `--yolo` — **verified v0.30.0** (`--auto` = fully autonomous) |
 | Grok Build | `grok-build` | `grok` | Apache-2.0 — `xai-org/grok-build` (Rust, 23k★) | `curl -fsSL https://x.ai/cli/install.sh \| bash` · npm `@xai-official/grok` | `--always-approve` |
 | Hermes Agent | `hermes` | `hermes` | MIT — `NousResearch/hermes-agent` (Python) | `curl -fsSL https://hermes-agent.nousresearch.com/install.sh \| bash` | `--yolo` |
 | Ollama | `ollama` | `ollama` | MIT — `ollama/ollama` (Go) | `curl -fsSL https://ollama.com/install.sh \| sh` · `brew install ollama` | n/a — not an agent |
@@ -61,7 +69,8 @@ MCP integration, per CLI:
 |---|---|---|
 | Grok Build | ✅ `grok mcp add {NAME} --url {URL} --type sse` / `grok mcp remove {NAME}` (also `list`, `doctor`) — **verified v0.2.3** | `~/.grok/config.toml` → `[mcp_servers.<name>]` with `url` / `type` / `enabled`. **Byte-identical in shape to Codex's TOML** — the existing minimal TOML scan is reusable as-is with a different path (now `McpRegistrationScanner.tomlMcpServersLoopbackUrl`). |
 | Hermes Agent | ✅ `hermes mcp add {NAME} --url {URL}` / `hermes mcp remove {NAME}` (also `list`, `test`, `configure`) — **verified v0.13.0** | `~/.hermes/config.yaml` → `mcp_servers:` → `<name>:` → `url:` (YAML) |
-| Kimi Code CLI | ❌ none — MCP is configured conversationally via the `/mcp-config` TUI | `~/.kimi-code/mcp.json` → `mcpServers.<name>` = `{ "url": …, "transport": "sse" }` (project-local: `.kimi-code/mcp.json`) |
+| Kimi Code CLI | ❌ **no `mcp` subcommand at all** (verified v0.30.0) — MCP is configured conversationally via `/mcp-config`, so BossTerm merges the JSON in-process | `~/.kimi-code/mcp.json` → `mcpServers.<name>` = `{ "transport": "sse", "url": … }`. Confirmed from the binary's own zod schema: `McpServerSseConfigSchema = object({ transport: literal("sse"), url: string().url(), … })`, and the preprocessor defaults a bare `url` to `"http"` — so `transport` must be written explicitly. |
+| OpenCode | ❌ none (TUI prompt) — also merged in-process, since `curl \| bash` is now its default install and `node` can no longer be assumed | `~/.config/opencode/opencode.json` → `mcp.<name>` = `{ "type": "remote", "url": …, "enabled": true }` |
 | Ollama | n/a — Ollama is an MCP *nothing*; it serves models, it doesn't consume tools | n/a |
 
 ### Openness ranking (drives the ordering)
@@ -73,9 +82,12 @@ fields and sorts on both:
 
 | Tier | CLIs | Rationale |
 |---|---|---|
-| 1 — OSS CLI + open/local models | Kimi Code (MIT), Hermes (MIT), OpenCode (MIT), Ollama (MIT) | OSS client, provider-agnostic, runs on local/open weights |
-| 2 — OSS CLI, vendor models | Grok Build (Apache-2.0), Codex (Apache-2.0), Gemini CLI (Apache-2.0) | source is open, the model requires a vendor account |
+| 1 — OSS CLI + open/local models | Hermes (MIT), Kimi Code (MIT), OpenClaw (MIT), OpenCode (MIT), Ollama (MIT) | OSS client, provider-agnostic, runs on local/open weights |
+| 2 — OSS CLI, vendor models | Codex (Apache-2.0), Gemini CLI (Apache-2.0), Grok Build (Apache-2.0) | source is open, the model requires a vendor account |
 | 3 — proprietary | Claude Code | closed client and model |
+
+Within a tier the order is alphabetical by display name, which is what
+`AI_ASSISTANTS_OSS_FIRST` and `McpAttachTarget.ossFirst` produce.
 
 This is honest about Grok Build: the user asked for it alongside the OSS CLIs, and its client *is*
 Apache-2.0, but it is not an open-weights path — tier 2, not tier 1.

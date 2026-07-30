@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.tabs
 
+import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.settings.theme.Theme
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
@@ -260,9 +261,11 @@ data class RemoteNestedGroup(
  * AI assistants offered in the remote chip menu — same set the browser viewer mirrors, derived from
  * the tool registry in open-source-first order so the three lists can't drift apart.
  */
-private val REMOTE_AI_ASSISTANTS: List<Pair<String, String>>
-    get() = ai.rever.bossterm.compose.ai.AIAssistants.AI_ASSISTANTS_OSS_FIRST
-        .map { it.id to it.displayName }
+private val REMOTE_AI_ASSISTANTS: List<Pair<String, String>> by lazy {
+    // by lazy, not get(): this is read while building a context menu during composition, and a
+    // `get()` re-derived the whole sorted list on every read.
+    AIAssistants.AI_ASSISTANTS_OSS_FIRST.map { it.id to it.displayName }
+}
 
 /**
  * Tab bar component for multiple terminal sessions.

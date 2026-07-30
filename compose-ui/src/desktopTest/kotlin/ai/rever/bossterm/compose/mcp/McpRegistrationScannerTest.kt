@@ -165,6 +165,48 @@ class McpRegistrationScannerTest {
     }
 
     @Test
+    fun `hermes name nested deeper than a direct child is not adopted`() {
+        val home = tempHome()
+        // `boss` here is a KEY INSIDE another server's env block, not a server, and the `url:` sits
+        // DEEPER than it. The depth matters: matching the name at any indent made the scanner treat
+        // this as our block and return that url — a false PRESENT, which suppresses the real
+        // re-attach. (A fixture with `url:` at the same indent as the nested name passes either way,
+        // so it would not have caught this.)
+        home.write(
+            ".hermes/config.yaml",
+            """
+            mcp_servers:
+              other:
+                env:
+                  boss:
+                    url: "http://127.0.0.1:7677"
+            """.trimIndent()
+        )
+        assertEquals(
+            Presence.ABSENT,
+            McpRegistrationScanner.scan("boss", home)[McpAttachTarget.HERMES]
+        )
+    }
+
+    @Test
+    fun `hermes still finds a direct child after a deeper sibling block`() {
+        val home = tempHome()
+        home.write(
+            ".hermes/config.yaml",
+            """
+            mcp_servers:
+              other:
+                env:
+                  NESTED: "1"
+                command: npx
+              boss:
+                url: "http://127.0.0.1:7677"
+            """.trimIndent()
+        )
+        assertEquals(setOf(McpAttachTarget.HERMES), present(McpRegistrationScanner.scan("boss", home)))
+    }
+
+    @Test
     fun `hermes remote url is not adopted`() {
         val home = tempHome()
         home.write(

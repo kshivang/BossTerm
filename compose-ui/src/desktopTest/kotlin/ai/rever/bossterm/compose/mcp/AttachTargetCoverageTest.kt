@@ -20,6 +20,16 @@ import kotlin.test.assertTrue
  */
 class AttachTargetCoverageTest {
 
+    /**
+     * A temp home that actually gets cleaned up. `File.deleteOnExit()` only removes empty
+     * directories, so the in-process round-trip — which writes a config inside — used to leak a
+     * directory tree per run.
+     */
+    private fun tempHome(prefix: String): File =
+        createTempDirectory(prefix).toFile().also { dir ->
+            Runtime.getRuntime().addShutdownHook(Thread { dir.deleteRecursively() })
+        }
+
     @Test
     fun `every attach target points at a real registry entry`() {
         for (target in McpAttachTarget.entries) {
@@ -37,16 +47,52 @@ class AttachTargetCoverageTest {
         }
     }
 
+    /**
+     * Scoped to BUILTIN on purpose. `AI_ASSISTANTS` is `BUILTIN + _customAssistants`, and
+     * `_customAssistants` is process-wide mutable state: a user-registered custom CLI legitimately
+     * has no attach target, so asserting over `AI_ASSISTANTS` would pass only for as long as no test
+     * calls `setCustomAssistants` — then fail depending on execution order. The invariant we
+     * actually mean is about the CLIs we ship.
+     */
     @Test
-    fun `every AI assistant has an attach target`() {
-        val missing = AIAssistants.AI_ASSISTANTS
+    fun `every built-in AI assistant has an attach target`() {
+        val missing = AIAssistants.BUILTIN
+            .filter { it.category == ToolCategory.AI_ASSISTANT }
             .filter { McpAttachTarget.forAssistant(it.id) == null }
             .map { it.id }
         assertTrue(
             missing.isEmpty(),
-            "AI assistants with no McpAttachTarget (add one, or move the CLI out of the " +
+            "built-in AI assistants with no McpAttachTarget (add one, or move the CLI out of the " +
                 "AI_ASSISTANT category if it can't consume MCP): $missing"
         )
+    }
+
+    /** A custom assistant with no attach target must not break the coverage invariant. */
+    @Test
+    fun `a custom assistant without an attach target is allowed`() {
+        try {
+            AIAssistants.setCustomAssistants(
+                listOf(
+                    ai.rever.bossterm.compose.ai.AIAssistantDefinition(
+                        id = "my-private-cli",
+                        displayName = "My Private CLI",
+                        command = "mycli"
+                    )
+                )
+            )
+            assertTrue(AIAssistants.AI_ASSISTANTS.any { it.id == "my-private-cli" })
+            assertTrue(
+                McpAttachTarget.forAssistant("my-private-cli") == null,
+                "a custom CLI should not be expected to have an attach target"
+            )
+            // The built-in invariant still holds with custom entries registered.
+            val missing = AIAssistants.BUILTIN
+                .filter { it.category == ToolCategory.AI_ASSISTANT }
+                .filter { McpAttachTarget.forAssistant(it.id) == null }
+            assertTrue(missing.isEmpty(), "built-in coverage must not depend on custom state")
+        } finally {
+            AIAssistants.setCustomAssistants(emptyList())
+        }
     }
 
     @Test
@@ -88,7 +134,7 @@ class AttachTargetCoverageTest {
 
     @Test
     fun `every target can produce either a command or an in-process write`() {
-        val home = createTempDirectory("attach-coverage-home").toFile().apply { deleteOnExit() }
+        val home = tempHome("attach-coverage-home")
         for (target in McpAttachTarget.entries) {
             val hasCommand = target.resolvedAddCommand("boss", "http://127.0.0.1:7677") != null
             // Probe rather than assume: a target with no add command MUST have an in-process path,
@@ -104,7 +150,7 @@ class AttachTargetCoverageTest {
     @Test
     fun `in-process targets round-trip a registration`() {
         for (target in McpAttachTarget.entries) {
-            val home = createTempDirectory("attach-roundtrip").toFile().apply { deleteOnExit() }
+            val home = tempHome("attach-roundtrip")
             val wrote = target.attachInProcess("boss", "http://127.0.0.1:7677", home) ?: continue
 
             assertTrue(wrote, "${target.name} failed to write its config into a fresh home")

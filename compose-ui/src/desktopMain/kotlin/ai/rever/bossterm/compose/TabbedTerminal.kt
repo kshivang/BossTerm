@@ -558,9 +558,9 @@ fun TabbedTerminal(
             onLaunchAssistant = { assistantId ->
                 val assistant = AIAssistants.findById(assistantId)
                 if (assistant != null) {
+                    val config = settings.aiAssistantConfigs[assistantId]
                     val isInstalled = aiState.detector.installationStatus.value[assistantId] ?: false
                     if (isInstalled) {
-                        val config = settings.aiAssistantConfigs[assistantId]
                         writeToTerminal(aiState.launcher.getLaunchCommand(assistant, config))
                     } else {
                         val resolved = aiState.launcher.resolveInstallCommands(assistant)
@@ -569,8 +569,10 @@ fun TabbedTerminal(
                             installCommand = resolved.command,
                             npmCommand = resolved.npmFallback,
                             terminalWriter = writeToTerminal,
-                            // Re-run what the user actually asked for once the install finishes.
-                            commandToRunAfter = assistant.command,
+                            // Re-run what the user actually asked for once the install finishes —
+                            // the full launch line, not the bare binary. `openclaw` alone prints
+                            // help instead of starting a session; `openclaw tui` is the agent.
+                            commandToRunAfter = aiState.launcher.launchCommandText(assistant, config),
                             clearLine = null  // No line to clear when launched from menu
                         )
                     }
@@ -589,7 +591,10 @@ fun TabbedTerminal(
                         installCommand = resolved.command,
                         npmCommand = resolved.npmFallback,
                         terminalWriter = writeToTerminal,
-                        commandToRunAfter = ollama.command,
+                        // Run the action that was actually clicked, not a bare `ollama` (which just
+                        // prints usage). Null args = the interactive "Run a Model…" case, where
+                        // there's nothing to auto-run after the install.
+                        commandToRunAfter = argsOrNull?.let { "${ollama.command} $it" },
                         clearLine = null
                     )
                     return

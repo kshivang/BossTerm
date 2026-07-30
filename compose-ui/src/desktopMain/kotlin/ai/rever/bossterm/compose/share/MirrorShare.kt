@@ -919,9 +919,11 @@ class MirrorShare(
                         // and the payload remains bounded by the pane dimensions.
                         entry.repaintSender.offer {
                             TerminalSnapshotEncoder.encodeScreenRepaint(
-                                entry.tab.textBuffer.createSnapshot(),
-                                entry.tab.terminal.cursorX,
-                                entry.tab.terminal.cursorY,
+                                snapshot = entry.tab.textBuffer.createSnapshot(),
+                                cursorX = entry.tab.terminal.cursorX,
+                                cursorY = entry.tab.terminal.cursorY,
+                                cursorVisible = entry.tab.display.cursorVisibleSnapshot,
+                                cursorShape = entry.tab.display.cursorShapeSnapshot,
                             )
                         }
                     }
@@ -1099,16 +1101,18 @@ class MirrorShare(
     /**
      * Build the initial-paint blob for a pane as **styled** text: each cell run is
      * prefixed with its SGR escape so the viewer's xterm.js paints the scrollback in
-     * color, exactly like live output. (Previously this sent `line.text` — plain chars
-     * with no styling — so the very first render was monochrome until new output arrived.)
+     * color, exactly like live output. The suffix also restores cursor visibility and shape,
+     * which xterm loses when the viewer resets it before applying a snapshot.
      */
     private fun snapshotText(tab: TerminalTab): String {
         val snap = tab.textBuffer.createSnapshot()
         return TerminalSnapshotEncoder.encode(
-            snap,
-            tab.terminal.cursorX,
-            tab.terminal.cursorY,
-            webViewerScrollbackLines(tab.textBuffer),
+            snapshot = snap,
+            cursorX = tab.terminal.cursorX,
+            cursorY = tab.terminal.cursorY,
+            maxHistoryLines = webViewerScrollbackLines(tab.textBuffer),
+            cursorVisible = tab.display.cursorVisibleSnapshot,
+            cursorShape = tab.display.cursorShapeSnapshot,
         )
     }
 

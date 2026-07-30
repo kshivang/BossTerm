@@ -810,9 +810,11 @@ class DaemonShareServer(
                             // ordered with PTY output without rebuilding retained browser history.
                             attachment.repaintSender.offer {
                                 TerminalSnapshotEncoder.encodeScreenRepaint(
-                                    core.textBuffer.createSnapshot(),
-                                    core.terminal.cursorX,
-                                    core.terminal.cursorY,
+                                    snapshot = core.textBuffer.createSnapshot(),
+                                    cursorX = core.terminal.cursorX,
+                                    cursorY = core.terminal.cursorY,
+                                    cursorVisible = core.display.cursorVisible,
+                                    cursorShape = core.display.cursorShape,
                                 )
                             }
                         }
@@ -906,10 +908,12 @@ class DaemonShareServer(
             vc.outbox.sendSnapshot(core.id, FrameOutbox.Frame.Text(ShareProtocol.encodeServer(ServerMessage.PaneSnapshot(
                 core.id,
                 TerminalSnapshotEncoder.encode(
-                    core.textBuffer.createSnapshot(),
-                    core.terminal.cursorX,
-                    core.terminal.cursorY,
-                    webViewerScrollbackLines(core.textBuffer),
+                    snapshot = core.textBuffer.createSnapshot(),
+                    cursorX = core.terminal.cursorX,
+                    cursorY = core.terminal.cursorY,
+                    maxHistoryLines = webViewerScrollbackLines(core.textBuffer),
+                    cursorVisible = core.display.cursorVisible,
+                    cursorShape = core.display.cursorShape,
                 ),
                 sz.columns, sz.rows,
                 webViewerScrollbackLines(core.textBuffer),

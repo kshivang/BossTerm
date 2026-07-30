@@ -53,13 +53,15 @@
     #mcppill { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
     #mcppill .dot { width: 7px; height: 7px; border-radius: 50%; background: #6b6b6b; display: inline-block; }
     #mcppill.on .dot { background: #4caf50; }
-    /* Boss Calling (voice agent) — a bottom bar, because calling is a mode you're IN, not a
-       toolbar toggle: idle it shows one Call button; on a call it becomes a strip with a live
-       level meter, what the agent is doing, Mute and End. Rides above #keybar (see
-       layoutForKeyboard) so the on-screen keys and the call controls never overlap. */
-    #voicebar { display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 29;
-                align-items: center; justify-content: center; gap: 8px; padding: 7px 10px;
-                background: #2b2b2b; border-top: 1px solid #404040; }
+    /* Boss Calling and the mobile keystrokes share ONE bottom strip. Either group may be
+       present by itself; when both are available they sit beside each other in the same
+       horizontally scrollable row. viewer.js positions and reserves this wrapper once. */
+    #bottomstrip { display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+                   align-items: center; gap: 8px; padding: 6px 8px; box-sizing: border-box;
+                   background: #2b2b2b; border-top: 1px solid #404040;
+                   overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+    #bottomstrip.on { display: flex; }
+    #voicebar { display: none; flex: 0 0 auto; align-items: center; justify-content: center; }
     #voicebar.on { display: flex; }
     #voicecallbtn { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
                     padding: 6px 16px; border-radius: 16px; border: 1px solid #4caf50;
@@ -69,12 +71,12 @@
     #voicecallbtn.disabled { opacity: .5; cursor: default; border-color: #505050; }
     #voicecallbtn .dot { width: 8px; height: 8px; border-radius: 50%; background: #4caf50; display: inline-block; }
     /* in-call strip */
-    #voicecall { display: none; align-items: center; gap: 12px; width: 100%; max-width: 640px; }
+    #voicecall { display: none; align-items: center; gap: 12px; flex: 0 0 auto; }
     #voicecall.on { display: flex; }
     /* listening/speaking meter: bars driven by a WebAudio analyser (mic while you talk, the
        agent's track while it answers), so silence is visibly different from a stalled call. */
-    #voicelevel { display: flex; align-items: center; gap: 3px; height: 24px; flex: 1 1 auto;
-                  min-width: 80px; }
+    #voicelevel { display: flex; align-items: center; gap: 3px; height: 24px; flex: 0 0 80px;
+                  width: 80px; min-width: 80px; }
     #voicelevel i { flex: 1 1 0; max-width: 5px; min-height: 3px; height: 3px; border-radius: 2px;
                     background: #4caf50; transition: height 70ms linear, background 200ms linear; }
     #voicecall.speaking #voicelevel i { background: #4a90e2; }
@@ -124,10 +126,9 @@
     #stage { flex: 1 1 auto; display: flex; min-width: 0; min-height: 0;
              overflow: auto; -webkit-overflow-scrolling: touch; }
 
-    /* on-screen key bar (mobile): Esc / Tab / Ctrl-combos / arrows. Fixed so viewer.js can
-       pin it just above the soft keyboard (via the VisualViewport API). */
-    #keybar { display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; gap: 6px; padding: 6px 8px;
-              background: #2b2b2b; border-top: 1px solid #404040; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    /* on-screen key group (mobile): Esc / Tab / Ctrl-combos / arrows. #bottomstrip
+       owns fixed positioning and scrolling so voice and keys can never form two rows. */
+    #keybar { display: none; flex: 0 0 auto; align-items: center; gap: 6px; }
     /* divs (not buttons) so tapping never blurs the terminal textarea / drops the iOS
        keyboard; flex-centered since divs don't center text like a <button>. */
     .keybtn { flex: 0 0 auto; min-width: 42px; box-sizing: border-box; display: inline-flex;
@@ -260,17 +261,19 @@
     <div id="stage"></div>
   </div>
   <div id="viewpill"></div>
-  <!-- Boss Calling: idle = the Call button; on a call = level meter + status + Mute/End. -->
-  <div id="voicebar">
-    <span id="voicecallbtn" title="Talk to this session's BossTerm agent"><span class="dot"></span><span id="voicelabel">Call BossTerm</span></span>
-    <span id="voicecall">
-      <span id="voicelevel"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
-      <span id="voicestate">Connecting…</span>
-      <button id="voicemute" title="Mute your microphone">Mute</button>
-      <button id="voicehang" title="End the call">End call</button>
-    </span>
+  <div id="bottomstrip">
+    <!-- Boss Calling: idle = the Call button; on a call = level meter + status + Mute/End. -->
+    <div id="voicebar">
+      <span id="voicecallbtn" title="Talk to this session's BossTerm agent"><span class="dot"></span><span id="voicelabel">Call BossTerm</span></span>
+      <span id="voicecall">
+        <span id="voicelevel"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+        <span id="voicestate">Connecting…</span>
+        <button id="voicemute" title="Mute your microphone">Mute</button>
+        <button id="voicehang" title="End the call">End call</button>
+      </span>
+    </div>
+    <div id="keybar"></div>
   </div>
-  <div id="keybar"></div>
   <div id="ctxmenu"></div>
   <div id="voicetoast"></div>
 

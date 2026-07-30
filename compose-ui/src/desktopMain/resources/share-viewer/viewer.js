@@ -247,7 +247,9 @@
   // The meter's bars are static markup — query once instead of every animation frame.
   var voiceBars = null;
   var voiceMicOk = !!(window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  var bottomStripEl = document.getElementById("bottomstrip");
   var voiceBarEl = document.getElementById("voicebar");
+  var keybarEl = document.getElementById("keybar");
   var voiceCallBtnEl = document.getElementById("voicecallbtn");
   var voiceLabelEl = document.getElementById("voicelabel");
   var voiceCallEl = document.getElementById("voicecall");
@@ -258,10 +260,14 @@
   var voiceToastEl = document.getElementById("voicetoast");
   var voiceAudioEl = null; // hidden <audio> for the agent's voice, created on first call
   var voiceToastTimer = null;
+  function syncBottomStrip() {
+    var visible = voiceBarEl.classList.contains("on") || keybarEl.style.display === "flex";
+    bottomStripEl.classList.toggle("on", visible);
+  }
   function toast(text, ms) {
     voiceToastEl.textContent = text;
-    // Sit above the call bar rather than under it.
-    voiceToastEl.style.bottom = (voiceBarEl.classList.contains("on") ? voiceBarEl.offsetHeight + 12 : 18) + "px";
+    // Sit above the shared bottom strip rather than under it.
+    voiceToastEl.style.bottom = (bottomStripEl.classList.contains("on") ? bottomStripEl.offsetHeight + 12 : 18) + "px";
     voiceToastEl.style.display = "block";
     if (voiceToastTimer) clearTimeout(voiceToastTimer);
     voiceToastTimer = setTimeout(function () { voiceToastEl.style.display = "none"; }, ms || 4000);
@@ -294,6 +300,7 @@
       } else {
         voiceBarEl.classList.remove("on");
       }
+      syncBottomStrip();
       layoutForKeyboard();
       return;
     }
@@ -322,7 +329,8 @@
       voiceStateEl.title = voice.model ? "In a call with " + voice.model : "";
       voiceMuteEl.textContent = voice.muted ? "Unmute" : "Mute";
     }
-    layoutForKeyboard(); // the bar changed height → re-reserve space at the bottom
+    syncBottomStrip();
+    layoutForKeyboard(); // the shared strip changed height → re-reserve space at the bottom
   }
   voiceCallBtnEl.onclick = function () {
     if (!voice.status || !voice.status.available || voice.state !== "idle") return;
@@ -750,7 +758,6 @@
     }
   }
 
-  var keybarEl = document.getElementById("keybar");
   var menubtnEl = document.getElementById("menubtn");
   var bodyEl = document.getElementById("body");
   var ctxEl = document.getElementById("ctxmenu");
@@ -872,7 +879,7 @@
       var shift = 0;
       if (open) {
         var visibleBottom = vv.offsetTop + vv.height;
-        var clear = (keybarEl.style.display !== "none" ? keybarEl.offsetHeight : 0) + 8;
+        var clear = (bottomStripEl.classList.contains("on") ? bottomStripEl.offsetHeight : 0) + 8;
         var cb = cursorBottomPx();
         // Unknown cursor → fall back to the full push (old behavior).
         shift = cb === null ? Math.round(kbH)
@@ -890,19 +897,17 @@
       // Keyboard just closed → apply any auto-fit we deferred while it was up.
       if (!open) maybeAutoFit();
     }
-    // Blur-safe (touches no textarea ancestor): keep the key bar riding the keyboard top and
-    // reserve body padding. Uses the scroll-invariant kbH so it doesn't jitter, and is safe to
+    // Blur-safe (touches no textarea ancestor): keep the shared bottom strip riding the keyboard
+    // top and reserve body padding. Uses the scroll-invariant kbH so it doesn't jitter, and is safe to
     // run on every event — including output-driven scroll events.
-    positionBottomBars(Math.max(0, Math.round(kbH) - appliedShiftPx));
+    positionBottomStrip(Math.max(0, Math.round(kbH) - appliedShiftPx));
   }
-  // The two fixed bars stack: #keybar rides the keyboard top, the Boss Calling bar sits on top of
-  // it, and #body reserves both so the terminal is never hidden behind them.
-  function positionBottomBars(kbBottomPx) {
-    keybarEl.style.bottom = kbBottomPx + "px";
-    var keyH = (keybarEl.style.display !== "none" && keybarEl.offsetHeight) ? keybarEl.offsetHeight : 0;
-    voiceBarEl.style.bottom = (kbBottomPx + keyH) + "px";
-    var voiceH = voiceBarEl.classList.contains("on") ? voiceBarEl.offsetHeight : 0;
-    bodyEl.style.paddingBottom = (keyH + voiceH) + "px";
+  // Voice controls and on-screen keys are one fixed row. Position that row once at the
+  // keyboard edge and reserve its height once so opening the keyboard cannot double-push the UI.
+  function positionBottomStrip(kbBottomPx) {
+    bottomStripEl.style.bottom = kbBottomPx + "px";
+    var stripH = bottomStripEl.classList.contains("on") ? bottomStripEl.offsetHeight : 0;
+    bodyEl.style.paddingBottom = stripH + "px";
   }
   // While the keyboard is up, keep the cursor visible above it. Only pushes FURTHER up (never
   // reduces the shift) and only when the cursor sits below the visible fold — so the common
@@ -915,14 +920,14 @@
     var cb = cursorBottomPx(); if (cb === null) return;
     var kbH = Math.max(0, window.innerHeight - vv.height);
     var visibleBottom = vv.offsetTop + vv.height;
-    var clear = (keybarEl.style.display !== "none" ? keybarEl.offsetHeight : 0) + 8;
+    var clear = (bottomStripEl.classList.contains("on") ? bottomStripEl.offsetHeight : 0) + 8;
     var want = Math.round(Math.max(0, Math.min(kbH, cb - visibleBottom + clear)));
     if (want <= appliedShiftPx) return; // cursor already clear of the keyboard — don't churn
     appliedShiftPx = want;
     var wasFocused = document.activeElement === activeTextarea();
     document.body.style.transform = "translateY(-" + want + "px)";
     if (wasFocused) { var ta = activeTextarea(); if (ta) try { ta.focus({ preventScroll: true }); } catch (e) {} }
-    positionBottomBars(Math.max(0, Math.round(kbH) - appliedShiftPx));
+    positionBottomStrip(Math.max(0, Math.round(kbH) - appliedShiftPx));
   }
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", layoutForKeyboard);
@@ -999,7 +1004,12 @@
   }
   function buildKeybar() {
     keybarEl.innerHTML = "";
-    if (!controlGranted) { keybarEl.style.display = "none"; layoutForKeyboard(); return; }
+    if (!controlGranted) {
+      keybarEl.style.display = "none";
+      syncBottomStrip();
+      layoutForKeyboard();
+      return;
+    }
     keybarEl.style.display = "flex";
     var kb = document.createElement("div");
     kb.className = "keybtn"; kb.textContent = "⌨"; kb.title = "Show / hide keyboard";
@@ -1011,7 +1021,8 @@
       wireKeyButton(b, k[1]);
       keybarEl.appendChild(b);
     });
-    layoutForKeyboard(); // reserve space + position above the keyboard
+    syncBottomStrip();
+    layoutForKeyboard(); // reserve one strip height + position above the keyboard
   }
   // The first pane of [node]'s tree (tree order) — the client's default focus / key-bar
   // target. Host focus is intentionally NOT reflected on the client; the client picks its own.

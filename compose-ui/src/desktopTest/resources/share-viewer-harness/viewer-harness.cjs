@@ -629,7 +629,7 @@ function loadViewer(options) {
   define("devicePixelRatio", 2);
   define("innerWidth", 390);
   define("innerHeight", 780);
-  define("visualViewport", undefined);
+  define("visualViewport", opts.visualViewport);
   define("matchMedia", () => ({
     matches: false,
     addEventListener() {},
@@ -976,7 +976,43 @@ const scenarios = {
     assert.strictEqual(lastTerminal().options.scrollback, 20000, "the viewer cap must win over a huge host cap");
   },
 
-  async "Boss Calling lives in the bottom bar: Call → live strip with meter, Mute, End"() {
+  "Boss Calling and keystrokes share one keyboard-aware bottom strip"() {
+    const viewportListeners = {};
+    const viewport = {
+      height: 780,
+      offsetTop: 0,
+      addEventListener(type, fn) { viewportListeners[type] = fn; },
+    };
+    loadViewer({ voiceCapable: true, visualViewport: viewport });
+    const socket = connectPanes(["pane-1"]);
+    const strip = el("bottomstrip");
+    strip.offsetHeight = 52;
+    el("voicebar").offsetHeight = 44;
+    el("keybar").offsetHeight = 48;
+
+    socket.deliver({ t: "control", granted: true });
+    assert.ok(strip.classList.contains("on"), "keystrokes alone show the shared strip");
+    assert.strictEqual(el("keybar").style.display, "flex");
+
+    socket.deliver({ t: "voiceStatus", available: true });
+    assert.ok(el("voicebar").classList.contains("on"), "voice joins the same strip");
+    assert.ok(strip.classList.contains("on"));
+    assert.strictEqual(el("body").style.paddingBottom, "52px", "reserve the shared row once");
+    assert.strictEqual(el("voicebar").style.bottom, undefined, "voice is not a separately positioned row");
+    assert.strictEqual(el("keybar").style.bottom, undefined, "keys are not a separately positioned row");
+
+    viewport.height = 480;
+    viewportListeners.resize();
+    assert.strictEqual(strip.style.bottom, "300px", "the one strip rides the keyboard edge");
+    assert.strictEqual(el("body").style.paddingBottom, "52px", "keyboard-open layout still reserves one row");
+
+    socket.deliver({ t: "voiceStatus", available: false });
+    assert.ok(strip.classList.contains("on"), "keystrokes keep the strip visible when voice leaves");
+    socket.deliver({ t: "control", granted: false });
+    assert.ok(!strip.classList.contains("on"), "the strip hides when neither group is available");
+  },
+
+  async "Boss Calling lives in the shared bottom strip: Call → live controls with meter, Mute, End"() {
     loadViewer({ voiceCapable: true });
     const socket = connectPanes(["pane-1"]);
     socket.deliver({ t: "control", granted: true });

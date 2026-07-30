@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.share
 
+import ai.rever.bossterm.terminal.CursorShape
 import ai.rever.bossterm.terminal.TerminalColor
 import ai.rever.bossterm.terminal.TextStyle
 import ai.rever.bossterm.terminal.model.BufferSnapshot
@@ -19,6 +20,8 @@ object TerminalSnapshotEncoder {
         cursorX: Int,
         cursorY: Int,
         maxHistoryLines: Int = Int.MAX_VALUE,
+        cursorVisible: Boolean = true,
+        cursorShape: CursorShape? = null,
     ): String {
         val sb = StringBuilder()
         var row = -snapshot.historyLinesCount.coerceAtMost(maxHistoryLines.coerceAtLeast(0))
@@ -28,6 +31,7 @@ object TerminalSnapshotEncoder {
             row++
         }
         sb.append("[0m") // reset trailing style
+        appendCursorState(sb, cursorVisible, cursorShape)
         // Park the cursor at its real screen position (1-based row;col) — otherwise the viewer
         // leaves it on the bottom row after the full-height blob (scrollback + screen).
         val cy = cursorY.coerceIn(1, snapshot.height)
@@ -47,6 +51,8 @@ object TerminalSnapshotEncoder {
         snapshot: BufferSnapshot,
         cursorX: Int,
         cursorY: Int,
+        cursorVisible: Boolean = true,
+        cursorShape: CursorShape? = null,
     ): String {
         val sb = StringBuilder()
         for (row in 0 until snapshot.height) {
@@ -55,8 +61,24 @@ object TerminalSnapshotEncoder {
         }
         val cy = cursorY.coerceIn(1, snapshot.height)
         val cx = cursorX.coerceAtLeast(1)
-        sb.append("\u001b[0m\u001b[$cy;${cx}H")
+        sb.append("\u001b[0m")
+        appendCursorState(sb, cursorVisible, cursorShape)
+        sb.append("\u001b[$cy;${cx}H")
         return sb.toString()
+    }
+
+    /** Restore host cursor modes lost when viewer.js resets xterm before applying a snapshot. */
+    private fun appendCursorState(sb: StringBuilder, visible: Boolean, shape: CursorShape?) {
+        sb.append(if (visible) "\u001b[?25h" else "\u001b[?25l")
+        val decscusr = when (shape) {
+            CursorShape.BLINK_BLOCK -> 1
+            CursorShape.STEADY_BLOCK, null -> 2
+            CursorShape.BLINK_UNDERLINE -> 3
+            CursorShape.STEADY_UNDERLINE -> 4
+            CursorShape.BLINK_VERTICAL_BAR -> 5
+            CursorShape.STEADY_VERTICAL_BAR -> 6
+        }
+        sb.append("\u001b[").append(decscusr).append(" q")
     }
 
     /** Append one buffer line as SGR-prefixed styled runs, trimming invisible trailing padding. */

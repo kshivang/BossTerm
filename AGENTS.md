@@ -148,7 +148,14 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 - **Search**: Ctrl+F (regex, case-sensitive)
 - **Clipboard**: Copy-on-select, middle-click paste
 - **Mouse**: vim/tmux support, Shift bypasses
-- **AI Menu**: Claude Code, Codex, Gemini, OpenCode
+- **AI Menu**: open-source-first (`AIAssistants.AI_ASSISTANTS_OSS_FIRST`) — Hermes Agent, Kimi Code
+  CLI, OpenClaw, OpenCode, then Codex, Gemini CLI, Grok Build, then Claude Code. Ordering is derived
+  from each entry's `openSource`/`localModels` flags, not declaration order. Adding a CLI means ONE entry in
+  `AIAssistants.BUILTIN` plus (if it speaks MCP) one `McpAttachTarget` — everything else (menus,
+  detection, onboarding, settings, remote/share menus) reads the registry. `AttachTargetCoverageTest`
+  fails the build if the two registries drift apart
+- **Local Models**: Ollama lives in its own `LOCAL_MODEL_RUNTIME` category — it serves models rather
+  than acting as an agent, so it has no auto-mode flag and no MCP attach target
 - **Boss Calling**: voice-call the session's AI agent — the status-strip pill (in-app) or the share
   viewer's bottom bar (remote). "Boss Calling" is the FEATURE and is fixed; the in-app button's
   label is `TabbedTerminal(callLabel = …)` — null renders "Call BossTerm", BossConsole passes

@@ -17,6 +17,7 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import ai.rever.bossterm.compose.TabbedTerminal
 import ai.rever.bossterm.compose.rememberTabbedTerminalState
+import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.cli.CLIInstallDialog
 import ai.rever.bossterm.compose.cli.CLIInstaller
 import ai.rever.bossterm.compose.mcp.BossTermMcpConfig
@@ -553,23 +554,37 @@ fun main(args: Array<String>) {
                         }
 
                         Menu("Tools", mnemonic = 'T') {
-                            // AI Assistants submenu
+                            // AI Assistants submenu, built from the registry in open-source-first
+                            // order — a new entry in AIAssistants.BUILTIN shows up here with no
+                            // change to this file. The license suffix keeps the openness claim
+                            // verifiable at the point of choice rather than buried in settings.
                             Menu("AI Assistants") {
+                                AIAssistants.AI_ASSISTANTS_OSS_FIRST.forEach { assistant ->
+                                    val suffix = assistant.license.takeIf { it.isNotBlank() }
+                                        ?.let { " — $it" }
+                                        .orEmpty()
+                                    Item(
+                                        assistant.displayName + suffix,
+                                        onClick = {
+                                            window.menuActions.onLaunchAssistant?.invoke(assistant.id)
+                                        }
+                                    )
+                                }
+                            }
+                            // Local model runtimes: run an open-weight model, or start the server
+                            // the assistants above can be pointed at for a fully offline stack.
+                            Menu("Local Models") {
                                 Item(
-                                    "Claude Code",
-                                    onClick = { window.menuActions.onLaunchClaudeCode?.invoke() }
+                                    "Run a Model…",
+                                    onClick = { window.menuActions.onRunLocalModel?.invoke(null) }
                                 )
                                 Item(
-                                    "Gemini CLI",
-                                    onClick = { window.menuActions.onLaunchGemini?.invoke() }
+                                    "Installed Models",
+                                    onClick = { window.menuActions.onListLocalModels?.invoke() }
                                 )
                                 Item(
-                                    "Codex",
-                                    onClick = { window.menuActions.onLaunchCodex?.invoke() }
-                                )
-                                Item(
-                                    "OpenCode",
-                                    onClick = { window.menuActions.onLaunchOpenCode?.invoke() }
+                                    "Start Ollama Server",
+                                    onClick = { window.menuActions.onStartLocalModelServer?.invoke() }
                                 )
                             }
                             // MCP server submenu — quick toggle plus deep-link into settings.

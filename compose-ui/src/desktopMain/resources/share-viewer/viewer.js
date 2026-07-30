@@ -135,12 +135,22 @@
   // a Turn on/off + Attach▸ menu relayed to the host. attached = McpAttachTarget persistence keys.
   var mcp = null;
   var mcpPillEl = document.getElementById("mcppill");
-  // Attach targets mirror the host's McpAttachTarget enum (persistenceKey → label).
+  // Attach targets mirror the host's McpAttachTarget enum (persistenceKey → label), in the same
+  // open-source-first order the host renders (McpAttachTarget.ossFirst). This list is a static
+  // web asset, so it can only be kept in sync by hand — AttachTargetCoverageTest asserts the host
+  // side stays total, and the host ignores a key it doesn't know.
   var MCP_TARGETS = [
-    { key: "CLAUDE_CODE", label: "Claude Code" },
+    // Open client + open/local models, alphabetical
+    { key: "HERMES", label: "Hermes Agent" },
+    { key: "KIMI_CODE", label: "Kimi Code CLI" },
+    { key: "OPENCLAW", label: "OpenClaw" },
+    { key: "OPENCODE", label: "OpenCode" },
+    // Open client, vendor models
     { key: "CODEX", label: "Codex" },
     { key: "GEMINI", label: "Gemini CLI" },
-    { key: "OPENCODE", label: "OpenCode" },
+    { key: "GROK", label: "Grok Build" },
+    // Proprietary
+    { key: "CLAUDE_CODE", label: "Claude Code" },
   ];
   function updateMcpPill() {
     if (!mcp) { mcpPillEl.style.display = "none"; return; }
@@ -1261,11 +1271,18 @@
   }
   // AI assistants mirrored from the host menu (Tools ▸ AI). Launching one runs the
   // host's configured command for that assistant in the clicked pane (control only).
+  // Open-source-first, matching the host's AIAssistants.AI_ASSISTANTS_OSS_FIRST order. The host
+  // resolves each id to ITS configured command + auto-mode flag, so an id the host doesn't have
+  // installed simply opens its install path there.
   var AI_ASSISTANTS = [
-    { id: "claude-code", label: "Claude Code" },
+    { id: "hermes", label: "Hermes Agent" },
+    { id: "kimi-code", label: "Kimi Code CLI" },
+    { id: "openclaw", label: "OpenClaw" },
+    { id: "opencode", label: "OpenCode" },
     { id: "codex", label: "Codex" },
     { id: "gemini-cli", label: "Gemini CLI" },
-    { id: "opencode", label: "OpenCode" }
+    { id: "grok-build", label: "Grok Build" },
+    { id: "claude-code", label: "Claude Code" }
   ];
   // Tab accent presets — same names/colors as the host chip menu's Color ▸ submenu.
   var TAB_COLORS = [

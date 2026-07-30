@@ -1,23 +1,37 @@
 package ai.rever.bossterm.compose.ai
 
-import kotlinx.coroutines.*
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.slf4j.LoggerFactory
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Detects which AI coding assistants are installed on the system.
+ * Detects which AI coding assistants (and the other registered CLI tools) are installed.
  *
  * Detection is performed on-demand when the context menu opens, not via polling.
  *
- * Detection strategy (in order):
- * 1. Direct path check in common locations
- * 2. `which` command
- * 3. Shell-sourced `which` (to pick up PATH modifications from .bashrc/.zshrc)
+ * Two passes, in order:
+ *  1. **Filesystem only, no subprocesses** — each tool's [AIAssistantDefinition.extraDetectPaths],
+ *     then the inherited `PATH`, then a short list of common install dirs, then nvm's versioned
+ *     node bin dirs.
+ *  2. **One** login-shell lookup for everything pass 1 missed, so tools installed behind a PATH
+ *     export in the user's profile (nvm, asdf, custom prefixes) are still found.
+ *
+ * Pass 2 is deliberately a single batched spawn. The previous implementation ran `which <cmd>` and
+ * then `$SHELL -l -c 'which <cmd>'` *per tool*: with the registry at 20+ tools that was up to ~40
+ * processes per sweep, each with its own 5s timeout, all on [Dispatchers.IO] — the dispatcher the
+ * terminal's shell sessions also compete for. Adding the open-source CLIs made that fan-out worse,
+ * so the shell-outs are collapsed into one `command -v` loop.
  */
 class AIAssistantDetector {
+
+    private val log = LoggerFactory.getLogger(AIAssistantDetector::class.java)
 
     private val _installationStatus = MutableStateFlow<Map<String, Boolean>>(emptyMap())
 
@@ -49,193 +63,169 @@ class AIAssistantDetector {
         return installationStatus.value[assistantId] == false
     }
 
-    private val home = System.getProperty("user.home")
+    private val home = System.getProperty("user.home").orEmpty()
 
     /**
-     * Detect installation status for all registered AI assistants.
+     * Detect installation status for all registered tools.
      *
      * @return Map of assistant ID to installation status
      */
     suspend fun detectAll(): Map<String, Boolean> = withContext(Dispatchers.IO) {
-        val results = AIAssistants.ALL.associate { assistant ->
-            assistant.id to detectSingle(assistant)
+        val definitions = AIAssistants.ALL
+        val foundOnDisk = definitions.associate { it.id to existsOnDisk(it) }
+
+        // Only the misses need the (single) shell probe.
+        val unresolved = definitions
+            .filter { foundOnDisk[it.id] != true }
+            .map { it.command }
+            .distinct()
+        val onShellPath = lookupInLoginShell(unresolved)
+
+        val results = definitions.associate { definition ->
+            definition.id to (foundOnDisk[definition.id] == true || definition.command in onShellPath)
         }
         _installationStatus.value = results
         results
     }
 
     /**
-     * Detect if a single AI assistant is installed.
+     * Detect if a single tool is installed. Does not publish to [installationStatus] — callers that
+     * want the cached map should use [detectAll].
      *
      * @param assistant The assistant to check
      * @return true if installed, false otherwise
      */
     suspend fun detectSingle(assistant: AIAssistantDefinition): Boolean = withContext(Dispatchers.IO) {
-        checkInstallation(assistant.id, assistant.command)
+        existsOnDisk(assistant) || assistant.command in lookupInLoginShell(listOf(assistant.command))
     }
 
     /**
-     * Check if a command is installed using multiple detection strategies.
-     *
-     * @param assistantId The assistant ID for assistant-specific path checks
-     * @param command The command name to check
-     * @return true if the command is found, false otherwise
+     * Filesystem-only lookup for [assistant]'s command. No subprocesses, so this is safe to run for
+     * every registered tool on every sweep.
      */
-    private fun checkInstallation(assistantId: String, command: String): Boolean {
-        // Strategy 1: Check assistant-specific installation paths
-        val specificPaths = getAssistantSpecificPaths(assistantId, command)
-        for (path in specificPaths) {
-            val file = File(path)
-            if (file.exists() && file.canExecute()) {
-                return true
-            }
+    private fun existsOnDisk(assistant: AIAssistantDefinition): Boolean {
+        // 1. Locations the definition declares for itself.
+        for (path in assistant.resolvedDetectPaths(home)) {
+            if (isExecutableFile(File(path))) return true
         }
 
-        // Strategy 2: Check common paths directly
-        val commonPaths = listOf(
+        // 2. The inherited PATH — what a plain spawn would search anyway. Cheaper and more
+        //    reliable than shelling out to `which`, and it works on Windows where `which` doesn't.
+        val pathDirs = System.getenv("PATH").orEmpty()
+            .split(File.pathSeparatorChar)
+            .filter { it.isNotBlank() }
+        for (dir in pathDirs) {
+            if (foundIn(File(dir), assistant.command)) return true
+        }
+
+        // 3. Common install dirs a GUI-launched app's bare PATH misses.
+        val commonDirs = listOf(
             "/usr/local/bin",
             "/usr/bin",
             "/opt/homebrew/bin",
             "$home/.local/bin",
             "$home/.npm-global/bin"
         )
-        for (path in commonPaths) {
-            val file = File(path, command)
-            if (file.exists() && file.canExecute()) {
-                return true
-            }
+        for (dir in commonDirs) {
+            if (foundIn(File(dir), assistant.command)) return true
         }
 
-        // Strategy 3: Check npm paths with nvm glob pattern support
+        // 4. nvm keeps one bin dir per installed node version.
         val nvmBase = File("$home/.nvm/versions/node")
-        if (nvmBase.exists() && nvmBase.isDirectory) {
-            nvmBase.listFiles()?.forEach { dir ->
-                if (dir.isDirectory) {
-                    val binPath = File(dir, "bin/$command")
-                    if (binPath.exists() && binPath.canExecute()) {
-                        return true
-                    }
+        if (nvmBase.isDirectory) {
+            nvmBase.listFiles()?.forEach { versionDir ->
+                if (versionDir.isDirectory && foundIn(File(versionDir, "bin"), assistant.command)) {
+                    return true
                 }
             }
-        }
-
-        // Strategy 4: Use `which` command
-        if (runCommand("which", command)) {
-            return true
-        }
-
-        // Strategy 5: Shell-sourced which (picks up PATH from shell config)
-        val shell = System.getenv("SHELL") ?: "/bin/bash"
-        if (runCommand(shell, "-l", "-c", "which $command")) {
-            return true
         }
 
         return false
     }
 
     /**
-     * Get assistant-specific installation paths.
+     * True when [command] resolves to an executable inside [dir]. On Windows the bare name is
+     * almost never the real file, so the usual PATHEXT suffixes are tried too.
      */
-    private fun getAssistantSpecificPaths(assistantId: String, command: String): List<String> {
-        return when (assistantId) {
-            "opencode" -> listOf(
-                "$home/.opencode/bin/opencode",
-                "$home/.local/bin/opencode",
-                "/usr/local/bin/opencode"
-            )
-            "claude-code" -> listOf(
-                "$home/.claude/local/claude",
-                "$home/.local/bin/claude",
-                "/usr/local/bin/claude"
-            )
-            "codex" -> listOf(
-                "$home/.local/bin/codex",
-                "/usr/local/bin/codex"
-            )
-            "gemini-cli" -> listOf(
-                "$home/.local/bin/gemini",
-                "/usr/local/bin/gemini"
-            )
-            "gh" -> listOf(
-                "/usr/bin/gh",
-                "/usr/local/bin/gh",
-                "/opt/homebrew/bin/gh",
-                "$home/.local/bin/gh"
-            )
-            "git" -> listOf(
-                "/usr/bin/git",
-                "/usr/local/bin/git",
-                "/opt/homebrew/bin/git"
-            )
-            "starship" -> listOf(
-                "/usr/bin/starship",
-                "/usr/local/bin/starship",
-                "/opt/homebrew/bin/starship",
-                "$home/.cargo/bin/starship"  // Cargo install location
-            )
-            "brew" -> listOf(
-                "/opt/homebrew/bin/brew",      // M1/M2 macOS
-                "/usr/local/bin/brew",          // Intel macOS
-                "/home/linuxbrew/.linuxbrew/bin/brew"  // Linux
-            )
-            "docker" -> listOf(
-                "/usr/local/bin/docker",
-                "/usr/bin/docker",
-                "/Applications/Docker.app/Contents/Resources/bin/docker"  // macOS Docker Desktop
-            )
-            "kubectl" -> listOf(
-                "/usr/local/bin/kubectl",
-                "/usr/bin/kubectl",
-                "$home/.local/bin/kubectl"
-            )
-            "rustc", "cargo" -> listOf(
-                "$home/.cargo/bin/rustc",
-                "$home/.cargo/bin/cargo"
-            )
-            "tmux" -> listOf(
-                "/usr/local/bin/tmux",
-                "/usr/bin/tmux",
-                "/opt/homebrew/bin/tmux"
-            )
-            "fzf" -> listOf(
-                "/usr/local/bin/fzf",
-                "/usr/bin/fzf",
-                "/opt/homebrew/bin/fzf",
-                "$home/.local/bin/fzf",
-                "$home/.fzf/bin/fzf"
-            )
-            else -> emptyList()
+    private fun foundIn(dir: File, command: String): Boolean {
+        if (isExecutableFile(File(dir, command))) return true
+        if (!ShellCustomizationUtils.isWindows()) return false
+        return WINDOWS_EXECUTABLE_SUFFIXES.any { isExecutableFile(File(dir, command + it)) }
+    }
+
+    private fun isExecutableFile(file: File): Boolean = file.isFile && file.canExecute()
+
+    /**
+     * Ask the user's login shell which of [commands] it can resolve, in a single spawn.
+     *
+     * Login (not interactive) mode: profile files carry the PATH exports we need without the
+     * prompt/rc machinery that can hang a headless spawn. Returns the subset that resolved; any
+     * failure or timeout returns an empty set, so detection degrades to the filesystem passes.
+     *
+     * The probe body is POSIX (`command -v x >/dev/null 2>&1 && echo x || true`), which covers
+     * sh/bash/zsh/fish. A csh/tcsh login shell can't parse it and returns nothing, so those users
+     * get the filesystem passes only — acceptable, since a tool in one of the declared or common
+     * install dirs is still found, and csh as a login shell is vanishingly rare.
+     */
+    private fun lookupInLoginShell(commands: List<String>): Set<String> {
+        if (commands.isEmpty()) return emptySet()
+        // GUI apps on Windows inherit the full user PATH from the registry, so pass 1 already
+        // covers it — and there is no login shell to ask.
+        if (ShellCustomizationUtils.isWindows()) return emptySet()
+
+        // The names come from the registry, but a custom assistant can contribute one, so refuse
+        // anything that isn't a plain command name rather than interpolating it into a script.
+        val safe = commands.filter { name ->
+            name.isNotEmpty() && name.all { it.isLetterOrDigit() || it in "._-" }
+        }
+        if (safe.isEmpty()) return emptySet()
+
+        val shell = System.getenv("SHELL")?.takeIf { it.isNotBlank() } ?: "/bin/sh"
+        // Echo the name of each command the shell can resolve, nothing for the rest. `|| true`
+        // keeps a miss from tripping any `set -e` inherited from the profile.
+        val script = safe.joinToString("; ") { name ->
+            "command -v $name >/dev/null 2>&1 && echo $name || true"
+        }
+        return try {
+            val process = ProcessBuilder(shell, "-l", "-c", script)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .start()
+            process.outputStream.close()
+            // Drain stdout on a daemon thread while waiting: a profile that echoes an MOTD larger
+            // than the OS pipe buffer would otherwise block the child on write until the timeout.
+            val output = AtomicReference("")
+            val drainer = Thread {
+                try {
+                    output.set(process.inputStream.bufferedReader().readText())
+                } catch (_: Throwable) {
+                    // ignore: output stays empty
+                }
+            }.apply {
+                isDaemon = true
+                name = "ai-detector-probe-drain"
+                start()
+            }
+            if (!process.waitFor(LOGIN_SHELL_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                log.warn("Login-shell tool probe timed out after {}s", LOGIN_SHELL_TIMEOUT_SECONDS)
+                return emptySet()
+            }
+            drainer.join(1_000)
+            val resolved = safe.toSet()
+            output.get().lineSequence().map { it.trim() }.filter { it in resolved }.toSet()
+        } catch (t: Throwable) {
+            log.debug("Login-shell tool probe failed: {}", t.message)
+            emptySet()
         }
     }
 
-    /**
-     * Run a command and check if it exits successfully.
-     *
-     * @param args Command and arguments
-     * @return true if command exits with code 0, false otherwise
-     */
-    private fun runCommand(vararg args: String): Boolean {
-        val process: Process
-        try {
-            process = ProcessBuilder(*args)
-                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                .redirectError(ProcessBuilder.Redirect.DISCARD)
-                .start()
-        } catch (e: Exception) {
-            return false
-        }
+    private companion object {
+        /**
+         * 10s for the whole batch. The old code allowed 5s *per tool* across two spawns each; one
+         * login shell that has already paid its profile cost resolves the rest almost free.
+         */
+        const val LOGIN_SHELL_TIMEOUT_SECONDS = 10L
 
-        // Process started successfully - ensure cleanup in all cases
-        return try {
-            val completed = process.waitFor(5, TimeUnit.SECONDS)
-            completed && process.exitValue() == 0
-        } catch (e: Exception) {
-            false
-        } finally {
-            // Ensure process is terminated
-            if (process.isAlive) {
-                process.destroyForcibly()
-            }
-        }
+        val WINDOWS_EXECUTABLE_SUFFIXES = listOf(".exe", ".cmd", ".bat", ".com", ".ps1")
     }
 }

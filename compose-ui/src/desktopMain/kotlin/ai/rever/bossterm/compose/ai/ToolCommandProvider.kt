@@ -21,22 +21,35 @@ class ToolCommandProvider {
         assistant: AIAssistantDefinition,
         config: AIAssistantConfigData? = null
     ): String {
-        return "${buildLaunchCommand(assistant, config)}\n"
+        return "${launchCommandText(assistant, config)}\n"
     }
 
     /**
-     * Build the launch command with YOLO flag if enabled.
+     * The launch command as text, without the trailing newline that submits it.
+     *
+     * Public because "what would launching this look like?" is needed in places that aren't writing
+     * to the PTY right now — notably the install wizard's `commandToRunAfter`, which used to pass
+     * the bare `assistant.command` and so ran `openclaw` (prints help) instead of `openclaw tui`
+     * after installing. One implementation, so those can't drift.
      */
-    private fun buildLaunchCommand(assistant: AIAssistantDefinition, config: AIAssistantConfigData?): String {
-        val baseCommand = config?.customCommand?.takeIf { it.isNotBlank() } ?: assistant.command
+    fun launchCommandText(assistant: AIAssistantDefinition, config: AIAssistantConfigData?): String {
+        // A custom command replaces the binary AND its subcommand — the user is specifying the
+        // whole invocation at that point, so launchArgs would be second-guessing them.
+        val custom = config?.customCommand?.takeIf { it.isNotBlank() }
+        val baseCommand = custom
+            ?: listOf(assistant.command, assistant.launchArgs)
+                .filter { it.isNotBlank() }
+                .joinToString(" ")
         val yoloFlag = config?.customYoloFlag?.takeIf { it.isNotBlank() } ?: assistant.yoloFlag
         val yoloEnabled = config?.yoloEnabled ?: true  // Default to YOLO mode enabled
 
-        return if (yoloEnabled && yoloFlag.isNotBlank()) {
-            "$baseCommand $yoloFlag"
-        } else {
-            baseCommand
-        }
+        if (!yoloEnabled) return baseCommand
+
+        // A CLI enables auto mode with a flag, an env var, or (in principle) both. The env prefix
+        // exists because OpenCode's TUI has no auto-approve argument at all — see its registry
+        // entry. Order matters: `VAR='…' cmd --flag`.
+        val withFlag = if (yoloFlag.isNotBlank()) "$baseCommand $yoloFlag" else baseCommand
+        return if (assistant.yoloEnv.isNotBlank()) "${assistant.yoloEnv} $withFlag" else withFlag
     }
 
     /**
@@ -44,8 +57,9 @@ class ToolCommandProvider {
      * Uses native script when available, otherwise npm with auto Node.js installation.
      */
     fun getInstallCommand(assistant: AIAssistantDefinition): String {
-        // If native script is available (curl | bash), use it
-        if (assistant.installCommand.startsWith("curl")) {
+        // Prefer the tool's own installer when it ships one. Keyed off the declared InstallKind
+        // rather than sniffing for a "curl" prefix — the string only looked reliable.
+        if (assistant.installKind == InstallKind.SHELL_SCRIPT && !ShellCustomizationUtils.isWindows()) {
             return "${assistant.installCommand}\n"
         }
         // If no npm package defined (VCS tools like git/gh), use installCommand directly
@@ -395,6 +409,22 @@ echo "Run 'source ${"$"}HOME/.cargo/env' to update your current shell"
                 ShellCustomizationUtils.isMacOS() -> "brew install fzf"
                 ShellCustomizationUtils.isWindows() -> "winget install junegunn.fzf --accept-source-agreements --accept-package-agreements"
                 else -> getLinuxInstallCommand("fzf", "fzf", "fzf")
+            }
+        }
+
+        /**
+         * Get platform-aware install command for Ollama.
+         *
+         * macOS gets the cask (it ships a menu-bar app plus the `ollama` binary); Linux uses the
+         * official installer script, which also registers the systemd service. No sudo wrapper is
+         * needed on either — the script prompts for its own when it needs one.
+         */
+        fun getOllamaInstallCommand(): String {
+            return when {
+                ShellCustomizationUtils.isMacOS() -> "brew install --cask ollama"
+                ShellCustomizationUtils.isWindows() ->
+                    "winget install Ollama.Ollama --accept-source-agreements --accept-package-agreements"
+                else -> "curl -fsSL https://ollama.com/install.sh | sh"
             }
         }
 

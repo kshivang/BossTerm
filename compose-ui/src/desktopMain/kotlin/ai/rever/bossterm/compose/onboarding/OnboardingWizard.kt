@@ -24,7 +24,10 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
+import ai.rever.bossterm.compose.ai.AIAssistantDetector
 import ai.rever.bossterm.compose.ai.AIAssistantIds
+import ai.rever.bossterm.compose.ai.AIAssistants
+import ai.rever.bossterm.compose.ai.ResolvedInstall
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -138,7 +141,7 @@ data class OnboardingSelections(
     val shellCustomization: ShellCustomizationChoice = ShellCustomizationChoice.STARSHIP,
     val installGit: Boolean = true,
     val installGitHubCLI: Boolean = true,
-    val aiAssistants: Set<String> = AIAssistantIds.ALL_AI_ASSISTANTS
+    val aiAssistants: Set<String> = AIAssistants.DEFAULT_ONBOARDING_SELECTION
 )
 
 /**
@@ -165,12 +168,17 @@ data class InstalledTools(
     // Version control
     val git: Boolean = false,
     val gh: Boolean = false,
-    // AI assistants
-    val claudeCode: Boolean = false,
-    val gemini: Boolean = false,
-    val codex: Boolean = false,
-    val opencode: Boolean = false
+    /**
+     * AI assistants, keyed by [ai.rever.bossterm.compose.ai.AIAssistantIds]. A map rather than one
+     * field per CLI: the wizard used to carry four booleans and six `when (id)` blocks that had to
+     * be edited in lockstep for every new assistant, which is exactly how a registered CLI ends up
+     * invisible in onboarding. Populated by iterating the registry, so it can't fall behind.
+     */
+    val aiAssistants: Map<String, Boolean> = emptyMap()
 ) {
+    /** Installed state for [assistantId]; false when detection hasn't seen it. */
+    fun isAiInstalled(assistantId: String): Boolean = aiAssistants[assistantId] == true
+
     val hasAnyShellCustomization: Boolean
         get() = starship || ohMyZsh || prezto || ohMyPosh
 
@@ -621,18 +629,7 @@ private fun hasAnySelection(selections: OnboardingSelections, installed: Install
     }
     if (selections.installGit && !installed.git) return true
     if (selections.installGitHubCLI && !installed.gh) return true
-    if (selections.aiAssistants.isNotEmpty()) {
-        selections.aiAssistants.forEach { id ->
-            val aiInstalled = when (id) {
-                AIAssistantIds.CLAUDE_CODE -> installed.claudeCode
-                AIAssistantIds.GEMINI_CLI -> installed.gemini
-                AIAssistantIds.CODEX -> installed.codex
-                AIAssistantIds.OPENCODE -> installed.opencode
-                else -> true
-            }
-            if (!aiInstalled) return true
-        }
-    }
+    if (selections.aiAssistants.any { !installed.isAiInstalled(it) }) return true
     return false
 }
 
@@ -642,6 +639,14 @@ private fun hasAnySelection(selections: OnboardingSelections, installed: Install
 suspend fun detectInstalledTools(): InstalledTools = withContext(Dispatchers.IO) {
     val isWindows = ShellCustomizationUtils.isWindows()
     val isMac = ShellCustomizationUtils.isMacOS()
+
+    // Every registered tool in ONE pass: AIAssistantDetector does a subprocess-free filesystem
+    // sweep and then a single batched `command -v` for whatever it missed. isCommandInstalled()
+    // below spawns a login shell PER command with a 3s timeout, which is the cost profile this
+    // branch set out to remove — and with the registry now at 9 AI entries it was the dominant
+    // cost of first launch. Shells and package managers aren't registry entries, so they stay.
+    val registryTools = AIAssistantDetector().detectAll()
+    fun installedFromRegistry(id: String): Boolean = registryTools[id] == true
 
     InstalledTools(
         // Unix shells
@@ -661,14 +666,12 @@ suspend fun detectInstalledTools(): InstalledTools = withContext(Dispatchers.IO)
         ohMyZsh = if (!isWindows) ShellCustomizationUtils.isOhMyZshInstalled() else false,
         prezto = if (!isWindows) ShellCustomizationUtils.isPreztoInstalled() else false,
         ohMyPosh = if (isWindows) isCommandInstalled("oh-my-posh") else false,
-        // Version control
-        git = isCommandInstalled("git"),
-        gh = isCommandInstalled("gh"),
-        // AI assistants
-        claudeCode = isCommandInstalled("claude"),
-        gemini = isCommandInstalled("gemini"),
-        codex = isCommandInstalled("codex"),
-        opencode = isCommandInstalled("opencode")
+        // Version control — registry entries, so they come from the same single sweep.
+        git = installedFromRegistry(AIAssistantIds.GIT),
+        gh = installedFromRegistry(AIAssistantIds.GH),
+        // AI assistants + local model runtimes, straight from the registry.
+        aiAssistants = (AIAssistants.AI_ASSISTANTS + AIAssistants.LOCAL_MODEL_RUNTIMES)
+            .associate { it.id to installedFromRegistry(it.id) }
     )
 }
 
@@ -821,24 +824,75 @@ private fun getRestartCommand(): String? {
  * Build the combined installation command for all selected tools.
  * Groups sudo commands together to minimize password prompts.
  *
+ * @param targetOs which platform's branch to emit. Defaults to the running OS; tests pass an
+ *   explicit value so the Windows branch is covered from any host — it previously wasn't reachable
+ *   in tests at all, which is how a `curl … | bash` line ended up in the PowerShell chain.
  * @return The combined installation command, or an error message if building fails
  */
-fun buildInstallCommand(selections: OnboardingSelections, installed: InstalledTools): String {
+fun buildInstallCommand(
+    selections: OnboardingSelections,
+    installed: InstalledTools,
+    targetOs: TargetOs = TargetOs.current()
+): String {
     return try {
-        buildInstallCommandInternal(selections, installed)
+        buildInstallCommandInternal(selections, installed, targetOs)
     } catch (e: Exception) {
         "echo 'Error building installation command: ${e.message?.replace("'", "\\'")}' && exit 1"
     }
 }
 
-private fun buildInstallCommandInternal(selections: OnboardingSelections, installed: InstalledTools): String {
+/** The platform whose install-script branch [buildInstallCommand] should emit. */
+enum class TargetOs {
+    MAC, WINDOWS, LINUX;
+
+    val isMac: Boolean get() = this == MAC
+    val isWindows: Boolean get() = this == WINDOWS
+
+    companion object {
+        fun current(): TargetOs {
+            val osName = (System.getProperty("os.name") ?: "unknown").lowercase()
+            return when {
+                osName.contains("mac") -> MAC
+                osName.contains("windows") -> WINDOWS
+                else -> LINUX
+            }
+        }
+    }
+}
+
+/** Shell variable the Unix script accumulates failed per-CLI installer names into. */
+private const val FAILED_INSTALLS_VAR = "BOSSTERM_FAILED_INSTALLS"
+
+/**
+ * Wrap a single tool's installer so a non-zero exit can't abort the rest of the script.
+ *
+ * The Unix script runs under `set -e`, and the per-CLI installers are emitted before the npm batch
+ * and the PATH post-install step — so without this, one bad installer (a moved URL, a network blip)
+ * leaves a half-configured shell with no PATH fixup and no summary of what actually failed. The name
+ * is recorded in [FAILED_INSTALLS_VAR] and reported at the end.
+ *
+ * Windows is left alone: `&&`-joined PowerShell short-circuits rather than aborting on a failed
+ * exit code, and every AI entry resolves to npm (batched) or winget there anyway, so no per-CLI
+ * script command reaches this path on Windows.
+ */
+private fun nonFatalInstall(displayName: String, command: String, isWindows: Boolean): String {
+    if (isWindows) return command
+    // Single-quoted for the shell; a display name with an apostrophe would otherwise break the line.
+    val safeName = displayName.replace("'", "")
+    return "{ $command; } || $FAILED_INSTALLS_VAR=\"\$$FAILED_INSTALLS_VAR '$safeName'\""
+}
+
+private fun buildInstallCommandInternal(
+    selections: OnboardingSelections,
+    installed: InstalledTools,
+    targetOs: TargetOs
+): String {
     val sudoCommands = mutableListOf<String>()
     val userCommands = mutableListOf<String>()
     val postInstallCommands = mutableListOf<String>()
 
-    val osName = System.getProperty("os.name") ?: "unknown"
-    val isMac = osName.lowercase().contains("mac")
-    val isWindows = osName.lowercase().contains("windows")
+    val isMac = targetOs.isMac
+    val isWindows = targetOs.isWindows
 
     // Helper to get Linux install command
     fun getLinuxInstall(pkg: String): String {
@@ -1036,28 +1090,37 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
         }
     }
 
-    // AI Assistants (npm-based with node check)
-    val aiToInstall = mutableListOf<Pair<String, String>>() // id to npm package
-    selections.aiAssistants.forEach { id ->
-        val aiInstalled = when (id) {
-            AIAssistantIds.CLAUDE_CODE -> installed.claudeCode
-            AIAssistantIds.GEMINI_CLI -> installed.gemini
-            AIAssistantIds.CODEX -> installed.codex
-            AIAssistantIds.OPENCODE -> installed.opencode
-            else -> true
+    // AI Assistants. The install method is declared by the registry ([InstallKind]) rather than
+    // sniffed off the command string, and `resolveInstall` applies the Windows fallback: a
+    // `curl … | bash` installer cannot run in the PowerShell chain this function emits on Windows,
+    // so those entries install from npm there instead.
+    val missingAi = selections.aiAssistants
+        .filterNot { installed.isAiInstalled(it) }
+        .mapNotNull { AIAssistants.findById(it) }
+        .map { it to it.resolveInstall(isWindows) }
+
+    // npm-installable ones batch into a single `npm install -g` so the node check, the ENOTEMPTY
+    // cleanup, and the sudo decision happen once for all of them.
+    val aiToInstall = missingAi.mapNotNull { (assistant, resolved) ->
+        (resolved as? ResolvedInstall.Npm)?.let { assistant.id to it.packageName }
+    }
+
+    // Everything else runs its own installer. Each one is wrapped so a single failing installer
+    // can't abort the script: the whole thing runs under `set -e`, and these land BEFORE the npm
+    // batch and the PATH post-install step, so an unguarded non-zero exit from one CLI used to take
+    // starship's PATH fixup and every later step down with it.
+    missingAi.forEach { (assistant, resolved) ->
+        if (resolved is ResolvedInstall.Command) {
+            userCommands.add(nonFatalInstall(assistant.displayName, resolved.command, isWindows))
         }
-        if (!aiInstalled) {
-            val npmPkg = when (id) {
-                AIAssistantIds.CLAUDE_CODE -> "@anthropic-ai/claude-code"
-                AIAssistantIds.GEMINI_CLI -> "@google/gemini-cli"
-                AIAssistantIds.CODEX -> "@openai/codex"
-                AIAssistantIds.OPENCODE -> "opencode-ai"
-                else -> null
-            }
-            if (npmPkg != null) {
-                aiToInstall.add(id to npmPkg)
-            }
-        }
+    }
+
+    // A CLI with no install path on this platform (Hermes on native Windows: shell-script installer,
+    // no npm package) is reported rather than silently dropped from the selection.
+    missingAi.filter { it.second == null }.forEach { (assistant, _) ->
+        val message = "${assistant.displayName} has no automatic installer for this platform - " +
+            "see ${assistant.websiteUrl}"
+        userCommands.add(if (isWindows) "Write-Host '$message'" else "echo '$message'")
     }
 
     if (aiToInstall.isNotEmpty()) {
@@ -1150,6 +1213,12 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
     // Build final command list
     val allCommands = mutableListOf<String>()
 
+    // Per-CLI installers append to this instead of aborting; reported just before the end.
+    val hasGuardedInstalls = !isWindows && userCommands.any { it.contains(FAILED_INSTALLS_VAR) }
+    if (hasGuardedInstalls) {
+        allCommands.add("$FAILED_INSTALLS_VAR=\"\"")
+    }
+
     // Authenticate sudo upfront for Unix (Starship and other tools internally use sudo)
     // Pre-auth sudo when any step may need it: explicit sudo commands, Starship (creates
     // /usr/local/bin), or mac AI installs (a root-owned npm global prefix → sudo npm).
@@ -1176,6 +1245,18 @@ private fun buildInstallCommandInternal(selections: OnboardingSelections, instal
     // Kill sudo keepalive at the end (after ALL commands)
     if (needsSudo) {
         allCommands.add("kill \$SUDO_KEEPALIVE_PID 2>/dev/null || true")
+    }
+
+    // Report anything that failed without taking the rest of the run down with it. Deliberately
+    // AFTER the sudo-keepalive teardown so the summary is the last thing on screen.
+    if (hasGuardedInstalls) {
+        allCommands.add(
+            "if [ -n \"\$$FAILED_INSTALLS_VAR\" ]; then " +
+                "echo ''; " +
+                "echo \"⚠ These did not install:\$$FAILED_INSTALLS_VAR\"; " +
+                "echo '  Everything else finished. Retry them from Settings ▸ AI Assistants.'; " +
+                "fi"
+        )
     }
 
     // Add completion message

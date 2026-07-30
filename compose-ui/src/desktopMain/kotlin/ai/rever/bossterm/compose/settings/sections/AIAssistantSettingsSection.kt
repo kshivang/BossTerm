@@ -125,7 +125,20 @@ fun AIAssistantSettingsSection(
                 }
             }
 
-            AIAssistants.BUILTIN.forEach { assistant ->
+            // AI assistants + local model runtimes, open-source-first. This used to iterate
+            // BUILTIN, which listed every registered tool — git, brew, docker, kubectl, tmux, fzf —
+            // under "AI Assistants".
+            //
+            // Be aware of what that means: nothing else in the app iterates VCS_TOOLS,
+            // PACKAGE_MANAGERS, CONTAINER_TOOLS, LANGUAGE_RUNTIMES or CLI_UTILITIES, so those tools
+            // now have NO per-tool settings surface at all — this is a deliberate removal, not a
+            // move. A custom command someone already saved for, say, `git` stays in
+            // aiAssistantConfigs and is still honored by ToolCommandProvider and MirrorShare; it
+            // just can't be edited from here any more. If that turns out to matter, the fix is a
+            // second "CLI tools" section rather than putting them back in this list.
+            val configurable = AIAssistants.AI_ASSISTANTS_OSS_FIRST.filter { it.isBuiltIn } +
+                AIAssistants.LOCAL_MODEL_RUNTIMES.filter { it.isBuiltIn }
+            configurable.forEach { assistant ->
                 val isInstalled = installationStatus[assistant.id] ?: false
                 val config = settings.aiAssistantConfigs[assistant.id] ?: AIAssistantConfigData()
 
@@ -296,6 +309,17 @@ private fun AIAssistantConfigCard(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     StatusBadge(isInstalled = isInstalled)
+                    // Provenance next to the name: the license the CLI itself ships under, plus
+                    // whether it can be pointed at local/open-weight models. Both come from the
+                    // registry and are what the open-source-first ordering sorts on.
+                    if (assistant.license.isNotBlank()) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        InfoBadge(text = assistant.license)
+                    }
+                    if (assistant.localModels) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        InfoBadge(text = "Local models")
+                    }
                     if (!assistant.isBuiltIn) {
                         Spacer(modifier = Modifier.width(6.dp))
                         CustomBadge()
@@ -651,6 +675,24 @@ private fun CustomBadge() {
             fontSize = 10.sp,
             fontWeight = FontWeight.Medium,
             color = AccentColor
+        )
+    }
+}
+
+/** Neutral metadata chip — license ("MIT") or capability ("Local models"). */
+@Composable
+private fun InfoBadge(text: String) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(TextMuted.copy(alpha = 0.15f))
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = text,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+            color = TextSecondary
         )
     }
 }

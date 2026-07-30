@@ -488,20 +488,58 @@ endpoint URL stays current across restarts.
 Commands run under the hood (from
 [`McpCliAttacher`](../compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/mcp/McpCliAttacher.kt)):
 
-| CLI         | Command                                                                   |
-|-------------|---------------------------------------------------------------------------|
-| Claude Code | `claude mcp add --scope user --transport sse <name> <url>`                |
-| Codex       | `codex mcp add <name> --url <url>`                                        |
-| Gemini CLI  | `gemini mcp add <name> <url> --transport sse --scope user`                |
-| OpenCode    | Scripted edit of `~/.config/opencode/opencode.json` via a `node -e` shim. |
+Listed in the open-source-first order the UI renders them
+(`McpAttachTarget.ossFirst`): fully-open stacks, then open clients on vendor
+models, then proprietary.
+
+| CLI           | License    | Command                                                                       |
+|---------------|------------|-------------------------------------------------------------------------------|
+| Hermes Agent  | MIT        | `hermes mcp add <name> --url <url>`                                           |
+| Kimi Code CLI | MIT        | In-process merge into `~/.kimi-code/mcp.json` (no scriptable `mcp add`).      |
+| OpenClaw      | MIT        | `openclaw mcp add <name> --url <url> --transport sse` (docs-only, see below)   |
+| OpenCode      | MIT        | In-process merge into `~/.config/opencode/opencode.json` (no scriptable `mcp add`). |
+| Codex         | Apache-2.0 | `codex mcp add <name> --url <url>`                                            |
+| Gemini CLI    | Apache-2.0 | `gemini mcp add <name> <url> --transport sse --scope user`                    |
+| Grok Build    | Apache-2.0 | `grok mcp add <name> --url <url> --type sse`                                  |
+| Claude Code   | —          | `claude mcp add --scope user --transport sse <name> <url>`                    |
 
 `<name>` is the embedder's `BossTermMcpConfig.serverName` (default
 `"bossterm"`) and `<url>` is `http://127.0.0.1:<port>/`.
 
+Two CLIs — OpenCode and Kimi Code — expose no non-interactive `mcp add` at all
+(both configure MCP through a TUI prompt). For those, the config is merged **in
+this process** by `McpConfigFileEditor`: parse, set only the one server key,
+write via a temp file + atomic rename with the original file's permissions
+preserved, leaving everything else in the file untouched.
+
+OpenCode's used to be a `node -e` one-liner instead, justified by "OpenCode ships
+as an npm package, so node is always there". That stopped being true when its
+`curl … | bash` installer became the default install path — a user can now have
+`opencode` without `node` — so both variants are handled the same way. The
+written shapes differ because the CLIs' parsers do: OpenCode wants
+`{type: "remote", url, enabled: true}` under `mcp`, Kimi Code wants
+`{transport: "sse", url}` under `mcpServers` (its schema is a discriminated union
+on `transport`, and a bare `url` would default to `http`, not sse).
+
 If the CLI binary is missing, the shell-out fails, or the operation times
-out (15 s), the corresponding config snippet is dropped onto the clipboard
+out, the corresponding config snippet is dropped onto the clipboard
 instead, and an amber "exit N — config copied to clipboard" status is shown
-under the button. **Codex caveat**: registration succeeds with codex-cli 0.130,
+under the button. The timeout is per target (`McpAttachTarget.timeoutSeconds`):
+15 s by default, 45 s for Hermes, whose `mcp add` is a Python process that
+performs live tool discovery against the URL before it returns.
+
+**Grok caveat**: `grok mcp add` does not validate `--type` at write time — a
+wrong transport is accepted into `config.toml` and only fails when the CLI
+tries to connect. `grok mcp doctor` diagnoses that.
+
+**OpenClaw caveat**: its `mcp` subcommand is newer than some installed builds
+(2026.3.13 has none; npm latest is 2026.7.1-2), so the shell-out is expected to
+fail on older installs and drop the config snippet on the clipboard instead. Its
+servers also nest one level deeper than every other CLI —
+`mcp.servers.<name>` in `~/.openclaw/openclaw.json` — which is why
+`jsonLoopbackUrl` walks a container *path* rather than a single key. Watch out
+when probing OpenClaw: `openclaw <unknown> --help` prints top-level help and
+exits **0**, so an exit code alone never proves a subcommand exists. **Codex caveat**: registration succeeds with codex-cli 0.130,
 but Codex currently speaks streamable HTTP only, so the runtime connection
 will fail against the SSE endpoint until BossTerm's MCP SDK is upgraded.
 

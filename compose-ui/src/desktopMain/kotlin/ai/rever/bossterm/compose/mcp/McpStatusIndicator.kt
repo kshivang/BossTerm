@@ -190,7 +190,7 @@ internal fun buildIndicatorMenuItems(
     onTurnOnRequest: () -> Unit
 ): List<ContextMenuController.MenuElement> {
     val attachSubmenuItems: List<ContextMenuController.MenuElement> =
-        McpAttachTarget.entries.map { target ->
+        McpAttachTarget.ossFirst.map { target ->
             val prefix = if (target in attached) "✓ " else ""
             ContextMenuController.MenuItem(
                 id = "mcp_attach_${target.name}",
@@ -285,7 +285,7 @@ private fun McpStatusTooltip(
                 color = McpToastTextColor,
                 fontSize = 11.sp
             )
-            McpAttachTarget.entries.filter { it in attached }.forEach { target ->
+            McpAttachTarget.ossFirst.filter { it in attached }.forEach { target ->
                 Text(
                     text = "  ✓ ${target.displayName}",
                     color = McpToastSuccessColor,

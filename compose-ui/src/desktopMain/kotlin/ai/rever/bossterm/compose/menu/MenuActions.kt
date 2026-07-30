@@ -41,10 +41,30 @@ class MenuActions {
     var onClosePane: (() -> Unit)? = null
 
     // Tools menu actions - AI Assistants
-    var onLaunchClaudeCode: (() -> Unit)? = null
-    var onLaunchGemini: (() -> Unit)? = null
-    var onLaunchCodex: (() -> Unit)? = null
-    var onLaunchOpenCode: (() -> Unit)? = null
+    /**
+     * Launch (or offer to install) the registered assistant with this id — see
+     * [ai.rever.bossterm.compose.ai.AIAssistantIds]. One hook for every CLI, so the menu is built
+     * by iterating [ai.rever.bossterm.compose.ai.AIAssistants.AI_ASSISTANTS_OSS_FIRST] instead of
+     * needing a new callback (and a new ~20-line wiring block) per CLI.
+     */
+    var onLaunchAssistant: ((assistantId: String) -> Unit)? = null
+
+    /**
+     * Run a local model in the focused pane. A non-null [model] runs it directly; null leaves
+     * `ollama run ` on the command line unterminated so the user can type the model themselves —
+     * enumerating installed models would mean shelling out while the menu is opening.
+     *
+     * The built-in menu only ever passes null (that's the "Run a Model…" item). The parameter is
+     * kept because this is embedder-facing API and "run this specific model" is the obvious
+     * programmatic use — an embedder with its own model picker needs it.
+     */
+    var onRunLocalModel: ((model: String?) -> Unit)? = null
+
+    /** Start the local model server (`ollama serve`) the local-capable assistants can talk to. */
+    var onStartLocalModelServer: (() -> Unit)? = null
+
+    /** List locally installed models (`ollama list`). */
+    var onListLocalModels: (() -> Unit)? = null
 
     // Tools menu actions - Version Control - Git
     var onGitInit: (() -> Unit)? = null

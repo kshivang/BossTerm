@@ -362,7 +362,7 @@ private fun AttachToCliSection(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            McpAttachTarget.entries.forEach { target ->
+            McpAttachTarget.ossFirst.forEach { target ->
                 val isAttached = target in attached
                 Button(
                     onClick = {
@@ -403,7 +403,7 @@ private fun AttachToCliSection(
         //   - Persistent attached state from the process-wide registry
         //     (survives the transient lastResults clear).
         //   - Last-attempt result with detail / clipboard fallback reason.
-        McpAttachTarget.entries.forEach { target ->
+        McpAttachTarget.ossFirst.forEach { target ->
             val isAttached = target in attached
             val result = lastResults[target]
             if (!isAttached && result == null) return@forEach

@@ -61,4 +61,19 @@ class ShareViewerAssetTest {
             assertEquals(digest.take(token.length), token, "stale immutable cache token for $font")
         }
     }
+
+    @Test
+    fun `shared bottom strip wraps mobile controls and centers voice-only state`() {
+        val html = resource("share-viewer/index.html")
+        val rule = checkNotNull(Regex("""#bottomstrip \{([^}]*)}""").find(html)) {
+            "missing #bottomstrip CSS rule"
+        }.groupValues[1]
+
+        assertTrue(rule.contains("flex-wrap: wrap"), "voice controls must not push every key off-screen")
+        assertTrue(rule.contains("justify-content: center"), "a voice-only pill stays centered")
+        assertTrue(
+            html.contains("#bottomstrip.has-keys { justify-content: flex-start; }"),
+            "keystrokes keep a stable left edge when present",
+        )
+    }
 }

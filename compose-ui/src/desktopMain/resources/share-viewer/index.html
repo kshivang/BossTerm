@@ -54,13 +54,15 @@
     #mcppill .dot { width: 7px; height: 7px; border-radius: 50%; background: #6b6b6b; display: inline-block; }
     #mcppill.on .dot { background: #4caf50; }
     /* Boss Calling and the mobile keystrokes share ONE bottom strip. Either group may be
-       present by itself; when both are available they sit beside each other in the same
-       horizontally scrollable row. viewer.js positions and reserves this wrapper once. */
+       present by itself; when both are available they wrap within the same scroller so the
+       first keystrokes stay reachable on narrow phones. viewer.js reserves this wrapper once. */
     #bottomstrip { display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
-                   align-items: center; gap: 8px; padding: 6px 8px; box-sizing: border-box;
+                   align-items: center; flex-wrap: wrap; justify-content: center; gap: 8px;
+                   padding: 6px 8px; box-sizing: border-box;
                    background: #2b2b2b; border-top: 1px solid #404040;
                    overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
     #bottomstrip.on { display: flex; }
+    #bottomstrip.has-keys { justify-content: flex-start; }
     #voicebar { display: none; flex: 0 0 auto; align-items: center; justify-content: center; }
     #voicebar.on { display: flex; }
     #voicecallbtn { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
@@ -127,7 +129,7 @@
              overflow: auto; -webkit-overflow-scrolling: touch; }
 
     /* on-screen key group (mobile): Esc / Tab / Ctrl-combos / arrows. #bottomstrip
-       owns fixed positioning and scrolling so voice and keys can never form two rows. */
+       owns fixed positioning and scrolling so voice and keys never become separate strips. */
     #keybar { display: none; flex: 0 0 auto; align-items: center; gap: 6px; }
     /* divs (not buttons) so tapping never blurs the terminal textarea / drops the iOS
        keyboard; flex-centered since divs don't center text like a <button>. */

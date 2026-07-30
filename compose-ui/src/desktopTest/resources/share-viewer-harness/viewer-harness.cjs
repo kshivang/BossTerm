@@ -992,23 +992,37 @@ const scenarios = {
 
     socket.deliver({ t: "control", granted: true });
     assert.ok(strip.classList.contains("on"), "keystrokes alone show the shared strip");
+    assert.ok(strip.classList.contains("has-keys"), "control state marks the strip as key-bearing");
     assert.strictEqual(el("keybar").style.display, "flex");
 
+    // Visibility follows controlGranted, not the exact spelling of an inline display value.
+    el("keybar").style.display = "inline-flex";
+    socket.deliver({ t: "voiceStatus", available: false });
+    assert.ok(strip.classList.contains("on"), "keystrokes keep the strip visible for any flex display");
+
+    // A narrow phone wraps voice and keys inside this ONE wrapper; reserve its measured height once.
+    strip.offsetHeight = 104;
     socket.deliver({ t: "voiceStatus", available: true });
     assert.ok(el("voicebar").classList.contains("on"), "voice joins the same strip");
     assert.ok(strip.classList.contains("on"));
-    assert.strictEqual(el("body").style.paddingBottom, "52px", "reserve the shared row once");
+    assert.strictEqual(el("body").style.paddingBottom, "104px", "reserve the wrapped shared strip once");
     assert.strictEqual(el("voicebar").style.bottom, undefined, "voice is not a separately positioned row");
     assert.strictEqual(el("keybar").style.bottom, undefined, "keys are not a separately positioned row");
 
     viewport.height = 480;
     viewportListeners.resize();
     assert.strictEqual(strip.style.bottom, "300px", "the one strip rides the keyboard edge");
-    assert.strictEqual(el("body").style.paddingBottom, "52px", "keyboard-open layout still reserves one row");
+    assert.strictEqual(el("body").style.paddingBottom, "104px", "keyboard-open layout reserves the wrapped strip once");
 
-    socket.deliver({ t: "voiceStatus", available: false });
-    assert.ok(strip.classList.contains("on"), "keystrokes keep the strip visible when voice leaves");
+    // The strip spans y=376..480 after wrapping and riding the 300px keyboard inset.
+    strip.rect = { left: 0, top: 376, width: 390, height: 104, right: 390, bottom: 480 };
+    socket.deliver({ t: "voiceError", code: "rate_limited" });
+    assert.strictEqual(el("voicetoast").style.bottom, "416px", "toast sits above keyboard and strip");
+
     socket.deliver({ t: "control", granted: false });
+    assert.ok(strip.classList.contains("on"), "voice keeps the strip visible when keystrokes leave");
+    assert.ok(!strip.classList.contains("has-keys"), "a voice-only strip returns to centered layout");
+    socket.deliver({ t: "voiceStatus", available: false });
     assert.ok(!strip.classList.contains("on"), "the strip hides when neither group is available");
   },
 

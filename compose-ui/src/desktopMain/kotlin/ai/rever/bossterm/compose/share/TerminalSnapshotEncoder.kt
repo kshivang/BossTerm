@@ -20,8 +20,8 @@ object TerminalSnapshotEncoder {
         cursorX: Int,
         cursorY: Int,
         maxHistoryLines: Int = Int.MAX_VALUE,
-        cursorVisible: Boolean = true,
-        cursorShape: CursorShape? = null,
+        cursorVisible: Boolean,
+        cursorShape: CursorShape?,
     ): String {
         val sb = StringBuilder()
         var row = -snapshot.historyLinesCount.coerceAtMost(maxHistoryLines.coerceAtLeast(0))
@@ -30,13 +30,13 @@ object TerminalSnapshotEncoder {
             if (row < snapshot.height - 1) sb.append("\r\n")
             row++
         }
-        sb.append("[0m") // reset trailing style
+        sb.append("\u001b[0m") // reset trailing style
         appendCursorState(sb, cursorVisible, cursorShape)
         // Park the cursor at its real screen position (1-based row;col) — otherwise the viewer
         // leaves it on the bottom row after the full-height blob (scrollback + screen).
         val cy = cursorY.coerceIn(1, snapshot.height)
         val cx = cursorX.coerceAtLeast(1)
-        sb.append("[$cy;${cx}H")
+        sb.append("\u001b[$cy;${cx}H")
         return sb.toString()
     }
 
@@ -51,8 +51,8 @@ object TerminalSnapshotEncoder {
         snapshot: BufferSnapshot,
         cursorX: Int,
         cursorY: Int,
-        cursorVisible: Boolean = true,
-        cursorShape: CursorShape? = null,
+        cursorVisible: Boolean,
+        cursorShape: CursorShape?,
     ): String {
         val sb = StringBuilder()
         for (row in 0 until snapshot.height) {
@@ -110,7 +110,7 @@ object TerminalSnapshotEncoder {
         if (style.hasOption(TextStyle.Option.HIDDEN)) codes.add("8")
         style.foreground?.let { codes.add(sgrColor(it, fg = true)) }
         style.background?.let { codes.add(sgrColor(it, fg = false)) }
-        return "[" + codes.joinToString(";") + "m"
+        return "\u001b[" + codes.joinToString(";") + "m"
     }
 
     private fun sgrColor(c: TerminalColor, fg: Boolean): String {

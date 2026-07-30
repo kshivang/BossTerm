@@ -23,6 +23,8 @@ class TerminalSnapshotEncoderTest {
             snapshot = snapshot,
             cursorX = 3,
             cursorY = 2,
+            cursorVisible = true,
+            cursorShape = null,
         )
 
         assertEquals(1, snapshot.historyLinesCount)
@@ -66,6 +68,7 @@ class TerminalSnapshotEncoderTest {
                 snapshot = snapshot,
                 cursorX = 1,
                 cursorY = 1,
+                cursorVisible = true,
                 cursorShape = shape,
             )
             assertTrue(

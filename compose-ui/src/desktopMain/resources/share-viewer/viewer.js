@@ -261,13 +261,19 @@
   var voiceAudioEl = null; // hidden <audio> for the agent's voice, created on first call
   var voiceToastTimer = null;
   function syncBottomStrip() {
-    var visible = voiceBarEl.classList.contains("on") || keybarEl.style.display === "flex";
+    var keysVisible = !!controlGranted;
+    bottomStripEl.classList.toggle("has-keys", keysVisible);
+    var visible = voiceBarEl.classList.contains("on") || keysVisible;
     bottomStripEl.classList.toggle("on", visible);
   }
   function toast(text, ms) {
     voiceToastEl.textContent = text;
-    // Sit above the shared bottom strip rather than under it.
-    voiceToastEl.style.bottom = (bottomStripEl.classList.contains("on") ? bottomStripEl.offsetHeight + 12 : 18) + "px";
+    // getBoundingClientRect includes the strip's keyboard offset, unlike offsetHeight alone.
+    var toastBottom = 18;
+    if (bottomStripEl.classList.contains("on")) {
+      toastBottom = Math.max(18, Math.round(window.innerHeight - bottomStripEl.getBoundingClientRect().top + 12));
+    }
+    voiceToastEl.style.bottom = toastBottom + "px";
     voiceToastEl.style.display = "block";
     if (voiceToastTimer) clearTimeout(voiceToastTimer);
     voiceToastTimer = setTimeout(function () { voiceToastEl.style.display = "none"; }, ms || 4000);
@@ -902,8 +908,8 @@
     // run on every event — including output-driven scroll events.
     positionBottomStrip(Math.max(0, Math.round(kbH) - appliedShiftPx));
   }
-  // Voice controls and on-screen keys are one fixed row. Position that row once at the
-  // keyboard edge and reserve its height once so opening the keyboard cannot double-push the UI.
+  // Voice controls and on-screen keys are one fixed strip. Position that wrapper once at the
+  // keyboard edge and reserve its measured height so wrapping cannot double-push the UI.
   function positionBottomStrip(kbBottomPx) {
     bottomStripEl.style.bottom = kbBottomPx + "px";
     var stripH = bottomStripEl.classList.contains("on") ? bottomStripEl.offsetHeight : 0;
@@ -978,8 +984,8 @@
     var sx = 0, sy = 0, moved = false, touched = false;
     // The keys are <div>s, NOT <button>s: a non-focusable element doesn't steal focus from
     // the terminal's hidden textarea on iOS, so the soft keyboard stays up WITHOUT a
-    // touchstart preventDefault — which means a horizontal swipe still scrolls the key bar
-    // natively (overflow-x). A 10px move-guard tells a swipe from a tap.
+    // touchstart preventDefault — which means a horizontal swipe still scrolls the shared bottom
+    // strip natively (overflow-x). A 10px move-guard tells a swipe from a tap.
     b.addEventListener("touchstart", function (e) {
       touched = true; moved = false;
       var t = e.touches[0]; if (t) { sx = t.clientX; sy = t.clientY; }

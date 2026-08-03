@@ -751,4 +751,4 @@ BossTerm has since been completely rewritten from the ground up in Kotlin with C
 
 ---
 
-**Built by [Risa Labs Inc](https://risalabs.ai)**
+**Built by [Risa Labs Inc](https://www.risalabs.ai)**

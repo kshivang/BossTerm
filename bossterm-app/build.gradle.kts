@@ -157,7 +157,7 @@ compose.desktop {
 
             linux {
                 iconFile.set(rootProject.file("BossTerm.png"))
-                debMaintainer = "shivang.risa@gmail.com"
+                debMaintainer = "support@risalabs.ai"
                 menuGroup = "System;TerminalEmulator"
                 appCategory = "Utility"
                 shortcut = true

@@ -76,8 +76,8 @@ jobs:
       - name: Commit Version Bump
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.version_bump != 'none' && github.event.inputs.version_bump != 'patch'
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "Risa Labs"
+          git config user.email "enterprise@risalabs.ai"
 
           if ! git diff --quiet VERSION; then
             git add VERSION
@@ -454,8 +454,8 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: |
           VERSION="${{ needs.prepare-version.outputs.version }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "Risa Labs"
+          git config user.email "enterprise@risalabs.ai"
           # Idempotent so a rerun of a partially-failed release (tag pushed, later
           # step failed) can proceed instead of dying on "tag already exists".
           if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
@@ -609,8 +609,8 @@ jobs:
       - name: Commit and Push
         run: |
           cd homebrew-tap
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "Risa Labs"
+          git config user.email "enterprise@risalabs.ai"
           git add Casks/bossterm.rb
           git commit -m "Update BossTerm to ${{ needs.prepare-version.outputs.version }}"
           git push

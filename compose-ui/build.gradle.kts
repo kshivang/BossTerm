@@ -203,7 +203,7 @@ mavenPublishing {
             developer {
                 id.set("kshivang")
                 name.set("Shivang")
-                email.set("shivang.risa@gmail.com")
+                email.set("enterprise@risalabs.ai")
             }
         }
         scm {

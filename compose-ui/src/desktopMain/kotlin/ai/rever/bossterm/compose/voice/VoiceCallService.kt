@@ -46,7 +46,7 @@ internal class VoiceCallService(
     private val scope: CoroutineScope,
     private val broker: VoiceSessionBroker = VoiceSessionBroker(),
     private val settings: () -> TerminalSettings = { SettingsManager.instance.settings.value },
-    private val loadKey: () -> String? = { VoiceAgentStorage.load()?.openaiApiKey?.takeIf { it.isNotBlank() } },
+    private val loadKey: () -> String? = { VoiceKeySource.resolve() },
     /**
      * Whether a key exists, for [status] only — separate from [loadKey] because status is
      * recomputed on every settings emission per share, and the GUI can answer from the in-process

@@ -15,6 +15,7 @@ import ai.rever.bossterm.compose.voice.VoiceAgentStorage
 import ai.rever.bossterm.compose.voice.RemoteVoiceCalls
 import ai.rever.bossterm.compose.voice.StampCachedValue
 import ai.rever.bossterm.compose.voice.VoiceCallService
+import ai.rever.bossterm.compose.voice.VoiceKeySource
 import ai.rever.bossterm.compose.voice.voiceCallTokenMatches
 import ai.rever.bossterm.compose.window.WindowManager
 import ai.rever.bossterm.terminal.model.TerminalModelListener
@@ -153,7 +154,13 @@ class MirrorShare(
             // round-trip: the same undiagnosable-from-the-far-end failure `reason` exists to stop.
             // Either source saying yes is enough. The flow is instant after an in-process save; the
             // stamp cache catches everything else for two stats.
-            keyPresent = { VoiceAgentStorage.keyPresentFlow.value || keyOnDisk.get() == true },
+            keyPresent = {
+                // Three sources, any one is enough. The embedder's is checked per read because
+                // it has no stamp and moves no flow, so neither cache below can see it change.
+                VoiceKeySource.embedderKeyPresent() ||
+                    VoiceAgentStorage.keyPresentFlow.value ||
+                    keyOnDisk.get() == true
+            },
             // Reads voice.json when its stamp moved. The FLOW answer is free and usually enough;
             // this is the cross-process half — see keyOnDisk.
             sessionName = { sessionName.value },

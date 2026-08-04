@@ -68,6 +68,28 @@ class ThemeDefaultsTest {
         assertEquals(1f, s.cursorFocusedAlpha, "focused cursor should match the opaque browser cursor")
     }
 
+    /**
+     * `colorToHex(theme.backgroundColorValue)` must reproduce `theme.background`
+     * byte for byte.
+     *
+     * The terminal-tab plugin's host-theme bridge identifies a curated builtin by
+     * comparing `colorToHex(hostInk)` against these stored strings, so an
+     * inexact round-trip would not throw — it would just never match, silently
+     * downgrading both BOSS identities to a derived approximation. `colorToHex`
+     * truncates (`(channel * 255).toInt()`), which is exactly where a float
+     * packed by `Color(0xFF……)` could come back one below.
+     */
+    @Test
+    fun `builtin background hex survives a Color round-trip`() {
+        for (theme in BuiltinThemes.ALL) {
+            assertEquals(
+                theme.background,
+                Theme.colorToHex(theme.backgroundColorValue),
+                "${theme.id}: background hex does not survive parse → colorToHex",
+            )
+        }
+    }
+
     private fun assertAnsiMatches(
         t: Theme,
         p: ColorPalette,

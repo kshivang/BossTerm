@@ -59,7 +59,7 @@ object VoiceToolCatalog {
         ),
         VoiceToolDef(
             name = "read_scrollback",
-            description = "Read the last N lines of a tab's terminal buffer — what's on screen plus history.",
+            description = "Read the last N lines of a tab's terminal buffer - what's on screen plus history.",
             parameters = objectSchema {
                 putJsonObject("tab_id") { put("type", "string"); put("description", TAB_ID_DESC) }
                 putJsonObject("lines") {
@@ -110,7 +110,7 @@ object VoiceToolCatalog {
         ),
         VoiceToolDef(
             name = "send_input",
-            description = "Type raw text into a tab's terminal (for interactive programs — TUIs, prompts). " +
+            description = "Type raw text into a tab's terminal (for interactive programs - TUIs, prompts). " +
                     "Include a trailing \\n to submit.",
             parameters = objectSchema(required = listOf("text")) {
                 putJsonObject("text") { put("type", "string"); put("description", "Text to type.") }

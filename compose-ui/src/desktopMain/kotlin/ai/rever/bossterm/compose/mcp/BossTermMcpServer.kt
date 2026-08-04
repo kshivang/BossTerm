@@ -775,7 +775,7 @@ class BossTermMcpServer(
                 "get_last_command",
                 "Return the most recently completed shell command for a tab " +
                         "(as captured via OSC 133), or null if no command has finished yet. " +
-                        "Requires shell integration — see shell-integration.md. " +
+                        "Requires shell integration - see shell-integration.md. " +
                         "Note: `commandText` is currently always null; only `exitCode`, `startedAtMs`, " +
                         "`finishedAtMs`, `durationMs`, and `cwd` are populated. Capturing the typed " +
                         "command text reliably is a follow-up."
@@ -1060,7 +1060,7 @@ class BossTermMcpServer(
                     }
                     putJsonObject("split_ratio") {
                         put("type", "number")
-                        put("description", "Optional split size (0.05..0.95) — fraction of " +
+                        put("description", "Optional split size (0.05..0.95) - fraction of " +
                                 "the parent's dimension the NEW pane gets. Only meaningful " +
                                 "for horizontal_split / vertical_split. Defaults to the " +
                                 "user-configured `mcpDefaultSplitRatio` setting (typically 0.3).")
@@ -1168,7 +1168,7 @@ class BossTermMcpServer(
                         "or in a freshly created pane via `panel`: new_tab / horizontal_split / " +
                         "vertical_split. Aspect ratio is preserved; `width`/`height` accept " +
                         "cells ('80'), pixels ('200px'), or percent ('50%'). Returns " +
-                        "{ ok, tabId, paneId } — the image bytes are NEVER echoed back."
+                        "{ ok, tabId, paneId } - the image bytes are NEVER echoed back."
             ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
@@ -1184,7 +1184,7 @@ class BossTermMcpServer(
                     }
                     putJsonObject("panel") {
                         put("type", "string")
-                        put("description", "Where to render: reuse (default — the active pane), " +
+                        put("description", "Where to render: reuse (default - the active pane), " +
                                 "new_tab, horizontal_split, vertical_split.")
                     }
                     putJsonObject("width") {
@@ -1291,7 +1291,7 @@ class BossTermMcpServer(
                 }
                 if (transcoded == null || transcoded.isEmpty()) {
                     return@addTool errorResult(
-                        "Could not decode image — unsupported format or corrupt data " +
+                        "Could not decode image - unsupported format or corrupt data " +
                             "(supported: PNG, JPEG, GIF, BMP, WebP)."
                     )
                 }
@@ -1510,7 +1510,7 @@ class BossTermMcpServer(
             description = describe(
                 "run_command",
                 "Run a shell command in a visible BossTerm pane and return its stdout/stderr, " +
-                        "exit code, and duration. Reuses the same pane across calls within a tab — " +
+                        "exit code, and duration. Reuses the same pane across calls within a tab - " +
                         "pass back the `pane_id` from a prior call to keep using the same pane. " +
                         "Requires OSC 133 shell integration on the user's shell. For TUIs " +
                         "(vim, less, htop, git commit without -m), returns `error: \"TUI detected\"`; " +
@@ -2134,7 +2134,7 @@ class BossTermMcpServer(
                     putJsonObject("omit_data") {
                         put("type", "boolean")
                         put("description", "If true, each chunk returns only index+timestamp+source " +
-                                "(no `data` payload). Use for cheap polling — `data` is the bulk of " +
+                                "(no `data` payload). Use for cheap polling - `data` is the bulk of " +
                                 "every chunk. Default false.")
                     }
                 },
@@ -2611,7 +2611,7 @@ class BossTermMcpServer(
 
         /** Told to the agent so it rewrites the pattern rather than retrying the same one. */
         const val SEARCH_TIMEOUT_HINT =
-            "the scan hit its time budget — narrow the pattern (avoid nested quantifiers) or search fewer lines"
+            "the scan hit its time budget - narrow the pattern (avoid nested quantifiers) or search fewer lines"
 
         private const val DEFAULT_SCROLLBACK_LINES = 200
         private const val DEFAULT_SEARCH_MAX_MATCHES = 50
@@ -2759,7 +2759,7 @@ class BossTermMcpServer(
                 "built-in shell. Use `run_in_panel` only for fire-and-forget visible actions " +
                 "(long-running dev servers, REPLs). If `run_command` returns " +
                 "`error: \"TUI detected\"`, switch to `send_input` + `read_scrollback` to " +
-                "drive the program — do not retry the same command."
+                "drive the program - do not retry the same command."
     }
 }
 

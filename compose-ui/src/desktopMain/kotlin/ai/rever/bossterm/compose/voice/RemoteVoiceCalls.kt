@@ -64,14 +64,14 @@ internal object RemoteVoiceCalls {
         // Ktor worker. That is the same shape as the dispatcher starvation VoiceAudioIo's KDoc cites.
         val label = sessionName?.takeIf { it.isNotBlank() } ?: "a shared session"
         val message = if (started) {
-            "A viewer started a voice call on \"$label\" — the agent can read and run commands here"
+            "A viewer started a voice call on \"$label\" - the agent can read and run commands here"
         } else {
             "The voice call on \"$label\" ended"
         }
         scope.launch {
             runCatching {
                 NotificationService.showNotification(
-                    title = "BossTerm — Boss Calling",
+                    title = "BossTerm - Boss Calling",
                     message = message,
                     withSound = started,
                 )

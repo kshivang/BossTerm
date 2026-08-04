@@ -346,7 +346,7 @@ fun TabbedTerminal(
                 Text(
                     "All ${TerminalSessionSlots.maxThreads} terminal session threads are in use, " +
                         "so this terminal could not start a shell. Close some terminal tabs or " +
-                        "splits to free threads, then try again — or raise the budget in " +
+                        "splits to free threads, then try again - or raise the budget in " +
                         "Settings → Performance → Sessions."
                 )
             },
@@ -1076,7 +1076,7 @@ fun TabbedTerminal(
             // created when the daemon was unreachable, a split sub-pane, etc.) must NOT silently widen
             // to ALL — that would publish EVERY daemon session when the user asked to share one tab.
             if (isTabScope && sessionId == null) {
-                println("startShare: refusing TAB share of $tabId — no backing daemon session (would widen to ALL)")
+                println("startShare: refusing TAB share of $tabId - no backing daemon session (would widen to ALL)")
                 return
             }
             val kind = if (sessionId != null) ai.rever.bossterm.compose.daemon.DaemonAttachProtocol.ShareScopeKind.SESSION
@@ -2391,7 +2391,7 @@ fun TabbedTerminal(
                             .clickable { session.requestControl() }
                     ) {
                         androidx.compose.material3.Text(
-                            "View only — click to request control",
+                            "View only - click to request control",
                             color = Color(0xFFB0B0B0),
                             fontSize = 11.sp,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
@@ -2412,7 +2412,7 @@ fun TabbedTerminal(
                             }
                     ) {
                         androidx.compose.material3.Text(
-                            "View only — click to request control of ${up.name ?: "the origin"}",
+                            "View only - click to request control of ${up.name ?: "the origin"}",
                             color = Color(0xFFB0B0B0),
                             fontSize = 11.sp,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)

@@ -86,7 +86,7 @@ private const val VIEWER_CALL_LABEL = "Call BossTerm"
  */
 internal fun bossCallingEnableDescription(callLabel: String): String =
     (if (callLabel == VIEWER_CALL_LABEL) {
-        "Show a \"$callLabel\" button — in this window and in the share viewer — "
+        "Show a \"$callLabel\" button - in this window and in the share viewer - "
     } else {
         "Show a \"$callLabel\" button in this window, and a \"$VIEWER_CALL_LABEL\" button in the " +
                 "share viewer, "
@@ -149,12 +149,12 @@ internal fun BossCallingSection(
             label = "Allow calls from share viewers",
             checked = settings.voiceCallShareEnabled,
             onCheckedChange = { onSettingsChange(settings.copy(voiceCallShareEnabled = it)) },
-            description = "Their call is billed to your OpenAI key and you cannot end it from here — " +
+            description = "Their call is billed to your OpenAI key and you cannot end it from here - " +
                     "the audio runs between their browser and OpenAI, so stopping the share cuts the " +
                     "agent's access to this machine but not the session they already started. With " +
                     "that in mind: this lets someone holding a control-share link start a voice call " +
                     "that can run commands here. Turn it off to keep Boss Calling for yourself in " +
-                    "this window only — a different trust boundary from calling your own terminal.",
+                    "this window only - a different trust boundary from calling your own terminal.",
             enabled = settings.voiceCallEnabled,
         )
         if (statusLine) VoiceAvailabilityLine(settings, keyPresentOverride)
@@ -187,8 +187,8 @@ internal fun BossCallingSection(
                 label = "Give the agent every MCP tool",
                 checked = settings.voiceExposeAllTools,
                 onCheckedChange = { onSettingsChange(settings.copy(voiceExposeAllTools = it)) },
-                description = "In-app calls advertise your whole MCP tool surface — the same tools " +
-                        "your editor or CLI agent gets — instead of a curated nine. Share viewers " +
+                description = "In-app calls advertise your whole MCP tool surface - the same tools " +
+                        "your editor or CLI agent gets - instead of a curated nine. Share viewers " +
                         "always keep the curated set: a guest's tool arguments are filtered against " +
                         "it, and that filter is what keeps them inside the shared session.",
             )
@@ -203,7 +203,7 @@ internal fun BossCallingSection(
                 },
                 description = "How readily the agent treats sound as you speaking. Turn this down if " +
                         "a fan, keyboard or background chatter keeps interrupting it. Automatic lets " +
-                        "the model judge when you've finished a thought — better at not cutting you " +
+                        "the model judge when you've finished a thought - better at not cutting you " +
                         "off mid-sentence, but it has no threshold to lower for a noisy room.",
             )
             SettingsDropdown(
@@ -244,7 +244,7 @@ private fun VoiceAgentInstructionsField(value: String, onChange: (String) -> Uni
         Text(text = "Extra instructions for the agent", color = TextPrimary, fontSize = 13.sp)
         Text(
             text = "Added to what the agent already knows about your terminal. Good for what this " +
-                    "machine is FOR — the stack you work in, conventions to follow, things to avoid.",
+                    "machine is FOR - the stack you work in, conventions to follow, things to avoid.",
             color = TextMuted,
             fontSize = 11.sp,
             modifier = Modifier.padding(top = 2.dp)
@@ -266,7 +266,7 @@ private fun VoiceAgentInstructionsField(value: String, onChange: (String) -> Uni
                 ) {
                     if (value.isEmpty()) {
                         Text(
-                            text = "e.g. This is a Kotlin/Compose repo — prefer ./gradlew over raw java.",
+                            text = "e.g. This is a Kotlin/Compose repo - prefer ./gradlew over raw java.",
                             color = TextMuted,
                             fontSize = 13.sp
                         )
@@ -359,12 +359,12 @@ private fun VoiceAvailabilityLine(settings: TerminalSettings, keyPresentOverride
     val inProcessKey by VoiceAgentStorage.keyPresentFlow.collectAsState()
     val keyPresent = keyPresentOverride ?: inProcessKey
     val (text, color) = when {
-        !settings.voiceCallEnabled -> "Off — no calls from this window or from viewers." to TextMuted
+        !settings.voiceCallEnabled -> "Off - no calls from this window or from viewers." to TextMuted
         !settings.voiceCallShareEnabled ->
-            "In-app only — viewers see no $VIEWER_CALL_LABEL button." to TextMuted
-        !keyPresent -> "No API key yet — viewers see no $VIEWER_CALL_LABEL button until you add one below." to Danger
+            "In-app only - viewers see no $VIEWER_CALL_LABEL button." to TextMuted
+        !keyPresent -> "No API key yet - viewers see no $VIEWER_CALL_LABEL button until you add one below." to Danger
         // The viewer shows the button to every device; control is enforced when they click it.
-        else -> "Ready — viewers see the $VIEWER_CALL_LABEL button (calling needs control)." to AccentColor
+        else -> "Ready - viewers see the $VIEWER_CALL_LABEL button (calling needs control)." to AccentColor
     }
     Text(text = text, color = color, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp))
 }
@@ -396,7 +396,7 @@ private fun VoiceApiKeyField(keyPresentOverride: Boolean? = null) {
         Text(text = "OpenAI API key", color = TextPrimary, fontSize = 13.sp)
         Text(
             text = "Used only to mint short-lived call tokens; the key itself never leaves this app. " +
-                    "Stored owner-only in ~/.bossterm/voice.json — never in settings.json." +
+                    "Stored owner-only in ~/.bossterm/voice.json - never in settings.json." +
                     if (keyPresent) " A key is currently set ✓" else "",
             color = TextMuted,
             fontSize = 11.sp,
@@ -448,7 +448,7 @@ private fun VoiceApiKeyField(keyPresentOverride: Boolean? = null) {
                             val saved = withContext(Dispatchers.IO + NonCancellable) {
                                 VoiceAgentStorage.save(StoredVoiceConfig(openaiApiKey = k))
                             }
-                            error = if (saved) null else "Couldn't write ~/.bossterm/voice.json — key not saved."
+                            error = if (saved) null else "Couldn't write ~/.bossterm/voice.json - key not saved."
                             if (saved) input = ""
                         }
                     }

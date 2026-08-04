@@ -46,7 +46,7 @@ class ShareViewerAiListContractTest {
         assertEquals(
             expected,
             literalValues("AI_ASSISTANTS", "id"),
-            "viewer.js AI_ASSISTANTS is out of sync with AIAssistants.AI_ASSISTANTS_OSS_FIRST — " +
+            "viewer.js AI_ASSISTANTS is out of sync with AIAssistants.AI_ASSISTANTS_OSS_FIRST - " +
                 "update the list in compose-ui/src/desktopMain/resources/share-viewer/viewer.js"
         )
     }
@@ -56,7 +56,7 @@ class ShareViewerAiListContractTest {
         assertEquals(
             McpAttachTarget.ossFirst.map { it.persistenceKey },
             literalValues("MCP_TARGETS", "key"),
-            "viewer.js MCP_TARGETS is out of sync with McpAttachTarget.ossFirst — " +
+            "viewer.js MCP_TARGETS is out of sync with McpAttachTarget.ossFirst - " +
                 "update the list in compose-ui/src/desktopMain/resources/share-viewer/viewer.js"
         )
     }

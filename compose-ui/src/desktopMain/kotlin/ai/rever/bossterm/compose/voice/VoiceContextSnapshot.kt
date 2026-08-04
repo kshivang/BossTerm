@@ -63,9 +63,9 @@ internal object VoiceContextSnapshot {
         if (total <= shown) return body
         val hidden = total - shown
         return if (body.isEmpty()) {
-            "- ($hidden more not listed — use list_tabs)"
+            "- ($hidden more not listed - use list_tabs)"
         } else {
-            "$body\n- (…and $hidden more not listed — use list_tabs)"
+            "$body\n- (…and $hidden more not listed - use list_tabs)"
         }
     }
 

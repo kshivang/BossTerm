@@ -111,7 +111,7 @@ internal class VoiceSessionBroker(
                     // asks for. Host-side only — the viewer's message stays generic, since this
                     // can carry account detail and the caller is a remote guest.
                     log.warn(
-                        "Voice session mint failed: HTTP {} (request-id {}) — {}",
+                        "Voice session mint failed: HTTP {} (request-id {}) - {}",
                         resp.status.value,
                         resp.headers["x-request-id"] ?: "none",
                         errorDetail(resp.bodyAsText()),

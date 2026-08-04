@@ -36,7 +36,7 @@ class VoiceCrossLanguageContractTest {
         val short = VoiceToolTimeouts.viewerMs("read_scrollback").toString()
         assertTrue(
             viewerJs.contains("""name === "run_command" ? $long : $short"""),
-            "viewer.js must use the ladder's viewerMs values ($long / $short) — see VoiceToolTimeouts",
+            "viewer.js must use the ladder's viewerMs values ($long / $short) - see VoiceToolTimeouts",
         )
         // And the ordering the ladder promises, checked against what the viewer actually ships.
         assertTrue(
@@ -232,7 +232,7 @@ class VoiceCrossLanguageContractTest {
                 .findAll(viewerJs).map { it.groupValues[1] }.toList()
             assertTrue(
                 assignments.all { it == "Object.create(null)" },
-                "voice.$field must never be a plain {} — a prototype key would drop a call: $assignments",
+                "voice.$field must never be a plain {} - a prototype key would drop a call: $assignments",
             )
         }
         assertTrue(viewerJs.contains("seenCalls: Object.create(null)"), "the initializer too")

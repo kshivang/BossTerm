@@ -107,7 +107,7 @@ class AIAssistantLaunchCommandTest {
         builtinAssistants().forEach { assistant ->
             assertTrue(
                 assistant.yoloFlag.isNotBlank() || assistant.yoloEnv.isNotBlank(),
-                "${assistant.id} has no auto-mode mechanism — every agent needs a flag or an " +
+                "${assistant.id} has no auto-mode mechanism - every agent needs a flag or an " +
                     "env prefix. If the CLI genuinely has neither, find its real mechanism " +
                     "rather than inventing a plausible-looking flag"
             )
@@ -199,7 +199,7 @@ class AIAssistantLaunchCommandTest {
         listOf("--auto-approve", "--auto", "--dangerously-skip-permissions").forEach { rejected ->
             assertFalse(
                 opencode.yoloFlag.contains(rejected),
-                "opencode's TUI rejects '$rejected' — it must not be in the launch command"
+                "opencode's TUI rejects '$rejected' - it must not be in the launch command"
             )
         }
         // Auto mode OFF must drop the env prefix entirely, or it isn't really off.

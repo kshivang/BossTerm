@@ -561,7 +561,7 @@ fun main(args: Array<String>) {
                             Menu("AI Assistants") {
                                 AIAssistants.AI_ASSISTANTS_OSS_FIRST.forEach { assistant ->
                                     val suffix = assistant.license.takeIf { it.isNotBlank() }
-                                        ?.let { " — $it" }
+                                        ?.let { " - $it" }
                                         .orEmpty()
                                     Item(
                                         assistant.displayName + suffix,

@@ -9,7 +9,7 @@
        Both narrower alternatives are worse, because CSP is baked at page load while availability is
        pushed live over the socket:
          - gating on the enable toggle breaks a call started after the host flips it on;
-         - gating on a key existing breaks every page loaded before the key was added — the viewer
+         - gating on a key existing breaks every page loaded before the key was added - the viewer
            then receives voiceStatus available=true, shows the button, and the host mints a real
            (billed) secret before the SDP fetch is blocked, reporting it as a network problem with
            no fix but a reload (and, on a daemon share, a restart).
@@ -17,7 +17,7 @@
        'self' with no unsafe-eval. Audio itself is WebRTC, not connect-src. -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; base-uri 'none'; form-action 'none'; connect-src 'self' __BOSSTERM_WS_ORIGINS__ https://api.openai.com; img-src 'self' data:; font-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
-  <title>BossTerm — shared session</title>
+  <title>BossTerm - shared session</title>
   <!-- xterm.js vendored locally (works fully offline on a LAN). MIT licensed. -->
   <!-- Bundled font notices: fonts/MesloLGSNF-NOTICE.txt and fonts/NotoSansSymbols2-OFL.txt -->
   <link rel="stylesheet" href="vendor/xterm.css" />
@@ -43,13 +43,13 @@
     body { display: flex; flex-direction: column; }
     #bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; height: 30px; flex: 0 0 auto;
            box-sizing: border-box; background: #2b2b2b; border-bottom: 1px solid #404040; font-size: 12px;
-           /* never clip on narrow screens — the whole bar scrolls horizontally */
+           /* never clip on narrow screens - the whole bar scrolls horizontally */
            overflow-x: auto; overflow-y: hidden; white-space: nowrap; scrollbar-width: none;
            -webkit-overflow-scrolling: touch; }
     #bar::-webkit-scrollbar { display: none; }
     #status { width: 8px; height: 8px; border-radius: 50%; background: #888; flex: 0 0 auto; }
     #status.live { background: #4caf50; } #status.down { background: #f44336; }
-    /* host MCP pill — dot color mirrors the host StatusStrip (green=running, gray=off) */
+    /* host MCP pill - dot color mirrors the host StatusStrip (green=running, gray=off) */
     #mcppill { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
     #mcppill .dot { width: 7px; height: 7px; border-radius: 50%; background: #6b6b6b; display: inline-block; }
     #mcppill.on .dot { background: #4caf50; }
@@ -92,7 +92,7 @@
     #voicehang { border-color: #d9534f !important; color: #e88 !important; }
     #voicehang:active { background: #d9534f !important; color: #fff !important; }
     /* transient call status line (tool running / errors), bottom-centered over the stage */
-    /* pointer-events:none — it sits bottom-centre over the stage for 4-6s and every tool call raises
+    /* pointer-events:none - it sits bottom-centre over the stage for 4-6s and every tool call raises
        one, which on a phone is exactly where you tap. It is a notice, never a target. */
     #voicetoast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 18px; z-index: 35;
                   pointer-events: none;
@@ -120,7 +120,7 @@
       #sidebar.show { position: absolute; top: 0; bottom: 0; left: 0; z-index: 20; width: 220px;
                       box-shadow: 2px 0 10px rgba(0,0,0,0.6); transform: translateX(-100%); transition: transform .2s ease; }
       #sidebar.show.open { transform: translateX(0); }
-      /* Vertical swipes on the terminal are handled in JS (term.scrollLines — xterm only
+      /* Vertical swipes on the terminal are handled in JS (term.scrollLines - xterm only
          scrolls from wheel events natively); stop the browser from racing us with a native
          page/stage pan. Horizontal pan (wide grids when zoomed) + pinch-zoom stay native. */
       .termhost { touch-action: pan-x pinch-zoom; }
@@ -170,7 +170,7 @@
               color: #b0b0b0; cursor: pointer; font-size: 13px; text-align: center; }
     .newtab:hover { color: #fff; border-color: #4a90e2; }
 
-    /* tab-bar split buttons (Split L/R, Split T/B) — mirror the host's tab-bar actions */
+    /* tab-bar split buttons (Split L/R, Split T/B) - mirror the host's tab-bar actions */
     .splitbtn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
                 padding: 2px 6px; border-radius: 5px; border: 1px solid #404040; background: #1e1e1e;
                 color: #b0b0b0; cursor: pointer; }
@@ -235,7 +235,7 @@
 </head>
 <body>
   <div id="installbanner" style="display:none">
-    <span class="txt">This session is shared from <b>BossTerm</b> — get the terminal to host and join sessions natively.</span>
+    <span class="txt">This session is shared from <b>BossTerm</b> - get the terminal to host and join sessions natively.</span>
     <a href="https://bossterm.com" target="_blank" rel="noopener">Get BossTerm</a>
     <span class="dismiss" id="installbanner-close" title="Dismiss">×</span>
   </div>
@@ -245,9 +245,9 @@
     <div id="tabbar"></div>
     <!-- Control-centric items first (you act on them): request-control, MCP, zoom/fit. -->
     <span class="badge" id="viewonly">view only</span>
-    <span class="badge" id="mcppill" style="display:none" title="Host MCP — click to manage"><span class="dot"></span>MCP</span>
+    <span class="badge" id="mcppill" style="display:none" title="Host MCP - click to manage"><span class="dot"></span>MCP</span>
     <span id="zoom">
-      <button id="splittabs" title="Show a split tab one pane at a time — switch panes via the sub-tab chips (on by default on phones)">⊞ Panes</button>
+      <button id="splittabs" title="Show a split tab one pane at a time - switch panes via the sub-tab chips (on by default on phones)">⊞ Panes</button>
       <button id="zoomout" title="Zoom out">A&minus;</button>
       <button id="zoomin" title="Zoom in">A+</button>
       <button id="zoomfit" title="Zoom so the terminal's full width fits your view (local only)">Fit view</button>
@@ -256,7 +256,7 @@
     <!-- Information-centric badges last (read-only): viewer count, terminal size, E2E code. -->
     <span class="badge" id="presence"></span>
     <span class="badge" id="dims" title="Host terminal size (columns × rows)"></span>
-    <span class="badge" id="e2e" title="End-to-end encrypted — compare this code with the one in the host's Share dialog" style="display:none"></span>
+    <span class="badge" id="e2e" title="End-to-end encrypted - compare this code with the one in the host's Share dialog" style="display:none"></span>
   </div>
   <div id="body">
     <div id="sidebar"></div>
@@ -290,9 +290,9 @@
 
   <script src="vendor/xterm.js"></script>
   <!-- GPU renderer (vendored @xterm/addon-webgl): smooth scrolling, esp. on phones.
-       Optional — viewer.js falls back to xterm's DOM renderer if it can't load. -->
+       Optional - viewer.js falls back to xterm's DOM renderer if it can't load. -->
   <script src="vendor/addon-webgl.js"></script>
-  <!-- Clickable URLs (vendored @xterm/addon-web-links). Optional — viewer.js no-ops if absent. -->
+  <!-- Clickable URLs (vendored @xterm/addon-web-links). Optional - viewer.js no-ops if absent. -->
   <script src="vendor/addon-web-links.js"></script>
   <script src="viewer-logic.js"></script>
   <script src="viewer.js"></script>

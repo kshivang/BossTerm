@@ -102,7 +102,7 @@ class McpEngineTeardownTest {
 
         assertTrue(
             teardownFinished.get(),
-            "stop() returned before the teardown finished — the embedder's classloader can " +
+            "stop() returned before the teardown finished - the embedder's classloader can " +
                 "close under it"
         )
         assertNull(manager.runningEngine, "engine reference must be cleared by stop()")

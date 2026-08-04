@@ -151,7 +151,7 @@ class RemoteSessionConnection(
                 val reply = (incoming.receive() as? Frame.Text)?.let { ShareProtocol.decodeKex(it.readText()) }
                 if (reply != null && reply.v != 1) {
                     closedByUser = true // terminal — a newer host we can't speak to
-                    _status.value = RemoteStatus.Denied("This session uses a newer encryption version — update BossTerm.")
+                    _status.value = RemoteStatus.Denied("This session uses a newer encryption version - update BossTerm.")
                     return@webSocket
                 }
                 val saltS = reply?.salt?.let { runCatching { SessionCrypto.decodeSecretB64Url(it) }.getOrNull() }

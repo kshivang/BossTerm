@@ -1,10 +1,10 @@
-<title>BOSS — Operator's Console Design System</title>
+<title>BOSS - Operator's Console Design System</title>
 <meta name="description" content="The BOSS visual identity: tokens, type, and every UI element across BossConsole and BossTerm, built on the amber signal and the character cell.">
 
 <style>
   :root {
     /* ---- Core surface ---- */
-    --ink:        #0E1217;   /* base floor — host AND terminal share it */
+    --ink:        #0E1217;   /* base floor - host AND terminal share it */
     --panel:      #161D26;   /* chrome / raised surface */
     --raised:     #1E2731;   /* menus, popovers, elevated */
     --line:       #2A3744;   /* hairline border / divider */
@@ -14,10 +14,10 @@
     --mist:       #8593A3;   /* secondary text */
     --muted:      #5C6977;   /* tertiary / disabled */
     /* ---- Signals ---- */
-    --signal:     #F2A93B;   /* AMBER — live / active / primary action */
+    --signal:     #F2A93B;   /* AMBER - live / active / primary action */
     --signal-dim: #C98A2E;   /* pressed / variant */
     --signal-wash:#2A2113;   /* amber at home on ink */
-    --data:       #56C7E0;   /* cyan — links / info / data */
+    --data:       #56C7E0;   /* cyan - links / info / data */
     --ok:         #6FD08C;
     --warn:       #F0B429;
     --alert:      #F2685F;
@@ -43,7 +43,7 @@
     font-size: 15px;
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
-    /* faint instrument grid — the character cell, made structural */
+    /* faint instrument grid - the character cell, made structural */
     background-image:
       linear-gradient(var(--line) 1px, transparent 1px),
       linear-gradient(90deg, var(--line) 1px, transparent 1px);
@@ -96,7 +96,7 @@
   .hero .sub { margin-top: 26px; max-width: 56ch; font-size: clamp(17px, 2vw, 21px); color: var(--mist); line-height: 1.45; }
   .hero .sub b { color: var(--chalk); font-weight: 600; }
 
-  /* the live cursor — signature */
+  /* the live cursor - signature */
   .cursor {
     display: inline-block; width: 0.62em; height: 1.05em; background: var(--signal);
     transform: translateY(0.12em); margin-left: 0.06em;
@@ -269,7 +269,7 @@
 
   footer { border-top: 1px solid var(--line); padding: 40px 0 70px; color: var(--muted); font-family: var(--mono); font-size: 12px; }
 
-  /* ===== 06 · In context — toggled full screens ===== */
+  /* ===== 06 · In context - toggled full screens ===== */
   .incontext .seg { display:inline-flex; background:var(--panel); border:1px solid var(--line); border-radius:var(--r-md); padding:4px; gap:4px; margin-bottom:28px; }
   .incontext .seg button { font-family:var(--mono); font-size:12.5px; letter-spacing:.03em; color:var(--mist); background:transparent; border:none; padding:9px 20px; border-radius:var(--r-sm); cursor:pointer; display:inline-flex; align-items:center; gap:9px; transition: color .12s var(--ease), background .12s var(--ease); }
   .incontext .seg button .pip { width:8px; height:13px; background:currentColor; opacity:.5; }
@@ -350,7 +350,7 @@
   <header class="hero">
     <div class="eyebrow">BOSS Design System · v1</div>
     <h1>Operator's<br>Console<span class="cursor" aria-hidden="true"></span></h1>
-    <p class="sub">A single visual language for <b>BossConsole</b> and <b>BossTerm</b>. Built on the character cell and one amber <b>signal</b> — the lamp that tells an operator what is live, right now.</p>
+    <p class="sub">A single visual language for <b>BossConsole</b> and <b>BossTerm</b>. Built on the character cell and one amber <b>signal</b> - the lamp that tells an operator what is live, right now.</p>
 
     <div class="term-demo" role="img" aria-label="Terminal demo showing the amber block cursor">
       <div class="term-bar">
@@ -377,11 +377,11 @@
       </div>
       <div class="specimen">
         <h3 style="color:var(--signal)">One amber signal</h3>
-        <p style="color:var(--mist); font-size:14px; margin:8px 0 0">Amber means <i>live / active / now</i> — the primary action, the focused field, the selected tab, the blinking cursor. Nothing else competes for it. Cyan carries data and links.</p>
+        <p style="color:var(--mist); font-size:14px; margin:8px 0 0">Amber means <i>live / active / now</i> - the primary action, the focused field, the selected tab, the blinking cursor. Nothing else competes for it. Cyan carries data and links.</p>
       </div>
       <div class="specimen">
         <h3 style="color:var(--signal)">Quiet everywhere else</h3>
-        <p style="color:var(--mist); font-size:14px; margin:8px 0 0">Surfaces separate by tint, not shadow. Borders are hairlines. Density is high and calm so the content — your output — is the loudest thing on screen.</p>
+        <p style="color:var(--mist); font-size:14px; margin:8px 0 0">Surfaces separate by tint, not shadow. Borders are hairlines. Density is high and calm so the content - your output - is the loudest thing on screen.</p>
       </div>
     </div>
   </section>
@@ -395,7 +395,7 @@
     </div>
 
     <div class="grid cols-4" style="margin-bottom:16px">
-      <div class="sw"><div class="chip" style="background:#0E1217"></div><div class="meta"><div class="nm">ink</div><div class="hx">#0E1217</div><div class="role">Base floor — host + terminal</div></div></div>
+      <div class="sw"><div class="chip" style="background:#0E1217"></div><div class="meta"><div class="nm">ink</div><div class="hx">#0E1217</div><div class="role">Base floor - host + terminal</div></div></div>
       <div class="sw"><div class="chip" style="background:#161D26"></div><div class="meta"><div class="nm">panel</div><div class="hx">#161D26</div><div class="role">Chrome, raised surface</div></div></div>
       <div class="sw"><div class="chip" style="background:#1E2731"></div><div class="meta"><div class="nm">raised</div><div class="hx">#1E2731</div><div class="role">Menus, popovers, hover</div></div></div>
       <div class="sw"><div class="chip" style="background:#2A3744"></div><div class="meta"><div class="nm">line</div><div class="hx">#2A3744</div><div class="role">Hairline border / divider</div></div></div>
@@ -407,14 +407,14 @@
       <div class="sw"><div class="chip" style="background:#3A4B5C"></div><div class="meta"><div class="nm">line-2</div><div class="hx">#3A4B5C</div><div class="role">Strong border, input edge</div></div></div>
     </div>
     <div class="grid cols-4">
-      <div class="sw"><div class="chip" style="background:#F2A93B; box-shadow:inset 0 0 30px -6px #fff6"></div><div class="meta"><div class="nm" style="color:#1a1206">signal</div><div class="hx" style="color:#7a5a18">#F2A93B</div><div class="role">Amber — live / primary action</div></div></div>
-      <div class="sw"><div class="chip" style="background:#56C7E0"></div><div class="meta"><div class="nm" style="color:#06222a">data</div><div class="hx" style="color:#1d5f70">#56C7E0</div><div class="role">Cyan — links / info</div></div></div>
+      <div class="sw"><div class="chip" style="background:#F2A93B; box-shadow:inset 0 0 30px -6px #fff6"></div><div class="meta"><div class="nm" style="color:#1a1206">signal</div><div class="hx" style="color:#7a5a18">#F2A93B</div><div class="role">Amber - live / primary action</div></div></div>
+      <div class="sw"><div class="chip" style="background:#56C7E0"></div><div class="meta"><div class="nm" style="color:#06222a">data</div><div class="hx" style="color:#1d5f70">#56C7E0</div><div class="role">Cyan - links / info</div></div></div>
       <div class="sw"><div class="chip" style="background:#6FD08C"></div><div class="meta"><div class="nm" style="color:#06220f">ok</div><div class="hx" style="color:#1f5e36">#6FD08C</div><div class="role">Success / running clean</div></div></div>
       <div class="sw"><div class="chip" style="background:#F2685F"></div><div class="meta"><div class="nm" style="color:#2a0a08">alert</div><div class="hx" style="color:#7a221d">#F2685F</div><div class="role">Error / destructive</div></div></div>
     </div>
 
     <div style="margin-top:40px" class="specimen">
-      <div class="label">BossTerm · "Operator" theme — ANSI 16 + terminal colors</div>
+      <div class="label">BossTerm · "Operator" theme - ANSI 16 + terminal colors</div>
       <div class="ansi" style="margin-bottom:16px">
         <div class="a" style="background:#15202B; color:#888">0</div>
         <div class="a" style="background:#F2685F">1</div>
@@ -449,7 +449,7 @@
     <div class="sec-head">
       <div class="eyebrow">02 · Type</div>
       <h2>Mono speaks first</h2>
-      <p class="lede">Monospace is the brand voice — display headings, eyebrows, labels, every number and path. A humanist sans carries running UI copy where reading speed matters. The app bundles <b style="color:var(--chalk)">MesloLGS Nerd Font</b> for the mono role.</p>
+      <p class="lede">Monospace is the brand voice - display headings, eyebrows, labels, every number and path. A humanist sans carries running UI copy where reading speed matters. The app bundles <b style="color:var(--chalk)">MesloLGS Nerd Font</b> for the mono role.</p>
     </div>
     <div class="specimen">
       <div class="type-row"><span class="tk">display / L</span><span style="font-family:var(--mono); font-weight:600; font-size:34px; letter-spacing:-0.02em">Take command</span><span class="spec">mono · 28–34 · 600 · -2%</span></div>
@@ -470,7 +470,7 @@
     </div>
     <div class="grid cols-3">
       <div class="specimen">
-        <div class="label">Spacing — 4px half-step, 8px base</div>
+        <div class="label">Spacing - 4px half-step, 8px base</div>
         <div class="space-row"><span class="bar" style="width:2px"></span><span class="v">2 · hairline gap</span></div>
         <div class="space-row"><span class="bar" style="width:4px"></span><span class="v">4 · icon padding</span></div>
         <div class="space-row"><span class="bar" style="width:8px"></span><span class="v">8 · base unit</span></div>
@@ -502,15 +502,15 @@
           <tr><td class="k">base</td><td class="v">160ms</td><td style="color:var(--mist); font-size:12px">menus, panels</td></tr>
           <tr><td class="k">blink</td><td class="v">530ms</td><td style="color:var(--mist); font-size:12px">cursor cadence</td></tr>
         </table>
-        <p class="note">Easing <code>cubic-bezier(.2,0,0,1)</code>. Motion respects <code>prefers-reduced-motion</code> — the cursor stops blinking, panels cut instead of slide.</p>
+        <p class="note">Easing <code>cubic-bezier(.2,0,0,1)</code>. Motion respects <code>prefers-reduced-motion</code> - the cursor stops blinking, panels cut instead of slide.</p>
       </div>
     </div>
   </section>
 
-  <!-- ================= COMPONENTS — HOST ================= -->
+  <!-- ================= COMPONENTS - HOST ================= -->
   <section id="host">
     <div class="sec-head">
-      <div class="eyebrow">04 · BossConsole — chrome</div>
+      <div class="eyebrow">04 · BossConsole - chrome</div>
       <h2>Host elements</h2>
       <p class="lede">The frame around the work: title bar, tabs, controls, overlays. The active item always wears amber.</p>
     </div>
@@ -519,11 +519,11 @@
     <div class="specimen" style="padding:0; overflow:hidden; margin-bottom:24px">
       <div style="display:flex; align-items:center; height:30px; background:var(--panel); border-bottom:1px solid var(--line); padding:0 12px; gap:10px">
         <span class="blk" style="height:13px; width:7px; animation:none; transform:none"></span>
-        <span style="font-family:var(--mono); font-size:12px; color:var(--mist)">BOSS — operator@boss</span>
-        <span style="margin-left:auto; color:var(--muted); font-family:var(--mono); font-size:13px">— ▢ ✕</span>
+        <span style="font-family:var(--mono); font-size:12px; color:var(--mist)">BOSS - operator@boss</span>
+        <span style="margin-left:auto; color:var(--muted); font-family:var(--mono); font-size:13px">- ▢ ✕</span>
       </div>
       <div class="tabbar" style="border:none; border-radius:0">
-        <div class="tab active"><span class="dot"></span>terminal — zsh<span class="x">✕</span></div>
+        <div class="tab active"><span class="dot"></span>terminal - zsh<span class="x">✕</span></div>
         <div class="tab"><span class="dot"></span>main.kt<span class="x">✕</span></div>
         <div class="tab"><span class="dot" style="background:var(--ok)"></span>server · :8080<span class="x">✕</span></div>
         <div class="tab" style="color:var(--muted)">＋</div>
@@ -552,7 +552,7 @@
         <div style="height:12px"></div>
         <label class="flabel">Search (focused)</label>
         <input class="field" style="border-color:var(--signal); box-shadow:0 0 0 3px #f2a93b30" placeholder="type to filter…" value="" />
-        <p class="note">Focus ring is always amber — the field is "live."</p>
+        <p class="note">Focus ring is always amber - the field is "live."</p>
       </div>
 
       <!-- toggle + slider -->
@@ -561,7 +561,7 @@
         <div class="row" style="justify-content:space-between; margin-bottom:8px"><span style="font-size:13px">Restore tabs on launch</span><span class="switch on"><span class="knob"></span></span></div>
         <div class="row" style="justify-content:space-between; margin-bottom:6px"><span style="font-size:13px; color:var(--mist)">Telemetry</span><span class="switch"><span class="knob"></span></span></div>
         <div class="divider-h" style="margin:14px 0"></div>
-        <label class="flabel">Font size — 14</label>
+        <label class="flabel">Font size - 14</label>
         <div class="slider"><span class="fill"></span><span class="thumb"></span></div>
       </div>
 
@@ -599,7 +599,7 @@
     </div>
 
     <div class="specimen" style="margin-top:16px">
-      <div class="label">Scrollbar — auto-hide, with markers</div>
+      <div class="label">Scrollbar - auto-hide, with markers</div>
       <div class="scroll-demo">
         $ grep -rn "signal" .<br>
         <span style="color:var(--match, #ffe9a8)" class="match">src/Theme.kt:42</span>: val signal = Color(0xFFF2A93B)<br>
@@ -615,10 +615,10 @@
     </div>
   </section>
 
-  <!-- ================= COMPONENTS — TERMINAL ================= -->
+  <!-- ================= COMPONENTS - TERMINAL ================= -->
   <section id="term">
     <div class="sec-head">
-      <div class="eyebrow">05 · BossTerm — the surface</div>
+      <div class="eyebrow">05 · BossTerm - the surface</div>
       <h2>Terminal elements</h2>
       <p class="lede">Where the operator actually works. The cursor is amber; ANSI colors are tuned to sit calmly on the shared <code>ink</code> floor.</p>
     </div>
@@ -626,7 +626,7 @@
     <div class="terminal" style="margin-bottom:24px">
       <div class="tb">
         <span class="lamp" style="width:9px;height:9px;border-radius:50%;background:var(--signal); box-shadow:0 0 8px -1px var(--signal)"></span>
-        <span style="font-family:var(--mono); font-size:12px; color:var(--mist)">zsh — ~/Development/Boss</span>
+        <span style="font-family:var(--mono); font-size:12px; color:var(--mist)">zsh - ~/Development/Boss</span>
         <span style="margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--muted)">120×32</span>
       </div>
       <div class="body" style="color:#D7DEE6">
@@ -667,7 +667,7 @@ operator@boss ~/Boss $ <span class="blk" aria-hidden="true"></span>
           <div style="border-left:3px solid var(--muted); padding-left:10px; color:var(--mist); margin-top:6px">deploy … <span style="color:var(--mist)">running</span></div>
         </div>
         <div class="slider" style="margin-top:16px; height:6px"><span class="fill" style="width:44%; background:var(--signal)"></span></div>
-        <p class="note">OSC 9;4 progress bar — amber, 6dp, top or bottom edge.</p>
+        <p class="note">OSC 9;4 progress bar - amber, 6dp, top or bottom edge.</p>
       </div>
     </div>
   </section>
@@ -677,7 +677,7 @@ operator@boss ~/Boss $ <span class="blk" aria-hidden="true"></span>
     <div class="sec-head">
       <div class="eyebrow">06 · In context</div>
       <h2>The template, applied</h2>
-      <p class="lede">The same tokens composed into real product surfaces. Toggle between the two BOSS apps — each is a different screen built entirely from this design language.</p>
+      <p class="lede">The same tokens composed into real product surfaces. Toggle between the two BOSS apps - each is a different screen built entirely from this design language.</p>
     </div>
 
     <div class="incontext">
@@ -691,7 +691,7 @@ operator@boss ~/Boss $ <span class="blk" aria-hidden="true"></span>
         <div class="win">
           <div class="winbar">
             <span class="tl"><i></i><i></i><i></i></span>
-            <span class="wt"><span class="cur" aria-hidden="true"></span>BOSS — operator@boss · ~/Development/Boss</span>
+            <span class="wt"><span class="cur" aria-hidden="true"></span>BOSS - operator@boss · ~/Development/Boss</span>
             <span class="winr">⌘K · RBAC: operator</span>
           </div>
           <div class="hostbody">
@@ -707,7 +707,7 @@ operator@boss ~/Boss $ <span class="blk" aria-hidden="true"></span>
               <div class="tabbar" style="border-radius:0; border:none; border-bottom:1px solid var(--line)">
                 <div class="tab active"><span class="dot"></span>BossDesignSystem.kt<span class="x">✕</span></div>
                 <div class="tab"><span class="dot" style="background:#5C9FE0"></span>BossTheme.kt<span class="x">✕</span></div>
-                <div class="tab"><span class="dot" style="background:var(--ok)"></span>terminal — zsh<span class="x">✕</span></div>
+                <div class="tab"><span class="dot" style="background:var(--ok)"></span>terminal - zsh<span class="x">✕</span></div>
                 <div class="tab" style="color:var(--muted)">＋</div>
               </div>
               <div class="hostsplit">
@@ -747,7 +747,7 @@ operator@boss ~/Boss $ <span class="blk" aria-hidden="true"></span>
             <span class="sr">Ln 40 · Col 18 · ◆ amber #F2A93B</span>
           </div>
         </div>
-        <p class="cap"><b>Host UX</b> — left rail, file tree, an editor with semantic syntax colors, and a split terminal. The active tab, the selected file's marker, and the current rail tool all wear the amber signal; everything else stays graphite-quiet.</p>
+        <p class="cap"><b>Host UX</b> - left rail, file tree, an editor with semantic syntax colors, and a split terminal. The active tab, the selected file's marker, and the current rail tool all wear the amber signal; everything else stays graphite-quiet.</p>
       </div>
 
       <!-- ===== TERMINAL SCREEN ===== -->
@@ -756,7 +756,7 @@ operator@boss ~/Boss $ <span class="blk" aria-hidden="true"></span>
           <div class="btprog"></div>
           <div class="winbar">
             <span class="tl"><i></i><i></i><i></i></span>
-            <span class="wt">zsh — ~/Development/Boss · 120×32</span>
+            <span class="wt">zsh - ~/Development/Boss · 120×32</span>
             <span class="winr">⌘F search · ⌘D split</span>
           </div>
           <div class="bttabs">
@@ -774,7 +774,7 @@ operator@boss ~/Boss $ <span class="blk" aria-hidden="true"></span>
               <div><span class="gn">operator</span>@<span class="cy">boss</span> <span class="am">~/Boss</span> $ rg "<span class="match">signal</span>" -n</div>
               <div class="mut">BossDesignSystem.kt:40: val <span class="match">signal</span> = …F2A93B</div>
               <div class="mut">BossTabButton.kt:18: // marker uses <span class="match">signal</span></div>
-              <div class="cbk gut-err"><span class="er">✕</span> <span class="mut">npm test — 1 failing (exit 1)</span></div>
+              <div class="cbk gut-err"><span class="er">✕</span> <span class="mut">npm test - 1 failing (exit 1)</span></div>
               <div style="margin-top:2px"><span class="sel">selection highlight</span> <span class="mut">· the amber block cursor →</span></div>
               <div><span class="gn">operator</span>@<span class="cy">boss</span> <span class="am">~/Boss</span> $ <span class="blk" aria-hidden="true"></span></div>
             </div>
@@ -788,7 +788,7 @@ operator@boss ~/Boss $ <span class="blk" aria-hidden="true"></span>
             </div>
           </div>
         </div>
-        <p class="cap"><b>Terminal UX</b> — tab chips (cyan marks a mirrored/remote session), a split pane, the floating search overlay with amber match highlights, command-block gutters (green ok / red error / running), selection, and the amber block cursor. Same <code>ink</code> floor as the host, so the window reads as one continuous surface.</p>
+        <p class="cap"><b>Terminal UX</b> - tab chips (cyan marks a mirrored/remote session), a split pane, the floating search overlay with amber match highlights, command-block gutters (green ok / red error / running), selection, and the amber block cursor. Same <code>ink</code> floor as the host, so the window reads as one continuous surface.</p>
       </div>
     </div>
   </section>
@@ -805,21 +805,21 @@ operator@boss ~/Boss $ <span class="blk" aria-hidden="true"></span>
         <thead><tr><th>Token</th><th>Value</th><th>Host (BossColors)</th><th>BossTerm</th></tr></thead>
         <tbody>
           <tr><td class="k">color.ink</td><td class="v">#0E1217</td><td>darkContentBackground</td><td>background</td></tr>
-          <tr><td class="k">color.panel</td><td class="v">#161D26</td><td>darkBackground / Surface</td><td>—</td></tr>
-          <tr><td class="k">color.raised</td><td class="v">#1E2731</td><td>contextMenuHover / raised</td><td>—</td></tr>
-          <tr><td class="k">color.line</td><td class="v">#2A3744</td><td>darkBorder</td><td>—</td></tr>
+          <tr><td class="k">color.panel</td><td class="v">#161D26</td><td>darkBackground / Surface</td><td>-</td></tr>
+          <tr><td class="k">color.raised</td><td class="v">#1E2731</td><td>contextMenuHover / raised</td><td>-</td></tr>
+          <tr><td class="k">color.line</td><td class="v">#2A3744</td><td>darkBorder</td><td>-</td></tr>
           <tr><td class="k">color.chalk</td><td class="v">#E9EEF3</td><td>darkTextPrimary</td><td>foreground (#D7DEE6)</td></tr>
-          <tr><td class="k">color.mist</td><td class="v">#8593A3</td><td>darkTextSecondary</td><td>—</td></tr>
+          <tr><td class="k">color.mist</td><td class="v">#8593A3</td><td>darkTextSecondary</td><td>-</td></tr>
           <tr><td class="k">color.signal</td><td class="v">#F2A93B</td><td>darkAccent</td><td>cursor</td></tr>
           <tr><td class="k">color.data</td><td class="v">#56C7E0</td><td>(link)</td><td>hyperlink</td></tr>
           <tr><td class="k">color.ok</td><td class="v">#6FD08C</td><td>darkSuccess / darkSecondary</td><td>ansi.green</td></tr>
           <tr><td class="k">color.alert</td><td class="v">#F2685F</td><td>darkError</td><td>ansi.red</td></tr>
-          <tr><td class="k">radius.button</td><td class="v">5dp</td><td>RoundedCornerShape(5)</td><td>—</td></tr>
+          <tr><td class="k">radius.button</td><td class="v">5dp</td><td>RoundedCornerShape(5)</td><td>-</td></tr>
           <tr><td class="k">font.mono</td><td class="v">MesloLGS NF</td><td>display + data</td><td>terminal</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="note">Full token set — spacing, elevation, motion, type scale — lives in the generated Kotlin alongside these colors.</p>
+    <p class="note">Full token set - spacing, elevation, motion, type scale - lives in the generated Kotlin alongside these colors.</p>
   </section>
 
   <footer>

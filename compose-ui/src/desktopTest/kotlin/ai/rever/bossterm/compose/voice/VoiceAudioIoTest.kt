@@ -256,7 +256,7 @@ class VoiceAudioIoTest {
         assertTrue(queuedMs <= 62_000, "unbounded growth would be a leak; saw ${queuedMs}ms")
         assertTrue(
             queuedMs >= 30_000,
-            "the bound must not chop real replies — a 30s answer has to fit; saw ${queuedMs}ms",
+            "the bound must not chop real replies - a 30s answer has to fit; saw ${queuedMs}ms",
         )
     }
 

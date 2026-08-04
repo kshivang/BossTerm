@@ -147,7 +147,7 @@ object BossAccountManager {
         val link = parseAuthInput(raw)
         if (link == null) {
             _state.value = AccountState.Error(
-                "Couldn't find a sign-in token in that link — paste the whole link from the email."
+                "Couldn't find a sign-in token in that link - paste the whole link from the email."
             )
             return
         }

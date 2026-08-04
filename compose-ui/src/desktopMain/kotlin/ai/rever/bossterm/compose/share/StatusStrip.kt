@@ -156,7 +156,7 @@ fun StatusStrip(
                     // looks actionable and isn't is worse than one that explains itself.
                     tooltip = if (remoteCalls > 0) {
                         "A viewer is in a voice call with this session's agent. Stopping the share " +
-                            "cuts the agent's access to this machine immediately — their audio " +
+                            "cuts the agent's access to this machine immediately - their audio " +
                             "session runs browser-to-OpenAI and cannot be ended from here."
                     } else {
                         null

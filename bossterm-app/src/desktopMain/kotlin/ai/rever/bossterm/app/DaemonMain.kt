@@ -66,7 +66,7 @@ fun runDaemon(args: Array<String>) {
     // covers the on-demand-spawn-from-a-terminal case.
     runCatching {
         sun.misc.Signal.handle(sun.misc.Signal("HUP"), sun.misc.SignalHandler {
-            log.info("SIGHUP ignored — daemon detaches from the controlling terminal")
+            log.info("SIGHUP ignored - daemon detaches from the controlling terminal")
         })
     }.onFailure { log.debug("Could not install SIGHUP handler: {}", it.message) }
 

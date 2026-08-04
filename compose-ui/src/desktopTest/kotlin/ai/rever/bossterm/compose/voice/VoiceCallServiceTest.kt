@@ -534,7 +534,7 @@ class VoiceCallServiceTest {
         assertEquals(
             VoiceCallService.MAX_LIVE_CALLS,
             shared.size,
-            "the stale entries are still in the map — only their owner may announce them",
+            "the stale entries are still in the map - only their owner may announce them",
         )
         assertNotNull(mine.openCall(), "expired foreign calls must not deny capacity")
     }

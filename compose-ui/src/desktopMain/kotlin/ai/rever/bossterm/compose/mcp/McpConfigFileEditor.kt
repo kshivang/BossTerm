@@ -50,7 +50,7 @@ internal object McpConfigFileEditor {
         val root = readRoot(file) ?: return false
         val container = root[containerKey]?.let { existing ->
             runCatching { existing.jsonObject }.getOrElse {
-                log.warn("'{}' in {} is not an object — refusing to overwrite", containerKey, file)
+                log.warn("'{}' in {} is not an object - refusing to overwrite", containerKey, file)
                 return false
             }
         } ?: JsonObject(emptyMap())

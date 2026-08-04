@@ -117,7 +117,7 @@ class DaemonShareServerTest {
             )
             assertTrue(
                 httpStatus(port, "/", hostHeader = "evil.example.com") != 403,
-                "share server is token-gated, not Host-gated — must not 403 by Host",
+                "share server is token-gated, not Host-gated - must not 403 by Host",
             )
         } finally {
             server.stop()

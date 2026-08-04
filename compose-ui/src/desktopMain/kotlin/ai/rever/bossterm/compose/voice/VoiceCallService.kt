@@ -405,7 +405,7 @@ internal class VoiceCallService(
         // pollVoiceStatus already calls closeCalls() within 5s of a toggle, after which isLiveCall
         // below refuses every subsequent call anyway. The check still happens before the tool runs.
         if (!isLiveCall(msg.callToken)) {
-            reply(toolError(msg.callId, "No active call — start a call before using tools"))
+            reply(toolError(msg.callId, "No active call - start a call before using tools"))
             return
         }
         // Resolve against the CATALOG, not the executor, on this thread: executor.tools() can force
@@ -546,7 +546,7 @@ internal class VoiceCallService(
             appendLine("A remote user is watching this terminal in a browser and talking to you.")
             appendLine()
             sessionName()?.let { appendLine("Session: ${VoiceContextSnapshot.field(it)}") }
-            appendLine("Session snapshot (may be stale — use tools for fresh data):")
+            appendLine("Session snapshot (may be stale - use tools for fresh data):")
             appendLine(snapshot.ifBlank { "- (no tabs visible)" })
             appendLine("Default all tool calls to the tab the user is viewing (omit tab_id).")
             appendLine()

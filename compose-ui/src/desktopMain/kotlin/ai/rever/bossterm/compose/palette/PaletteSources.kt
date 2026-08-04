@@ -40,7 +40,7 @@ object PaletteSources {
                     id = "workflow:${wf.sourcePath ?: wf.name}",
                     title = wf.name,
                     subtitle = wf.description?.takeIf { it.isNotBlank() }
-                        ?: "Workflow — ${wf.arguments.size} parameter(s)",
+                        ?: "Workflow - ${wf.arguments.size} parameter(s)",
                     group = "Workflow",
                     run = { onRunWorkflow(wf) },
                 )
@@ -53,7 +53,7 @@ object PaletteSources {
                 PaletteCommand(
                     id = "recent:$cmd",
                     title = cmd,
-                    subtitle = "Recent command — inserts at prompt",
+                    subtitle = "Recent command - inserts at prompt",
                     group = "Recent",
                     run = { insertCommand(cmd) },
                 )

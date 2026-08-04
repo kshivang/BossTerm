@@ -896,7 +896,7 @@ fun TabBar(
                                     // Read-only session: eye badge (right-click → Request Control).
                                     Icon(
                                         Icons.Default.Visibility,
-                                        contentDescription = "View only — right-click to request control",
+                                        contentDescription = "View only - right-click to request control",
                                         tint = Color(0xFF808080),
                                         modifier = Modifier.size(12.dp)
                                     )

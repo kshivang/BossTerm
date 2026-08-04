@@ -3,8 +3,8 @@
 BossTerm ships an in-process [Model Context Protocol](https://modelcontextprotocol.io)
 server that exposes the running terminal to MCP-aware clients (Claude Code,
 Codex, Gemini CLI, OpenCode, etc.). Clients can enumerate tabs, read
-scrollback, search output, capture the last completed command, and — when
-write tools are enabled — drive shells, send signals, and open new panes.
+scrollback, search output, capture the last completed command, and - when
+write tools are enabled - drive shells, send signals, and open new panes.
 
 This guide covers user-facing enablement and the embedder API. For a hands-on
 example, see [`embedded-example/`](../embedded-example/) and
@@ -21,7 +21,7 @@ example, see [`embedded-example/`](../embedded-example/) and
   are rejected with `403 Forbidden` (DNS-rebinding defense).
 - **Opt-in**: disabled by default. The server only starts when `mcpEnabled`
   is `true`. Embedders can set `defaultEnabled = true` to flip the default
-  on first launch — see [BossTermMcpConfig reference](#bosstermmcpconfig-reference).
+  on first launch - see [BossTermMcpConfig reference](#bosstermmcpconfig-reference).
 
 ## Enabling the server (user)
 
@@ -33,7 +33,7 @@ example, see [`embedded-example/`](../embedded-example/) and
 3. (Optional) Adjust **Port** if `7676` clashes with another local service.
    Toggling the port while enabled performs a stop-then-start.
 4. (Optional) In **Exposed Tools**, untick any built-in tool you don't want
-   MCP clients to call. The change applies immediately — no server restart.
+   MCP clients to call. The change applies immediately - no server restart.
 5. (Optional) Under **Attach to AI CLI**, click the button for each AI CLI
    you want to register this endpoint with. See
    [Attaching to AI CLIs](#attaching-to-ai-clis).
@@ -65,8 +65,8 @@ INFO  BossTermMcpManager - BossTerm MCP server ready: http://127.0.0.1:7676/ (SS
 ### `~/.bossterm/mcp.port` marker file
 
 `~/.bossterm/mcp.port` holds the **bound** port (after fallback, not the
-configured one) and exists so external tooling — primarily the user-global
-Claude Code PreToolUse hook described below — can decide whether to route
+configured one) and exists so external tooling - primarily the user-global
+Claude Code PreToolUse hook described below - can decide whether to route
 `Bash` through `run_command` with a stat + cheap TCP probe
 (`nc -z 127.0.0.1 <port>`) instead of an HTTP request with a timeout.
 
@@ -83,8 +83,8 @@ process can already reach the loopback endpoint while it's running.
 
 ### Caller-window resolution
 
-For tools that default to "the primary window" — `get_active_tab` with no
-`tab_id`, `run_in_panel` / `run_command` with no `tab_id` — the server
+For tools that default to "the primary window" - `get_active_tab` with no
+`tab_id`, `run_in_panel` / `run_command` with no `tab_id` - the server
 picks the window the **calling client is running inside**, not whichever
 window happened to register first.
 
@@ -108,7 +108,7 @@ Platform support: macOS (via `lsof` + `ps`) and Linux (via
 `/proc/net/tcp` + `/proc/<pid>/status`). Cost: roughly 50–150 ms per
 request on macOS, 5–15 ms on Linux. Windows and other platforms skip
 the resolver and fall back to first-registered. All failure modes log
-at DEBUG and degrade — never crash a tool call.
+at DEBUG and degrade - never crash a tool call.
 
 Concurrent multi-client racing: if two clients in different windows
 issue requests simultaneously, the resolved window is last-writer-wins
@@ -121,7 +121,7 @@ The server's `initialize` response includes an MCP-spec `instructions` string
 telling the client to prefer `run_command` over its built-in shell tool.
 Claude Code and Codex both surface MCP server instructions in the model's
 system prompt at session start, so the preference is communicated
-out-of-band — no per-project config required for it to take effect.
+out-of-band - no per-project config required for it to take effect.
 
 The full string is the `BOSSTERM_MCP_INSTRUCTIONS` constant in
 [`BossTermMcpServer.kt`](../compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/mcp/BossTermMcpServer.kt).
@@ -142,7 +142,7 @@ List all open terminal tabs across every window registered with the
 `McpTerminalRegistry`.
 
 - Arguments:
-  - `include_fields` (optional array) — allow-list over TabInfo fields
+  - `include_fields` (optional array) - allow-list over TabInfo fields
     (`id`, `title`, `cwd`, `pid`, `isActive`). Omit to get every field;
     pass e.g. `["id", "isActive"]` for a minimal response when listing
     many tabs.
@@ -170,7 +170,7 @@ Return the active tab of the primary window, or the literal JSON `null` if no
 tab is active.
 
 - Arguments:
-  - `include_fields` (optional array) — same allow-list as `list_tabs`.
+  - `include_fields` (optional array) - same allow-list as `list_tabs`.
 - Returns: a `TabInfo` object (same shape as in `list_tabs`) or `null`.
 
 ### `list_panes`
@@ -197,11 +197,11 @@ the UI), or when you've lost track of a pane id returned by an earlier
   }
   ```
 - A tab without splits returns a single entry whose `id` equals the
-  `tab_id`. For a split tab, `id` is the wrapping `SplitNode.Pane.id` — the
+  `tab_id`. For a split tab, `id` is the wrapping `SplitNode.Pane.id` - the
   value to pass back as `pane_id` to `send_input`, `send_signal`,
   `read_scrollback`, etc. `sessionId` is preserved separately so callers
   can correlate against APIs that surface session ids directly. Closing a
-  pane is `send_signal` with `signal=ctrl_d` and the pane's `id` —
+  pane is `send_signal` with `signal=ctrl_d` and the pane's `id` -
   the shell exits and the pane disposes itself.
 
 ### `read_scrollback`
@@ -212,7 +212,7 @@ screen). Trailing whitespace per line is stripped.
 - Required: `tab_id` (string).
 - Optional:
   - `lines` (integer, minimum `1`, default `200`).
-  - `pane_id` (string) — to target a specific split pane (the value returned
+  - `pane_id` (string) - to target a specific split pane (the value returned
     by `run_in_panel`). Omit to read the focused pane.
 - Returns:
   ```json
@@ -225,11 +225,11 @@ Regex-search the entire scrollback (history + screen) of a tab or pane.
 
 - Required: `tab_id` (string), `pattern` (string, Kotlin/Java regex syntax).
 - Optional:
-  - `max_matches` (integer, minimum `1`, default `50`) — truncates at this
+  - `max_matches` (integer, minimum `1`, default `50`) - truncates at this
     many matches; `truncated` in the response indicates it was hit.
   - `ignore_case` (boolean, default `false`).
   - `pane_id` (string).
-  - `include_line_text` (boolean, default `true`) — if false, each match
+  - `include_line_text` (boolean, default `true`) - if false, each match
     returns only `row`, `matchStart`, `matchEnd` (no line text). Cuts the
     response by 60–80% on typical scrollback searches.
 - Returns:
@@ -249,7 +249,7 @@ Regex-search the entire scrollback (history + screen) of a tab or pane.
 ### `get_last_command`
 
 Return the most recently completed shell command for a tab (as captured via
-OSC 133). Requires shell integration — see
+OSC 133). Requires shell integration - see
 [Shell Integration](../README.md#shell-integration).
 
 - Required: `tab_id` (string).
@@ -263,7 +263,7 @@ OSC 133). Requires shell integration — see
     "cwd": "/home/me"
   }
   ```
-- `commandText` is omitted from the response — capturing the typed command
+- `commandText` is omitted from the response - capturing the typed command
   text reliably is a follow-up. (Null fields are omitted from every
   BossTerm MCP response; see [Wire format notes](#wire-format-notes).)
 
@@ -277,13 +277,13 @@ collection is enabled for the tab. Supports incremental polling via
 - Required: `tab_id` (string).
 - Optional:
   - `max_chunks` (integer, `1..settings.debugMaxChunks`, default `100`).
-  - `since_index` (integer, ≥ 0) — return only chunks with `index >
+  - `since_index` (integer, ≥ 0) - return only chunks with `index >
     since_index`. Use the previous response's `stats.newestIndex` for polling.
-  - `sources` (array of strings, case-insensitive) — filter to a subset of:
+  - `sources` (array of strings, case-insensitive) - filter to a subset of:
     `PTY_OUTPUT`, `USER_INPUT`, `EMULATOR_GENERATED`, `CONSOLE_LOG`. Omit the
     key entirely to get every source; an empty array (or one containing only
     unknown names) returns no chunks.
-  - `omit_data` (boolean, default `false`) — if true, each chunk returns
+  - `omit_data` (boolean, default `false`) - if true, each chunk returns
     only `index`, `timestamp`, `source` (no `data` payload). Use for cheap
     polling since `data` is the bulk of every chunk.
 - Returns:
@@ -332,11 +332,11 @@ with shell startup.
   - `script`: text to write to the new panel's shell. Include `\n` to submit
     as a command.
 - Optional:
-  - `tab_id` (string) — source tab id. Required for splits; defaults to the
+  - `tab_id` (string) - source tab id. Required for splits; defaults to the
     primary window's active tab.
-  - `working_dir` (string) — for splits, defaults to the inherited cwd via
+  - `working_dir` (string) - for splits, defaults to the inherited cwd via
     OSC 7.
-  - `split_ratio` (number, `0.05..0.95`) — fraction of the parent's dimension
+  - `split_ratio` (number, `0.05..0.95`) - fraction of the parent's dimension
     the **new** pane gets. Defaults to the user's `mcpDefaultSplitRatio`
     (typically `0.3`).
 - Returns:
@@ -363,14 +363,14 @@ stdout/stderr, and duration**. Consecutive calls in the same tab reuse one
 "MCP scratch pane" so the UI doesn't accumulate splits.
 
 Exposed by default (disable it like any other tool in Settings → BossTerm MCP →
-Exposed Tools). It's available for explicit use out of the box — e.g. when the
+Exposed Tools). It's available for explicit use out of the box - e.g. when the
 user asks the agent to "split and run X". Whether the agent is *told to prefer*
 it over its own built-in shell for everything is a separate opt-in: the
 `mcpRunCommandPreferredShell` setting (default off), see
 [Using as Claude Code's default shell](#using-as-claude-codes-default-shell).
 
 This is the tool to prefer over your client's built-in shell tool when the
-BossTerm MCP is attached — the user sees commands run in their actual
+BossTerm MCP is attached - the user sees commands run in their actual
 terminal *and* the output still comes back to the agent. The server
 advertises that preference in its [initialize-time instructions](#initialize-time-instructions).
 
@@ -378,24 +378,24 @@ Requires OSC 133 shell integration on the user's shell. See
 [`.claude/rules/shell-integration.md`](../.claude/rules/shell-integration.md).
 
 - Required:
-  - `script` (string) — shell command. A trailing newline is added if
+  - `script` (string) - shell command. A trailing newline is added if
     absent. **Avoid embedded `\n`** for multi-statement scripts (the shell
     fires multiple OSC 133;B/D cycles; the response carries the FIRST D's
     exit code and the slice covers from the first B onward). Use
     `bash -lc '…'` or `sh -c '…'` to bundle compound logic into a single
-    shell command — that emits a single B/D pair.
+    shell command - that emits a single B/D pair.
 - Optional:
-  - `pane_id` (string) — reuse a specific MCP pane. Defaults to the pane this
+  - `pane_id` (string) - reuse a specific MCP pane. Defaults to the pane this
     tool last created for `tab_id`; if none, a new pane is created.
-  - `tab_id` (string) — source tab. Defaults to the primary window's active
+  - `tab_id` (string) - source tab. Defaults to the primary window's active
     tab.
-  - `panel` — panel mode used **only when creating a new pane**: `"reuse"`
+  - `panel` - panel mode used **only when creating a new pane**: `"reuse"`
     (default; behaves as `horizontal_split` for the first call),
     `"horizontal_split"`, `"vertical_split"`, or `"new_tab"`.
-  - `split_ratio` (number, `0.05..0.95`) — only used on the first call that
+  - `split_ratio` (number, `0.05..0.95`) - only used on the first call that
     creates the pane. Defaults to `mcpDefaultSplitRatio`.
-  - `working_dir` (string) — only used when creating a new pane.
-  - `timeout_ms` (integer, `100..600_000`) — hard timeout. Default `120_000`.
+  - `working_dir` (string) - only used when creating a new pane.
+  - `timeout_ms` (integer, `100..600_000`) - hard timeout. Default `120_000`.
 - Returns:
   ```json
   {
@@ -416,11 +416,11 @@ Requires OSC 133 shell integration on the user's shell. See
     *or* the command timed out.
   - `error` is set when `ok` is `false`. Notable values:
     - `"TUI detected (alternate screen entered). Use send_input + read_scrollback ..."`
-      — the command entered an alternate-screen program (`vim`, `less`,
+      - the command entered an alternate-screen program (`vim`, `less`,
       `htop`, `git commit` without `-m`, etc.). The pane stays alive so the
       caller can drive it via `send_input` + `read_scrollback`. **Do not
-      retry the same call** — it will time out the same way.
-    - `"Timed out after Nms ..."` — `timeout_ms` elapsed before OSC 133;D
+      retry the same call** - it will time out the same way.
+    - `"Timed out after Nms ..."` - `timeout_ms` elapsed before OSC 133;D
       arrived. Partial output is still captured.
 
 Concurrent calls on the same `pane_id` are serialized FIFO (per-pane mutex)
@@ -471,7 +471,7 @@ Response:
 ```
 
 Unknown names error out before any change is written. `manage_tools` itself is
-reserved and cannot be disabled — that would brick the surface (no way to
+reserved and cannot be disabled - that would brick the surface (no way to
 re-enable anything from MCP). Every other tool, including `run_command`, is
 freely disablable and exposed by default.
 
@@ -501,12 +501,12 @@ models, then proprietary.
 | Codex         | Apache-2.0 | `codex mcp add <name> --url <url>`                                            |
 | Gemini CLI    | Apache-2.0 | `gemini mcp add <name> <url> --transport sse --scope user`                    |
 | Grok Build    | Apache-2.0 | `grok mcp add <name> --url <url> --type sse`                                  |
-| Claude Code   | —          | `claude mcp add --scope user --transport sse <name> <url>`                    |
+| Claude Code   | -          | `claude mcp add --scope user --transport sse <name> <url>`                    |
 
 `<name>` is the embedder's `BossTermMcpConfig.serverName` (default
 `"bossterm"`) and `<url>` is `http://127.0.0.1:<port>/`.
 
-Two CLIs — OpenCode and Kimi Code — expose no non-interactive `mcp add` at all
+Two CLIs - OpenCode and Kimi Code - expose no non-interactive `mcp add` at all
 (both configure MCP through a TUI prompt). For those, the config is merged **in
 this process** by `McpConfigFileEditor`: parse, set only the one server key,
 write via a temp file + atomic rename with the original file's permissions
@@ -514,8 +514,8 @@ preserved, leaving everything else in the file untouched.
 
 OpenCode's used to be a `node -e` one-liner instead, justified by "OpenCode ships
 as an npm package, so node is always there". That stopped being true when its
-`curl … | bash` installer became the default install path — a user can now have
-`opencode` without `node` — so both variants are handled the same way. The
+`curl … | bash` installer became the default install path - a user can now have
+`opencode` without `node` - so both variants are handled the same way. The
 written shapes differ because the CLIs' parsers do: OpenCode wants
 `{type: "remote", url, enabled: true}` under `mcp`, Kimi Code wants
 `{transport: "sse", url}` under `mcpServers` (its schema is a discriminated union
@@ -523,20 +523,20 @@ on `transport`, and a bare `url` would default to `http`, not sse).
 
 If the CLI binary is missing, the shell-out fails, or the operation times
 out, the corresponding config snippet is dropped onto the clipboard
-instead, and an amber "exit N — config copied to clipboard" status is shown
+instead, and an amber "exit N - config copied to clipboard" status is shown
 under the button. The timeout is per target (`McpAttachTarget.timeoutSeconds`):
 15 s by default, 45 s for Hermes, whose `mcp add` is a Python process that
 performs live tool discovery against the URL before it returns.
 
-**Grok caveat**: `grok mcp add` does not validate `--type` at write time — a
+**Grok caveat**: `grok mcp add` does not validate `--type` at write time - a
 wrong transport is accepted into `config.toml` and only fails when the CLI
 tries to connect. `grok mcp doctor` diagnoses that.
 
 **OpenClaw caveat**: its `mcp` subcommand is newer than some installed builds
 (2026.3.13 has none; npm latest is 2026.7.1-2), so the shell-out is expected to
 fail on older installs and drop the config snippet on the clipboard instead. Its
-servers also nest one level deeper than every other CLI —
-`mcp.servers.<name>` in `~/.openclaw/openclaw.json` — which is why
+servers also nest one level deeper than every other CLI -
+`mcp.servers.<name>` in `~/.openclaw/openclaw.json` - which is why
 `jsonLoopbackUrl` walks a container *path* rather than a single key. Watch out
 when probing OpenClaw: `openclaw <unknown> --help` prints top-level help and
 exits **0**, so an exit code alone never proves a subcommand exists. **Codex caveat**: registration succeeds with codex-cli 0.130,
@@ -549,7 +549,7 @@ The MCP server is loopback-only, but [session sharing](session-sharing.md) carri
 devices. When a window with MCP enabled is shared:
 
 - The web viewer shows an **MCP pill** that mirrors the host's MCP state; from it a viewer can
-  toggle the server and attach AI CLIs — the operations execute on the **host**, not the viewer.
+  toggle the server and attach AI CLIs - the operations execute on the **host**, not the viewer.
 - MCP tool calls against shared tabs are **relayed to the host's** MCP server, using the host's
   configured `serverName` and bound port.
 - A native "Add remote" BossTerm client surfaces the same control as **Remote MCP** in the remote
@@ -566,7 +566,7 @@ shared session, without exposing the loopback endpoint directly. See
 > `run_command` as AI clients' default shell"** (`mcpRunCommandPreferredShell`,
 > default off). With it on, the server's initialize-time `instructions` tell
 > clients to prefer `run_command` over their built-in shell. (If you've also
-> disabled `run_command` in Exposed Tools, re-enable it first — a disabled tool
+> disabled `run_command` in Exposed Tools, re-enable it first - a disabled tool
 > isn't on the wire.)
 
 There are two layers, with different timing:
@@ -574,16 +574,16 @@ There are two layers, with different timing:
 - **Soft (built in).** With the setting on, the initialize-time `instructions`
   field steers Claude Code toward `run_command`. Because MCP `instructions` are
   read once at connect, this layer applies to the **next** client that connects
-  (restart Claude Code or reconnect the server), and it's a nudge — the model
+  (restart Claude Code or reconnect the server), and it's a nudge - the model
   usually follows it but can still pick `Bash`.
-- **Hard + instant (the hook below).** For a guarantee — and for the toggle to
-  take effect *immediately* in a running session — wire up a user-global
+- **Hard + instant (the hook below).** For a guarantee - and for the toggle to
+  take effect *immediately* in a running session - wire up a user-global
   `PreToolUse` hook. It reads the
   [`~/.bossterm/mcp.port` marker](#bosstermmcpport-marker-file), which BossTerm
   writes/deletes the moment you flip `mcpRunCommandPreferredShell`. So turning
   the setting on makes the hook deny `Bash` (routing to `run_command`) on the
   very next call; turning it off makes the marker disappear and `Bash` flow
-  normally — no Claude restart either way. If the file is missing or the port
+  normally - no Claude restart either way. If the file is missing or the port
   isn't listening, the hook exits silently so non-BossTerm sessions and the
   opted-out state are unaffected.
 
@@ -597,7 +597,7 @@ marker="$HOME/.bossterm/mcp.port"
 [ -f "$marker" ] || exit 0
 port=$(cat "$marker" 2>/dev/null) || exit 0
 case "$port" in ''|*[!0-9]*) exit 0 ;; esac
-# Fail closed (let Bash through) if nc is unavailable — without a probe we
+# Fail closed (let Bash through) if nc is unavailable - without a probe we
 # can't verify the marker isn't stale, and routing Claude to a dead port
 # is worse than skipping the routing entirely.
 if ! command -v nc >/dev/null 2>&1; then
@@ -652,7 +652,7 @@ Caveats:
 - **Claude and BossTerm must run as the same OS user.** The hook reads
   `$HOME/.bossterm/mcp.port`; BossTerm writes to `${user.home}/.bossterm/mcp.port`.
   Under `sudo claude` or `su` those resolve to different paths, the hook
-  finds no marker, and routing degrades to no-op (Bash still works — it
+  finds no marker, and routing degrades to no-op (Bash still works - it
   just doesn't go through BossTerm).
 - **`nc` must be available** on the user's `PATH` for the probe step. The
   hook fails closed (lets Bash through) when `nc` is missing, since it
@@ -678,7 +678,7 @@ and are persisted to `~/.bossterm/settings.json`.
 | `mcpRunCommandPreferredShell`   | `Boolean`     | `false`     | Make `run_command` the AI client's default shell. Off = the tool is available but used only when explicitly asked. On = (a) the initialize-time `instructions` tell clients to prefer it (soft, applies next connect) and (b) the `~/.bossterm/mcp.port` marker is written so the PreToolUse hook enforces it (hard, instant per-call). Toggling writes/deletes the marker live. UI toggle in Settings → BossTerm MCP. |
 | `mcpAttachedTo`           | `Set<String>`       | `{}`        | Stable `persistenceKey`s (e.g. `"CLAUDE_CODE"`) of attached AI CLIs. Used for silent re-attach.        |
 | `disabledMcpTools`        | `Set<String>`       | `{}`        | Unprefixed built-in tool names hidden from clients. Edited via the UI or `manage_tools`. `manage_tools` is reserved and ignored if added by hand; every other tool (including `run_command`) is freely disablable and exposed by default. |
-| `mcpMaxAnswerChars`       | `Int`               | `150_000`   | Soft ceiling on tool response size. When exceeded, the tool returns a progressively smaller summary instead of the full payload — see [Response shortening](#response-shortening). Advanced; no UI control. |
+| `mcpMaxAnswerChars`       | `Int`               | `150_000`   | Soft ceiling on tool response size. When exceeded, the tool returns a progressively smaller summary instead of the full payload - see [Response shortening](#response-shortening). Advanced; no UI control. |
 | `mcpConfigured`           | `Boolean`           | `false`     | Internal first-launch marker. Once `true`, embedder defaults no longer override the user's choice.     |
 
 ## Embedder integration
@@ -740,7 +740,7 @@ Runtime.getRuntime().addShutdownHook(Thread {
 
 `start()` is idempotent. It begins watching `mcpEnabled` / `mcpPort` and
 binds/unbinds the Ktor engine accordingly. `stop()` cancels the watcher and
-stops Ktor asynchronously — safe to call from `onDispose` on the UI thread.
+stops Ktor asynchronously - safe to call from `onDispose` on the UI thread.
 
 ### 3. Provide `LocalBossTermMcpConfig` for the settings UI
 
@@ -766,7 +766,7 @@ guide.
 
 `McpTerminalRegistry` is a singleton. Each window that hosts a
 `TabbedTerminalState` must register that state so the MCP server can find
-tabs across windows. The registry only accepts `TabbedTerminalState` — apps
+tabs across windows. The registry only accepts `TabbedTerminalState` - apps
 built on the single-terminal `EmbeddableTerminal` component can still bind
 the MCP server and register their own tools via `additionalTools`, but the
 tab-scoped built-ins (`list_tabs`, `read_scrollback`, `send_input`, etc.)
@@ -790,10 +790,10 @@ window code is the canonical example.
 ### Canonical samples
 
 - [`embedded-example/src/desktopMain/kotlin/ai/rever/bossterm/embedded/Main.kt`](../embedded-example/src/desktopMain/kotlin/ai/rever/bossterm/embedded/Main.kt)
-  — single-window app, register on the embeddable state, custom tool
+  - single-window app, register on the embeddable state, custom tool
   `embedded_example_app_info`.
 - [`tabbed-example/src/desktopMain/kotlin/ai/rever/bossterm/tabbed/Main.kt`](../tabbed-example/src/desktopMain/kotlin/ai/rever/bossterm/tabbed/Main.kt)
-  — multi-window tabbed app, register per-window, custom tool
+  - multi-window tabbed app, register per-window, custom tool
   `tabbed_example_window_overview` that iterates `McpTerminalRegistry.allStates()`.
 
 ## `BossTermMcpConfig` reference
@@ -810,7 +810,7 @@ From
 | `defaultPort`             | `Int`                      | `7676`             | First-launch port. After `mcpConfigured` flips, the user's setting wins.                                                             |
 | `defaultEnabled`          | `Boolean`                  | `false`            | First-launch enabled state. After `mcpConfigured` flips, the user's setting wins.                                                    |
 | `showInSettingsUi`        | `Boolean`                  | `true`             | When `false`, hides the MCP section from the in-app Settings UI. The status pill is still driven by `mcpShowStatusIndicator`.        |
-| `additionalTools`         | `(Server) -> Unit`         | `{}` (no-op)       | Hook to register embedder-specific tools. Tool names here are **not** prefixed — the embedder owns the namespace.                    |
+| `additionalTools`         | `(Server) -> Unit`         | `{}` (no-op)       | Hook to register embedder-specific tools. Tool names here are **not** prefixed - the embedder owns the namespace.                    |
 | `customToolDescriptions`  | `Map<String, String>`      | `{}`               | Override descriptions of built-in tools. Keys are unprefixed names. Unknown keys are silently ignored; unmentioned tools keep default. |
 
 ## Customizing tool descriptions
@@ -857,7 +857,7 @@ additionalTools = { server ->
 }
 ```
 
-The tool name is whatever the embedder picks — `toolNamePrefix` is **not**
+The tool name is whatever the embedder picks - `toolNamePrefix` is **not**
 applied. Choose a unique prefix to avoid colliding with future BossTerm
 built-ins. See the two example modules for working tools that introspect the
 host process via the embedder hook.
@@ -868,11 +868,11 @@ Tools can be hidden from clients in three equivalent ways. Each writes
 `disabledMcpTools` in `settings.json`; changes apply live without restarting
 the server.
 
-- **Settings UI** — Settings → BossTerm MCP → Exposed Tools, uncheck the
+- **Settings UI** - Settings → BossTerm MCP → Exposed Tools, uncheck the
   tool.
-- **`manage_tools` MCP tool** — `{"operation": "disable", "names":
+- **`manage_tools` MCP tool** - `{"operation": "disable", "names":
   ["send_input"]}`.
-- **Direct edit** — add the unprefixed name to `disabledMcpTools` in
+- **Direct edit** - add the unprefixed name to `disabledMcpTools` in
   `~/.bossterm/settings.json` and save. The settings watcher detects the
   change and reconfigures the live server.
 
@@ -890,7 +890,7 @@ directory comes back as `{id, title, isActive}` rather than
 carries the always-null `commandText`. Same for any other optional field on
 any DTO.
 
-For most clients this is transparent — JSON parsers return the same
+For most clients this is transparent - JSON parsers return the same
 implicit `null` / `undefined` / `None` whether the key is absent or
 explicitly `null`. The only place it bites is code that probes
 *presence* rather than value:
@@ -903,17 +903,17 @@ response.commandText === null  // was true; now undefined
 
 If your client relies on presence semantics, switch to value checks
 (`response.cwd == null` instead of `'cwd' in response`). Set
-`mcpMaxAnswerChars = 0` (no effect on null omission — that's a separate
+`mcpMaxAnswerChars = 0` (no effect on null omission - that's a separate
 encoder setting) if you want everything else big-and-explicit too.
 
 The one place the server intentionally emits a literal top-level JSON
-`null` is `get_active_tab` when there is no active tab — that's hand-built
+`null` is `get_active_tab` when there is no active tab - that's hand-built
 outside the encoder and is unaffected by the setting.
 
 ## Response shortening
 
-Three built-in tools can return unbounded responses — `search_output`,
-`read_scrollback`, and `read_debug_console` — so each runs its full payload
+Three built-in tools can return unbounded responses - `search_output`,
+`read_scrollback`, and `read_debug_console` - so each runs its full payload
 through a per-tool fallback ladder. If the full JSON would exceed
 `settings.mcpMaxAnswerChars` (default `150_000`), the server returns a
 progressively smaller well-formed JSON instead. The agent never sees a
@@ -925,21 +925,21 @@ projection so clients can detect they're looking at a summary. Common
 shortened shapes:
 
 `search_output`
-- **positions only** — `matches` keeps `row`, `matchStart`, `matchEnd`; the
+- **positions only** - `matches` keeps `row`, `matchStart`, `matchEnd`; the
   matched line text is dropped. Usually 60–80% smaller than full.
-- **row counts** — `{rowCounts: {row: hits}, totalMatches}` instead of per-match
+- **row counts** - `{rowCounts: {row: hits}, totalMatches}` instead of per-match
   records.
-- **totals only** — `{totalMatches, truncated, historyLinesCount, height}`.
+- **totals only** - `{totalMatches, truncated, historyLinesCount, height}`.
 
 `read_scrollback`
-- **tail** — keeps the last 20 lines and reports the requested count.
-- **totals only** — `{totalAvailable}` with a "retry with smaller `lines`"
+- **tail** - keeps the last 20 lines and reports the requested count.
+- **totals only** - `{totalAvailable}` with a "retry with smaller `lines`"
   hint.
 
 `read_debug_console`
-- **metadata only** — chunks keep `index`, `timestamp`, `source`; the `data`
+- **metadata only** - chunks keep `index`, `timestamp`, `source`; the `data`
   byte payload is dropped. Great for polling "any new chunks since N".
-- **stats only** — drops the chunks list entirely; agent narrows by
+- **stats only** - drops the chunks list entirely; agent narrows by
   `since_index`, `sources`, or `max_chunks` on the next call.
 
 Reduce `mcpMaxAnswerChars` (e.g. to `50_000`) if you want the fallbacks to
@@ -959,7 +959,7 @@ INFO  BossTermMcpManager - Starting BossTerm MCP server on http://127.0.0.1:7677
 INFO  BossTermMcpManager - BossTerm MCP server ready: http://127.0.0.1:7677/ ...
 ```
 
-The user-configured `mcpPort` setting is NOT updated by fallback — the next
+The user-configured `mcpPort` setting is NOT updated by fallback - the next
 restart still tries the original first, in case the conflicting process has
 exited. The status pill's hover tooltip and the silent CLI auto-reattach
 both use the actual running port, so registered AI CLIs follow along
@@ -975,7 +975,7 @@ automatically.
 
 **The server won't bind any port at all.** Either (a) all 10 attempted ports
 were busy, (b) the configured port was rejected for a reason other than
-"address in use" — e.g. permission denied on a privileged port (`<1024` on
+"address in use" - e.g. permission denied on a privileged port (`<1024` on
 Linux/macOS when not running as root), or (c) the very first attempt hit a
 non-bind error. The manager treats permission-denied as a hard failure
 (not a "try the next port" condition) so it doesn't walk up a privileged
@@ -1006,7 +1006,7 @@ the CLI's config and the next BossTerm startup will see it via
 
 **Codex registered but won't connect.** Known. codex-cli 0.130 speaks
 streamable HTTP only and BossTerm's MCP SDK serves SSE. Tracked as a
-follow-up — the registration is recorded in `mcpAttachedTo` so the entry
+follow-up - the registration is recorded in `mcpAttachedTo` so the entry
 auto-refreshes once the SDK is upgraded.
 
 **Port stuck after Force-Quit.** The 1.5 s Ktor shutdown grace is normally

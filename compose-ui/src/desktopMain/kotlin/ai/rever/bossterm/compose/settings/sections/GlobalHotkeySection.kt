@@ -93,7 +93,7 @@ fun GlobalHotkeySection(
                     onCheckedChange = { onSettingsChange(settings.copy(globalHotkeyToggleEnabled = it)) },
                     description = "Also register one hotkey (" +
                         currentConfig.toDisplayString(useMacSymbols = isMacOS) +
-                        ") that shows/hides the active window from anywhere — a drop-down-terminal trigger.",
+                        ") that shows/hides the active window from anywhere - a drop-down-terminal trigger.",
                     enabled = settings.globalHotkeyEnabled
                 )
             }
@@ -103,7 +103,7 @@ fun GlobalHotkeySection(
                 checked = settings.showGlobalHotkeyHint,
                 onCheckedChange = { onSettingsChange(settings.copy(showGlobalHotkeyHint = it)) },
                 description = "Display a small dim label (e.g. \"⌘1\") in the top-right of each " +
-                        "window showing its assigned global hotkey. Off by default — the hint is " +
+                        "window showing its assigned global hotkey. Off by default - the hint is " +
                         "only useful if you actively use global hotkeys.",
                 enabled = settings.globalHotkeyEnabled
             )

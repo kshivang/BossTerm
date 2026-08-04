@@ -275,7 +275,7 @@ private fun McpStatusTooltip(
         )
         if (attached.isEmpty()) {
             Text(
-                text = "No CLIs attached yet — right-click to attach.",
+                text = "No CLIs attached yet - right-click to attach.",
                 color = McpToastTextColor,
                 fontSize = 11.sp
             )
@@ -315,7 +315,7 @@ fun AttachToast(
             "Attaching ${status.target.displayName}…" to McpToastTextColor
         is AttachStatus.Done -> when (val r = status.result) {
             is McpAttachResult.Success -> {
-                val tail = if (r.detail.isNotEmpty()) " — ${r.detail.take(80)}" else ""
+                val tail = if (r.detail.isNotEmpty()) " - ${r.detail.take(80)}" else ""
                 "✓ ${r.target.displayName} attached$tail" to McpToastSuccessColor
             }
             is McpAttachResult.CopiedToClipboard ->

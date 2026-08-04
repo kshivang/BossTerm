@@ -120,7 +120,7 @@
     cryptoFailed = true;
     sessionEnded = true; // terminal — don't let "Disconnected" overwrite it
     showOverlay("This link is missing its key",
-      "Re-copy the full share link from BossTerm — it must include the part after #.", false);
+      "Re-copy the full share link from BossTerm - it must include the part after #.", false);
     try { (socket || ws).close(); } catch (e) {}
   }
 
@@ -211,7 +211,7 @@
   var viewPillEl = document.getElementById("viewpill");
   function updateViewPill() {
     if (!controlGranted) {
-      viewPillEl.textContent = "View only — click to request control";
+      viewPillEl.textContent = "View only - click to request control";
       viewPillEl.style.display = "";
       viewPillEl.onclick = function () {
         if (window.confirm("You're viewing this session read-only. Ask the host for control?"))
@@ -224,7 +224,7 @@
       if (layout.tabs[i].id === activeTabId) { t = layout.tabs[i]; break; }
     if (t && t.origin && t.originReadOnly) {
       var name = t.originName || "remote";
-      viewPillEl.textContent = "View only — click to request control of " + name;
+      viewPillEl.textContent = "View only - click to request control of " + name;
       viewPillEl.style.display = "";
       viewPillEl.onclick = function () { requestUpstreamControl(t.id, name); };
       return;
@@ -318,7 +318,7 @@
       voiceCallBtnEl.className = voiceMicOk ? "" : "disabled";
       voiceCallBtnEl.title = voiceMicOk
         ? "Talk to this session's BossTerm agent"
-        : "Voice calls need an https share link — open the remote (tunnel) link";
+        : "Voice calls need an https share link - open the remote (tunnel) link";
       voiceLabelEl.textContent = "Call BossTerm";
     } else {
       voiceCallBtnEl.className = "";
@@ -340,7 +340,7 @@
   }
   voiceCallBtnEl.onclick = function () {
     if (!voice.status || !voice.status.available || voice.state !== "idle") return;
-    if (!voiceMicOk) { toast("Voice calls need an https share link — open the remote (tunnel) link."); return; }
+    if (!voiceMicOk) { toast("Voice calls need an https share link - open the remote (tunnel) link."); return; }
     if (viewOnlyGate()) return; // view-only → request-control prompt
     // Claim the call SYNCHRONOUSLY, before awaiting the mic: the guard above runs again on a second
     // click while getUserMedia is still pending, and two clicks used to mean two mic streams and two
@@ -371,11 +371,11 @@
       // reliably — and told the caller their network blocks WebRTC, which is the wrong cause, while
       // the host had already been billed for the session. Two phases, two budgets; the timer is
       // restarted when voiceSession arrives (see armSdpWatchdog).
-      voiceArmWatchdog(VOICE_MINT_TIMEOUT_MS, "The host didn't answer in time — try again.");
+      voiceArmWatchdog(VOICE_MINT_TIMEOUT_MS, "The host didn't answer in time - try again.");
     }).catch(function () {
       voice.state = "idle"; // release the claim so the button comes back
       updateVoiceBar();
-      toast("Microphone access was denied — allow the mic for this site and try again.");
+      toast("Microphone access was denied - allow the mic for this site and try again.");
     });
   };
   voiceMuteEl.onclick = function () {
@@ -538,22 +538,22 @@
   function voiceErrorText(m) {
     switch (m.code) {
       case "no_key":
-        return "The host hasn't added an OpenAI key yet — Boss Calling needs one in BossTerm Settings.";
+        return "The host hasn't added an OpenAI key yet - Boss Calling needs one in BossTerm Settings.";
       case "disabled":
         return "The host has Boss Calling switched off for shared sessions.";
       case "unauthorized":
-        return "The host's OpenAI key was rejected — check it in BossTerm Settings.";
+        return "The host's OpenAI key was rejected - check it in BossTerm Settings.";
       case "not_controller":
-        return "You need control of this session to call — asking the host now.";
+        return "You need control of this session to call - asking the host now.";
       case "rate_limited":
-        return "Too many call attempts — wait a moment and try again.";
+        return "Too many call attempts - wait a moment and try again.";
       case "stale_call":
-        return "That call is no longer active — start a new one.";
+        return "That call is no longer active - start a new one.";
       case "too_many_calls":
         return "This session already has as many voice calls as it allows.";
       case "insecure_transport":
         return "This session isn't end-to-end encrypted, so the host won't put a call secret on " +
-          "it — reopen the full share link, including the #k part after the '#'.";
+          "it - reopen the full share link, including the #k part after the '#'.";
       default:
         return "Couldn't start the call" + (m.message ? ": " + m.message : ".");
     }
@@ -647,7 +647,7 @@
         output: JSON.stringify({ error: "The host did not answer this tool call in time." }),
       },
     });
-    toast("A tool call timed out — the agent will say so.");
+    toast("A tool call timed out - the agent will say so.");
     updateVoiceBar();
     voiceMaybeRequestResponse();
   }
@@ -693,7 +693,7 @@
       voiceStartIdleWatch();
       voice.state = "live";
       updateVoiceBar();
-      toast("Connected — say something.");
+      toast("Connected - say something.");
     };
     dc.onmessage = function (ev) {
       var e; try { e = JSON.parse(ev.data); } catch (x) { return; }
@@ -750,7 +750,7 @@
       return pc.setRemoteDescription({ type: "answer", sdp: answer });
     }).catch(function () {
       if (voice.state !== "idle") {
-        toast("Couldn't establish the voice connection — your network may block WebRTC.");
+        toast("Couldn't establish the voice connection - your network may block WebRTC.");
         endCall(true);
       }
     });
@@ -760,7 +760,7 @@
   function voiceOnSocketDown() {
     if (voice.state !== "idle") {
       endCall(false);
-      toast("Share connection lost — call ended.");
+      toast("Share connection lost - call ended.");
     }
   }
 
@@ -1474,7 +1474,7 @@
   function setStatus(cls) { statusEl.className = cls; }
 
   if (!token) {
-    document.body.textContent = "Missing share token — open the link from BossTerm's Share dialog.";
+    document.body.textContent = "Missing share token - open the link from BossTerm's Share dialog.";
     return;
   }
 
@@ -2313,7 +2313,7 @@
           hd.appendChild(lbl);
           if (g.offline) {
             var off = document.createElement("span");
-            off.textContent = "· offline"; off.title = "The host lost its connection to this session — content is frozen";
+            off.textContent = "· offline"; off.title = "The host lost its connection to this session - content is frozen";
             off.style.cssText = "color:#E57373;font-size:10px;";
             hd.appendChild(off);
           }
@@ -2337,7 +2337,7 @@
           }
           if (g.readOnly) {
             var eye = document.createElement("span");
-            eye.textContent = "👁"; eye.title = "Read-only via this host — click to request control";
+            eye.textContent = "👁"; eye.title = "Read-only via this host - click to request control";
             eye.style.cursor = "pointer";
             eye.onclick = function (ev) { ev.stopPropagation(); requestUpstreamControl(anchorTab(g).id, g.name || "remote"); };
             hd.appendChild(eye);
@@ -2445,7 +2445,7 @@
       add.title = "Ask the host to mirror another BossTerm share link";
       add.onclick = function () {
         if (viewOnlyGate()) return;
-        var link = window.prompt("Paste a BossTerm share link — the host will mirror its tabs:");
+        var link = window.prompt("Paste a BossTerm share link - the host will mirror its tabs:");
         if (link && link.trim()) sendMsg({ t: "offerShare", link: link.trim() });
       };
       sidebarEl.appendChild(add);
@@ -2523,7 +2523,7 @@
   // control, offer to request it instead of silently doing nothing. True = handled, caller bails.
   function viewOnlyGate() {
     if (controlGranted) return false;
-    if (window.confirm("You're viewing this session read-only — this action needs control. Ask the host for it?"))
+    if (window.confirm("You're viewing this session read-only - this action needs control. Ask the host for it?"))
       sendMsg({ t: "requestControl" });
     return true;
   }
@@ -2536,7 +2536,7 @@
     if (now < inputPromptQuietUntil) return;
     inputPromptQuietUntil = now + 30000;
     if (tabId) { requestUpstreamControl(tabId, name); return; }
-    if (window.confirm("You're viewing this session read-only — typing needs control. Ask the host for it?"))
+    if (window.confirm("You're viewing this session read-only - typing needs control. Ask the host for it?"))
       sendMsg({ t: "requestControl" });
   }
   function tabOfPane(paneId) {
@@ -3105,7 +3105,7 @@
         // The host's master switch is a kill switch: don't just hide the bar under a live call.
         if (!m.available && voice.state !== "idle") {
           endCall(true);
-          toast("Boss Calling was turned off on the host — call ended.");
+          toast("Boss Calling was turned off on the host - call ended.");
         }
         updateVoiceBar();
         break;
@@ -3114,7 +3114,7 @@
         // the mint's.
         voiceArmWatchdog(
           VOICE_SDP_TIMEOUT_MS,
-          "Couldn't establish the voice connection — your network may block WebRTC."
+          "Couldn't establish the voice connection - your network may block WebRTC."
         );
         connectRealtime(m); break;
       case "voiceError":
@@ -3144,7 +3144,7 @@
         }
         updateVoiceBar();
         voiceMaybeRequestResponse();
-        if (m.isError) toast("Tool failed — the agent will explain.");
+        if (m.isError) toast("Tool failed - the agent will explain.");
         break;
       case "control":
         controlGranted = !!m.granted;

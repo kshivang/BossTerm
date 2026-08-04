@@ -5,7 +5,7 @@
 - **Repository**: BossTerm (Kotlin/Compose Desktop terminal emulator)
 - **Main Branch**: `master` | **Dev Branch**: `dev`
 - **Settings**: `~/.bossterm/settings.json`
-- **Secrets**: `~/.bossterm/voice.json` (chmod 600) — the Boss Calling OpenAI key, deliberately NOT in settings.json
+- **Secrets**: `~/.bossterm/voice.json` (chmod 600) - the Boss Calling OpenAI key, deliberately NOT in settings.json
 
 ## Build & Run
 
@@ -46,18 +46,18 @@ Do NOT include AI co-author attribution in commits unless the user explicitly re
 
 ### Font Loading
 Skiko can't read a typeface out of the jar (classloader issues), so bundled fonts must land on
-disk first. Extract via `extractBundledFont()` in `compose-ui/.../util/FontUtils.kt` — do NOT go
+disk first. Extract via `extractBundledFont()` in `compose-ui/.../util/FontUtils.kt` - do NOT go
 back to a per-launch `File.createTempFile`:
 
 - `classLoader.getResourceAsStream("fonts/….ttf")` → `~/.bossterm/fonts/<name>-<sha256-12>.ttf`
   (content-addressed, written once per font per upgrade, fsync + atomic rename, superseded copies
   pruned on the write path so a warm launch stays zero-I/O) → `Font(file = …)`
 - A fresh multi-megabyte file per launch is the worst case for endpoint-security scanning, and
-  Skia's font path calls `dlsym` (CoreText weight mapping) — see the deadlock note below
+  Skia's font path calls `dlsym` (CoreText weight mapping) - see the deadlock note below
 
 ### Launch hangs with a window that never appears (macOS)
 Symptom: the process is alive, logs look healthy (MCP bound, settings saved), but no window paints,
-and the JVM sits near 0% CPU. This is not Gatekeeper, MDM policy, or a failed launch — it is
+and the JVM sits near 0% CPU. This is not Gatekeeper, MDM policy, or a failed launch - it is
 **dyld loader-lock contention**:
 
 ```
@@ -67,8 +67,8 @@ other thread      dlopen → Loader::mapSegments → fcntl          (holds the W
                   ^ code-signature validation on first map       stalled in the kernel)
 ```
 
-Anything that stalls that first-map signature check — an EDR/endpoint-security extension scanning
-a newly written file is the common one — blocks the event thread before the first frame.
+Anything that stalls that first-map signature check - an EDR/endpoint-security extension scanning
+a newly written file is the common one - blocks the event thread before the first frame.
 
 Diagnose (do not guess at MDM):
 ```bash
@@ -78,7 +78,7 @@ ps -p <pid> -o %cpu=,time=,etime=                         # blocked (low CPU, hi
 ```
 It clears itself once the scan returns; signature results are cached per file, so warm launches are
 fine and a clean build re-arms it. Note that querying windows via `osascript`/System Events makes
-macOS `dlopen` the accessibility bundles into the target — that adds a waiter on the very same lock
+macOS `dlopen` the accessibility bundles into the target - that adds a waiter on the very same lock
 and reports `0 windows` as a false negative. Use `jcmd`/`sample` instead.
 
 ### Emoji Rendering
@@ -124,16 +124,16 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 - `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/settings/TerminalSettings.kt`
 - `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/actions/BuiltinActions.kt`
 
-**Boss Calling (voice)** — `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/voice/`
-- `VoiceToolCatalog.kt` — the curated tool surface both call surfaces advertise; a new tool needs a
+**Boss Calling (voice)** - `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/voice/`
+- `VoiceToolCatalog.kt` - the curated tool surface both call surfaces advertise; a new tool needs a
   schema here, a handler in each executor, and a description in `HostVoiceCallController.describeTool`
   AND `viewer.js voiceDescribeTool`
-- `VoiceCallService.kt` — share-viewer policy: control role, share scope, mint budget, call tokens
-- `HostVoiceCallController.kt` — the in-app call (JDK WebSocket + `javax.sound.sampled`, no WebRTC)
-- `VoiceAgentStorage.kt` — the chmod-600 key file
-- `VoiceAgentCustomization.kt` — the embedder seam for the agent's instructions (the button's label
+- `VoiceCallService.kt` - share-viewer policy: control role, share scope, mint budget, call tokens
+- `HostVoiceCallController.kt` - the in-app call (JDK WebSocket + `javax.sound.sampled`, no WebRTC)
+- `VoiceAgentStorage.kt` - the chmod-600 key file
+- `VoiceAgentCustomization.kt` - the embedder seam for the agent's instructions (the button's label
   is a `TabbedTerminal` parameter instead, alongside `contextMenuItems`)
-- `VoiceToolSource.kt` — the EMBEDDER's tool surface (`TabbedTerminal(voiceToolSource = …)`), merged
+- `VoiceToolSource.kt` - the EMBEDDER's tool surface (`TabbedTerminal(voiceToolSource = …)`), merged
   into the in-app agent's tools by `CompositeVoiceToolExecutor`. In-app only; shares keep the
   curated catalog. `VoiceToolPolicy.kt` holds the two safety tiers (never-advertise vs
   confirmation-gated) and `VoiceConfirmationGate.kt` the speech interlock behind the second
@@ -148,17 +148,17 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 - **Search**: Ctrl+F (regex, case-sensitive)
 - **Clipboard**: Copy-on-select, middle-click paste
 - **Mouse**: vim/tmux support, Shift bypasses
-- **AI Menu**: open-source-first (`AIAssistants.AI_ASSISTANTS_OSS_FIRST`) — Hermes Agent, Kimi Code
+- **AI Menu**: open-source-first (`AIAssistants.AI_ASSISTANTS_OSS_FIRST`) - Hermes Agent, Kimi Code
   CLI, OpenClaw, OpenCode, then Codex, Gemini CLI, Grok Build, then Claude Code. Ordering is derived
   from each entry's `openSource`/`localModels` flags, not declaration order. Adding a CLI means ONE entry in
-  `AIAssistants.BUILTIN` plus (if it speaks MCP) one `McpAttachTarget` — everything else (menus,
+  `AIAssistants.BUILTIN` plus (if it speaks MCP) one `McpAttachTarget` - everything else (menus,
   detection, onboarding, settings, remote/share menus) reads the registry. `AttachTargetCoverageTest`
   fails the build if the two registries drift apart
-- **Local Models**: Ollama lives in its own `LOCAL_MODEL_RUNTIME` category — it serves models rather
+- **Local Models**: Ollama lives in its own `LOCAL_MODEL_RUNTIME` category - it serves models rather
   than acting as an agent, so it has no auto-mode flag and no MCP attach target
-- **Boss Calling**: voice-call the session's AI agent — the status-strip pill (in-app) or the share
+- **Boss Calling**: voice-call the session's AI agent - the status-strip pill (in-app) or the share
   viewer's bottom bar (remote). "Boss Calling" is the FEATURE and is fixed; the in-app button's
-  label is `TabbedTerminal(callLabel = …)` — null renders "Call BossTerm", BossConsole passes
+  label is `TabbedTerminal(callLabel = …)` - null renders "Call BossTerm", BossConsole passes
   "Call Boss". The viewer's button is a static web asset and stays "Call BossTerm". Needs an OpenAI
   key in `~/.bossterm/voice.json`; remote calls additionally require control of the share
 - **Debug**: Ctrl+Shift+D

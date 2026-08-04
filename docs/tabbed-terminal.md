@@ -173,7 +173,7 @@ DisposableEffect(Unit) { onDispose { terminalState.dispose() } }
 
 ### Split Pane API (T6)
 
-Programmatic control over split panes within tabs. All methods accept an optional `tabId` parameter — if `null`, the active tab is used.
+Programmatic control over split panes within tabs. All methods accept an optional `tabId` parameter - if `null`, the active tab is used.
 
 | Method | Description |
 |--------|-------------|
@@ -935,8 +935,8 @@ See the [tabbed-example](../tabbed-example) module for a full working example wi
 - Window focus tracking
 - Settings panel overlay
 - **State persistence demo** (view switching)
-- **Plugin API demo** — interactive Split Pane (T6) and Reactive State (T7) controls
-- **Reactive status bar** — live tab/pane info powered by T7 flows
+- **Plugin API demo** - interactive Split Pane (T6) and Reactive State (T7) controls
+- **Reactive status bar** - live tab/pane info powered by T7 flows
 
 Run the example:
 

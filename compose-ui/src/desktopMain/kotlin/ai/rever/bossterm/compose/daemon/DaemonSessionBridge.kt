@@ -150,13 +150,13 @@ class DaemonSessionBridge(
         val box = outbox ?: run {
             // No live connection (reconnecting). Dropping queued input here is intentional — see the
             // per-connection outbox note — but make it visible rather than silent.
-            log.debug("attach: dropped client msg {} — no live connection", m::class.simpleName)
+            log.debug("attach: dropped client msg {} - no live connection", m::class.simpleName)
             return false
         }
         if (box.trySend(DaemonAttachProtocol.encodeClient(m)).isFailure) {
             // Output drops are by design; a dropped *input*/control message is a correctness issue, so
             // surface it (the socket is wedged and will drop+reconnect).
-            log.warn("attach: outbox full — dropped client msg {}", m::class.simpleName)
+            log.warn("attach: outbox full - dropped client msg {}", m::class.simpleName)
             return false
         }
         return true

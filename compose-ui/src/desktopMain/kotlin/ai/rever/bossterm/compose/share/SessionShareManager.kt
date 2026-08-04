@@ -554,7 +554,7 @@ object SessionShareManager {
             // left behind a shut-down manager runs observer coroutines on its OWN scope, which our
             // cancelChildren() never reaches — it would keep observing terminal state forever.
             if (supersededByShutdown(epoch)) {
-                log.warn("Share for {} lost a race with shutdown — tearing it back down", tabId)
+                log.warn("Share for {} lost a race with shutdown - tearing it back down", tabId)
                 unregisterShareLocked(tabId, share)
                 return@withLock null
             }
@@ -564,7 +564,7 @@ object SessionShareManager {
             if (!secure) {
                 log.warn(
                     "Session-sharing link is plaintext over a non-private host ({}). " +
-                        "Use https (Tailscale Funnel or a TLS tunnel) — input/output is not encrypted.",
+                        "Use https (Tailscale Funnel or a TLS tunnel) - input/output is not encrypted.",
                     url
                 )
             }
@@ -1018,7 +1018,7 @@ object SessionShareManager {
                 // were binding would have cleared the latch (see [shutdownEpoch]).
                 if (supersededByShutdown(epoch)) {
                     log.warn(
-                        "Session-sharing server bound on {}:{} while shutting down — stopping it again",
+                        "Session-sharing server bound on {}:{} while shutting down - stopping it again",
                         host, port
                     )
                     engine = null

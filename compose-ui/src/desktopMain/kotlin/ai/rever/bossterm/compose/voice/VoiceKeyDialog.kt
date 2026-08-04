@@ -82,7 +82,7 @@ internal fun VoiceKeyDialog(
                 input = ""
                 onSaved()
             } else {
-                error = "Couldn't write ~/.bossterm/voice.json — key not saved."
+                error = "Couldn't write ~/.bossterm/voice.json - key not saved."
             }
         }
     }
@@ -95,7 +95,7 @@ internal fun VoiceKeyDialog(
             Column(modifier = Modifier.width(380.dp)) {
                 Text(
                     "Boss Calling needs your OpenAI API key to start a voice call. It is stored " +
-                        "owner-only in ~/.bossterm/voice.json — never in settings.json — and is used " +
+                        "owner-only in ~/.bossterm/voice.json - never in settings.json - and is used " +
                         "only to open the call.",
                     color = TextMuted,
                     fontSize = 11.sp,

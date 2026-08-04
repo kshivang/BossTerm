@@ -48,7 +48,7 @@ class VoiceContextSnapshotTest {
 
     @Test
     fun `ordinary titles and paths pass through untouched`() {
-        assertEquals("zsh — ~/Development/Boss", VoiceContextSnapshot.field("zsh — ~/Development/Boss"))
+        assertEquals("zsh - ~/Development/Boss", VoiceContextSnapshot.field("zsh - ~/Development/Boss"))
         assertEquals("/Users/x/src/my-project", VoiceContextSnapshot.field("/Users/x/src/my-project"))
         assertEquals("", VoiceContextSnapshot.field(null))
         assertEquals("", VoiceContextSnapshot.field(""))

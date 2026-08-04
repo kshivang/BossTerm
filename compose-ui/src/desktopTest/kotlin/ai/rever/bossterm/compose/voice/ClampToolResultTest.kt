@@ -49,7 +49,7 @@ class ClampToolResultTest {
         assertFalse(head.isEmpty())
         assertFalse(
             Character.isHighSurrogate(head.last()),
-            "head ends on a high surrogate — that's half a character",
+            "head ends on a high surrogate - that's half a character",
         )
         // And it round-trips as text without replacement characters.
         assertFalse(head.toByteArray(Charsets.UTF_8).toString(Charsets.UTF_8).contains('�'))

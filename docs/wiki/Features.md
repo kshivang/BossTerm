@@ -93,7 +93,7 @@ BossTerm is packed with features for modern terminal workflows.
 
 | Feature | Description |
 |---------|-------------|
-| **Session Sharing** | Watch or control a tab / window / all windows from any device — self-hosted, no cloud relay |
+| **Session Sharing** | Watch or control a tab / window / all windows from any device - self-hosted, no cloud relay |
 | **Web Viewer** | Mobile-friendly xterm.js viewer over LAN, Tailscale, or a zero-config Cloudflare tunnel, with a QR code |
 | **Remote Control** | View-only or full typing access on approval; connect from another BossTerm as a native client |
 | **End-to-End Encryption** | Per-connection AES-256-GCM; the key rides the URL fragment and never reaches the relay |

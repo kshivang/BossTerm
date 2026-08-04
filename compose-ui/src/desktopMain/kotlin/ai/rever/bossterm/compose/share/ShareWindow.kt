@@ -147,9 +147,9 @@ fun ShareWindow(
     Window(
         onCloseRequest = onDismiss,
         title = when (info.scope) {
-            ShareScope.TAB -> "BossTerm — Share Tab"
-            ShareScope.WINDOW -> "BossTerm — Share Window"
-            ShareScope.ALL -> "BossTerm — Share All Windows"
+            ShareScope.TAB -> "BossTerm - Share Tab"
+            ShareScope.WINDOW -> "BossTerm - Share Window"
+            ShareScope.ALL -> "BossTerm - Share All Windows"
         },
         resizable = false,
         state = rememberWindowState(size = DpSize(600.dp, 680.dp))
@@ -209,7 +209,7 @@ fun ShareWindow(
                         }
                         SegToggle("View", "Control", rightSelected = controlQr) { controlQr = it }
                         Text(
-                            if (controlQr) "QR encodes the Control link — scanning grants typing access."
+                            if (controlQr) "QR encodes the Control link - scanning grants typing access."
                             else "QR encodes the View link (read-only).",
                             color = if (controlQr) Danger else TextMuted, fontSize = 11.sp,
                             textAlign = TextAlign.Center,
@@ -242,8 +242,8 @@ fun ShareWindow(
                         Text(
                             when (info.scope) {
                                 ShareScope.TAB -> "Sharing this tab and its splits."
-                                ShareScope.WINDOW -> "Sharing all tabs in this window — switchable in the viewer, with splits."
-                                ShareScope.ALL -> "Sharing every window — viewers see tabs grouped by window."
+                                ShareScope.WINDOW -> "Sharing all tabs in this window - switchable in the viewer, with splits."
+                                ShareScope.ALL -> "Sharing every window - viewers see tabs grouped by window."
                             },
                             color = TextMuted, fontSize = 11.sp,
                             textAlign = TextAlign.Center,
@@ -256,7 +256,7 @@ fun ShareWindow(
                 ShareSection("Links", headerAction = headerActions) {
                     info.e2eCode?.let { code ->
                         Text(
-                            "🔒 End-to-end encrypted · code $code — the relay can't read this session. " +
+                            "🔒 End-to-end encrypted · code $code - the relay can't read this session. " +
                                 "The same code shows on the viewer; matching codes confirm the key end-to-end.",
                             color = AccentColor, fontSize = 11.sp
                         )
@@ -272,13 +272,13 @@ fun ShareWindow(
                     )
                     if (!info.secure) {
                         Text(
-                            "⚠ Not encrypted — this link is plaintext. Use https (Tailscale Funnel / a TLS tunnel) beyond your trusted LAN.",
+                            "⚠ Not encrypted - this link is plaintext. Use https (Tailscale Funnel / a TLS tunnel) beyond your trusted LAN.",
                             color = Danger, fontSize = 11.sp
                         )
                     }
                     if (tailscaleMode == "cloudflare") {
                         Text(
-                            "The public link is ephemeral — use ↻ Refresh link (above) to mint a new one.",
+                            "The public link is ephemeral - use ↻ Refresh link (above) to mint a new one.",
                             color = TextMuted, fontSize = 11.sp
                         )
                     }
@@ -451,7 +451,7 @@ private fun RemoteAccessSetupSection(
     // new link. On confirm we persist the choice (onModeChange) AND switch the live tunnel.
     pendingMode?.let { target ->
         val msg = when (target) {
-            "off" -> "Turn off remote access? The public link stops working — sharing stays on your LAN only."
+            "off" -> "Turn off remote access? The public link stops working - sharing stays on your LAN only."
             "cloudflare" -> "Switch to Cloudflare? A new public https://…trycloudflare.com link is generated; the current link stops working."
             "serve" -> "Switch to Tailscale Serve? A new tailnet-only link replaces the current one."
             "funnel" -> "Switch to Tailscale Funnel? A new public link replaces the current one."
@@ -497,7 +497,7 @@ private fun RemoteAccessSetupSection(
                     SessionShareManager.RemoteStatus.Retrying ->
                         "${remote.mode} · retrying (${remote.attempt}/${remote.maxAttempts})…"
                     SessionShareManager.RemoteStatus.Active -> "${remote.mode} · active"
-                    SessionShareManager.RemoteStatus.FellBack -> "${remote.mode} · unreachable — using LAN link"
+                    SessionShareManager.RemoteStatus.FellBack -> "${remote.mode} · unreachable - using LAN link"
                 },
                 color = when (remote.status) {
                     SessionShareManager.RemoteStatus.Active -> Success
@@ -555,9 +555,9 @@ private fun RemoteAccessSetupSection(
                         }
                     )
                     if (isCloudflare) {
-                        SetupStep(2, "That's it — Share, and a public https://…trycloudflare.com link is generated automatically (no account). It appears here in a few seconds and changes each session.")
+                        SetupStep(2, "That's it - Share, and a public https://…trycloudflare.com link is generated automatically (no account). It appears here in a few seconds and changes each session.")
                     } else {
-                        SetupStep(2, "Enable HTTPS certificates (required) — admin console → DNS → “Enable HTTPS”. Sign in with the SAME account as this machine, or the page 404s.")
+                        SetupStep(2, "Enable HTTPS certificates (required) - admin console → DNS → “Enable HTTPS”. Sign in with the SAME account as this machine, or the page 404s.")
                         LinkText("Open DNS settings →", "https://login.tailscale.com/admin/dns")
                         if (mode == "funnel") {
                             SetupStep(3, "Funnel also needs the Funnel node-attribute in your ACL policy. Add this block and Save:")
@@ -576,11 +576,11 @@ private fun RemoteAccessSetupSection(
                                 }
                             }
                         }
-                        SetupStep(if (mode == "funnel") 4 else 3, "After enabling, wait ~1 min (DNS / policy propagation), then Stop + Share again — the links above upgrade to https://<host>.ts.net.")
+                        SetupStep(if (mode == "funnel") 4 else 3, "After enabling, wait ~1 min (DNS / policy propagation), then Stop + Share again - the links above upgrade to https://<host>.ts.net.")
                     }
                     if (!active) {
                         Text(
-                            "Not active yet — the links above still use the LAN address. " +
+                            "Not active yet - the links above still use the LAN address. " +
                                 if (isCloudflare) "Share to bring up the public link (cloudflared installs automatically)." else "Finish the steps, then re-share.",
                             color = TextMuted, fontSize = 11.sp
                         )
@@ -619,14 +619,14 @@ private fun ProviderInstallRow(
                         installing -> if (isCloudflared) "Installing cloudflared automatically… (this can take a minute)"
                                       else "Installing via Homebrew… (this can take a minute)"
                         installed == null -> "Checking…"
-                        installed == true -> if (isCloudflared) "Ready ✓ — installed automatically (no sign-in needed)."
-                                             else "Installed ✓ — now sign in (menu-bar app, or `tailscale up`)."
-                        installFailed -> if (isCloudflared) "Automatic install failed — check your connection and Retry, or install manually."
-                                         else "Install failed — check your connection and Retry, or install manually."
-                        autoInstallOk -> if (isCloudflared) "Installs automatically when you share — no setup needed."
-                                         else "Not found — install it, then sign in."
-                        else -> if (isCloudflared) "Not supported on this platform — install manually."
-                                else "Not found — install manually."
+                        installed == true -> if (isCloudflared) "Ready ✓ - installed automatically (no sign-in needed)."
+                                             else "Installed ✓ - now sign in (menu-bar app, or `tailscale up`)."
+                        installFailed -> if (isCloudflared) "Automatic install failed - check your connection and Retry, or install manually."
+                                         else "Install failed - check your connection and Retry, or install manually."
+                        autoInstallOk -> if (isCloudflared) "Installs automatically when you share - no setup needed."
+                                         else "Not found - install it, then sign in."
+                        else -> if (isCloudflared) "Not supported on this platform - install manually."
+                                else "Not found - install manually."
                     },
                     color = when {
                         installed == true -> Success

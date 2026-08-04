@@ -107,7 +107,7 @@ class CallLabelTest {
             bossCallingIndicatorDescription(default),
         )
         assertEquals(
-            "Show a \"Call BossTerm\" button — in this window and in the share viewer — " +
+            "Show a \"Call BossTerm\" button - in this window and in the share viewer - " +
                 "that starts a voice conversation with an AI agent (OpenAI Realtime) able to " +
                 "inspect this session and run commands. Starting a call sends your tab titles " +
                 "and working directories to OpenAI, and anything the agent then reads from the " +
@@ -166,7 +166,7 @@ class CallLabelTest {
             .toList()
         assertTrue(
             offenders.isEmpty(),
-            "hardcoded call label — render TabbedTerminal's resolved callLabel instead:\n" +
+            "hardcoded call label - render TabbedTerminal's resolved callLabel instead:\n" +
                 offenders.joinToString("\n"),
         )
     }
@@ -192,7 +192,7 @@ class CallLabelTest {
             val source = stripComments(file.readText())
             for (callee in callees) {
                 val calls = invocationArguments(source, callee)
-                assertTrue(calls.isNotEmpty(), "no $callee( call left in $path — did it move?")
+                assertTrue(calls.isNotEmpty(), "no $callee( call left in $path - did it move?")
                 for (args in calls) {
                     assertTrue(
                         args.contains("callLabel"),
@@ -245,7 +245,7 @@ class CallLabelTest {
             ?: fail("share-viewer/index.html is not on the test classpath")
         assertTrue(
             html.contains("<span id=\"voicelabel\">Call BossTerm</span>"),
-            "the viewer's button was renamed — VIEWER_CALL_LABEL in BossCallingSection.kt is now a lie",
+            "the viewer's button was renamed - VIEWER_CALL_LABEL in BossCallingSection.kt is now a lie",
         )
     }
 

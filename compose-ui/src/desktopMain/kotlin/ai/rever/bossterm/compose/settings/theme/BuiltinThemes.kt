@@ -386,9 +386,51 @@ object BuiltinThemes {
     )
 
     /**
+     * BOSS Blueprint — the bossconsole.ai identity, and the default.
+     *
+     * Shares the BossConsole host floor (ink #05070B, the site's `--ink`) so the
+     * terminal and the chrome around it read as one continuous surface. The
+     * cursor is the site's `--blue-bright` rather than `--blue`: a block cursor
+     * has to stay legible against the glyph it covers, and `--blue` is only
+     * 3.7:1 on ink. For the same reason `cursorText` is white here where
+     * BOSS Operator can afford ink on its high-luminance amber.
+     */
+    val BOSS_BLUEPRINT = Theme(
+        id = "boss-blueprint",
+        name = "BOSS Blueprint",
+        foreground = "0xFFD5DBE5",   // site `.console-thread p`
+        background = "0xFF05070B",   // shared `ink` floor / site `--ink`
+        cursor = "0xFF2F74FF",       // site `--blue-bright`
+        cursorText = "0xFFFFFFFF",
+        selection = "0xFF123A7A",
+        selectionText = "0xFFE7EDFA",
+        searchMatch = "0xFFF1DF9E",  // the site's one warm color
+        hyperlink = "0xFF88A9FF",    // `data` — site `.audit-line svg` #8af
+        // ANSI 16 — cool-tuned to sit on the ink floor
+        black = "0xFF0B1019",        // site `--ink-2`
+        red = "0xFFFF5D5D",
+        green = "0xFF2FD98A",
+        yellow = "0xFFF0B429",
+        blue = "0xFF2F74FF",         // site `--blue-bright`
+        magenta = "0xFFB48CFF",
+        cyan = "0xFF56C7E0",
+        white = "0xFFC3CCDA",
+        brightBlack = "0xFF2E3B4F",
+        brightRed = "0xFFFF8A8A",
+        brightGreen = "0xFF6BE8AC",
+        brightYellow = "0xFFFFD98A",
+        brightBlue = "0xFF7EA6FF",
+        brightMagenta = "0xFFD0B6FF",
+        brightCyan = "0xFF8FDDEC",
+        brightWhite = "0xFFE7EDFA",
+        isBuiltin = true
+    )
+
+    /**
      * All built-in themes.
      */
     val ALL = listOf(
+        BOSS_BLUEPRINT,
         BOSS_OPERATOR,
         DEFAULT,
         DRACULA,
@@ -409,6 +451,19 @@ object BuiltinThemes {
 
     /**
      * Default theme ID — the unified BOSS identity.
+     *
+     * Changing this is not a one-line edit: [UiTheme.fromTheme] keys its
+     * hand-authored chrome tokens off theme id (not off this constant), and
+     * `TerminalSettings`' fresh-install color defaults must equal this theme's
+     * — `ThemeDefaultsTest` fails if they drift.
      */
-    const val DEFAULT_THEME_ID = "boss-operator"
+    const val DEFAULT_THEME_ID = "boss-blueprint"
+
+    /**
+     * The theme [DEFAULT_THEME_ID] names, for callers that need the object and
+     * would otherwise hardcode it. Note this is NOT [DEFAULT] — that is the
+     * stark black-on-white XTerm theme, which is a *named* theme and not the
+     * product default. `ThemeDefaultsTest` pins the two to agree.
+     */
+    val PRODUCT_DEFAULT: Theme = BOSS_BLUEPRINT
 }

@@ -10,8 +10,9 @@ import androidx.compose.ui.graphics.luminance
  * properties in docs/design-system.html.
  *
  * Tokens are derived from the active terminal [Theme] so the chrome follows
- * whatever theme the user picks; the BOSS Operator theme maps to the exact
- * design-system values.
+ * whatever theme the user picks. The two BOSS identities — BOSS Blueprint (the
+ * default) and BOSS Operator — skip the derivation and map to their exact
+ * design-system values; see [EXACT_TOKENS].
  */
 data class UiTheme(
     // Surfaces
@@ -37,6 +38,35 @@ data class UiTheme(
     val isDark: Boolean get() = ink.luminance() < 0.5f
 
     companion object {
+        /**
+         * Exact tokens for the bossconsole.ai identity, mirroring the host's
+         * `BossBlueprintColorScheme` (`line2` is the host's `lineStrong`).
+         *
+         * `signal` is the site's `--blue`, which sits at 3.8:1 on `ink` — above
+         * the WCAG floor for UI components, below a text floor. That is how the
+         * site behaves: emphasis is a `signalWash` fill plus a 2.dp indicator,
+         * never a hairline of `signal` alone. `onSignal` is white, not `ink`,
+         * because `--blue` is too dark to carry ink-colored content.
+         */
+        val BOSS_BLUEPRINT = UiTheme(
+            ink = Color(0xFF05070B),
+            panel = Color(0xFF080B11),
+            raised = Color(0xFF0E141E),
+            line = Color(0xFF1C2432),
+            line2 = Color(0xFF2E3B4F),
+            chalk = Color(0xFFE7EDFA),
+            mist = Color(0xFF9AA7BB),
+            muted = Color(0xFF69768B),
+            signal = Color(0xFF0F5BFF),
+            signalDim = Color(0xFF0A45C4),
+            signalWash = Color(0xFF0A1A3C),
+            onSignal = Color(0xFFFFFFFF),
+            data = Color(0xFF88A9FF),
+            ok = Color(0xFF2FD98A),
+            warn = Color(0xFFF0B429),
+            alert = Color(0xFFFF5D5D),
+        )
+
         /** Exact tokens from docs/design-system.html `:root`. */
         val BOSS_OPERATOR = UiTheme(
             ink = Color(0xFF0E1217),
@@ -58,14 +88,29 @@ data class UiTheme(
         )
 
         /**
+         * The BOSS identities, whose chrome tokens are hand-authored rather than
+         * derived.
+         *
+         * Keyed by theme id and *not* by [BuiltinThemes.DEFAULT_THEME_ID] — a map
+         * means moving the default cannot silently push the theme that used to be
+         * the default through [fromTheme]'s derivation and lose its authored
+         * values.
+         */
+        private val EXACT_TOKENS: Map<String, UiTheme> =
+            mapOf(
+                "boss-blueprint" to BOSS_BLUEPRINT,
+                "boss-operator" to BOSS_OPERATOR,
+            )
+
+        /**
          * Derive chrome tokens from a terminal theme.
          *
          * The surface ladder nudges the terminal floor toward the text color
-         * using the same ratios the BOSS Operator tokens sit at on ink, so any
-         * theme (dark or light) yields a coherent panel/raised/border stack.
+         * using the same ratios the BOSS tokens sit at on ink, so any theme
+         * (dark or light) yields a coherent panel/raised/border stack.
          */
         fun fromTheme(theme: Theme): UiTheme {
-            if (theme.id == BuiltinThemes.DEFAULT_THEME_ID) return BOSS_OPERATOR
+            EXACT_TOKENS[theme.id]?.let { return it }
 
             val bg = theme.backgroundColorValue
             val fg = theme.foregroundColor
@@ -143,7 +188,9 @@ data class UiTheme(
  * [ThemeManager] pushes updates whenever the active theme changes.
  */
 object BossUiTheme {
-    private val state = mutableStateOf(UiTheme.BOSS_OPERATOR)
+    // Seeded to the product default so chrome composed before ThemeManager's
+    // loadActiveTheme() lands does not flash a different identity.
+    private val state = mutableStateOf(UiTheme.fromTheme(BuiltinThemes.PRODUCT_DEFAULT))
 
     val current: UiTheme get() = state.value
 

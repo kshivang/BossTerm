@@ -395,9 +395,20 @@ object BuiltinColorPalettes {
     )
 
     /**
+     * BOSS Blueprint — the ANSI 16 of the bossconsole.ai identity.
+     * Mix over any theme to carry the BOSS palette into terminal apps.
+     */
+    // Derived from the theme, same as BOSS_OPERATOR above, so the two never drift.
+    val BOSS_BLUEPRINT = ColorPalette.fromTheme(BuiltinThemes.BOSS_BLUEPRINT).copy(
+        id = "boss-blueprint",
+        name = "BOSS Blueprint",
+    )
+
+    /**
      * All built-in color palettes.
      */
     val ALL = listOf(
+        BOSS_BLUEPRINT,
         BOSS_OPERATOR,
         XTERM,
         TANGO,

@@ -1,5 +1,5 @@
 <title>BOSS — Operator's Console Design System</title>
-<meta name="description" content="The BOSS visual identity: tokens, type, and every UI element across BossConsole and BossTerm, built on the amber signal and the character cell.">
+<meta name="description" content="The BOSS visual identity: tokens, type, and every UI element across BossConsole and BossTerm, built on one signal color and the character cell.">
 
 <style>
   :root {
@@ -350,7 +350,7 @@
   <header class="hero">
     <div class="eyebrow">BOSS Design System · v1</div>
     <h1>Operator's<br>Console<span class="cursor" aria-hidden="true"></span></h1>
-    <p class="sub">A single visual language for <b>BossConsole</b> and <b>BossTerm</b>. Built on the character cell and one amber <b>signal</b> — the lamp that tells an operator what is live, right now.</p>
+    <p class="sub">A single visual language for <b>BossConsole</b> and <b>BossTerm</b>. Built on the character cell and exactly one <b>signal</b> color — the lamp that tells an operator what is live, right now. This page renders in BOSS Operator; BOSS Blueprint is the shipping default.</p>
 
     <div class="term-demo" role="img" aria-label="Terminal demo showing the amber block cursor">
       <div class="term-bar">
@@ -505,7 +505,7 @@
         <span class="pill">search #F1DF9E</span>
         <span class="pill" style="border-color:#88A9FF; color:#88A9FF">link #88A9FF</span>
       </div>
-      <p style="color:var(--mist); font-size:13px; margin:14px 0 0">The cursor is <code>--blue-bright</code> rather than <code>--blue</code>: a block cursor has to stay legible against the glyph it covers, and <code>--blue</code> is only 3.7:1 on ink. Same reason <code>onSignal</code> is white where Operator can afford ink on its high-luminance amber.</p>
+      <p style="color:var(--mist); font-size:13px; margin:14px 0 0">The cursor is <code>--blue-bright</code> rather than <code>--blue</code> because a block cursor has to be visible against the <b>floor</b> — 4.8:1 versus <code>--blue</code>'s 3.8:1. Not against the glyph underneath: the cursor is an opaque rect on a layer above the text, so the covered glyph is replaced, not blended. <code>onSignal</code> is white for a separate reason — <code>--blue</code> is too dark to carry ink-colored content.</p>
     </div>
 
     <div class="specimen" style="margin-top:14px">
@@ -582,7 +582,7 @@
     <div class="sec-head">
       <div class="eyebrow">04 · BossConsole — chrome</div>
       <h2>Host elements</h2>
-      <p class="lede">The frame around the work: title bar, tabs, controls, overlays. The active item always wears amber.</p>
+      <p class="lede">The frame around the work: title bar, tabs, controls, overlays. The active item always wears the theme's <code>signal</code> — amber on this page, electric blue under the default BOSS Blueprint.</p>
     </div>
 
     <!-- title + tab bar -->

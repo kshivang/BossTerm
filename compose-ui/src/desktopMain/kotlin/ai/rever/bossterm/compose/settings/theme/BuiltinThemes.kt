@@ -389,11 +389,17 @@ object BuiltinThemes {
      * BOSS Blueprint — the bossconsole.ai identity, and the default.
      *
      * Shares the BossConsole host floor (ink #05070B, the site's `--ink`) so the
-     * terminal and the chrome around it read as one continuous surface. The
-     * cursor is the site's `--blue-bright` rather than `--blue`: a block cursor
-     * has to stay legible against the glyph it covers, and `--blue` is only
-     * 3.7:1 on ink. For the same reason `cursorText` is white here where
-     * BOSS Operator can afford ink on its high-luminance amber.
+     * terminal and the chrome around it read as one continuous surface.
+     *
+     * The cursor is the site's `--blue-bright` rather than `--blue` because a
+     * block cursor has to be visible against the FLOOR: 4.8:1 vs `--blue`'s
+     * 3.8:1. It is not about the glyph underneath — `renderCursorOverlay` draws
+     * an opaque rect at `cursorFocusedAlpha` (1f) on a layer above the text, so
+     * the covered glyph is replaced rather than blended.
+     *
+     * `cursorText` and `selectionText` are set for completeness but are
+     * currently UNWIRED: `Theme.cursorTextColor` / `selectionTextColor` have no
+     * readers, so do not invest care in these two values expecting to see them.
      */
     val BOSS_BLUEPRINT = Theme(
         id = "boss-blueprint",

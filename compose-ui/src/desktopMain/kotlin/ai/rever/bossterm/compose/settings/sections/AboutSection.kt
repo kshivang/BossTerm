@@ -19,6 +19,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
@@ -200,7 +201,7 @@ private fun LinkRow(
         )
         Text(
             text = url.removePrefix("https://"),
-            color = AccentColor,
+            color = AccentTextColor,
             fontSize = 13.sp,
             textDecoration = if (isHovered) TextDecoration.Underline else TextDecoration.None
         )
@@ -277,7 +278,7 @@ private fun ShortcutRow(shortcut: String, action: String) {
     ) {
         Text(
             text = shortcut,
-            color = AccentColor,
+            color = AccentTextColor,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium
         )

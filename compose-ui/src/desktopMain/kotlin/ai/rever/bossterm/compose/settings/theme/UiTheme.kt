@@ -29,6 +29,7 @@ data class UiTheme(
     val signal: Color,     // live / active / primary action
     val signalDim: Color,  // pressed / variant
     val signalWash: Color, // signal at home on ink (selected rows, chips)
+    val signalText: Color, // signal-colored TEXT/ICONS — held to the 4.5:1 text floor
     val onSignal: Color,   // content on signal-filled controls
     val data: Color,       // links / info
     val ok: Color,
@@ -60,6 +61,9 @@ data class UiTheme(
             signal = Color(0xFF0F5BFF),
             signalDim = Color(0xFF0A45C4),
             signalWash = Color(0xFF0A1A3C),
+            // --blue is 3.5:1 as a glyph; the site uses this lighter blue for
+            // blue text on ink and so do we. 8.1:1 on the darkest surface.
+            signalText = Color(0xFF88A9FF),
             onSignal = Color(0xFFFFFFFF),
             data = Color(0xFF88A9FF),
             ok = Color(0xFF2FD98A),
@@ -80,6 +84,7 @@ data class UiTheme(
             signal = Color(0xFFF2A93B),
             signalDim = Color(0xFFC98A2E),
             signalWash = Color(0xFF2A2113),
+            signalText = Color(0xFFF2A93B), // = signal; amber already clears the text floor
             onSignal = Color(0xFF0E1217),
             data = Color(0xFF56C7E0),
             ok = Color(0xFF6FD08C),
@@ -98,8 +103,8 @@ data class UiTheme(
          */
         private val EXACT_TOKENS: Map<String, UiTheme> =
             mapOf(
-                "boss-blueprint" to BOSS_BLUEPRINT,
-                "boss-operator" to BOSS_OPERATOR,
+                BuiltinThemes.BOSS_BLUEPRINT.id to BOSS_BLUEPRINT,
+                BuiltinThemes.BOSS_OPERATOR.id to BOSS_OPERATOR,
             )
 
         /**
@@ -118,10 +123,12 @@ data class UiTheme(
             // Content on a signal fill: whichever of the theme's own floor/text
             // colors contrasts more with the fill.
             val onSignal = if (contrastRatio(signal, bg) >= contrastRatio(signal, fg)) bg else fg
+            val panel = mix(bg, fg, 0.05f)
+            val raised = mix(bg, fg, 0.09f)
             return UiTheme(
                 ink = bg,
-                panel = mix(bg, fg, 0.05f),
-                raised = mix(bg, fg, 0.09f),
+                panel = panel,
+                raised = raised,
                 line = mix(bg, fg, 0.16f),
                 line2 = mix(bg, fg, 0.26f),
                 chalk = fg,
@@ -130,6 +137,10 @@ data class UiTheme(
                 signal = signal,
                 signalDim = mix(signal, Color.Black, 0.17f),
                 signalWash = mix(bg, signal, 0.12f),
+                // Derived themes get a signal pushed toward their own text color
+                // until it clears the text floor, so accent-colored labels stay
+                // readable on any imported theme rather than only on the BOSS two.
+                signalText = legibleAsText(signal, listOf(bg, panel, raised), fg),
                 onSignal = onSignal,
                 data = theme.hyperlinkColor,
                 ok = theme.getAnsiColor(2),
@@ -151,6 +162,43 @@ data class UiTheme(
             } else {
                 cursor
             }
+        }
+
+        /**
+         * Nudge [signal] toward [fg] until it clears the 4.5:1 text floor against
+         * **every** surface in [surfaces], giving up at the theme's own text color.
+         *
+         * A saturated accent that works as a fill is often too dark or too light to
+         * read as a glyph; rather than pick a hue for every imported theme, we walk
+         * the one axis the theme already tells us is legible on its own floor.
+         *
+         * Solved against the minimum over all surfaces rather than a surface picked
+         * as "the worst": which one that is depends on whether the nudge moves the
+         * accent lighter or darker, and guessing `raised` left solarized-dark at
+         * 4.44:1 on `panel`.
+         */
+        private fun legibleAsText(signal: Color, surfaces: List<Color>, fg: Color): Color {
+            fun worst(c: Color) = surfaces.minOf { contrastRatio(c, it) }
+            if (worst(signal) >= 4.5f) return signal
+
+            // Phase 1 — toward the theme's own text color, which keeps the result
+            // inside the theme's palette.
+            for (step in 1..20) {
+                val candidate = mix(signal, fg, step / 20f)
+                if (worst(candidate) >= 4.5f) return candidate
+            }
+
+            // Phase 2 — past fg, toward the luminance extreme. Needed because fg is
+            // NOT guaranteed to clear the floor itself: solarized-dark's #839496 is
+            // 4.44:1 against its own derived `panel`, so phase 1 alone cannot
+            // converge there. Walking to an extreme always can, and mixing toward
+            // white/black preserves hue, so the accent stays recognisable.
+            val extreme = if (surfaces.first().luminance() < 0.5f) Color.White else Color.Black
+            for (step in 1..20) {
+                val candidate = mix(fg, extreme, step / 20f)
+                if (worst(candidate) >= 4.5f) return candidate
+            }
+            return extreme
         }
 
         /**

@@ -22,6 +22,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
@@ -498,7 +499,7 @@ private fun ThemePreviewCard(
                     Icon(
                         imageVector = Icons.Default.Check,
                         contentDescription = "Selected",
-                        tint = AccentColor,
+                        tint = AccentTextColor,
                         modifier = Modifier.size(14.dp)
                     )
                 }
@@ -620,7 +621,7 @@ private fun CreateThemeDialog(
                         focusedBorderColor = AccentColor,
                         unfocusedBorderColor = BorderColor,
                         cursorColor = AccentColor,
-                        focusedLabelColor = AccentColor,
+                        focusedLabelColor = AccentTextColor,
                         unfocusedLabelColor = TextSecondary
                     )
                 )
@@ -795,7 +796,7 @@ private fun UseThemePaletteCard(
                     Icon(
                         imageVector = Icons.Default.Check,
                         contentDescription = "Selected",
-                        tint = AccentColor,
+                        tint = AccentTextColor,
                         modifier = Modifier.size(12.dp)
                     )
                 }
@@ -899,7 +900,7 @@ private fun ColorPalettePreviewCard(
                     Icon(
                         imageVector = Icons.Default.Check,
                         contentDescription = "Selected",
-                        tint = AccentColor,
+                        tint = AccentTextColor,
                         modifier = Modifier.size(12.dp)
                     )
                 }
@@ -946,7 +947,7 @@ private fun CreatePaletteDialog(
                         focusedBorderColor = AccentColor,
                         unfocusedBorderColor = BorderColor,
                         cursorColor = AccentColor,
-                        focusedLabelColor = AccentColor,
+                        focusedLabelColor = AccentTextColor,
                         unfocusedLabelColor = TextSecondary
                     )
                 )

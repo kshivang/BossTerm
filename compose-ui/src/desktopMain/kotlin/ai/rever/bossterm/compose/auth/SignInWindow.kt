@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.auth
 
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
@@ -129,7 +130,7 @@ fun SignInWindow(
                                         Text(if (cooldownLeft > 0) "Resend (${cooldownLeft}s)" else "Resend link", fontSize = 13.sp)
                                     }
                                     TextButton(onClick = { BossAccountManager.reset() }) {
-                                        Text("Use a different email", color = AccentColor, fontSize = 13.sp)
+                                        Text("Use a different email", color = AccentTextColor, fontSize = 13.sp)
                                     }
                                 }
                                 PasteLinkSection(

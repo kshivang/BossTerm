@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.daemon
 
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
@@ -290,7 +291,7 @@ private fun ShareDetails(
             Text(
                 "🔒 End-to-end encrypted · code $code — the relay can't read this session. " +
                     "The same code shows on the viewer; matching codes confirm the key end-to-end.",
-                color = AccentColor, fontSize = 11.sp
+                color = AccentTextColor, fontSize = 11.sp
             )
         }
         LinkRow("View (read-only)", share.url, clipboard)
@@ -334,11 +335,11 @@ private fun PendingRow(token: String, req: DaemonAttachProtocol.PendingApproval)
             }
             TextButton(
                 onClick = { DaemonShareClient.approve(token, req.clientId, false) },
-                colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor)
             ) { Text("View", fontSize = 12.sp) }
             TextButton(
                 onClick = { DaemonShareClient.approve(token, req.clientId, true) },
-                colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor)
             ) { Text("Control", fontSize = 12.sp) }
             TextButton(
                 onClick = { DaemonShareClient.deny(token, req.clientId) },
@@ -392,7 +393,7 @@ private fun RemoteAccessSection(share: DaemonAttachProtocol.ShareView) {
             TextButton(
                 onClick = { if (!refreshing) DaemonShareClient.setRemoteMode(share.token, share.remoteMode) },
                 enabled = !refreshing,
-                colors = ButtonDefaults.textButtonColors(contentColor = AccentColor),
+                colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor),
             ) { Text(if (refreshing) "Refreshing…" else "↻ Refresh link", fontSize = 12.sp) }
         }
     }
@@ -455,7 +456,7 @@ private fun LinkRow(label: String, url: String, clipboard: ClipboardManager) {
                 Spacer(Modifier.width(8.dp))
                 TextButton(
                     onClick = { clipboard.setText(AnnotatedString(url)) },
-                    colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                    colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor)
                 ) { Text("Copy") }
             }
         }

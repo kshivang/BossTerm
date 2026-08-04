@@ -20,6 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
@@ -153,7 +154,7 @@ fun SettingsSlider(
             }
             Text(
                 text = valueDisplay(value),
-                color = AccentColor,
+                color = AccentTextColor,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium
             )
@@ -554,7 +555,7 @@ fun SettingsSectionedDropdown(
                         ) {
                             Text(
                                 text = sectionName,
-                                color = AccentColor,
+                                color = AccentTextColor,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold
                             )

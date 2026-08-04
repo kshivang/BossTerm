@@ -39,6 +39,7 @@ class UiThemeTest {
         assertEquals(Color(0xFF69768B), ui.muted)
         assertEquals(Color(0xFF0F5BFF), ui.signal, "the site's --blue")
         assertEquals(Color(0xFF0A1A3C), ui.signalWash)
+        assertEquals(Color(0xFF88A9FF), ui.signalText, "--blue is only 3.5:1 as a glyph")
         assertEquals(Color(0xFFFFFFFF), ui.onSignal, "--blue is too dark to carry ink-colored content")
         assertEquals(Color(0xFF88A9FF), ui.data)
         assertEquals(Color(0xFFFF5D5D), ui.alert)
@@ -98,6 +99,18 @@ class UiThemeTest {
             // Light's dark-yellow signal caps out just under 3.0 against its paper.
             val contrast = contrastRatio(ui.signal, ui.onSignal)
             assertTrue(contrast >= 2.5f, "${theme.id}: onSignal contrast $contrast on signal is too low")
+
+            // The axis that regressed when Blueprint landed: `signal` is allowed to
+            // sit at the 3:1 component floor, but anything drawn as a GLYPH uses
+            // `signalText` and must clear 4.5:1 — on `raised`, the worst surface,
+            // not just on the bare floor.
+            for ((name, surface) in listOf("ink" to ui.ink, "panel" to ui.panel, "raised" to ui.raised)) {
+                val text = contrastRatio(ui.signalText, surface)
+                assertTrue(
+                    text >= 4.5f,
+                    "${theme.id}: signalText is $text on $name, below the 4.5:1 text floor",
+                )
+            }
         }
     }
 
@@ -113,7 +126,8 @@ class UiThemeTest {
     @Test
     fun `settings chrome follows the boss ui theme`() {
         BossUiTheme.update(BuiltinThemes.BOSS_BLUEPRINT)
-        assertEquals(Color(0xFF0F5BFF), SettingsTheme.AccentColor, "accent should be the blue signal")
+        assertEquals(Color(0xFF0F5BFF), SettingsTheme.AccentColor, "accent fill should be the blue signal")
+        assertEquals(Color(0xFF88A9FF), SettingsTheme.AccentTextColor, "accent TEXT must clear the text floor")
         assertEquals(Color(0xFF080B11), SettingsTheme.BackgroundColor)
         assertEquals(Color(0xFF0E141E), SettingsTheme.SurfaceColor)
         assertEquals(Color(0xFFFFFFFF), SettingsTheme.TextOnAccent)

@@ -100,7 +100,10 @@ class ThemeManager private constructor(
      * Apply a theme by ID.
      */
     fun applyThemeById(id: String) {
-        val theme = getThemeById(id) ?: BuiltinThemes.DEFAULT
+        // Product default, not BuiltinThemes.DEFAULT — this is public API on an
+        // embeddable library, so a stale id from an embedder must not land the
+        // whole app on the stark black-on-white XTerm theme.
+        val theme = getThemeById(id) ?: BuiltinThemes.PRODUCT_DEFAULT
         applyTheme(theme)
     }
 

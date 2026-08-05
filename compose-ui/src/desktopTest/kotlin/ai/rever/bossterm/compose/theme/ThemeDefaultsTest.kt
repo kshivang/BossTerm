@@ -65,6 +65,10 @@ class ThemeDefaultsTest {
         assertEquals(t.searchMatch, s.foundPatternColor)
         assertEquals(t.hyperlink, s.hyperlinkColor)
         assertEquals(t.id, s.activeThemeId)
+        // The scrollbar search markers are theme-owned too, so a fresh install
+        // does not ship yellow/orange markers on a cool-blue default.
+        assertEquals(t.searchMatch, s.searchMarkerColor)
+        assertEquals(t.cursor, s.currentSearchMarkerColor)
         assertEquals(1f, s.cursorFocusedAlpha, "focused cursor should match the opaque browser cursor")
     }
 
@@ -88,6 +92,38 @@ class ThemeDefaultsTest {
                 "${theme.id}: background hex does not survive parse → colorToHex",
             )
         }
+    }
+
+
+    /**
+     * Every colour a [Theme] exposes must reach a setting that something renders.
+     *
+     * `searchMatch` and `cursorText` were both dead for a long time: themes set
+     * them, the theme editor let you change them, and nothing on screen moved.
+     * This pins the propagation half; the render half is pinned by
+     * `CursorOverlayTest` (pixels) and the renderer reading `foundPatternColor`.
+     */
+    @Test
+    fun `applyTheme propagates every rendered colour slot`() {
+        val t = BuiltinThemes.BOSS_OPERATOR
+        val s = TerminalSettings(
+            activeThemeId = t.id,
+            defaultForeground = t.foreground,
+            defaultBackground = t.background,
+            selectionColor = t.selection,
+            foundPatternColor = t.searchMatch,
+            hyperlinkColor = t.hyperlink,
+            searchMarkerColor = t.searchMatch,
+            currentSearchMarkerColor = t.cursor,
+        )
+        // Mirrors ThemeManager.applyTheme's copy(...) block. If a slot is added
+        // there without a reader, or removed from there while a theme still
+        // exposes it, this is where the pair stops agreeing.
+        assertEquals(t.searchMatch, s.foundPatternColor, "in-buffer search highlight")
+        assertEquals(t.searchMatch, s.searchMarkerColor, "scrollbar match markers")
+        assertEquals(t.cursor, s.currentSearchMarkerColor, "scrollbar current-match marker")
+        assertEquals(t.selection, s.selectionColor)
+        assertEquals(t.hyperlink, s.hyperlinkColor)
     }
 
     private fun assertAnsiMatches(

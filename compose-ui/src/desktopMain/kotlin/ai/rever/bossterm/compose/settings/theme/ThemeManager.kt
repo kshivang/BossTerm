@@ -83,7 +83,14 @@ class ThemeManager private constructor(
     fun applyTheme(theme: Theme) {
         setCurrentTheme(theme)
 
-        // Update settings with the new theme's colors
+        // Update settings with the new theme's colors.
+        //
+        // The scrollbar search markers are in this set so a theme switch carries
+        // the whole search surface, not just the in-buffer highlight. They stay
+        // editable in Scrollbar settings; like the five above, an explicit theme
+        // switch is what resets them. The current-match marker takes the cursor
+        // color because that is the theme's "live / now" slot, which is exactly
+        // what the match you are standing on is.
         settingsManager.updateSetting {
             copy(
                 activeThemeId = theme.id,
@@ -91,7 +98,9 @@ class ThemeManager private constructor(
                 defaultBackground = theme.background,
                 selectionColor = theme.selection,
                 foundPatternColor = theme.searchMatch,
-                hyperlinkColor = theme.hyperlink
+                hyperlinkColor = theme.hyperlink,
+                searchMarkerColor = theme.searchMatch,
+                currentSearchMarkerColor = theme.cursor
             )
         }
     }

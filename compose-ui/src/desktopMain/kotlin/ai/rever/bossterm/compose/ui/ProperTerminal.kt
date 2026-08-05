@@ -2080,6 +2080,17 @@ fun ProperTerminal(
                 focusedAlpha = settings.cursorFocusedAlpha,
                 unfocusedAlpha = settings.cursorUnfocusedAlpha,
                 imageOcclusion = cursorImageSlice,
+                // Read from the same snapshot line the image slice above uses, so
+                // the glyph, the cursor and the cell content cannot disagree.
+                cursorGlyph = bufferSnapshot
+                    .getLine(bufferCursorRow)
+                    .charAt(effectiveCursorX)
+                    .takeIf { it != '\u0000' }
+                    ?.toString(),
+                cursorTextColor = activeTheme.cursorTextColor,
+                glyphFontFamily = sharedFont,
+                glyphFontSize = effectiveFontSize,
+                glyphMeasurer = textMeasurer,
               )
             }
           }

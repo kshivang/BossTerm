@@ -1121,10 +1121,21 @@ object TerminalCanvasRenderer {
             ctx.searchMatches.forEachIndexed { index, (matchCol, matchRow) ->
                 val screenRow = matchRow + ctx.scrollOffset
                 if (screenRow in 0 until ctx.visibleRows) {
+                    // The theme's `searchMatch` drives this, not the scrollbar
+                    // marker colors it used to read. Those are a different surface
+                    // with their own settings, and using them here left
+                    // `Theme.searchMatch` with no reader at all: editing "Search
+                    // Match" in the theme editor changed nothing on screen.
+                    //
+                    // One token, two states, so alpha carries the emphasis rather
+                    // than a second hue. The current match is roughly twice as
+                    // opaque as the rest, which reads clearly without needing a
+                    // colour the theme never defined.
+                    val matchBase = ctx.settings.foundPatternColorValue
                     val matchColor = if (index == ctx.currentMatchIndex) {
-                        ctx.settings.currentSearchMarkerColorValue.copy(alpha = 0.6f)
+                        matchBase.copy(alpha = 0.65f)
                     } else {
-                        ctx.settings.searchMarkerColorValue.copy(alpha = 0.4f)
+                        matchBase.copy(alpha = 0.32f)
                     }
 
                     for (charOffset in 0 until matchLength) {
@@ -1345,6 +1356,16 @@ object TerminalCanvasRenderer {
         focusedAlpha: Float = 1f,
         unfocusedAlpha: Float = 0.3f,
         imageOcclusion: ImageCellSlice? = null,
+        // The glyph the block cursor covers, redrawn on top of it in
+        // [cursorTextColor]. A block cursor is an OPAQUE rect on this overlay, so
+        // without this the character under the cursor is simply invisible - which
+        // is why `Theme.cursorText` existed with no reader for so long. Null (or a
+        // blank glyph, or a non-block shape) draws nothing extra.
+        cursorGlyph: String? = null,
+        cursorTextColor: Color? = null,
+        glyphFontFamily: FontFamily? = null,
+        glyphFontSize: Float = 0f,
+        glyphMeasurer: TextMeasurer? = null,
     ) {
         if (!cursorVisible || cellWidth <= 0f || cellHeight <= 0f) return
         // cursorY is 1-indexed in the screen buffer, adjust to 0-indexed
@@ -1406,6 +1427,28 @@ object TerminalCanvasRenderer {
                         topLeft = Offset(x, y),
                         size = Size(w, h)
                     )
+                    // Put the covered character back, on top of the block.
+                    // Only the block shapes need this: underline and bar sit at
+                    // the cell edge and never hide the glyph.
+                    if (
+                        cursorGlyph != null &&
+                        cursorGlyph.isNotBlank() &&
+                        cursorTextColor != null &&
+                        glyphFontFamily != null &&
+                        glyphFontSize > 0f &&
+                        glyphMeasurer != null
+                    ) {
+                        drawTextClipped(
+                            textMeasurer = glyphMeasurer,
+                            text = cursorGlyph,
+                            topLeft = Offset(x, y),
+                            style = TextStyle(
+                                color = cursorTextColor.copy(alpha = cursorAlpha),
+                                fontFamily = glyphFontFamily,
+                                fontSize = glyphFontSize.sp,
+                            ),
+                        )
+                    }
                 }
                 CursorShape.BLINK_UNDERLINE, CursorShape.STEADY_UNDERLINE -> {
                     drawRect(

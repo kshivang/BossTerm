@@ -1168,19 +1168,39 @@ object TerminalCanvasRenderer {
                                 topLeft = Offset(x, y),
                                 size = Size(w, h)
                             )
-                            // The current match also gets an outline. Two alphas of
-                            // one hue converge on a light theme or a pale
-                            // searchMatch, and this wash is drawn OVER the glyphs
-                            // rather than behind them, so alpha is already carrying
-                            // legibility as well as emphasis. A border survives both.
-                            if (isCurrentMatch) {
-                                drawRect(
-                                    color = matchBase,
-                                    topLeft = Offset(x, y),
-                                    size = Size(w, h),
-                                    style = Stroke(width = 1f),
-                                )
-                            }
+                        }
+                    }
+
+                    // One outline around the WHOLE match, not one per cell: inside
+                    // the loop above this boxed every letter separately, and a
+                    // centred stroke paints each shared boundary twice, so a
+                    // six-character match read as a grid of boxed letters with
+                    // dividers louder than the border itself.
+                    //
+                    // Stroked in the foreground colour rather than in `matchBase`:
+                    // the fill and the border would otherwise be the same hue, and
+                    // with both search states now derived from one token the border
+                    // is carrying the "which one am I on" signal. 1.dp.toPx() to
+                    // match the cursor's edge idiom - a raw 1f is a hairline on
+                    // HiDPI.
+                    if (isCurrentMatch) {
+                        val startCol = matchCol.coerceAtLeast(0)
+                        val endCol = (matchCol + matchLength).coerceAtMost(snapshot.width)
+                        if (endCol > startCol) {
+                            val sx = startCol * ctx.cellWidth
+                            val sy = screenRow * ctx.cellHeight
+                            val stroke = 1.dp.toPx()
+                            // Inset by half the width: a centred stroke would bleed
+                            // into the cells on either side of the match.
+                            drawRect(
+                                color = ctx.settings.defaultForegroundColor,
+                                topLeft = Offset(sx + stroke / 2f, sy + stroke / 2f),
+                                size = Size(
+                                    (endCol * ctx.cellWidth - sx) - stroke,
+                                    ((screenRow + 1) * ctx.cellHeight - sy) - stroke,
+                                ),
+                                style = Stroke(width = stroke),
+                            )
                         }
                     }
                 }

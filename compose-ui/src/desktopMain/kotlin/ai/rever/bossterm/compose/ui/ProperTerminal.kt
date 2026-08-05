@@ -2091,7 +2091,12 @@ fun ProperTerminal(
                     line = bufferSnapshot.getLine(bufferCursorRow),
                     column = effectiveCursorX,
                     width = bufferSnapshot.width,
-                    ambiguousCharsAreDoubleWidth = settings.ambiguousCharsAreDoubleWidth,
+                    // display.ambiguousCharsAreDoubleWidth(), NOT the setting: the
+                    // text canvas feeds the classifier from the display, and the
+                    // whole premise here is mirroring what the text pass decided.
+                    // Both read false today, so a divergence would be silent - and
+                    // safe in the wrong way, since it only ever makes this decline.
+                    ambiguousCharsAreDoubleWidth = display.ambiguousCharsAreDoubleWidth(),
                     // The SGR text-blink clocks, NOT cursorBlinkVisible: that one is
                     // the caret timer and gating text blink on it is wrong in both
                     // directions (see resolveCursorGlyph).

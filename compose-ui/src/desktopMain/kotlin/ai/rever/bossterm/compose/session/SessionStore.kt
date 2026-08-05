@@ -123,7 +123,7 @@ object SessionStore {
                     // A split failed mid-rebuild (focused pane unresolved); abandon the
                     // rest of this subtree. The tab is left with a partial layout — no
                     // rollback, but log it so a half-restored split isn't silent.
-                    System.err.println("WARN: SessionStore.rebuildTree — vertical split failed; tab restored with partial layout")
+                    System.err.println("WARN: SessionStore.rebuildTree - vertical split failed; tab restored with partial layout")
                     return
                 }
                 rebuildTree(node.left, state, paneId, makeSession)
@@ -134,7 +134,7 @@ object SessionStore {
                 val newId = state.splitFocusedPane(
                     SplitOrientation.HORIZONTAL, makeSession(firstLeafCwd(node.bottom)), node.ratio
                 ) ?: run {
-                    System.err.println("WARN: SessionStore.rebuildTree — horizontal split failed; tab restored with partial layout")
+                    System.err.println("WARN: SessionStore.rebuildTree - horizontal split failed; tab restored with partial layout")
                     return
                 }
                 rebuildTree(node.top, state, paneId, makeSession)

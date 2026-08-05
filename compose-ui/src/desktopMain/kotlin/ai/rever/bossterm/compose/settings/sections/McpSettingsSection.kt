@@ -163,7 +163,7 @@ fun McpSettingsSection(
                         "initialize instructions carry this as a soft nudge (applies on the " +
                         "next client connect). If you've installed the Claude Code PreToolUse " +
                         "hook (docs/mcp-server.md), this also writes the ~/.bossterm/mcp.port " +
-                        "marker live, so the hook enforces it instantly — toggling flips Bash " +
+                        "marker live, so the hook enforces it instantly - toggling flips Bash " +
                         "routing on/off per command with no Claude restart.",
                 enabled = settings.mcpEnabled
             )
@@ -232,7 +232,7 @@ private fun ExposedToolsSection(
     SettingsSection(title = "Exposed Tools") {
         Text(
             text = "Pick which built-in BossTerm MCP tools clients can call. Toggling here " +
-                    "is equivalent to calling the `manage_tools` MCP tool — both update the " +
+                    "is equivalent to calling the `manage_tools` MCP tool - both update the " +
                     "same setting and apply live without restarting the server. The " +
                     "`manage_tools` tool itself is always exposed so disabling everything " +
                     "leaves a way back.",
@@ -281,7 +281,7 @@ private fun ExposedToolsSection(
             // Always-exposed meta-tool isn't in BUILT_IN_READ_TOOLS or
             // BUILT_IN_WRITE_TOOLS, so the loops above never render it.
             // Surface its existence here so users know it's there.
-            text = "Plus the always-exposed meta-tool `manage_tools` — lets clients " +
+            text = "Plus the always-exposed meta-tool `manage_tools` - lets clients " +
                     "enable/disable the tools above at runtime. It cannot be hidden from " +
                     "this surface.",
             color = TextMuted,
@@ -349,7 +349,7 @@ private fun AttachToCliSection(
         Text(
             text = "Register this BossTerm MCP endpoint with your favorite AI CLI. " +
                     "Each button removes any existing entry of the same name, then runs " +
-                    "the CLI's `mcp add` command — so repeated clicks are safe. " +
+                    "the CLI's `mcp add` command - so repeated clicks are safe. " +
                     "If the CLI isn't installed (or the command fails), the right " +
                     "config snippet is copied to your clipboard.",
             color = TextMuted,
@@ -420,7 +420,7 @@ private fun AttachToCliSection(
                 val (label, color) = when (result) {
                     is McpAttachResult.Success ->
                         "Last attempt: ✓ ${result.target.displayName} attached" +
-                            (if (result.detail.isNotEmpty()) " — ${result.detail}" else "") to
+                            (if (result.detail.isNotEmpty()) " - ${result.detail}" else "") to
                             Success
                     is McpAttachResult.CopiedToClipboard ->
                         "Last attempt: ${result.target.displayName}: ${result.reason}" to Warning

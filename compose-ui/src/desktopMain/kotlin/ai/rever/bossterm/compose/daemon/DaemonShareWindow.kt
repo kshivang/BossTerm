@@ -124,7 +124,7 @@ fun DaemonShareWindow(
 
     Window(
         onCloseRequest = onDismiss,
-        title = "BossTerm — Share",
+        title = "BossTerm - Share",
         resizable = false,
         state = rememberWindowState(size = DpSize(600.dp, 680.dp))
     ) {
@@ -202,7 +202,7 @@ private fun ScopeSection(scope: String, focusedSessionId: String?, onScopeChange
             Text(
                 if (scope == DaemonAttachProtocol.ShareScopeKind.SESSION)
                     "Sharing just the focused session."
-                else "Sharing every session — viewers switch between them as tabs.",
+                else "Sharing every session - viewers switch between them as tabs.",
                 color = TextMuted, fontSize = 11.sp,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth()
@@ -216,7 +216,7 @@ private fun ScopeSection(scope: String, focusedSessionId: String?, onScopeChange
 private fun StartSection(scope: String, focusedSessionId: String?) {
     SettingsSection("Not sharing yet") {
         Text(
-            "No active share for this scope. Start one — it keeps serving the viewer even after you close BossTerm.",
+            "No active share for this scope. Start one - it keeps serving the viewer even after you close BossTerm.",
             color = TextSecondary, fontSize = 12.sp
         )
         Button(
@@ -276,7 +276,7 @@ private fun ShareDetails(
             }
             SegToggle("View", "Control", rightSelected = controlQr) { controlQr = it }
             Text(
-                if (controlQr) "QR encodes the Control link — scanning grants typing access."
+                if (controlQr) "QR encodes the Control link - scanning grants typing access."
                 else "QR encodes the View link (read-only).",
                 color = if (controlQr) Danger else TextMuted, fontSize = 11.sp,
                 textAlign = TextAlign.Center,
@@ -289,7 +289,7 @@ private fun ShareDetails(
     SettingsSection("Links") {
         share.e2eCode?.let { code ->
             Text(
-                "🔒 End-to-end encrypted · code $code — the relay can't read this session. " +
+                "🔒 End-to-end encrypted · code $code - the relay can't read this session. " +
                     "The same code shows on the viewer; matching codes confirm the key end-to-end.",
                 color = AccentTextColor, fontSize = 11.sp
             )
@@ -298,7 +298,7 @@ private fun ShareDetails(
         LinkRow("Control (can type)", share.controlUrl, clipboard)
         if (!share.secure) {
             Text(
-                "⚠ Not encrypted — this link is plaintext. Use https (Tailscale Funnel / a TLS tunnel) beyond your trusted LAN.",
+                "⚠ Not encrypted - this link is plaintext. Use https (Tailscale Funnel / a TLS tunnel) beyond your trusted LAN.",
                 color = Danger, fontSize = 11.sp
             )
         }
@@ -407,7 +407,7 @@ private fun remoteStatusLabel(share: DaemonAttachProtocol.ShareView): String = w
     "verifying" -> "${share.remoteMode} · verifying link…"
     "retrying" -> "${share.remoteMode} · retrying (${share.remoteAttempt}/${share.remoteMaxAttempts})…"
     "active" -> "${share.remoteMode} · active"
-    "fellback" -> "${share.remoteMode} · unreachable — using LAN link"
+    "fellback" -> "${share.remoteMode} · unreachable - using LAN link"
     else -> share.remoteStatus
 }
 

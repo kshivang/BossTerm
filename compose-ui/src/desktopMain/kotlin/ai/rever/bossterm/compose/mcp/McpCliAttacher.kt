@@ -511,10 +511,10 @@ object McpCliAttacher {
                     log.warn(
                         "In-process config write for {} failed; {}",
                         target.displayName,
-                        if (quiet) "quiet mode — clipboard untouched" else "copying fallback to clipboard"
+                        if (quiet) "quiet mode - clipboard untouched" else "copying fallback to clipboard"
                     )
                     if (!quiet) copyToClipboard(target.resolvedClipboard(serverName, url))
-                    val suffix = if (quiet) "" else " — config copied to clipboard"
+                    val suffix = if (quiet) "" else " - config copied to clipboard"
                     return@withContext McpAttachResult.CopiedToClipboard(
                         target,
                         "could not write config$suffix"
@@ -526,12 +526,12 @@ object McpCliAttacher {
                     // No scriptable `mcp add` and no in-process path — drop the
                     // config snippet on the clipboard so the user can paste it.
                     log.info(
-                        "{} has no scriptable `mcp add` — {}",
+                        "{} has no scriptable `mcp add` - {}",
                         target.displayName,
                         if (quiet) "skipping (quiet mode)" else "copying fallback to clipboard"
                     )
                     if (!quiet) copyToClipboard(target.resolvedClipboard(serverName, url))
-                    val suffix = if (quiet) "" else " — config copied to clipboard"
+                    val suffix = if (quiet) "" else " - config copied to clipboard"
                     return@withContext McpAttachResult.CopiedToClipboard(
                         target,
                         "manual setup required (no scriptable `mcp add`)$suffix"
@@ -558,9 +558,9 @@ object McpCliAttacher {
                         "$baseReason: $cliMessage"
                     }
                     log.warn("Attach for {} failed ({}); {}", target.displayName, combinedReason,
-                        if (quiet) "quiet mode — clipboard untouched" else "copying fallback to clipboard")
+                        if (quiet) "quiet mode - clipboard untouched" else "copying fallback to clipboard")
                     if (!quiet) copyToClipboard(target.resolvedClipboard(serverName, url))
-                    val suffix = if (quiet) "" else " — config copied to clipboard"
+                    val suffix = if (quiet) "" else " - config copied to clipboard"
                     McpAttachResult.CopiedToClipboard(target, "$combinedReason$suffix")
                 }
             } catch (e: CancellationException) {
@@ -570,14 +570,14 @@ object McpCliAttacher {
             } catch (e: IOException) {
                 // Binary not on PATH is the most common cause.
                 log.warn("Could not spawn {} ({}); {}", target.displayName, e.message,
-                    if (quiet) "quiet mode — clipboard untouched" else "copying fallback to clipboard")
+                    if (quiet) "quiet mode - clipboard untouched" else "copying fallback to clipboard")
                 if (!quiet) copyToClipboard(target.resolvedClipboard(serverName, url))
-                val suffix = if (quiet) "" else " — config copied to clipboard"
+                val suffix = if (quiet) "" else " - config copied to clipboard"
                 McpAttachResult.CopiedToClipboard(target, "CLI not found$suffix")
             } catch (e: Exception) {
                 log.warn("Unexpected error attaching {}: {}", target.displayName, e.message)
                 if (!quiet) copyToClipboard(target.resolvedClipboard(serverName, url))
-                val suffix = if (quiet) "" else " — config copied to clipboard"
+                val suffix = if (quiet) "" else " - config copied to clipboard"
                 McpAttachResult.CopiedToClipboard(target, "${e::class.simpleName}$suffix")
             }
         }

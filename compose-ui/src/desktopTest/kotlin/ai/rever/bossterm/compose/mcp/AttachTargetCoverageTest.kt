@@ -157,7 +157,7 @@ class AttachTargetCoverageTest {
             assertEquals(
                 McpRegistrationScanner.Presence.PRESENT,
                 McpRegistrationScanner.scan("boss", home)[target],
-                "${target.name} wrote a config the scanner doesn't recognize — the writer and the " +
+                "${target.name} wrote a config the scanner doesn't recognize - the writer and the " +
                     "reader disagree about the file path or shape"
             )
 

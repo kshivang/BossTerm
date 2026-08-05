@@ -94,7 +94,7 @@ fun DaemonSettingsSection(
                 label = "Start daemon at login",
                 checked = settings.startDaemonAtLogin,
                 enabled = settings.daemonEnabled,
-                description = "Install a per-OS login service so the daemon is always available — " +
+                description = "Install a per-OS login service so the daemon is always available - " +
                     "even before BossTerm is first opened, or after a reboot.",
                 onCheckedChange = { enabled ->
                     onSettingsChange(settings.copy(startDaemonAtLogin = enabled))
@@ -151,7 +151,7 @@ fun DaemonSettingsSection(
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                "The daemon never stops when you close the GUI — only via Quit daemon or OS logout.",
+                "The daemon never stops when you close the GUI - only via Quit daemon or OS logout.",
                 color = TextMuted, fontSize = 11.sp,
             )
         }
@@ -169,7 +169,7 @@ private fun readStatus(): String {
     }.getOrNull() ?: return "Daemon status unavailable."
     val uptimeS = st.uptimeMs / 1000
     return buildString {
-        append("Running — pid ${st.pid}, v${st.version}\n")
+        append("Running - pid ${st.pid}, v${st.version}\n")
         append("Sessions: ${st.sessionCount}\n")
         append("MCP port: ${st.mcpPort ?: "off"}   Attach port: ${st.attachPort ?: "off"}\n")
         append("Uptime: ${uptimeS}s")

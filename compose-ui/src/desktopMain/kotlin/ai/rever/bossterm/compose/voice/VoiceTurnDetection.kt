@@ -27,8 +27,8 @@ internal object VoiceTurnDetection {
 
     /** What the settings dropdown shows, in the same order as [ALL]. */
     fun label(value: String): String = when (value) {
-        NOISY -> "Noisy room — least sensitive"
-        QUIET -> "Quiet room — most sensitive"
+        NOISY -> "Noisy room - least sensitive"
+        QUIET -> "Quiet room - most sensitive"
         AUTOMATIC -> "Automatic (model decides)"
         else -> "Normal"
     }

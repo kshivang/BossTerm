@@ -261,7 +261,7 @@ TabbedTerminal(
 
 ## Split Pane API (T6)
 
-Programmatic control over split panes. All methods accept an optional `tabId` — defaults to the active tab.
+Programmatic control over split panes. All methods accept an optional `tabId` - defaults to the active tab.
 
 ```kotlin
 val state = rememberTabbedTerminalState()

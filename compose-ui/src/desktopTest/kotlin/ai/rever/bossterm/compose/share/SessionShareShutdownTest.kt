@@ -134,7 +134,7 @@ class SessionShareShutdownTest {
         awaitPrewarmLaunched()
         assertTrue(
             rangeIsFree(),
-            "the pre-warm must still be parked in its MCP wait — nothing may bind before the " +
+            "the pre-warm must still be parked in its MCP wait - nothing may bind before the " +
                 "MCP port is published"
         )
 
@@ -178,7 +178,7 @@ class SessionShareShutdownTest {
         assertEquals(
             0,
             managerScopeChildren(),
-            "shutdown() must leave no active work on the manager's scope — a straggler that " +
+            "shutdown() must leave no active work on the manager's scope - a straggler that " +
                 "resumes inside a closing classloader is the whole bug"
         )
     }
@@ -284,7 +284,7 @@ class SessionShareShutdownTest {
         )
         assertNull(
             SessionShareManager.fitHostEmbedder,
-            "shutdown must drop the embedder it was handed — holding it pins the host that is " +
+            "shutdown must drop the embedder it was handed - holding it pins the host that is " +
                 "disposing us"
         )
     }

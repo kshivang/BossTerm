@@ -927,7 +927,7 @@ class BossTermMcpManager(
                     )
                     if (!rewrite) {
                         log.info(
-                            "Skipping reattach for {} — a live '{}' instance already owns registered port {}",
+                            "Skipping reattach for {} - a live '{}' instance already owns registered port {}",
                             target.displayName, config.serverName, registered
                         )
                         return@mapNotNull null
@@ -942,7 +942,7 @@ class BossTermMcpManager(
             outcomes.forEach { (target, result) ->
                 if (result is McpAttachResult.CopiedToClipboard) {
                     log.warn(
-                        "Auto-reattach failed for {}: {} — keeping it persisted; will retry on next bind",
+                        "Auto-reattach failed for {}: {} - keeping it persisted; will retry on next bind",
                         target.displayName, result.reason
                     )
                 }

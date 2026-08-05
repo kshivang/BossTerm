@@ -286,7 +286,7 @@ internal class HostVoiceCallController(
                     onLevel = { level -> _level.value = level },
                     // Losing the mic used to be silent: the bar kept saying "Listening…" with the
                     // meter frozen while the call billed on, deaf. End it and say so instead.
-                    onEnded = { reason -> endWith("$reason — call ended.") },
+                    onEnded = { reason -> endWith("$reason - call ended.") },
                 )
             } catch (e: CancellationException) {
                 throw e
@@ -336,8 +336,8 @@ internal class HostVoiceCallController(
     private fun connectFailureMessage(e: Throwable): String {
         val status = (e as? WebSocketHandshakeException)?.response?.statusCode()
         return when (status) {
-            401, 403 -> "The host's OpenAI key was rejected — check it in Settings."
-            429 -> "OpenAI is rate-limiting this key — wait a moment and try again."
+            401, 403 -> "The host's OpenAI key was rejected - check it in Settings."
+            429 -> "OpenAI is rate-limiting this key - wait a moment and try again."
             null -> "Couldn't reach OpenAI (${e.javaClass.simpleName})"
             else -> "Couldn't reach OpenAI (HTTP $status)"
         }
@@ -354,7 +354,7 @@ internal class HostVoiceCallController(
                 val now = nowMs()
                 if (now - startedAt >= MAX_CALL_DURATION_MS) {
                     log.info("Boss Calling: ending in-app call at the {} min ceiling", MAX_CALL_DURATION_MS / 60_000)
-                    endWith("Call ended — reached the ${MAX_CALL_DURATION_MS / 60_000} minute limit.")
+                    endWith("Call ended - reached the ${MAX_CALL_DURATION_MS / 60_000} minute limit.")
                     return@launch
                 }
                 // A tool still running IS the call doing something. toolTimeoutMs("run_command") is
@@ -366,7 +366,7 @@ internal class HostVoiceCallController(
                 if (toolsPending()) touchActivity()
                 else if (now - lastActivityMs >= IDLE_TIMEOUT_MS) {
                     log.info("Boss Calling: ending idle in-app call")
-                    endWith("Call ended — nothing happened for ${IDLE_TIMEOUT_MS / 60_000} minutes.")
+                    endWith("Call ended - nothing happened for ${IDLE_TIMEOUT_MS / 60_000} minutes.")
                     return@launch
                 }
             }
@@ -840,7 +840,7 @@ internal class HostVoiceCallController(
             appendLine("You are Boss, a voice assistant built into the user's own BossTerm terminal.")
             appendLine("They are speaking to you from the app, looking at the terminal you can inspect.")
             appendLine()
-            appendLine("Session snapshot (may be stale — use tools for fresh data):")
+            appendLine("Session snapshot (may be stale - use tools for fresh data):")
             appendLine(snapshot.ifBlank { "- (no tabs visible)" })
             appendLine("Default tool calls to the tab they are viewing (omit tab_id).")
             appendLine()

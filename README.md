@@ -15,9 +15,9 @@
 
 | ⚡ [**Fast**](#performance) | 📱 [**Share**](#session-sharing) | 🤖 [**MCP for AI**](#bossterm-mcp) | 🧩 [**Embeddable**](#embedding-in-your-app) |
 |:--:|:--:|:--:|:--:|
-| 1,645 MB/s — edges out Alacritty | Watch & control from any device | Expose tabs to Claude Code & co. | Drop it into your Compose app |
+| 1,645 MB/s - edges out Alacritty | Watch & control from any device | Expose tabs to Claude Code & co. | Drop it into your Compose app |
 
-A modern terminal emulator built with **Kotlin** and **Compose Desktop** — high-performance, deeply customizable, and feature-rich on macOS, Linux, and Windows.
+A modern terminal emulator built with **Kotlin** and **Compose Desktop** - high-performance, deeply customizable, and feature-rich on macOS, Linux, and Windows.
 
 ## Performance
 
@@ -238,17 +238,17 @@ cd BossTerm
 - **Debug Tools** - Built-in terminal debugging with Ctrl+Shift+D
 - **Welcome Wizard** - First-time setup wizard for shell, tools, and AI assistants
 - **Customizable** - JSON-based settings at `~/.bossterm/settings.json`
-- **Session Sharing** - Watch or control a tab / window / all windows from any device — self-hosted, with a QR code and a mobile-friendly web viewer (LAN, Tailscale, or a zero-config Cloudflare tunnel)
+- **Session Sharing** - Watch or control a tab / window / all windows from any device - self-hosted, with a QR code and a mobile-friendly web viewer (LAN, Tailscale, or a zero-config Cloudflare tunnel)
 - **Remote Control** - End-to-end encrypted; viewers get typing access on approval, or connect from another BossTerm as a native remote client
 - **AI / MCP Server** - Built-in [Model Context Protocol](https://modelcontextprotocol.io) server exposes your terminals to Claude Code, Codex, Gemini CLI, and OpenCode
-- **Session Daemon** - opt-in tmux-style background process keeps your sessions, MCP server, and shares alive after the GUI closes — reopen to reattach; can start at login
+- **Session Daemon** - opt-in tmux-style background process keeps your sessions, MCP server, and shares alive after the GUI closes - reopen to reattach; can start at login
 - **Embeddable** - Drop the terminal into your own Kotlin/Compose Desktop app as a library (`com.risaboss:bossterm-compose`)
 
 ## Design
 
-BossTerm's default look is the **BOSS Blueprint** theme — the identity shared with [bossconsole.ai](https://bossconsole.ai) and the BossConsole host: an electric **signal** (`#0F5BFF`) for the live/now moment on a near-black **ink** floor (`#05070B`), with a MesloLGS mono voice. **BOSS Operator**, the original amber-on-ink look (`#F2A93B` on `#0E1217`), ships alongside it. The whole chrome follows the active theme — tab bar, terminal surface, settings, dialogs, and context menus — and you can switch themes/palettes in Settings.
+BossTerm's default look is the **BOSS Blueprint** theme - the identity shared with [bossconsole.ai](https://bossconsole.ai) and the BossConsole host: an electric **signal** (`#0F5BFF`) for the live/now moment on a near-black **ink** floor (`#05070B`), with a MesloLGS mono voice. **BOSS Operator**, the original amber-on-ink look (`#F2A93B` on `#0E1217`), ships alongside it. The whole chrome follows the active theme - tab bar, terminal surface, settings, dialogs, and context menus - and you can switch themes/palettes in Settings.
 
-🎨 **[Visual styleguide](docs/design-system.html)** — a self-contained HTML reference for the whole design system's colors / type / components (open it in a browser).
+🎨 **[Visual styleguide](docs/design-system.html)** - a self-contained HTML reference for the whole design system's colors / type / components (open it in a browser).
 
 ## Keyboard Shortcuts
 
@@ -500,31 +500,31 @@ fun MyApp() {
 
 ## Session Sharing
 
-Watch — or hand over — a live terminal to any device, with **no cloud relay and no account**.
+Watch - or hand over - a live terminal to any device, with **no cloud relay and no account**.
 BossTerm runs the share server itself; viewers open a link (or scan a QR code) in any browser, or
 connect from another BossTerm as a native client.
 
 - **Scope**: share a single **tab** (with its splits), a whole **window**, or **all windows**
   (viewers see tabs grouped by window).
 - **View or Control**: hand out a read-only **view** link or a **control** link (typing access).
-  View-only viewers can request control mid-session and you approve from a prompt — required for
+  View-only viewers can request control mid-session and you approve from a prompt - required for
   public links by default, skipped on the LAN.
 - **Reach**: LAN out of the box, or a public URL via **Tailscale** (Serve/Funnel) or a zero-config
-  **Cloudflare** quick tunnel (the default — `cloudflared` is fetched automatically, no account).
+  **Cloudflare** quick tunnel (the default - `cloudflared` is fetched automatically, no account).
   The tunnel is pre-warmed so the QR is ready the moment you hit Share.
-- **Mobile web viewer**: xterm.js-based and touch-tuned — soft-keyboard push, an on-screen key bar
+- **Mobile web viewer**: xterm.js-based and touch-tuned - soft-keyboard push, an on-screen key bar
   (Esc / Tab / Ctrl / arrows + a ⌨ toggle), pinch-zoom, fit-to-screen, and clickable links.
 - **Native remote client**: "Add remote" in BossTerm to mirror another machine's shared tabs into
-  your own window — including its **Remote MCP** — with control relayed up the chain.
+  your own window - including its **Remote MCP** - with control relayed up the chain.
 - **End-to-end encrypted**: the session key rides in the URL **fragment** (`#k=…`), which browsers
-  never send to the server — so even a tunnel relay can't read your session. Frames use
+  never send to the server - so even a tunnel relay can't read your session. Frames use
   per-connection AES-256-GCM, and a short verification code lets both ends confirm the same key.
 
 Enable it under **Settings → Session Sharing** (off by default), then **Share** from a tab's menu.
 Defaults: binds the LAN on port `7677`, Cloudflare remote mode, approval required only for public
 links.
 
-See **[docs/session-sharing.md](docs/session-sharing.md)** for the full guide — scopes,
+See **[docs/session-sharing.md](docs/session-sharing.md)** for the full guide - scopes,
 remote-access setup, the viewer, the native client, the encryption design, and every setting.
 
 ## BossTerm MCP
@@ -532,10 +532,10 @@ remote-access setup, the viewer, the native client, the encryption design, and e
 BossTerm ships an in-process [Model Context Protocol](https://modelcontextprotocol.io)
 server that exposes the running terminal to MCP-aware clients (Claude Code,
 Codex, Gemini CLI, OpenCode). Clients can enumerate tabs, read scrollback,
-search output, capture the last completed command, and — when write tools
-are enabled — drive shells, send signals, open new splits, and **run
+search output, capture the last completed command, and - when write tools
+are enabled - drive shells, send signals, open new splits, and **run
 commands in a visible pane** while still capturing stdout/stderr and exit
-code (`run_command` — recommended default shell for AI clients).
+code (`run_command` - recommended default shell for AI clients).
 
 - **Endpoint**: `http://127.0.0.1:7676/` over Server-Sent Events, configurable
   via Settings → BossTerm MCP → Port.
@@ -544,7 +544,7 @@ code (`run_command` — recommended default shell for AI clients).
   user can reach it while it is enabled.
 - **Opt-in**: disabled by default. Toggle on under Settings → BossTerm MCP.
 - **Remote MCP**: when you [share a session](#session-sharing), the host's MCP can be driven from
-  the web viewer (an "MCP pill" toggles it and attaches CLIs) or from a native remote client —
+  the web viewer (an "MCP pill" toggles it and attaches CLIs) or from a native remote client -
   calls on shared tabs are relayed to the host.
 
 ### Turning it on (as a user)
@@ -552,7 +552,7 @@ code (`run_command` — recommended default shell for AI clients).
 1. Open Settings → **BossTerm MCP** and toggle **Enable BossTerm MCP Server**.
    A green "BossTerm MCP on" pill appears in the tab bar.
 2. (Optional) Under **Exposed Tools**, untick any built-in tool you don't
-   want clients to call — toggles apply live.
+   want clients to call - toggles apply live.
 3. Under **Attach to AI CLI**, click the button for each AI CLI you want to
    register the endpoint with. Re-attachment is idempotent and happens
    silently on subsequent launches.
@@ -560,8 +560,8 @@ code (`run_command` — recommended default shell for AI clients).
 ### Using as Claude Code's default shell
 
 `run_command` is exposed by default and ready for explicit use (e.g. "split and
-run X"). To make it Claude Code's *default* shell — preferred over its built-in
-`Bash` for everything — turn on **Settings → BossTerm MCP → "Use `run_command`
+run X"). To make it Claude Code's *default* shell - preferred over its built-in
+`Bash` for everything - turn on **Settings → BossTerm MCP → "Use `run_command`
 as AI clients' default shell"** (off by default). With it on, the server's
 initialize-time `instructions` tell Claude Code to prefer `run_command` (a soft
 nudge that applies to the next client connection).
@@ -571,7 +571,7 @@ For a hard guarantee that also takes effect **instantly**, add the user-global
 [docs/mcp-server.md](docs/mcp-server.md#using-as-claude-codes-default-shell).
 BossTerm writes/deletes the `~/.bossterm/mcp.port` marker the moment you flip
 the setting, and the hook routes `Bash` calls to `mcp__bossterm__run_command`
-whenever the marker is present — so toggling the setting turns enforcement on or
+whenever the marker is present - so toggling the setting turns enforcement on or
 off per command, with no Claude restart.
 
 ### Embedding it (as a developer)
@@ -625,19 +625,19 @@ descriptions of individual built-ins. The
 [`embedded-example`](embedded-example/) and [`tabbed-example`](tabbed-example/)
 modules demonstrate both hooks.
 
-See [docs/mcp-server.md](docs/mcp-server.md) for the full reference —
+See [docs/mcp-server.md](docs/mcp-server.md) for the full reference -
 every built-in tool's JSON schema, the `manage_tools` meta-tool, the
 `BossTermMcpConfig` field-by-field table, and troubleshooting.
 
 ## Session Daemon
 
 A tmux-style background process that **owns your terminal sessions, MCP server, and shares** so they
-keep running after you close the GUI — reopen BossTerm and it reattaches to the live sessions. **Off by
+keep running after you close the GUI - reopen BossTerm and it reattaches to the live sessions. **Off by
 default**; turn it on under Settings → Session Daemon. When off, BossTerm uses the pre-daemon behavior
 (in-process MCP/sharing, sessions die with the window), a path that's preserved byte-for-byte.
 
 - **Survives the GUI**: sessions live in the daemon, not the window. Close the app (or all its
-  windows) and your shells keep running — long builds, SSH sessions, and `run_command` agents don't
+  windows) and your shells keep running - long builds, SSH sessions, and `run_command` agents don't
   die. The next launch mirrors them straight back as tabs.
 - **Thin-client GUI**: when enabled, each window attaches to the daemon over a loopback WebSocket and
   renders its sessions; keystrokes and resizes flow back to the daemon, which owns the PTYs. If the
@@ -651,12 +651,12 @@ default**; turn it on under Settings → Session Daemon. When off, BossTerm uses
   a shared/multi-user host, note the loopback MCP endpoint is then reachable by any process running as
   you whenever you're logged in.
 - **Secure by construction**: loopback-only, gated by a 256-bit per-launch secret (constant-time
-  compare, sent in a header — never the query string), DNS-rebinding `Host` guards on every server,
+  compare, sent in a header - never the query string), DNS-rebinding `Host` guards on every server,
   owner-only (`0600`) discovery/secret files in a `0700` base dir, and a `FileChannel.tryLock`
   single-spawn guard. SESSION-scoped shares are write-isolated to their one session.
 
 Manage it under **Settings → Session Daemon** (toggles take effect after restarting BossTerm). The
-daemon never stops when you close the GUI — only via **Quit daemon**, or OS logout.
+daemon never stops when you close the GUI - only via **Quit daemon**, or OS logout.
 
 ## Technology Stack
 
@@ -725,29 +725,29 @@ You may select either license at your option.
 
 ## Authors
 
-**Shivang** — shivang@risalabs.ai
+**Shivang** - shivang@risalabs.ai
 
 ## Open Source Origin and History
 
 BossTerm was originally inspired by [JediTerm](https://github.com/JetBrains/jediterm) by JetBrains (authored by Dmitry Trofimov dmitry.trofimov@jetbrains.com and Clément Poulain). The initial version of JediTerm was itself a reworked terminal emulator Gritty, which was in its own turn a reworked JCTerm terminal implementation.
 
-BossTerm has since been completely rewritten from the ground up in Kotlin with Compose Desktop — no JediTerm, Gritty, or JCTerm code remains. Everything was rewritten from scratch with a new rendering engine, new buffer implementation, and new UI framework. A lot of new features were added including split panes, inline images, AI assistant integration, custom platform services, and high-performance incremental snapshot rendering.
+BossTerm has since been completely rewritten from the ground up in Kotlin with Compose Desktop - no JediTerm, Gritty, or JCTerm code remains. Everything was rewritten from scratch with a new rendering engine, new buffer implementation, and new UI framework. A lot of new features were added including split panes, inline images, AI assistant integration, custom platform services, and high-performance incremental snapshot rendering.
 
 ## Acknowledgments
 
-- [JediTerm](https://github.com/JetBrains/jediterm) by JetBrains — original inspiration for terminal emulation
-- [iTerm2](https://github.com/gnachman/iTerm2) — the beloved macOS terminal, inspiration for many UX features
-- [Pty4J](https://github.com/JetBrains/pty4j) — PTY library for local terminal sessions
-- [ICU4J](https://unicode-icu.github.io/icu/userguide/icu4j/) — Unicode and grapheme cluster support
+- [JediTerm](https://github.com/JetBrains/jediterm) by JetBrains - original inspiration for terminal emulation
+- [iTerm2](https://github.com/gnachman/iTerm2) - the beloved macOS terminal, inspiration for many UX features
+- [Pty4J](https://github.com/JetBrains/pty4j) - PTY library for local terminal sessions
+- [ICU4J](https://unicode-icu.github.io/icu/userguide/icu4j/) - Unicode and grapheme cluster support
 
 ## References
 
-- [Terminal protocol description](http://invisible-island.net/xterm/ctlseqs/ctlseqs.html) — Xterm control sequences
-- [Terminal Character Set Terminology and Mechanics](http://www.columbia.edu/kermit/k95manual/iso2022.html) — ISO 2022 character sets
-- [VT420 Programmer Reference Manual](http://manx.classiccmp.org/collections/mds-199909/cd3/term/vt420rm2.pdf) — DEC terminal reference
-- [UTF-8 Demo](http://www.cl.cam.ac.uk/~mgk25/ucs/examples/UTF-8-demo.txt) — Unicode test file
-- [Control sequences visualization](http://www.gnu.org/software/teseq/) — GNU teseq
-- [Terminal protocol tests](http://invisible-island.net/vttest/) — vttest suite
+- [Terminal protocol description](http://invisible-island.net/xterm/ctlseqs/ctlseqs.html) - Xterm control sequences
+- [Terminal Character Set Terminology and Mechanics](http://www.columbia.edu/kermit/k95manual/iso2022.html) - ISO 2022 character sets
+- [VT420 Programmer Reference Manual](http://manx.classiccmp.org/collections/mds-199909/cd3/term/vt420rm2.pdf) - DEC terminal reference
+- [UTF-8 Demo](http://www.cl.cam.ac.uk/~mgk25/ucs/examples/UTF-8-demo.txt) - Unicode test file
+- [Control sequences visualization](http://www.gnu.org/software/teseq/) - GNU teseq
+- [Terminal protocol tests](http://invisible-island.net/vttest/) - vttest suite
 
 ---
 

@@ -164,7 +164,7 @@ class McpReattachLifecycleTest {
 
         assertTrue(
             unwound.get(),
-            "stop() returned while cancelled work was still unwinding — the host closes the " +
+            "stop() returned while cancelled work was still unwinding - the host closes the " +
                 "classloader the moment dispose() returns"
         )
     }
@@ -204,7 +204,7 @@ class McpReattachLifecycleTest {
 
         assertTrue(
             cancelledBeforeTeardown.get(),
-            "the fan-out was still live when the engine teardown ran — cancellation must come first"
+            "the fan-out was still live when the engine teardown ran - cancellation must come first"
         )
     }
 }

@@ -3,8 +3,8 @@
 BossTerm ships an in-process [Model Context Protocol](https://modelcontextprotocol.io)
 server that exposes the running terminal to MCP-aware clients (Claude Code,
 Codex, Gemini CLI, OpenCode, etc.). Clients can enumerate tabs, read
-scrollback, search output, capture the last completed command, and — when
-write tools are enabled — drive shells, send signals, and open new panes.
+scrollback, search output, capture the last completed command, and - when
+write tools are enabled - drive shells, send signals, and open new panes.
 
 This guide covers user-facing enablement and the embedder API. For hands-on
 samples, see the `embedded-example/` and `tabbed-example/` modules in the
@@ -23,7 +23,7 @@ samples, see the `embedded-example/` and `tabbed-example/` modules in the
   are rejected with `403 Forbidden` (DNS-rebinding defense).
 - **Opt-in**: disabled by default. The server only starts when `mcpEnabled`
   is `true`. Embedders can set `defaultEnabled = true` to flip the default
-  on first launch — see the [BossTermMcpConfig reference](#bosstermmcpconfig-reference).
+  on first launch - see the [BossTermMcpConfig reference](#bosstermmcpconfig-reference).
 
 ---
 
@@ -37,7 +37,7 @@ samples, see the `embedded-example/` and `tabbed-example/` modules in the
 3. (Optional) Adjust **Port** if `7676` clashes with another local service.
    Toggling the port while enabled performs a stop-then-start.
 4. (Optional) In **Exposed Tools**, untick any built-in tool you don't want
-   MCP clients to call. The change applies immediately — no server restart.
+   MCP clients to call. The change applies immediately - no server restart.
 5. (Optional) Under **Attach to AI CLI**, click the button for each AI CLI
    you want to register this endpoint with. See
    [Attaching to AI CLIs](#attaching-to-ai-clis).
@@ -85,7 +85,7 @@ List all open terminal tabs across every window registered with the
 `McpTerminalRegistry`.
 
 - Arguments:
-  - `include_fields` (optional array) — allow-list over TabInfo fields
+  - `include_fields` (optional array) - allow-list over TabInfo fields
     (`id`, `title`, `cwd`, `pid`, `isActive`). Omit to get every field;
     pass e.g. `["id", "isActive"]` for a minimal response when listing
     many tabs.
@@ -113,7 +113,7 @@ Return the active tab of the primary window, or the literal JSON `null` if
 no tab is active.
 
 - Arguments:
-  - `include_fields` (optional array) — same allow-list as `list_tabs`.
+  - `include_fields` (optional array) - same allow-list as `list_tabs`.
 - Returns: a `TabInfo` object (same shape as in `list_tabs`) or `null`.
 
 ### `list_panes`
@@ -140,11 +140,11 @@ by an earlier `run_in_panel` call.
   }
   ```
 - A tab without splits returns a single entry whose `id` equals the
-  `tab_id`. For a split tab, `id` is the wrapping `SplitNode.Pane.id` —
+  `tab_id`. For a split tab, `id` is the wrapping `SplitNode.Pane.id` -
   the value to pass back as `pane_id` to `send_input`, `send_signal`,
   `read_scrollback`, etc. `sessionId` is preserved separately so callers
   can correlate against APIs that surface session ids directly. Closing a
-  pane is `send_signal` with `signal=ctrl_d` and the pane's `id` —
+  pane is `send_signal` with `signal=ctrl_d` and the pane's `id` -
   the shell exits and the pane disposes itself.
 
 ### `read_scrollback`
@@ -155,7 +155,7 @@ screen). Trailing whitespace per line is stripped.
 - Required: `tab_id` (string).
 - Optional:
   - `lines` (integer, minimum `1`, default `200`).
-  - `pane_id` (string) — to target a specific split pane (the value returned
+  - `pane_id` (string) - to target a specific split pane (the value returned
     by `run_in_panel`). Omit to read the focused pane.
 - Returns:
   ```json
@@ -168,11 +168,11 @@ Regex-search the entire scrollback (history + screen) of a tab or pane.
 
 - Required: `tab_id` (string), `pattern` (string, Kotlin/Java regex syntax).
 - Optional:
-  - `max_matches` (integer, minimum `1`, default `50`) — truncates at this
+  - `max_matches` (integer, minimum `1`, default `50`) - truncates at this
     many matches; `truncated` in the response indicates it was hit.
   - `ignore_case` (boolean, default `false`).
   - `pane_id` (string).
-  - `include_line_text` (boolean, default `true`) — if false, each match
+  - `include_line_text` (boolean, default `true`) - if false, each match
     returns only `row`, `matchStart`, `matchEnd` (no line text). Cuts the
     response by 60–80% on typical scrollback searches.
 - Returns:
@@ -192,7 +192,7 @@ Regex-search the entire scrollback (history + screen) of a tab or pane.
 ### `get_last_command`
 
 Return the most recently completed shell command for a tab (as captured via
-OSC 133). Requires shell integration — see [[Shell-Integration]].
+OSC 133). Requires shell integration - see [[Shell-Integration]].
 
 - Required: `tab_id` (string).
 - Returns either `null` (no command completed yet) or:
@@ -205,7 +205,7 @@ OSC 133). Requires shell integration — see [[Shell-Integration]].
     "cwd": "/home/me"
   }
   ```
-- `commandText` is omitted from the response — capturing the typed command
+- `commandText` is omitted from the response - capturing the typed command
   text reliably is a follow-up. (Null fields are omitted from every
   BossTerm MCP response; see [Wire format notes](#wire-format-notes).)
 
@@ -219,13 +219,13 @@ collection is enabled for the tab. Supports incremental polling via
 - Required: `tab_id` (string).
 - Optional:
   - `max_chunks` (integer, `1..settings.debugMaxChunks`, default `100`).
-  - `since_index` (integer, ≥ 0) — return only chunks with `index >
+  - `since_index` (integer, ≥ 0) - return only chunks with `index >
     since_index`. Use the previous response's `stats.newestIndex` for polling.
-  - `sources` (array of strings, case-insensitive) — filter to a subset of:
+  - `sources` (array of strings, case-insensitive) - filter to a subset of:
     `PTY_OUTPUT`, `USER_INPUT`, `EMULATOR_GENERATED`, `CONSOLE_LOG`. Omit the
     key entirely to get every source; an empty array (or one containing only
     unknown names) returns no chunks.
-  - `omit_data` (boolean, default `false`) — if true, each chunk returns
+  - `omit_data` (boolean, default `false`) - if true, each chunk returns
     only `index`, `timestamp`, `source` (no `data` payload). Use for cheap
     polling since `data` is the bulk of every chunk.
 - Returns:
@@ -274,11 +274,11 @@ with shell startup.
   - `script`: text to write to the new panel's shell. Include `\n` to submit
     as a command.
 - Optional:
-  - `tab_id` (string) — source tab id. Required for splits; defaults to the
+  - `tab_id` (string) - source tab id. Required for splits; defaults to the
     primary window's active tab.
-  - `working_dir` (string) — for splits, defaults to the inherited cwd via
+  - `working_dir` (string) - for splits, defaults to the inherited cwd via
     OSC 7.
-  - `split_ratio` (number, `0.05..0.95`) — fraction of the parent's dimension
+  - `split_ratio` (number, `0.05..0.95`) - fraction of the parent's dimension
     the **new** pane gets. Defaults to the user's `mcpDefaultSplitRatio`
     (typically `0.3`).
 - Returns:
@@ -333,7 +333,7 @@ Response:
 ```
 
 Unknown names error out before any change is written. `manage_tools` itself
-is reserved and cannot be disabled — that would brick the surface.
+is reserved and cannot be disabled - that would brick the surface.
 
 ---
 
@@ -361,7 +361,7 @@ Commands run under the hood:
 
 If the CLI binary is missing, the shell-out fails, or the operation times
 out (15 s), the corresponding config snippet is dropped onto the clipboard
-instead, and an amber "exit N — config copied to clipboard" status is shown
+instead, and an amber "exit N - config copied to clipboard" status is shown
 under the button. **Codex caveat**: registration succeeds with codex-cli
 0.130, but Codex currently speaks streamable HTTP only, so the runtime
 connection will fail against the SSE endpoint until BossTerm's MCP SDK is
@@ -391,7 +391,7 @@ All MCP-related fields are persisted to `~/.bossterm/settings.json`.
 | `mcpDefaultSplitRatio`    | `Float`             | `0.3`       | Default new-pane size for `run_in_panel` splits when `split_ratio` is omitted. Range `0.05..0.95`.     |
 | `mcpAttachedTo`           | `Set<String>`       | `{}`        | Stable `persistenceKey`s (e.g. `"CLAUDE_CODE"`) of attached AI CLIs. Used for silent re-attach.        |
 | `disabledMcpTools`        | `Set<String>`       | `{}`        | Unprefixed built-in tool names hidden from clients. Edited via the UI or `manage_tools`.               |
-| `mcpMaxAnswerChars`       | `Int`               | `150_000`   | Soft ceiling on tool response size. When exceeded, the tool returns a progressively smaller summary instead of the full payload — see [Response shortening](#response-shortening). Advanced; no UI control. |
+| `mcpMaxAnswerChars`       | `Int`               | `150_000`   | Soft ceiling on tool response size. When exceeded, the tool returns a progressively smaller summary instead of the full payload - see [Response shortening](#response-shortening). Advanced; no UI control. |
 | `mcpConfigured`           | `Boolean`           | `false`     | Internal first-launch marker. Once `true`, embedder defaults no longer override the user's choice.     |
 
 ---
@@ -455,7 +455,7 @@ Runtime.getRuntime().addShutdownHook(Thread {
 
 `start()` is idempotent. It begins watching `mcpEnabled` / `mcpPort` and
 binds/unbinds the Ktor engine accordingly. `stop()` cancels the watcher and
-stops Ktor asynchronously — safe to call from `onDispose` on the UI thread.
+stops Ktor asynchronously - safe to call from `onDispose` on the UI thread.
 
 ### 3. Provide `LocalBossTermMcpConfig` for the settings UI
 
@@ -481,7 +481,7 @@ guide.
 
 `McpTerminalRegistry` is a singleton. Each window that hosts a
 `TabbedTerminalState` must register that state so the MCP server can find
-tabs across windows. The registry only accepts `TabbedTerminalState` — apps
+tabs across windows. The registry only accepts `TabbedTerminalState` - apps
 built on the single-terminal `EmbeddableTerminal` component can still bind
 the MCP server and register their own tools via `additionalTools`, but the
 tab-scoped built-ins (`list_tabs`, `read_scrollback`, `send_input`, etc.)
@@ -505,10 +505,10 @@ canonical example.
 ### Canonical samples
 
 - `embedded-example/src/desktopMain/kotlin/ai/rever/bossterm/embedded/Main.kt`
-  — single-window app, register on the embeddable state, custom tool
+  - single-window app, register on the embeddable state, custom tool
   `embedded_example_app_info`.
 - `tabbed-example/src/desktopMain/kotlin/ai/rever/bossterm/tabbed/Main.kt`
-  — multi-window tabbed app, register per-window, custom tool
+  - multi-window tabbed app, register per-window, custom tool
   `tabbed_example_window_overview` that iterates
   `McpTerminalRegistry.allStates()`.
 
@@ -525,7 +525,7 @@ canonical example.
 | `defaultPort`             | `Int`                      | `7676`             | First-launch port. After `mcpConfigured` flips, the user's setting wins.                                                             |
 | `defaultEnabled`          | `Boolean`                  | `false`            | First-launch enabled state. After `mcpConfigured` flips, the user's setting wins.                                                    |
 | `showInSettingsUi`        | `Boolean`                  | `true`             | When `false`, hides the MCP section from the in-app Settings UI. The status pill is still driven by `mcpShowStatusIndicator`.        |
-| `additionalTools`         | `(Server) -> Unit`         | `{}` (no-op)       | Hook to register embedder-specific tools. Tool names here are **not** prefixed — the embedder owns the namespace.                    |
+| `additionalTools`         | `(Server) -> Unit`         | `{}` (no-op)       | Hook to register embedder-specific tools. Tool names here are **not** prefixed - the embedder owns the namespace.                    |
 | `customToolDescriptions`  | `Map<String, String>`      | `{}`               | Override descriptions of built-in tools. Keys are unprefixed names. Unknown keys are silently ignored; unmentioned tools keep default. |
 
 ---
@@ -575,7 +575,7 @@ additionalTools = { server ->
 }
 ```
 
-The tool name is whatever the embedder picks — `toolNamePrefix` is **not**
+The tool name is whatever the embedder picks - `toolNamePrefix` is **not**
 applied. Choose a unique prefix to avoid colliding with future BossTerm
 built-ins. See the two example modules for working tools that introspect
 the host process via the embedder hook.
@@ -588,11 +588,11 @@ Tools can be hidden from clients in three equivalent ways. Each writes
 `disabledMcpTools` in `settings.json`; changes apply live without
 restarting the server.
 
-- **Settings UI** — Settings → BossTerm MCP → Exposed Tools, uncheck the
+- **Settings UI** - Settings → BossTerm MCP → Exposed Tools, uncheck the
   tool.
-- **`manage_tools` MCP tool** — `{"operation": "disable", "names":
+- **`manage_tools` MCP tool** - `{"operation": "disable", "names":
   ["send_input"]}`.
-- **Direct edit** — add the unprefixed name to `disabledMcpTools` in
+- **Direct edit** - add the unprefixed name to `disabledMcpTools` in
   `~/.bossterm/settings.json` and save. The settings watcher detects the
   change and reconfigures the live server.
 
@@ -611,7 +611,7 @@ directory comes back as `{id, title, isActive}` rather than
 carries the always-null `commandText`. Same for any other optional field
 on any DTO.
 
-For most clients this is transparent — JSON parsers return the same
+For most clients this is transparent - JSON parsers return the same
 implicit `null` / `undefined` / `None` whether the key is absent or
 explicitly `null`. The only place it bites is code that probes
 *presence* rather than value:
@@ -626,15 +626,15 @@ If your client relies on presence semantics, switch to value checks
 (`response.cwd == null` instead of `'cwd' in response`).
 
 The one place the server intentionally emits a literal top-level JSON
-`null` is `get_active_tab` when there is no active tab — that's hand-built
+`null` is `get_active_tab` when there is no active tab - that's hand-built
 outside the encoder and is unaffected by the setting.
 
 ---
 
 ## Response shortening
 
-Three built-in tools can return unbounded responses — `search_output`,
-`read_scrollback`, and `read_debug_console` — so each runs its full payload
+Three built-in tools can return unbounded responses - `search_output`,
+`read_scrollback`, and `read_debug_console` - so each runs its full payload
 through a per-tool fallback ladder. If the full JSON would exceed
 `settings.mcpMaxAnswerChars` (default `150_000`), the server returns a
 progressively smaller well-formed JSON instead. The agent never sees a
@@ -646,21 +646,21 @@ projection so clients can detect they're looking at a summary. Common
 shortened shapes:
 
 `search_output`
-- **positions only** — `matches` keeps `row`, `matchStart`, `matchEnd`; the
+- **positions only** - `matches` keeps `row`, `matchStart`, `matchEnd`; the
   matched line text is dropped. Usually 60–80% smaller than full.
-- **row counts** — `{rowCounts: {row: hits}, totalMatches}` instead of
+- **row counts** - `{rowCounts: {row: hits}, totalMatches}` instead of
   per-match records.
-- **totals only** — `{totalMatches, truncated, historyLinesCount, height}`.
+- **totals only** - `{totalMatches, truncated, historyLinesCount, height}`.
 
 `read_scrollback`
-- **tail** — keeps the last 20 lines and reports the requested count.
-- **totals only** — `{totalAvailable}` with a "retry with smaller `lines`"
+- **tail** - keeps the last 20 lines and reports the requested count.
+- **totals only** - `{totalAvailable}` with a "retry with smaller `lines`"
   hint.
 
 `read_debug_console`
-- **metadata only** — chunks keep `index`, `timestamp`, `source`; the `data`
+- **metadata only** - chunks keep `index`, `timestamp`, `source`; the `data`
   byte payload is dropped. Great for polling "any new chunks since N".
-- **stats only** — drops the chunks list entirely; agent narrows by
+- **stats only** - drops the chunks list entirely; agent narrows by
   `since_index`, `sources`, or `max_chunks` on the next call.
 
 Reduce `mcpMaxAnswerChars` (e.g. to `50_000`) if you want the fallbacks to
@@ -682,7 +682,7 @@ INFO  BossTermMcpManager - Starting BossTerm MCP server on http://127.0.0.1:7677
 INFO  BossTermMcpManager - BossTerm MCP server ready: http://127.0.0.1:7677/ ...
 ```
 
-The user-configured `mcpPort` setting is NOT updated by fallback — the
+The user-configured `mcpPort` setting is NOT updated by fallback - the
 next restart still tries the original first, in case the conflicting
 process has exited. The status pill's hover tooltip and the silent CLI
 auto-reattach both use the actual running port, so registered AI CLIs
@@ -698,7 +698,7 @@ follow along automatically.
 
 **The server won't bind any port at all.** Either (a) all 10 attempted
 ports were busy, (b) the configured port was rejected for a reason other
-than "address in use" — e.g. permission denied on a privileged port
+than "address in use" - e.g. permission denied on a privileged port
 (`<1024` on Linux/macOS when not running as root), or (c) the very first
 attempt hit a non-bind error. The manager treats permission-denied as a
 hard failure (not a "try the next port" condition) so it doesn't walk up
@@ -729,7 +729,7 @@ into the CLI's config and the next BossTerm startup will see it via
 
 **Codex registered but won't connect.** Known. codex-cli 0.130 speaks
 streamable HTTP only and BossTerm's MCP SDK serves SSE. Tracked as a
-follow-up — the registration is recorded in `mcpAttachedTo` so the entry
+follow-up - the registration is recorded in `mcpAttachedTo` so the entry
 auto-refreshes once the SDK is upgraded.
 
 **Port stuck after Force-Quit.** The 1.5 s Ktor shutdown grace is normally
@@ -740,7 +740,7 @@ change the port temporarily.
 
 ## Related pages
 
-- [[Embedding-Guide]] — Embedding a single terminal.
-- [[Tabbed-Terminal-Guide]] — Embedding a full tab bar with splits.
-- [[Configuration]] — Full settings.json reference.
-- [[Shell-Integration]] — Setting up OSC 7 / OSC 133 in your shell.
+- [[Embedding-Guide]] - Embedding a single terminal.
+- [[Tabbed-Terminal-Guide]] - Embedding a full tab bar with splits.
+- [[Configuration]] - Full settings.json reference.
+- [[Shell-Integration]] - Setting up OSC 7 / OSC 133 in your shell.

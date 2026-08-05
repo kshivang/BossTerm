@@ -158,7 +158,7 @@ fun rememberTabbedTerminalState(
 
 #### Split Pane Methods (T6)
 
-All accept optional `tabId: String?` — defaults to active tab.
+All accept optional `tabId: String?` - defaults to active tab.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|

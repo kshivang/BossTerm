@@ -74,7 +74,7 @@ object TerminalSessionSlots {
 
     /** Message shown in the pane (and echoed by the capacity dialog) when a session is refused. */
     const val EXHAUSTED_MESSAGE =
-        "No terminal threads available — close some terminal tabs or splits, then try again."
+        "No terminal threads available - close some terminal tabs or splits, then try again."
 
     /**
      * Machine-scaled default budget: 16 threads (~5 sessions) per CPU core,

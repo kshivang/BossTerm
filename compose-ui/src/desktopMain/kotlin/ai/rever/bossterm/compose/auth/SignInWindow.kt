@@ -79,7 +79,7 @@ fun SignInWindow(
 
     Window(
         onCloseRequest = onDismiss,
-        title = "BossTerm — Sign In",
+        title = "BossTerm - Sign In",
         resizable = false,
         state = rememberWindowState(size = DpSize(440.dp, 480.dp))
     ) {
@@ -161,7 +161,7 @@ fun SignInWindow(
                                 placeholder = "you@example.com",
                             )
                             Spacer(Modifier.height(6.dp))
-                            Text("We'll email you a link — no password needed.", color = TextMuted, fontSize = 11.sp)
+                            Text("We'll email you a link - no password needed.", color = TextMuted, fontSize = 11.sp)
                             Spacer(Modifier.height(14.dp))
                             Button(
                                 onClick = { send(email) },

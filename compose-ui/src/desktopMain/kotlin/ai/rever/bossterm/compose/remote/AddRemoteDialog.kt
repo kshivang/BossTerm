@@ -72,7 +72,7 @@ fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
         if (l.isBlank()) return
         if (manager.connect(l, deviceName, shareBack) == null) {
             // connect() refuses our own share links — mirroring a session into itself loops.
-            error = "That's this BossTerm's own share link — a session can't mirror itself."
+            error = "That's this BossTerm's own share link - a session can't mirror itself."
         } else {
             link = ""
             error = null
@@ -80,7 +80,7 @@ fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
     }
     Window(
         onCloseRequest = onDismiss,
-        title = "BossTerm — Remote Sessions",
+        title = "BossTerm - Remote Sessions",
         resizable = false,
         state = rememberWindowState(size = DpSize(560.dp, 520.dp))
     ) {
@@ -182,7 +182,7 @@ fun RequestControlPrompt(onConfirm: () -> Unit, onDismiss: () -> Unit) {
         title = { Text("View-only session", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
         text = {
             Text(
-                "You're viewing this session read-only — splits, new tabs, and typing need " +
+                "You're viewing this session read-only - splits, new tabs, and typing need " +
                     "control. Ask for it? When the session is reached through another host, " +
                     "each host is asked in turn and its owner approves.",
                 color = TextSecondary, fontSize = 12.sp
@@ -223,7 +223,7 @@ fun RemoteFitPrompt(
                 verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    "This tab mirrors $hostName — its terminal grid doesn't fit this window 1:1.",
+                    "This tab mirrors $hostName - its terminal grid doesn't fit this window 1:1.",
                     color = TextSecondary, fontSize = 12.sp
                 )
                 Button(

@@ -345,4 +345,90 @@ class CursorOverlayTest {
         }
         assertEquals(0, bluePixels, "a blank glyph should draw nothing")
     }
+
+    /**
+     * The one guard in the overlay that is a bare numeric threshold
+     * (OPAQUE_BLOCK_ALPHA), and the easiest thing here to regress silently. A
+     * translucent block lets the original glyph show through, so a repaint doubles
+     * it - the same objection that excludes underline and bar cursors.
+     */
+    @Test
+    fun aTranslucentBlockDoesNotRepaintTheGlyph() {
+        val pixels = draw(width = 12, height = 20) {
+            with(TerminalCanvasRenderer) {
+                renderCursorOverlay(
+                    cursorVisible = true,
+                    cursorBlinkVisible = true,
+                    cursorShape = CursorShape.STEADY_BLOCK,
+                    cursorX = 0,
+                    cursorY = 1,
+                    scrollOffset = 0,
+                    cellWidth = 12f,
+                    cellHeight = 20f,
+                    isFocused = false, // -> unfocusedAlpha 0.3, below the opacity gate
+                    cursorColor = Color.Red,
+                    cursorGlyph = CursorGlyph("W", isBold = false, isItalic = false, isUnderline = false),
+                    cursorTextColor = Color.Blue,
+                    glyphFontFamily = FontFamily.Monospace,
+                    glyphFontSize = 14f,
+                    glyphMeasurer = glyphMeasurer,
+                )
+            }
+        }.toPixelMap()
+
+        var bluePixels = 0
+        for (x in 0 until 12) {
+            for (y in 0 until 20) if (pixels[x, y].blue > 0.5f) bluePixels++
+        }
+        assertEquals(0, bluePixels, "a translucent block must not double-draw the glyph")
+    }
+
+    /**
+     * The underline is a literal rect, and a different code path from the
+     * `CursorGlyph.isUnderline` field `ResolveCursorGlyphTest` checks - so nothing
+     * proved the branch actually paints until this.
+     *
+     * Compares total glyph-coloured pixels with and without the attribute rather
+     * than probing the bottom rows: where a glyph's own ink lands depends on font
+     * metrics, and the difference between the two draws does not. (A blank glyph
+     * cannot be used to isolate the rect - the overlay short-circuits on
+     * `text.isNotBlank()`, and `resolveCursorGlyph` never emits a blank glyph.)
+     */
+    @Test
+    fun anUnderlinedCellKeepsItsUnderlineUnderTheCursor() {
+        fun bluePixels(underline: Boolean): Int {
+            val pixels = draw(width = 12, height = 20) {
+                with(TerminalCanvasRenderer) {
+                    renderCursorOverlay(
+                        cursorVisible = true,
+                        cursorBlinkVisible = true,
+                        cursorShape = CursorShape.STEADY_BLOCK,
+                        cursorX = 0,
+                        cursorY = 1,
+                        scrollOffset = 0,
+                        cellWidth = 12f,
+                        cellHeight = 20f,
+                        isFocused = true,
+                        cursorColor = Color.Red,
+                        cursorGlyph = CursorGlyph("l", isBold = false, isItalic = false, isUnderline = underline),
+                        cursorTextColor = Color.Blue,
+                        glyphFontFamily = FontFamily.Monospace,
+                        glyphFontSize = 14f,
+                        glyphMeasurer = glyphMeasurer,
+                    )
+                }
+            }.toPixelMap()
+            var n = 0
+            for (x in 0 until 12) for (y in 0 until 20) if (pixels[x, y].blue > 0.5f) n++
+            return n
+        }
+
+        val plain = bluePixels(underline = false)
+        val underlined = bluePixels(underline = true)
+        assertTrue(plain > 0, "the glyph itself should paint")
+        assertTrue(
+            underlined > plain,
+            "an underlined cell must keep its underline ($underlined vs $plain px)",
+        )
+    }
 }

@@ -89,6 +89,9 @@ import ai.rever.bossterm.compose.rendering.RenderingContext
 import ai.rever.bossterm.compose.rendering.RenderableBlock
 import ai.rever.bossterm.compose.rendering.ImageRenderer
 import ai.rever.bossterm.compose.rendering.TerminalCanvasRenderer
+import ai.rever.bossterm.terminal.model.TerminalLine
+import kotlin.math.abs
+import androidx.compose.ui.graphics.luminance
 import ai.rever.bossterm.compose.rendering.imageCellSlice
 import ai.rever.bossterm.compose.blocks.BlockState
 import ai.rever.bossterm.compose.selection.SelectionEngine
@@ -2106,7 +2109,11 @@ fun ProperTerminal(
                     slowBlinkVisible = slowBlinkVisible,
                     rapidBlinkVisible = rapidBlinkVisible,
                 ) else null,
-                cursorTextColor = activeTheme.cursorTextColor,
+                cursorTextColor = cursorGlyphColor(
+                    theme = activeTheme,
+                    effectiveFill = baseCursorColor,
+                    fillIsAppSet = customCursorColor != null,
+                ),
                 glyphFontFamily = sharedFont,
                 glyphFontSize = effectiveFontSize,
                 glyphMeasurer = textMeasurer,
@@ -2463,6 +2470,29 @@ fun ProperTerminal(
   } // end else (Connected state)
 }
 
+/**
+ * The colour to repaint the covered glyph in, given the fill actually being drawn.
+ *
+ * `theme.cursorText` is authored against `theme.cursor`, but OSC 12 lets an app
+ * replace the fill without saying anything about the glyph. Using the theme value
+ * regardless would make this feature WORSE than the blank block it replaces: a
+ * dark app-set cursor would get a dark glyph smeared across it. So when the fill
+ * is app-set, pick whichever of the theme's own floor/text colours sits further
+ * from it in luminance - the same trick `UiTheme.fromTheme` uses to choose
+ * `onSignal`.
+ */
+internal fun cursorGlyphColor(
+    theme: ai.rever.bossterm.compose.settings.theme.Theme,
+    effectiveFill: Color,
+    fillIsAppSet: Boolean,
+): Color {
+    if (!fillIsAppSet) return theme.cursorTextColor
+    val fill = effectiveFill.luminance()
+    val floor = theme.backgroundColorValue
+    val text = theme.foregroundColor
+    return if (abs(fill - floor.luminance()) >= abs(fill - text.luminance())) floor else text
+}
+
 /** Block shapes are the only ones that hide the glyph beneath the cursor. */
 private fun CursorShape?.isBlock(): Boolean =
     this == null || this == CursorShape.STEADY_BLOCK || this == CursorShape.BLINK_BLOCK
@@ -2498,7 +2528,7 @@ private fun CursorShape?.isBlock(): Boolean =
  *    whenever the caret is solid, and flash a steady cell on the caret's clock.
  */
 internal fun resolveCursorGlyph(
-    line: ai.rever.bossterm.terminal.model.TerminalLine,
+    line: TerminalLine,
     visualColumn: Int,
     terminalWidth: Int,
     ambiguousCharsAreDoubleWidth: Boolean,

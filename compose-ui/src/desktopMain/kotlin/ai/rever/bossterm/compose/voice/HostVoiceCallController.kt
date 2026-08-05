@@ -76,7 +76,7 @@ internal class HostVoiceCallController(
      */
     private val newAudio: () -> VoiceAudioIo = { JavaSoundVoiceAudioIo() },
     private val settings: () -> TerminalSettings = { SettingsManager.instance.settings.value },
-    private val loadKey: () -> String? = { VoiceAgentStorage.load()?.openaiApiKey?.takeIf { it.isNotBlank() } },
+    private val loadKey: () -> String? = { VoiceKeySource.resolve() },
     /** Injected in tests so the ceilings can be exercised without waiting them out. */
     private val nowMs: () -> Long = { System.currentTimeMillis() },
     /**

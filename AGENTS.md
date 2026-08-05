@@ -131,6 +131,20 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 - `VoiceCallService.kt` - share-viewer policy: control role, share scope, mint budget, call tokens
 - `HostVoiceCallController.kt` - the in-app call (JDK WebSocket + `javax.sound.sampled`, no WebRTC)
 - `VoiceAgentStorage.kt` - the chmod-600 key file
+- `VoiceKeySource.kt` - **where the key comes from**: an embedder-supplied source first, then
+  `voice.json`. Read `resolve()`, never `VoiceAgentStorage.load()` directly, on any path that needs
+  a usable key. BossTerm can't depend on `boss-plugin-api`, so the seam is a plain lambda that
+  `terminal-tab` fills from BOSS's `Settings → AI Providers` (its **OpenAI** provider specifically -
+  Realtime is OpenAI's, so handing over whatever provider is merely *active* would send an
+  `sk-ant-…` key to `api.openai.com`). Only the credential is shared: the Realtime model stays
+  `TerminalSettings.voiceCallModel`, because an `LlmConfig.modelId` is a *chat* model.
+  Process-wide rather than a `TabbedTerminal` parameter because three unrelated paths read the key
+  (in-app call, share mint, share advertisement). A throwing embedder falls through to the file
+  rather than taking a call down - it runs host code across a plugin classloader.
+  The daemon is deliberately excluded: it is headless with no embedder in the process.
+  `keyStamp()` still only sees file edits, so an embedder key is noticed on the next read rather
+  than pushed - which is why `MirrorShare`'s presence check calls it per read alongside its two
+  file-backed caches.
 - `VoiceAgentCustomization.kt` - the embedder seam for the agent's instructions (the button's label
   is a `TabbedTerminal` parameter instead, alongside `contextMenuItems`)
 - `VoiceToolSource.kt` - the EMBEDDER's tool surface (`TabbedTerminal(voiceToolSource = …)`), merged
@@ -160,7 +174,8 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
   viewer's bottom bar (remote). "Boss Calling" is the FEATURE and is fixed; the in-app button's
   label is `TabbedTerminal(callLabel = …)` - null renders "Call BossTerm", BossConsole passes
   "Call Boss". The viewer's button is a static web asset and stays "Call BossTerm". Needs an OpenAI
-  key in `~/.bossterm/voice.json`; remote calls additionally require control of the share
+  key - from an embedder-registered source if there is one, else `~/.bossterm/voice.json` (see
+  `VoiceKeySource.kt`); remote calls additionally require control of the share
 - **Debug**: Ctrl+Shift+D
 
 ## Programmatic API

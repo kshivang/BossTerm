@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.settings.theme
 
 import ai.rever.bossterm.compose.settings.SettingsManager
+import ai.rever.bossterm.compose.settings.TerminalSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -9,6 +10,30 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.UUID
+
+/**
+ * Apply every colour a [Theme] owns onto these settings.
+ *
+ * Extracted from [ThemeManager.applyTheme] so the mapping can be asserted
+ * directly. A test that hand-writes the same `copy(...)` and then checks its own
+ * values is a tautology - it passes even if this mapping is deleted - and that is
+ * exactly the drift a propagation guard is supposed to catch.
+ *
+ * The scrollbar search markers are deliberately NOT here. They are two
+ * same-sized ticks distinguished only by hue, and pairing `searchMatch` with
+ * `cursor` collapses that distinction on several builtins (dracula, monokai and
+ * catppuccin-mocha all put a pale yellow next to an off-white). They stay
+ * user-owned in Scrollbar settings.
+ */
+internal fun TerminalSettings.withThemeColors(theme: Theme): TerminalSettings =
+    copy(
+        activeThemeId = theme.id,
+        defaultForeground = theme.foreground,
+        defaultBackground = theme.background,
+        selectionColor = theme.selection,
+        foundPatternColor = theme.searchMatch,
+        hyperlinkColor = theme.hyperlink,
+    )
 
 /**
  * Container for serializing custom themes to JSON.
@@ -83,26 +108,7 @@ class ThemeManager private constructor(
     fun applyTheme(theme: Theme) {
         setCurrentTheme(theme)
 
-        // Update settings with the new theme's colors.
-        //
-        // The scrollbar search markers are in this set so a theme switch carries
-        // the whole search surface, not just the in-buffer highlight. They stay
-        // editable in Scrollbar settings; like the five above, an explicit theme
-        // switch is what resets them. The current-match marker takes the cursor
-        // color because that is the theme's "live / now" slot, which is exactly
-        // what the match you are standing on is.
-        settingsManager.updateSetting {
-            copy(
-                activeThemeId = theme.id,
-                defaultForeground = theme.foreground,
-                defaultBackground = theme.background,
-                selectionColor = theme.selection,
-                foundPatternColor = theme.searchMatch,
-                hyperlinkColor = theme.hyperlink,
-                searchMarkerColor = theme.searchMatch,
-                currentSearchMarkerColor = theme.cursor
-            )
-        }
+        settingsManager.updateSetting { withThemeColors(theme) }
     }
 
     /**

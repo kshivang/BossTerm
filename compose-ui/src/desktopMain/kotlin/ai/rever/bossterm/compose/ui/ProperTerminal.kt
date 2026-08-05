@@ -2080,13 +2080,17 @@ fun ProperTerminal(
                 focusedAlpha = settings.cursorFocusedAlpha,
                 unfocusedAlpha = settings.cursorUnfocusedAlpha,
                 imageOcclusion = cursorImageSlice,
-                // Read from the same snapshot line the image slice above uses, so
-                // the glyph, the cursor and the cell content cannot disagree.
-                cursorGlyph = bufferSnapshot
-                    .getLine(bufferCursorRow)
-                    .charAt(effectiveCursorX)
-                    .takeIf { it != '\u0000' }
-                    ?.toString(),
+                // Resolved HERE, not in the overlay: deciding whether a cell may be
+                // repainted needs the cell's style, which the overlay cannot see.
+                // Returns null for every case the text pass itself declines to
+                // draw, so the block simply stays solid rather than painting
+                // something the rest of the screen is not showing.
+                cursorGlyph = resolveCursorGlyph(
+                    line = bufferSnapshot.getLine(bufferCursorRow),
+                    column = effectiveCursorX,
+                    width = bufferSnapshot.width,
+                    blinkVisible = cursorBlinkVisible,
+                ),
                 cursorTextColor = activeTheme.cursorTextColor,
                 glyphFontFamily = sharedFont,
                 glyphFontSize = effectiveFontSize,
@@ -2449,6 +2453,52 @@ fun ProperTerminal(
  * Handles spaces, quotes, and other special characters.
  * Uses single quotes with escaped internal single quotes (iTerm2 style).
  */
+/**
+ * The glyph a block cursor may repaint on top of itself, or null to leave the
+ * block solid.
+ *
+ * The cursor overlay is a separate canvas that never sees the buffer, so this
+ * decides on its behalf. Every rejection below mirrors something the main text
+ * pass in `TerminalCanvasRenderer` already does; painting where it declines would
+ * put a character on screen that exists nowhere else:
+ *
+ *  - **DWC** (`CharUtils.DWC`, U+E000) is the private-use marker for the trailing
+ *    cell of a double-width character. The text pass skips it; stringifying it
+ *    paints tofu.
+ *  - **HIDDEN** (SGR 8, conceal) is used by password prompts, and the cursor sits
+ *    exactly on the character just typed. Revealing it only under the cursor is a
+ *    disclosure, not a cosmetic bug.
+ *  - **Blink-off** cells are invisible everywhere else at that moment.
+ *  - **Surrogate pairs** cannot be repainted from one UTF-16 unit; a lone
+ *    surrogate shapes to U+FFFD. Astral glyphs also want the fallback font
+ *    families the overlay does not carry, so they are declined outright rather
+ *    than drawn wrong.
+ *  - **Double-width lead cells** would need a two-cell block; the one-cell clip
+ *    would slice the glyph in half.
+ */
+internal fun resolveCursorGlyph(
+    line: ai.rever.bossterm.terminal.model.TerminalLine,
+    column: Int,
+    width: Int,
+    blinkVisible: Boolean,
+): String? {
+    if (column < 0 || column >= width) return null
+    val char = line.charAt(column)
+    if (char == CharUtils.DWC || char == CharUtils.EMPTY_CHAR || char.isWhitespace()) return null
+    // Astral plane: needs the pair and a fallback family. Decline.
+    if (Character.isHighSurrogate(char) || Character.isLowSurrogate(char)) return null
+    // A double-width lead cell is wider than the block that would clip it.
+    if (column + 1 < width && line.charAt(column + 1) == CharUtils.DWC) return null
+
+    val style = line.getStyleAt(column)
+    if (style?.hasOption(BossTextStyle.Option.HIDDEN) == true) return null
+    val blinks = style?.hasOption(BossTextStyle.Option.SLOW_BLINK) == true ||
+        style?.hasOption(BossTextStyle.Option.RAPID_BLINK) == true
+    if (blinks && !blinkVisible) return null
+
+    return char.toString()
+}
+
 private fun escapePathForShell(path: String): String {
   // Characters that need quoting in shell
   val needsQuoting = path.contains(' ') ||

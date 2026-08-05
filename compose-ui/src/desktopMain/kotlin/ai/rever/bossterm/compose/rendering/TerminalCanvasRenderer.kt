@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
@@ -1428,26 +1429,46 @@ object TerminalCanvasRenderer {
                         size = Size(w, h)
                     )
                     // Put the covered character back, on top of the block.
-                    // Only the block shapes need this: underline and bar sit at
-                    // the cell edge and never hide the glyph.
+                    //
+                    // Only the block shapes need this: underline and bar sit at the
+                    // cell edge and never hide the glyph.
+                    //
+                    // Gated on the block being effectively OPAQUE. A translucent
+                    // block (an unfocused cursor is 0.3 by default) lets the
+                    // original glyph show through, so repainting would double-draw
+                    // it - the same objection that excludes underline and bar. The
+                    // two canvases also disagree by a sub-pixel on row origin,
+                    // which is invisible under an opaque block and a visible ghost
+                    // under a translucent one.
+                    //
+                    // Drawn at FULL alpha, not the cursor's: the block underneath
+                    // is already opaque, so fading the glyph only lowers its
+                    // contrast against the fill.
                     if (
                         cursorGlyph != null &&
                         cursorGlyph.isNotBlank() &&
                         cursorTextColor != null &&
                         glyphFontFamily != null &&
                         glyphFontSize > 0f &&
-                        glyphMeasurer != null
+                        glyphMeasurer != null &&
+                        cursorAlpha >= 0.99f
                     ) {
-                        drawTextClipped(
-                            textMeasurer = glyphMeasurer,
-                            text = cursorGlyph,
-                            topLeft = Offset(x, y),
-                            style = TextStyle(
-                                color = cursorTextColor.copy(alpha = cursorAlpha),
-                                fontFamily = glyphFontFamily,
-                                fontSize = glyphFontSize.sp,
-                            ),
-                        )
+                        // Clipped to the cell the block actually covers.
+                        // drawTextClipped only guards the CANVAS edge, so a glyph
+                        // wider than one cell would otherwise paint over the
+                        // already-correct text in the neighbouring cell.
+                        clipRect(left = x, top = y, right = x + w, bottom = y + h) {
+                            drawTextClipped(
+                                textMeasurer = glyphMeasurer,
+                                text = cursorGlyph,
+                                topLeft = Offset(x, y),
+                                style = TextStyle(
+                                    color = cursorTextColor,
+                                    fontFamily = glyphFontFamily,
+                                    fontSize = glyphFontSize.sp,
+                                ),
+                            )
+                        }
                     }
                 }
                 CursorShape.BLINK_UNDERLINE, CursorShape.STEADY_UNDERLINE -> {

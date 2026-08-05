@@ -360,12 +360,12 @@ data class TerminalSettings(
     /**
      * Search marker color for regular matches (serialized as ARGB hex)
      */
-    val searchMarkerColor: String = "0xFFF1DF9E",
+    val searchMarkerColor: String = "0xFFFFFF00",
 
     /**
      * Search marker color for current match (serialized as ARGB hex)
      */
-    val currentSearchMarkerColor: String = "0xFF2F74FF",
+    val currentSearchMarkerColor: String = "0xFFFF6600",
 
     // ===== Command Blocks =====
 

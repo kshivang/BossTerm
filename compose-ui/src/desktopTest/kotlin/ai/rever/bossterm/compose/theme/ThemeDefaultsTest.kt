@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.theme
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.theme.BuiltinColorPalettes
 import ai.rever.bossterm.compose.settings.theme.BuiltinThemes
+import ai.rever.bossterm.compose.settings.theme.withThemeColors
 import ai.rever.bossterm.compose.settings.theme.ColorPalette
 import ai.rever.bossterm.compose.settings.theme.Theme
 import kotlin.test.Test
@@ -65,10 +66,6 @@ class ThemeDefaultsTest {
         assertEquals(t.searchMatch, s.foundPatternColor)
         assertEquals(t.hyperlink, s.hyperlinkColor)
         assertEquals(t.id, s.activeThemeId)
-        // The scrollbar search markers are theme-owned too, so a fresh install
-        // does not ship yellow/orange markers on a cool-blue default.
-        assertEquals(t.searchMatch, s.searchMarkerColor)
-        assertEquals(t.cursor, s.currentSearchMarkerColor)
         assertEquals(1f, s.cursorFocusedAlpha, "focused cursor should match the opaque browser cursor")
     }
 
@@ -100,30 +97,39 @@ class ThemeDefaultsTest {
      *
      * `searchMatch` and `cursorText` were both dead for a long time: themes set
      * them, the theme editor let you change them, and nothing on screen moved.
-     * This pins the propagation half; the render half is pinned by
-     * `CursorOverlayTest` (pixels) and the renderer reading `foundPatternColor`.
+     *
+     * This drives the REAL mapping ([withThemeColors], which `applyTheme` calls)
+     * rather than restating it. The first version of this test hand-built the same
+     * `copy(...)` and asserted its own values, so it passed green even with the
+     * mapping deleted - a guard that cannot fail is worse than no guard, because
+     * it reads as covered.
      */
     @Test
-    fun `applyTheme propagates every rendered colour slot`() {
+    fun `withThemeColors carries every rendered colour slot`() {
         val t = BuiltinThemes.BOSS_OPERATOR
-        val s = TerminalSettings(
-            activeThemeId = t.id,
-            defaultForeground = t.foreground,
-            defaultBackground = t.background,
-            selectionColor = t.selection,
-            foundPatternColor = t.searchMatch,
-            hyperlinkColor = t.hyperlink,
-            searchMarkerColor = t.searchMatch,
-            currentSearchMarkerColor = t.cursor,
-        )
-        // Mirrors ThemeManager.applyTheme's copy(...) block. If a slot is added
-        // there without a reader, or removed from there while a theme still
-        // exposes it, this is where the pair stops agreeing.
-        assertEquals(t.searchMatch, s.foundPatternColor, "in-buffer search highlight")
-        assertEquals(t.searchMatch, s.searchMarkerColor, "scrollbar match markers")
-        assertEquals(t.cursor, s.currentSearchMarkerColor, "scrollbar current-match marker")
+        val s = TerminalSettings().withThemeColors(t)
+        assertEquals(t.id, s.activeThemeId)
+        assertEquals(t.foreground, s.defaultForeground)
+        assertEquals(t.background, s.defaultBackground)
         assertEquals(t.selection, s.selectionColor)
         assertEquals(t.hyperlink, s.hyperlinkColor)
+        // The slot this PR revived: the in-buffer search highlight reads
+        // foundPatternColorValue, so theme.searchMatch has to land here.
+        assertEquals(t.searchMatch, s.foundPatternColor, "in-buffer search highlight")
+    }
+
+    /**
+     * The scrollbar markers are deliberately user-owned, not theme-driven: they
+     * are two same-sized ticks told apart only by hue, and several builtins put a
+     * pale yellow `searchMatch` next to an off-white `cursor`. Pinned so the
+     * decision is visible rather than looking like an oversight.
+     */
+    @Test
+    fun `scrollbar search markers stay independent of the theme`() {
+        val before = TerminalSettings()
+        val after = before.withThemeColors(BuiltinThemes.BOSS_BLUEPRINT)
+        assertEquals(before.searchMarkerColor, after.searchMarkerColor)
+        assertEquals(before.currentSearchMarkerColor, after.currentSearchMarkerColor)
     }
 
     private fun assertAnsiMatches(

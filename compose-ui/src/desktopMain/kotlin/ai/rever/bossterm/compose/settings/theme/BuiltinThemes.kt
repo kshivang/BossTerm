@@ -393,13 +393,12 @@ object BuiltinThemes {
      *
      * The cursor is the site's `--blue-bright` rather than `--blue` because a
      * block cursor has to be visible against the FLOOR: 4.8:1 vs `--blue`'s
-     * 3.8:1. It is not about the glyph underneath — `renderCursorOverlay` draws
-     * an opaque rect at `cursorFocusedAlpha` (1f) on a layer above the text, so
-     * the covered glyph is replaced rather than blended.
+     * 3.8:1.
      *
-     * `cursorText` and `selectionText` are set for completeness but are
-     * currently UNWIRED: `Theme.cursorTextColor` / `selectionTextColor` have no
-     * readers, so do not invest care in these two values expecting to see them.
+     * `cursorText` IS wired: an opaque block cursor repaints the character it
+     * covers in this colour, so `cursorText`-on-`cursor` is a real contrast pair.
+     * `selectionText` (`Theme.selectionTextColor`) is still unwired and has no
+     * readers.
      */
     val BOSS_BLUEPRINT = Theme(
         id = "boss-blueprint",

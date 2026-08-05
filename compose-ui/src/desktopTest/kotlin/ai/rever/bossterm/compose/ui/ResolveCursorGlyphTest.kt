@@ -35,21 +35,21 @@ class ResolveCursorGlyphTest {
 
     @Test
     fun `a plain character is repainted`() {
-        assertEquals(CursorGlyph("a", isBold = false, isItalic = false), resolveCursorGlyph(line("abc"), column = 0, width = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
-        assertEquals(CursorGlyph("c", isBold = false, isItalic = false), resolveCursorGlyph(line("abc"), column = 2, width = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertEquals(CursorGlyph("a", isBold = false, isItalic = false, isUnderline = false), resolveCursorGlyph(line("abc"), visualColumn = 0, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertEquals(CursorGlyph("c", isBold = false, isItalic = false, isUnderline = false), resolveCursorGlyph(line("abc"), visualColumn = 2, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
     }
 
     @Test
     fun `a blank cell has nothing to put back`() {
-        assertNull(resolveCursorGlyph(line("a c"), column = 1, width = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(line("a c"), visualColumn = 1, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
         // Past the end of the line reads as an empty cell, not a crash.
-        assertNull(resolveCursorGlyph(line("a"), column = 4, width = 8, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(line("a"), visualColumn = 4, terminalWidth = 8, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
     }
 
     @Test
     fun `out of range columns are rejected`() {
-        assertNull(resolveCursorGlyph(line("abc"), column = -1, width = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
-        assertNull(resolveCursorGlyph(line("abc"), column = 3, width = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(line("abc"), visualColumn = -1, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(line("abc"), visualColumn = 3, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
     }
 
     /**
@@ -60,7 +60,7 @@ class ResolveCursorGlyphTest {
     @Test
     fun `a DWC trailing cell is rejected`() {
         val wide = line("你${CharUtils.DWC}")
-        assertNull(resolveCursorGlyph(wide, column = 1, width = 2, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(wide, visualColumn = 1, terminalWidth = 2, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
     }
 
     /**
@@ -70,7 +70,7 @@ class ResolveCursorGlyphTest {
     @Test
     fun `a double-width lead cell is rejected`() {
         val wide = line("你${CharUtils.DWC}")
-        assertNull(resolveCursorGlyph(wide, column = 0, width = 2, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(wide, visualColumn = 0, terminalWidth = 2, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
     }
 
     /**
@@ -80,8 +80,8 @@ class ResolveCursorGlyphTest {
     @Test
     fun `surrogate halves are rejected`() {
         val emoji = line("😀") // U+1F600
-        assertNull(resolveCursorGlyph(emoji, column = 0, width = 2, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
-        assertNull(resolveCursorGlyph(emoji, column = 1, width = 2, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(emoji, visualColumn = 0, terminalWidth = 2, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(emoji, visualColumn = 1, terminalWidth = 2, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
     }
 
     /**
@@ -92,7 +92,7 @@ class ResolveCursorGlyphTest {
     @Test
     fun `a concealed cell is never revealed`() {
         val hidden = line("secret", styleWith(TextStyle.Option.HIDDEN))
-        assertNull(resolveCursorGlyph(hidden, column = 0, width = 6, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(hidden, visualColumn = 0, terminalWidth = 6, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
     }
 
     /**
@@ -105,7 +105,7 @@ class ResolveCursorGlyphTest {
     fun `each blink option follows its own clock`() {
         val slow = line("x", styleWith(TextStyle.Option.SLOW_BLINK))
         assertEquals(
-            CursorGlyph("x", isBold = false, isItalic = false),
+            CursorGlyph("x", isBold = false, isItalic = false, isUnderline = false),
             resolveCursorGlyph(slow, 0, 1, false, slowBlinkVisible = true, rapidBlinkVisible = false),
             "slow blink on",
         )
@@ -116,7 +116,7 @@ class ResolveCursorGlyphTest {
 
         val rapid = line("x", styleWith(TextStyle.Option.RAPID_BLINK))
         assertEquals(
-            CursorGlyph("x", isBold = false, isItalic = false),
+            CursorGlyph("x", isBold = false, isItalic = false, isUnderline = false),
             resolveCursorGlyph(rapid, 0, 1, false, slowBlinkVisible = false, rapidBlinkVisible = true),
             "rapid blink on",
         )
@@ -159,7 +159,7 @@ class ResolveCursorGlyphTest {
     @Test
     fun `plain BMP math is repainted in the terminal font`() {
         assertEquals(
-            CursorGlyph("\u2200", isBold = false, isItalic = false),
+            CursorGlyph("\u2200", isBold = false, isItalic = false, isUnderline = false),
             resolveCursorGlyph(line("\u2200"), 0, 1, false, slowBlinkVisible = true, rapidBlinkVisible = true),
         )
     }
@@ -169,13 +169,49 @@ class ResolveCursorGlyphTest {
     fun `bold and italic are carried through`() {
         val bold = line("b", styleWith(TextStyle.Option.BOLD))
         assertEquals(
-            CursorGlyph("b", isBold = true, isItalic = false),
+            CursorGlyph("b", isBold = true, isItalic = false, isUnderline = false),
             resolveCursorGlyph(bold, 0, 1, false, slowBlinkVisible = true, rapidBlinkVisible = true),
         )
         val italic = line("i", styleWith(TextStyle.Option.ITALIC))
         assertEquals(
-            CursorGlyph("i", isBold = false, isItalic = true),
+            CursorGlyph("i", isBold = false, isItalic = true, isUnderline = false),
             resolveCursorGlyph(italic, 0, 1, false, slowBlinkVisible = true, rapidBlinkVisible = true),
+        )
+    }
+
+    /**
+     * The caret column is VISUAL; `charAt` and `analyzeCharacter` are
+     * BUFFER-indexed. They coincide only while a line holds no multi-unit
+     * grapheme, which is true of every other fixture in this file - and is why the
+     * first version of this indexed the line with the caret column directly and
+     * nothing caught it.
+     *
+     * `U+26A0 U+FE0F` occupies three buffer cells (`[26A0][FE0F][DWC]`) and one
+     * visual cell, so everything after it is shifted by two. The expected mapping
+     * below was MEASURED against `visualColToBufferCol`, not derived by hand:
+     * assuming the emoji was two visual cells wide got it wrong twice.
+     *
+     *     buffer: 0=26A0 1=FE0F 2=DWC 3=o 4=k
+     *     visual: 0=emoji 1=o 2=k 3=(empty)
+     */
+    @Test
+    fun `the caret column is converted from visual to buffer space`() {
+        val l = line("\u26A0\uFE0F${CharUtils.DWC}ok")
+
+        assertEquals(
+            CursorGlyph("o", isBold = false, isItalic = false, isUnderline = false),
+            resolveCursorGlyph(l, visualColumn = 1, terminalWidth = 5, false, true, true),
+            "visual 1 is 'o'; indexing the buffer directly would give the U+FE0F selector",
+        )
+        assertEquals(
+            CursorGlyph("k", isBold = false, isItalic = false, isUnderline = false),
+            resolveCursorGlyph(l, visualColumn = 2, terminalWidth = 5, false, true, true),
+            "visual 2 is 'k'; indexing the buffer directly would give the DWC marker",
+        )
+        assertNull(
+            resolveCursorGlyph(l, visualColumn = 3, terminalWidth = 5, false, true, true),
+            "visual 3 is the empty cell the caret usually rests in; indexing the " +
+                "buffer directly would paint a phantom 'o' there",
         )
     }
 }

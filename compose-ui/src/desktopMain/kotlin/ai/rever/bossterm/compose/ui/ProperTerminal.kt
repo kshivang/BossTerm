@@ -2087,10 +2087,13 @@ fun ProperTerminal(
                 // Returns null for every case the text pass itself declines to
                 // draw, so the block simply stays solid rather than painting
                 // something the rest of the screen is not showing.
-                cursorGlyph = resolveCursorGlyph(
+                // Only the block shapes repaint, so skip the analysis entirely for
+                // the others: this overlay exists to be the cheap layer that the
+                // blink repaints twice a second.
+                cursorGlyph = if (cursorShape.isBlock()) resolveCursorGlyph(
                     line = bufferSnapshot.getLine(bufferCursorRow),
-                    column = effectiveCursorX,
-                    width = bufferSnapshot.width,
+                    visualColumn = effectiveCursorX,
+                    terminalWidth = bufferSnapshot.width,
                     // display.ambiguousCharsAreDoubleWidth(), NOT the setting: the
                     // text canvas feeds the classifier from the display, and the
                     // whole premise here is mirroring what the text pass decided.
@@ -2102,7 +2105,7 @@ fun ProperTerminal(
                     // directions (see resolveCursorGlyph).
                     slowBlinkVisible = slowBlinkVisible,
                     rapidBlinkVisible = rapidBlinkVisible,
-                ),
+                ) else null,
                 cursorTextColor = activeTheme.cursorTextColor,
                 glyphFontFamily = sharedFont,
                 glyphFontSize = effectiveFontSize,
@@ -2460,11 +2463,10 @@ fun ProperTerminal(
   } // end else (Connected state)
 }
 
-/**
- * Escape a file path for safe shell usage.
- * Handles spaces, quotes, and other special characters.
- * Uses single quotes with escaped internal single quotes (iTerm2 style).
- */
+/** Block shapes are the only ones that hide the glyph beneath the cursor. */
+private fun CursorShape?.isBlock(): Boolean =
+    this == null || this == CursorShape.STEADY_BLOCK || this == CursorShape.BLINK_BLOCK
+
 /**
  * What a block cursor may repaint, or null to leave the block solid.
  *
@@ -2497,18 +2499,34 @@ fun ProperTerminal(
  */
 internal fun resolveCursorGlyph(
     line: ai.rever.bossterm.terminal.model.TerminalLine,
-    column: Int,
-    width: Int,
+    visualColumn: Int,
+    terminalWidth: Int,
     ambiguousCharsAreDoubleWidth: Boolean,
     slowBlinkVisible: Boolean,
     rapidBlinkVisible: Boolean,
 ): CursorGlyph? {
-    if (column < 0 || column >= width) return null
+    if (visualColumn < 0 || visualColumn >= terminalWidth) return null
+
+    // The caret column is VISUAL; charAt and analyzeCharacter are BUFFER-indexed.
+    // They coincide only while the line holds no multi-unit grapheme
+    // (TerminalLine.requiresVisualColumnMapping), so an emoji, an astral char or a
+    // Nerd Font glyph earlier in the line shifts everything after it. Every other
+    // site that indexes a line from a screen position converts first; this one has
+    // to as well, or the block repaints a neighbouring character - or a phantom
+    // duplicate in the empty cell the caret usually rests in.
+    //
+    // bufferLimit, not terminalWidth: the text pass bounds the classifier by the
+    // line's own length, and a line carrying multi-unit graphemes is longer in
+    // buffer cells than the terminal is wide. Passing the narrower bound would
+    // truncate the DWC and variation-selector lookahead the text pass performs.
+    val bufferLimit = maxOf(terminalWidth, line.length())
+    val column = TerminalCanvasRenderer.visualColToBufferCol(line, visualColumn, bufferLimit)
+
     val char = line.charAt(column)
     if (char == CharUtils.DWC || char == CharUtils.EMPTY_CHAR || char.isWhitespace()) return null
     if (Character.isHighSurrogate(char) || Character.isLowSurrogate(char)) return null
 
-    val analysis = analyzeCharacter(char, line, column, width, ambiguousCharsAreDoubleWidth)
+    val analysis = analyzeCharacter(char, line, column, bufferLimit, ambiguousCharsAreDoubleWidth)
     if (
         analysis.isDoubleWidth ||
         analysis.isEmojiOrWideSymbol ||
@@ -2528,9 +2546,15 @@ internal fun resolveCursorGlyph(
         text = char.toString(),
         isBold = style?.hasOption(BossTextStyle.Option.BOLD) == true,
         isItalic = style?.hasOption(BossTextStyle.Option.ITALIC) == true,
+        isUnderline = style?.hasOption(BossTextStyle.Option.UNDERLINED) == true,
     )
 }
 
+/**
+ * Escape a file path for safe shell usage.
+ * Handles spaces, quotes, and other special characters.
+ * Uses single quotes with escaped internal single quotes (iTerm2 style).
+ */
 private fun escapePathForShell(path: String): String {
   // Characters that need quoting in shell
   val needsQuoting = path.contains(' ') ||

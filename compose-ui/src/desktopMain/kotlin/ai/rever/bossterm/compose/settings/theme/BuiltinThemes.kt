@@ -406,7 +406,10 @@ object BuiltinThemes {
         foreground = "0xFFD5DBE5",   // site `.console-thread p`
         background = "0xFF05070B",   // shared `ink` floor / site `--ink`
         cursor = "0xFF2F74FF",       // site `--blue-bright`
-        cursorText = "0xFFFFFFFF",
+        // Ink, not white: now that cursorText actually paints, this is a real
+        // glyph-on-fill pair and white gave only 4.15:1 against the cursor. Ink
+        // gives 4.80:1 - the same ratio as cursor-against-floor, by symmetry.
+        cursorText = "0xFF05070B",
         selection = "0xFF123A7A",
         selectionText = "0xFFE7EDFA",
         searchMatch = "0xFFF1DF9E",  // the site's one warm color

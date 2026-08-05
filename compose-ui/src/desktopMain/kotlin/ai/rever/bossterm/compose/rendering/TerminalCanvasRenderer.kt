@@ -147,6 +147,7 @@ data class CursorGlyph(
     val text: String,
     val isBold: Boolean,
     val isItalic: Boolean,
+    val isUnderline: Boolean,
 )
 
 /**
@@ -1379,7 +1380,18 @@ object TerminalCanvasRenderer {
      * Cursor is rendered at its buffer position - when scrolled into history,
      * cursor will be below the visible area and won't be rendered.
      */
-    /**
+        /**
+     * How opaque a block must be before the covered glyph is repainted on top.
+     *
+     * Below this the original glyph shows THROUGH the block, so a repaint doubles
+     * it - the same objection that excludes underline and bar cursors. Not 1.0f
+     * exactly because `cursorFocusedAlpha` is user-settable and a value like 0.99
+     * is visually opaque; a user who sets 0.95 gets no repaint, which is the
+     * conservative direction.
+     */
+    private const val OPAQUE_BLOCK_ALPHA = 0.99f
+
+/**
      * Draw just the cursor, into its own overlay [Canvas] stacked on top of the text canvas.
      *
      * Split out from the main render pass on purpose: the cursor is the only thing that
@@ -1443,6 +1455,10 @@ object TerminalCanvasRenderer {
         // which is especially visible against a transparent animated sprite.
         val x = floor(cursorX * cellWidth)
         val y = floor(cursorScreenRow * cellHeight)
+        // The rect floors onto a device pixel; a repainted glyph must not, or it
+        // shifts against its neighbours as the caret moves.
+        val unflooredX = cursorX * cellWidth
+        val unflooredY = cursorScreenRow * cellHeight
         val right = floor((cursorX + 1) * cellWidth)
         val bottom = floor((cursorScreenRow + 1) * cellHeight)
         val w = right - x
@@ -1500,7 +1516,7 @@ object TerminalCanvasRenderer {
                         glyphFontFamily != null &&
                         glyphFontSize > 0f &&
                         glyphMeasurer != null &&
-                        cursorAlpha >= 0.99f
+                        cursorAlpha >= OPAQUE_BLOCK_ALPHA
                     ) {
                         // Clipped to the cell the block actually covers.
                         // drawTextClipped only guards the CANVAS edge, so a glyph
@@ -1510,7 +1526,11 @@ object TerminalCanvasRenderer {
                             drawTextClipped(
                                 textMeasurer = glyphMeasurer,
                                 text = cursorGlyph.text,
-                                topLeft = Offset(x, y),
+                                // Unfloored, matching the text pass. The RECT is
+                                // floored to sit on a device pixel, but drawing the
+                                // glyph at that floored origin shifts it up to a
+                                // pixel against its neighbours as the caret moves.
+                                topLeft = Offset(unflooredX, unflooredY),
                                 style = TextStyle(
                                     color = cursorTextColor,
                                     fontFamily = glyphFontFamily,
@@ -1522,6 +1542,17 @@ object TerminalCanvasRenderer {
                                     fontStyle = if (cursorGlyph.isItalic) FontStyle.Italic else FontStyle.Normal,
                                 ),
                             )
+                            // The block covers the text pass's underline too, so an
+                            // underlined path or hyperlink would lose it for exactly
+                            // the cell the caret is on.
+                            if (cursorGlyph.isUnderline) {
+                                val underlineY = y + h - 2f
+                                drawRect(
+                                    color = cursorTextColor,
+                                    topLeft = Offset(x, underlineY),
+                                    size = Size(w, 1.dp.toPx()),
+                                )
+                            }
                         }
                     }
                 }

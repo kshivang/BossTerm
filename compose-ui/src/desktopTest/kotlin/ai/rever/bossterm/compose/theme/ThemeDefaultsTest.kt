@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.theme
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.theme.BuiltinColorPalettes
 import ai.rever.bossterm.compose.settings.theme.BuiltinThemes
+import ai.rever.bossterm.compose.settings.theme.withThemeColors
 import ai.rever.bossterm.compose.settings.theme.ColorPalette
 import ai.rever.bossterm.compose.settings.theme.Theme
 import kotlin.test.Test
@@ -90,6 +91,83 @@ class ThemeDefaultsTest {
         }
     }
 
+
+    /**
+     * Every colour a [Theme] exposes must reach a setting that something renders.
+     *
+     * `searchMatch` and `cursorText` were both dead for a long time: themes set
+     * them, the theme editor let you change them, and nothing on screen moved.
+     *
+     * This drives the REAL mapping ([withThemeColors], which `applyTheme` calls)
+     * rather than restating it. The first version of this test hand-built the same
+     * `copy(...)` and asserted its own values, so it passed green even with the
+     * mapping deleted - a guard that cannot fail is worse than no guard, because
+     * it reads as covered.
+     */
+    @Test
+    fun `withThemeColors carries every rendered colour slot`() {
+        val t = BuiltinThemes.BOSS_OPERATOR
+        val s = TerminalSettings().withThemeColors(t)
+        assertEquals(t.id, s.activeThemeId)
+        assertEquals(t.foreground, s.defaultForeground)
+        assertEquals(t.background, s.defaultBackground)
+        assertEquals(t.selection, s.selectionColor)
+        assertEquals(t.hyperlink, s.hyperlinkColor)
+        // The slot this PR revived: the in-buffer search highlight reads
+        // foundPatternColorValue, so theme.searchMatch has to land here.
+        assertEquals(t.searchMatch, s.foundPatternColor, "in-buffer search highlight")
+    }
+
+    /**
+     * The scrollbar markers are deliberately user-owned, not theme-driven: they
+     * are two same-sized ticks told apart only by hue, and several builtins put a
+     * pale yellow `searchMatch` next to an off-white `cursor`. Pinned so the
+     * decision is visible rather than looking like an oversight.
+     */
+    @Test
+    fun `scrollbar search markers stay independent of the theme`() {
+        val before = TerminalSettings()
+        val after = before.withThemeColors(BuiltinThemes.BOSS_BLUEPRINT)
+        assertEquals(before.searchMarkerColor, after.searchMarkerColor)
+        assertEquals(before.currentSearchMarkerColor, after.currentSearchMarkerColor)
+    }
+
+    /**
+     * Every colour property on [Theme] must have a declared destiny: carried into
+     * settings by [withThemeColors], read straight off the theme by a renderer, or
+     * named on [KNOWN_UNWIRED].
+     *
+     * This is the guard that would actually have caught the bug this work started
+     * from. Asserting the mappings that exist cannot: add a slot and the assertion
+     * still passes, which is exactly how `searchMatch` and `cursorText` stayed dead
+     * while the theme editor advertised them. Enumerating the type means a new slot
+     * fails here until someone decides what reads it.
+     */
+    @Test
+    fun `every theme colour slot is either mapped, read directly, or a declared dead slot`() {
+        // Only the String properties are slots. Theme also exposes @Transient
+        // derived `Color` accessors (cursorColor, backgroundColorValue, ...) that
+        // are views onto these, not separate values to account for.
+        val colourSlots = Theme::class.members
+            .filterIsInstance<kotlin.reflect.KProperty1<Theme, *>>()
+            .filter { it.returnType.classifier == String::class }
+            .map { it.name }
+            .filter { it !in NON_COLOUR_SLOTS }
+            .toSet()
+
+        val accountedFor = MAPPED_INTO_SETTINGS + READ_DIRECTLY + KNOWN_UNWIRED
+        val unaccounted = colourSlots - accountedFor
+        assertEquals(
+            emptySet(),
+            unaccounted,
+            "new Theme colour slot(s) with no declared reader: $unaccounted. Map it in " +
+                "withThemeColors, add it to READ_DIRECTLY if a renderer reads the theme, " +
+                "or to KNOWN_UNWIRED to record it as deliberately dead.",
+        )
+        // And the bookkeeping cannot name slots that no longer exist.
+        assertEquals(emptySet(), accountedFor - colourSlots, "stale entries in the slot lists")
+    }
+
     private fun assertAnsiMatches(
         t: Theme,
         p: ColorPalette,
@@ -110,5 +188,34 @@ class ThemeDefaultsTest {
         assertEquals(t.brightMagenta, p.brightMagenta)
         assertEquals(t.brightCyan, p.brightCyan)
         assertEquals(t.brightWhite, p.brightWhite)
+    }
+
+    private companion object {
+        /** Not colours: identity and metadata. */
+        val NON_COLOUR_SLOTS = setOf("id", "name", "isBuiltin")
+
+        /** Carried into TerminalSettings by withThemeColors. */
+        val MAPPED_INTO_SETTINGS = setOf(
+            "foreground", "background", "selection", "searchMatch", "hyperlink",
+        )
+
+        /**
+         * Read straight off the active Theme by a renderer, never stored in
+         * settings: the cursor pair by the cursor overlay, the ANSI 16 by the text
+         * pass and ColorPalette.fromTheme.
+         */
+        val READ_DIRECTLY = setOf(
+            "cursor", "cursorText",
+            "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+            "brightBlack", "brightRed", "brightGreen", "brightYellow",
+            "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
+        )
+
+        /**
+         * Deliberately dead, recorded rather than absent. `selectionText` has no
+         * reader: the selection is drawn as a translucent wash over unmodified
+         * text, so there is no inverted-text colour to apply.
+         */
+        val KNOWN_UNWIRED = setOf("selectionText")
     }
 }

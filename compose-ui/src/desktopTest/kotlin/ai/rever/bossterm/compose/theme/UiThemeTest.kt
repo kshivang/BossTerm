@@ -149,4 +149,40 @@ class UiThemeTest {
         val lb = b.luminance() + 0.05f
         return maxOf(la, lb) / minOf(la, lb)
     }
+
+    /**
+     * `cursorText` painted nowhere until it was wired, so no builtin's value had
+     * ever been reviewed as a visible colour. Now an opaque block repaints the
+     * covered glyph in it, making `cursorText`-on-`cursor` a real glyph-on-fill
+     * pair held to the same 4.5:1 floor as `signalText`.
+     *
+     * The two exemptions are faithful ports of published themes (Solarized Light,
+     * One Dark); restyling someone else's palette to pass our floor would
+     * misrepresent it, so they are recorded rather than changed. BOSS Blueprint was
+     * ours and was fixed (white gave 4.15:1, ink gives 4.80:1).
+     */
+    @Test
+    fun `cursorText is legible on the cursor it is painted over`() {
+        val debt = setOf("solarized-light", "one-dark")
+        val failing = mutableListOf<String>()
+        for (theme in BuiltinThemes.ALL) {
+            val ratio = contrastRatio(theme.cursorTextColor, theme.cursorColor)
+            if (theme.id in debt) continue
+            if (ratio < 4.5f) failing += "${theme.id} (${"%.2f".format(ratio)}:1)"
+        }
+        assertTrue(failing.isEmpty(), "cursorText below the 4.5:1 glyph floor: $failing")
+
+        // And the debt list cannot quietly grow or go stale.
+        val stillFailing = BuiltinThemes.ALL
+            .filter { contrastRatio(it.cursorTextColor, it.cursorColor) < 4.5f }
+            .map { it.id }
+            .toSet()
+        assertEquals(
+            debt,
+            stillFailing,
+            "cursorText contrast debt changed: fix the theme or update the exemption list",
+        )
+    }
+
+
 }

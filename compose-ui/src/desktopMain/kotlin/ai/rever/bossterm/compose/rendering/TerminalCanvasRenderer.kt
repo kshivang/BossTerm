@@ -9,11 +9,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.SelectionMode
@@ -131,6 +134,20 @@ data class RenderableBlock(
     val startRow: Int,
     val endRow: Int,
     val color: Color
+)
+
+/**
+ * A glyph an opaque block cursor may repaint on top of itself, carrying the
+ * attributes the text pass would have drawn it with.
+ *
+ * Built by `resolveCursorGlyph`, which owns every decision about whether a cell
+ * may be repainted at all.
+ */
+data class CursorGlyph(
+    val text: String,
+    val isBold: Boolean,
+    val isItalic: Boolean,
+    val isUnderline: Boolean,
 )
 
 /**
@@ -1121,10 +1138,22 @@ object TerminalCanvasRenderer {
             ctx.searchMatches.forEachIndexed { index, (matchCol, matchRow) ->
                 val screenRow = matchRow + ctx.scrollOffset
                 if (screenRow in 0 until ctx.visibleRows) {
-                    val matchColor = if (index == ctx.currentMatchIndex) {
-                        ctx.settings.currentSearchMarkerColorValue.copy(alpha = 0.6f)
+                    // The theme's `searchMatch` drives this, not the scrollbar
+                    // marker colors it used to read. Those are a different surface
+                    // with their own settings, and using them here left
+                    // `Theme.searchMatch` with no reader at all: editing "Search
+                    // Match" in the theme editor changed nothing on screen.
+                    //
+                    // One token, two states, so alpha carries the emphasis rather
+                    // than a second hue. The current match is roughly twice as
+                    // opaque as the rest, which reads clearly without needing a
+                    // colour the theme never defined.
+                    val matchBase = ctx.settings.foundPatternColorValue
+                    val isCurrentMatch = index == ctx.currentMatchIndex
+                    val matchColor = if (isCurrentMatch) {
+                        matchBase.copy(alpha = 0.65f)
                     } else {
-                        ctx.settings.searchMarkerColorValue.copy(alpha = 0.4f)
+                        matchBase.copy(alpha = 0.32f)
                     }
 
                     for (charOffset in 0 until matchLength) {
@@ -1139,6 +1168,39 @@ object TerminalCanvasRenderer {
                                 color = matchColor,
                                 topLeft = Offset(x, y),
                                 size = Size(w, h)
+                            )
+                        }
+                    }
+
+                    // One outline around the WHOLE match, not one per cell: inside
+                    // the loop above this boxed every letter separately, and a
+                    // centred stroke paints each shared boundary twice, so a
+                    // six-character match read as a grid of boxed letters with
+                    // dividers louder than the border itself.
+                    //
+                    // Stroked in the foreground colour rather than in `matchBase`:
+                    // the fill and the border would otherwise be the same hue, and
+                    // with both search states now derived from one token the border
+                    // is carrying the "which one am I on" signal. 1.dp.toPx() to
+                    // match the cursor's edge idiom - a raw 1f is a hairline on
+                    // HiDPI.
+                    if (isCurrentMatch) {
+                        val startCol = matchCol.coerceAtLeast(0)
+                        val endCol = (matchCol + matchLength).coerceAtMost(snapshot.width)
+                        if (endCol > startCol) {
+                            val sx = startCol * ctx.cellWidth
+                            val sy = screenRow * ctx.cellHeight
+                            val stroke = 1.dp.toPx()
+                            // Inset by half the width: a centred stroke would bleed
+                            // into the cells on either side of the match.
+                            drawRect(
+                                color = ctx.settings.defaultForegroundColor,
+                                topLeft = Offset(sx + stroke / 2f, sy + stroke / 2f),
+                                size = Size(
+                                    (endCol * ctx.cellWidth - sx) - stroke,
+                                    ((screenRow + 1) * ctx.cellHeight - sy) - stroke,
+                                ),
+                                style = Stroke(width = stroke),
                             )
                         }
                     }
@@ -1318,7 +1380,18 @@ object TerminalCanvasRenderer {
      * Cursor is rendered at its buffer position - when scrolled into history,
      * cursor will be below the visible area and won't be rendered.
      */
-    /**
+        /**
+     * How opaque a block must be before the covered glyph is repainted on top.
+     *
+     * Below this the original glyph shows THROUGH the block, so a repaint doubles
+     * it - the same objection that excludes underline and bar cursors. Not 1.0f
+     * exactly because `cursorFocusedAlpha` is user-settable and a value like 0.99
+     * is visually opaque; a user who sets 0.95 gets no repaint, which is the
+     * conservative direction.
+     */
+    private const val OPAQUE_BLOCK_ALPHA = 0.99f
+
+/**
      * Draw just the cursor, into its own overlay [Canvas] stacked on top of the text canvas.
      *
      * Split out from the main render pass on purpose: the cursor is the only thing that
@@ -1345,6 +1418,16 @@ object TerminalCanvasRenderer {
         focusedAlpha: Float = 1f,
         unfocusedAlpha: Float = 0.3f,
         imageOcclusion: ImageCellSlice? = null,
+        // The glyph the block cursor covers, redrawn on top of it in
+        // [cursorTextColor]. A block cursor is an OPAQUE rect on this overlay, so
+        // without this the character under the cursor is simply invisible - which
+        // is why `Theme.cursorText` existed with no reader for so long. Null (or a
+        // blank glyph, or a non-block shape) draws nothing extra.
+        cursorGlyph: CursorGlyph? = null,
+        cursorTextColor: Color? = null,
+        glyphFontFamily: FontFamily? = null,
+        glyphFontSize: Float = 0f,
+        glyphMeasurer: TextMeasurer? = null,
     ) {
         if (!cursorVisible || cellWidth <= 0f || cellHeight <= 0f) return
         // cursorY is 1-indexed in the screen buffer, adjust to 0-indexed
@@ -1372,6 +1455,10 @@ object TerminalCanvasRenderer {
         // which is especially visible against a transparent animated sprite.
         val x = floor(cursorX * cellWidth)
         val y = floor(cursorScreenRow * cellHeight)
+        // The rect floors onto a device pixel; a repainted glyph must not, or it
+        // shifts against its neighbours as the caret moves.
+        val unflooredX = cursorX * cellWidth
+        val unflooredY = cursorScreenRow * cellHeight
         val right = floor((cursorX + 1) * cellWidth)
         val bottom = floor((cursorScreenRow + 1) * cellHeight)
         val w = right - x
@@ -1406,6 +1493,68 @@ object TerminalCanvasRenderer {
                         topLeft = Offset(x, y),
                         size = Size(w, h)
                     )
+                    // Put the covered character back, on top of the block.
+                    //
+                    // Only the block shapes need this: underline and bar sit at the
+                    // cell edge and never hide the glyph.
+                    //
+                    // Gated on the block being effectively OPAQUE. A translucent
+                    // block (an unfocused cursor is 0.3 by default) lets the
+                    // original glyph show through, so repainting would double-draw
+                    // it - the same objection that excludes underline and bar. The
+                    // two canvases also disagree by a sub-pixel on row origin,
+                    // which is invisible under an opaque block and a visible ghost
+                    // under a translucent one.
+                    //
+                    // Drawn at FULL alpha, not the cursor's: the block underneath
+                    // is already opaque, so fading the glyph only lowers its
+                    // contrast against the fill.
+                    if (
+                        cursorGlyph != null &&
+                        cursorGlyph.text.isNotBlank() &&
+                        cursorTextColor != null &&
+                        glyphFontFamily != null &&
+                        glyphFontSize > 0f &&
+                        glyphMeasurer != null &&
+                        cursorAlpha >= OPAQUE_BLOCK_ALPHA
+                    ) {
+                        // Clipped to the cell the block actually covers.
+                        // drawTextClipped only guards the CANVAS edge, so a glyph
+                        // wider than one cell would otherwise paint over the
+                        // already-correct text in the neighbouring cell.
+                        clipRect(left = x, top = y, right = x + w, bottom = y + h) {
+                            drawTextClipped(
+                                textMeasurer = glyphMeasurer,
+                                text = cursorGlyph.text,
+                                // Unfloored, matching the text pass. The RECT is
+                                // floored to sit on a device pixel, but drawing the
+                                // glyph at that floored origin shifts it up to a
+                                // pixel against its neighbours as the caret moves.
+                                topLeft = Offset(unflooredX, unflooredY),
+                                style = TextStyle(
+                                    color = cursorTextColor,
+                                    fontFamily = glyphFontFamily,
+                                    fontSize = glyphFontSize.sp,
+                                    // Carried from the cell: a bold prompt character
+                                    // repainted at Normal weight reads thinner under
+                                    // the cursor than everywhere else.
+                                    fontWeight = if (cursorGlyph.isBold) FontWeight.Bold else FontWeight.Normal,
+                                    fontStyle = if (cursorGlyph.isItalic) FontStyle.Italic else FontStyle.Normal,
+                                ),
+                            )
+                            // The block covers the text pass's underline too, so an
+                            // underlined path or hyperlink would lose it for exactly
+                            // the cell the caret is on.
+                            if (cursorGlyph.isUnderline) {
+                                val underlineY = y + h - 2f
+                                drawRect(
+                                    color = cursorTextColor,
+                                    topLeft = Offset(x, underlineY),
+                                    size = Size(w, 1.dp.toPx()),
+                                )
+                            }
+                        }
+                    }
                 }
                 CursorShape.BLINK_UNDERLINE, CursorShape.STEADY_UNDERLINE -> {
                     drawRect(

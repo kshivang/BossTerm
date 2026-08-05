@@ -54,6 +54,8 @@ import ai.rever.bossterm.terminal.model.BufferSnapshot
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import ai.rever.bossterm.terminal.model.image.TerminalImage
 import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
+import ai.rever.bossterm.compose.rendering.CursorGlyph
+import ai.rever.bossterm.compose.rendering.analyzeCharacter
 import ai.rever.bossterm.terminal.util.CharUtils
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -87,6 +89,9 @@ import ai.rever.bossterm.compose.rendering.RenderingContext
 import ai.rever.bossterm.compose.rendering.RenderableBlock
 import ai.rever.bossterm.compose.rendering.ImageRenderer
 import ai.rever.bossterm.compose.rendering.TerminalCanvasRenderer
+import ai.rever.bossterm.terminal.model.TerminalLine
+import kotlin.math.abs
+import androidx.compose.ui.graphics.luminance
 import ai.rever.bossterm.compose.rendering.imageCellSlice
 import ai.rever.bossterm.compose.blocks.BlockState
 import ai.rever.bossterm.compose.selection.SelectionEngine
@@ -2080,6 +2085,38 @@ fun ProperTerminal(
                 focusedAlpha = settings.cursorFocusedAlpha,
                 unfocusedAlpha = settings.cursorUnfocusedAlpha,
                 imageOcclusion = cursorImageSlice,
+                // Resolved HERE, not in the overlay: deciding whether a cell may be
+                // repainted needs the cell's style, which the overlay cannot see.
+                // Returns null for every case the text pass itself declines to
+                // draw, so the block simply stays solid rather than painting
+                // something the rest of the screen is not showing.
+                // Only the block shapes repaint, so skip the analysis entirely for
+                // the others: this overlay exists to be the cheap layer that the
+                // blink repaints twice a second.
+                cursorGlyph = if (cursorShape.isBlock()) resolveCursorGlyph(
+                    line = bufferSnapshot.getLine(bufferCursorRow),
+                    visualColumn = effectiveCursorX,
+                    terminalWidth = bufferSnapshot.width,
+                    // display.ambiguousCharsAreDoubleWidth(), NOT the setting: the
+                    // text canvas feeds the classifier from the display, and the
+                    // whole premise here is mirroring what the text pass decided.
+                    // Both read false today, so a divergence would be silent - and
+                    // safe in the wrong way, since it only ever makes this decline.
+                    ambiguousCharsAreDoubleWidth = display.ambiguousCharsAreDoubleWidth(),
+                    // The SGR text-blink clocks, NOT cursorBlinkVisible: that one is
+                    // the caret timer and gating text blink on it is wrong in both
+                    // directions (see resolveCursorGlyph).
+                    slowBlinkVisible = slowBlinkVisible,
+                    rapidBlinkVisible = rapidBlinkVisible,
+                ) else null,
+                cursorTextColor = cursorGlyphColor(
+                    theme = activeTheme,
+                    effectiveFill = baseCursorColor,
+                    fillIsAppSet = customCursorColor != null,
+                ),
+                glyphFontFamily = sharedFont,
+                glyphFontSize = effectiveFontSize,
+                glyphMeasurer = textMeasurer,
               )
             }
           }
@@ -2431,6 +2468,116 @@ fun ProperTerminal(
       }
     }
   } // end else (Connected state)
+}
+
+/**
+ * The colour to repaint the covered glyph in, given the fill actually being drawn.
+ *
+ * `theme.cursorText` is authored against `theme.cursor`, but OSC 12 lets an app
+ * replace the fill without saying anything about the glyph. Using the theme value
+ * regardless would make this feature WORSE than the blank block it replaces: a
+ * dark app-set cursor would get a dark glyph smeared across it. So when the fill
+ * is app-set, pick whichever of the theme's own floor/text colours sits further
+ * from it in luminance - the same trick `UiTheme.fromTheme` uses to choose
+ * `onSignal`.
+ */
+internal fun cursorGlyphColor(
+    theme: ai.rever.bossterm.compose.settings.theme.Theme,
+    effectiveFill: Color,
+    fillIsAppSet: Boolean,
+): Color {
+    if (!fillIsAppSet) return theme.cursorTextColor
+    val fill = effectiveFill.luminance()
+    val floor = theme.backgroundColorValue
+    val text = theme.foregroundColor
+    return if (abs(fill - floor.luminance()) >= abs(fill - text.luminance())) floor else text
+}
+
+/** Block shapes are the only ones that hide the glyph beneath the cursor. */
+private fun CursorShape?.isBlock(): Boolean =
+    this == null || this == CursorShape.STEADY_BLOCK || this == CursorShape.BLINK_BLOCK
+
+/**
+ * What a block cursor may repaint, or null to leave the block solid.
+ *
+ * The cursor overlay is a separate canvas that never sees the buffer, so this
+ * decides on its behalf. Every rejection mirrors something the main text pass in
+ * `TerminalCanvasRenderer` already does; painting where it declines puts a
+ * character on screen that exists nowhere else, which is worse than the blank
+ * block this exists to fix because it looks correct.
+ *
+ *  - **DWC** (`CharUtils.DWC`, U+E000) is the private-use marker for the trailing
+ *    cell of a double-width character. Stringifying it paints tofu.
+ *  - **Surrogate halves** cannot carry an astral code point; a lone surrogate
+ *    shapes to U+FFFD.
+ *  - **Anything needing a fallback font family** is declined via the SAME
+ *    classifier the text pass uses ([analyzeCharacter]). `renderCharacter` routes
+ *    emoji, technical symbols and cursive/math to Apple Color Emoji,
+ *    `NotoSansSymbols2` or `FontFamily.Default`; this overlay only carries the
+ *    terminal font, so repainting those here would draw a different glyph than
+ *    the one on screen a frame earlier. That also subsumes double-width, whose
+ *    glyph would be sliced by the one-cell clip.
+ *  - **HIDDEN** (SGR 8, conceal) is used by password prompts, and the cursor sits
+ *    exactly on the character just typed. Revealing it only under the cursor is a
+ *    disclosure, not a cosmetic bug.
+ *  - **Blink-off** cells are invisible everywhere else at that moment. Note the
+ *    two SGR blink options run on their OWN timers
+ *    ([TerminalSettings.slowTextBlinkMs] / [TerminalSettings.rapidTextBlinkMs],
+ *    master-switched by `enableTextBlinking`) and NOT on the caret's
+ *    `caretBlinkMs`. Passing the caret flag here would repaint a blink-off cell
+ *    whenever the caret is solid, and flash a steady cell on the caret's clock.
+ */
+internal fun resolveCursorGlyph(
+    line: TerminalLine,
+    visualColumn: Int,
+    terminalWidth: Int,
+    ambiguousCharsAreDoubleWidth: Boolean,
+    slowBlinkVisible: Boolean,
+    rapidBlinkVisible: Boolean,
+): CursorGlyph? {
+    if (visualColumn < 0 || visualColumn >= terminalWidth) return null
+
+    // The caret column is VISUAL; charAt and analyzeCharacter are BUFFER-indexed.
+    // They coincide only while the line holds no multi-unit grapheme
+    // (TerminalLine.requiresVisualColumnMapping), so an emoji, an astral char or a
+    // Nerd Font glyph earlier in the line shifts everything after it. Every other
+    // site that indexes a line from a screen position converts first; this one has
+    // to as well, or the block repaints a neighbouring character - or a phantom
+    // duplicate in the empty cell the caret usually rests in.
+    //
+    // bufferLimit, not terminalWidth: the text pass bounds the classifier by the
+    // line's own length, and a line carrying multi-unit graphemes is longer in
+    // buffer cells than the terminal is wide. Passing the narrower bound would
+    // truncate the DWC and variation-selector lookahead the text pass performs.
+    val bufferLimit = maxOf(terminalWidth, line.length())
+    val column = TerminalCanvasRenderer.visualColToBufferCol(line, visualColumn, bufferLimit)
+
+    val char = line.charAt(column)
+    if (char == CharUtils.DWC || char == CharUtils.EMPTY_CHAR || char.isWhitespace()) return null
+    if (Character.isHighSurrogate(char) || Character.isLowSurrogate(char)) return null
+
+    val analysis = analyzeCharacter(char, line, column, bufferLimit, ambiguousCharsAreDoubleWidth)
+    if (
+        analysis.isDoubleWidth ||
+        analysis.isEmojiOrWideSymbol ||
+        analysis.isEmojiWithVariationSelector ||
+        analysis.isTechnicalSymbol ||
+        analysis.isCursiveOrMath
+    ) {
+        return null
+    }
+
+    val style = line.getStyleAt(column)
+    if (style?.hasOption(BossTextStyle.Option.HIDDEN) == true) return null
+    if (style?.hasOption(BossTextStyle.Option.SLOW_BLINK) == true && !slowBlinkVisible) return null
+    if (style?.hasOption(BossTextStyle.Option.RAPID_BLINK) == true && !rapidBlinkVisible) return null
+
+    return CursorGlyph(
+        text = char.toString(),
+        isBold = style?.hasOption(BossTextStyle.Option.BOLD) == true,
+        isItalic = style?.hasOption(BossTextStyle.Option.ITALIC) == true,
+        isUnderline = style?.hasOption(BossTextStyle.Option.UNDERLINED) == true,
+    )
 }
 
 /**

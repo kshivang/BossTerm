@@ -505,7 +505,7 @@
         <span class="pill">search #F1DF9E</span>
         <span class="pill" style="border-color:#88A9FF; color:#88A9FF">link #88A9FF</span>
       </div>
-      <p style="color:var(--mist); font-size:13px; margin:14px 0 0">The cursor is <code>--blue-bright</code> rather than <code>--blue</code> because a block cursor has to be visible against the <b>floor</b> - 4.8:1 versus <code>--blue</code>'s 3.8:1. Not against the glyph underneath: the cursor is an opaque rect on a layer above the text, so the covered glyph is replaced, not blended. <code>onSignal</code> is white for a separate reason - <code>--blue</code> is too dark to carry ink-colored content.</p>
+      <p style="color:var(--mist); font-size:13px; margin:14px 0 0">The cursor is <code>--blue-bright</code> rather than <code>--blue</code> because a block cursor has to be visible against the <b>floor</b> - 4.8:1 versus <code>--blue</code>'s 3.8:1. Not against the glyph underneath: an opaque block repaints that character on top of itself in <code>cursorText</code>, so the pair that matters there is <code>cursorText</code>-on-<code>cursor</code> - for a theme-provided cursor. An app that sets its own cursor via OSC 12 overrides the fill but not the glyph colour, so that pairing is outside the theme's control. <code>onSignal</code> is white for a separate reason - <code>--blue</code> is too dark to carry ink-colored content.</p>
     </div>
 
     <div class="specimen" style="margin-top:14px">

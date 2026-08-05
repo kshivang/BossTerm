@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.share
 
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
@@ -129,13 +130,13 @@ fun ShareWindow(
                     TextButton(
                         onClick = onRefreshLink,
                         enabled = !remoteBusy,
-                        colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                        colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor)
                     ) { Text(if (remoteBusy) "Refreshing…" else "↻ Refresh link", fontSize = 12.sp) }
                 }
                 if (canShare) {
                     TextButton(
                         onClick = { if (!ShareSheet.share(info.url)) clipboard.setText(AnnotatedString(info.url)) },
-                        colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                        colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor)
                     ) { Text("⤴ Share", fontSize = 12.sp) }
                 }
             }
@@ -258,7 +259,7 @@ fun ShareWindow(
                         Text(
                             "🔒 End-to-end encrypted · code $code - the relay can't read this session. " +
                                 "The same code shows on the viewer; matching codes confirm the key end-to-end.",
-                            color = AccentColor, fontSize = 11.sp
+                            color = AccentTextColor, fontSize = 11.sp
                         )
                     }
                     LinkRow("View (read-only)", info.url, clipboard)
@@ -390,7 +391,7 @@ private fun LinkRow(label: String, url: String, clipboard: ClipboardManager) {
                 Spacer(Modifier.width(8.dp))
                 TextButton(
                     onClick = { clipboard.setText(AnnotatedString(url)) },
-                    colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                    colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor)
                 ) { Text("Copy") }
             }
         }
@@ -570,7 +571,7 @@ private fun RemoteAccessSetupSection(
                                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                                         TextButton(
                                             onClick = { clipboard.setText(AnnotatedString(FUNNEL_ACL_SNIPPET)) },
-                                            colors = ButtonDefaults.textButtonColors(contentColor = AccentColor)
+                                            colors = ButtonDefaults.textButtonColors(contentColor = AccentTextColor)
                                         ) { Text("Copy") }
                                     }
                                 }
@@ -667,7 +668,7 @@ private fun SetupStep(n: Int, text: String) {
 @Composable
 private fun LinkText(text: String, url: String) {
     Text(
-        text, color = AccentColor, fontSize = 11.sp,
+        text, color = AccentTextColor, fontSize = 11.sp,
         modifier = Modifier.padding(start = 18.dp).clickable {
             runCatching { java.awt.Desktop.getDesktop().browse(java.net.URI(url)) }
         }

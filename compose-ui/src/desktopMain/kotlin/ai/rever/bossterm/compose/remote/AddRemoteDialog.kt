@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.remote
 
 import ai.rever.bossterm.compose.settings.SettingsTheme
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
@@ -297,7 +298,7 @@ private fun RemoteSessionRow(session: RemoteSession, onDisconnect: () -> Unit) {
             }
             val s = status
             if (s is RemoteStatus.Connected && !s.canControl) {
-                TextButton(onClick = { session.requestControl() }) { Text("Request control", color = AccentColor) }
+                TextButton(onClick = { session.requestControl() }) { Text("Request control", color = AccentTextColor) }
             }
             TextButton(onClick = onDisconnect) { Text("Disconnect", color = Danger) }
         }

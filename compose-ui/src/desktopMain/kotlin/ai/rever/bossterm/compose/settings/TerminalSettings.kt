@@ -86,18 +86,18 @@ data class TerminalSettings(
     /**
      * Default foreground color (serialized as ARGB hex)
      */
-    val defaultForeground: String = "0xFFD7DEE6",
+    val defaultForeground: String = "0xFFD5DBE5",
 
     /**
      * Default background color (serialized as ARGB hex)
      */
-    val defaultBackground: String = "0xFF0E1217",
+    val defaultBackground: String = "0xFF05070B",
 
     /**
      * Selection highlight color (serialized as ARGB hex).
-     * Default matches the BOSS Operator theme so a fresh install is self-consistent.
+     * Default matches the BOSS Blueprint theme so a fresh install is self-consistent.
      */
-    val selectionColor: String = "0xFF21405A",
+    val selectionColor: String = "0xFF123A7A",
 
     /**
      * Selection highlight opacity (0.0 to 1.0).
@@ -109,19 +109,19 @@ data class TerminalSettings(
     /**
      * Search result highlight color (serialized as ARGB hex)
      */
-    val foundPatternColor: String = "0xFFF0B429",
+    val foundPatternColor: String = "0xFFF1DF9E",
 
     /**
      * Hyperlink color (serialized as ARGB hex)
      */
-    val hyperlinkColor: String = "0xFF56C7E0",
+    val hyperlinkColor: String = "0xFF88A9FF",
 
     /**
      * Active theme ID.
      * References a theme from BuiltinThemes or a custom theme.
      * When a theme is applied, the color settings above are updated to match.
      */
-    val activeThemeId: String = "boss-operator",
+    val activeThemeId: String = "boss-blueprint",
 
     /**
      * Active color palette ID.

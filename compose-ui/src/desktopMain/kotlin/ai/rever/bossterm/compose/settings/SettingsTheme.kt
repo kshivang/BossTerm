@@ -13,6 +13,13 @@ object SettingsTheme {
     val SurfaceColor: Color get() = BossUiTheme.current.raised
     val BackgroundColor: Color get() = BossUiTheme.current.panel
     val AccentColor: Color get() = BossUiTheme.current.signal
+
+    /**
+     * Accent for TEXT and ICONS. [AccentColor] is the fill; a saturated accent
+     * that reads well as a fill is often below the 4.5:1 text floor as a glyph
+     * (BOSS Blueprint's `--blue` is 3.5:1 on `raised`).
+     */
+    val AccentTextColor: Color get() = BossUiTheme.current.signalText
     val BorderColor: Color get() = BossUiTheme.current.line
     val TextPrimary: Color get() = BossUiTheme.current.chalk
     val TextSecondary: Color get() = BossUiTheme.current.mist

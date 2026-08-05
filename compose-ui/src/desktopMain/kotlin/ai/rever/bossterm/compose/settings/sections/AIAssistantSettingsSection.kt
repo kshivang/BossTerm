@@ -8,6 +8,7 @@ import ai.rever.bossterm.compose.settings.AIAssistantConfigData
 import ai.rever.bossterm.compose.settings.CustomAIAssistantData
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
@@ -119,7 +120,7 @@ fun AIAssistantSettingsSection(
                     Icon(
                         imageVector = Icons.Default.Refresh,
                         contentDescription = "Refresh",
-                        tint = AccentColor,
+                        tint = AccentTextColor,
                         modifier = Modifier.size(18.dp)
                     )
                 }
@@ -220,7 +221,7 @@ fun AIAssistantSettingsSection(
 
             OutlinedButton(
                 onClick = { showAddCustomDialog = true },
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentColor),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = AccentTextColor),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(
@@ -398,7 +399,7 @@ private fun AIAssistantConfigCard(
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = if (expanded) "Hide Advanced" else "Show Advanced",
-                color = AccentColor,
+                color = AccentTextColor,
                 fontSize = 12.sp,
                 modifier = Modifier.clickable { expanded = !expanded }
             )
@@ -503,7 +504,7 @@ private fun CustomAssistantDialog(
         cursorColor = AccentColor,
         focusedBorderColor = AccentColor,
         unfocusedBorderColor = BorderColor,
-        focusedLabelColor = AccentColor,
+        focusedLabelColor = AccentTextColor,
         unfocusedLabelColor = TextSecondary,
         placeholderColor = TextMuted,
         backgroundColor = BackgroundColor
@@ -674,7 +675,7 @@ private fun CustomBadge() {
             text = "Custom",
             fontSize = 10.sp,
             fontWeight = FontWeight.Medium,
-            color = AccentColor
+            color = AccentTextColor
         )
     }
 }

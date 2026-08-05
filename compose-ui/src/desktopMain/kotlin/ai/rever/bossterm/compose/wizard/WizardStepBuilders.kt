@@ -33,6 +33,7 @@ import ai.rever.bossterm.compose.TabbedTerminal
 import ai.rever.bossterm.compose.rememberTabbedTerminalState
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
@@ -261,7 +262,7 @@ object WizardStepBuilders {
                         OutlinedButton(
                             onClick = onTryNpm,
                             colors = ButtonDefaults.outlinedButtonColors(
-                                contentColor = AccentColor
+                                contentColor = AccentTextColor
                             ),
                             border = BorderStroke(1.dp, AccentColor)
                         ) {

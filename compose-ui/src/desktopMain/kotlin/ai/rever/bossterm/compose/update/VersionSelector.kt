@@ -17,6 +17,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
+import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
@@ -298,7 +299,7 @@ private fun VersionDropdown(
                         )
                         Text(
                             text = "Retry",
-                            color = AccentColor,
+                            color = AccentTextColor,
                             fontSize = 11.sp,
                             modifier = Modifier.clickable { onRetry() }
                         )
@@ -494,7 +495,7 @@ fun InstallInstructionsDialog(
             Column {
                 Text(
                     text = "Downloaded: ${downloadedFile.name}",
-                    color = AccentColor,
+                    color = AccentTextColor,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium
                 )
@@ -567,7 +568,7 @@ private fun InstructionStep(text: String) {
 private fun SelectableCommand(command: String) {
     Text(
         text = command,
-        color = AccentColor,
+        color = AccentTextColor,
         fontSize = 12.sp,
         modifier = Modifier
             .fillMaxWidth()

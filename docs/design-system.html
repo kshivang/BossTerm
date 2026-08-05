@@ -1,5 +1,5 @@
 <title>BOSS - Operator's Console Design System</title>
-<meta name="description" content="The BOSS visual identity: tokens, type, and every UI element across BossConsole and BossTerm, built on the amber signal and the character cell.">
+<meta name="description" content="The BOSS visual identity: tokens, type, and every UI element across BossConsole and BossTerm, built on one signal color and the character cell.">
 
 <style>
   :root {
@@ -350,7 +350,7 @@
   <header class="hero">
     <div class="eyebrow">BOSS Design System · v1</div>
     <h1>Operator's<br>Console<span class="cursor" aria-hidden="true"></span></h1>
-    <p class="sub">A single visual language for <b>BossConsole</b> and <b>BossTerm</b>. Built on the character cell and one amber <b>signal</b> - the lamp that tells an operator what is live, right now.</p>
+    <p class="sub">A single visual language for <b>BossConsole</b> and <b>BossTerm</b>. Built on the character cell and exactly one <b>signal</b> color - the lamp that tells an operator what is live, right now. This page renders in BOSS Operator; BOSS Blueprint is the shipping default.</p>
 
     <div class="term-demo" role="img" aria-label="Terminal demo showing the amber block cursor">
       <div class="term-bar">
@@ -376,8 +376,8 @@
         <p style="color:var(--mist); font-size:14px; margin:8px 0 0">The terminal character cell (~8.4×17px at 14sp Meslo) is the grid the whole UI snaps to. Chrome borrows the terminal's discipline, not the other way around.</p>
       </div>
       <div class="specimen">
-        <h3 style="color:var(--signal)">One amber signal</h3>
-        <p style="color:var(--mist); font-size:14px; margin:8px 0 0">Amber means <i>live / active / now</i> - the primary action, the focused field, the selected tab, the blinking cursor. Nothing else competes for it. Cyan carries data and links.</p>
+        <h3 style="color:var(--signal)">Exactly one signal</h3>
+        <p style="color:var(--mist); font-size:14px; margin:8px 0 0">One color means <i>live / active / now</i> - the primary action, the focused field, the selected tab, the blinking cursor. Nothing else competes for it. A second color, <code>data</code>, carries data and links. <i>Which</i> hues those are is the theme's business - amber and cyan under BOSS Operator, electric blue under BOSS Blueprint (the default) - but a theme never gets three.</p>
       </div>
       <div class="specimen">
         <h3 style="color:var(--signal)">Quiet everywhere else</h3>
@@ -391,7 +391,8 @@
     <div class="sec-head">
       <div class="eyebrow">01 · Color</div>
       <h2>Surface &amp; signal</h2>
-      <p class="lede">Host chrome and terminal share one floor (<code>ink</code>), so a panel and the shell it wraps feel continuous. Amber and cyan are the only saturated colors that appear in chrome.</p>
+      <p class="lede">Host chrome and terminal share one floor (<code>ink</code>), so a panel and the shell it wraps feel continuous. <code>signal</code> and <code>data</code> are the only saturated colors that appear in chrome.</p>
+      <p class="lede" style="margin-top:10px"><b style="color:var(--chalk)">This page renders in BOSS Operator.</b> Every hex below is an Operator value, kept as the reference definition of what each slot is <i>for</i>. The shipping default is <b style="color:var(--chalk)">BOSS Blueprint</b> - see <a href="#themes" style="color:var(--data)">the theme table</a> for its values. Components name slots, never hexes, so both themes drive the same components.</p>
     </div>
 
     <div class="grid cols-4" style="margin-bottom:16px">
@@ -441,6 +442,75 @@
         <span class="pill">search #F0B429</span>
         <span class="pill" style="border-color:var(--data); color:var(--data)">link #56C7E0</span>
       </div>
+    </div>
+  </section>
+
+  <!-- ================= THEMES ================= -->
+  <section id="themes">
+    <div class="sec-head">
+      <div class="eyebrow">01b · Themes</div>
+      <h2>Two identities, one slot set</h2>
+      <p class="lede">Every token above is a <i>slot</i>. A theme fills the slots; components only ever name slots, so adding a theme costs one palette and no component edits. <b style="color:var(--chalk)">BOSS Blueprint</b> is the default in both BossTerm and the BossConsole host, and matches <a href="https://bossconsole.ai" style="color:var(--data)">bossconsole.ai</a> - every value is lifted from that site's stylesheet or composited from it (a site alpha over the site's own floor).</p>
+    </div>
+
+    <div class="tok-tbl-wrap">
+      <table class="tok">
+        <thead><tr><th>Slot</th><th>BOSS Blueprint <span style="color:var(--muted); font-weight:400">(default)</span></th><th>BOSS Operator</th><th>Source on bossconsole.ai</th></tr></thead>
+        <tbody>
+          <tr><td class="k">ink</td><td class="v">#05070B</td><td class="v">#0E1217</td><td><code>--ink</code></td></tr>
+          <tr><td class="k">panel</td><td class="v">#080B11</td><td class="v">#161D26</td><td><code>.console-frame</code></td></tr>
+          <tr><td class="k">raised</td><td class="v">#0E141E</td><td class="v">#1E2731</td><td>near <code>--ink-2</code> #0b1019</td></tr>
+          <tr><td class="k">line</td><td class="v">#1C2432</td><td class="v">#2A3744</td><td><code>--line-dark</code> over ink</td></tr>
+          <tr><td class="k">line2 / lineStrong</td><td class="v">#2E3B4F</td><td class="v">#3A4B5C</td><td><code>#ffffff4d</code> over ink</td></tr>
+          <tr><td class="k">chalk / textPrimary</td><td class="v">#E7EDFA</td><td class="v">#E9EEF3</td><td>site <code>#e7edfa</code></td></tr>
+          <tr><td class="k">mist / textSecondary</td><td class="v">#9AA7BB</td><td class="v">#8593A3</td><td><code>.eyebrow</code></td></tr>
+          <tr><td class="k">muted / textMuted</td><td class="v">#69768B</td><td class="v">#5C6977</td><td><code>.console-topbar</code></td></tr>
+          <tr><td class="k">signal</td><td class="v">#0F5BFF</td><td class="v">#F2A93B</td><td><code>--blue</code></td></tr>
+          <tr><td class="k">signalDim</td><td class="v">#0A45C4</td><td class="v">#C98A2E</td><td>pressed / variant</td></tr>
+          <tr><td class="k">signalWash</td><td class="v">#0A1A3C</td><td class="v">#2A2113</td><td><code>.console-sidebar .selected</code></td></tr>
+          <tr><td class="k">onSignal</td><td class="v">#FFFFFF</td><td class="v">#0E1217</td><td><code>.button-light</code></td></tr>
+          <tr><td class="k">data</td><td class="v">#88A9FF</td><td class="v">#56C7E0</td><td><code>.audit-line svg</code> #8af</td></tr>
+          <tr><td class="k">ok</td><td class="v">#2FD98A</td><td class="v">#6FD08C</td><td>-</td></tr>
+          <tr><td class="k">warn</td><td class="v">#F0B429</td><td class="v">#F0B429</td><td>-</td></tr>
+          <tr><td class="k">alert</td><td class="v">#FF5D5D</td><td class="v">#F2685F</td><td>-</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="specimen" style="margin-top:18px">
+      <h3 style="color:var(--signal)">BOSS Blueprint - terminal</h3>
+      <div class="ansi" style="margin-top:12px">
+        <div class="a" style="background:#0B1019; color:#C3CCDA">0</div>
+        <div class="a" style="background:#FF5D5D">1</div>
+        <div class="a" style="background:#2FD98A">2</div>
+        <div class="a" style="background:#F0B429">3</div>
+        <div class="a" style="background:#2F74FF">4</div>
+        <div class="a" style="background:#B48CFF">5</div>
+        <div class="a" style="background:#56C7E0">6</div>
+        <div class="a" style="background:#C3CCDA">7</div>
+        <div class="a" style="background:#2E3B4F">8</div>
+        <div class="a" style="background:#FF8A8A">9</div>
+        <div class="a" style="background:#6BE8AC">10</div>
+        <div class="a" style="background:#FFD98A">11</div>
+        <div class="a" style="background:#7EA6FF">12</div>
+        <div class="a" style="background:#D0B6FF">13</div>
+        <div class="a" style="background:#8FDDEC">14</div>
+        <div class="a" style="background:#E7EDFA">15</div>
+      </div>
+      <div class="pills">
+        <span class="pill">fg #D5DBE5</span>
+        <span class="pill">bg #05070B</span>
+        <span class="pill" style="border-color:#2F74FF; color:#2F74FF">cursor #2F74FF</span>
+        <span class="pill">selection #123A7A</span>
+        <span class="pill">search #F1DF9E</span>
+        <span class="pill" style="border-color:#88A9FF; color:#88A9FF">link #88A9FF</span>
+      </div>
+      <p style="color:var(--mist); font-size:13px; margin:14px 0 0">The cursor is <code>--blue-bright</code> rather than <code>--blue</code> because a block cursor has to be visible against the <b>floor</b> - 4.8:1 versus <code>--blue</code>'s 3.8:1. Not against the glyph underneath: the cursor is an opaque rect on a layer above the text, so the covered glyph is replaced, not blended. <code>onSignal</code> is white for a separate reason - <code>--blue</code> is too dark to carry ink-colored content.</p>
+    </div>
+
+    <div class="specimen" style="margin-top:14px">
+      <h3 style="color:var(--signal)">On Blueprint's signal contrast</h3>
+      <p style="color:var(--mist); font-size:14px; margin:8px 0 0"><code>--blue</code> sits at <b style="color:var(--chalk)">3.8:1</b> against <code>ink</code> - above the WCAG 3:1 floor for UI components, below any text floor. That is deliberate, and it is how the site behaves: emphasis comes from a <code>signalWash</code> fill plus a 2dp indicator, never from a hairline of <code>signal</code> alone. If a control reads as too quiet, thicken the indicator or lift the wash - do not brighten <code>signal</code>.</p>
     </div>
   </section>
 
@@ -512,7 +582,7 @@
     <div class="sec-head">
       <div class="eyebrow">04 · BossConsole - chrome</div>
       <h2>Host elements</h2>
-      <p class="lede">The frame around the work: title bar, tabs, controls, overlays. The active item always wears amber.</p>
+      <p class="lede">The frame around the work: title bar, tabs, controls, overlays. The active item always wears the theme's <code>signal</code> - amber on this page, electric blue under the default BOSS Blueprint.</p>
     </div>
 
     <!-- title + tab bar -->
@@ -798,7 +868,7 @@ operator@boss ~/Boss $ <span class="blk" aria-hidden="true"></span>
     <div class="sec-head">
       <div class="eyebrow">07 · Implementation</div>
       <h2>Token → Kotlin</h2>
-      <p class="lede">These tokens ship as <code>BossDesignSystem.kt</code> (host, exposed via <code>BossTheme</code> CompositionLocals) and as the <b style="color:var(--chalk)">"BOSS Operator"</b> builtin <code>Theme</code> + <code>ColorPalette</code> in BossTerm.</p>
+      <p class="lede">These tokens ship as <code>BossDesignSystem.kt</code> (host, exposed via <code>BossTheme</code> CompositionLocals) and as builtin <code>Theme</code> + <code>ColorPalette</code> pairs in BossTerm - <b style="color:var(--chalk)">"BOSS Blueprint"</b> (the default) and <b style="color:var(--chalk)">"BOSS Operator"</b>. The values in this table are Operator's, matching the rest of this page.</p>
     </div>
     <div class="tok-tbl-wrap">
       <table class="tok">

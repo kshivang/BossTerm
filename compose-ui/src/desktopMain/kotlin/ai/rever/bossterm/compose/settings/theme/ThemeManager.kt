@@ -36,7 +36,7 @@ class ThemeManager private constructor(
      */
     val customThemes: StateFlow<List<Theme>> = _customThemes.asStateFlow()
 
-    private val _currentTheme = MutableStateFlow(BuiltinThemes.BOSS_OPERATOR)
+    private val _currentTheme = MutableStateFlow(BuiltinThemes.PRODUCT_DEFAULT)
 
     /**
      * Currently active theme.
@@ -100,7 +100,10 @@ class ThemeManager private constructor(
      * Apply a theme by ID.
      */
     fun applyThemeById(id: String) {
-        val theme = getThemeById(id) ?: BuiltinThemes.DEFAULT
+        // Product default, not BuiltinThemes.DEFAULT — this is public API on an
+        // embeddable library, so a stale id from an embedder must not land the
+        // whole app on the stark black-on-white XTerm theme.
+        val theme = getThemeById(id) ?: BuiltinThemes.PRODUCT_DEFAULT
         applyTheme(theme)
     }
 
@@ -152,9 +155,10 @@ class ThemeManager private constructor(
         _customThemes.value = updatedThemes
         saveCustomThemes()
 
-        // If we deleted the current theme, switch to default
+        // If we deleted the current theme, switch to the product default — not
+        // BuiltinThemes.DEFAULT, which is the stark black-on-white XTerm theme.
         if (_currentTheme.value.id == id) {
-            applyTheme(BuiltinThemes.DEFAULT)
+            applyTheme(BuiltinThemes.PRODUCT_DEFAULT)
         }
     }
 
@@ -215,11 +219,11 @@ class ThemeManager private constructor(
      */
     private fun loadActiveTheme() {
         val activeThemeId = settingsManager.settings.value.activeThemeId
-        // Unknown id falls back to the product default (boss-operator), not the
-        // stark black/white BuiltinThemes.DEFAULT.
+        // Unknown id falls back to the product default, not the stark
+        // black/white BuiltinThemes.DEFAULT.
         val theme = getThemeById(activeThemeId)
             ?: getThemeById(BuiltinThemes.DEFAULT_THEME_ID)
-            ?: BuiltinThemes.DEFAULT
+            ?: BuiltinThemes.PRODUCT_DEFAULT
         setCurrentTheme(theme)
     }
 

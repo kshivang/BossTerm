@@ -242,7 +242,7 @@ class CursorOverlayTest {
                     cellHeight = 20f,
                     isFocused = true,
                     cursorColor = Color.Red,
-                    cursorGlyph = glyph,
+                    cursorGlyph = glyph?.let { CursorGlyph(it, isBold = false, isItalic = false) },
                     cursorTextColor = Color.Blue,
                     glyphFontFamily = FontFamily.Monospace,
                     glyphFontSize = 14f,
@@ -252,20 +252,27 @@ class CursorOverlayTest {
         }
 
         val without = cellPixels(null).toPixelMap()
-        val with = cellPixels("W").toPixelMap()
+        val withGlyph = cellPixels("W").toPixelMap()
 
         var bareCursorPixels = 0
         var glyphPixels = 0
         for (x in 0 until 12) {
             for (y in 0 until 20) {
                 if (without[x, y].red > 0.9f && without[x, y].blue < 0.1f) bareCursorPixels++
-                if (with[x, y].blue > 0.5f) glyphPixels++
+                if (withGlyph[x, y].blue > 0.5f) glyphPixels++
             }
         }
         assertTrue(bareCursorPixels > 0, "the block cursor itself should paint")
         assertTrue(
             glyphPixels > 0,
             "no cursorText-colored pixels: the covered glyph was never repainted",
+        )
+        // Bounded above as well: a "W" covers PART of a 12x20 cell. Without this a
+        // glyph that overdrew the whole cell - or escaped the cell clip entirely -
+        // would still pass the lower bound.
+        assertTrue(
+            glyphPixels < 12 * 20,
+            "the glyph filled the whole cell ($glyphPixels px): it is not being clipped",
         )
     }
 
@@ -290,7 +297,7 @@ class CursorOverlayTest {
                         cellHeight = 20f,
                         isFocused = true,
                         cursorColor = Color.Red,
-                        cursorGlyph = "W",
+                        cursorGlyph = CursorGlyph("W", isBold = false, isItalic = false),
                         cursorTextColor = Color.Blue,
                         glyphFontFamily = FontFamily.Monospace,
                         glyphFontSize = 14f,
@@ -323,7 +330,7 @@ class CursorOverlayTest {
                     cellHeight = 20f,
                     isFocused = true,
                     cursorColor = Color.Red,
-                    cursorGlyph = " ",
+                    cursorGlyph = CursorGlyph(" ", isBold = false, isItalic = false),
                     cursorTextColor = Color.Blue,
                     glyphFontFamily = FontFamily.Monospace,
                     glyphFontSize = 14f,

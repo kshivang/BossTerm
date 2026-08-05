@@ -10,11 +10,13 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.SelectionMode
@@ -132,6 +134,19 @@ data class RenderableBlock(
     val startRow: Int,
     val endRow: Int,
     val color: Color
+)
+
+/**
+ * A glyph an opaque block cursor may repaint on top of itself, carrying the
+ * attributes the text pass would have drawn it with.
+ *
+ * Built by `resolveCursorGlyph`, which owns every decision about whether a cell
+ * may be repainted at all.
+ */
+data class CursorGlyph(
+    val text: String,
+    val isBold: Boolean,
+    val isItalic: Boolean,
 )
 
 /**
@@ -1133,7 +1148,8 @@ object TerminalCanvasRenderer {
                     // opaque as the rest, which reads clearly without needing a
                     // colour the theme never defined.
                     val matchBase = ctx.settings.foundPatternColorValue
-                    val matchColor = if (index == ctx.currentMatchIndex) {
+                    val isCurrentMatch = index == ctx.currentMatchIndex
+                    val matchColor = if (isCurrentMatch) {
                         matchBase.copy(alpha = 0.65f)
                     } else {
                         matchBase.copy(alpha = 0.32f)
@@ -1152,6 +1168,19 @@ object TerminalCanvasRenderer {
                                 topLeft = Offset(x, y),
                                 size = Size(w, h)
                             )
+                            // The current match also gets an outline. Two alphas of
+                            // one hue converge on a light theme or a pale
+                            // searchMatch, and this wash is drawn OVER the glyphs
+                            // rather than behind them, so alpha is already carrying
+                            // legibility as well as emphasis. A border survives both.
+                            if (isCurrentMatch) {
+                                drawRect(
+                                    color = matchBase,
+                                    topLeft = Offset(x, y),
+                                    size = Size(w, h),
+                                    style = Stroke(width = 1f),
+                                )
+                            }
                         }
                     }
                 }
@@ -1362,7 +1391,7 @@ object TerminalCanvasRenderer {
         // without this the character under the cursor is simply invisible - which
         // is why `Theme.cursorText` existed with no reader for so long. Null (or a
         // blank glyph, or a non-block shape) draws nothing extra.
-        cursorGlyph: String? = null,
+        cursorGlyph: CursorGlyph? = null,
         cursorTextColor: Color? = null,
         glyphFontFamily: FontFamily? = null,
         glyphFontSize: Float = 0f,
@@ -1446,7 +1475,7 @@ object TerminalCanvasRenderer {
                     // contrast against the fill.
                     if (
                         cursorGlyph != null &&
-                        cursorGlyph.isNotBlank() &&
+                        cursorGlyph.text.isNotBlank() &&
                         cursorTextColor != null &&
                         glyphFontFamily != null &&
                         glyphFontSize > 0f &&
@@ -1460,12 +1489,17 @@ object TerminalCanvasRenderer {
                         clipRect(left = x, top = y, right = x + w, bottom = y + h) {
                             drawTextClipped(
                                 textMeasurer = glyphMeasurer,
-                                text = cursorGlyph,
+                                text = cursorGlyph.text,
                                 topLeft = Offset(x, y),
                                 style = TextStyle(
                                     color = cursorTextColor,
                                     fontFamily = glyphFontFamily,
                                     fontSize = glyphFontSize.sp,
+                                    // Carried from the cell: a bold prompt character
+                                    // repainted at Normal weight reads thinner under
+                                    // the cursor than everywhere else.
+                                    fontWeight = if (cursorGlyph.isBold) FontWeight.Bold else FontWeight.Normal,
+                                    fontStyle = if (cursorGlyph.isItalic) FontStyle.Italic else FontStyle.Normal,
                                 ),
                             )
                         }

@@ -54,6 +54,8 @@ import ai.rever.bossterm.terminal.model.BufferSnapshot
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import ai.rever.bossterm.terminal.model.image.TerminalImage
 import ai.rever.bossterm.terminal.model.pool.VersionedBufferSnapshot
+import ai.rever.bossterm.compose.rendering.CursorGlyph
+import ai.rever.bossterm.compose.rendering.analyzeCharacter
 import ai.rever.bossterm.terminal.util.CharUtils
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -2089,7 +2091,12 @@ fun ProperTerminal(
                     line = bufferSnapshot.getLine(bufferCursorRow),
                     column = effectiveCursorX,
                     width = bufferSnapshot.width,
-                    blinkVisible = cursorBlinkVisible,
+                    ambiguousCharsAreDoubleWidth = settings.ambiguousCharsAreDoubleWidth,
+                    // The SGR text-blink clocks, NOT cursorBlinkVisible: that one is
+                    // the caret timer and gating text blink on it is wrong in both
+                    // directions (see resolveCursorGlyph).
+                    slowBlinkVisible = slowBlinkVisible,
+                    rapidBlinkVisible = rapidBlinkVisible,
                 ),
                 cursorTextColor = activeTheme.cursorTextColor,
                 glyphFontFamily = sharedFont,
@@ -2454,49 +2461,69 @@ fun ProperTerminal(
  * Uses single quotes with escaped internal single quotes (iTerm2 style).
  */
 /**
- * The glyph a block cursor may repaint on top of itself, or null to leave the
- * block solid.
+ * What a block cursor may repaint, or null to leave the block solid.
  *
  * The cursor overlay is a separate canvas that never sees the buffer, so this
- * decides on its behalf. Every rejection below mirrors something the main text
- * pass in `TerminalCanvasRenderer` already does; painting where it declines would
- * put a character on screen that exists nowhere else:
+ * decides on its behalf. Every rejection mirrors something the main text pass in
+ * `TerminalCanvasRenderer` already does; painting where it declines puts a
+ * character on screen that exists nowhere else, which is worse than the blank
+ * block this exists to fix because it looks correct.
  *
  *  - **DWC** (`CharUtils.DWC`, U+E000) is the private-use marker for the trailing
- *    cell of a double-width character. The text pass skips it; stringifying it
- *    paints tofu.
+ *    cell of a double-width character. Stringifying it paints tofu.
+ *  - **Surrogate halves** cannot carry an astral code point; a lone surrogate
+ *    shapes to U+FFFD.
+ *  - **Anything needing a fallback font family** is declined via the SAME
+ *    classifier the text pass uses ([analyzeCharacter]). `renderCharacter` routes
+ *    emoji, technical symbols and cursive/math to Apple Color Emoji,
+ *    `NotoSansSymbols2` or `FontFamily.Default`; this overlay only carries the
+ *    terminal font, so repainting those here would draw a different glyph than
+ *    the one on screen a frame earlier. That also subsumes double-width, whose
+ *    glyph would be sliced by the one-cell clip.
  *  - **HIDDEN** (SGR 8, conceal) is used by password prompts, and the cursor sits
  *    exactly on the character just typed. Revealing it only under the cursor is a
  *    disclosure, not a cosmetic bug.
- *  - **Blink-off** cells are invisible everywhere else at that moment.
- *  - **Surrogate pairs** cannot be repainted from one UTF-16 unit; a lone
- *    surrogate shapes to U+FFFD. Astral glyphs also want the fallback font
- *    families the overlay does not carry, so they are declined outright rather
- *    than drawn wrong.
- *  - **Double-width lead cells** would need a two-cell block; the one-cell clip
- *    would slice the glyph in half.
+ *  - **Blink-off** cells are invisible everywhere else at that moment. Note the
+ *    two SGR blink options run on their OWN timers
+ *    ([TerminalSettings.slowTextBlinkMs] / [TerminalSettings.rapidTextBlinkMs],
+ *    master-switched by `enableTextBlinking`) and NOT on the caret's
+ *    `caretBlinkMs`. Passing the caret flag here would repaint a blink-off cell
+ *    whenever the caret is solid, and flash a steady cell on the caret's clock.
  */
 internal fun resolveCursorGlyph(
     line: ai.rever.bossterm.terminal.model.TerminalLine,
     column: Int,
     width: Int,
-    blinkVisible: Boolean,
-): String? {
+    ambiguousCharsAreDoubleWidth: Boolean,
+    slowBlinkVisible: Boolean,
+    rapidBlinkVisible: Boolean,
+): CursorGlyph? {
     if (column < 0 || column >= width) return null
     val char = line.charAt(column)
     if (char == CharUtils.DWC || char == CharUtils.EMPTY_CHAR || char.isWhitespace()) return null
-    // Astral plane: needs the pair and a fallback family. Decline.
     if (Character.isHighSurrogate(char) || Character.isLowSurrogate(char)) return null
-    // A double-width lead cell is wider than the block that would clip it.
-    if (column + 1 < width && line.charAt(column + 1) == CharUtils.DWC) return null
+
+    val analysis = analyzeCharacter(char, line, column, width, ambiguousCharsAreDoubleWidth)
+    if (
+        analysis.isDoubleWidth ||
+        analysis.isEmojiOrWideSymbol ||
+        analysis.isEmojiWithVariationSelector ||
+        analysis.isTechnicalSymbol ||
+        analysis.isCursiveOrMath
+    ) {
+        return null
+    }
 
     val style = line.getStyleAt(column)
     if (style?.hasOption(BossTextStyle.Option.HIDDEN) == true) return null
-    val blinks = style?.hasOption(BossTextStyle.Option.SLOW_BLINK) == true ||
-        style?.hasOption(BossTextStyle.Option.RAPID_BLINK) == true
-    if (blinks && !blinkVisible) return null
+    if (style?.hasOption(BossTextStyle.Option.SLOW_BLINK) == true && !slowBlinkVisible) return null
+    if (style?.hasOption(BossTextStyle.Option.RAPID_BLINK) == true && !rapidBlinkVisible) return null
 
-    return char.toString()
+    return CursorGlyph(
+        text = char.toString(),
+        isBold = style?.hasOption(BossTextStyle.Option.BOLD) == true,
+        isItalic = style?.hasOption(BossTextStyle.Option.ITALIC) == true,
+    )
 }
 
 private fun escapePathForShell(path: String): String {

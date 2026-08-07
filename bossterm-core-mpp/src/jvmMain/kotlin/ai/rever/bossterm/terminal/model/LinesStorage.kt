@@ -144,67 +144,99 @@ fun LinesStorage.processLines(yStart: Int, count: Int, consumer: StyledTextConsu
 }
 
 /**
- * Performs a cyclic shift:
- * adds [count] of lines at the position [y], then removes [count] of lines from the end of [y, lastLine] range.
+ * Pans the `[y, lastLine]` region DOWN by [count]: the bottom rows fall out past `lastLine` and
+ * blanks appear at [y]. Rows outside the region are pinned. See [rotateRegion] - [count] is clamped
+ * to the region height, so fewer than [count] blanks appear when the region is shorter than that.
  *
- * Optimized to use direct index operations instead of multiple list shuffles.
- * Before: O(m + n + count) where m = lines before y, n = lines after lastLine
- * After: O(count) direct index operations
- *
- * @param y        index of the insertion point, the operation does not affect all lines before this line.
- * @param count    number of lines to insert.
- * @param lastLine the operation does not affect all lines after this line.
+ * @param y        first row of the region; rows before it are unaffected.
+ * @param count    rows to pan down, clamped to the region height.
+ * @param lastLine last row of the region; rows after it are unaffected.
  */
 fun LinesStorage.insertLines(y: Int, count: Int, lastLine: Int, filler: TerminalLine.TextEntry) {
-  if (count <= 0) return
-
-  // First, remove count lines from the end of the scroll region (they scroll off)
-  repeat(count) {
-    val removeIndex = lastLine.coerceAtMost(size - 1)
-    if (removeIndex >= y && size > 0) {
-      removeAt(removeIndex)
-    }
-  }
-
-  // Then, insert count blank lines at position y
-  repeat(count) {
-    insertAt(y, TerminalLine(filler))
-  }
+  rotateRegion(y, lastLine, panDown = true, magnitude = count, filler = filler)
 }
 
 /**
- * Performs a cyclic shift:
- * removes [count] of lines after the position [y], then adds [count] of lines after the [lastLine].
+ * Rotate the rows of a scrolling region, filling the vacated end with blanks.
  *
- * Optimized to use direct index operations instead of multiple list shuffles.
- * Before: O(m + n + count) where m = lines before y, n = lines after lastLine
- * After: O(count) direct index operations
+ * [panDown] moves content toward the bottom margin (SD / IL): the bottom rows fall out past
+ * [lastLine] and blanks appear at [y]. Otherwise it moves toward the top (SU / DL / line feed): the
+ * top rows leave and blanks appear at the bottom margin. Rows outside `[y, lastLine]` are PINNED and
+ * never move.
  *
- * @param y        first index if the line to delete, the operation does not affect all lines before this line.
- * @param count    number of lines to delete.
- * @param lastLine the operation does not affect all lines after this line.
+ * One function rather than two because the directions are the same rotation mirrored. They were
+ * previously two hand-written index computations, and each reached past a margin in its own way -
+ * see the commit that introduced this for the index math that failed. Three bounds keep both
+ * honest:
+ *
+ *  - the region is materialized up to [lastLine] before anything is measured, so the bottom margin
+ *    is the REGION's, never however far painting has reached. Letting the painted row count define
+ *    it drops the rows that should shift into the unpainted part, and rendering never materializes
+ *    trailing rows ([ai.rever.bossterm.terminal.model.pool.IncrementalSnapshotBuilder] iterates
+ *    `0 until size`), so a short screen stays short: reachable, not theoretical. Two consequences
+ *    worth knowing - the first scroll grows `size` to the region bottom permanently, and on a
+ *    partly painted MAIN screen the rows handed back for scrollback then include the blanks a
+ *    full-height screen really has.
+ *  - [magnitude] is clamped to the region height, so an oversized count blanks the region and
+ *    touches nothing outside it. Moving `count` rows while removing fewer changed the screen height.
+ *  - `lastLine < y` is a no-op. Callers reach this with a cursor-derived [y] (IL/DL), which can sit
+ *    outside the region entirely.
+ *
+ * Direction is a flag rather than a signed count so there is no sign to get wrong, and so the
+ * accumulator below can be allocated only on the side that returns it.
+ *
+ * @param y first row of the region.
+ * @param lastLine last row of the region; rows after it are unaffected.
+ * @param panDown true to move content toward [lastLine] (SD / IL), false toward [y] (SU / DL).
+ * @param magnitude rows to move; clamped to the region height, ignored at zero or below.
+ * @return the rows that left the region, top-to-bottom, when [panDown] is false. Empty when it is
+ *   true: nothing downstream consumes those, and SD is a scroll hot path.
+ */
+private fun LinesStorage.rotateRegion(
+  y: Int,
+  lastLine: Int,
+  panDown: Boolean,
+  magnitude: Int,
+  filler: TerminalLine.TextEntry,
+): List<TerminalLine> {
+  if (magnitude <= 0 || y < 0 || lastLine < y) return emptyList()
+
+  // `get` fills the storage up to the index, so after this the region's bottom margin IS
+  // `lastLine`. Deliberately not re-clamped to `size - 1` afterwards: that clamp is what let the
+  // painted row count define the margin. The second check covers a capacity-limited storage that
+  // cannot grow that far, where a no-op beats an out-of-bounds removal.
+  if (lastLine >= size) get(lastLine)
+  if (lastLine >= size) return emptyList()
+
+  val moved = magnitude.coerceAtMost(lastLine - y + 1)
+  // The rotation takes rows from one end of the region and opens the same number at the other.
+  val bottomStart = lastLine - moved + 1
+  val removeIndex = if (panDown) bottomStart else y
+  val insertIndex = if (panDown) y else bottomStart
+
+  val removed = if (panDown) null else ArrayList<TerminalLine>(moved)
+  repeat(moved) {
+    val line = removeAt(removeIndex)
+    removed?.add(line)
+  }
+  repeat(moved) { insertAt(insertIndex, TerminalLine(filler)) }
+  return removed ?: emptyList()
+}
+
+/**
+ * Pans the `[y, lastLine]` region UP by [count]: the top rows leave the region and blanks appear at
+ * the bottom margin. Rows outside the region are pinned. See [rotateRegion] - [count] is clamped to
+ * the region height, so a larger count blanks the region rather than reaching past `lastLine`.
+ *
+ * @param y        first row of the region; rows before it are unaffected.
+ * @param count    rows to pan up, clamped to the region height.
+ * @param lastLine last row of the region; rows after it are unaffected.
+ * @return the rows that left the region, top-to-bottom. The caller appends these to scrollback when
+ *   the region starts at the top of the screen.
  */
 fun LinesStorage.deleteLines(y: Int, count: Int, lastLine: Int, filler: TerminalLine.TextEntry): List<TerminalLine> {
   if (count <= 0) return emptyList()
-
-  val removed = mutableListOf<TerminalLine>()
-
-  // Remove count lines starting at position y
-  repeat(count) {
-    if (y < size && y <= lastLine) {
-      removed.add(removeAt(y))
-    }
-  }
-
-  // Insert count blank lines at the end of the scroll region
-  // The insert position is (lastLine - count + 1) since we've already removed lines
-  val actualRemoved = removed.size
-  repeat(actualRemoved) { i ->
-    val insertIndex = (lastLine - count + 1 + i).coerceIn(0, size)
-    insertAt(insertIndex, TerminalLine(filler))
-  }
-
-  return removed
+  return rotateRegion(y, lastLine, panDown = false, magnitude = count, filler = filler)
 }
 
 /**

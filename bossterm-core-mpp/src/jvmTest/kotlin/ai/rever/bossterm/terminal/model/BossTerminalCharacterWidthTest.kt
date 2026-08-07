@@ -51,19 +51,4 @@ class BossTerminalCharacterWidthTest {
         return BossTerminal(NoopTerminalDisplay(), textBuffer, styleState)
     }
 
-    private class NoopTerminalDisplay : TerminalDisplay {
-        override var windowTitle: String? = null
-        override var iconTitle: String? = null
-        override val selection: TerminalSelection? = null
-
-        override fun setCursor(x: Int, y: Int) = Unit
-        override fun setCursorShape(cursorShape: CursorShape?) = Unit
-        override fun beep() = Unit
-        override fun scrollArea(scrollRegionTop: Int, scrollRegionSize: Int, dy: Int) = Unit
-        override fun setCursorVisible(isCursorVisible: Boolean) = Unit
-        override fun useAlternateScreenBuffer(useAlternateScreenBuffer: Boolean) = Unit
-        override fun terminalMouseModeSet(mouseMode: MouseMode) = Unit
-        override fun setMouseFormat(mouseFormat: MouseFormat) = Unit
-        override fun ambiguousCharsAreDoubleWidth(): Boolean = false
-    }
 }

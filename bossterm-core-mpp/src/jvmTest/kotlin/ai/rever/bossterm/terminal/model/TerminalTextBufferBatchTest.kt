@@ -113,7 +113,7 @@ class TerminalTextBufferBatchTest {
     fun snapshotsStayResponsiveAndDisconnectClearsAbandonedBatch() {
         val styleState = StyleState()
         val buffer = TerminalTextBuffer(width = 8, height = 2, styleState = styleState)
-        val display = NoopTerminalDisplay()
+        val display = RecordingTerminalDisplay()
         val terminal = BossTerminal(display, buffer, styleState)
         buffer.getLine(0) // Materialize the lazily allocated first screen row.
         val modelChanges = AtomicInteger()
@@ -166,7 +166,7 @@ class TerminalTextBufferBatchTest {
     fun disconnectClearsNestedBatchAndPublishesOnce() {
         val styleState = StyleState()
         val buffer = TerminalTextBuffer(width = 8, height = 2, styleState = styleState)
-        val terminal = BossTerminal(NoopTerminalDisplay(), buffer, styleState)
+        val terminal = BossTerminal(RecordingTerminalDisplay(), buffer, styleState)
         val modelChanges = AtomicInteger()
         buffer.addModelListener(object : TerminalModelListener {
             override fun modelChanged() {
@@ -197,7 +197,7 @@ class TerminalTextBufferBatchTest {
     fun mismatchedTeardownThreadStillClearsBatchAndSynchronizedUpdate() {
         val styleState = StyleState()
         val buffer = TerminalTextBuffer(width = 8, height = 2, styleState = styleState)
-        val display = NoopTerminalDisplay()
+        val display = RecordingTerminalDisplay()
         val terminal = BossTerminal(display, buffer, styleState)
         val executor = Executors.newSingleThreadExecutor()
 
@@ -224,7 +224,7 @@ class TerminalTextBufferBatchTest {
         }
     }
 
-    private class NoopTerminalDisplay : TerminalDisplay {
+    private class RecordingTerminalDisplay : TerminalDisplay {
         var synchronizedUpdateEnabled: Boolean? = null
         override var windowTitle: String? = null
         override var iconTitle: String? = null

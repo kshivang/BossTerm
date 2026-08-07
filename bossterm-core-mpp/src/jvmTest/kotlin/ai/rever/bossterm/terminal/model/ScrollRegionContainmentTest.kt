@@ -91,15 +91,15 @@ class ScrollRegionContainmentTest {
      */
     @Test
     fun anOversizedScrollBlanksOnlyTheRegion() {
-        for (op in listOf("T", "S")) {
-            replay(fillRows() + "$esc[2;9r$esc[40$op") { buffer ->
+        for (op in listOf("T", "S")) for (count in listOf(9, 40)) {
+            replay(fillRows() + "$esc[2;9r$esc[$count$op") { buffer ->
                 val rows = buffer.rows()
-                assertEquals("r1", rows[0], "row 1 must survive an oversized $op")
-                assertEquals("r10", rows[9], "row 10 must survive an oversized $op")
+                assertEquals("r1", rows[0], "row 1 must survive $op x$count")
+                assertEquals("r10", rows[9], "row 10 must survive $op x$count")
                 assertEquals(
                     List(8) { "" },
                     rows.subList(1, 9),
-                    "an oversized $op blanks the region and nothing outside it",
+                    "$op x$count blanks the region and nothing outside it",
                 )
             }
         }
@@ -214,6 +214,24 @@ class ScrollRegionContainmentTest {
                 buffer.screenLinesCount,
                 "and must not grow the screen past the terminal height",
             )
+        }
+    }
+
+    /**
+     * The mirror of the case above, on the TOP margin. Both directions, because DL reaches the same
+     * guard. Containment is only meaningfully "pinned" if both margins are covered - a suite with
+     * just the bottom case advertises symmetry it does not have.
+     */
+    @Test
+    fun insertOrDeleteLineAboveTheTopMarginChangesNothing() {
+        for (op in listOf("L", "M")) {
+            replay(fillRows() + "$esc[5;10r$esc[1;1H$esc[3$op") { buffer ->
+                assertEquals(
+                    (1..height).map { "r$it" },
+                    buffer.rows(),
+                    "$op above the region's top margin must not move any row",
+                )
+            }
         }
     }
 }

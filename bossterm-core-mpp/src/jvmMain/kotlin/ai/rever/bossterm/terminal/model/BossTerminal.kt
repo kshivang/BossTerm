@@ -1234,9 +1234,20 @@ class BossTerminal(
         myTabulator.setTabStop(myCursorX)
     }
 
+    /**
+     * IL/DL are ignored when the cursor sits outside the scrolling region (DEC VT510). Without this
+     * the region's TOP margin is unguarded: with `ESC[2;9r` and the cursor on row 1, the rotation
+     * would run from row 1 and pan a row the region does not own. The bottom margin is contained
+     * inside [LinesStorage.rotateRegion]; this is the mirror of it, and it has to live here because
+     * only the terminal knows where the cursor is.
+     */
+    private fun cursorIsOutsideScrollRegion(): Boolean =
+        myCursorY < myScrollRegionTop || myCursorY > myScrollRegionBottom
+
     override fun insertLines(count: Int) {
         terminalTextBuffer.lock()
         try {
+            if (cursorIsOutsideScrollRegion()) return
             terminalTextBuffer.insertLines(myCursorY - 1, count, myScrollRegionBottom)
         } finally {
             terminalTextBuffer.unlock()
@@ -1246,6 +1257,7 @@ class BossTerminal(
     override fun deleteLines(count: Int) {
         terminalTextBuffer.lock()
         try {
+            if (cursorIsOutsideScrollRegion()) return
             terminalTextBuffer.deleteLines(myCursorY - 1, count, myScrollRegionBottom)
         } finally {
             terminalTextBuffer.unlock()

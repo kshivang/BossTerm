@@ -1,6 +1,7 @@
 package ai.rever.bossterm.terminal.model
 
 import ai.rever.bossterm.terminal.StyledTextConsumer
+import kotlin.math.abs
 import kotlin.math.min
 
 /**
@@ -153,40 +154,39 @@ fun LinesStorage.processLines(yStart: Int, count: Int, consumer: StyledTextConsu
  * @param lastLine last row of the region; rows after it are unaffected.
  */
 fun LinesStorage.insertLines(y: Int, count: Int, lastLine: Int, filler: TerminalLine.TextEntry) {
+  if (count <= 0) return
   rotateRegion(y, lastLine, delta = count, filler = filler)
 }
 
 /**
  * Rotate the rows of a scrolling region by [delta], filling the vacated end with blanks.
  *
- * Positive [delta] pans content DOWN (SD / IL): the bottom [delta] rows fall out past the bottom
- * margin and blanks appear at [y]. Negative pans UP (SU / DL / line feed): the top rows leave and
- * blanks appear at the bottom margin. Rows outside `[y, lastLine]` are PINNED and never move.
+ * Positive [delta] pans content DOWN (SD / IL): the bottom rows fall out past the bottom margin and
+ * blanks appear at [y]. Negative pans UP (SU / DL / line feed): the top rows leave and blanks appear
+ * at the bottom margin. Rows outside `[y, lastLine]` are PINNED and never move.
  *
- * This exists as one function because the two directions are the same rotation with opposite
- * signs, and keeping them as two hand-written index computations is exactly how they came to
- * disagree. The down direction removed at a per-iteration `lastLine.coerceAtMost(size - 1)`, which
- * walks past the margin as each removal shifts the rows above it up — with rows r1..r10, a region
- * of 2..9 and count 3 it deleted r9, then the PINNED r10, then r8, leaving r7 in row 10. Claude
- * Code drives precisely this (`ESC[2;Nr` + `ESC[nT`) and pins its prompt box below the region, so
- * the rows it never repaints were being corrupted underneath it. The up direction bounded its loop
- * by `y < size` rather than by the region, so any count past the region height destroyed the rows
- * below the bottom margin too, and fed them to scrollback on a top-anchored region.
+ * One function rather than two because the directions are the same rotation with opposite signs.
+ * They were previously two hand-written index computations, and each reached past a margin in its
+ * own way - see the commit that introduced this for the exact index math that failed. Three bounds
+ * keep both honest:
  *
- * Two bounds keep both honest:
- *  - the region is materialized up to [lastLine] first. Clamping the region to `size - 1` instead
- *    makes the PAINTED row count define the margin, so on a partly painted screen the rows that
- *    should have shifted down into the unpainted part are dropped instead. Rendering never
- *    materializes trailing rows ([ai.rever.bossterm.terminal.model.pool.IncrementalSnapshotBuilder]
- *    iterates `0 until size`), so a short screen stays short and this is reachable, not theoretical.
- *  - the move is clamped to the region height, so an oversized count blanks the region and nothing
- *    else. Moving `count` rows while removing fewer changed the screen's height.
+ *  - the region is materialized up to [lastLine] before it is measured. Clamping to `size - 1`
+ *    instead lets the PAINTED row count define the margin, so rows that should shift into the
+ *    unpainted part are dropped. Rendering never materializes trailing rows
+ *    ([ai.rever.bossterm.terminal.model.pool.IncrementalSnapshotBuilder] iterates `0 until size`),
+ *    so a short screen stays short: reachable, not theoretical. Note this makes the first scroll
+ *    grow `size` to the region bottom permanently, and on a partly painted MAIN screen the rows
+ *    handed back for scrollback then include the blanks a full-height screen really has.
+ *  - the move is clamped to the region height, so an oversized count blanks the region and touches
+ *    nothing outside it. Moving `count` rows while removing fewer changed the screen's height.
+ *  - `lastLine < y` is a no-op. Callers reach this with a cursor-derived [y] (IL/DL), which can sit
+ *    outside the region entirely.
  *
  * @param y first row of the region.
  * @param lastLine last row of the region; rows after it are unaffected.
  * @param delta signed number of rows to move; clamped to the region height.
- * @return the rows that left the region, in top-to-bottom order. Only meaningful for a negative
- *   [delta], where the caller may hand them to scrollback.
+ * @return the rows that left the region, top-to-bottom, for a negative [delta]. Always empty for a
+ *   positive [delta]: nothing downstream consumes it, and SD is a scroll hot path.
  */
 private fun LinesStorage.rotateRegion(
   y: Int,
@@ -200,16 +200,20 @@ private fun LinesStorage.rotateRegion(
   // rather than however far painting happens to have reached.
   if (lastLine >= size) get(lastLine)
   val regionBottom = lastLine.coerceAtMost(size - 1)
-  val moved = kotlin.math.abs(delta).coerceAtMost(regionBottom - y + 1)
+  val moved = abs(delta).coerceAtMost(regionBottom - y + 1)
   if (moved <= 0) return emptyList()
 
-  val removeAt = if (delta > 0) regionBottom - moved + 1 else y
-  val insertAt = if (delta > 0) y else regionBottom - moved + 1
+  val panDown = delta > 0
+  val removeIndex = if (panDown) regionBottom - moved + 1 else y
+  val insertIndex = if (panDown) y else regionBottom - moved + 1
 
-  val removed = ArrayList<TerminalLine>(moved)
-  repeat(moved) { removed.add(removeAt(removeAt)) }
-  repeat(moved) { insertAt(insertAt, TerminalLine(filler)) }
-  return removed
+  val removed = if (panDown) null else ArrayList<TerminalLine>(moved)
+  repeat(moved) {
+    val line = removeAt(removeIndex)
+    removed?.add(line)
+  }
+  repeat(moved) { insertAt(insertIndex, TerminalLine(filler)) }
+  return removed ?: emptyList()
 }
 
 /**

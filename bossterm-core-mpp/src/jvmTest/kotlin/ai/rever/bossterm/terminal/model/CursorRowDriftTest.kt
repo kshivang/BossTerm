@@ -1,12 +1,8 @@
-package ai.rever.bossterm.compose.terminal
+package ai.rever.bossterm.terminal.model
 
-import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.terminal.ArrayTerminalDataStream
 import ai.rever.bossterm.terminal.TerminalMode
 import ai.rever.bossterm.terminal.emulator.BossEmulator
-import ai.rever.bossterm.terminal.model.BossTerminal
-import ai.rever.bossterm.terminal.model.StyleState
-import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -41,20 +37,14 @@ class CursorRowDriftTest {
     private val height = 10
 
     private fun feed(sequence: String, assertions: (TerminalTextBuffer) -> Unit) {
-        val display = ComposeTerminalDisplay()
-        try {
-            val styleState = StyleState()
-            val buffer = TerminalTextBuffer(width = width, height = height, styleState = styleState)
-            val terminal = BossTerminal(display, buffer, styleState)
-            terminal.setModeEnabled(TerminalMode.AlternateBuffer, true)
-            buffer.getLine(height - 1) // materialize the lazily allocated screen rows
-            val stream = ArrayTerminalDataStream(sequence.toCharArray())
-            val emulator = BossEmulator(stream, terminal)
-            while (emulator.hasNext()) emulator.next()
-            assertions(buffer)
-        } finally {
-            display.dispose()
-        }
+        val styleState = StyleState()
+        val buffer = TerminalTextBuffer(width = width, height = height, styleState = styleState)
+        val terminal = BossTerminal(NoopTerminalDisplay(), buffer, styleState)
+        terminal.setModeEnabled(TerminalMode.AlternateBuffer, true)
+        buffer.getLine(height - 1) // materialize the lazily allocated screen rows
+        val emulator = BossEmulator(ArrayTerminalDataStream(sequence.toCharArray()), terminal)
+        while (emulator.hasNext()) emulator.next()
+        assertions(buffer)
     }
 
     private fun TerminalTextBuffer.rowText(row: Int) = getLine(row).text.trimEnd()

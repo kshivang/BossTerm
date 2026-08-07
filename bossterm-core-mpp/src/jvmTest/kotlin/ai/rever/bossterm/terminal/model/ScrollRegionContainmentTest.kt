@@ -1,12 +1,8 @@
 package ai.rever.bossterm.terminal.model
 
 import ai.rever.bossterm.terminal.ArrayTerminalDataStream
-import ai.rever.bossterm.terminal.CursorShape
-import ai.rever.bossterm.terminal.TerminalDisplay
 import ai.rever.bossterm.terminal.TerminalMode
 import ai.rever.bossterm.terminal.emulator.BossEmulator
-import ai.rever.bossterm.terminal.emulator.mouse.MouseFormat
-import ai.rever.bossterm.terminal.emulator.mouse.MouseMode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -20,10 +16,15 @@ import kotlin.test.assertEquals
  *
  * where `g-pages/supabase/functions` should have been.
  *
- * Both directions are covered here because they were separately wrong: SD walked past the bottom
- * margin on ANY count, and SU reached past it on any count larger than the region. The oversized
- * and partly painted cases each hid behind a test that only used a small count on a fully painted
- * screen, so they are pinned explicitly.
+ * Both directions are covered because they were separately wrong: SD walked past the bottom margin
+ * on ANY count, and SU reached past it on any count larger than the region. The oversized and
+ * partly painted cases each hid behind a test that used a small count on a fully painted screen, so
+ * they are pinned explicitly. IL/DL reach the same code with a CURSOR-derived top, a materially
+ * different input space, so they get their own cases.
+ *
+ * Assertions are on ROWS wherever possible. A history assertion under a region that does not start
+ * at row 1 proves nothing: `TerminalTextBuffer.scrollArea` only feeds scrollback when
+ * `scrollRegionTop == 1`, so such a test passes with the rotation completely broken.
  */
 class ScrollRegionContainmentTest {
 
@@ -34,13 +35,14 @@ class ScrollRegionContainmentTest {
     private fun replay(
         sequence: String,
         screenHeight: Int = height,
+        alternateScreen: Boolean = true,
         materializeAll: Boolean = true,
         assertions: (TerminalTextBuffer) -> Unit,
     ) {
         val styleState = StyleState()
         val buffer = TerminalTextBuffer(width, screenHeight, styleState)
         val terminal = BossTerminal(NoopTerminalDisplay(), buffer, styleState)
-        terminal.setModeEnabled(TerminalMode.AlternateBuffer, true)
+        if (alternateScreen) terminal.setModeEnabled(TerminalMode.AlternateBuffer, true)
         if (materializeAll) buffer.getLine(screenHeight - 1)
         val emulator = BossEmulator(ArrayTerminalDataStream(sequence.toCharArray()), terminal)
         while (emulator.hasNext()) emulator.next()
@@ -104,10 +106,10 @@ class ScrollRegionContainmentTest {
     }
 
     /**
-     * The region's bottom margin is a property of the REGION, not of how far painting has reached.
-     * Rendering never materializes trailing rows (`IncrementalSnapshotBuilder` iterates
-     * `0 until size`), so a screen can stay short indefinitely; clamping the margin to `size - 1`
-     * silently dropped the rows that should have moved into the unpainted part.
+     * The bottom margin is a property of the REGION, not of how far painting has reached. Rendering
+     * never materializes trailing rows (`IncrementalSnapshotBuilder` iterates `0 until size`), so a
+     * screen can stay short indefinitely; clamping the margin to `size - 1` silently dropped the
+     * rows that should have moved into the unpainted part.
      */
     @Test
     fun scrollDownOnAPartlyPaintedScreenKeepsEveryRow() {
@@ -124,57 +126,94 @@ class ScrollRegionContainmentTest {
     }
 
     /**
-     * Scrolling a region that does NOT start at row 1 is not scrollback. Uses SU with an oversized
-     * count, because that is the combination that used to push rows from below the bottom margin
-     * into history.
+     * The same containment, measured on rows rather than on history: a region below row 1 cannot
+     * feed scrollback anyway, so asserting `historyLinesCount == 0` there proves nothing.
      */
     @Test
-    fun aRegionBelowTheTopAddsNoScrollback() {
+    fun aRegionBelowTheTopLeavesThePinnedRowsAlone() {
         replay(fillRows() + "$esc[2;9r$esc[40S") { buffer ->
-            assertEquals(0, buffer.historyLinesCount, "a region below row 1 must not feed scrollback")
+            val rows = buffer.rows()
+            assertEquals("r1", rows[0], "row 1 is pinned above the region")
+            assertEquals("r10", rows[9], "row 10 is pinned below the region")
         }
     }
 
     /**
-     * A top-anchored region DOES feed scrollback, but only with the rows that actually left the
-     * region - never the rows pinned below its bottom margin. This ran on the main screen because
-     * the alternate screen suppresses scrollback entirely, which would mask the assertion.
+     * A top-anchored region DOES feed scrollback, but only with the rows that actually left it -
+     * never the rows pinned below its bottom margin. On the MAIN screen, because the alternate
+     * screen suppresses scrollback entirely and would mask this.
      */
     @Test
     fun aTopAnchoredRegionScrollsOnlyItsOwnRowsIntoHistory() {
-        val styleState = StyleState()
-        val buffer = TerminalTextBuffer(width, height, styleState)
-        val terminal = BossTerminal(NoopTerminalDisplay(), buffer, styleState)
-        buffer.getLine(height - 1)
-        val sequence = fillRows() + "$esc[1;5r$esc[40S"
-        val emulator = BossEmulator(ArrayTerminalDataStream(sequence.toCharArray()), terminal)
-        while (emulator.hasNext()) emulator.next()
-
-        assertEquals(
-            listOf("r6", "r7", "r8", "r9", "r10"),
-            (5 until height).map { buffer.getLine(it).text.trimEnd() },
-            "rows below the bottom margin are pinned and must stay on screen",
-        )
-        assertEquals(
-            5,
-            buffer.historyLinesCount,
-            "only the region's own 5 rows reach history, not the 5 pinned below it",
-        )
+        replay(fillRows() + "$esc[1;5r$esc[40S", alternateScreen = false) { buffer ->
+            assertEquals(
+                listOf("r6", "r7", "r8", "r9", "r10"),
+                buffer.rows().subList(5, 10),
+                "rows below the bottom margin are pinned and must stay on screen",
+            )
+            assertEquals(
+                5,
+                buffer.historyLinesCount,
+                "only the region's own 5 rows reach history, not the 5 pinned below it",
+            )
+        }
     }
 
-    private class NoopTerminalDisplay : TerminalDisplay {
-        override var windowTitle: String? = null
-        override var iconTitle: String? = null
-        override val selection: TerminalSelection? = null
+    /**
+     * Materializing the region to its bottom margin also decides what a partly painted MAIN screen
+     * hands to scrollback. A real 24-row screen genuinely has blank rows to scroll away, so a
+     * 5-row scroll moves 5 rows even when only 3 have ever been painted. Pinned because this is a
+     * scrollback-content change, not merely an internal one.
+     */
+    @Test
+    fun aPartlyPaintedScreenScrollsItsBlankRowsIntoHistoryToo() {
+        replay(
+            fillRows(n = 3) + "$esc[1;24r$esc[5S",
+            screenHeight = 24,
+            alternateScreen = false,
+            materializeAll = false,
+        ) { buffer ->
+            assertEquals(5, buffer.historyLinesCount, "a 5-row scroll moves 5 rows, painted or not")
+            assertEquals(
+                listOf("r1", "r2", "r3", "", ""),
+                (-5..-1).map { buffer.getLine(it).text.trimEnd() },
+                "the three painted rows, then the blanks a full-height screen really has",
+            )
+        }
+    }
 
-        override fun setCursor(x: Int, y: Int) = Unit
-        override fun setCursorShape(cursorShape: CursorShape?) = Unit
-        override fun beep() = Unit
-        override fun scrollArea(scrollRegionTop: Int, scrollRegionSize: Int, dy: Int) = Unit
-        override fun setCursorVisible(isCursorVisible: Boolean) = Unit
-        override fun useAlternateScreenBuffer(useAlternateScreenBuffer: Boolean) = Unit
-        override fun terminalMouseModeSet(mouseMode: MouseMode) = Unit
-        override fun setMouseFormat(mouseFormat: MouseFormat) = Unit
-        override fun ambiguousCharsAreDoubleWidth(): Boolean = false
+    /**
+     * IL (`CSI L`) reaches the same rotation with a CURSOR-derived top. Inside the region it must
+     * still respect the bottom margin.
+     */
+    @Test
+    fun insertLineWithTheCursorInsideTheRegionKeepsPinnedRows() {
+        replay(fillRows() + "$esc[2;9r$esc[3;1H$esc[3L") { buffer ->
+            val rows = buffer.rows()
+            assertEquals("r1", rows[0], "row 1 is pinned above the region")
+            assertEquals("r10", rows[9], "row 10 is pinned below the region")
+            assertEquals("r2", rows[1], "rows above the cursor do not move")
+            assertEquals(listOf("", "", ""), rows.subList(2, 5), "three blanks open at the cursor")
+        }
+    }
+
+    /**
+     * IL with the cursor BELOW the bottom margin is a no-op. The old code skipped the removal but
+     * still inserted, growing the screen past the terminal height.
+     */
+    @Test
+    fun insertLineWithTheCursorBelowTheMarginChangesNothing() {
+        replay(fillRows() + "$esc[2;5r$esc[8;1H$esc[3L") { buffer ->
+            assertEquals(
+                (1..height).map { "r$it" },
+                buffer.rows(),
+                "IL outside the region must not move any row",
+            )
+            assertEquals(
+                height,
+                buffer.screenLinesCount,
+                "and must not grow the screen past the terminal height",
+            )
+        }
     }
 }

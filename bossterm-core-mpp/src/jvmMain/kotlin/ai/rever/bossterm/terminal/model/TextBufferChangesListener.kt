@@ -16,6 +16,22 @@ interface TextBufferChangesListener {
   fun linesChanged(fromIndex: Int) {}
 
   /**
+   * Lines scrolled off the top of the screen and were appended to the history buffer.
+   *
+   * A viewport anchored to the BOTTOM of the buffer (offset counted back from the live screen)
+   * addresses different content after this: everything the user is looking at moved [count]
+   * lines further from the bottom. Such a viewport has to add [count] to its offset to stay on
+   * the same content, which is the dual of what a top-anchored viewport does for
+   * [linesDiscardedFromHistory] (compare iTerm2's `PTYTextView.handleScrollbackOverflow:`).
+   *
+   * Fired for every append, including the `scrollArea` hot path that a full-screen TUI drives
+   * once per output line — keep implementations cheap.
+   *
+   * @param count number of lines appended to the end of the history.
+   */
+  fun linesAddedToHistory(count: Int) {}
+
+  /**
    * History buffer capacity was exceeded, so the Text Buffer had to discard some lines from the start of the history.
    *
    * @param lines discarded lines.

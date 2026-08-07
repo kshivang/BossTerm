@@ -232,6 +232,31 @@ fun ProperTerminal(
     onDispose { gridStabilityTracker.job?.cancel() }
   }
 
+  // Lines appended to history since the last frame the UI took. Our scroll offset is counted back
+  // from the LIVE BOTTOM, so every appended line moves the content the user is looking at one row
+  // further from that anchor - sit scrolled up while a build streams and the viewport slides out
+  // from under you. iTerm2 has the mirror-image problem (its viewport is top-anchored, so head
+  // eviction moves it) and fixes it the same way: accumulate a count, apply it when the view takes
+  // a frame (`syncResult.overflow` -> `PTYTextView.refreshAfterSync` -> `handleScrollbackOverflow:`).
+  //
+  // Accumulate lock-free on the emulator thread, apply on the UI thread. Deliberately NOT written
+  // straight from the listener - that fires inside the buffer lock on the hottest path, and taking
+  // Compose's snapshot lock under it is the lock inversion ComposeTerminalDisplay warns about.
+  val pendingHistoryAppends = remember(textBuffer) { java.util.concurrent.atomic.AtomicInteger(0) }
+  DisposableEffect(textBuffer) {
+    val anchor = object : ai.rever.bossterm.terminal.model.TextBufferChangesListener {
+      override fun linesAddedToHistory(count: Int) {
+        pendingHistoryAppends.addAndGet(count)
+      }
+
+      override fun historyCleared() {
+        pendingHistoryAppends.set(0)
+      }
+    }
+    textBuffer.addChangesListener(anchor)
+    onDispose { textBuffer.removeChangesListener(anchor) }
+  }
+
   // Command blocks captured for this session (OSC 133). Collected so the gutter
   // and scrollbar markers repaint as commands start and finish. Falls back to a
   // stable empty flow when this session does not track blocks.
@@ -1699,6 +1724,11 @@ fun ProperTerminal(
           accumulatedScrollDelta += delta * settings.scrollMultiplier
           val scrollLines = accumulatedScrollDelta.toInt()
           if (scrollLines != 0) {
+            if (scrollOffset == 0) {
+              // Leaving the bottom: appends banked while we were following it must not be folded
+              // into the offset we are about to take, or the first frame jumps.
+              pendingHistoryAppends.set(0)
+            }
             scrollOffset = (scrollOffset - scrollLines).coerceIn(0, historySize)
             accumulatedScrollDelta -= scrollLines.toFloat()
             userScrollTrigger++  // Mark as user-initiated scroll for scrollbar visibility
@@ -1869,6 +1899,18 @@ fun ProperTerminal(
         // Snapshot cached by Compose - recreated when display triggers redraw OR buffer dimensions change
         // Buffer, images, and cursor state are retained as one accepted render frame.
         val currentTrigger = display.redrawTrigger.value
+        // iTerm2's refreshAfterSync equivalent: fold the appends that landed since the last frame
+        // into the scroll offset so a scrolled-up viewport stays on the same content. Only while
+        // the user is actually scrolled up - at offset 0 we keep following the bottom, which is
+        // what iTerm2 does with `if (!userScroll) [self scrollEnd]`.
+        LaunchedEffect(currentTrigger) {
+          val appended = pendingHistoryAppends.getAndSet(0)
+          if (appended > 0 && scrollOffset > 0) {
+            // Clamping at historyLinesCount pins the view to the oldest surviving line once capped
+            // history starts evicting, mirroring iTerm2 clamping its scroll rect at 0.
+            scrollOffset = (scrollOffset + appended).coerceAtMost(textBuffer.historyLinesCount)
+          }
+        }
         val imageDataCache = terminal.getImageDataCache()
         val stableFrameHolder = remember(textBuffer, display) {
           StableRenderFrameHolder<StableTerminalRenderFrame>()

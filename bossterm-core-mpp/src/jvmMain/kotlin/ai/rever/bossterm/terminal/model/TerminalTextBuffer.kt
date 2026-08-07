@@ -1013,11 +1013,13 @@ class TerminalTextBuffer internal constructor(
   }
 
   private fun addLinesToHistory(linesToAdd: List<TerminalLine>) {
+    if (linesToAdd.isEmpty()) return
     val totalAfterAdd = historyLinesStorage.size + linesToAdd.size
 
     // Fast path: no lines need to be discarded (most common case)
     if (totalAfterAdd <= maxHistoryLinesCount) {
       historyLinesStorage.addAllToBottom(linesToAdd)
+      changesMulticaster.linesAddedToHistory(linesToAdd.size)
       return
     }
 
@@ -1042,6 +1044,7 @@ class TerminalTextBuffer internal constructor(
     historyLinesStorage.addAllToBottom(linesToAdd)
     imageCellHistoryTrimCounter.addAndGet(discardedLinesCount.toLong())
 
+    changesMulticaster.linesAddedToHistory(linesToAdd.size)
     if (linesToDiscard.isNotEmpty()) {
       changesMulticaster.linesDiscardedFromHistory(linesToDiscard)
     }

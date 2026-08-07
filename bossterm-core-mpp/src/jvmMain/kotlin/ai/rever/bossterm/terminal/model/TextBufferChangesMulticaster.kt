@@ -19,6 +19,12 @@ internal class TextBufferChangesMulticaster : TextBufferChangesListener {
     }
   }
 
+  override fun linesAddedToHistory(count: Int) {
+    forEachListeners {
+      it.linesAddedToHistory(count)
+    }
+  }
+
   override fun linesDiscardedFromHistory(lines: List<TerminalLine>) {
     forEachListeners {
       it.linesDiscardedFromHistory(lines)

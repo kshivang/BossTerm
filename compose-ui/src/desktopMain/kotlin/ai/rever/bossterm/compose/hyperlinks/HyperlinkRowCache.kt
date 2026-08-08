@@ -3,42 +3,63 @@ package ai.rever.bossterm.compose.hyperlinks
 import ai.rever.bossterm.terminal.model.TerminalLine
 
 /**
- * Per-buffer-row hyperlink memo, keyed by the LINE INSTANCE rather than a version hash.
+ * Per-buffer-row hyperlink memo for the hover path.
  *
- * The incremental snapshot builder reuses the [TerminalLine] object for a row whose content did
- * not change, so identity is an exact O(1) validity check: a row that changed is the only thing
- * that misses. No scroll offset appears anywhere in the key, which is the point - the previous
- * cache folded the offset into its hash, so every wheel tick missed and re-ran detection over
- * the whole viewport.
+ * Keyed by the LINE INSTANCES the answer depends on, not by a version hash. The incremental
+ * snapshot builder reuses the [TerminalLine] object for a row whose content did not change, so
+ * identity is an exact O(1) validity check: a row that changed is the only thing that misses. No
+ * scroll offset appears anywhere in the key, which is the point - the previous cache folded the
+ * offset into its hash, so every wheel tick missed and re-ran detection over the whole viewport.
  *
- * Deliberately NOT Compose state. It is written from a pointer handler, and the previous cache
- * was `mutableStateOf` read and written inside the draw lambda - a draw-phase write to state the
- * draw observer had recorded, which re-invalidated the draw node and cost a second full text
- * render on every frame.
+ * A wrapped row's answer depends on its whole logical run, so the key for those rows is every
+ * line in the run. Bypassing the memo instead would re-run `collectWrappedLines` (a rejoin of
+ * the entire logical line) plus the full registry sweep on every pointer-move event - and in a
+ * long-output session wrapped rows are the common case, not the exception.
+ *
+ * [cwd] and [detectFilePaths] are part of the key because `detect` resolves relative paths
+ * against them: after a `cd`, an unchanged line must produce different `file://` targets.
+ *
+ * Deliberately NOT Compose state. It is written from a pointer handler, and the cache it
+ * replaces was `mutableStateOf` read and written inside the draw lambda - a draw-phase write to
+ * state the draw observer had recorded, which re-invalidated the draw node and cost a second
+ * full text render on every frame.
  *
  * Not thread-safe: confined to the UI thread, like the pointer handler that owns it.
  */
 internal class HyperlinkRowCache {
-  private val rows = HashMap<Int, Pair<TerminalLine, List<Hyperlink>>>()
+  private class Entry(
+    val lines: List<TerminalLine>,
+    val cwd: String?,
+    val detectFilePaths: Boolean,
+    val links: List<Hyperlink>,
+  )
+
+  private val rows = HashMap<Int, Entry>()
 
   /**
-   * Hyperlinks on [bufferRow], detecting only if [line] is not the instance already memoized.
+   * Hyperlinks on [bufferRow], detecting only when something the answer depends on changed.
    *
-   * [bypass] skips the memo entirely for rows whose answer depends on their neighbours - a
-   * wrapped run's detection walks to the logical line's start, so an unchanged line can still
-   * produce a different result when a sibling row changed. Those are the minority and this runs
-   * once per mouse move, so re-detecting them is cheap and always correct.
+   * @param runLines the line instances the answer depends on: just this row's line for an
+   *   ordinary row, every line of the logical run for a wrapped one.
    */
   fun linksAt(
     bufferRow: Int,
-    line: TerminalLine,
-    bypass: Boolean = false,
+    runLines: List<TerminalLine>,
+    cwd: String?,
+    detectFilePaths: Boolean,
     detect: () -> List<Hyperlink>,
   ): List<Hyperlink> {
-    if (bypass) return detect()
-    rows[bufferRow]?.let { (cachedLine, links) -> if (cachedLine === line) return links }
+    val hit = rows[bufferRow]
+    if (hit != null &&
+      hit.cwd == cwd &&
+      hit.detectFilePaths == detectFilePaths &&
+      hit.lines.size == runLines.size &&
+      hit.lines.indices.all { hit.lines[it] === runLines[it] }
+    ) {
+      return hit.links
+    }
     if (rows.size > MAX_ROWS) rows.clear()
-    return detect().also { rows[bufferRow] = line to it }
+    return detect().also { rows[bufferRow] = Entry(runLines, cwd, detectFilePaths, it) }
   }
 
   fun clear() {

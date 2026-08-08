@@ -184,37 +184,38 @@ class ComposeTerminalDisplay : TerminalDisplay {
      * scrollArea() or other buffer modification methods.
      */
     override fun setCursor(x: Int, y: Int) {
+        // Unchanged is the common case - BossTerminal.finishText() calls this after every
+        // writeCharacters - and copy() would allocate a CursorSnapshot for each one. Bail
+        // before the allocation, the debug print and the redraw bookkeeping alike.
+        val current = _cursor.get()
+        if (current.x == x && current.y == y) return
+        if (debugCursor) {
+            println("🔵 CURSOR MOVE: (${current.x},${current.y}) → ($x,$y)")
+        }
         // One atomic update, not two field writes: x and y have to land together or a reader
         // between them sees a position the terminal was never in.
-        val previous = _cursor.getAndUpdate { it.copy(x = x, y = y) }
-        if (debugCursor && (previous.x != x || previous.y != y)) {
-            println("🔵 CURSOR MOVE: (${previous.x},${previous.y}) → ($x,$y)")
-        }
+        _cursor.getAndUpdate { it.copy(x = x, y = y) }
         // Trigger redraw when cursor moves - fixes p10k/zsh TUI not updating
         // Cursor-only changes (no buffer modification) still need screen refresh
-        if (previous.x != x || previous.y != y) {
-            requestRedraw()
-        }
+        requestRedraw()
     }
 
     override fun setCursorShape(cursorShape: CursorShape?) {
-        val previous = _cursor.getAndUpdate { it.copy(shape = cursorShape) }
-        if (debugCursor && previous.shape != cursorShape) {
-            println("🔷 CURSOR SHAPE: ${previous.shape} → $cursorShape")
+        if (_cursor.get().shape == cursorShape) return
+        if (debugCursor) {
+            println("🔷 CURSOR SHAPE: ${_cursor.get().shape} → $cursorShape")
         }
-        if (previous.shape != cursorShape) {
-            requestRedraw()
-        }
+        _cursor.getAndUpdate { it.copy(shape = cursorShape) }
+        requestRedraw()
     }
 
     override fun setCursorVisible(isCursorVisible: Boolean) {
-        val previous = _cursor.getAndUpdate { it.copy(visible = isCursorVisible) }
-        if (debugCursor && previous.visible != isCursorVisible) {
-            println("👁️  CURSOR VISIBLE: ${previous.visible} → $isCursorVisible")
+        if (_cursor.get().visible == isCursorVisible) return
+        if (debugCursor) {
+            println("👁️  CURSOR VISIBLE: ${_cursor.get().visible} → $isCursorVisible")
         }
-        if (previous.visible != isCursorVisible) {
-            requestRedraw()
-        }
+        _cursor.getAndUpdate { it.copy(visible = isCursorVisible) }
+        requestRedraw()
     }
 
     override fun beep() {

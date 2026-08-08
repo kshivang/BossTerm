@@ -1,6 +1,9 @@
 package ai.rever.bossterm.compose.ui
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import ai.rever.bossterm.compose.rendering.CursorGlyph
+import ai.rever.bossterm.compose.rendering.GlyphBlink
 import ai.rever.bossterm.terminal.CursorShape
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -70,5 +73,53 @@ class CursorFrameEqualityTest {
     fun hidingOrReshapingTheCaretProducesADifferentFrame() {
         assertNotEquals(frame(), frame(visible = false))
         assertNotEquals(frame(), frame(shape = CursorShape.STEADY_UNDERLINE))
+    }
+
+    /**
+     * The glyph is a data class, so two frames built from the same cell compare equal and the
+     * overlay is not invalidated - and a different character, style or blink attribute does
+     * invalidate it. Left uncovered originally, which is why the blink-gate regression got
+     * through: every case used `glyph = null`.
+     */
+    @Test
+    fun theRepaintedGlyphParticipatesInEquality() {
+        val glyph = CursorGlyph("a", isBold = false, isItalic = false, isUnderline = false)
+        assertEquals(frame().copy(glyph = glyph), frame().copy(glyph = glyph))
+        assertEquals(
+            frame().copy(glyph = glyph),
+            frame().copy(glyph = CursorGlyph("a", isBold = false, isItalic = false, isUnderline = false)),
+            "an equal glyph must not invalidate, even as a distinct instance",
+        )
+        assertNotEquals(
+            frame().copy(glyph = glyph),
+            frame().copy(glyph = glyph.copy(text = "b")),
+        )
+        assertNotEquals(
+            frame().copy(glyph = glyph),
+            frame().copy(glyph = glyph.copy(isBold = true)),
+        )
+        assertNotEquals(
+            frame().copy(glyph = glyph),
+            frame().copy(glyph = glyph.copy(blink = GlyphBlink.SLOW)),
+            "the blink attribute is what the draw-time gate keys on",
+        )
+        assertNotEquals(frame().copy(glyph = glyph), frame().copy(glyph = null))
+    }
+
+    /**
+     * `ImageBitmap` has no structural equality, so it falls back to identity. That is correct
+     * here only because `ImageRenderer.getOrDecodeImage` caches, handing back the same instance
+     * for an unchanged image - pinned so a change to that caching is caught here rather than as
+     * a caret that repaints every frame over an inline image.
+     */
+    @Test
+    fun theImageOcclusionParticipatesInEquality() {
+        val bitmap = ImageBitmap(2, 2)
+        assertEquals(frame().copy(imageBitmap = bitmap), frame().copy(imageBitmap = bitmap))
+        assertNotEquals(
+            frame().copy(imageBitmap = bitmap),
+            frame().copy(imageBitmap = ImageBitmap(2, 2)),
+        )
+        assertNotEquals(frame().copy(imageBitmap = bitmap), frame().copy(imageBitmap = null))
     }
 }

@@ -58,20 +58,35 @@ internal data class CursorFrame(
 )
 
 /**
- * Identity-stable holder so [CursorOverlay]'s draw lambda has exactly ONE capture.
+ * Identity-stable holder for everything the PAINT phase reads without going through composition.
  *
- * `Canvas(modifier) { }` is `Spacer(modifier.drawBehind(onDraw))`, and `drawBehind`'s element
- * compares the lambda instance - a new instance invalidates the draw node. Kotlin only memoizes
- * a lambda when every capture is stable, and the overlay used to capture the buffer snapshot,
- * the render frame, the settings, the theme and half a dozen more, several of them unstable. So
- * every recomposition of the parent - including one per wheel event - rebuilt it and re-ran the
- * glyph and image resolution with it. One stable capture plus a skippable composable means the
- * parent recomposing does not touch this layer at all.
+ * Two jobs, both about subscription phase:
+ *
+ * 1. `Canvas(modifier) { }` is `Spacer(modifier.drawBehind(onDraw))`, and `drawBehind`'s element
+ *    compares the lambda instance - a new instance invalidates the draw node. Kotlin only
+ *    memoizes a lambda when every capture is stable, and the overlay used to capture the buffer
+ *    snapshot, the render frame, the settings, the theme and more, several unstable. So every
+ *    recomposition of the parent, including one per wheel event, rebuilt it. One stable capture
+ *    plus a skippable composable means the parent recomposing does not touch that layer.
+ * 2. The three blink clocks live here rather than as composition locals so BOTH canvases read
+ *    them in their own draw lambdas. That is the only phase where the read subscribes: the
+ *    caret's [frame] is published from a `SideEffect`, which runs in the apply phase outside
+ *    `observeReads`, so a clock read there would subscribe nothing and the glyph would keep
+ *    painting after the text pass had blinked it away.
  */
 @Stable
-internal class CursorOverlayState {
-  var frame by mutableStateOf<CursorFrame?>(null)
-  var blinkVisible by mutableStateOf(true)
+internal class TerminalPaintState {
+  /** The caret, republished whenever anything it draws changes. */
+  var cursorFrame by mutableStateOf<CursorFrame?>(null)
+
+  /** The caret's own timer (`caretBlinkMs`), read only by the cursor overlay. */
+  var caretVisible by mutableStateOf(true)
+
+  /** SGR 5, read by the text canvas for its cells and by the overlay for the caret's glyph. */
+  var slowBlinkVisible by mutableStateOf(true)
+
+  /** SGR 6, likewise. */
+  var rapidBlinkVisible by mutableStateOf(true)
 }
 
 /**
@@ -83,10 +98,15 @@ internal class CursorOverlayState {
  * from composition into a recomposition loop.
  */
 @Composable
-internal fun CursorOverlay(state: CursorOverlayState) {
+internal fun CursorOverlay(state: TerminalPaintState) {
   Canvas(modifier = Modifier.padding(start = 4.dp, top = 4.dp).fillMaxSize().clipToBounds()) {
-    val f = state.frame ?: return@Canvas
-    val blink = state.blinkVisible
+    val f = state.cursorFrame ?: return@Canvas
+    val blink = state.caretVisible
+    // The SGR clocks gate the repainted glyph HERE, in the draw phase, so this layer repaints
+    // in step with the text pass. resolveCursorGlyph only records which clock the cell follows.
+    val glyph = f.glyph?.takeIf {
+      it.blink.isVisible(state.slowBlinkVisible, state.rapidBlinkVisible)
+    }
     if (size.width < f.cellWidth || size.height < f.cellHeight) return@Canvas
 
     val screenRow = (f.y - 1).coerceAtLeast(0) + f.scrollOffset
@@ -121,7 +141,7 @@ internal fun CursorOverlay(state: CursorOverlayState) {
         focusedAlpha = f.focusedAlpha,
         unfocusedAlpha = f.unfocusedAlpha,
         imageOcclusion = occlusion,
-        cursorGlyph = f.glyph,
+        cursorGlyph = glyph,
         cursorTextColor = f.glyphColor,
         glyphFontFamily = f.glyphFontFamily,
         glyphFontSize = f.glyphFontSize,

@@ -105,15 +105,6 @@ data class RenderingContext(
     val terminalWidthCells: Int = 80,
     val terminalHeightCells: Int = 24,
 
-    // Working directory for resolving relative file paths in hyperlinks
-    val workingDirectory: String? = null,
-
-    // Whether to detect file/folder paths as clickable hyperlinks
-    val detectFilePaths: Boolean = true,
-
-    // Custom hyperlink registry for per-instance pattern customization
-    val hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
-
     // Command blocks resolved to on-screen rows for this frame (empty when the
     // feature is disabled, so the gutter pass is a no-op).
     val commandBlocks: List<RenderableBlock> = emptyList()
@@ -144,7 +135,30 @@ data class CursorGlyph(
     val isBold: Boolean,
     val isItalic: Boolean,
     val isUnderline: Boolean,
+    /**
+     * Which SGR text-blink clock this glyph follows, if any.
+     *
+     * Recorded rather than applied at resolve time so the gate can live in the overlay's DRAW
+     * lambda. Resolution happens in the apply phase, which is outside `observeReads` - a clock
+     * read there subscribes nothing, so the glyph would keep painting after the text pass had
+     * blinked it away.
+     */
+    val blink: GlyphBlink = GlyphBlink.NONE,
 )
+
+/** The SGR blink attribute a repainted cursor glyph carries. */
+enum class GlyphBlink {
+    NONE,
+    SLOW,
+    RAPID;
+
+    /** Whether a glyph with this attribute is showing, given the two clocks. */
+    fun isVisible(slowVisible: Boolean, rapidVisible: Boolean): Boolean = when (this) {
+        NONE -> true
+        SLOW -> slowVisible
+        RAPID -> rapidVisible
+    }
+}
 
 /**
  * Result of analyzing a character for rendering purposes.
@@ -755,43 +769,6 @@ object TerminalCanvasRenderer {
                 // Advance visual position
                 visualCol += analysis.visualWidth
             }
-        }
-    }
-
-    /**
-     * Hyperlinks on one BUFFER row, in buffer coordinates.
-     *
-     * Offset-free by construction: the same buffer row yields the same answer wherever the
-     * viewport happens to be sitting, which is what lets a caller memo the result across a
-     * scroll. This replaces a per-frame sweep of every visible row that ran ~14 regexes per
-     * row inside the draw phase - for a result the text pass never read. Only the hover
-     * hit-test and the hover underline consume it, so it is resolved one row at a time, on
-     * demand.
-     *
-     * Wrapped rows are handled by walking to the logical line's start, which may be off-screen;
-     * the returned spans therefore cover every buffer row the link occupies.
-     */
-    fun detectHyperlinksForBufferRow(
-        snapshot: VersionedBufferSnapshot,
-        bufferRow: Int,
-        terminalWidth: Int,
-        workingDirectory: String?,
-        detectFilePaths: Boolean,
-        registry: HyperlinkRegistry,
-    ): List<Hyperlink> {
-        val line = snapshot.getLine(bufferRow)
-        // isWrapped semantics: true means "this line wraps INTO the next line", so a row is a
-        // continuation when its PREDECESSOR is wrapped.
-        val isPreviousLineWrapped = bufferRow - 1 >= -snapshot.historyLinesCount &&
-            snapshot.getLine(bufferRow - 1).isWrapped
-        return if (isPreviousLineWrapped || line.isWrapped) {
-            HyperlinkDetector.detectHyperlinksWithWrapping(
-                snapshot, bufferRow, terminalWidth, workingDirectory, detectFilePaths, registry
-            )
-        } else {
-            HyperlinkDetector.detectHyperlinks(
-                line.text, bufferRow, workingDirectory, detectFilePaths, registry
-            )
         }
     }
 

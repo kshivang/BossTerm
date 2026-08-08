@@ -1,6 +1,5 @@
 package ai.rever.bossterm.compose.hyperlinks
 
-import ai.rever.bossterm.compose.rendering.TerminalCanvasRenderer
 import ai.rever.bossterm.terminal.model.CharBuffer
 import ai.rever.bossterm.terminal.model.StyleState
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
@@ -25,7 +24,7 @@ class HyperlinkBufferRowTest {
     }
 
     private fun links(buffer: TerminalTextBuffer, bufferRow: Int) =
-        TerminalCanvasRenderer.detectHyperlinksForBufferRow(
+        HyperlinkDetector.detectForBufferRow(
             snapshot = buffer.createIncrementalSnapshot(),
             bufferRow = bufferRow,
             terminalWidth = buffer.width,
@@ -96,7 +95,7 @@ class HyperlinkBufferRowTest {
         var detections = 0
 
         repeat(5) {
-            cache.linksAt(1, snapshot.getLine(1)) {
+            cache.linksAt(1, listOf(snapshot.getLine(1)), cwd = null, detectFilePaths = false) {
                 detections++
                 emptyList()
             }
@@ -112,27 +111,84 @@ class HyperlinkBufferRowTest {
         var detections = 0
         val detect = { detections++; emptyList<Hyperlink>() }
 
-        cache.linksAt(1, buffer.createIncrementalSnapshot().getLine(1), detect = detect)
+        cache.linksAt(1, listOf(buffer.createIncrementalSnapshot().getLine(1)), null, false, detect)
         write(buffer, 2, "second line entirely")
-        cache.linksAt(1, buffer.createIncrementalSnapshot().getLine(1), detect = detect)
+        cache.linksAt(1, listOf(buffer.createIncrementalSnapshot().getLine(1)), null, false, detect)
 
         assertEquals(2, detections, "a changed row must miss")
     }
 
+    /**
+     * A wrapped row must still memoize.
+     *
+     * The first version of this cache bypassed the memo for any wrapped row, which meant every
+     * pointer-move event re-ran the whole-logical-line rejoin plus the registry sweep - on the
+     * UI thread, in a session where wrapped rows are the common case, not the exception.
+     */
     @Test
-    fun bypassSkipsTheMemoEntirely() {
-        val buffer = TerminalTextBuffer(40, 4, StyleState(), 100)
-        write(buffer, 2, "wrapped content")
-        val line = buffer.createIncrementalSnapshot().getLine(1)
+    fun aWrappedRunMemoizesWhileEveryLineInItIsUnchanged() {
+        val buffer = TerminalTextBuffer(20, 4, StyleState(), 100)
+        write(buffer, 1, "https://example.com/")
+        write(buffer, 2, "deep/path")
+        buffer.getLine(0).isWrapped = true
+        val snapshot = buffer.createIncrementalSnapshot()
         val cache = HyperlinkRowCache()
         var detections = 0
 
-        repeat(3) {
-            cache.linksAt(1, line, bypass = true) {
-                detections++
-                emptyList()
-            }
+        repeat(5) {
+            cache.linksAt(
+                bufferRow = 0,
+                runLines = HyperlinkDetector.runLinesAt(snapshot, 0),
+                cwd = null,
+                detectFilePaths = false,
+            ) { detections++; emptyList() }
         }
-        assertEquals(3, detections, "wrapped rows depend on neighbours, so they never memoize")
+        assertEquals(1, detections, "an unchanged wrapped run must not re-detect per event")
+    }
+
+    @Test
+    fun aWrappedRunReDetectsWhenASiblingLineChanges() {
+        val buffer = TerminalTextBuffer(20, 4, StyleState(), 100)
+        write(buffer, 1, "https://example.com/")
+        write(buffer, 2, "deep/path")
+        buffer.getLine(0).isWrapped = true
+        val cache = HyperlinkRowCache()
+        var detections = 0
+        val detect = { detections++; emptyList<Hyperlink>() }
+
+        val first = buffer.createIncrementalSnapshot()
+        cache.linksAt(0, HyperlinkDetector.runLinesAt(first, 0), null, false, detect)
+        // Row 0 itself is untouched - the CONTINUATION changes, and it is part of the answer.
+        write(buffer, 2, "other/path/here")
+        val second = buffer.createIncrementalSnapshot()
+        cache.linksAt(0, HyperlinkDetector.runLinesAt(second, 0), null, false, detect)
+
+        assertEquals(2, detections, "the run's other lines are part of the key")
+    }
+
+    /**
+     * Detection resolves relative paths against the working directory, so an unchanged line
+     * must still re-detect after a `cd` - otherwise a stale `file://` target survives forever,
+     * since the line instance never changes.
+     */
+    @Test
+    fun aWorkingDirectoryChangeReDetectsAnUnchangedLine() {
+        val buffer = TerminalTextBuffer(40, 4, StyleState(), 100)
+        write(buffer, 2, "see ./src/main.kt")
+        val snapshot = buffer.createIncrementalSnapshot()
+        val cache = HyperlinkRowCache()
+        var detections = 0
+        val detect = { detections++; emptyList<Hyperlink>() }
+        val run = listOf(snapshot.getLine(1))
+
+        cache.linksAt(1, run, cwd = "/a", detectFilePaths = true, detect = detect)
+        cache.linksAt(1, run, cwd = "/a", detectFilePaths = true, detect = detect)
+        assertEquals(1, detections, "same cwd, same line: one detection")
+
+        cache.linksAt(1, run, cwd = "/b", detectFilePaths = true, detect = detect)
+        assertEquals(2, detections, "a cd must invalidate paths resolved against the old cwd")
+
+        cache.linksAt(1, run, cwd = "/b", detectFilePaths = false, detect = detect)
+        assertEquals(3, detections, "toggling path detection must invalidate too")
     }
 }

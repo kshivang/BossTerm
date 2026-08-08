@@ -563,6 +563,61 @@ object HyperlinkDetector {
      * @param registry The pattern registry to use (default: global registry)
      * @return List of hyperlinks that are part of this logical line, in buffer rows
      */
+    /**
+     * Whether [bufferRow] is part of a wrapped logical line, in either direction.
+     *
+     * `isWrapped` means "this line wraps INTO the next", so a row is a continuation when its
+     * PREDECESSOR is wrapped.
+     */
+    fun isPartOfWrappedRun(snapshot: VersionedBufferSnapshot, bufferRow: Int): Boolean =
+        snapshot.getLine(bufferRow).isWrapped ||
+            (bufferRow - 1 >= -snapshot.historyLinesCount && snapshot.getLine(bufferRow - 1).isWrapped)
+
+    /**
+     * The line instances [bufferRow]'s detection result depends on.
+     *
+     * One line for an ordinary row; the whole logical run for a wrapped one, since the rejoin
+     * walks to the run's start and end. Callers memoizing detection must key on all of them, or
+     * an edit to a sibling row goes unnoticed. Just the wrap-flag walk - no rejoin, no regex.
+     */
+    fun runLinesAt(snapshot: VersionedBufferSnapshot, bufferRow: Int): List<TerminalLine> {
+        if (!isPartOfWrappedRun(snapshot, bufferRow)) return listOf(snapshot.getLine(bufferRow))
+        var start = bufferRow
+        while (start > -snapshot.historyLinesCount) {
+            if (snapshot.getLine(start - 1).isWrapped) start-- else break
+        }
+        var end = start
+        while (snapshot.getLine(end).isWrapped && end < snapshot.height) end++
+        return (start..end).map { snapshot.getLine(it) }
+    }
+
+    /**
+     * Hyperlinks on one BUFFER row, in buffer coordinates.
+     *
+     * Offset-free by construction: the same buffer row yields the same answer wherever the
+     * viewport happens to be sitting, which is what lets a caller memo the result across a
+     * scroll. This replaces a per-frame sweep of every visible row that ran the whole registry
+     * per row inside the draw phase - for a result the text pass never read. Only the hover
+     * hit-test and the hover underline consume it, so it is resolved one row at a time, on
+     * demand.
+     */
+    fun detectForBufferRow(
+        snapshot: VersionedBufferSnapshot,
+        bufferRow: Int,
+        terminalWidth: Int,
+        workingDirectory: String?,
+        detectFilePaths: Boolean,
+        registry: HyperlinkRegistry = this.registry,
+    ): List<Hyperlink> = if (isPartOfWrappedRun(snapshot, bufferRow)) {
+        detectHyperlinksWithWrapping(
+            snapshot, bufferRow, terminalWidth, workingDirectory, detectFilePaths, registry
+        )
+    } else {
+        detectHyperlinks(
+            snapshot.getLine(bufferRow).text, bufferRow, workingDirectory, detectFilePaths, registry
+        )
+    }
+
     fun detectHyperlinksWithWrapping(
         snapshot: VersionedBufferSnapshot,
         bufferRow: Int,

@@ -49,7 +49,7 @@ object CommandBlockActions {
         /** Scroll so [row] sits near the top of the viewport. */
         fun jumpToRow(row: Int) {
             val historySize = session.textBuffer.historyLinesCount
-            session.scrollOffset.value = (-row + 2).coerceIn(0, historySize)
+            session.scrollTo(-row + 2)
             session.display.requestImmediateRedraw()
         }
 

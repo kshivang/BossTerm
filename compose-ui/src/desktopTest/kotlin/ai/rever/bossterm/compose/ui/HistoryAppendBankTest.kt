@@ -28,7 +28,7 @@ class HistoryAppendBankTest {
 
         repeat(3) { buffer.scrollArea(1, -1, 4) }
 
-        assertEquals(3, bank.drain().appended)
+        assertEquals(3, bank.peek().appended)
     }
 
     /**
@@ -44,7 +44,7 @@ class HistoryAppendBankTest {
 
         repeat(3) { buffer.scrollArea(1, -1, 4) }
 
-        assertEquals(0, bank.drain().appended, "alt-screen appends must never reach the bank")
+        assertEquals(0, bank.peek().appended, "alt-screen appends must never reach the bank")
     }
 
     /**
@@ -64,19 +64,21 @@ class HistoryAppendBankTest {
 
         assertEquals(
             2,
-            bank.drain().appended,
+            bank.peek().appended,
             "the 2 main-screen lines survive, the 5 alt-screen ones were never banked",
         )
     }
 
     @Test
-    fun drainingEmptiesTheBank() {
+    fun consumingTakesExactlyWhatWasPeeked() {
         val (buffer, bank) = buffer().bankWiredUp()
         buffer.getLine(3)
         buffer.scrollArea(1, -1, 4)
 
-        assertEquals(1, bank.drain().appended)
-        assertEquals(0, bank.drain().appended, "a second drain sees nothing new")
+        val delta = bank.peek()
+        assertEquals(1, delta.appended)
+        bank.consume(delta)
+        assertEquals(0, bank.peek().appended, "consuming takes exactly what was peeked")
     }
 
     /** Leaving the live bottom discards the bank: those appends were not a scrolled viewport's. */
@@ -88,7 +90,7 @@ class HistoryAppendBankTest {
 
         bank.clear()
 
-        assertEquals(0, bank.drain().appended)
+        assertEquals(0, bank.peek().appended)
     }
 
     /**
@@ -103,11 +105,12 @@ class HistoryAppendBankTest {
         repeat(4) { buffer.scrollArea(1, -1, 4) }
 
         buffer.clearHistory()
-        val delta = bank.drain()
+        val delta = bank.peek()
 
         assertEquals(true, delta.cleared, "the clear must be reported, not just counted away")
         assertEquals(0, delta.appended)
-        assertEquals(false, bank.drain().cleared, "and taken only once")
+        bank.consume(delta)
+        assertEquals(false, bank.peek().cleared, "and taken only once")
     }
 
     @Test
@@ -116,6 +119,35 @@ class HistoryAppendBankTest {
         buffer.getLine(3)
         buffer.scrollArea(1, -1, 4)
 
-        assertEquals(false, bank.drain().cleared)
+        assertEquals(false, bank.peek().cleared)
+    }
+
+    /**
+     * A composition can be discarded before it applies. Peeking must therefore leave the count in
+     * place, or those appends vanish and the viewport drifts permanently - the exact failure this
+     * class exists to prevent.
+     */
+    @Test
+    fun peekingWithoutConsumingKeepsTheCount() {
+        val (buffer, bank) = buffer().bankWiredUp()
+        buffer.getLine(3)
+        repeat(3) { buffer.scrollArea(1, -1, 4) }
+
+        assertEquals(3, bank.peek().appended)
+        assertEquals(3, bank.peek().appended, "a discarded composition must not swallow appends")
+    }
+
+    /** Appends landing between the peek and the commit survive into the next frame. */
+    @Test
+    fun appendsArrivingDuringAFrameAreNotLost() {
+        val (buffer, bank) = buffer().bankWiredUp()
+        buffer.getLine(3)
+        repeat(2) { buffer.scrollArea(1, -1, 4) }
+        val inFlight = bank.peek()
+
+        buffer.scrollArea(1, -1, 4) // arrives after the frame was computed
+        bank.consume(inFlight)
+
+        assertEquals(1, bank.peek().appended, "only the applied count is taken back")
     }
 }

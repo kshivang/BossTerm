@@ -161,6 +161,16 @@ internal class StableRenderFrameHolder<T : Any> {
  * @param change what happened to history since the last fold.
  * @param historyCount history size after the change - the furthest back the viewport can address.
  */
+/**
+ * A fold computed during composition, waiting to be committed once that composition applies.
+ *
+ * Mutable and deliberately not Compose state: marking it consumed must not invalidate anything,
+ * and a composition that is discarded simply never marks it, so the bank keeps its count.
+ */
+internal class PendingFold(val delta: HistoryDelta, val offset: Int) {
+  var consumed: Boolean = false
+}
+
 internal fun foldHistoryAppends(current: Int, change: HistoryDelta, historyCount: Int): Int = when {
   // History was emptied under a scrolled-up viewport: every line it addressed is gone, so the only
   // sensible position left is the live bottom. Staying put would render blank until the user
@@ -274,10 +284,7 @@ fun ProperTerminal(
    * the bottom are not compensation for a scrolled viewport, and folding them makes the first
    * scrolled frame jump.
    */
-  fun setScrollOffset(target: Int) {
-    if (scrollOffset == 0) historyAppendBank.clear()
-    scrollOffset = target.coerceIn(0, textBuffer.historyLinesCount)
-  }
+  fun setScrollOffset(target: Int) = tab.scrollTo(target)
 
   // Command blocks captured for this session (OSC 133). Collected so the gutter
   // and scrollbar markers repaint as commands start and finish. Falls back to a
@@ -1932,21 +1939,33 @@ fun ProperTerminal(
         // A plain holder rather than Compose state on purpose: consuming it must not invalidate
         // the composition. Once consumed, every later recomposition renders straight from
         // `scrollOffset`, so user scrolling behaves exactly as it did before this change.
+        // Skipped entirely while the alternate screen is up. The fire-time gate keeps alt appends
+        // out of the bank, but a MAIN-screen append banked just before a TUI starts would still be
+        // folded here and clamped against `historyLinesCount` - which on the alt screen is the ALT
+        // history, typically 0. That collapses the offset and loses the main-screen position for
+        // good. Leaving it banked applies it correctly once the TUI exits.
         val pendingFold = remember(currentTrigger) {
-          val folded = foldHistoryAppends(
-            scrollOffset,
-            historyAppendBank.drain(),
-            textBuffer.historyLinesCount,
-          )
-          arrayOf<Int?>(if (folded != scrollOffset) folded else null)
+          if (textBuffer.isUsingAlternateBuffer) {
+            null
+          } else {
+            // peek, not drain: this runs during composition, and a composition that never applies
+            // must not swallow the count. Taken for real in the SideEffect below.
+            val delta = historyAppendBank.peek()
+            val folded = foldHistoryAppends(scrollOffset, delta, textBuffer.historyLinesCount)
+            if (delta.cleared || delta.appended > 0) PendingFold(delta, folded) else null
+          }
         }
         // The frame that first shows the appended lines is rendered at the corrected offset, so
-        // there is no shift-and-snap; the SideEffect only commits what was already drawn.
-        val effectiveScrollOffset = pendingFold[0] ?: scrollOffset
+        // there is no shift-and-snap; the SideEffect only commits what was already drawn. Once
+        // consumed, later recompositions render straight from `scrollOffset`, so user scrolling -
+        // which moves the offset without advancing the redraw trigger - is never clobbered.
+        val effectiveScrollOffset = pendingFold?.takeIf { !it.consumed }?.offset ?: scrollOffset
         SideEffect {
-          pendingFold[0]?.let { target ->
-            pendingFold[0] = null
-            if (scrollOffset != target) scrollOffset = target
+          pendingFold?.let { fold ->
+            if (fold.consumed) return@let
+            fold.consumed = true
+            historyAppendBank.consume(fold.delta)
+            if (scrollOffset != fold.offset) scrollOffset = fold.offset
           }
         }
         val imageDataCache = terminal.getImageDataCache()

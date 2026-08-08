@@ -104,6 +104,20 @@ interface TerminalSession {
      */
     val historyAppendBank: HistoryAppendBank
 
+    /**
+     * Move the viewport, clamped to the available history.
+     *
+     * The only supported way to write [scrollOffset]. Leaving the live bottom must also discard
+     * anything [historyAppendBank] has banked: those appends arrived while the view was following
+     * the bottom, so they are not compensation for a scrolled viewport, and folding them makes the
+     * first scrolled frame jump. Writing the state directly silently skips that, which is why this
+     * lives beside the state rather than in whichever composable happens to be driving.
+     */
+    fun scrollTo(target: Int) {
+        if (scrollOffset.value == 0) historyAppendBank.clear()
+        scrollOffset.value = target.coerceIn(0, textBuffer.historyLinesCount)
+    }
+
     // === Search State ===
 
     /**

@@ -61,13 +61,26 @@ class HistoryAppendBank(private val buffer: TerminalTextBuffer) : TextBufferChan
         pending.set(0)
     }
 
-    /** Everything that happened to history since the last drain, taken atomically together. */
-    fun drain(): HistoryDelta = HistoryDelta(
-        // Order matters: take the flag first, so an append racing in between is kept rather than
-        // silently dropped by the reset that follows it.
-        cleared = cleared.getAndSet(false),
-        appended = pending.getAndSet(0),
-    )
+    /**
+     * What has accumulated so far, WITHOUT taking it.
+     *
+     * Split from [consume] because the reader computes during composition, and a composition can
+     * be discarded before it applies. Taking the count there would silently swallow those appends
+     * on a discarded frame and leave exactly the permanent drift this class exists to prevent.
+     * `StableRenderFrameHolder` guards the frame capture against the same hazard.
+     */
+    fun peek(): HistoryDelta = HistoryDelta(cleared = cleared.get(), appended = pending.get())
+
+    /**
+     * Take back exactly what [peek] reported, once it has actually been applied.
+     *
+     * Subtracts rather than zeroing, so appends that landed between the peek and the commit stay
+     * banked for the next frame instead of being lost.
+     */
+    fun consume(delta: HistoryDelta) {
+        if (delta.appended != 0) pending.addAndGet(-delta.appended)
+        if (delta.cleared) cleared.set(false)
+    }
 
     /**
      * Forget anything banked.

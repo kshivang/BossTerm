@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose
 
+import ai.rever.bossterm.compose.ui.HistoryAppendBank
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.State
 import ai.rever.bossterm.core.typeahead.TerminalTypeAheadManager
@@ -91,6 +92,17 @@ interface TerminalSession {
      * Current scroll offset in lines from the bottom of the buffer.
      */
     val scrollOffset: MutableState<Int>
+
+    /**
+     * Lines appended to history since the viewport last took a frame.
+     *
+     * Lives beside [scrollOffset] and shares its lifetime deliberately: the offset is measured
+     * back from the live bottom, so this is the correction that keeps it addressing the same
+     * content. A composition-scoped counter would be dropped whenever a tab goes to the
+     * background while the offset it corrects survives, so the tab would drift unnoticed and
+     * land somewhere else when reselected.
+     */
+    val historyAppendBank: HistoryAppendBank
 
     // === Search State ===
 

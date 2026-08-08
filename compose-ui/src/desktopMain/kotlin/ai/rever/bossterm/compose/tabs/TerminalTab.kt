@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.tabs
 
+import ai.rever.bossterm.compose.ui.HistoryAppendBank
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import kotlinx.coroutines.CoroutineScope
@@ -379,6 +380,17 @@ data class TerminalTab(
     }
 
     /**
+     * Lines appended to history since the viewport last took a frame.
+     *
+     * Registered for the TAB's lifetime rather than a composition's, so a backgrounded tab keeps
+     * being compensated. A composition-scoped listener is removed when the tab stops being
+     * composed while [scrollOffset] survives, which is how a background tab drifts and then lands
+     * somewhere else when you switch back to it.
+     */
+    override val historyAppendBank: HistoryAppendBank =
+        HistoryAppendBank(textBuffer).also { textBuffer.addChangesListener(it) }
+
+    /**
      * Channel for queuing user input writes to the PTY.
      * Capacity of 256 provides reasonable buffer for burst input (e.g., paste operations).
      * Uses WriteOperation sealed class to handle both text and raw bytes in FIFO order.
@@ -466,6 +478,14 @@ data class TerminalTab(
      * displays can cause exceptions that crash the rendering pipeline.
      */
     override fun dispose() {
+        // Registered for this tab's lifetime, so it is unregistered here rather than by a
+        // composition leaving the tree.
+        try {
+            textBuffer.removeChangesListener(historyAppendBank)
+        } catch (e: Exception) {
+            System.err.println("WARN: Failed to remove history append bank: ${e.message}")
+        }
+
         // Remove model listener to prevent memory leak
         // This is CRITICAL - without cleanup, listeners accumulate and can crash
         // the rendering pipeline when they reference disposed displays

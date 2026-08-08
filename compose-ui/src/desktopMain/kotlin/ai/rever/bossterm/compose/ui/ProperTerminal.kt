@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.*
-import java.util.concurrent.atomic.AtomicInteger
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -70,7 +69,6 @@ import ai.rever.bossterm.compose.actions.createBuiltinActions
 import ai.rever.bossterm.compose.splits.NavigationDirection
 import ai.rever.bossterm.compose.menu.MenuActions
 import ai.rever.bossterm.compose.debug.DebugWindow
-import ai.rever.bossterm.terminal.model.TextBufferChangesListener
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.features.ContextMenuPopup
 import ai.rever.bossterm.compose.features.showHyperlinkContextMenu
@@ -142,6 +140,16 @@ private data class StableTerminalRenderFrame(
 )
 
 /** UI-thread-confined retention committed only after an accepted composition applies. */
+internal class StableRenderFrameHolder<T : Any> {
+  private var frame: T? = null
+
+  fun frameFor(candidate: T?): T? = candidate ?: frame
+
+  fun commit(candidate: T) {
+    frame = candidate
+  }
+}
+
 /**
  * The offset a bottom-anchored viewport needs after [appended] lines were appended to history.
  *
@@ -159,16 +167,6 @@ internal fun foldHistoryAppends(current: Int, appended: Int, historyCount: Int):
   // Following the bottom is a position, not a pin: keep following it.
   current <= 0 -> current
   else -> (current + appended).coerceAtMost(historyCount)
-}
-
-internal class StableRenderFrameHolder<T : Any> {
-  private var frame: T? = null
-
-  fun frameFor(candidate: T?): T? = candidate ?: frame
-
-  fun commit(candidate: T) {
-    frame = candidate
-  }
 }
 
 /**
@@ -263,29 +261,8 @@ fun ProperTerminal(
   // Accumulate lock-free on the emulator thread, apply on the UI thread. Deliberately NOT written
   // straight from the listener - that fires inside the buffer lock on the hottest path, and taking
   // Compose's snapshot lock under it is the lock inversion ComposeTerminalDisplay warns about.
-  val pendingHistoryAppends = remember(textBuffer) { AtomicInteger(0) }
-  DisposableEffect(textBuffer) {
-    val anchor = object : TextBufferChangesListener {
-      override fun linesAddedToHistory(count: Int) {
-        // Decide here, not at drain time. This fires synchronously inside the append, so
-        // `isUsingAlternateBuffer` is consistent with the lines being reported. Testing it on the
-        // UI thread a frame later races both ways: main-screen appends banked before the app
-        // enters the alt screen would be dropped, and alt-screen appends banked before the TUI
-        // exits would be folded into the main-screen offset - exactly what the check prevents.
-        //
-        // The alternate screen really does accumulate scrollback here (`useAlternateBuffer` swaps
-        // in a live storage and `scrollArea` has no alt guard), but it is thrown away when the TUI
-        // exits, so an offset derived from it would address a buffer that no longer exists.
-        if (!textBuffer.isUsingAlternateBuffer) pendingHistoryAppends.addAndGet(count)
-      }
-
-      override fun historyCleared() {
-        pendingHistoryAppends.set(0)
-      }
-    }
-    textBuffer.addChangesListener(anchor)
-    onDispose { textBuffer.removeChangesListener(anchor) }
-  }
+  // Session-scoped, registered for the tab's lifetime: see TerminalSession.historyAppendBank.
+  val historyAppendBank = tab.historyAppendBank
 
   /**
    * Move the viewport, clearing any banked appends when leaving the live bottom.
@@ -295,7 +272,7 @@ fun ProperTerminal(
    * scrolled frame jump.
    */
   fun setScrollOffset(target: Int) {
-    if (scrollOffset == 0) pendingHistoryAppends.set(0)
+    if (scrollOffset == 0) historyAppendBank.clear()
     scrollOffset = target.coerceIn(0, textBuffer.historyLinesCount)
   }
 
@@ -351,7 +328,6 @@ fun ProperTerminal(
   // Scroll terminal to show a search match (only scroll if match not already visible)
   fun scrollToMatch(matchRow: Int) {
     val screenHeight = textBuffer.height
-    val historySize = textBuffer.historyLinesCount
 
     // Calculate currently visible rows (in buffer coordinates)
     // scrollOffset=0 means viewing current screen (rows 0 to screenHeight-1)
@@ -530,8 +506,7 @@ fun ProperTerminal(
     autoScrollJob?.cancel()
     autoScrollJob = scope.launch {
       while (isActive && isDragging) {
-        val historySize = textBuffer.historyLinesCount
-        val height = canvasSize.height
+            val height = canvasSize.height
 
         // Calculate scroll amount based on distance from bounds
         val scrolled = when {
@@ -1762,8 +1737,7 @@ fun ProperTerminal(
           // Local scroll (main buffer or Shift+Wheel override)
           // Accumulate fractional deltas for smooth scrolling
           // Windows trackpads send small fractional values, so multiplier helps
-          val historySize = textBuffer.historyLinesCount
-          accumulatedScrollDelta += delta * settings.scrollMultiplier
+                accumulatedScrollDelta += delta * settings.scrollMultiplier
           val scrollLines = accumulatedScrollDelta.toInt()
           if (scrollLines != 0) {
             setScrollOffset(scrollOffset - scrollLines)
@@ -1937,20 +1911,25 @@ fun ProperTerminal(
         // Buffer, images, and cursor state are retained as one accepted render frame.
         val currentTrigger = display.redrawTrigger.value
         // iTerm2's refreshAfterSync equivalent: fold the appends banked since the last frame into
-        // the offset, so a scrolled-up viewport keeps addressing the same content. See
-        // [foldHistoryAppends] for the edges and the listener above for why alt-screen appends
-        // never reach the bank.
+        // the offset, so a scrolled-up viewport keeps addressing the same content.
         //
-        // SideEffect, not LaunchedEffect: this runs synchronously after apply, so the resulting
-        // recomposition lands in the same frame loop instead of the next one. A frame late would
-        // draw the post-append snapshot at the pre-append offset and then snap, which under
-        // sustained output trades a steady drift for a per-frame jitter. It also avoids allocating
-        // and cancelling a coroutine per redraw on the hottest composable in the app.
-        SideEffect {
-          val appended = pendingHistoryAppends.getAndSet(0)
+        // Computed HERE, during composition and beside the frame capture, so THIS frame draws the
+        // new snapshot at the corrected offset. Writing it from an effect instead does not work:
+        // `scrollOffset` is read at composable scope (`rememberUpdatedState` below), so a write
+        // during apply invalidates the whole composable and schedules the correction for the NEXT
+        // frame - a full extra recomposition of the largest composable in the app, per frame of
+        // streamed output, and still a frame late. The SideEffect only commits what was already
+        // rendered, and re-runs a fold that no-ops.
+        val effectiveScrollOffset = remember(currentTrigger) {
+          val appended = historyAppendBank.drain()
           if (appended > 0) {
-            scrollOffset = foldHistoryAppends(scrollOffset, appended, textBuffer.historyLinesCount)
+            foldHistoryAppends(scrollOffset, appended, textBuffer.historyLinesCount)
+          } else {
+            scrollOffset
           }
+        }
+        SideEffect {
+          if (scrollOffset != effectiveScrollOffset) scrollOffset = effectiveScrollOffset
         }
         val imageDataCache = terminal.getImageDataCache()
         val stableFrameHolder = remember(textBuffer, display) {
@@ -2009,7 +1988,7 @@ fun ProperTerminal(
 
             // Version-based hyperlink caching: compute hash including scroll position
             // since visible content changes with scroll even if buffer content is same
-            val currentVersionHash = bufferSnapshot.computeVersionHash() * 31 + scrollOffset
+            val currentVersionHash = bufferSnapshot.computeVersionHash() * 31 + effectiveScrollOffset
 
             // Reuse cached hyperlinks if buffer content and scroll position unchanged
             val precomputedHyperlinks = if (currentVersionHash == lastHyperlinkVersionHash &&
@@ -2035,8 +2014,8 @@ fun ProperTerminal(
                 val startBuf = selectionTracker.resolveAnchorRow(block.startAnchor, bufferSnapshot)
                   ?: return@mapNotNull null
                 val endBuf = block.endAnchor?.let { selectionTracker.resolveAnchorRow(it, bufferSnapshot) }
-                val startScreen = startBuf + scrollOffset
-                val endScreen = endBuf?.let { it + scrollOffset } ?: visibleRows
+                val startScreen = startBuf + effectiveScrollOffset
+                val endScreen = endBuf?.let { it + effectiveScrollOffset } ?: visibleRows
                 if (endScreen < 0 || startScreen > visibleRows) return@mapNotNull null
                 val color = when (block.state) {
                   BlockState.SUCCESS -> settings.commandBlockSuccessColorValue
@@ -2066,7 +2045,7 @@ fun ProperTerminal(
               cellHeight = cellHeight,
               baseCellHeight = baseCellHeight,
               cellBaseline = cellMetrics.third,
-              scrollOffset = scrollOffset,
+              scrollOffset = effectiveScrollOffset,
               visibleCols = visibleCols,
               visibleRows = visibleRows,
               textMeasurer = textMeasurer,
@@ -2137,7 +2116,7 @@ fun ProperTerminal(
             } else activeTheme.cursorColor
             with(TerminalCanvasRenderer) {
               val bufferCursorRow = (cursorY - 1).coerceAtLeast(0)
-              val cursorScreenRow = bufferCursorRow + scrollOffset
+              val cursorScreenRow = bufferCursorRow + effectiveScrollOffset
               val cursorImageCell = bufferSnapshot.getLine(bufferCursorRow).getImageCellAt(effectiveCursorX)
               val cursorImageSlice = cursorImageCell?.let { imageCell ->
                 renderFrame.imagesById[imageCell.imageId]?.let { image ->
@@ -2160,7 +2139,7 @@ fun ProperTerminal(
                 cursorShape = cursorShape,
                 cursorX = effectiveCursorX,
                 cursorY = cursorY,
-                scrollOffset = scrollOffset,
+                scrollOffset = effectiveScrollOffset,
                 cellWidth = cellWidth,
                 cellHeight = cellHeight,
                 isFocused = isFocused,

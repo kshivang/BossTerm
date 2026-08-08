@@ -151,22 +151,25 @@ internal class StableRenderFrameHolder<T : Any> {
 }
 
 /**
- * The offset a bottom-anchored viewport needs after [appended] lines were appended to history.
+ * The offset a bottom-anchored viewport needs after [change] happened to history.
  *
  * `scrollOffset` counts back from the LIVE BOTTOM, so appending moves the user's content that many
  * rows further from the anchor; adding the count re-addresses the same lines. Extracted from the
- * composable so the edges are unit-testable: following the bottom is left alone, and a capped
- * history pins the view to its oldest surviving line rather than running off the end.
+ * composable so the edges are unit-testable.
  *
  * @param current the offset now; 0 means following the live bottom.
- * @param appended lines added to history since the last fold.
- * @param historyCount history size after the append, the furthest back the viewport can address.
+ * @param change what happened to history since the last fold.
+ * @param historyCount history size after the change - the furthest back the viewport can address.
  */
-internal fun foldHistoryAppends(current: Int, appended: Int, historyCount: Int): Int = when {
-  appended <= 0 -> current
+internal fun foldHistoryAppends(current: Int, change: HistoryDelta, historyCount: Int): Int = when {
+  // History was emptied under a scrolled-up viewport: every line it addressed is gone, so the only
+  // sensible position left is the live bottom. Staying put would render blank until the user
+  // scrolled again.
+  change.cleared -> 0
+  change.appended <= 0 -> current
   // Following the bottom is a position, not a pin: keep following it.
   current <= 0 -> current
-  else -> (current + appended).coerceAtMost(historyCount)
+  else -> (current + change.appended).coerceAtMost(historyCount)
 }
 
 /**
@@ -1921,12 +1924,7 @@ fun ProperTerminal(
         // streamed output, and still a frame late. The SideEffect only commits what was already
         // rendered, and re-runs a fold that no-ops.
         val effectiveScrollOffset = remember(currentTrigger) {
-          val appended = historyAppendBank.drain()
-          if (appended > 0) {
-            foldHistoryAppends(scrollOffset, appended, textBuffer.historyLinesCount)
-          } else {
-            scrollOffset
-          }
+          foldHistoryAppends(scrollOffset, historyAppendBank.drain(), textBuffer.historyLinesCount)
         }
         SideEffect {
           if (scrollOffset != effectiveScrollOffset) scrollOffset = effectiveScrollOffset

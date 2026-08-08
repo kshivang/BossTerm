@@ -28,7 +28,7 @@ class HistoryAppendBankTest {
 
         repeat(3) { buffer.scrollArea(1, -1, 4) }
 
-        assertEquals(3, bank.drain())
+        assertEquals(3, bank.drain().appended)
     }
 
     /**
@@ -44,7 +44,7 @@ class HistoryAppendBankTest {
 
         repeat(3) { buffer.scrollArea(1, -1, 4) }
 
-        assertEquals(0, bank.drain(), "alt-screen appends must never reach the bank")
+        assertEquals(0, bank.drain().appended, "alt-screen appends must never reach the bank")
     }
 
     /**
@@ -64,7 +64,7 @@ class HistoryAppendBankTest {
 
         assertEquals(
             2,
-            bank.drain(),
+            bank.drain().appended,
             "the 2 main-screen lines survive, the 5 alt-screen ones were never banked",
         )
     }
@@ -75,8 +75,8 @@ class HistoryAppendBankTest {
         buffer.getLine(3)
         buffer.scrollArea(1, -1, 4)
 
-        assertEquals(1, bank.drain())
-        assertEquals(0, bank.drain(), "a second drain sees nothing new")
+        assertEquals(1, bank.drain().appended)
+        assertEquals(0, bank.drain().appended, "a second drain sees nothing new")
     }
 
     /** Leaving the live bottom discards the bank: those appends were not a scrolled viewport's. */
@@ -88,18 +88,34 @@ class HistoryAppendBankTest {
 
         bank.clear()
 
-        assertEquals(0, bank.drain())
+        assertEquals(0, bank.drain().appended)
     }
 
-    /** A cleared history leaves nothing to compensate for. */
+    /**
+     * A cleared history is reported as such, not merely as "no appends". A viewport scrolled up
+     * when `CSI 3 J` lands is addressing lines that no longer exist, so the fold needs to know the
+     * difference between "nothing happened" and "everything went away".
+     */
     @Test
-    fun clearingHistoryEmptiesTheBank() {
+    fun clearingHistoryIsReportedAndEmptiesTheBank() {
         val (buffer, bank) = buffer().bankWiredUp()
         buffer.getLine(3)
         repeat(4) { buffer.scrollArea(1, -1, 4) }
 
         buffer.clearHistory()
+        val delta = bank.drain()
 
-        assertEquals(0, bank.drain())
+        assertEquals(true, delta.cleared, "the clear must be reported, not just counted away")
+        assertEquals(0, delta.appended)
+        assertEquals(false, bank.drain().cleared, "and taken only once")
+    }
+
+    @Test
+    fun anOrdinaryAppendIsNotReportedAsAClear() {
+        val (buffer, bank) = buffer().bankWiredUp()
+        buffer.getLine(3)
+        buffer.scrollArea(1, -1, 4)
+
+        assertEquals(false, bank.drain().cleared)
     }
 }

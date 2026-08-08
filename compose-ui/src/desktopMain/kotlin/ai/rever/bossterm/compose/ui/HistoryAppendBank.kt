@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.ui
 
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import ai.rever.bossterm.terminal.model.TextBufferChangesListener
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -27,6 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class HistoryAppendBank(private val buffer: TerminalTextBuffer) : TextBufferChangesListener {
 
     private val pending = AtomicInteger(0)
+    private val cleared = AtomicBoolean(false)
 
     /**
      * Alternate-screen appends are excluded HERE, at fire time, not when the count is drained.
@@ -45,12 +47,27 @@ class HistoryAppendBank(private val buffer: TerminalTextBuffer) : TextBufferChan
         if (!buffer.isUsingAlternateBuffer) pending.addAndGet(count)
     }
 
+    /**
+     * History went away entirely - `CSI 3 J`, which is what plain `clear` emits, reaches this.
+     *
+     * Recorded rather than just zeroing the count, because a viewport scrolled up is now pointing
+     * into a history of size 0 and would render blank until the user scrolled again. The offset
+     * itself cannot be written from here: this runs on the emulator thread inside the buffer lock,
+     * and touching Compose state there is the lock inversion this class exists to avoid. So the
+     * fact is banked and the UI thread acts on it in the same drain as the counts.
+     */
     override fun historyCleared() {
-        clear()
+        cleared.set(true)
+        pending.set(0)
     }
 
-    /** Take the count accumulated since the last call, resetting to zero. */
-    fun drain(): Int = pending.getAndSet(0)
+    /** Everything that happened to history since the last drain, taken atomically together. */
+    fun drain(): HistoryDelta = HistoryDelta(
+        // Order matters: take the flag first, so an append racing in between is kept rather than
+        // silently dropped by the reset that follows it.
+        cleared = cleared.getAndSet(false),
+        appended = pending.getAndSet(0),
+    )
 
     /**
      * Forget anything banked.
@@ -63,3 +80,12 @@ class HistoryAppendBank(private val buffer: TerminalTextBuffer) : TextBufferChan
         pending.set(0)
     }
 }
+
+/**
+ * What happened to history between two frames.
+ *
+ * @param cleared history was emptied, so a scrolled-up viewport is addressing lines that no longer
+ *   exist and must return to the live bottom.
+ * @param appended lines added since the last drain, excluding the alternate screen.
+ */
+data class HistoryDelta(val cleared: Boolean, val appended: Int)

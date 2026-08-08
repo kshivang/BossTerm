@@ -1,5 +1,7 @@
 package ai.rever.bossterm.terminal.model
 
+import ai.rever.bossterm.core.util.CellPosition
+import ai.rever.bossterm.core.util.TermSize
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -181,6 +183,32 @@ class HistoryAppendAnchorTest {
             "every line moved into history must be reported",
         )
         assertTrue(listener.appended > 0, "the move must have produced at least one append")
+    }
+
+    /**
+     * The third caller of `addLinesToHistory`: a height SHRINK pushes the rows that no longer fit
+     * into history, and reports them like any other append.
+     *
+     * Pinned because it is the caller with the documented asymmetry - a height GROWTH pulls lines
+     * back out of history with no corresponding event - so a consumer that only sums these counts
+     * over-counts across a shrink/grow cycle. Inert in the app today, where the layout callback
+     * resets the offset on any resize, but the event contract is what is being asserted here.
+     */
+    @Test
+    fun aHeightShrinkReportsTheRowsItPushesIntoHistory() {
+        val buffer = buffer(height = 4)
+        val listener = RecordingListener()
+        buffer.addChangesListener(listener)
+        for (row in 1..4) buffer.write(row, "L$row")
+
+        buffer.resize(TermSize(20, 2), CellPosition(1, 4), selection = null)
+
+        assertEquals(
+            buffer.historyLinesCount,
+            listener.appended,
+            "the rows that no longer fit are reported as appends",
+        )
+        assertTrue(listener.appended > 0, "a shrink from 4 rows to 2 must push something down")
     }
 
     /**

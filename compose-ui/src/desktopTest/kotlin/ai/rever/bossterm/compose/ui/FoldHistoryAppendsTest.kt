@@ -12,17 +12,20 @@ import kotlin.test.assertEquals
  */
 class FoldHistoryAppendsTest {
 
+    private fun appended(n: Int) = HistoryDelta(cleared = false, appended = n)
+
+
     @Test
     fun addingTheAppendCountReAddressesTheSameContent() {
         // Scrolled 10 back, 3 lines appended: the content is now 13 rows from the live bottom.
-        assertEquals(13, foldHistoryAppends(current = 10, appended = 3, historyCount = 500))
+        assertEquals(13, foldHistoryAppends(current = 10, change = appended(3), historyCount = 500))
     }
 
     @Test
     fun followingTheBottomKeepsFollowingIt() {
         assertEquals(
             0,
-            foldHistoryAppends(current = 0, appended = 40, historyCount = 500),
+            foldHistoryAppends(current = 0, change = appended(40), historyCount = 500),
             "offset 0 is 'follow the live bottom', not a pinned position",
         )
     }
@@ -31,20 +34,20 @@ class FoldHistoryAppendsTest {
     fun aCappedHistoryPinsTheViewToItsOldestSurvivingLine() {
         // History is full at 100, so the content the user was reading has been evicted; the
         // viewport stops at the oldest line that still exists instead of running off the end.
-        assertEquals(100, foldHistoryAppends(current = 98, appended = 20, historyCount = 100))
+        assertEquals(100, foldHistoryAppends(current = 98, change = appended(20), historyCount = 100))
     }
 
     @Test
     fun anOffsetAlreadyPastTheHistoryIsBroughtBackToTheOldestLine() {
-        assertEquals(50, foldHistoryAppends(current = 80, appended = 5, historyCount = 50))
+        assertEquals(50, foldHistoryAppends(current = 80, change = appended(5), historyCount = 50))
     }
 
     @Test
     fun nothingAppendedLeavesTheOffsetExactlyWhereItWas() {
-        assertEquals(42, foldHistoryAppends(current = 42, appended = 0, historyCount = 500))
+        assertEquals(42, foldHistoryAppends(current = 42, change = appended(0), historyCount = 500))
         assertEquals(
             42,
-            foldHistoryAppends(current = 42, appended = -3, historyCount = 500),
+            foldHistoryAppends(current = 42, change = appended(-3), historyCount = 500),
             "a negative count must never walk the viewport backwards",
         )
     }
@@ -53,7 +56,29 @@ class FoldHistoryAppendsTest {
     fun aSingleLineAppendMovesTheViewportOneRow() {
         // The steady case: one line of streaming output, one row of compensation.
         var offset = 7
-        repeat(5) { offset = foldHistoryAppends(offset, appended = 1, historyCount = 500) }
+        repeat(5) { offset = foldHistoryAppends(offset, appended(1), 500) }
         assertEquals(12, offset, "five appended lines move the viewport five rows")
+    }
+
+    /**
+     * History emptied under a scrolled-up viewport - `CSI 3 J`, what plain `clear` emits. Every
+     * line the viewport addressed is gone, so staying put would render blank until the user
+     * scrolled again.
+     */
+    @Test
+    fun clearingHistoryReturnsTheViewportToTheLiveBottom() {
+        assertEquals(
+            0,
+            foldHistoryAppends(current = 40, change = HistoryDelta(cleared = true, appended = 0), historyCount = 0),
+        )
+    }
+
+    @Test
+    fun aClearWinsOverAnyAppendsInTheSameFrame() {
+        assertEquals(
+            0,
+            foldHistoryAppends(current = 40, change = HistoryDelta(cleared = true, appended = 7), historyCount = 0),
+            "the appended lines were cleared away too; there is nothing left to compensate",
+        )
     }
 }

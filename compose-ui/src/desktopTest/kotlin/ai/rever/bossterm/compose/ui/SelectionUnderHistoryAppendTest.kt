@@ -47,7 +47,11 @@ class SelectionUnderHistoryAppendTest {
 
         // A line of streaming output arrives, and the fix folds it into the offset.
         buffer.scrollArea(1, -1, 4)
-        val compensated = foldHistoryAppends(offset, appended = 1, historyCount = buffer.historyLinesCount)
+        val compensated = foldHistoryAppends(
+            offset,
+            HistoryDelta(cleared = false, appended = 1),
+            buffer.historyLinesCount,
+        )
 
         assertEquals(
             before,

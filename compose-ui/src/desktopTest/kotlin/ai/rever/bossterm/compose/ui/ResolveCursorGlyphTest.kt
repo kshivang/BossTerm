@@ -2,12 +2,15 @@ package ai.rever.bossterm.compose.ui
 
 import ai.rever.bossterm.terminal.TextStyle
 import ai.rever.bossterm.compose.rendering.CursorGlyph
+import ai.rever.bossterm.compose.rendering.GlyphBlink
 import ai.rever.bossterm.terminal.model.CharBuffer
 import ai.rever.bossterm.terminal.model.TerminalLine
 import ai.rever.bossterm.terminal.util.CharUtils
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * What a block cursor is allowed to repaint on top of itself.
@@ -35,21 +38,21 @@ class ResolveCursorGlyphTest {
 
     @Test
     fun `a plain character is repainted`() {
-        assertEquals(CursorGlyph("a", isBold = false, isItalic = false, isUnderline = false), resolveCursorGlyph(line("abc"), visualColumn = 0, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
-        assertEquals(CursorGlyph("c", isBold = false, isItalic = false, isUnderline = false), resolveCursorGlyph(line("abc"), visualColumn = 2, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertEquals(CursorGlyph("a", isBold = false, isItalic = false, isUnderline = false), resolveCursorGlyph(line("abc"), visualColumn = 0, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false))
+        assertEquals(CursorGlyph("c", isBold = false, isItalic = false, isUnderline = false), resolveCursorGlyph(line("abc"), visualColumn = 2, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false))
     }
 
     @Test
     fun `a blank cell has nothing to put back`() {
-        assertNull(resolveCursorGlyph(line("a c"), visualColumn = 1, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(line("a c"), visualColumn = 1, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false))
         // Past the end of the line reads as an empty cell, not a crash.
-        assertNull(resolveCursorGlyph(line("a"), visualColumn = 4, terminalWidth = 8, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(line("a"), visualColumn = 4, terminalWidth = 8, ambiguousCharsAreDoubleWidth = false))
     }
 
     @Test
     fun `out of range columns are rejected`() {
-        assertNull(resolveCursorGlyph(line("abc"), visualColumn = -1, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
-        assertNull(resolveCursorGlyph(line("abc"), visualColumn = 3, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(line("abc"), visualColumn = -1, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false))
+        assertNull(resolveCursorGlyph(line("abc"), visualColumn = 3, terminalWidth = 3, ambiguousCharsAreDoubleWidth = false))
     }
 
     /**
@@ -60,7 +63,7 @@ class ResolveCursorGlyphTest {
     @Test
     fun `a DWC trailing cell is rejected`() {
         val wide = line("你${CharUtils.DWC}")
-        assertNull(resolveCursorGlyph(wide, visualColumn = 1, terminalWidth = 2, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(wide, visualColumn = 1, terminalWidth = 2, ambiguousCharsAreDoubleWidth = false))
     }
 
     /**
@@ -70,7 +73,7 @@ class ResolveCursorGlyphTest {
     @Test
     fun `a double-width lead cell is rejected`() {
         val wide = line("你${CharUtils.DWC}")
-        assertNull(resolveCursorGlyph(wide, visualColumn = 0, terminalWidth = 2, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(wide, visualColumn = 0, terminalWidth = 2, ambiguousCharsAreDoubleWidth = false))
     }
 
     /**
@@ -80,8 +83,8 @@ class ResolveCursorGlyphTest {
     @Test
     fun `surrogate halves are rejected`() {
         val emoji = line("😀") // U+1F600
-        assertNull(resolveCursorGlyph(emoji, visualColumn = 0, terminalWidth = 2, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
-        assertNull(resolveCursorGlyph(emoji, visualColumn = 1, terminalWidth = 2, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(emoji, visualColumn = 0, terminalWidth = 2, ambiguousCharsAreDoubleWidth = false))
+        assertNull(resolveCursorGlyph(emoji, visualColumn = 1, terminalWidth = 2, ambiguousCharsAreDoubleWidth = false))
     }
 
     /**
@@ -92,37 +95,50 @@ class ResolveCursorGlyphTest {
     @Test
     fun `a concealed cell is never revealed`() {
         val hidden = line("secret", styleWith(TextStyle.Option.HIDDEN))
-        assertNull(resolveCursorGlyph(hidden, visualColumn = 0, terminalWidth = 6, ambiguousCharsAreDoubleWidth = false, slowBlinkVisible = true, rapidBlinkVisible = true))
+        assertNull(resolveCursorGlyph(hidden, visualColumn = 0, terminalWidth = 6, ambiguousCharsAreDoubleWidth = false))
     }
 
     /**
-     * Each SGR blink option is gated against its OWN clock. The first version of
-     * this passed one `blinkVisible` for both and was handed the CARET timer, so a
-     * blink-off cell was repainted whenever the caret happened to be solid, and a
-     * steady cell flashed on the caret's clock. One parameter could not see it.
+     * Each SGR blink option is carried separately, so the overlay can gate it against its OWN
+     * clock. An early version passed one `blinkVisible` for both and was handed the CARET
+     * timer, so a blink-off cell was repainted whenever the caret happened to be solid, and a
+     * steady cell flashed on the caret's clock. One flag could not see the difference.
+     *
+     * The gate then moved out of here entirely - see the comment in the test body.
      */
     @Test
-    fun `each blink option follows its own clock`() {
+    fun `each blink option is recorded so the overlay can gate on its own clock`() {
+        // The clock is applied in the overlay's DRAW lambda, not here: resolution runs in the
+        // apply phase, where reading a clock subscribes nothing, so a glyph gated at resolve
+        // time would keep painting after the text pass had blinked it away. What resolution
+        // owes the overlay is which clock the cell follows.
         val slow = line("x", styleWith(TextStyle.Option.SLOW_BLINK))
-        assertEquals(
-            CursorGlyph("x", isBold = false, isItalic = false, isUnderline = false),
-            resolveCursorGlyph(slow, 0, 1, false, slowBlinkVisible = true, rapidBlinkVisible = false),
-            "slow blink on",
-        )
-        assertNull(
-            resolveCursorGlyph(slow, 0, 1, false, slowBlinkVisible = false, rapidBlinkVisible = true),
-            "slow blink off must not be repainted just because the rapid clock is on",
-        )
+        assertEquals(GlyphBlink.SLOW, resolveCursorGlyph(slow, 0, 1, false)?.blink)
 
         val rapid = line("x", styleWith(TextStyle.Option.RAPID_BLINK))
+        assertEquals(GlyphBlink.RAPID, resolveCursorGlyph(rapid, 0, 1, false)?.blink)
+
         assertEquals(
-            CursorGlyph("x", isBold = false, isItalic = false, isUnderline = false),
-            resolveCursorGlyph(rapid, 0, 1, false, slowBlinkVisible = false, rapidBlinkVisible = true),
-            "rapid blink on",
+            GlyphBlink.NONE,
+            resolveCursorGlyph(line("x"), 0, 1, false)?.blink,
+            "an unattributed cell follows no clock",
         )
-        assertNull(
-            resolveCursorGlyph(rapid, 0, 1, false, slowBlinkVisible = true, rapidBlinkVisible = false),
-            "rapid blink off must not be repainted just because the slow clock is on",
+    }
+
+    @Test
+    fun `a glyph shows only while its own clock is on`() {
+        assertTrue(GlyphBlink.NONE.isVisible(slowVisible = false, rapidVisible = false))
+
+        assertTrue(GlyphBlink.SLOW.isVisible(slowVisible = true, rapidVisible = false))
+        assertFalse(
+            GlyphBlink.SLOW.isVisible(slowVisible = false, rapidVisible = true),
+            "slow blink off must not show just because the rapid clock is on",
+        )
+
+        assertTrue(GlyphBlink.RAPID.isVisible(slowVisible = false, rapidVisible = true))
+        assertFalse(
+            GlyphBlink.RAPID.isVisible(slowVisible = true, rapidVisible = false),
+            "rapid blink off must not show just because the slow clock is on",
         )
     }
 
@@ -143,14 +159,14 @@ class ResolveCursorGlyphTest {
     fun `characters needing a fallback font are rejected`() {
         // U+23F8 PAUSE, inside the technical-symbol range.
         assertNull(
-            resolveCursorGlyph(line("\u23F8"), 0, 1, false, slowBlinkVisible = true, rapidBlinkVisible = true),
+            resolveCursorGlyph(line("\u23F8"), 0, 1, false),
             "a technical symbol routes to a fallback family",
         )
         // U+231A WATCH, listed in UnicodeConstants.isBmpEmoji. Picked by reading
         // that predicate rather than guessing: U+2764 HEAVY BLACK HEART is NOT in
         // it, so an earlier version of this assertion failed for being wrong.
         assertNull(
-            resolveCursorGlyph(line("\u231A"), 0, 1, false, slowBlinkVisible = true, rapidBlinkVisible = true),
+            resolveCursorGlyph(line("\u231A"), 0, 1, false),
             "a BMP emoji-presentation symbol routes to a fallback family",
         )
     }
@@ -160,7 +176,7 @@ class ResolveCursorGlyphTest {
     fun `plain BMP math is repainted in the terminal font`() {
         assertEquals(
             CursorGlyph("\u2200", isBold = false, isItalic = false, isUnderline = false),
-            resolveCursorGlyph(line("\u2200"), 0, 1, false, slowBlinkVisible = true, rapidBlinkVisible = true),
+            resolveCursorGlyph(line("\u2200"), 0, 1, false),
         )
     }
 
@@ -170,12 +186,12 @@ class ResolveCursorGlyphTest {
         val bold = line("b", styleWith(TextStyle.Option.BOLD))
         assertEquals(
             CursorGlyph("b", isBold = true, isItalic = false, isUnderline = false),
-            resolveCursorGlyph(bold, 0, 1, false, slowBlinkVisible = true, rapidBlinkVisible = true),
+            resolveCursorGlyph(bold, 0, 1, false),
         )
         val italic = line("i", styleWith(TextStyle.Option.ITALIC))
         assertEquals(
             CursorGlyph("i", isBold = false, isItalic = true, isUnderline = false),
-            resolveCursorGlyph(italic, 0, 1, false, slowBlinkVisible = true, rapidBlinkVisible = true),
+            resolveCursorGlyph(italic, 0, 1, false),
         )
     }
 
@@ -200,16 +216,16 @@ class ResolveCursorGlyphTest {
 
         assertEquals(
             CursorGlyph("o", isBold = false, isItalic = false, isUnderline = false),
-            resolveCursorGlyph(l, visualColumn = 1, terminalWidth = 5, false, true, true),
+            resolveCursorGlyph(l, visualColumn = 1, terminalWidth = 5, false),
             "visual 1 is 'o'; indexing the buffer directly would give the U+FE0F selector",
         )
         assertEquals(
             CursorGlyph("k", isBold = false, isItalic = false, isUnderline = false),
-            resolveCursorGlyph(l, visualColumn = 2, terminalWidth = 5, false, true, true),
+            resolveCursorGlyph(l, visualColumn = 2, terminalWidth = 5, false),
             "visual 2 is 'k'; indexing the buffer directly would give the DWC marker",
         )
         assertNull(
-            resolveCursorGlyph(l, visualColumn = 3, terminalWidth = 5, false, true, true),
+            resolveCursorGlyph(l, visualColumn = 3, terminalWidth = 5, false),
             "visual 3 is the empty cell the caret usually rests in; indexing the " +
                 "buffer directly would paint a phantom 'o' there",
         )

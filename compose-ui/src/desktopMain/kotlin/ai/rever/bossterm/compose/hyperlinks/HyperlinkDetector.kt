@@ -9,13 +9,18 @@ import java.util.concurrent.CopyOnWriteArrayList
 /**
  * Represents a detected hyperlink in terminal text that may span multiple terminal lines.
  *
+ * All row numbers here are BUFFER rows: 0 is the top of the live screen and negative indices
+ * reach into history, matching `VersionedBufferSnapshot.getLine`. They used to be screen rows,
+ * which meant they silently changed meaning as the viewport scrolled; add `scrollOffset` to
+ * convert one to a screen row for painting or hit-testing.
+ *
  * @property url The URL to open when clicked
  * @property startCol Start column (0-based) in the first row
  * @property endCol End column (exclusive) in the last row
- * @property row Row number of the first line (for backwards compatibility)
- * @property startRow First row of the hyperlink (same as row)
- * @property endRow Last row of the hyperlink (same as startRow for single-line links)
- * @property rowSpans Map of row -> (startCol, endCol) for each row the hyperlink spans
+ * @property row Buffer row of the first line (for backwards compatibility)
+ * @property startRow First buffer row of the hyperlink (same as row)
+ * @property endRow Last buffer row of the hyperlink (same as startRow for single-line links)
+ * @property rowSpans Map of buffer row -> (startCol, endCol) for each row the hyperlink spans
  * @property patternId The ID of the pattern that matched this hyperlink (e.g., "builtin:http")
  * @property matchedText The original text that was matched before URL transformation
  */
@@ -43,8 +48,8 @@ data class Hyperlink(
  * Holds information about joined wrapped lines for hyperlink detection.
  *
  * @property joinedText The concatenated text from all wrapped lines
- * @property startRow The first row (screen coordinates) of the logical line
- * @property endRow The last row (screen coordinates) of the logical line
+ * @property startRow The first row (buffer coordinates) of the logical line
+ * @property endRow The last row (buffer coordinates) of the logical line
  * @property rowOffsets Character offset in joinedText where each row starts
  */
 data class JoinedLineInfo(
@@ -107,6 +112,16 @@ data class HyperlinkPattern(
  */
 class HyperlinkRegistry {
     private val patterns = CopyOnWriteArrayList<HyperlinkPattern>()
+
+    private val _revision = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * Bumped on every mutation, so a caller memoizing detection results can key on it.
+     *
+     * Without it an embedder adding or removing a pattern at runtime would never reach an
+     * already-memoized row: the row's line instance does not change, so the memo hits forever.
+     */
+    val revision: Int get() = _revision.get()
 
     init {
         // Register built-in patterns
@@ -236,6 +251,7 @@ class HyperlinkRegistry {
         // Remove existing pattern with same ID
         patterns.removeIf { it.id == pattern.id }
         patterns.add(pattern)
+        _revision.incrementAndGet()
     }
 
     /**
@@ -244,9 +260,8 @@ class HyperlinkRegistry {
      * @param id The pattern ID to remove
      * @return true if pattern was found and removed
      */
-    fun removePattern(id: String): Boolean {
-        return patterns.removeIf { it.id == id }
-    }
+    fun removePattern(id: String): Boolean =
+        patterns.removeIf { it.id == id }.also { if (it) _revision.incrementAndGet() }
 
     /**
      * Get a pattern by ID.
@@ -270,6 +285,7 @@ class HyperlinkRegistry {
      */
     fun clear() {
         patterns.clear()
+        _revision.incrementAndGet()
     }
 
     /**
@@ -313,6 +329,17 @@ class HyperlinkRegistry {
  * ```
  */
 object HyperlinkDetector {
+    /**
+     * How far a wrapped-line walk may run in each direction.
+     *
+     * Without it both walks are bounded only by scrollback depth: `cat` a minified file and one
+     * logical line is thousands of rows, so a single pointer move onto a new row walks all of
+     * them, allocates a list that size, and hands the hover memo a key it then compares
+     * element-by-element on the UI thread. At 80 columns this still spans ~5k characters, which
+     * is past the point where a link is usefully detectable anyway.
+     */
+    const val MAX_WRAPPED_RUN_ROWS = 64
+
     /**
      * The pattern registry. Use this to add/remove custom patterns.
      */
@@ -466,53 +493,43 @@ object HyperlinkDetector {
      * Collect wrapped lines starting from a given row, walking backwards to find the start
      * and forwards to find the end of the logical line.
      *
+     * Rows here are BUFFER rows: 0 is the top of the live screen and negative indices reach
+     * into history, matching [VersionedBufferSnapshot.getLine]. This used to take a screen row
+     * plus a scroll offset and add them, while every caller computed screen rows by
+     * subtracting the offset - so a scrolled-back viewport walked the wrong lines and bounded
+     * the forward walk against the wrong end of the buffer. Working in buffer space removes
+     * the conversion, and with it the chance of getting its sign wrong.
+     *
      * @param snapshot The buffer snapshot
-     * @param row The current row (screen row, 0-based from top of visible area)
-     * @param scrollOffset Current scroll offset (negative = scrolled into history)
+     * @param bufferRow The row to start from, in buffer coordinates
      * @param terminalWidth Terminal width in columns
      * @return JoinedLineInfo containing the complete logical line text and row mapping
      */
     fun collectWrappedLines(
         snapshot: VersionedBufferSnapshot,
-        row: Int,
-        scrollOffset: Int,
+        bufferRow: Int,
         terminalWidth: Int
     ): JoinedLineInfo {
-        val lineIndex = row + scrollOffset
-
-        // Find start of logical line (walk backwards while previous line is wrapped)
-        // Note: -snapshot.historyLinesCount is the oldest valid history line index
-        var startRow = row
-        var startLineIndex = lineIndex
-        while (startLineIndex > -snapshot.historyLinesCount) {
-            val prevLineIndex = startLineIndex - 1
-            val prevLine = snapshot.getLine(prevLineIndex)
-            if (prevLine.isWrapped) {
-                startLineIndex--
-                startRow--
-            } else {
-                break
-            }
+        // Walk the same rows, with the same bounds, as runLinesAt: it produces the memo key
+        // for this result, so a row this reads and it omits would be a row whose change went
+        // unnoticed. Both stop one short of `height` because getLine returns a fresh
+        // createEmpty() past it - which would pad a full terminal width for a row that is not
+        // there, and put a never-identity-equal instance in that key.
+        val oldest = maxOf(-snapshot.historyLinesCount, bufferRow - MAX_WRAPPED_RUN_ROWS)
+        var startRow = bufferRow
+        while (startRow > oldest) {
+            if (snapshot.getLine(startRow - 1).isWrapped) startRow-- else break
         }
 
-        // Find end of logical line (walk forwards while current line is wrapped)
         var endRow = startRow
-        var endLineIndex = startLineIndex
-        while (true) {
-            val currentLine = snapshot.getLine(endLineIndex)
-            if (!currentLine.isWrapped) {
-                break
-            }
-            endLineIndex++
-            endRow++
-            if (endLineIndex >= snapshot.height) break
-        }
+        val furthest = minOf(snapshot.height - 1, bufferRow + MAX_WRAPPED_RUN_ROWS)
+        while (endRow < furthest && snapshot.getLine(endRow).isWrapped) endRow++
 
         // Join lines with VISUAL WIDTH-aware position tracking
         val joinedText = StringBuilder()
         val rowOffsets = mutableListOf<Int>()
 
-        for (idx in startLineIndex..endLineIndex) {
+        for (idx in startRow..endRow) {
             rowOffsets.add(joinedText.length)
             val line = snapshot.getLine(idx)
             val text = line.text
@@ -520,7 +537,7 @@ object HyperlinkDetector {
 
             // Pad to terminal width based on VISUAL width, not character count
             // This correctly handles double-width characters (CJK, emoji) and DWC markers
-            if (idx < endLineIndex) {
+            if (idx < endRow) {
                 val visualWidth = calculateVisualWidth(line, terminalWidth)
                 if (visualWidth < terminalWidth) {
                     repeat(terminalWidth - visualWidth) {
@@ -563,27 +580,100 @@ object HyperlinkDetector {
     }
 
     /**
+     * Whether [bufferRow] is part of a wrapped logical line, in either direction.
+     *
+     * `isWrapped` means "this line wraps INTO the next", so a row is a continuation when its
+     * PREDECESSOR is wrapped.
+     */
+    fun isPartOfWrappedRun(snapshot: VersionedBufferSnapshot, bufferRow: Int): Boolean =
+        snapshot.getLine(bufferRow).isWrapped ||
+            (bufferRow - 1 >= -snapshot.historyLinesCount && snapshot.getLine(bufferRow - 1).isWrapped)
+
+    /**
+     * The line instances [bufferRow]'s detection result depends on.
+     *
+     * One line for an ordinary row; the whole logical run for a wrapped one, since the rejoin
+     * walks to the run's start and end. Callers memoizing detection must key on all of them, or
+     * an edit to a sibling row goes unnoticed. Just the wrap-flag walk - no rejoin, no regex.
+     */
+    fun runLinesAt(snapshot: VersionedBufferSnapshot, bufferRow: Int): List<TerminalLine> {
+        val oldest = maxOf(-snapshot.historyLinesCount, bufferRow - MAX_WRAPPED_RUN_ROWS)
+        if (!isPartOfWrappedRun(snapshot, bufferRow)) {
+            // The predecessor's wrap flag is what decided this row is NOT a continuation, so it
+            // is part of the answer and has to be in the key: a TUI rewriting row R-1 so it now
+            // wraps into R would otherwise hit this memo on R's unchanged line and keep
+            // returning the single-row result forever.
+            return if (bufferRow - 1 >= oldest) {
+                listOf(snapshot.getLine(bufferRow), snapshot.getLine(bufferRow - 1))
+            } else {
+                listOf(snapshot.getLine(bufferRow))
+            }
+        }
+        var start = bufferRow
+        while (start > oldest) {
+            if (snapshot.getLine(start - 1).isWrapped) start-- else break
+        }
+        // Bounds FIRST: getLine returns a fresh createEmpty() out of range, so letting `end`
+        // reach `height` would put a never-identity-equal instance in the key and miss the memo
+        // on every single event - for a run that ends on the last screen row, which is exactly
+        // where a live TUI's wrapped output sits.
+        var end = start
+        val furthest = minOf(snapshot.height - 1, bufferRow + MAX_WRAPPED_RUN_ROWS)
+        while (end < furthest && snapshot.getLine(end).isWrapped) end++
+        val lines = ArrayList<TerminalLine>(end - start + 2)
+        for (row in start..end) lines.add(snapshot.getLine(row))
+        // Same reason as above, for the walk that found `start`.
+        if (start - 1 >= oldest) lines.add(snapshot.getLine(start - 1))
+        return lines
+    }
+
+    /**
+     * Hyperlinks on one BUFFER row, in buffer coordinates.
+     *
+     * Offset-free by construction: the same buffer row yields the same answer wherever the
+     * viewport happens to be sitting, which is what lets a caller memo the result across a
+     * scroll. This replaces a per-frame sweep of every visible row that ran the whole registry
+     * per row inside the draw phase - for a result the text pass never read. Only the hover
+     * hit-test and the hover underline consume it, so it is resolved one row at a time, on
+     * demand.
+     */
+    fun detectForBufferRow(
+        snapshot: VersionedBufferSnapshot,
+        bufferRow: Int,
+        terminalWidth: Int,
+        workingDirectory: String?,
+        detectFilePaths: Boolean,
+        registry: HyperlinkRegistry = this.registry,
+    ): List<Hyperlink> = if (isPartOfWrappedRun(snapshot, bufferRow)) {
+        detectHyperlinksWithWrapping(
+            snapshot, bufferRow, terminalWidth, workingDirectory, detectFilePaths, registry
+        )
+    } else {
+        detectHyperlinks(
+            snapshot.getLine(bufferRow).text, bufferRow, workingDirectory, detectFilePaths, registry
+        )
+    }
+
+    /**
      * Detect hyperlinks in wrapped lines, returning hyperlinks with proper row spans.
      *
      * @param snapshot The buffer snapshot
-     * @param screenRow The screen row to check (0-based from top of visible area)
-     * @param scrollOffset Current scroll offset
+     * @param bufferRow The row to check, in buffer coordinates (negative reaches into history)
      * @param terminalWidth Terminal width
      * @param workingDirectory The current working directory for resolving relative paths (optional)
      * @param detectFilePaths Whether to detect file paths as hyperlinks (default: true)
      * @param registry The pattern registry to use (default: global registry)
-     * @return List of hyperlinks that are part of this logical line
+     * @return List of hyperlinks that are part of this logical line, in buffer rows
      */
     fun detectHyperlinksWithWrapping(
         snapshot: VersionedBufferSnapshot,
-        screenRow: Int,
-        scrollOffset: Int,
+        bufferRow: Int,
         terminalWidth: Int,
         workingDirectory: String? = null,
         detectFilePaths: Boolean = true,
         registry: HyperlinkRegistry = this.registry
     ): List<Hyperlink> {
-        val lineInfo = collectWrappedLines(snapshot, screenRow, scrollOffset, terminalWidth)
+        val lineInfo = collectWrappedLines(snapshot, bufferRow, terminalWidth)
 
         // Detect hyperlinks in the joined text (pass the registry)
         val rawHyperlinks = detectHyperlinks(lineInfo.joinedText, lineInfo.startRow, workingDirectory, detectFilePaths, registry)

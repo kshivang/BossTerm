@@ -21,8 +21,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.SelectionMode
 import ai.rever.bossterm.compose.hyperlinks.Hyperlink
-import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
-import ai.rever.bossterm.compose.hyperlinks.HyperlinkRegistry
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.util.ColorUtils
@@ -105,19 +103,6 @@ data class RenderingContext(
     val terminalWidthCells: Int = 80,
     val terminalHeightCells: Int = 24,
 
-    // Pre-computed hyperlinks cache (for version-based caching optimization)
-    // If provided, hyperlink detection will be skipped and these will be used
-    val precomputedHyperlinks: Map<Int, List<Hyperlink>>? = null,
-
-    // Working directory for resolving relative file paths in hyperlinks
-    val workingDirectory: String? = null,
-
-    // Whether to detect file/folder paths as clickable hyperlinks
-    val detectFilePaths: Boolean = true,
-
-    // Custom hyperlink registry for per-instance pattern customization
-    val hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
-
     // Command blocks resolved to on-screen rows for this frame (empty when the
     // feature is disabled, so the gutter pass is a no-op).
     val commandBlocks: List<RenderableBlock> = emptyList()
@@ -148,7 +133,48 @@ data class CursorGlyph(
     val isBold: Boolean,
     val isItalic: Boolean,
     val isUnderline: Boolean,
+    /**
+     * Which SGR text-blink clock this glyph follows, if any.
+     *
+     * Recorded rather than applied at resolve time so the gate can live in the overlay's DRAW
+     * lambda. Resolution happens in the apply phase, which is outside `observeReads` - a clock
+     * read there subscribes nothing, so the glyph would keep painting after the text pass had
+     * blinked it away.
+     */
+    val blink: GlyphBlink = GlyphBlink.NONE,
 )
+
+/** The SGR blink attribute a repainted cursor glyph carries. */
+enum class GlyphBlink {
+    NONE,
+    SLOW,
+    RAPID;
+
+    /**
+     * Whether a glyph with this attribute is showing, given the two clocks.
+     *
+     * Callers in a Compose draw phase should test [NONE] first: both arguments are evaluated
+     * here, so an unattributed glyph would otherwise subscribe its layer to two clocks that
+     * cannot affect it. That is a property of the call site, not of this function, which is why
+     * the check lives there rather than being duplicated into a second predicate.
+     */
+    fun isVisible(slowVisible: Boolean, rapidVisible: Boolean): Boolean = when (this) {
+        NONE -> true
+        SLOW -> slowVisible
+        RAPID -> rapidVisible
+    }
+}
+
+/**
+ * Whether this shape's caret is drawn on the caret blink clock.
+ *
+ * [renderCursorOverlay] consults the clock only for the BLINK_* shapes, so a reader that wants
+ * to avoid subscribing to it needlessly can ask here first.
+ */
+fun CursorShape?.isBlinkingShape(): Boolean = when (this) {
+    CursorShape.BLINK_BLOCK, CursorShape.BLINK_UNDERLINE, CursorShape.BLINK_VERTICAL_BAR -> true
+    else -> false
+}
 
 /**
  * Result of analyzing a character for rendering purposes.
@@ -538,10 +564,8 @@ object TerminalCanvasRenderer {
      * - Pass 2: Draw all text (reuse cached analysis)
      * - Pass 3: Draw overlays (hyperlinks, search, selection, cursor)
      *
-     * @return Map of row to detected hyperlinks for mouse hover detection
      */
-    fun DrawScope.renderTerminal(ctx: RenderingContext): Map<Int, List<Hyperlink>> {
-        val hyperlinksCache = mutableMapOf<Int, List<Hyperlink>>()
+    fun DrawScope.renderTerminal(ctx: RenderingContext) {
         // Cache character analysis to avoid redundant computation between passes
         val analysisCache = AnalysisCache(ctx.visibleRows, ctx.visibleCols)
 
@@ -566,16 +590,13 @@ object TerminalCanvasRenderer {
             renderSelectionHighlight(ctx)
         }
 
-        // Pass 2: Draw text and collect hyperlinks (reuse cached analysis)
-        val detectedHyperlinks = renderText(ctx, analysisCache)
-        hyperlinksCache.putAll(detectedHyperlinks)
+        // Pass 2: Draw text (reuse cached analysis)
+        renderText(ctx, analysisCache)
 
         // Pass 3: Draw overlays (hyperlinks, search - but NOT selection or cursor).
         // The cursor is drawn in its own overlay Canvas (see renderCursorOverlay) so its
         // blink doesn't re-run this whole pass.
         renderOverlays(ctx)
-
-        return hyperlinksCache
     }
 
     /**
@@ -768,86 +789,11 @@ object TerminalCanvasRenderer {
     }
 
     /**
-     * Detect all hyperlinks in the visible buffer area.
-     * This method can be called independently for caching purposes.
-     *
-     * Returns a map of row index to list of hyperlinks on that row.
-     * Multi-row hyperlinks are added to ALL rows they span.
-     *
-     * @param ctx The rendering context containing buffer snapshot and scroll state
-     * @return Map of row to detected hyperlinks
-     */
-    fun detectAllHyperlinks(ctx: RenderingContext): Map<Int, List<Hyperlink>> {
-        val snapshot = ctx.bufferSnapshot
-        val hyperlinksCache = mutableMapOf<Int, MutableList<Hyperlink>>()
-
-        for (row in 0 until ctx.visibleRows) {
-            val lineIndex = row - ctx.scrollOffset
-            val line = snapshot.getLine(lineIndex)
-
-            // Detect hyperlinks - handle wrapped lines specially
-            // isWrapped semantics: true means "this line wraps INTO the next line"
-            // Check if this row is a continuation of a wrapped line (previous line was wrapped)
-            val prevLineIndex = lineIndex - 1
-            val isPreviousLineWrapped = if (prevLineIndex >= -snapshot.historyLinesCount) {
-                snapshot.getLine(prevLineIndex).isWrapped
-            } else {
-                false
-            }
-
-            // Determine if we need to detect hyperlinks for this row
-            // Skip continuation rows IF we already processed them (check cache)
-            // This handles the case where start row is scrolled off-screen
-            val shouldDetect = if (isPreviousLineWrapped) {
-                // Continuation row - only detect if not already in cache
-                // (start row might be off-screen and not yet processed)
-                !hyperlinksCache.containsKey(row)
-            } else {
-                true
-            }
-
-            if (shouldDetect) {
-                val isPartOfWrappedSequence = isPreviousLineWrapped || line.isWrapped
-                val hyperlinks = if (isPartOfWrappedSequence) {
-                    // Part of a wrapped sequence - use wrapped detection
-                    // This walks backwards to find start even if off-screen
-                    HyperlinkDetector.detectHyperlinksWithWrapping(
-                        snapshot, row, ctx.scrollOffset, ctx.visibleCols,
-                        ctx.workingDirectory, ctx.detectFilePaths, ctx.hyperlinkRegistry
-                    )
-                } else {
-                    // Single line - use standard detection
-                    HyperlinkDetector.detectHyperlinks(
-                        line.text, row, ctx.workingDirectory, ctx.detectFilePaths, ctx.hyperlinkRegistry
-                    )
-                }
-
-                // Populate cache for ALL rows each hyperlink spans
-                // Note: The same Hyperlink object is intentionally added to multiple rows
-                // to enable efficient lookup when hovering over any part of a wrapped URL
-                for (hyperlink in hyperlinks) {
-                    for (spanRow in hyperlink.rowSpans.keys) {
-                        hyperlinksCache.getOrPut(spanRow) { mutableListOf() }.add(hyperlink)
-                    }
-                }
-            }
-        }
-
-        return hyperlinksCache
-    }
-
-    /**
      * Pass 2: Render all text with proper font handling.
      * Reuses character analysis from the cache populated by renderBackgrounds().
-     * Returns map of row to detected hyperlinks.
      */
-    private fun DrawScope.renderText(ctx: RenderingContext, analysisCache: AnalysisCache): Map<Int, List<Hyperlink>> {
+    private fun DrawScope.renderText(ctx: RenderingContext, analysisCache: AnalysisCache) {
         val snapshot = ctx.bufferSnapshot
-
-        // Use precomputed hyperlinks if available (version-based caching),
-        // otherwise detect them fresh
-        val hyperlinksCache: Map<Int, List<Hyperlink>> = ctx.precomputedHyperlinks
-            ?: detectAllHyperlinks(ctx)
 
         // Memoize TextStyle for the duration of this frame, keyed by foreground color
         // (raw ULong, lossless) with the 4 bold/italic combinations in a small array.
@@ -1110,8 +1056,6 @@ object TerminalCanvasRenderer {
 
             flushBatch()
         }
-
-        return hyperlinksCache
     }
 
     /**
@@ -1123,10 +1067,13 @@ object TerminalCanvasRenderer {
         // Hyperlink underline - supports multi-row hyperlinks
         if (ctx.settings.hyperlinkUnderlineOnHover && ctx.hoveredHyperlink != null && ctx.isModifierPressed) {
             val link = ctx.hoveredHyperlink
-            // Draw underline for each row the hyperlink spans
+            // Draw underline for each row the hyperlink spans. Spans are BUFFER rows, so they
+            // convert to screen rows here - which is also why the underline now follows the
+            // link when the viewport scrolls under a held modifier instead of staying put.
             for ((spanRow, span) in link.rowSpans) {
-                if (spanRow in 0 until ctx.visibleRows) {
-                    val y = spanRow * ctx.cellHeight
+                val screenRow = spanRow + ctx.scrollOffset
+                if (screenRow in 0 until ctx.visibleRows) {
+                    val y = screenRow * ctx.cellHeight
                     val underlineY = y + ctx.cellHeight - 1f
                     val startX = span.first * ctx.cellWidth
                     val endX = span.second * ctx.cellWidth

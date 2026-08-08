@@ -132,7 +132,18 @@ class TerminalTypeAheadManager(private val myTerminalModel: TypeAheadTerminalMod
         }
     }
 
-    val cursorX: Int
+    /**
+     * The column to draw the caret at while local echo is predicting, or null when there is
+     * nothing predicted and the caret must come from the renderer's own frame.
+     *
+     * Returning null rather than falling back to the live emulator column is the whole point.
+     * A fallback makes this getter answer "where is the cursor right now", which a renderer
+     * then pairs with a row captured from an earlier frame - an x/y the terminal was never in,
+     * re-read on every recomposition (so the caret's column jitters for the length of a scroll
+     * gesture, with no output change at all). Overriding only while actually predicting is all
+     * the contract type-ahead needs.
+     */
+    val predictedCursorX: Int?
         get() {
             myTerminalModel.lock()
             try {
@@ -141,14 +152,9 @@ class TerminalTypeAheadManager(private val myTerminalModel: TypeAheadTerminalMod
                     resetState()
                 }
 
-                val predictions =
-                    this.visiblePredictions
-
-                val cursorX =
-                    if (predictions.isEmpty()) myTerminalModel.currentLineWithCursor.myCursorX else predictions.get(
-                        predictions.size - 1
-                    )?.myPredictedLineWithCursorX?.myCursorX ?: myTerminalModel.currentLineWithCursor.myCursorX
-                return cursorX + 1
+                val predicted = this.visiblePredictions.lastOrNull()
+                    ?.myPredictedLineWithCursorX?.myCursorX ?: return null
+                return predicted + 1
             } finally {
                 myTerminalModel.unlock()
             }

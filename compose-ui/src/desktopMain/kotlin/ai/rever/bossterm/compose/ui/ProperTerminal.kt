@@ -1740,7 +1740,7 @@ fun ProperTerminal(
           // Local scroll (main buffer or Shift+Wheel override)
           // Accumulate fractional deltas for smooth scrolling
           // Windows trackpads send small fractional values, so multiplier helps
-                accumulatedScrollDelta += delta * settings.scrollMultiplier
+          accumulatedScrollDelta += delta * settings.scrollMultiplier
           val scrollLines = accumulatedScrollDelta.toInt()
           if (scrollLines != 0) {
             setScrollOffset(scrollOffset - scrollLines)
@@ -1923,11 +1923,31 @@ fun ProperTerminal(
         // frame - a full extra recomposition of the largest composable in the app, per frame of
         // streamed output, and still a frame late. The SideEffect only commits what was already
         // rendered, and re-runs a fold that no-ops.
-        val effectiveScrollOffset = remember(currentTrigger) {
-          foldHistoryAppends(scrollOffset, historyAppendBank.drain(), textBuffer.historyLinesCount)
+        // Drained once per redraw trigger, then CONSUMED. Holding the folded value across
+        // recompositions instead would clobber the user: `scrollOffset` changes without the
+        // trigger advancing (the wheel writes it and never calls requestImmediateRedraw, and
+        // `redrawTrigger` only moves in ComposeTerminalDisplay.actualRedraw), so a cached value
+        // would both freeze the view mid-scroll and then get written back over the new offset.
+        //
+        // A plain holder rather than Compose state on purpose: consuming it must not invalidate
+        // the composition. Once consumed, every later recomposition renders straight from
+        // `scrollOffset`, so user scrolling behaves exactly as it did before this change.
+        val pendingFold = remember(currentTrigger) {
+          val folded = foldHistoryAppends(
+            scrollOffset,
+            historyAppendBank.drain(),
+            textBuffer.historyLinesCount,
+          )
+          arrayOf<Int?>(if (folded != scrollOffset) folded else null)
         }
+        // The frame that first shows the appended lines is rendered at the corrected offset, so
+        // there is no shift-and-snap; the SideEffect only commits what was already drawn.
+        val effectiveScrollOffset = pendingFold[0] ?: scrollOffset
         SideEffect {
-          if (scrollOffset != effectiveScrollOffset) scrollOffset = effectiveScrollOffset
+          pendingFold[0]?.let { target ->
+            pendingFold[0] = null
+            if (scrollOffset != target) scrollOffset = target
+          }
         }
         val imageDataCache = terminal.getImageDataCache()
         val stableFrameHolder = remember(textBuffer, display) {

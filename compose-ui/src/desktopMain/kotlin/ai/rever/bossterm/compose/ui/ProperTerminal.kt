@@ -61,6 +61,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.compose.ConnectionState
 import ai.rever.bossterm.compose.PreConnectScreen
 import ai.rever.bossterm.compose.actions.addSplitPaneActions
@@ -77,6 +78,7 @@ import ai.rever.bossterm.compose.hyperlinks.Hyperlink
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkInfo
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkRegistry
+import ai.rever.bossterm.compose.hyperlinks.HyperlinkRowCache
 import ai.rever.bossterm.compose.hyperlinks.toHyperlinkInfo
 import ai.rever.bossterm.compose.SelectionMode
 import ai.rever.bossterm.compose.ime.IMEHandler
@@ -139,10 +141,14 @@ private data class StableTerminalRenderFrame(
    */
   val historyDelta: HistoryDelta,
   val imagesById: Map<Long, TerminalImage>,
-  val cursorX: Int,
-  val cursorY: Int,
-  val cursorVisible: Boolean,
-  val cursorShape: CursorShape?,
+  /** Position, visibility and shape as one value, read under the same lock hold as [buffer]. */
+  val cursor: ComposeTerminalDisplay.CursorSnapshot,
+  /**
+   * Local-echo column override, captured with the frame; null whenever type-ahead is not
+   * actually predicting. Read live at composable scope it would re-enter the emulator lock on
+   * every recomposition and pair a fresh column with this frame's row.
+   */
+  val typeAheadCursorX: Int?,
 )
 
 /** UI-thread-confined retention committed only after an accepted composition applies. */
@@ -419,9 +425,12 @@ fun ProperTerminal(
 
   // Hyperlink state from tab
   var hoveredHyperlink by tab.hoveredHyperlink
-  var cachedHyperlinks by remember { mutableStateOf<Map<Int, List<Hyperlink>>>(emptyMap()) }
-  // Version hash for hyperlink caching - reuse cached hyperlinks when buffer unchanged
-  var lastHyperlinkVersionHash by remember { mutableStateOf(0L) }
+  // Hover-time detection, memoized per buffer row on line identity. Plain holders, not Compose
+  // state: nothing in the draw phase reads them, and the cache they replace was read AND
+  // written inside the draw lambda, which invalidated the draw node and cost a second full text
+  // render per frame.
+  val hyperlinkCache = remember(textBuffer) { HyperlinkRowCache() }
+  val hoverSnapshot = remember(textBuffer) { arrayOfNulls<VersionedBufferSnapshot>(1) }
   // Track previous hover state for consumer callbacks
   var previousHoveredHyperlink by remember { mutableStateOf<Hyperlink?>(null) }
 
@@ -713,8 +722,9 @@ fun ProperTerminal(
     }
   }
 
-  // Cursor blink state for BLINK_* cursor shapes
-  var cursorBlinkVisible by remember { mutableStateOf(true) }
+  // Cursor blink state for BLINK_* cursor shapes, plus the frame the overlay draws. Both live
+  // on one identity-stable holder so the overlay's draw lambda has a single stable capture.
+  val cursorOverlay = remember(tab.id) { CursorOverlayState() }
 
   // Use shared font loaded once by Main.kt (performance optimization for multiple tabs)
   // Font loading is expensive and should only happen once, not per tab
@@ -776,11 +786,11 @@ fun ProperTerminal(
     terminal.setCellDimensions(cellWidth, cellHeight)
   }
 
-  // Window focus + tab visibility gate every blink animation. The Canvas draw lambda
-  // reads cursorBlinkVisible / slowBlinkVisible / rapidBlinkVisible, so each toggle
-  // repaints the ENTIRE terminal canvas. Letting those loops run while the window is in
-  // the background — or for a tab that isn't the visible one — wakes the CPU/GPU twice a
-  // second forever for no visible benefit (a major battery drain). Gate them so an idle
+  // Window focus + tab visibility gate every blink animation. Each toggle repaints a Canvas -
+  // the whole text canvas for the two SGR clocks, the small cursor overlay for the caret. Letting
+  // those loops run while the window is in the background, or for a tab that isn't the visible
+  // one, wakes the CPU/GPU twice a second forever for no visible benefit (a major battery
+  // drain). Gate them so an idle
   // or backgrounded terminal produces zero periodic repaints, matching iTerm2/Terminal.app
   // (the cursor stops blinking when the app isn't frontmost). When a loop is parked we
   // freeze its flag to "visible" so the cursor shows solid and blink-attributed text stays
@@ -795,41 +805,31 @@ fun ProperTerminal(
   // to "visible") instead of repainting the whole text canvas once a second for
   // no visible change.
   LaunchedEffect(blinkActive, hasSlowBlinkText, settings.enableTextBlinking, settings.slowTextBlinkMs) {
-    if (!blinkActive || !hasSlowBlinkText || !settings.enableTextBlinking || settings.slowTextBlinkMs <= 0) {
+    if (!blinkActive || !hasSlowBlinkText || !settings.enableTextBlinking) {
       slowBlinkVisible = true
       return@LaunchedEffect
     }
-    while (isActive) {
-      delay(settings.slowTextBlinkMs.toLong())
-      slowBlinkVisible = !slowBlinkVisible
-    }
+    runBlinkPhase(settings.slowTextBlinkMs) { slowBlinkVisible = it }
   }
 
   // RAPID_BLINK animation timer (configurable via settings.rapidTextBlinkMs).
   LaunchedEffect(blinkActive, hasRapidBlinkText, settings.enableTextBlinking, settings.rapidTextBlinkMs) {
-    if (!blinkActive || !hasRapidBlinkText || !settings.enableTextBlinking || settings.rapidTextBlinkMs <= 0) {
+    if (!blinkActive || !hasRapidBlinkText || !settings.enableTextBlinking) {
       rapidBlinkVisible = true
       return@LaunchedEffect
     }
-    while (isActive) {
-      delay(settings.rapidTextBlinkMs.toLong())
-      rapidBlinkVisible = !rapidBlinkVisible
-    }
+    runBlinkPhase(settings.rapidTextBlinkMs) { rapidBlinkVisible = it }
   }
 
   // Cursor blink animation timer (configurable via settings.caretBlinkMs).
   // caretBlinkMs <= 0 means "solid cursor, never blink" (the settings slider exposes 0 as
-  // "Off"); the old code turned that into delay(0) in a tight loop, which pegged a CPU
-  // core instead of disabling the blink. The guard now makes "Off" actually off.
+  // "Off"); runBlinkPhase shows the caret and returns rather than spinning on delay(0).
   LaunchedEffect(blinkActive, settings.caretBlinkMs) {
-    if (!blinkActive || settings.caretBlinkMs <= 0) {
-      cursorBlinkVisible = true
+    if (!blinkActive) {
+      cursorOverlay.blinkVisible = true
       return@LaunchedEffect
     }
-    while (isActive) {
-      delay(settings.caretBlinkMs.toLong())
-      cursorBlinkVisible = !cursorBlinkVisible
-    }
+    runBlinkPhase(settings.caretBlinkMs) { cursorOverlay.blinkVisible = it }
   }
 
   // PTY initialization and process monitoring are now handled by TabController
@@ -1538,15 +1538,32 @@ fun ProperTerminal(
             return@onPointerEvent
           }
 
-          // Check for hyperlink hover
+          // Check for hyperlink hover. Detection is resolved for THIS row only, on demand:
+          // the old per-frame sweep of every visible row ran inside the draw phase for a
+          // result only this handler ever read.
           val col = (pos.x / cellWidth).toInt()
-          val row = (pos.y / cellHeight).toInt() + scrollOffset
-          val absoluteRow = row - scrollOffset
+          val screenRow = (pos.y / cellHeight).toInt()
+          val bufferRow = screenRow - scrollOffset
 
-          // Get hyperlinks for this row (supports multi-row hyperlinks)
-          val hyperlinksForRow = cachedHyperlinks[absoluteRow]
+          val snapshot = hoverSnapshot[0]
+          val hyperlinksForRow = snapshot?.let { snap ->
+            val line = snap.getLine(bufferRow)
+            // A wrapped run's answer depends on its neighbours, so it never comes from the memo.
+            val wrapped = line.isWrapped ||
+              (bufferRow - 1 >= -snap.historyLinesCount && snap.getLine(bufferRow - 1).isWrapped)
+            hyperlinkCache.linksAt(bufferRow, line, bypass = wrapped) {
+              TerminalCanvasRenderer.detectHyperlinksForBufferRow(
+                snapshot = snap,
+                bufferRow = bufferRow,
+                terminalWidth = snap.width,
+                workingDirectory = tab.workingDirectory.value,
+                detectFilePaths = settings.detectFilePaths,
+                registry = hyperlinkRegistry,
+              )
+            }
+          }
           hoveredHyperlink = hyperlinksForRow?.firstOrNull { link ->
-            link.containsPosition(col, absoluteRow)
+            link.containsPosition(col, bufferRow)
           }
 
           // Notify hover consumers when hyperlink hover state changes
@@ -1558,13 +1575,13 @@ fun ProperTerminal(
             // Enter callback for new hyperlink with bounds - notify all consumers
             if (hoveredHyperlink != null) {
               val link = hoveredHyperlink!!
-              // For multi-row hyperlinks, provide bounds for the current row's span
-              val span = link.rowSpans[absoluteRow] ?: Pair(link.startCol, link.endCol)
+              // Spans are keyed by buffer row; the bounds are on-screen pixels.
+              val span = link.rowSpans[bufferRow] ?: Pair(link.startCol, link.endCol)
               val bounds = Rect(
                 left = span.first * cellWidth,
-                top = (absoluteRow) * cellHeight,
+                top = screenRow * cellHeight,
                 right = span.second * cellWidth,
-                bottom = (absoluteRow + 1) * cellHeight
+                bottom = (screenRow + 1) * cellHeight
               )
               tab.hoverConsumers.forEach { it.onMouseEntered(bounds, link.url) }
             }
@@ -1951,15 +1968,37 @@ fun ProperTerminal(
         }
         val capturedFrame = remember(currentTrigger, textBuffer.width, textBuffer.height) {
           display.captureStableRenderFrame {
-            StableTerminalRenderFrame(
-              buffer = textBuffer.createIncrementalSnapshot(),
-              historyDelta = historyAppendBank.peek(),
-              imagesById = imageDataCache.snapshotImages(),
-              cursorX = display.cursorXSnapshot,
-              cursorY = display.cursorYSnapshot,
-              cursorVisible = display.cursorVisibleSnapshot,
-              cursorShape = display.cursorShapeSnapshot,
-            )
+            // Outside the hold: ImageDataCache has its own monitor and nothing needs the image
+            // set to agree with the cursor. Keeps the rule below - one lock at a time on the UI
+            // thread - true without needing an argument about the cache's own ordering.
+            val images = imageDataCache.snapshotImages()
+            // ONE hold of the terminal buffer lock, so the snapshot, the appends banked against
+            // it and the cursor that belongs to it all describe the same instant.
+            // createIncrementalSnapshot() releases the lock before returning, so reading the
+            // cursor after it paired text from T0 with a caret from T1 - and the emulator moves
+            // the caret many times per rendered frame.
+            //
+            // LOCK ORDER: the UI thread takes ONLY myLock here, and touches no Compose state and
+            // no other monitor under it. captureStableRenderFrame takes syncUpdateLock before
+            // this lambda and again after it returns, never during, so the emulator's
+            // myLock -> syncUpdateLock order (setCursor fires requestRedraw inside the buffer
+            // lock) is never inverted - the hazard documented on captureStableRenderFrame and on
+            // HistoryAppendBank. myLock is reentrant, so the nested acquisition inside
+            // createIncrementalSnapshot is free, and this replaces TWO acquisitions per
+            // composition with one: the type-ahead column used to take it again, live, outside
+            // the capture entirely.
+            textBuffer.lock()
+            try {
+              StableTerminalRenderFrame(
+                buffer = textBuffer.createIncrementalSnapshot(),
+                historyDelta = historyAppendBank.peek(),
+                imagesById = images,
+                cursor = display.cursorSnapshot,
+                typeAheadCursorX = tab.typeAheadManager?.predictedCursorX,
+              )
+            } finally {
+              textBuffer.unlock()
+            }
           }
         }
         val renderFrame = stableFrameHolder.frameFor(capturedFrame)
@@ -1998,6 +2037,12 @@ fun ProperTerminal(
           // Only frames from a composition that reached apply become future fallbacks.
           capturedFrame?.let(stableFrameHolder::commit)
         }
+        SideEffect {
+          // Hand the pointer handler the snapshot that was actually drawn. A plain array cell
+          // rather than Compose state: the hover path is the only reader, and making it state
+          // would put a write in the apply phase that recomposes the whole composable.
+          hoverSnapshot[0] = renderFrame?.buffer
+        }
         // A first mount during ?2026 has no trusted fallback frame yet. Leave only
         // terminal-dependent layers empty until the synchronized update publishes
         // its redraw; sibling overlays such as search remain composed.
@@ -2005,12 +2050,13 @@ fun ProperTerminal(
           val bufferSnapshot = renderFrame.buffer
           // Cursor and content must come from the same committed ?2026 frame. Kitty
           // image updates temporarily move the real cursor to the placement anchor.
-          val cursorX = renderFrame.cursorX
-          val cursorY = renderFrame.cursorY
-          val cursorVisible = renderFrame.cursorVisible
-          val cursorShape = renderFrame.cursorShape
-          // Type-ahead manager can override cursor X for local echo prediction
-          val effectiveCursorX = tab.typeAheadManager?.let { it.cursorX - 1 } ?: cursorX
+          val cursorX = renderFrame.cursor.x
+          val cursorY = renderFrame.cursor.y
+          val cursorVisible = renderFrame.cursor.visible
+          val cursorShape = renderFrame.cursor.shape
+          // Type-ahead overrides the column while local echo is predicting - taken from the
+          // frame, so it describes the same instant as the row beside it.
+          val effectiveCursorX = renderFrame.typeAheadCursorX?.minus(1) ?: cursorX
 
           Canvas(modifier = Modifier.padding(start = 4.dp, top = 4.dp).fillMaxSize().clipToBounds()) {
             // Guard against invalid canvas sizes during resize - prevents drawText constraint failures
@@ -2031,18 +2077,6 @@ fun ProperTerminal(
             val baseCursorColor = if (customCursorColor != null) {
               Color(customCursorColor.red, customCursorColor.green, customCursorColor.blue)
             } else activeTheme.cursorColor
-
-            // Version-based hyperlink caching: compute hash including scroll position
-            // since visible content changes with scroll even if buffer content is same
-            val currentVersionHash = bufferSnapshot.computeVersionHash() * 31 + effectiveScrollOffset
-
-            // Reuse cached hyperlinks if buffer content and scroll position unchanged
-            val precomputedHyperlinks = if (currentVersionHash == lastHyperlinkVersionHash &&
-                                            cachedHyperlinks.isNotEmpty()) {
-              cachedHyperlinks
-            } else {
-              null // Force fresh detection
-            }
 
             // Resolve content-anchored selection to current coordinates
             // This allows selection to follow content as terminal scrolls
@@ -2109,10 +2143,9 @@ fun ProperTerminal(
               cursorX = effectiveCursorX,
               cursorY = cursorY,
               cursorVisible = cursorVisible,
-              // The text pass no longer draws the cursor (it lives in its own overlay Canvas
-              // below), so pass a constant here. Reading the real cursorBlinkVisible state in
-              // this draw lambda would re-subscribe the whole text canvas to the blink and
-              // defeat the optimization.
+              // The text pass no longer draws the cursor (it lives in CursorOverlay below), so
+              // pass a constant here. Reading the caret's blink state in this draw lambda would
+              // re-subscribe the whole text canvas to it and defeat the optimization.
               cursorBlinkVisible = true,
               cursorShape = cursorShape,
               cursorColor = baseCursorColor,
@@ -2124,19 +2157,15 @@ fun ProperTerminal(
               imageDataById = renderFrame.imagesById,
               terminalWidthCells = bufferSnapshot.width,
               terminalHeightCells = bufferSnapshot.height,
-              precomputedHyperlinks = precomputedHyperlinks,
               workingDirectory = tab.workingDirectory.value,
               detectFilePaths = settings.detectFilePaths,
               hyperlinkRegistry = hyperlinkRegistry,
               commandBlocks = resolvedCommandBlocks
             )
 
-            // Render terminal using extracted renderer - returns detected hyperlinks
+            // Render terminal using extracted renderer
             with(TerminalCanvasRenderer) {
-              val detectedHyperlinks = renderTerminal(renderingContext)
-              // Update cache for next frame
-              cachedHyperlinks = detectedHyperlinks
-              lastHyperlinkVersionHash = currentVersionHash
+              renderTerminal(renderingContext)
             }
 
             // Reflect the renderer's blink-presence findings into composition state. Only
@@ -2147,87 +2176,73 @@ fun ProperTerminal(
             if (hasRapidBlinkText != blinkProbe[1]) hasRapidBlinkText = blinkProbe[1]
           }
 
-          // Cursor overlay — drawn in its own Canvas, stacked on top of the text canvas above
-          // (same modifier, so coordinates line up exactly). This is the ONLY place that reads
-          // cursorBlinkVisible, so the ~0.5s blink invalidates just this tiny layer instead of
-          // re-running the full text render. Cursor position is read from the same
-          // composition-scoped snapshots the text canvas uses, so it stays in sync as content
-          // and scroll change. If the cursor intersects an inline image, that cell's alpha masks
-          // the cursor so animated sprite pixels remain above it, matching browser compositing.
-          Canvas(modifier = Modifier.padding(start = 4.dp, top = 4.dp).fillMaxSize().clipToBounds()) {
-            if (size.width < cellWidth || size.height < cellHeight) return@Canvas
+          // Cursor overlay - its own Canvas stacked on the text canvas above, hoisted into a
+          // skippable composable so a recomposition of THIS composable (one per wheel event,
+          // one per frame of streamed output) no longer rebuilds its draw lambda and re-runs
+          // the glyph and image resolution with it. See CursorOverlayState.
+          //
+          // Published from a SideEffect - the apply phase, after composition and before
+          // layout/draw - so the overlay paints this frame's values in this frame. It sits
+          // after the fold's SideEffect on purpose, so `effectiveScrollOffset` is the value the
+          // text canvas actually drew with.
+          SideEffect {
             val customCursorColor = terminal.cursorColor
             val baseCursorColor = if (customCursorColor != null) {
               Color(customCursorColor.red, customCursorColor.green, customCursorColor.blue)
             } else activeTheme.cursorColor
-            with(TerminalCanvasRenderer) {
-              val bufferCursorRow = (cursorY - 1).coerceAtLeast(0)
-              val cursorScreenRow = bufferCursorRow + effectiveScrollOffset
-              val cursorImageCell = bufferSnapshot.getLine(bufferCursorRow).getImageCellAt(effectiveCursorX)
-              val cursorImageSlice = cursorImageCell?.let { imageCell ->
-                renderFrame.imagesById[imageCell.imageId]?.let { image ->
-                  ImageRenderer.getOrDecodeImage(image)
-                }?.let { bitmap ->
-                  imageCellSlice(
-                    imageCell = imageCell,
-                    bitmap = bitmap,
-                    visualColumn = effectiveCursorX,
-                    screenRow = cursorScreenRow,
-                    visibleColumns = (size.width / cellWidth).toInt().coerceAtMost(bufferSnapshot.width),
-                    cellWidth = cellWidth,
-                    cellHeight = cellHeight,
-                  )
-                }
-              }
-              renderCursorOverlay(
-                cursorVisible = cursorVisible,
-                cursorBlinkVisible = cursorBlinkVisible,
-                cursorShape = cursorShape,
-                cursorX = effectiveCursorX,
-                cursorY = cursorY,
-                scrollOffset = effectiveScrollOffset,
-                cellWidth = cellWidth,
-                cellHeight = cellHeight,
-                isFocused = isFocused,
-                cursorColor = baseCursorColor,
-                focusedAlpha = settings.cursorFocusedAlpha,
-                unfocusedAlpha = settings.cursorUnfocusedAlpha,
-                imageOcclusion = cursorImageSlice,
-                // Resolved HERE, not in the overlay: deciding whether a cell may be
-                // repainted needs the cell's style, which the overlay cannot see.
-                // Returns null for every case the text pass itself declines to
-                // draw, so the block simply stays solid rather than painting
-                // something the rest of the screen is not showing.
-                // Only the block shapes repaint, so skip the analysis entirely for
-                // the others: this overlay exists to be the cheap layer that the
-                // blink repaints twice a second.
-                cursorGlyph = if (cursorShape.isBlock()) resolveCursorGlyph(
-                    line = bufferSnapshot.getLine(bufferCursorRow),
-                    visualColumn = effectiveCursorX,
-                    terminalWidth = bufferSnapshot.width,
-                    // display.ambiguousCharsAreDoubleWidth(), NOT the setting: the
-                    // text canvas feeds the classifier from the display, and the
-                    // whole premise here is mirroring what the text pass decided.
-                    // Both read false today, so a divergence would be silent - and
-                    // safe in the wrong way, since it only ever makes this decline.
-                    ambiguousCharsAreDoubleWidth = display.ambiguousCharsAreDoubleWidth(),
-                    // The SGR text-blink clocks, NOT cursorBlinkVisible: that one is
-                    // the caret timer and gating text blink on it is wrong in both
-                    // directions (see resolveCursorGlyph).
-                    slowBlinkVisible = slowBlinkVisible,
-                    rapidBlinkVisible = rapidBlinkVisible,
-                ) else null,
-                cursorTextColor = cursorGlyphColor(
-                    theme = activeTheme,
-                    effectiveFill = baseCursorColor,
-                    fillIsAppSet = customCursorColor != null,
-                ),
-                glyphFontFamily = sharedFont,
-                glyphFontSize = effectiveFontSize,
-                glyphMeasurer = textMeasurer,
-              )
-            }
+            val bufferCursorRow = (cursorY - 1).coerceAtLeast(0)
+            val cursorLine = bufferSnapshot.getLine(bufferCursorRow)
+            val cursorImageCell = cursorLine.getImageCellAt(effectiveCursorX)
+            cursorOverlay.frame = CursorFrame(
+              visible = cursorVisible,
+              shape = cursorShape,
+              x = effectiveCursorX,
+              y = cursorY,
+              scrollOffset = effectiveScrollOffset,
+              cellWidth = cellWidth,
+              cellHeight = cellHeight,
+              bufferWidth = bufferSnapshot.width,
+              isFocused = isFocused,
+              color = baseCursorColor,
+              focusedAlpha = settings.cursorFocusedAlpha,
+              unfocusedAlpha = settings.cursorUnfocusedAlpha,
+              // Resolved HERE, not in the overlay: deciding whether a cell may be
+              // repainted needs the cell's style, which the overlay cannot see.
+              // Returns null for every case the text pass itself declines to
+              // draw, so the block simply stays solid rather than painting
+              // something the rest of the screen is not showing.
+              // Only the block shapes repaint, so skip the analysis entirely for
+              // the others: this overlay exists to be the cheap layer that the
+              // blink repaints twice a second.
+              glyph = if (cursorShape.isBlock()) resolveCursorGlyph(
+                  line = cursorLine,
+                  visualColumn = effectiveCursorX,
+                  terminalWidth = bufferSnapshot.width,
+                  // display.ambiguousCharsAreDoubleWidth(), NOT the setting: the
+                  // text canvas feeds the classifier from the display, and the
+                  // whole premise here is mirroring what the text pass decided.
+                  // Both read false today, so a divergence would be silent - and
+                  // safe in the wrong way, since it only ever makes this decline.
+                  ambiguousCharsAreDoubleWidth = display.ambiguousCharsAreDoubleWidth(),
+                  // The SGR text-blink clocks, NOT the caret timer: gating text blink on the
+                  // caret's clock is wrong in both directions (see resolveCursorGlyph).
+                  slowBlinkVisible = slowBlinkVisible,
+                  rapidBlinkVisible = rapidBlinkVisible,
+              ) else null,
+              glyphColor = cursorGlyphColor(
+                  theme = activeTheme,
+                  effectiveFill = baseCursorColor,
+                  fillIsAppSet = customCursorColor != null,
+              ),
+              glyphFontFamily = sharedFont,
+              glyphFontSize = effectiveFontSize,
+              glyphMeasurer = textMeasurer,
+              imageCell = cursorImageCell,
+              imageBitmap = cursorImageCell?.let { renderFrame.imagesById[it.imageId] }
+                ?.let { ImageRenderer.getOrDecodeImage(it) },
+            )
           }
+          CursorOverlay(cursorOverlay)
 
           // IME (Input Method Editor) handler for CJK input
           // Provides invisible TextField for IME composition (Pinyin, Hiragana, etc.)

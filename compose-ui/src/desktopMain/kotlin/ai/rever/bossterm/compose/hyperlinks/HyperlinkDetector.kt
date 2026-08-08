@@ -466,53 +466,43 @@ object HyperlinkDetector {
      * Collect wrapped lines starting from a given row, walking backwards to find the start
      * and forwards to find the end of the logical line.
      *
+     * Rows here are BUFFER rows: 0 is the top of the live screen and negative indices reach
+     * into history, matching [VersionedBufferSnapshot.getLine]. This used to take a screen row
+     * plus a scroll offset and add them, while every caller computed screen rows by
+     * subtracting the offset - so a scrolled-back viewport walked the wrong lines and bounded
+     * the forward walk against the wrong end of the buffer. Working in buffer space removes
+     * the conversion, and with it the chance of getting its sign wrong.
+     *
      * @param snapshot The buffer snapshot
-     * @param row The current row (screen row, 0-based from top of visible area)
-     * @param scrollOffset Current scroll offset (negative = scrolled into history)
+     * @param bufferRow The row to start from, in buffer coordinates
      * @param terminalWidth Terminal width in columns
      * @return JoinedLineInfo containing the complete logical line text and row mapping
      */
     fun collectWrappedLines(
         snapshot: VersionedBufferSnapshot,
-        row: Int,
-        scrollOffset: Int,
+        bufferRow: Int,
         terminalWidth: Int
     ): JoinedLineInfo {
-        val lineIndex = row + scrollOffset
-
         // Find start of logical line (walk backwards while previous line is wrapped)
         // Note: -snapshot.historyLinesCount is the oldest valid history line index
-        var startRow = row
-        var startLineIndex = lineIndex
-        while (startLineIndex > -snapshot.historyLinesCount) {
-            val prevLineIndex = startLineIndex - 1
-            val prevLine = snapshot.getLine(prevLineIndex)
-            if (prevLine.isWrapped) {
-                startLineIndex--
-                startRow--
-            } else {
-                break
-            }
+        var startRow = bufferRow
+        while (startRow > -snapshot.historyLinesCount) {
+            if (snapshot.getLine(startRow - 1).isWrapped) startRow-- else break
         }
 
         // Find end of logical line (walk forwards while current line is wrapped)
         var endRow = startRow
-        var endLineIndex = startLineIndex
         while (true) {
-            val currentLine = snapshot.getLine(endLineIndex)
-            if (!currentLine.isWrapped) {
-                break
-            }
-            endLineIndex++
+            if (!snapshot.getLine(endRow).isWrapped) break
             endRow++
-            if (endLineIndex >= snapshot.height) break
+            if (endRow >= snapshot.height) break
         }
 
         // Join lines with VISUAL WIDTH-aware position tracking
         val joinedText = StringBuilder()
         val rowOffsets = mutableListOf<Int>()
 
-        for (idx in startLineIndex..endLineIndex) {
+        for (idx in startRow..endRow) {
             rowOffsets.add(joinedText.length)
             val line = snapshot.getLine(idx)
             val text = line.text
@@ -520,7 +510,7 @@ object HyperlinkDetector {
 
             // Pad to terminal width based on VISUAL width, not character count
             // This correctly handles double-width characters (CJK, emoji) and DWC markers
-            if (idx < endLineIndex) {
+            if (idx < endRow) {
                 val visualWidth = calculateVisualWidth(line, terminalWidth)
                 if (visualWidth < terminalWidth) {
                     repeat(terminalWidth - visualWidth) {
@@ -566,24 +556,22 @@ object HyperlinkDetector {
      * Detect hyperlinks in wrapped lines, returning hyperlinks with proper row spans.
      *
      * @param snapshot The buffer snapshot
-     * @param screenRow The screen row to check (0-based from top of visible area)
-     * @param scrollOffset Current scroll offset
+     * @param bufferRow The row to check, in buffer coordinates (negative reaches into history)
      * @param terminalWidth Terminal width
      * @param workingDirectory The current working directory for resolving relative paths (optional)
      * @param detectFilePaths Whether to detect file paths as hyperlinks (default: true)
      * @param registry The pattern registry to use (default: global registry)
-     * @return List of hyperlinks that are part of this logical line
+     * @return List of hyperlinks that are part of this logical line, in buffer rows
      */
     fun detectHyperlinksWithWrapping(
         snapshot: VersionedBufferSnapshot,
-        screenRow: Int,
-        scrollOffset: Int,
+        bufferRow: Int,
         terminalWidth: Int,
         workingDirectory: String? = null,
         detectFilePaths: Boolean = true,
         registry: HyperlinkRegistry = this.registry
     ): List<Hyperlink> {
-        val lineInfo = collectWrappedLines(snapshot, screenRow, scrollOffset, terminalWidth)
+        val lineInfo = collectWrappedLines(snapshot, bufferRow, terminalWidth)
 
         // Detect hyperlinks in the joined text (pass the registry)
         val rawHyperlinks = detectHyperlinks(lineInfo.joinedText, lineInfo.startRow, workingDirectory, detectFilePaths, registry)

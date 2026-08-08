@@ -14,6 +14,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Compose implementation of TerminalDisplay interface with adaptive debouncing.
@@ -47,6 +48,21 @@ class ComposeTerminalDisplay : TerminalDisplay {
         NORMAL      // PTY output - apply debounce
     }
 
+    /**
+     * The four cursor fields as ONE value.
+     *
+     * Published through an AtomicReference rather than four @Volatile fields because
+     * [setCursor] writes x and then y: a reader landing between the two sees a position the
+     * terminal was never in, and the emulator moves the cursor many times per rendered frame.
+     * Still non-reactive - only `redrawTrigger` drives recomposition.
+     */
+    data class CursorSnapshot(
+        val x: Int,
+        val y: Int,
+        val visible: Boolean,
+        val shape: CursorShape?,
+    )
+
     // Current rendering mode
     @Volatile
     private var currentMode = RedrawMode.INTERACTIVE
@@ -71,10 +87,9 @@ class ComposeTerminalDisplay : TerminalDisplay {
     }
     // Non-reactive cursor state - only redrawTrigger controls recomposition
     // This prevents flickering caused by Compose State updates racing with debounced redraws
-    @Volatile private var _cursorXValue = 0
-    @Volatile private var _cursorYValue = 0
-    @Volatile private var _cursorVisibleValue = true
-    @Volatile private var _cursorShapeValue: CursorShape? = null
+    private val _cursor = AtomicReference(
+        CursorSnapshot(x = 0, y = 0, visible = true, shape = null)
+    )
     private val _bracketedPasteMode = mutableStateOf(false)
     private val _termSize = mutableStateOf(TermSize(80, 24))
 
@@ -98,11 +113,16 @@ class ComposeTerminalDisplay : TerminalDisplay {
     private val _progressState = mutableStateOf(TerminalDisplay.ProgressState.HIDDEN)
     private val _progressValue = mutableStateOf(0)
 
-    // Snapshot getters for cursor - non-reactive, read inside remember() blocks
-    val cursorXSnapshot: Int get() = _cursorXValue
-    val cursorYSnapshot: Int get() = _cursorYValue
-    val cursorVisibleSnapshot: Boolean get() = _cursorVisibleValue
-    val cursorShapeSnapshot: CursorShape? get() = _cursorShapeValue
+    /** All four cursor fields at once - see [CursorSnapshot]. Non-reactive. */
+    val cursorSnapshot: CursorSnapshot get() = _cursor.get()
+
+    // Single-field getters for callers that genuinely want one value (mirror share, tests).
+    // A renderer must use cursorSnapshot instead: reading these one at a time reintroduces
+    // exactly the tear the AtomicReference exists to close.
+    val cursorXSnapshot: Int get() = _cursor.get().x
+    val cursorYSnapshot: Int get() = _cursor.get().y
+    val cursorVisibleSnapshot: Boolean get() = _cursor.get().visible
+    val cursorShapeSnapshot: CursorShape? get() = _cursor.get().shape
     val bracketedPasteMode: State<Boolean> = _bracketedPasteMode
     val termSize: State<TermSize> = _termSize
     val mouseMode: State<MouseMode> = _mouseMode
@@ -164,37 +184,35 @@ class ComposeTerminalDisplay : TerminalDisplay {
      * scrollArea() or other buffer modification methods.
      */
     override fun setCursor(x: Int, y: Int) {
-        if (debugCursor && (_cursorXValue != x || _cursorYValue != y)) {
-            println("🔵 CURSOR MOVE: ($_cursorXValue,$_cursorYValue) → ($x,$y)")
+        // One atomic update, not two field writes: x and y have to land together or a reader
+        // between them sees a position the terminal was never in.
+        val previous = _cursor.getAndUpdate { it.copy(x = x, y = y) }
+        if (debugCursor && (previous.x != x || previous.y != y)) {
+            println("🔵 CURSOR MOVE: (${previous.x},${previous.y}) → ($x,$y)")
         }
-        val changed = _cursorXValue != x || _cursorYValue != y
-        _cursorXValue = x
-        _cursorYValue = y
         // Trigger redraw when cursor moves - fixes p10k/zsh TUI not updating
         // Cursor-only changes (no buffer modification) still need screen refresh
-        if (changed) {
+        if (previous.x != x || previous.y != y) {
             requestRedraw()
         }
     }
 
     override fun setCursorShape(cursorShape: CursorShape?) {
-        if (debugCursor && _cursorShapeValue != cursorShape) {
-            println("🔷 CURSOR SHAPE: $_cursorShapeValue → $cursorShape")
+        val previous = _cursor.getAndUpdate { it.copy(shape = cursorShape) }
+        if (debugCursor && previous.shape != cursorShape) {
+            println("🔷 CURSOR SHAPE: ${previous.shape} → $cursorShape")
         }
-        val changed = _cursorShapeValue != cursorShape
-        _cursorShapeValue = cursorShape
-        if (changed) {
+        if (previous.shape != cursorShape) {
             requestRedraw()
         }
     }
 
     override fun setCursorVisible(isCursorVisible: Boolean) {
-        if (debugCursor && _cursorVisibleValue != isCursorVisible) {
-            println("👁️  CURSOR VISIBLE: $_cursorVisibleValue → $isCursorVisible")
+        val previous = _cursor.getAndUpdate { it.copy(visible = isCursorVisible) }
+        if (debugCursor && previous.visible != isCursorVisible) {
+            println("👁️  CURSOR VISIBLE: ${previous.visible} → $isCursorVisible")
         }
-        val changed = _cursorVisibleValue != isCursorVisible
-        _cursorVisibleValue = isCursorVisible
-        if (changed) {
+        if (previous.visible != isCursorVisible) {
             requestRedraw()
         }
     }

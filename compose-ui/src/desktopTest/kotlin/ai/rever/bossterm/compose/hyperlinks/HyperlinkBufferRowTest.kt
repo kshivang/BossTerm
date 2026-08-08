@@ -95,7 +95,7 @@ class HyperlinkBufferRowTest {
         var detections = 0
 
         repeat(5) {
-            cache.linksAt(1, listOf(snapshot.getLine(1)), cwd = null, detectFilePaths = false) {
+            cache.linksAt(1, listOf(snapshot.getLine(1)), cwd = null, detectFilePaths = false, registryRevision = 0) {
                 detections++
                 emptyList()
             }
@@ -111,9 +111,9 @@ class HyperlinkBufferRowTest {
         var detections = 0
         val detect = { detections++; emptyList<Hyperlink>() }
 
-        cache.linksAt(1, listOf(buffer.createIncrementalSnapshot().getLine(1)), null, false, detect)
+        cache.linksAt(1, listOf(buffer.createIncrementalSnapshot().getLine(1)), null, false, 0, detect)
         write(buffer, 2, "second line entirely")
-        cache.linksAt(1, listOf(buffer.createIncrementalSnapshot().getLine(1)), null, false, detect)
+        cache.linksAt(1, listOf(buffer.createIncrementalSnapshot().getLine(1)), null, false, 0, detect)
 
         assertEquals(2, detections, "a changed row must miss")
     }
@@ -141,6 +141,7 @@ class HyperlinkBufferRowTest {
                 runLines = HyperlinkDetector.runLinesAt(snapshot, 0),
                 cwd = null,
                 detectFilePaths = false,
+                registryRevision = 0,
             ) { detections++; emptyList() }
         }
         assertEquals(1, detections, "an unchanged wrapped run must not re-detect per event")
@@ -157,11 +158,11 @@ class HyperlinkBufferRowTest {
         val detect = { detections++; emptyList<Hyperlink>() }
 
         val first = buffer.createIncrementalSnapshot()
-        cache.linksAt(0, HyperlinkDetector.runLinesAt(first, 0), null, false, detect)
+        cache.linksAt(0, HyperlinkDetector.runLinesAt(first, 0), null, false, 0, detect)
         // Row 0 itself is untouched - the CONTINUATION changes, and it is part of the answer.
         write(buffer, 2, "other/path/here")
         val second = buffer.createIncrementalSnapshot()
-        cache.linksAt(0, HyperlinkDetector.runLinesAt(second, 0), null, false, detect)
+        cache.linksAt(0, HyperlinkDetector.runLinesAt(second, 0), null, false, 0, detect)
 
         assertEquals(2, detections, "the run's other lines are part of the key")
     }
@@ -187,15 +188,18 @@ class HyperlinkBufferRowTest {
         val cache = HyperlinkRowCache()
         var detections = 0
         repeat(5) {
-            cache.linksAt(2, HyperlinkDetector.runLinesAt(snapshot, 2), null, false) {
+            cache.linksAt(2, HyperlinkDetector.runLinesAt(snapshot, 2), null, false, 0) {
                 detections++; emptyList()
             }
         }
         assertEquals(1, detections, "a run at the bottom of the screen must not re-detect")
 
+        // Exact instances, not a size bound: the bug put a fresh out-of-range createEmpty() in
+        // the list, which a size check would happily accept.
+        val run = HyperlinkDetector.runLinesAt(snapshot, 2)
         assertTrue(
-            HyperlinkDetector.runLinesAt(snapshot, 2).size <= buffer.height + 1,
-            "the walk must not run past the last screen row",
+            run.all { line -> (-snapshot.historyLinesCount until snapshot.height).any { snapshot.getLine(it) === line } },
+            "every line in the key must be one the snapshot actually holds",
         )
     }
 
@@ -214,13 +218,13 @@ class HyperlinkBufferRowTest {
         val detect = { detections++; emptyList<Hyperlink>() }
 
         val first = buffer.createIncrementalSnapshot()
-        cache.linksAt(1, HyperlinkDetector.runLinesAt(first, 1), null, false, detect)
+        cache.linksAt(1, HyperlinkDetector.runLinesAt(first, 1), null, false, 0, detect)
 
         // Row 1's own line is untouched; only its PREDECESSOR changes.
         write(buffer, 1, "https://example.com/")
         buffer.getLine(0).isWrapped = true
         val second = buffer.createIncrementalSnapshot()
-        cache.linksAt(1, HyperlinkDetector.runLinesAt(second, 1), null, false, detect)
+        cache.linksAt(1, HyperlinkDetector.runLinesAt(second, 1), null, false, 0, detect)
 
         assertEquals(2, detections, "the predecessor's wrap flag is part of the answer")
     }
@@ -240,14 +244,14 @@ class HyperlinkBufferRowTest {
         val detect = { detections++; emptyList<Hyperlink>() }
         val run = listOf(snapshot.getLine(1))
 
-        cache.linksAt(1, run, cwd = "/a", detectFilePaths = true, detect = detect)
-        cache.linksAt(1, run, cwd = "/a", detectFilePaths = true, detect = detect)
+        cache.linksAt(1, run, cwd = "/a", detectFilePaths = true, registryRevision = 0, detect = detect)
+        cache.linksAt(1, run, cwd = "/a", detectFilePaths = true, registryRevision = 0, detect = detect)
         assertEquals(1, detections, "same cwd, same line: one detection")
 
-        cache.linksAt(1, run, cwd = "/b", detectFilePaths = true, detect = detect)
+        cache.linksAt(1, run, cwd = "/b", detectFilePaths = true, registryRevision = 0, detect = detect)
         assertEquals(2, detections, "a cd must invalidate paths resolved against the old cwd")
 
-        cache.linksAt(1, run, cwd = "/b", detectFilePaths = false, detect = detect)
+        cache.linksAt(1, run, cwd = "/b", detectFilePaths = false, registryRevision = 0, detect = detect)
         assertEquals(3, detections, "toggling path detection must invalidate too")
     }
 }

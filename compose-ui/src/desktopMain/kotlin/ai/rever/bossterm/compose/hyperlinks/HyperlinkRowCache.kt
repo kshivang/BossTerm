@@ -16,8 +16,10 @@ import ai.rever.bossterm.terminal.model.TerminalLine
  * the entire logical line) plus the full registry sweep on every pointer-move event - and in a
  * long-output session wrapped rows are the common case, not the exception.
  *
- * [cwd] and [detectFilePaths] are part of the key because `detect` resolves relative paths
- * against them: after a `cd`, an unchanged line must produce different `file://` targets.
+ * [cwd], [detectFilePaths] and the registry revision are part of the key because `detect`
+ * resolves against all three: after a `cd` an unchanged line must produce different `file://`
+ * targets, and an embedder adding a pattern at runtime must reach rows already memoized - the
+ * line instance never changes, so nothing else would ever invalidate them.
  *
  * Deliberately NOT Compose state. It is written from a pointer handler, and the cache it
  * replaces was `mutableStateOf` read and written inside the draw lambda - a draw-phase write to
@@ -31,6 +33,7 @@ internal class HyperlinkRowCache {
     val lines: List<TerminalLine>,
     val cwd: String?,
     val detectFilePaths: Boolean,
+    val registryRevision: Int,
     val links: List<Hyperlink>,
   )
 
@@ -47,19 +50,23 @@ internal class HyperlinkRowCache {
     runLines: List<TerminalLine>,
     cwd: String?,
     detectFilePaths: Boolean,
+    registryRevision: Int,
     detect: () -> List<Hyperlink>,
   ): List<Hyperlink> {
     val hit = rows[bufferRow]
     if (hit != null &&
       hit.cwd == cwd &&
       hit.detectFilePaths == detectFilePaths &&
+      hit.registryRevision == registryRevision &&
       hit.lines.size == runLines.size &&
       hit.lines.indices.all { hit.lines[it] === runLines[it] }
     ) {
       return hit.links
     }
-    if (rows.size > MAX_ROWS) rows.clear()
-    return detect().also { rows[bufferRow] = Entry(runLines, cwd, detectFilePaths, it) }
+    if (rows.size >= MAX_ROWS) rows.clear()
+    return detect().also {
+      rows[bufferRow] = Entry(runLines, cwd, detectFilePaths, registryRevision, it)
+    }
   }
 
   fun clear() {

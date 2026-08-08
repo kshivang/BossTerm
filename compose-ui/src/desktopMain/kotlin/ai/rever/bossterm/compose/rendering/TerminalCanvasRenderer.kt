@@ -159,6 +159,17 @@ enum class GlyphBlink {
 }
 
 /**
+ * Whether this shape's caret is drawn on the caret blink clock.
+ *
+ * [renderCursorOverlay] consults the clock only for the BLINK_* shapes, so a reader that wants
+ * to avoid subscribing to it needlessly can ask here first.
+ */
+fun CursorShape?.isBlinkingShape(): Boolean = when (this) {
+    CursorShape.BLINK_BLOCK, CursorShape.BLINK_UNDERLINE, CursorShape.BLINK_VERTICAL_BAR -> true
+    else -> false
+}
+
+/**
  * Result of analyzing a character for rendering purposes.
  * Encapsulates surrogate pair handling, double-width detection, and variation selector info.
  *

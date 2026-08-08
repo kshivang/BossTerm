@@ -70,6 +70,9 @@ class BlinkClockTest {
     fun theOldFixedDelayLoopDriftsAndTheAbsoluteEdgeLoopDoesNot() {
         val period = 500L
         // Deterministic pseudo-random lateness in 0..400ms; a fixed seed keeps the test stable.
+        // Bounded BELOW one period on purpose: the per-edge invariant asserted at the end only
+        // holds while a late wake does not skip an edge outright. Widening this range would
+        // make the assertion fail for a reason that is not a regression.
         var seed = 12345L
         val lateness = LongArray(20) {
             seed = (seed * 1103515245 + 12345) and 0x7FFFFFFF

@@ -9,13 +9,18 @@ import java.util.concurrent.CopyOnWriteArrayList
 /**
  * Represents a detected hyperlink in terminal text that may span multiple terminal lines.
  *
+ * All row numbers here are BUFFER rows: 0 is the top of the live screen and negative indices
+ * reach into history, matching `VersionedBufferSnapshot.getLine`. They used to be screen rows,
+ * which meant they silently changed meaning as the viewport scrolled; add `scrollOffset` to
+ * convert one to a screen row for painting or hit-testing.
+ *
  * @property url The URL to open when clicked
  * @property startCol Start column (0-based) in the first row
  * @property endCol End column (exclusive) in the last row
- * @property row Row number of the first line (for backwards compatibility)
- * @property startRow First row of the hyperlink (same as row)
- * @property endRow Last row of the hyperlink (same as startRow for single-line links)
- * @property rowSpans Map of row -> (startCol, endCol) for each row the hyperlink spans
+ * @property row Buffer row of the first line (for backwards compatibility)
+ * @property startRow First buffer row of the hyperlink (same as row)
+ * @property endRow Last buffer row of the hyperlink (same as startRow for single-line links)
+ * @property rowSpans Map of buffer row -> (startCol, endCol) for each row the hyperlink spans
  * @property patternId The ID of the pattern that matched this hyperlink (e.g., "builtin:http")
  * @property matchedText The original text that was matched before URL transformation
  */
@@ -43,8 +48,8 @@ data class Hyperlink(
  * Holds information about joined wrapped lines for hyperlink detection.
  *
  * @property joinedText The concatenated text from all wrapped lines
- * @property startRow The first row (screen coordinates) of the logical line
- * @property endRow The last row (screen coordinates) of the logical line
+ * @property startRow The first row (buffer coordinates) of the logical line
+ * @property endRow The last row (buffer coordinates) of the logical line
  * @property rowOffsets Character offset in joinedText where each row starts
  */
 data class JoinedLineInfo(
@@ -107,6 +112,16 @@ data class HyperlinkPattern(
  */
 class HyperlinkRegistry {
     private val patterns = CopyOnWriteArrayList<HyperlinkPattern>()
+
+    private val _revision = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * Bumped on every mutation, so a caller memoizing detection results can key on it.
+     *
+     * Without it an embedder adding or removing a pattern at runtime would never reach an
+     * already-memoized row: the row's line instance does not change, so the memo hits forever.
+     */
+    val revision: Int get() = _revision.get()
 
     init {
         // Register built-in patterns
@@ -236,6 +251,7 @@ class HyperlinkRegistry {
         // Remove existing pattern with same ID
         patterns.removeIf { it.id == pattern.id }
         patterns.add(pattern)
+        _revision.incrementAndGet()
     }
 
     /**
@@ -244,9 +260,8 @@ class HyperlinkRegistry {
      * @param id The pattern ID to remove
      * @return true if pattern was found and removed
      */
-    fun removePattern(id: String): Boolean {
-        return patterns.removeIf { it.id == id }
-    }
+    fun removePattern(id: String): Boolean =
+        patterns.removeIf { it.id == id }.also { if (it) _revision.incrementAndGet() }
 
     /**
      * Get a pattern by ID.
@@ -270,6 +285,7 @@ class HyperlinkRegistry {
      */
     fun clear() {
         patterns.clear()
+        _revision.incrementAndGet()
     }
 
     /**
@@ -553,17 +569,6 @@ object HyperlinkDetector {
     }
 
     /**
-     * Detect hyperlinks in wrapped lines, returning hyperlinks with proper row spans.
-     *
-     * @param snapshot The buffer snapshot
-     * @param bufferRow The row to check, in buffer coordinates (negative reaches into history)
-     * @param terminalWidth Terminal width
-     * @param workingDirectory The current working directory for resolving relative paths (optional)
-     * @param detectFilePaths Whether to detect file paths as hyperlinks (default: true)
-     * @param registry The pattern registry to use (default: global registry)
-     * @return List of hyperlinks that are part of this logical line, in buffer rows
-     */
-    /**
      * Whether [bufferRow] is part of a wrapped logical line, in either direction.
      *
      * `isWrapped` means "this line wraps INTO the next", so a row is a continuation when its
@@ -637,6 +642,17 @@ object HyperlinkDetector {
         )
     }
 
+    /**
+     * Detect hyperlinks in wrapped lines, returning hyperlinks with proper row spans.
+     *
+     * @param snapshot The buffer snapshot
+     * @param bufferRow The row to check, in buffer coordinates (negative reaches into history)
+     * @param terminalWidth Terminal width
+     * @param workingDirectory The current working directory for resolving relative paths (optional)
+     * @param detectFilePaths Whether to detect file paths as hyperlinks (default: true)
+     * @param registry The pattern registry to use (default: global registry)
+     * @return List of hyperlinks that are part of this logical line, in buffer rows
+     */
     fun detectHyperlinksWithWrapping(
         snapshot: VersionedBufferSnapshot,
         bufferRow: Int,

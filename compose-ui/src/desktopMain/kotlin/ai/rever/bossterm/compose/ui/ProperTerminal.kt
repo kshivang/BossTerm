@@ -163,6 +163,13 @@ internal class UiRef<T> {
   var value: T? = null
 }
 
+/** The last hover resolution, so repeat events on the same row cost nothing. */
+internal class HoverRow(
+  val snapshot: VersionedBufferSnapshot,
+  val bufferRow: Int,
+  val links: List<Hyperlink>,
+)
+
 /** UI-thread-confined retention committed only after an accepted composition applies. */
 internal class StableRenderFrameHolder<T : Any> {
   private var frame: T? = null
@@ -443,6 +450,8 @@ fun ProperTerminal(
   // render per frame.
   val hyperlinkCache = remember(textBuffer) { HyperlinkRowCache() }
   val hoverSnapshot = remember(textBuffer) { UiRef<VersionedBufferSnapshot>() }
+  // Last row resolved, so a Move that stays on it skips the run walk entirely.
+  val lastHover = remember(textBuffer) { UiRef<HoverRow>() }
   // Track previous hover state for consumer callbacks
   var previousHoveredHyperlink by remember { mutableStateOf<Hyperlink?>(null) }
 
@@ -460,7 +469,6 @@ fun ProperTerminal(
   // This prevents flickering caused by cursor updates triggering separate recompositions
   // Type-ahead cursor override is handled separately in the Canvas
 
-  // Blink state for SLOW_BLINK and RAPID_BLINK text attributes
 
   // Whether blink-attributed text is actually present in the visible region. The
   // renderer writes this back each frame via `blinkProbe` (no extra scan), and the
@@ -805,11 +813,11 @@ fun ProperTerminal(
   // the whole text canvas for the two SGR clocks, the small cursor overlay for the caret. Letting
   // those loops run while the window is in the background, or for a tab that isn't the visible
   // one, wakes the CPU/GPU twice a second forever for no visible benefit (a major battery
-  // drain). Gate them so an idle
-  // or backgrounded terminal produces zero periodic repaints, matching iTerm2/Terminal.app
-  // (the cursor stops blinking when the app isn't frontmost). When a loop is parked we
-  // freeze its flag to "visible" so the cursor shows solid and blink-attributed text stays
-  // readable; the renderer still draws the unfocused cursor style from `isFocused`.
+  // drain). Gate them so an idle or backgrounded terminal produces zero periodic repaints,
+  // matching iTerm2/Terminal.app (the cursor stops blinking when the app isn't frontmost). When
+  // a loop is parked we freeze its flag to "visible" so the cursor shows solid and
+  // blink-attributed text stays readable; the renderer still draws the unfocused cursor style
+  // from `isFocused`.
   val blinkActive = isActiveTab && LocalWindowInfo.current.isWindowFocused
 
   // SLOW_BLINK animation timer (configurable via settings.slowTextBlinkMs).
@@ -1570,23 +1578,35 @@ fun ProperTerminal(
           val inRange = snapshot != null &&
             bufferRow >= -snapshot.historyLinesCount && bufferRow < snapshot.height
           val hyperlinksForRow = if (!inRange) null else snapshot!!.let { snap ->
-            val cwd = tab.workingDirectory.value
-            hyperlinkCache.linksAt(
-              bufferRow = bufferRow,
-              // A wrapped row's answer depends on its whole logical run, so the key is every
-              // line in it - an edit to a sibling row has to miss.
-              runLines = HyperlinkDetector.runLinesAt(snap, bufferRow),
-              cwd = cwd,
-              detectFilePaths = settings.detectFilePaths,
-            ) {
-              HyperlinkDetector.detectForBufferRow(
-                snapshot = snap,
+            val previous = lastHover.value
+            if (previous != null && previous.snapshot === snap && previous.bufferRow == bufferRow) {
+              // The pointer crosses many pixels per row, so the overwhelming majority of Move
+              // events land on the row the last one did. Short-circuit before runLinesAt: its
+              // backwards walk is bounded by history depth, not by the viewport, so one mouse
+              // move over a long wrapped run (a `cat` of a file with no newlines) would walk
+              // thousands of rows and then compare thousands of references, per event, even on
+              // a memo hit.
+              previous.links
+            } else {
+              val cwd = tab.workingDirectory.value
+              hyperlinkCache.linksAt(
                 bufferRow = bufferRow,
-                terminalWidth = snap.width,
-                workingDirectory = cwd,
+                // A wrapped row's answer depends on its whole logical run, so the key is every
+                // line in it - an edit to a sibling row has to miss.
+                runLines = HyperlinkDetector.runLinesAt(snap, bufferRow),
+                cwd = cwd,
                 detectFilePaths = settings.detectFilePaths,
-                registry = hyperlinkRegistry,
-              )
+                registryRevision = hyperlinkRegistry.revision,
+              ) {
+                HyperlinkDetector.detectForBufferRow(
+                  snapshot = snap,
+                  bufferRow = bufferRow,
+                  terminalWidth = snap.width,
+                  workingDirectory = cwd,
+                  detectFilePaths = settings.detectFilePaths,
+                  registry = hyperlinkRegistry,
+                )
+              }.also { lastHover.value = HoverRow(snap, bufferRow, it) }
             }
           }
           hoveredHyperlink = hyperlinksForRow?.firstOrNull { link ->
@@ -2071,9 +2091,9 @@ fun ProperTerminal(
           capturedFrame?.let(stableFrameHolder::commit)
         }
         SideEffect {
-          // Hand the pointer handler the snapshot that was actually drawn. A plain array cell
-          // rather than Compose state: the hover path is the only reader, and making it state
-          // would put a write in the apply phase that recomposes the whole composable.
+          // Hand the pointer handler the snapshot that was actually drawn. A plain box rather
+          // than Compose state: the hover path is the only reader, and making it state would put
+          // a write in the apply phase that recomposes the whole composable.
           hoverSnapshot.value = renderFrame?.buffer
         }
         // A first mount during ?2026 has no trusted fallback frame yet. Leave only
@@ -2728,6 +2748,12 @@ internal fun resolveCursorGlyph(
         // Recorded, not applied: this runs in the apply phase, where a clock read subscribes
         // nothing. The overlay gates on it in its draw lambda instead, so a text-blink toggle
         // repaints the caret's glyph in step with the text pass.
+        //
+        // A cell carrying BOTH SGR 5 and SGR 6 follows the slow clock here, where the old
+        // gate-at-resolve-time hid the glyph if either clock was off. The combination is
+        // ill-defined in the spec and the text pass itself picks one, so following one clock
+        // matches what the cell underneath is doing; the deliberate part is that it is a
+        // choice, not an oversight.
         blink = when {
             style?.hasOption(BossTextStyle.Option.SLOW_BLINK) == true -> GlyphBlink.SLOW
             style?.hasOption(BossTextStyle.Option.RAPID_BLINK) == true -> GlyphBlink.RAPID

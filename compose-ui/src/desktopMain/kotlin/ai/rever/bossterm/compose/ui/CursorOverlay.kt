@@ -17,6 +17,8 @@ import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import ai.rever.bossterm.compose.rendering.CursorGlyph
+import ai.rever.bossterm.compose.rendering.GlyphBlink
+import ai.rever.bossterm.compose.rendering.isBlinkingShape
 import ai.rever.bossterm.compose.rendering.TerminalCanvasRenderer
 import ai.rever.bossterm.compose.rendering.imageCellSlice
 import ai.rever.bossterm.terminal.CursorShape
@@ -101,11 +103,21 @@ internal class TerminalPaintState {
 internal fun CursorOverlay(state: TerminalPaintState) {
   Canvas(modifier = Modifier.padding(start = 4.dp, top = 4.dp).fillMaxSize().clipToBounds()) {
     val f = state.cursorFrame ?: return@Canvas
-    val blink = state.caretVisible
-    // The SGR clocks gate the repainted glyph HERE, in the draw phase, so this layer repaints
-    // in step with the text pass. resolveCursorGlyph only records which clock the cell follows.
-    val glyph = f.glyph?.takeIf {
-      it.blink.isVisible(state.slowBlinkVisible, state.rapidBlinkVisible)
+    // Every read below is a SUBSCRIPTION, so each is taken only when it can change what this
+    // layer paints. A steady caret shape ignores the caret clock entirely (see
+    // renderCursorOverlay), and reading it anyway would repaint a pixel-identical frame twice
+    // a period for the whole life of the tab - DECSCUSR 2/4/6 is what plenty of shells set.
+    val blink = if (f.shape.isBlinkingShape()) state.caretVisible else true
+    // Likewise the SGR clocks: an ordinary cell follows neither, and `isVisible(a, b)` would
+    // evaluate both and subscribe to both. Gating HERE rather than at resolve time is what
+    // keeps the caret's glyph in step with the text pass, since resolution runs in the apply
+    // phase where a read subscribes nothing.
+    val glyph = f.glyph?.takeIf { g ->
+      when (g.blink) {
+        GlyphBlink.NONE -> true
+        GlyphBlink.SLOW -> state.slowBlinkVisible
+        GlyphBlink.RAPID -> state.rapidBlinkVisible
+      }
     }
     if (size.width < f.cellWidth || size.height < f.cellHeight) return@Canvas
 

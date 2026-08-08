@@ -21,8 +21,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.SelectionMode
 import ai.rever.bossterm.compose.hyperlinks.Hyperlink
-import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
-import ai.rever.bossterm.compose.hyperlinks.HyperlinkRegistry
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.util.ColorUtils

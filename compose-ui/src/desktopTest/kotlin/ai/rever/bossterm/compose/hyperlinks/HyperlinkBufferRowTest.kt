@@ -167,6 +167,65 @@ class HyperlinkBufferRowTest {
     }
 
     /**
+     * A run ending on the LAST screen row must still memoize.
+     *
+     * `getLine` returns a fresh `createEmpty()` out of range, so a forward walk that checked the
+     * wrap flag before the bounds could let `end` reach `height` and put a never-identity-equal
+     * instance in the key - missing the memo on every single event, for exactly the rows a live
+     * TUI's wrapped output occupies.
+     */
+    @Test
+    fun aWrappedRunEndingOnTheLastRowStillMemoizes() {
+        val buffer = TerminalTextBuffer(20, 4, StyleState(), 100)
+        write(buffer, 3, "https://example.com/")
+        write(buffer, 4, "deep/path")
+        buffer.getLine(2).isWrapped = true
+        // The run is rows 2..3, and 3 is the last screen row of a 4-row buffer.
+        buffer.getLine(3).isWrapped = true
+
+        val snapshot = buffer.createIncrementalSnapshot()
+        val cache = HyperlinkRowCache()
+        var detections = 0
+        repeat(5) {
+            cache.linksAt(2, HyperlinkDetector.runLinesAt(snapshot, 2), null, false) {
+                detections++; emptyList()
+            }
+        }
+        assertEquals(1, detections, "a run at the bottom of the screen must not re-detect")
+
+        assertTrue(
+            HyperlinkDetector.runLinesAt(snapshot, 2).size <= buffer.height + 1,
+            "the walk must not run past the last screen row",
+        )
+    }
+
+    /**
+     * The predecessor decides whether a row is a continuation, so it belongs in the key even for
+     * a row that is currently NOT wrapped. A TUI rewriting row R-1 so it wraps into R leaves R's
+     * own line untouched, and without this the memo would keep returning the single-row answer.
+     */
+    @Test
+    fun aRowReDetectsWhenItsPredecessorStartsWrappingIntoIt() {
+        val buffer = TerminalTextBuffer(20, 4, StyleState(), 100)
+        write(buffer, 1, "plain")
+        write(buffer, 2, "https://example.com")
+        val cache = HyperlinkRowCache()
+        var detections = 0
+        val detect = { detections++; emptyList<Hyperlink>() }
+
+        val first = buffer.createIncrementalSnapshot()
+        cache.linksAt(1, HyperlinkDetector.runLinesAt(first, 1), null, false, detect)
+
+        // Row 1's own line is untouched; only its PREDECESSOR changes.
+        write(buffer, 1, "https://example.com/")
+        buffer.getLine(0).isWrapped = true
+        val second = buffer.createIncrementalSnapshot()
+        cache.linksAt(1, HyperlinkDetector.runLinesAt(second, 1), null, false, detect)
+
+        assertEquals(2, detections, "the predecessor's wrap flag is part of the answer")
+    }
+
+    /**
      * Detection resolves relative paths against the working directory, so an unchanged line
      * must still re-detect after a `cd` - otherwise a stale `file://` target survives forever,
      * since the line instance never changes.

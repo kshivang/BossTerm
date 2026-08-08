@@ -76,6 +76,24 @@ class CursorFrameEqualityTest {
     }
 
     /**
+     * Focus and theme colour reach the caret through the frame, so they have to invalidate it.
+     *
+     * The gap this closes is not equality itself - it is that nothing pinned "a focus change
+     * updates the caret" at all, which is how a regression that dropped their subscription got
+     * through. Both are now read at composable scope so the publishing effect re-runs; this is
+     * the half of that contract a unit test can hold.
+     */
+    @Test
+    fun focusAndColourInvalidateTheOverlay() {
+        assertNotEquals(frame(), frame().copy(isFocused = false))
+        assertNotEquals(frame(), frame().copy(color = Color.Red))
+        assertNotEquals(frame(), frame().copy(glyphColor = Color.Red))
+        // The alphas are what `isFocused` actually selects between in the renderer.
+        assertNotEquals(frame(), frame().copy(focusedAlpha = 0.5f))
+        assertNotEquals(frame(), frame().copy(unfocusedAlpha = 0.5f))
+    }
+
+    /**
      * The glyph is a data class, so two frames built from the same cell compare equal and the
      * overlay is not invalidated - and a different character, style or blink attribute does
      * invalidate it. Left uncovered originally, which is why the blink-gate regression got

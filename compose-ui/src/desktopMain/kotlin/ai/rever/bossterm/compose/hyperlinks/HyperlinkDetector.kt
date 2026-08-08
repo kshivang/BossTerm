@@ -581,14 +581,33 @@ object HyperlinkDetector {
      * an edit to a sibling row goes unnoticed. Just the wrap-flag walk - no rejoin, no regex.
      */
     fun runLinesAt(snapshot: VersionedBufferSnapshot, bufferRow: Int): List<TerminalLine> {
-        if (!isPartOfWrappedRun(snapshot, bufferRow)) return listOf(snapshot.getLine(bufferRow))
+        val oldest = -snapshot.historyLinesCount
+        if (!isPartOfWrappedRun(snapshot, bufferRow)) {
+            // The predecessor's wrap flag is what decided this row is NOT a continuation, so it
+            // is part of the answer and has to be in the key: a TUI rewriting row R-1 so it now
+            // wraps into R would otherwise hit this memo on R's unchanged line and keep
+            // returning the single-row result forever.
+            return if (bufferRow - 1 >= oldest) {
+                listOf(snapshot.getLine(bufferRow), snapshot.getLine(bufferRow - 1))
+            } else {
+                listOf(snapshot.getLine(bufferRow))
+            }
+        }
         var start = bufferRow
-        while (start > -snapshot.historyLinesCount) {
+        while (start > oldest) {
             if (snapshot.getLine(start - 1).isWrapped) start-- else break
         }
+        // Bounds FIRST: getLine returns a fresh createEmpty() out of range, so letting `end`
+        // reach `height` would put a never-identity-equal instance in the key and miss the memo
+        // on every single event - for a run that ends on the last screen row, which is exactly
+        // where a live TUI's wrapped output sits.
         var end = start
-        while (snapshot.getLine(end).isWrapped && end < snapshot.height) end++
-        return (start..end).map { snapshot.getLine(it) }
+        while (end < snapshot.height - 1 && snapshot.getLine(end).isWrapped) end++
+        val lines = ArrayList<TerminalLine>(end - start + 2)
+        for (row in start..end) lines.add(snapshot.getLine(row))
+        // Same reason as above, for the walk that found `start`.
+        if (start - 1 >= oldest) lines.add(snapshot.getLine(start - 1))
+        return lines
     }
 
     /**

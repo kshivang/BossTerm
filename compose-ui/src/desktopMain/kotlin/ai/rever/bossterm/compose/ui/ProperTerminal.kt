@@ -517,6 +517,9 @@ fun ProperTerminal(
     } finally {
       buffer.unlock()
     }
+    // Every negative buffer row the memo holds just stopped existing, and the entries pin the
+    // lines that were dropped.
+    hyperlinkCache.clear()
     display.requestImmediateRedraw()
   }
 
@@ -734,7 +737,9 @@ fun ProperTerminal(
 
   // Cursor blink state for BLINK_* cursor shapes, plus the frame the overlay draws. Both live
   // on one identity-stable holder so the overlay's draw lambda has a single stable capture.
-  val paintState = remember(tab.id) { TerminalPaintState() }
+  // Unkeyed on purpose: the three blink LaunchedEffects capture this holder but are not keyed
+  // on it, so a key here could leave them writing an orphaned instance while the caret froze.
+  val paintState = remember { TerminalPaintState() }
 
   // Use shared font loaded once by Main.kt (performance optimization for multiple tabs)
   // Font loading is expensive and should only happen once, not per tab
@@ -1066,6 +1071,10 @@ fun ProperTerminal(
               // Reset scroll to bottom on resize - history size may have changed, making old offset invalid
               // This ensures the user sees the current screen content after resize
               scrollOffset = 0
+              // A reflow rewrites every line, so every memoized row is stale. Dropping them also
+              // releases the TerminalLines the memo pins, which would otherwise outlive their
+              // eviction from history.
+              hyperlinkCache.clear()
               // Also notify the process handle if available (must be launched in coroutine)
               scope.launch {
                 processHandle?.resize(newCols, newRows)
@@ -1997,12 +2006,13 @@ fun ProperTerminal(
             // the caret many times per rendered frame.
             //
             // LOCK ORDER: the UI thread takes myLock here and, under it, only ever takes
-            // syncUpdateLock - the same myLock -> syncUpdateLock order the emulator uses
-            // (setCursor fires requestRedraw inside the buffer lock), so it is never inverted.
-            // That inner acquisition is reachable: on the alternate screen with live
-            // predictions, predictedCursorX resets state, which fires a model change and so a
-            // redraw request. No Compose state is touched under the lock, which is the hazard
-            // documented on captureStableRenderFrame and on HistoryAppendBank.
+            // monitors the emulator also takes in that order, so it is never inverted. The
+            // emulator runs myLock -> syncUpdateLock (setCursor fires requestRedraw inside the
+            // buffer lock) and myLock -> the debouncer monitor; predictedCursorX's alt-screen
+            // reset reaches the latter through terminateCall, and the debouncer runs its
+            // callback outside its own monitor, so neither nests the other way. No Compose
+            // state is touched under the lock, which is the hazard documented on
+            // captureStableRenderFrame and on HistoryAppendBank.
             // captureStableRenderFrame itself takes syncUpdateLock before this lambda and again
             // after it returns, never during. myLock is reentrant, so the nested acquisitions
             // below are free, and this replaces TWO acquisitions per composition with one: the
@@ -2081,6 +2091,25 @@ fun ProperTerminal(
           // frame, so it describes the same instant as the row beside it.
           val effectiveCursorX = renderFrame.typeAheadCursorX?.minus(1) ?: cursorX
 
+          // Read at COMPOSABLE scope, not inside the SideEffect that publishes the caret frame.
+          // A SideEffect runs in the apply phase, outside observeReads, so a read there
+          // subscribes nothing: `activeTheme` is collectAsState and `isFocused` is tab state, so
+          // reading them only in the effect would leave the caret on the old theme colour and
+          // the old focus alpha until some unrelated recomposition happened to fire - on an idle
+          // terminal, indefinitely. Reading them here is what re-runs the effect. (Window focus
+          // is separate and already gates the blink loops via `blinkActive`; this is in-window
+          // focus, so clicking into the search field has to dim the caret.)
+          val caretIsFocused = isFocused
+          val appCursorColor = terminal.cursorColor
+          val baseCursorColor = if (appCursorColor != null) {
+            Color(appCursorColor.red, appCursorColor.green, appCursorColor.blue)
+          } else activeTheme.cursorColor
+          val caretGlyphColor = cursorGlyphColor(
+            theme = activeTheme,
+            effectiveFill = baseCursorColor,
+            fillIsAppSet = appCursorColor != null,
+          )
+
           Canvas(modifier = Modifier.padding(start = 4.dp, top = 4.dp).fillMaxSize().clipToBounds()) {
             // Guard against invalid canvas sizes during resize - prevents drawText constraint failures
             if (size.width < cellWidth || size.height < cellHeight) return@Canvas
@@ -2092,14 +2121,6 @@ fun ProperTerminal(
             // Use ceil for rows to include partially visible bottom row (Canvas clips automatically)
             val visibleCols = (size.width / cellWidth).toInt().coerceAtMost(bufferSnapshot.width)
             val visibleRows = kotlin.math.ceil(size.height / cellHeight).toInt().coerceAtMost(bufferSnapshot.height)
-
-            // Get cursor color from terminal (OSC 12), falling back to the active theme's
-            // cursor color so the cursor stays visible against light and dark backgrounds
-            // alike when no app has overridden it.
-            val customCursorColor = terminal.cursorColor
-            val baseCursorColor = if (customCursorColor != null) {
-              Color(customCursorColor.red, customCursorColor.green, customCursorColor.blue)
-            } else activeTheme.cursorColor
 
             // Resolve content-anchored selection to current coordinates
             // This allows selection to follow content as terminal scrolls
@@ -2206,10 +2227,6 @@ fun ProperTerminal(
           // after the fold's SideEffect on purpose, so `effectiveScrollOffset` is the value the
           // text canvas actually drew with.
           SideEffect {
-            val customCursorColor = terminal.cursorColor
-            val baseCursorColor = if (customCursorColor != null) {
-              Color(customCursorColor.red, customCursorColor.green, customCursorColor.blue)
-            } else activeTheme.cursorColor
             val bufferCursorRow = (cursorY - 1).coerceAtLeast(0)
             val cursorLine = bufferSnapshot.getLine(bufferCursorRow)
             val cursorImageCell = cursorLine.getImageCellAt(effectiveCursorX)
@@ -2222,7 +2239,7 @@ fun ProperTerminal(
               cellWidth = cellWidth,
               cellHeight = cellHeight,
               bufferWidth = bufferSnapshot.width,
-              isFocused = isFocused,
+              isFocused = caretIsFocused,
               color = baseCursorColor,
               focusedAlpha = settings.cursorFocusedAlpha,
               unfocusedAlpha = settings.cursorUnfocusedAlpha,
@@ -2245,11 +2262,7 @@ fun ProperTerminal(
                   // safe in the wrong way, since it only ever makes this decline.
                   ambiguousCharsAreDoubleWidth = display.ambiguousCharsAreDoubleWidth(),
               ) else null,
-              glyphColor = cursorGlyphColor(
-                  theme = activeTheme,
-                  effectiveFill = baseCursorColor,
-                  fillIsAppSet = customCursorColor != null,
-              ),
+              glyphColor = caretGlyphColor,
               glyphFontFamily = sharedFont,
               glyphFontSize = effectiveFontSize,
               glyphMeasurer = textMeasurer,

@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose
 
+import ai.rever.bossterm.compose.ui.HistoryAppendBank
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.State
 import ai.rever.bossterm.core.typeahead.TerminalTypeAheadManager
@@ -91,6 +92,31 @@ interface TerminalSession {
      * Current scroll offset in lines from the bottom of the buffer.
      */
     val scrollOffset: MutableState<Int>
+
+    /**
+     * Lines appended to history since the viewport last took a frame.
+     *
+     * Lives beside [scrollOffset] and shares its lifetime deliberately: the offset is measured
+     * back from the live bottom, so this is the correction that keeps it addressing the same
+     * content. A composition-scoped counter would be dropped whenever a tab goes to the
+     * background while the offset it corrects survives, so the tab would drift unnoticed and
+     * land somewhere else when reselected.
+     */
+    val historyAppendBank: HistoryAppendBank
+
+    /**
+     * Move the viewport, clamped to the available history.
+     *
+     * The only supported way to write [scrollOffset]. Leaving the live bottom must also discard
+     * anything [historyAppendBank] has banked: those appends arrived while the view was following
+     * the bottom, so they are not compensation for a scrolled viewport, and folding them makes the
+     * first scrolled frame jump. Writing the state directly silently skips that, which is why this
+     * lives beside the state rather than in whichever composable happens to be driving.
+     */
+    fun scrollTo(target: Int) {
+        if (scrollOffset.value == 0) historyAppendBank.clear()
+        scrollOffset.value = target.coerceIn(0, textBuffer.historyLinesCount)
+    }
 
     // === Search State ===
 

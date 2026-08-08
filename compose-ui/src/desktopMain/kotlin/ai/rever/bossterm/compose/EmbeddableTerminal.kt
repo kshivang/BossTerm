@@ -697,7 +697,7 @@ class EmbeddableTerminalState {
      * Scroll to the bottom of the terminal (most recent output).
      */
     fun scrollToBottom() {
-        session?.scrollOffset?.value = 0
+        session?.scrollTo(0)
     }
 
     /**
@@ -706,11 +706,7 @@ class EmbeddableTerminalState {
      * @param lines Number of lines to scroll (positive = up into history, negative = down)
      */
     fun scrollBy(lines: Int) {
-        session?.let { s ->
-            val maxScroll = s.textBuffer.historyLinesCount
-            val newOffset = (s.scrollOffset.value + lines).coerceIn(0, maxScroll)
-            s.scrollOffset.value = newOffset
-        }
+        session?.let { s -> s.scrollTo(s.scrollOffset.value + lines) }
     }
 
     /**

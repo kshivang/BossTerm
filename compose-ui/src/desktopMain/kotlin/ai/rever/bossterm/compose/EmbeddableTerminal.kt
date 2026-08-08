@@ -237,6 +237,15 @@ fun EmbeddableTerminal(
         SettingsLoader.resolveSettings(settings, settingsPath).withOverrides(settingsOverride)
     }
 
+    // The context menu controller is built below without the resolved settings in scope, and an
+    // embedder using `settings`/`settingsPath` is not reading the global file at all - so publish
+    // whichever value actually applies here rather than letting it fall back to the singleton.
+    DisposableEffect(resolvedSettings.useNativeContextMenus) {
+        ai.rever.bossterm.compose.features.NativeContextMenuOverride
+            .set(resolvedSettings.useNativeContextMenus)
+        onDispose { ai.rever.bossterm.compose.features.NativeContextMenuOverride.set(null) }
+    }
+
     // Effective shell command (validates $SHELL exists, falls back to /bin/bash or /bin/sh)
     val effectiveCommand = command ?: ShellCustomizationUtils.getValidShell(resolvedSettings.windowsShell)
 

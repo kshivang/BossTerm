@@ -618,7 +618,19 @@ TerminalSettingsOverride(
     maxRefreshRate = 30,
     bufferMaxLines = 5000
 )
+
+// Keep BOSS-themed right-click menus instead of the OS's own
+TerminalSettingsOverride(
+    useNativeContextMenus = false
+)
 ```
+
+### Context menus
+
+By default BossTerm shows the operating system's own right-click menus on macOS and Windows: a
+real `NSMenu` / Win32 menu, which follows the system appearance rather than the terminal theme and
+cannot be coloured or given icons. Set `useNativeContextMenus = false` to get the BOSS-themed
+menus back. Linux always uses the themed menus, since the AWT peer there ignores GTK.
 
 ## Custom Link Handling
 

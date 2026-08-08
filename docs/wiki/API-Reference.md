@@ -289,6 +289,7 @@ data class TerminalSettings(
     val useLoginSession: Boolean = true,
     val initialCommand: String = "",
     val initialCommandDelayMs: Int = 500,
+    val useNativeContextMenus: Boolean = true,
     val copyOnSelect: Boolean = false,
     val pasteOnMiddleClick: Boolean = true,
     val emulateX11CopyPaste: Boolean = false,

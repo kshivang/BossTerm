@@ -147,11 +147,14 @@ class ContextMenuController internal constructor(
     private fun showAt(anchor: MenuAnchor, items: List<MenuElement>, window: ComposeWindow?) {
         val renderer = if (nativePreferred()) nativeRenderer else swingRenderer
 
-        // Take down whatever is up before replacing it. On the native path this can only
-        // invalidate, not dismiss — see [generation].
-        activeRenderer?.hide()
+        // Bump BEFORE tearing the old menu down, matching [hideMenu], so the outgoing menu's
+        // items are already stale while it is being replaced. The Swing renderer calls back
+        // synchronously from hide(); under the new generation that callback is correctly ignored,
+        // and _menuVisible is set true again just below.
         generation += 1
         val shown = generation
+        // On the native path this can only invalidate, not dismiss — see [generation].
+        activeRenderer?.hide()
 
         activeRenderer = renderer
         _menuVisible.value = true
@@ -207,13 +210,39 @@ internal fun shouldUseNativeMenus(settingEnabled: Boolean, isLinux: Boolean): Bo
     settingEnabled && !isLinux
 
 /**
+ * An embedder's explicit `TerminalSettingsOverride.useNativeContextMenus`, if there is one.
+ *
+ * A [ContextMenuController] is built deep in the tree - per tab, per tab bar, per status
+ * indicator - where the *resolved* settings (the file merged with any per-instance override) are
+ * not in scope, so the override has to reach it out of band. `TabbedTerminal` and
+ * `EmbeddableTerminal`, the two places that actually resolve settings, publish here.
+ *
+ * Deliberately holds only the override and not the whole setting: when it is null the controller
+ * reads [SettingsManager] live, so a user toggling the preference still takes effect on the next
+ * right-click with no staleness. This mirrors how this file already reaches `BossUiTheme` for the
+ * themed renderer's colours.
+ *
+ * Limitation: process-wide, so two embedded terminals that set *different* explicit overrides
+ * would see last-writer-wins. Everything else (no override, or every instance agreeing) is exact.
+ */
+internal object NativeContextMenuOverride {
+    @Volatile
+    private var override: Boolean? = null
+
+    fun set(value: Boolean?) { override = value }
+
+    fun current(): Boolean? = override
+}
+
+/**
  * The live answer for [shouldUseNativeMenus], read per show so flipping the setting takes effect
  * on the next right-click without a restart. Falls back to native if settings are unreadable.
  */
 internal fun nativeMenusPreferred(): Boolean = shouldUseNativeMenus(
-    settingEnabled = runCatching {
-        SettingsManager.instance.settings.value.useNativeContextMenus
-    }.getOrDefault(true),
+    settingEnabled = NativeContextMenuOverride.current()
+        ?: runCatching {
+            SettingsManager.instance.settings.value.useNativeContextMenus
+        }.getOrDefault(true),
     isLinux = ShellCustomizationUtils.isLinux()
 )
 
@@ -515,27 +544,46 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
 
             // A PopupMenu must hang off a live Component, and AWT keeps it as a child until
             // removed. Detach the previous one so invokers don't accumulate menus.
-            attached?.let { (owner, menu) -> runCatching { owner.remove(menu) } }
+            detach()
 
             val popup = java.awt.PopupMenu()
-            materialize(popup, planNativeMenu(items), isCurrent, onDismiss)
+            val dismissed = {
+                detach()
+                clearDismissWatcher()
+                onDismiss()
+            }
+            materialize(popup, planNativeMenu(items), isCurrent, dismissed)
             invoker.add(popup)
             attached = invoker to popup
 
-            installDismissWatcher(onDismiss)
-
             val at = anchor.toInvokerCoordinates(invoker)
             popup.show(invoker, at.x, at.y)
+            // Armed after show() (which returns in ~0 ms) so the grace window covers only the
+            // gap before the OS takes the input grab, not the invoker resolution before it.
+            installDismissWatcher(dismissed)
         }
     }
 
     /**
-     * Deliberately does not try to dismiss: verified that `setVisible(false)`, `remove()` and
-     * `dispose()` on the invoker all leave an open `NSMenu` tracking and selectable. The
+     * Deliberately does not try to dismiss the menu: verified that `setVisible(false)`, `remove()`
+     * and `dispose()` on the invoker all leave an open `NSMenu` tracking and selectable. The
      * controller's generation fence is what makes a lingering menu harmless.
+     *
+     * It does still detach, because that same measurement means detaching cannot disturb a menu
+     * that is currently open - and leaving the popup parented would strand its items, their
+     * listeners, and every closure they captured on a long-lived window.
      */
     override fun hide() {
-        onEdt { clearDismissWatcher() }
+        onEdt {
+            clearDismissWatcher()
+            detach()
+        }
+    }
+
+    /** Unparent the popup so a closed tab doesn't strand its menu on the ComposeWindow. */
+    private fun detach() {
+        attached?.let { (owner, menu) -> runCatching { owner.remove(menu) } }
+        attached = null
     }
 
     /**
@@ -547,10 +595,8 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
      * `MOUSE_EXITED`, the Escape key-release, then `MOUSE_ENTERED`. So the flag cannot clear
      * early, and it clears promptly even if the user never moves the mouse afterwards.
      *
-     * Two guards remain for the gap between `show()` being posted to the EDT and the OS actually
-     * taking the input grab: `MOUSE_RELEASED` is ignored, because the release of the very
-     * right-click that opened the menu could land in that window, and so is anything inside a
-     * short grace period.
+     * Only [AWTEvent.getID] is inspected; no event contents are read, which matters because this
+     * is a process-wide listener and BossTerm ships as a library inside other apps.
      */
     private fun installDismissWatcher(onDismiss: () -> Unit) {
         clearDismissWatcher()
@@ -558,22 +604,26 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
         val toolkit = Toolkit.getDefaultToolkit()
         val listener = object : java.awt.event.AWTEventListener {
             override fun eventDispatched(event: AWTEvent) {
-                if (System.currentTimeMillis() - armedAt < DISMISS_GRACE_MS) return
-                if (event.id == MouseEvent.MOUSE_RELEASED) return
+                if (!isDismissalEvent(System.currentTimeMillis() - armedAt)) return
                 toolkit.removeAWTEventListener(this)
                 if (dismissWatcher === this) dismissWatcher = null
                 onDismiss()
             }
         }
         dismissWatcher = listener
-        toolkit.addAWTEventListener(
-            listener,
-            AWTEvent.MOUSE_EVENT_MASK or AWTEvent.MOUSE_MOTION_EVENT_MASK or AWTEvent.KEY_EVENT_MASK
-        )
+        // Requires AWTPermission("listenToAllAWTEvents"). If an embedder's policy refuses, lose
+        // the visibility flag rather than the menu.
+        runCatching {
+            toolkit.addAWTEventListener(
+                listener,
+                AWTEvent.MOUSE_EVENT_MASK or AWTEvent.MOUSE_MOTION_EVENT_MASK or
+                    AWTEvent.KEY_EVENT_MASK
+            )
+        }.onFailure { dismissWatcher = null }
     }
 
     private fun clearDismissWatcher() {
-        dismissWatcher?.let { Toolkit.getDefaultToolkit().removeAWTEventListener(it) }
+        dismissWatcher?.let { runCatching { Toolkit.getDefaultToolkit().removeAWTEventListener(it) } }
         dismissWatcher = null
     }
 
@@ -609,9 +659,24 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
         if (SwingUtilities.isEventDispatchThread()) block() else SwingUtilities.invokeLater(block)
     }
 
-    private companion object {
-        /** Long enough to outlast the opening right-click's own event tail. */
-        const val DISMISS_GRACE_MS = 300L
+    internal companion object {
+        /**
+         * Only covers the gap between `show()` returning and the OS taking the input grab, so it
+         * can be short. Kept small deliberately: the dismissal burst is the signal, and anything
+         * discarded inside this window delays the flag until the next unrelated input event.
+         */
+        const val DISMISS_GRACE_MS = 120L
+
+        /**
+         * Whether an AWT input event means the menu has closed.
+         *
+         * Inside the grace window nothing counts: `show()` is posted to the EDT, so the opening
+         * right-click's own `MOUSE_RELEASED` tail can still be in flight before the OS takes the
+         * grab. Outside it *everything* counts, `MOUSE_RELEASED` included - by then an open menu
+         * would have swallowed it, so any event that reaches us is genuinely post-dismissal, and
+         * filtering by id would only strand the flag until the user next moved the mouse.
+         */
+        fun isDismissalEvent(elapsedMs: Long): Boolean = elapsedMs >= DISMISS_GRACE_MS
     }
 }
 
@@ -673,6 +738,9 @@ fun createTerminalContextMenuItems(
             label = "Copy",
             enabled = hasSelection,
             action = onCopy,
+            // Renders Ctrl+C on Windows, which is only honest because copy is gated on a
+            // selection: without one this item is disabled and Ctrl+C reaches the shell as
+            // SIGINT. Do not loosen `enabled = hasSelection` without revisiting this.
             shortcut = 'C'
         ),
         ContextMenuController.MenuItem(
@@ -687,7 +755,10 @@ fun createTerminalContextMenuItems(
             label = "Select All",
             enabled = true,
             action = onSelectAll,
-            shortcut = 'A'
+            // Cmd+A only. `BuiltinActions.selectAllAction` binds meta deliberately so that Ctrl+A
+            // passes through to the terminal (tmux prefix, readline beginning-of-line), so
+            // advertising Ctrl+A off macOS would promise a binding that does something else.
+            shortcut = if (ShellCustomizationUtils.isMacOS()) 'A' else null
         ),
         ContextMenuController.MenuItem(
             id = "find",

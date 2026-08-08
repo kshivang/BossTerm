@@ -238,6 +238,56 @@ class NativeContextMenuTest {
         assertFalse(c.menuVisible.value, "selecting an item dismisses the menu")
     }
 
+    // ----- the dismissal heuristic -----
+
+    @Test
+    fun `nothing inside the grace window counts as dismissal`() {
+        // The opening right-click's own MOUSE_RELEASED can still be in flight here.
+        assertFalse(AwtNativeContextMenuRenderer.isDismissalEvent(0))
+        assertFalse(
+            AwtNativeContextMenuRenderer.isDismissalEvent(
+                AwtNativeContextMenuRenderer.DISMISS_GRACE_MS - 1
+            )
+        )
+    }
+
+    @Test
+    fun `any event after the grace window counts as dismissal`() {
+        // An open menu holds the input grab, so anything reaching us is genuinely post-dismissal.
+        assertTrue(
+            AwtNativeContextMenuRenderer.isDismissalEvent(
+                AwtNativeContextMenuRenderer.DISMISS_GRACE_MS
+            )
+        )
+        assertTrue(AwtNativeContextMenuRenderer.isDismissalEvent(5_000))
+    }
+
+    // ----- the embedder override -----
+
+    @Test
+    fun `an embedder override wins over the settings file`() {
+        try {
+            NativeContextMenuOverride.set(false)
+            assertFalse(nativeMenusPreferred(), "an explicit override of false must be honoured")
+
+            NativeContextMenuOverride.set(true)
+            // True everywhere except Linux, which is gated separately.
+            assertEquals(
+                !ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isLinux(),
+                nativeMenusPreferred()
+            )
+        } finally {
+            NativeContextMenuOverride.set(null)
+        }
+    }
+
+    @Test
+    fun `clearing the override falls back to the settings file`() {
+        NativeContextMenuOverride.set(false)
+        NativeContextMenuOverride.set(null)
+        assertNull(NativeContextMenuOverride.current())
+    }
+
     @Test
     fun `linux never gets native menus regardless of the setting`() {
         assertFalse(shouldUseNativeMenus(settingEnabled = true, isLinux = true))

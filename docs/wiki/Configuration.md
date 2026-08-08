@@ -63,6 +63,7 @@ Location: `~/.bossterm/settings.json`
 |---------|------|---------|-------------|
 | `useLoginSession` | Boolean | `true` | Use login shell on macOS |
 | `initialCommand` | String | `""` | Command to run on new tabs |
+| `useNativeContextMenus` | Boolean | `true` | Use the OS's own right-click menus (macOS/Windows). Off restores BOSS-themed menus. Ignored on Linux |
 | `copyOnSelect` | Boolean | `false` | Auto-copy selected text |
 | `pasteOnMiddleClick` | Boolean | `true` | Middle-click paste |
 | `emulateX11CopyPaste` | Boolean | `false` | Separate selection clipboard |

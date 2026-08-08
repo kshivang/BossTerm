@@ -259,6 +259,14 @@ fun TabbedTerminal(
         globalSettings.withOverrides(settingsOverride)
     }
 
+    // Context menu controllers are built deep in the tree, where the resolved override is not in
+    // scope; publish it for them. Null leaves them reading the global setting live.
+    DisposableEffect(settingsOverride?.useNativeContextMenus) {
+        ai.rever.bossterm.compose.features.NativeContextMenuOverride
+            .set(settingsOverride?.useNativeContextMenus)
+        onDispose { ai.rever.bossterm.compose.features.NativeContextMenuOverride.set(null) }
+    }
+
     // Load font once and share across all tabs (supports custom font via settings)
     val sharedFont = remember(settings.fontName) {
         loadTerminalFont(settings.fontName)

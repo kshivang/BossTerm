@@ -24,7 +24,11 @@ interface TextBufferChangesListener {
    * the same content, which is the dual of what a top-anchored viewport does for
    * [linesDiscardedFromHistory] (compare iTerm2's `PTYTextView.handleScrollbackOverflow:`).
    *
-   * Fired for every append, including the `scrollArea` hot path that a full-screen TUI drives
+   * Fired for every append on BOTH screens - this buffer accumulates scrollback on the alternate
+   * screen too, so a consumer anchoring a viewport must decide for itself whether an alt-screen
+   * append is meaningful to it. The case this was added for is an ordinary shell streaming output.
+   *
+   * Fired for every append, including the `scrollArea` hot path that a streaming process drives
    * once per output line — keep implementations cheap.
    *
    * @param count number of lines appended to the end of the history.

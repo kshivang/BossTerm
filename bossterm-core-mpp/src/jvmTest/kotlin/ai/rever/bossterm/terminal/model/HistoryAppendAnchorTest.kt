@@ -12,8 +12,11 @@ import kotlin.test.assertTrue
  * iTerm2 has the mirror-image problem — its viewport is anchored to the top, so lines evicted
  * from the head move it — and compensates in `PTYTextView.handleScrollbackOverflow:` using a
  * count accumulated since the last sync. Doing the same here requires the buffer to actually
- * report appends, and the `scrollArea` path a full-screen TUI drives (DECSTBM with top == 1)
+ * report appends, and the `scrollArea` path a streaming process drives (DECSTBM with top == 1)
  * previously reported nothing at all.
+ *
+ * Note this buffer accumulates scrollback on the ALTERNATE screen too, so appends are reported
+ * there as well; the consumer decides what to do with those. See [theAlternateScreenAlsoReportsItsAppends].
  */
 class HistoryAppendAnchorTest {
 
@@ -126,8 +129,6 @@ class HistoryAppendAnchorTest {
         )
     }
 
-
-
     @Test
     fun cappedHistoryStillReportsAppendsWhileDiscarding() {
         val buffer = buffer(maxHistory = 3)
@@ -138,7 +139,67 @@ class HistoryAppendAnchorTest {
         repeat(5) { buffer.scrollArea(1, -1, 4) }
 
         assertEquals(5, listener.appended, "appends must be reported even once history is capped")
-        assertTrue(listener.discarded > 0, "a capped history must also report its discards")
+        // Exact, not `> 0`: five appends into a 3-line history discards exactly 2, and a loose
+        // assertion would not notice an off-by-one in the discard path.
+        assertEquals(2, listener.discarded, "a capped history discards exactly the overflow")
         assertEquals(3, buffer.historyLinesCount)
+    }
+
+    /**
+     * The alternate screen accumulates scrollback in this buffer - `useAlternateBuffer` swaps in a
+     * live storage and `scrollArea` has no alt guard - so appends are reported there too. Pinned
+     * because a consumer anchoring a viewport has to know this: folding alt-screen appends walks
+     * the offset against a history that is discarded when the TUI exits.
+     */
+    @Test
+    fun theAlternateScreenAlsoReportsItsAppends() {
+        val buffer = buffer()
+        buffer.useAlternateBuffer(true)
+        val listener = RecordingListener()
+        buffer.addChangesListener(listener)
+        for (row in 1..4) buffer.write(row, "A$row")
+
+        repeat(3) { buffer.scrollArea(1, -1, 4) }
+
+        assertEquals(3, listener.appended, "alt-screen appends are reported like any other")
+        assertEquals(3, buffer.historyLinesCount, "and they really do land in a history buffer")
+    }
+
+    /** `moveScreenLinesToHistory` also routes through `addLinesToHistory`, so it must report too. */
+    @Test
+    fun movingScreenLinesToHistoryReportsTheAppend() {
+        val buffer = buffer()
+        val listener = RecordingListener()
+        buffer.addChangesListener(listener)
+        for (row in 1..4) buffer.write(row, "M$row")
+
+        buffer.moveScreenLinesToHistory()
+
+        assertEquals(
+            buffer.historyLinesCount,
+            listener.appended,
+            "every line moved into history must be reported",
+        )
+        assertTrue(listener.appended > 0, "the move must have produced at least one append")
+    }
+
+    /**
+     * An empty append must not wake listeners with a zero count.
+     *
+     * Deliberately NOT `scrollArea(1, 0, 4)`: `dy == 0` returns at the top of `scrollArea` and
+     * never reaches `addLinesToHistory`, so that would pass with the guard deleted. A degenerate
+     * region does reach it - the rotation yields no rows, and the top-anchored branch then calls
+     * `addLinesToHistory` with an empty list.
+     */
+    @Test
+    fun anEmptyAppendReportsNothing() {
+        val buffer = buffer()
+        val listener = RecordingListener()
+        buffer.addChangesListener(listener)
+        for (row in 1..4) buffer.write(row, "L$row")
+
+        buffer.scrollArea(1, -1, 0)
+
+        assertEquals(0, listener.appendCallbacks, "no callback at all for an empty append")
     }
 }

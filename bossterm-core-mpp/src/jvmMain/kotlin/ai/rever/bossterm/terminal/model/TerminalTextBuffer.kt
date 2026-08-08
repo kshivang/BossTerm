@@ -1044,10 +1044,12 @@ class TerminalTextBuffer internal constructor(
     historyLinesStorage.addAllToBottom(linesToAdd)
     imageCellHistoryTrimCounter.addAndGet(discardedLinesCount.toLong())
 
-    changesMulticaster.linesAddedToHistory(linesToAdd.size)
+    // Discards physically happened first, so report them first: a listener reconstructing the
+    // history index space would be misled by the reverse order.
     if (linesToDiscard.isNotEmpty()) {
       changesMulticaster.linesDiscardedFromHistory(linesToDiscard)
     }
+    changesMulticaster.linesAddedToHistory(linesToAdd.size)
   }
 
   private fun fireHistoryBufferLineCountChanged() {

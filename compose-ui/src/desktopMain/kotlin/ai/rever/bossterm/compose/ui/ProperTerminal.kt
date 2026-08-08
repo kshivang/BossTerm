@@ -1903,9 +1903,17 @@ fun ProperTerminal(
         // into the scroll offset so a scrolled-up viewport stays on the same content. Only while
         // the user is actually scrolled up - at offset 0 we keep following the bottom, which is
         // what iTerm2 does with `if (!userScroll) [self scrollEnd]`.
+        //
+        // Never on the ALTERNATE screen. This buffer really does accumulate scrollback there
+        // (`useAlternateBuffer` swaps in a live CyclicBufferLinesStorage, and `scrollArea` has no
+        // alt guard), so a full-screen TUI scrolling with DECSTBM top == 1, or plain line feeds,
+        // appends and reports just like the main screen. Folding those would walk the offset
+        // against a history that is thrown away when the TUI exits, leaving the restored main view
+        // at an offset derived from a buffer that no longer exists. The bank is still drained, so
+        // alt-screen appends are discarded rather than applied late.
         LaunchedEffect(currentTrigger) {
           val appended = pendingHistoryAppends.getAndSet(0)
-          if (appended > 0 && scrollOffset > 0) {
+          if (appended > 0 && scrollOffset > 0 && !textBuffer.isUsingAlternateBuffer) {
             // Clamping at historyLinesCount pins the view to the oldest surviving line once capped
             // history starts evicting, mirroring iTerm2 clamping its scroll rect at 0.
             scrollOffset = (scrollOffset + appended).coerceAtMost(textBuffer.historyLinesCount)

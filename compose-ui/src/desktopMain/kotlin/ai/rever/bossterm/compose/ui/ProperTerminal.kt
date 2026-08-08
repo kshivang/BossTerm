@@ -132,6 +132,12 @@ private class GridStabilityTracker {
 /** A complete immutable frame retained while an application performs ?2026 updates. */
 private data class StableTerminalRenderFrame(
   val buffer: VersionedBufferSnapshot,
+  /**
+   * History appends peeked in the same breath as [buffer], so the fold describes exactly the
+   * lines this snapshot contains. Peeking outside the capture leaves a frame of residue when an
+   * append lands between the two.
+   */
+  val historyDelta: HistoryDelta,
   val imagesById: Map<Long, TerminalImage>,
   val cursorX: Int,
   val cursorY: Int,
@@ -1939,35 +1945,6 @@ fun ProperTerminal(
         // A plain holder rather than Compose state on purpose: consuming it must not invalidate
         // the composition. Once consumed, every later recomposition renders straight from
         // `scrollOffset`, so user scrolling behaves exactly as it did before this change.
-        // Skipped entirely while the alternate screen is up. The fire-time gate keeps alt appends
-        // out of the bank, but a MAIN-screen append banked just before a TUI starts would still be
-        // folded here and clamped against `historyLinesCount` - which on the alt screen is the ALT
-        // history, typically 0. That collapses the offset and loses the main-screen position for
-        // good. Leaving it banked applies it correctly once the TUI exits.
-        val pendingFold = remember(currentTrigger) {
-          if (textBuffer.isUsingAlternateBuffer) {
-            null
-          } else {
-            // peek, not drain: this runs during composition, and a composition that never applies
-            // must not swallow the count. Taken for real in the SideEffect below.
-            val delta = historyAppendBank.peek()
-            val folded = foldHistoryAppends(scrollOffset, delta, textBuffer.historyLinesCount)
-            if (delta.cleared || delta.appended > 0) PendingFold(delta, folded) else null
-          }
-        }
-        // The frame that first shows the appended lines is rendered at the corrected offset, so
-        // there is no shift-and-snap; the SideEffect only commits what was already drawn. Once
-        // consumed, later recompositions render straight from `scrollOffset`, so user scrolling -
-        // which moves the offset without advancing the redraw trigger - is never clobbered.
-        val effectiveScrollOffset = pendingFold?.takeIf { !it.consumed }?.offset ?: scrollOffset
-        SideEffect {
-          pendingFold?.let { fold ->
-            if (fold.consumed) return@let
-            fold.consumed = true
-            historyAppendBank.consume(fold.delta)
-            if (scrollOffset != fold.offset) scrollOffset = fold.offset
-          }
-        }
         val imageDataCache = terminal.getImageDataCache()
         val stableFrameHolder = remember(textBuffer, display) {
           StableRenderFrameHolder<StableTerminalRenderFrame>()
@@ -1976,6 +1953,7 @@ fun ProperTerminal(
           display.captureStableRenderFrame {
             StableTerminalRenderFrame(
               buffer = textBuffer.createIncrementalSnapshot(),
+              historyDelta = historyAppendBank.peek(),
               imagesById = imageDataCache.snapshotImages(),
               cursorX = display.cursorXSnapshot,
               cursorY = display.cursorYSnapshot,
@@ -1985,6 +1963,37 @@ fun ProperTerminal(
           }
         }
         val renderFrame = stableFrameHolder.frameFor(capturedFrame)
+        // Folded only for a capture that was ACCEPTED. `captureStableRenderFrame` returns null
+        // when the composition overlaps a DEC 2026 synchronized update, and `frameFor` then paints
+        // the previously retained snapshot - which does not contain the appended lines. Advancing
+        // the offset for it would jump the retained frame N rows and jump back when the real one
+        // lands: the shift-and-snap this exists to avoid, relocated into the ?2026 window.
+        //
+        // Skipped entirely on the alternate screen too: the fire-time gate keeps ALT appends out of
+        // the bank, and this keeps a banked MAIN-screen append from being clamped against the alt
+        // history (typically 0), which would collapse the offset and lose the position for good.
+        // The bank keeps its count either way, so skipping costs nothing but a frame.
+        val pendingFold = remember(capturedFrame) {
+          val delta = capturedFrame?.historyDelta
+          if (delta == null || textBuffer.isUsingAlternateBuffer || (!delta.cleared && delta.appended <= 0)) {
+            null
+          } else {
+            PendingFold(delta, foldHistoryAppends(scrollOffset, delta, textBuffer.historyLinesCount))
+          }
+        }
+        // The frame that first shows the appended lines renders at the corrected offset, so there
+        // is no shift-and-snap; the SideEffect only commits what was already drawn. Once consumed,
+        // later recompositions render straight from `scrollOffset`, so a user scroll - which moves
+        // the offset without advancing the redraw trigger - is never clobbered.
+        val effectiveScrollOffset = pendingFold?.takeIf { !it.consumed }?.offset ?: scrollOffset
+        SideEffect {
+          pendingFold?.let { fold ->
+            if (fold.consumed) return@let
+            fold.consumed = true
+            historyAppendBank.consume(fold.delta)
+            if (scrollOffset != fold.offset) scrollOffset = fold.offset
+          }
+        }
         SideEffect {
           // Only frames from a composition that reached apply become future fallbacks.
           capturedFrame?.let(stableFrameHolder::commit)

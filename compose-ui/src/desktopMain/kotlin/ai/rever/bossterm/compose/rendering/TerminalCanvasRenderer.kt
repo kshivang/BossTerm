@@ -150,7 +150,14 @@ enum class GlyphBlink {
     SLOW,
     RAPID;
 
-    /** Whether a glyph with this attribute is showing, given the two clocks. */
+    /**
+     * Whether a glyph with this attribute is showing, given the two clocks.
+     *
+     * Callers in a Compose draw phase should test [NONE] first: both arguments are evaluated
+     * here, so an unattributed glyph would otherwise subscribe its layer to two clocks that
+     * cannot affect it. That is a property of the call site, not of this function, which is why
+     * the check lives there rather than being duplicated into a second predicate.
+     */
     fun isVisible(slowVisible: Boolean, rapidVisible: Boolean): Boolean = when (this) {
         NONE -> true
         SLOW -> slowVisible

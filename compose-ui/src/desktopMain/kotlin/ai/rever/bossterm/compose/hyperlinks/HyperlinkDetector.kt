@@ -330,6 +330,17 @@ class HyperlinkRegistry {
  */
 object HyperlinkDetector {
     /**
+     * How far a wrapped-line walk may run in each direction.
+     *
+     * Without it both walks are bounded only by scrollback depth: `cat` a minified file and one
+     * logical line is thousands of rows, so a single pointer move onto a new row walks all of
+     * them, allocates a list that size, and hands the hover memo a key it then compares
+     * element-by-element on the UI thread. At 80 columns this still spans ~5k characters, which
+     * is past the point where a link is usefully detectable anyway.
+     */
+    const val MAX_WRAPPED_RUN_ROWS = 64
+
+    /**
      * The pattern registry. Use this to add/remove custom patterns.
      */
     val registry = HyperlinkRegistry()
@@ -499,20 +510,20 @@ object HyperlinkDetector {
         bufferRow: Int,
         terminalWidth: Int
     ): JoinedLineInfo {
-        // Find start of logical line (walk backwards while previous line is wrapped)
-        // Note: -snapshot.historyLinesCount is the oldest valid history line index
+        // Walk the same rows, with the same bounds, as runLinesAt: it produces the memo key
+        // for this result, so a row this reads and it omits would be a row whose change went
+        // unnoticed. Both stop one short of `height` because getLine returns a fresh
+        // createEmpty() past it - which would pad a full terminal width for a row that is not
+        // there, and put a never-identity-equal instance in that key.
+        val oldest = maxOf(-snapshot.historyLinesCount, bufferRow - MAX_WRAPPED_RUN_ROWS)
         var startRow = bufferRow
-        while (startRow > -snapshot.historyLinesCount) {
+        while (startRow > oldest) {
             if (snapshot.getLine(startRow - 1).isWrapped) startRow-- else break
         }
 
-        // Find end of logical line (walk forwards while current line is wrapped)
         var endRow = startRow
-        while (true) {
-            if (!snapshot.getLine(endRow).isWrapped) break
-            endRow++
-            if (endRow >= snapshot.height) break
-        }
+        val furthest = minOf(snapshot.height - 1, bufferRow + MAX_WRAPPED_RUN_ROWS)
+        while (endRow < furthest && snapshot.getLine(endRow).isWrapped) endRow++
 
         // Join lines with VISUAL WIDTH-aware position tracking
         val joinedText = StringBuilder()
@@ -586,7 +597,7 @@ object HyperlinkDetector {
      * an edit to a sibling row goes unnoticed. Just the wrap-flag walk - no rejoin, no regex.
      */
     fun runLinesAt(snapshot: VersionedBufferSnapshot, bufferRow: Int): List<TerminalLine> {
-        val oldest = -snapshot.historyLinesCount
+        val oldest = maxOf(-snapshot.historyLinesCount, bufferRow - MAX_WRAPPED_RUN_ROWS)
         if (!isPartOfWrappedRun(snapshot, bufferRow)) {
             // The predecessor's wrap flag is what decided this row is NOT a continuation, so it
             // is part of the answer and has to be in the key: a TUI rewriting row R-1 so it now
@@ -607,7 +618,8 @@ object HyperlinkDetector {
         // on every single event - for a run that ends on the last screen row, which is exactly
         // where a live TUI's wrapped output sits.
         var end = start
-        while (end < snapshot.height - 1 && snapshot.getLine(end).isWrapped) end++
+        val furthest = minOf(snapshot.height - 1, bufferRow + MAX_WRAPPED_RUN_ROWS)
+        while (end < furthest && snapshot.getLine(end).isWrapped) end++
         val lines = ArrayList<TerminalLine>(end - start + 2)
         for (row in start..end) lines.add(snapshot.getLine(row))
         // Same reason as above, for the walk that found `start`.

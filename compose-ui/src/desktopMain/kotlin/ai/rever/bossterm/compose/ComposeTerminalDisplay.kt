@@ -187,6 +187,11 @@ class ComposeTerminalDisplay : TerminalDisplay {
         // Unchanged is the common case - BossTerminal.finishText() calls this after every
         // writeCharacters - and copy() would allocate a CursorSnapshot for each one. Bail
         // before the allocation, the debug print and the redraw bookkeeping alike.
+        //
+        // Check-then-act, deliberately: the AtomicReference is here so READERS see x and y
+        // together, not to make this method atomic against a second writer. The emulator thread
+        // is the only writer, and was the only writer when these were two volatile ints. A
+        // second one would need this guard folded into the update.
         val current = _cursor.get()
         if (current.x == x && current.y == y) return
         if (debugCursor) {
@@ -201,18 +206,20 @@ class ComposeTerminalDisplay : TerminalDisplay {
     }
 
     override fun setCursorShape(cursorShape: CursorShape?) {
-        if (_cursor.get().shape == cursorShape) return
+        val current = _cursor.get()
+        if (current.shape == cursorShape) return
         if (debugCursor) {
-            println("🔷 CURSOR SHAPE: ${_cursor.get().shape} → $cursorShape")
+            println("🔷 CURSOR SHAPE: ${current.shape} → $cursorShape")
         }
         _cursor.getAndUpdate { it.copy(shape = cursorShape) }
         requestRedraw()
     }
 
     override fun setCursorVisible(isCursorVisible: Boolean) {
-        if (_cursor.get().visible == isCursorVisible) return
+        val current = _cursor.get()
+        if (current.visible == isCursorVisible) return
         if (debugCursor) {
-            println("👁️  CURSOR VISIBLE: ${_cursor.get().visible} → $isCursorVisible")
+            println("👁️  CURSOR VISIBLE: ${current.visible} → $isCursorVisible")
         }
         _cursor.getAndUpdate { it.copy(visible = isCursorVisible) }
         requestRedraw()

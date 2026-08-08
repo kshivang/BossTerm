@@ -167,6 +167,9 @@ internal class UiRef<T> {
 internal class HoverRow(
   val snapshot: VersionedBufferSnapshot,
   val bufferRow: Int,
+  val cwd: String?,
+  val detectFilePaths: Boolean,
+  val registryRevision: Int,
   val links: List<Hyperlink>,
 )
 
@@ -1578,8 +1581,21 @@ fun ProperTerminal(
           val inRange = snapshot != null &&
             bufferRow >= -snapshot.historyLinesCount && bufferRow < snapshot.height
           val hyperlinksForRow = if (!inRange) null else snapshot!!.let { snap ->
+            val cwd = tab.workingDirectory.value
+            val detectPaths = settings.detectFilePaths
+            val revision = hyperlinkRegistry.revision
             val previous = lastHover.value
-            if (previous != null && previous.snapshot === snap && previous.bufferRow == bufferRow) {
+            // Every component the memo checks, checked here too: a fresh snapshot arrives with
+            // any output, but on an IDLE terminal a settings toggle or a runtime addPattern
+            // produces none, so a short-circuit keyed on the snapshot alone would serve the
+            // stale answer indefinitely.
+            if (previous != null &&
+              previous.snapshot === snap &&
+              previous.bufferRow == bufferRow &&
+              previous.cwd == cwd &&
+              previous.detectFilePaths == detectPaths &&
+              previous.registryRevision == revision
+            ) {
               // The pointer crosses many pixels per row, so the overwhelming majority of Move
               // events land on the row the last one did. Short-circuit before runLinesAt: its
               // backwards walk is bounded by history depth, not by the viewport, so one mouse
@@ -1588,25 +1604,26 @@ fun ProperTerminal(
               // a memo hit.
               previous.links
             } else {
-              val cwd = tab.workingDirectory.value
               hyperlinkCache.linksAt(
                 bufferRow = bufferRow,
                 // A wrapped row's answer depends on its whole logical run, so the key is every
                 // line in it - an edit to a sibling row has to miss.
                 runLines = HyperlinkDetector.runLinesAt(snap, bufferRow),
                 cwd = cwd,
-                detectFilePaths = settings.detectFilePaths,
-                registryRevision = hyperlinkRegistry.revision,
+                detectFilePaths = detectPaths,
+                registryRevision = revision,
               ) {
                 HyperlinkDetector.detectForBufferRow(
                   snapshot = snap,
                   bufferRow = bufferRow,
                   terminalWidth = snap.width,
                   workingDirectory = cwd,
-                  detectFilePaths = settings.detectFilePaths,
+                  detectFilePaths = detectPaths,
                   registry = hyperlinkRegistry,
                 )
-              }.also { lastHover.value = HoverRow(snap, bufferRow, it) }
+              }.also {
+                lastHover.value = HoverRow(snap, bufferRow, cwd, detectPaths, revision, it)
+              }
             }
           }
           hoveredHyperlink = hyperlinksForRow?.firstOrNull { link ->
@@ -2243,9 +2260,7 @@ fun ProperTerminal(
           // the glyph and image resolution with it. See TerminalPaintState.
           //
           // Published from a SideEffect - the apply phase, after composition and before
-          // layout/draw - so the overlay paints this frame's values in this frame. It sits
-          // after the fold's SideEffect on purpose, so `effectiveScrollOffset` is the value the
-          // text canvas actually drew with.
+          // layout/draw - so the overlay paints this frame's values in this frame.
           SideEffect {
             val bufferCursorRow = (cursorY - 1).coerceAtLeast(0)
             val cursorLine = bufferSnapshot.getLine(bufferCursorRow)

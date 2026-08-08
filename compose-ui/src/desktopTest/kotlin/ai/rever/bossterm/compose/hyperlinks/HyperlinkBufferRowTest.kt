@@ -254,4 +254,66 @@ class HyperlinkBufferRowTest {
         cache.linksAt(1, run, cwd = "/b", detectFilePaths = false, registryRevision = 0, detect = detect)
         assertEquals(3, detections, "toggling path detection must invalidate too")
     }
+
+    /**
+     * The run walk is capped, so one pathological logical line cannot make a pointer move
+     * O(scrollback). `cat` of a minified file is a single wrapped run thousands of rows long.
+     */
+    @Test
+    fun theRunWalkIsBoundedRegardlessOfHowLongTheLogicalLineIs() {
+        val rows = HyperlinkDetector.MAX_WRAPPED_RUN_ROWS * 4
+        val buffer = TerminalTextBuffer(20, 8, StyleState(), rows * 2)
+        // Every line wraps into the next, so the logical line is the whole scrollback.
+        repeat(rows) {
+            write(buffer, 1, "x".repeat(20))
+            buffer.getLine(0).isWrapped = true
+            buffer.scrollArea(1, -1, 8)
+        }
+        val snapshot = buffer.createIncrementalSnapshot()
+
+        val run = HyperlinkDetector.runLinesAt(snapshot, 0)
+        assertTrue(
+            run.size <= 2 * HyperlinkDetector.MAX_WRAPPED_RUN_ROWS + 2,
+            "the walk must be capped, was ${run.size} rows for a $rows-row run",
+        )
+    }
+
+    /**
+     * A runtime pattern change has to reach rows already memoized - the line instance never
+     * changes, so nothing else would ever invalidate them.
+     */
+    @Test
+    fun aRegistryChangeReDetectsAnUnchangedLine() {
+        val buffer = TerminalTextBuffer(40, 4, StyleState(), 100)
+        write(buffer, 2, "see TICKET-42 ok")
+        val run = listOf(buffer.createIncrementalSnapshot().getLine(1))
+        val cache = HyperlinkRowCache()
+        var detections = 0
+        val detect = { detections++; emptyList<Hyperlink>() }
+
+        cache.linksAt(1, run, null, false, registryRevision = 0, detect = detect)
+        cache.linksAt(1, run, null, false, registryRevision = 0, detect = detect)
+        assertEquals(1, detections, "same registry, same line: one detection")
+
+        cache.linksAt(1, run, null, false, registryRevision = 1, detect = detect)
+        assertEquals(2, detections, "a pattern added at runtime must invalidate memoized rows")
+    }
+
+    @Test
+    fun theRegistryRevisionMovesOnEveryMutation() {
+        val registry = HyperlinkRegistry()
+        val before = registry.revision
+        registry.addPattern(
+            HyperlinkPattern(id = "test:x", regex = Regex("x"), priority = 99),
+        )
+        val afterAdd = registry.revision
+        assertTrue(afterAdd > before, "addPattern must bump the revision")
+
+        registry.removePattern("test:x")
+        assertTrue(registry.revision > afterAdd, "removePattern must bump it too")
+
+        val afterRemove = registry.revision
+        registry.removePattern("test:not-there")
+        assertEquals(afterRemove, registry.revision, "a no-op removal must not bump it")
+    }
 }

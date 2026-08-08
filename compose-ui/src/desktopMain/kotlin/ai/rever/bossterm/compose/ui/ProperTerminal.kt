@@ -72,7 +72,6 @@ import ai.rever.bossterm.compose.splits.NavigationDirection
 import ai.rever.bossterm.compose.menu.MenuActions
 import ai.rever.bossterm.compose.debug.DebugWindow
 import ai.rever.bossterm.compose.features.ContextMenuController
-import ai.rever.bossterm.compose.features.ContextMenuPopup
 import ai.rever.bossterm.compose.features.showHyperlinkContextMenu
 import ai.rever.bossterm.compose.features.showTerminalContextMenu
 import ai.rever.bossterm.compose.hyperlinks.Hyperlink
@@ -2465,11 +2464,13 @@ fun ProperTerminal(
 
         // Restore focus to terminal when context menu closes.
         // Critical for embedded scenarios where focus returns to parent container
-        // instead of terminal after AWT JPopupMenu dismissal. Fixes #126.
-        val contextMenuState by contextMenuController.menuState
-        LaunchedEffect(contextMenuState.isVisible) {
-          if (!contextMenuState.isVisible && isActiveTab) {
-            // Delay for AWT JPopupMenu to fully close before focus restoration
+        // instead of terminal after popup dismissal. Fixes #126.
+        // Keys off menuVisible, which tracks every menu; the old menuState it watched was only
+        // ever populated by a fallback branch that never ran, so this effect never fired.
+        val contextMenuOnScreen by contextMenuController.menuVisible
+        LaunchedEffect(contextMenuOnScreen) {
+          if (!contextMenuOnScreen && isActiveTab) {
+            // Delay for the popup to fully close before focus restoration
             kotlinx.coroutines.delay(50)
             focusRequester.requestFocus()
           }
@@ -2631,9 +2632,6 @@ fun ProperTerminal(
         }
       }
     } // end Box
-
-    // Context menu popup
-    ContextMenuPopup(controller = contextMenuController)
 
     // Debug window (separate window)
     DebugWindow(

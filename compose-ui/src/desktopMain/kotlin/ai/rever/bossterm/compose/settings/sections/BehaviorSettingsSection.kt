@@ -215,6 +215,17 @@ fun BehaviorSettingsSection(
 
         // Mouse Settings
         SettingsSection(title = "Mouse") {
+            // Linux always gets the themed menu: the AWT peer there is the Motif-era XAWT menu,
+            // so offering the choice would only ever make things worse.
+            if (!ShellCustomizationUtils.isLinux()) {
+                SettingsToggle(
+                    label = "Native Context Menus",
+                    checked = settings.useNativeContextMenus,
+                    onCheckedChange = { onSettingsChange(settings.copy(useNativeContextMenus = it)) },
+                    description = "Use the system's own right-click menus. Off restores BOSS-themed menus"
+                )
+            }
+
             SettingsToggle(
                 label = "Enable Mouse Reporting",
                 checked = settings.enableMouseReporting,

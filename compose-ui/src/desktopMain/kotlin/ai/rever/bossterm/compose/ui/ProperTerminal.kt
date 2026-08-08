@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.*
+import java.util.concurrent.atomic.AtomicInteger
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -69,6 +70,7 @@ import ai.rever.bossterm.compose.actions.createBuiltinActions
 import ai.rever.bossterm.compose.splits.NavigationDirection
 import ai.rever.bossterm.compose.menu.MenuActions
 import ai.rever.bossterm.compose.debug.DebugWindow
+import ai.rever.bossterm.terminal.model.TextBufferChangesListener
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.features.ContextMenuPopup
 import ai.rever.bossterm.compose.features.showHyperlinkContextMenu
@@ -140,6 +142,25 @@ private data class StableTerminalRenderFrame(
 )
 
 /** UI-thread-confined retention committed only after an accepted composition applies. */
+/**
+ * The offset a bottom-anchored viewport needs after [appended] lines were appended to history.
+ *
+ * `scrollOffset` counts back from the LIVE BOTTOM, so appending moves the user's content that many
+ * rows further from the anchor; adding the count re-addresses the same lines. Extracted from the
+ * composable so the edges are unit-testable: following the bottom is left alone, and a capped
+ * history pins the view to its oldest surviving line rather than running off the end.
+ *
+ * @param current the offset now; 0 means following the live bottom.
+ * @param appended lines added to history since the last fold.
+ * @param historyCount history size after the append, the furthest back the viewport can address.
+ */
+internal fun foldHistoryAppends(current: Int, appended: Int, historyCount: Int): Int = when {
+  appended <= 0 -> current
+  // Following the bottom is a position, not a pin: keep following it.
+  current <= 0 -> current
+  else -> (current + appended).coerceAtMost(historyCount)
+}
+
 internal class StableRenderFrameHolder<T : Any> {
   private var frame: T? = null
 
@@ -242,11 +263,20 @@ fun ProperTerminal(
   // Accumulate lock-free on the emulator thread, apply on the UI thread. Deliberately NOT written
   // straight from the listener - that fires inside the buffer lock on the hottest path, and taking
   // Compose's snapshot lock under it is the lock inversion ComposeTerminalDisplay warns about.
-  val pendingHistoryAppends = remember(textBuffer) { java.util.concurrent.atomic.AtomicInteger(0) }
+  val pendingHistoryAppends = remember(textBuffer) { AtomicInteger(0) }
   DisposableEffect(textBuffer) {
-    val anchor = object : ai.rever.bossterm.terminal.model.TextBufferChangesListener {
+    val anchor = object : TextBufferChangesListener {
       override fun linesAddedToHistory(count: Int) {
-        pendingHistoryAppends.addAndGet(count)
+        // Decide here, not at drain time. This fires synchronously inside the append, so
+        // `isUsingAlternateBuffer` is consistent with the lines being reported. Testing it on the
+        // UI thread a frame later races both ways: main-screen appends banked before the app
+        // enters the alt screen would be dropped, and alt-screen appends banked before the TUI
+        // exits would be folded into the main-screen offset - exactly what the check prevents.
+        //
+        // The alternate screen really does accumulate scrollback here (`useAlternateBuffer` swaps
+        // in a live storage and `scrollArea` has no alt guard), but it is thrown away when the TUI
+        // exits, so an offset derived from it would address a buffer that no longer exists.
+        if (!textBuffer.isUsingAlternateBuffer) pendingHistoryAppends.addAndGet(count)
       }
 
       override fun historyCleared() {
@@ -255,6 +285,18 @@ fun ProperTerminal(
     }
     textBuffer.addChangesListener(anchor)
     onDispose { textBuffer.removeChangesListener(anchor) }
+  }
+
+  /**
+   * Move the viewport, clearing any banked appends when leaving the live bottom.
+   *
+   * Every path that takes the offset off 0 must go through this: appends banked while following
+   * the bottom are not compensation for a scrolled viewport, and folding them makes the first
+   * scrolled frame jump.
+   */
+  fun setScrollOffset(target: Int) {
+    if (scrollOffset == 0) pendingHistoryAppends.set(0)
+    scrollOffset = target.coerceIn(0, textBuffer.historyLinesCount)
   }
 
   // Command blocks captured for this session (OSC 133). Collected so the gutter
@@ -321,11 +363,11 @@ fun ProperTerminal(
     if (matchRow < visibleRowStart) {
       // Match is above visible area, scroll up to show it (with 2-line margin from top)
       val targetOffset = -matchRow + 2
-      scrollOffset = targetOffset.coerceIn(0, historySize)
+      setScrollOffset(targetOffset)
     } else if (matchRow > visibleRowEnd) {
       // Match is below visible area, scroll down to show it (with 2-line margin from bottom)
       val targetOffset = -(matchRow - screenHeight + 3)
-      scrollOffset = targetOffset.coerceIn(0, historySize)
+      setScrollOffset(targetOffset)
     }
     // If match is already visible, don't scroll
 
@@ -496,13 +538,13 @@ fun ProperTerminal(
           position.y < 0 -> {
             // Dragging above canvas - scroll up into history
             val scrollDelta = (-position.y * AUTO_SCROLL_SPEED).toInt().coerceAtLeast(1)
-            scrollOffset = (scrollOffset + scrollDelta).coerceIn(0, historySize)
+            setScrollOffset(scrollOffset + scrollDelta)
             true
           }
           position.y > height -> {
             // Dragging below canvas - scroll down toward current
             val scrollDelta = ((position.y - height) * AUTO_SCROLL_SPEED).toInt().coerceAtLeast(1)
-            scrollOffset = (scrollOffset - scrollDelta).coerceIn(0, historySize)
+            setScrollOffset(scrollOffset - scrollDelta)
             true
           }
           else -> false  // Back in bounds
@@ -881,7 +923,7 @@ fun ProperTerminal(
     screenHeight = { textBuffer.height },
     cellHeight = { cellHeight },
     onScroll = { newOffset ->
-      scrollOffset = newOffset
+      setScrollOffset(newOffset)
       display.requestImmediateRedraw() // Immediate redraw for responsive scrolling
     }
   )
@@ -1724,12 +1766,7 @@ fun ProperTerminal(
           accumulatedScrollDelta += delta * settings.scrollMultiplier
           val scrollLines = accumulatedScrollDelta.toInt()
           if (scrollLines != 0) {
-            if (scrollOffset == 0) {
-              // Leaving the bottom: appends banked while we were following it must not be folded
-              // into the offset we are about to take, or the first frame jumps.
-              pendingHistoryAppends.set(0)
-            }
-            scrollOffset = (scrollOffset - scrollLines).coerceIn(0, historySize)
+            setScrollOffset(scrollOffset - scrollLines)
             accumulatedScrollDelta -= scrollLines.toFloat()
             userScrollTrigger++  // Mark as user-initiated scroll for scrollbar visibility
           }
@@ -1899,24 +1936,20 @@ fun ProperTerminal(
         // Snapshot cached by Compose - recreated when display triggers redraw OR buffer dimensions change
         // Buffer, images, and cursor state are retained as one accepted render frame.
         val currentTrigger = display.redrawTrigger.value
-        // iTerm2's refreshAfterSync equivalent: fold the appends that landed since the last frame
-        // into the scroll offset so a scrolled-up viewport stays on the same content. Only while
-        // the user is actually scrolled up - at offset 0 we keep following the bottom, which is
-        // what iTerm2 does with `if (!userScroll) [self scrollEnd]`.
+        // iTerm2's refreshAfterSync equivalent: fold the appends banked since the last frame into
+        // the offset, so a scrolled-up viewport keeps addressing the same content. See
+        // [foldHistoryAppends] for the edges and the listener above for why alt-screen appends
+        // never reach the bank.
         //
-        // Never on the ALTERNATE screen. This buffer really does accumulate scrollback there
-        // (`useAlternateBuffer` swaps in a live CyclicBufferLinesStorage, and `scrollArea` has no
-        // alt guard), so a full-screen TUI scrolling with DECSTBM top == 1, or plain line feeds,
-        // appends and reports just like the main screen. Folding those would walk the offset
-        // against a history that is thrown away when the TUI exits, leaving the restored main view
-        // at an offset derived from a buffer that no longer exists. The bank is still drained, so
-        // alt-screen appends are discarded rather than applied late.
-        LaunchedEffect(currentTrigger) {
+        // SideEffect, not LaunchedEffect: this runs synchronously after apply, so the resulting
+        // recomposition lands in the same frame loop instead of the next one. A frame late would
+        // draw the post-append snapshot at the pre-append offset and then snap, which under
+        // sustained output trades a steady drift for a per-frame jitter. It also avoids allocating
+        // and cancelling a coroutine per redraw on the hottest composable in the app.
+        SideEffect {
           val appended = pendingHistoryAppends.getAndSet(0)
-          if (appended > 0 && scrollOffset > 0 && !textBuffer.isUsingAlternateBuffer) {
-            // Clamping at historyLinesCount pins the view to the oldest surviving line once capped
-            // history starts evicting, mirroring iTerm2 clamping its scroll rect at 0.
-            scrollOffset = (scrollOffset + appended).coerceAtMost(textBuffer.historyLinesCount)
+          if (appended > 0) {
+            scrollOffset = foldHistoryAppends(scrollOffset, appended, textBuffer.historyLinesCount)
           }
         }
         val imageDataCache = terminal.getImageDataCache()

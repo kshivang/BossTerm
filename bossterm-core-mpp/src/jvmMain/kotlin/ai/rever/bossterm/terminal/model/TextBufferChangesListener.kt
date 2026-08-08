@@ -28,6 +28,12 @@ interface TextBufferChangesListener {
    * screen too, so a consumer anchoring a viewport must decide for itself whether an alt-screen
    * append is meaningful to it. The case this was added for is an ordinary shell streaming output.
    *
+   * NOT a complete account of history movement. `resize` fires this when a height shrink pushes
+   * lines into history, but a height GROWTH pulls lines back out with no event, so a consumer that
+   * only adds up these counts will over-count across a shrink/grow cycle. Anything reconstructing
+   * the history index space needs to handle resize itself rather than treating this as the sole
+   * source of truth.
+   *
    * Fired for every append, including the `scrollArea` hot path that a streaming process drives
    * once per output line — keep implementations cheap.
    *

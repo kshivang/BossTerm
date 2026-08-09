@@ -145,7 +145,8 @@ fun VisualSettingsSection(
                     }
                 },
                 description = if (settings.useNativeTitleBar) {
-                    "Native macOS title bar with proper fullscreen (no transparency)"
+                    "Native macOS title bar and traffic lights over the terminal background, " +
+                        "with proper fullscreen. Transparency is not available with it."
                 } else {
                     "Custom title bar with transparency support"
                 }

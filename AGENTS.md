@@ -81,6 +81,41 @@ fine and a clean build re-arms it. Note that querying windows via `osascript`/Sy
 macOS `dlopen` the accessibility bundles into the target - that adds a waiter on the very same lock
 and reports `0 windows` as a false negative. Use `jcmd`/`sample` instead.
 
+### AWT cannot make a decorated frame transparent (measured)
+
+Do not spend an afternoon rediscovering this. AWT allocates an alpha-capable backing store only for
+windows it considers translucent, and refuses that for decorated frames -
+`IllegalComponentStateException: The frame is decorated`, on both `setBackground(alpha<255)` and
+`setOpacity`, before and after the window is shown. Forcing the `NSWindow` non-opaque underneath is
+not enough either: measured through the peer, `CPlatformWindow.setOpaque(false)` runs and the window
+reports `isOpaque = NO`, and alpha still composites onto black because the surface has no alpha
+channel. The same alpha-0 fill in an **undecorated** window is see-through.
+
+macOS itself allows it, which is how Terminal.app is transparent with traffic lights - it is AWT's
+window that cannot be. So transparency belongs to the undecorated path only, which is exactly what
+`useNativeTitleBar = false` selects. See `compose-ui/.../window/NativeTitleBarStyle.kt`.
+
+One consequence rides along, and it is why the app no longer follows the system appearance: with
+`apple.awt.transparentTitleBar` the title text sits over OUR background, but AppKit still picks that
+text's colour from the window appearance. Following the system therefore guarantees an unreadable
+title whenever the two disagree - confirmed by hand, a light system appearance drew a near-black
+title on the near-black default background. `nativeTitleBarAppearance` derives
+`apple.awt.application.appearance` from the terminal background instead, which fixes both
+directions. It has to be applied before AWT boots, and it is app-wide, so other AWT chrome (the
+native context menus) follows the terminal background too.
+
+### OSC 1 names the TAB, OSC 2 names the WINDOW
+
+xterm's split, and it is load-bearing across `TabController`, `TabbedTerminal` and `ProperTerminal`.
+Do not fold them into one field: apps set them to different strings deliberately (oh-my-zsh emits a
+short OSC 1 and a long OSC 2 back to back from `precmd`), so merging makes the tab label depend on
+which arrived last. OSC 0 sets both.
+
+The window title resolves `resolveWindowTitle`: a Rename… custom title, then OSC 2, then the tab's
+own title. The OSC 2 slot is cleared at prompt start so a program that set one stops naming the
+window after it exits - which needs OSC 133, so it does not happen inside tmux/screen or without the
+shell integration.
+
 ### Emoji Rendering
 Skia ignores variation selectors (U+FE0F). Peek-ahead to detect, switch to `FontFamily.Default`, render as unit.
 
@@ -110,6 +145,10 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 **Buffer**
 - `bossterm-core-mpp/src/jvmMain/kotlin/com/bossterm/terminal/model/TerminalTextBuffer.kt`
 - `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/pool/IncrementalSnapshotBuilder.kt`
+
+**Window**
+- `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/window/NativeTitleBarStyle.kt`
+  (full window content, the title bar inset, and the transparency finding above)
 
 **Components**
 - `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/TabbedTerminal.kt`

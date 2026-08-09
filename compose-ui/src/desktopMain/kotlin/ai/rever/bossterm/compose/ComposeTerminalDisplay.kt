@@ -129,6 +129,17 @@ class ComposeTerminalDisplay : TerminalDisplay {
     val bellTrigger: State<Int> = _bellTrigger
     val progressState: State<TerminalDisplay.ProgressState> = _progressState
     val progressValue: State<Int> = _progressValue
+    /**
+     * The app's OSC 2 window title.
+     *
+     * Empty is a RESET, not merely "nothing yet": TabController clears it at each prompt start
+     * so a title set by a program that has since exited stops naming the window. Consumers should
+     * fall back to something of their own rather than showing a blank - see
+     * `resolveWindowTitle` in TabbedTerminal, which falls back to the tab title.
+     *
+     * The reset needs OSC 133, so it does not happen inside tmux/screen or in a session with no
+     * shell integration; there a title outlives the program that set it, as it always has.
+     */
     val windowTitleFlow: StateFlow<String> = _windowTitle.asStateFlow()
     val iconTitleFlow: StateFlow<String> = _iconTitle.asStateFlow()
 

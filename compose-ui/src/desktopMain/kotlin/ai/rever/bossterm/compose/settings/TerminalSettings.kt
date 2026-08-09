@@ -169,6 +169,13 @@ data class TerminalSettings(
      * When true: Native macOS title bar, proper fullscreen, but no transparency.
      * When false: Custom title bar, transparency works, but no true fullscreen.
      * Changing this requires app restart to take effect.
+     *
+     * "No transparency" is an AWT restriction, not a macOS one - see
+     * `applyFullWindowContent` in `window/NativeTitleBarStyle.kt`, which records what was measured.
+     * Short version: AWT gives an alpha-capable backing store only to windows it treats as
+     * translucent and refuses that for decorated frames, and forcing the NSWindow non-opaque
+     * underneath does not help because the surface has no alpha channel. Do not spend an
+     * afternoon rediscovering it.
      */
     val useNativeTitleBar: Boolean = true,
 

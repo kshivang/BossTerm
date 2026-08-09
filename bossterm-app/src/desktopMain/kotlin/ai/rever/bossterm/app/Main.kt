@@ -2,6 +2,8 @@ package ai.rever.bossterm.app
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -32,6 +34,9 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.update.UpdateBanner
 import ai.rever.bossterm.compose.update.UpdateManager
 import ai.rever.bossterm.compose.window.CustomTitleBar
+import ai.rever.bossterm.compose.window.applyFullWindowContent
+import ai.rever.bossterm.compose.window.nativeTitleBarAppearance
+import ai.rever.bossterm.compose.window.titleBarInset
 import ai.rever.bossterm.compose.window.GlobalHotKeyManager
 import ai.rever.bossterm.compose.window.HotKeyConfig
 import ai.rever.bossterm.compose.window.WindowManager
@@ -73,6 +78,17 @@ fun main(args: Array<String>) {
         if (ShellCustomizationUtils.isMacOS()) System.setProperty("apple.awt.UIElement", "true")
         runDaemon(rest)
         return
+    }
+
+    // Window appearance, derived from OUR background rather than the system's. Must be here:
+    // apple.awt.application.appearance is read once when AWT initializes, so this has to beat the
+    // deep-link handler below (it touches java.awt.Desktop) as well as any window. See
+    // nativeTitleBarAppearance for why following the system is not an option once the title bar is
+    // transparent. Settings are plain file + JSON at this point, no toolkit involved.
+    SettingsManager.instance.settings.value.let { s ->
+        nativeTitleBarAppearance(s.useNativeTitleBar, s.defaultBackground)?.let {
+            System.setProperty("apple.awt.application.appearance", it)
+        }
     }
 
     // Configure GPU rendering (must be before any Skiko/Compose initialization)
@@ -284,6 +300,30 @@ fun main(args: Array<String>) {
                         }
                     }
                 ) {
+                    // Native title bar styling: let the app's background run under the title bar so
+                    // the traffic lights sit on it, instead of a system-painted strip above the
+                    // content. Only meaningful on the native path - the custom title bar already
+                    // owns that area. `this@Window.window` because the loop variable above shadows
+                    // FrameWindowScope.window.
+                    // Split deliberately: whether the content WILL run under the title bar is a
+                    // pure predicate, so the inset below is right on the very first frame, while
+                    // the client-property write that makes it so is a mutation and belongs in the
+                    // effect phase. (A composition can be discarded or re-run; remember's
+                    // initializer is not guaranteed to belong to the one that gets applied.)
+                    val fullWindowContent =
+                        remember { useNativeTitleBar && ShellCustomizationUtils.isMacOS() }
+                    // Starts optimistic so the inset is right on frame one, then takes the actual
+                    // result: applyFullWindowContent declines a window it cannot style, and the
+                    // inset has to follow it or we reserve 28dp for a title bar that stayed where
+                    // it was. ComposeWindow is a JFrame so the decline path should never fire -
+                    // this is what makes that a fact about the code rather than a hope.
+                    var styleApplied by remember { mutableStateOf(fullWindowContent) }
+                    LaunchedEffect(fullWindowContent) {
+                        if (fullWindowContent) {
+                            styleApplied = applyFullWindowContent(this@Window.window)
+                        }
+                    }
+
                     // Update manager state
                     val updateManager = remember { UpdateManager.instance }
                     val updateState by updateManager.updateState.collectAsState()
@@ -729,6 +769,11 @@ fun main(args: Array<String>) {
                                                    windowState.placement == WindowPlacement.Maximized
                     val cornerRadius = if (useNativeTitleBar || isFullscreenOrMaximized) 0.dp else 20.dp
 
+                    // One value for every site that has to stay clear of the title bar. See
+                    // titleBarInset for why it is Fullscreen-only, why Maximized still insets, and
+                    // why placement is trusted for this.
+                    val topInset = titleBarInset(styleApplied, windowState.placement)
+
                     // Load background image if set
                     val backgroundImage = remember(windowSettings.backgroundImagePath) {
                         if (windowSettings.backgroundImagePath.isNotEmpty()) {
@@ -810,6 +855,13 @@ fun main(args: Array<String>) {
                             }
 
                             Column(modifier = Modifier.fillMaxSize()) {
+                                // The content pane now extends under the title bar, so reserve its
+                                // height - otherwise the tab bar would sit beneath the traffic
+                                // lights and be unclickable. The app's background already paints
+                                // through this strip, which is the point. Zero in fullscreen; see
+                                // titleBarInset.
+                                Spacer(modifier = Modifier.height(topInset))
+
                                 // Custom title bar (only when not using native title bar)
                                 if (!useNativeTitleBar) {
                                     CustomTitleBar(
@@ -905,10 +957,14 @@ fun main(args: Array<String>) {
                             // Hotkey hint overlay (top-right corner, like iTerm2)
                             // Shows for native title bar; custom title bar shows it in the title bar itself
                             if (useNativeTitleBar && globalHotkeyHint != null) {
+                                // This Box is a sibling of the Column above, so it is NOT covered
+                                // by that Column's title bar spacer - it anchors to the frame top
+                                // and has to apply the same inset itself, or it renders inside the
+                                // title bar strip and crowds the centred window title.
                                 Box(
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
-                                        .padding(top = 8.dp, end = 12.dp)
+                                        .padding(top = topInset + 8.dp, end = 12.dp)
                                 ) {
                                     Text(
                                         text = globalHotkeyHint,

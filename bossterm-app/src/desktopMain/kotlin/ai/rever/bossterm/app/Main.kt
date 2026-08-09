@@ -2,6 +2,8 @@ package ai.rever.bossterm.app
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -32,6 +34,8 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.update.UpdateBanner
 import ai.rever.bossterm.compose.update.UpdateManager
 import ai.rever.bossterm.compose.window.CustomTitleBar
+import ai.rever.bossterm.compose.window.NATIVE_TITLE_BAR_HEIGHT_DP
+import ai.rever.bossterm.compose.window.applyFullWindowContent
 import ai.rever.bossterm.compose.window.GlobalHotKeyManager
 import ai.rever.bossterm.compose.window.HotKeyConfig
 import ai.rever.bossterm.compose.window.WindowManager
@@ -284,6 +288,16 @@ fun main(args: Array<String>) {
                         }
                     }
                 ) {
+                    // Native title bar styling: let the app's background run under the title bar so
+                    // the traffic lights sit on it, instead of a system-painted strip above the
+                    // content. Only meaningful on the native path - the custom title bar already
+                    // owns that area. `this@Window.window` because the loop variable above shadows
+                    // FrameWindowScope.window.
+                    val fullWindowContent =
+                        remember(useNativeTitleBar) {
+                            useNativeTitleBar && applyFullWindowContent(this@Window.window)
+                        }
+
                     // Update manager state
                     val updateManager = remember { UpdateManager.instance }
                     val updateState by updateManager.updateState.collectAsState()
@@ -810,6 +824,14 @@ fun main(args: Array<String>) {
                             }
 
                             Column(modifier = Modifier.fillMaxSize()) {
+                                // The content pane now extends under the title bar, so reserve its
+                                // height - otherwise the tab bar would sit beneath the traffic
+                                // lights and be unclickable. The app's background already paints
+                                // through this strip, which is the point.
+                                if (fullWindowContent) {
+                                    Spacer(modifier = Modifier.height(NATIVE_TITLE_BAR_HEIGHT_DP.dp))
+                                }
+
                                 // Custom title bar (only when not using native title bar)
                                 if (!useNativeTitleBar) {
                                     CustomTitleBar(

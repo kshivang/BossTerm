@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.features
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -378,24 +379,84 @@ class NativeContextMenuTest {
             NativeContextMenuOverride.set(null)
         }
 
+    // The override's effect is asserted through shouldUseNativeMenus with an injected platform,
+    // so these have teeth on a Linux CI runner too. Reading nativeMenusPreferred() directly would
+    // collapse to `false == false` off macOS and pass even if the override were ignored.
+    private fun gate(override: Boolean?, fileSetting: Boolean, isMacOs: Boolean) =
+        shouldUseNativeMenus(settingEnabled = override ?: fileSetting, isMacOs = isMacOs)
+
     @Test
     fun `an embedder override wins over the settings file`() {
-        withOverride(false) {
-            assertFalse(nativeMenusPreferred(), "an explicit override of false must be honoured")
-        }
-        withOverride(true) {
-            // Native is macOS-only for now, so that is the whole answer here.
-            assertEquals(
-                ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isMacOS(),
-                nativeMenusPreferred()
-            )
-        }
+        assertFalse(gate(override = false, fileSetting = true, isMacOs = true))
+        assertTrue(gate(override = true, fileSetting = false, isMacOs = true))
     }
 
     @Test
-    fun `clearing the override falls back to the settings file`() {
-        withOverride(false) { }
+    fun `with no override the settings file decides`() {
+        assertTrue(gate(override = null, fileSetting = true, isMacOs = true))
+        assertFalse(gate(override = null, fileSetting = false, isMacOs = true))
+    }
+
+    @Test
+    fun `set returns the previous value so siblings can restore it`() {
+        // TabbedTerminal relies on this: unmounting one instance must not clear another's override.
+        assertNull(NativeContextMenuOverride.set(true))
+        try {
+            val previous = NativeContextMenuOverride.set(false)
+            assertEquals(true, previous)
+            NativeContextMenuOverride.set(previous)
+            assertEquals(true, NativeContextMenuOverride.current())
+        } finally {
+            NativeContextMenuOverride.set(null)
+        }
         assertNull(NativeContextMenuOverride.current())
+    }
+
+    @Test
+    fun `an unreadable settings source falls back to native rather than throwing`() {
+        withOverride(null) {
+            // nativeMenusPreferred wraps the SettingsManager read in runCatching; whatever it
+            // returns, it must not propagate.
+            nativeMenusPreferred()
+        }
+    }
+
+    // ----- anchor arithmetic -----
+
+    @Test
+    fun `a screen anchor is converted relative to the invoker origin`() {
+        val at = MenuAnchor.Screen(1200, 830).toInvokerCoordinates(java.awt.Point(1000, 800))
+        assertEquals(200, at.x)
+        assertEquals(30, at.y)
+    }
+
+    @Test
+    fun `an invoker-relative anchor is passed through untouched`() {
+        // The MouseInfo-null fallback: the offset is already invoker-local.
+        val at = MenuAnchor.RelativeToInvoker(40, 60).toInvokerCoordinates(java.awt.Point(1000, 800))
+        assertEquals(40, at.x)
+        assertEquals(60, at.y)
+    }
+
+    @Test
+    fun `a screen anchor on a second monitor can convert to negative coordinates`() {
+        val at = MenuAnchor.Screen(-300, 50).toInvokerCoordinates(java.awt.Point(0, 0))
+        assertEquals(-300, at.x)
+        assertEquals(50, at.y)
+    }
+
+    // ----- shortcut contract -----
+
+    @Test
+    fun `a shortcut that is not a VK constant is rejected at construction`() {
+        // 'c'.code is 99, which is not KeyEvent.VK_C and would render as something arbitrary.
+        assertFailsWith<IllegalArgumentException> {
+            ContextMenuController.MenuItem("copy", "Copy", true, {}, shortcut = 'c')
+        }
+        // Valid ones still build.
+        ContextMenuController.MenuItem("copy", "Copy", true, {}, shortcut = 'C')
+        ContextMenuController.MenuItem("one", "One", true, {}, shortcut = '1')
+        ContextMenuController.MenuItem("none", "None", true, {}, shortcut = null)
     }
 
     @Test

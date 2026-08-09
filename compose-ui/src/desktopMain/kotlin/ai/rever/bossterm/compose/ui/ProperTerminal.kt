@@ -2472,7 +2472,10 @@ fun ProperTerminal(
         // itself on mount, and restoring the terminal 50ms later would yank focus straight back
         // out of the field the user just asked for.
         val contextMenuOnScreen by contextMenuController.menuVisible
-        val overlayOwnsFocus = searchVisible || commandPaletteVisible || historySearchVisible
+        // "Show Debug Panel" is an item in this menu too, and debugPanelVisible has its own
+        // focus-restoring effect above; without it here the two fight over that transition.
+        val overlayOwnsFocus =
+          searchVisible || commandPaletteVisible || historySearchVisible || debugPanelVisible
         LaunchedEffect(contextMenuOnScreen, overlayOwnsFocus) {
           if (!contextMenuOnScreen && isActiveTab && !overlayOwnsFocus) {
             // Delay for the popup to fully close before focus restoration

@@ -78,9 +78,18 @@ class ContextMenuController internal constructor(
         val label: String,
         val enabled: Boolean,
         val action: () -> Unit,
-        /** An uppercase letter, whose char code is the matching `KeyEvent.VK_*` constant. */
+        /** An uppercase letter or digit, whose char code IS the matching `KeyEvent.VK_*`. */
         val shortcut: Char? = null
-    ) : MenuElement()
+    ) : MenuElement() {
+        init {
+            // MenuShortcut takes a virtual key code, and only A-Z / 0-9 have char codes that
+            // coincide with theirs. Lowercase 'c' is 99, which is not a VK constant at all, and
+            // would render as something arbitrary rather than failing.
+            require(shortcut == null || shortcut in 'A'..'Z' || shortcut in '0'..'9') {
+                "shortcut must be an uppercase letter or digit, was '$shortcut'"
+            }
+        }
+    }
 
     /**
      * Menu separator with optional label
@@ -243,7 +252,8 @@ internal object NativeContextMenuOverride {
     @Volatile
     private var override: Boolean? = null
 
-    fun set(value: Boolean?) { override = value }
+    /** Returns the previous value so a caller can restore it rather than clobbering a sibling. */
+    fun set(value: Boolean?): Boolean? = override.also { override = value }
 
     fun current(): Boolean? = override
 }
@@ -302,8 +312,10 @@ internal fun resolveInvoker(preferred: Window?, at: java.awt.Point?): Window? {
             bounds = it.bounds
         )
     }
+    // Deliberately no toFront()/requestFocus() here: PopupMenu.show does not need an active
+    // invoker, and a resolve* function reordering the window stack would let a right-click raise
+    // a BossTerm window over the host app it is embedded in.
     return pickInvoker(candidates, at)?.window
-        ?.also { if (!it.isActive) { it.toFront(); it.requestFocus() } }
 }
 
 /** The properties [pickInvoker] ranks on, lifted off AWT so the rule can be tested headlessly. */
@@ -321,19 +333,23 @@ internal fun <T> pickInvoker(
     at: java.awt.Point?
 ): InvokerCandidate<T>? = candidates
     .filter { it.isFrameOrDialog && it.isShowing }
-    .filter { at == null || it.bounds.contains(at) }
+    // Rectangle.contains is half-open on the right/bottom edges, so a click on the very edge can
+    // match nothing. Falling back to all eligible windows keeps the old degradation (menu on the
+    // wrong window) instead of introducing a new one (right-click silently does nothing).
+    .let { eligible -> eligible.filter { at == null || it.bounds.contains(at) }.ifEmpty { eligible } }
     .minWithOrNull(
         compareByDescending<InvokerCandidate<T>> { it.isActive }
             .thenBy { it.bounds.width.toLong() * it.bounds.height.toLong() }
     )
 
 /** Resolve an anchor against its invoker into the invoker-relative point `show()` wants. */
-internal fun MenuAnchor.toInvokerCoordinates(invoker: Window): java.awt.Point = when (this) {
+internal fun MenuAnchor.toInvokerCoordinates(invoker: Window): java.awt.Point =
+    toInvokerCoordinates(invoker.locationOnScreen)
+
+/** Takes the origin rather than the Window so the arithmetic is testable without a display. */
+internal fun MenuAnchor.toInvokerCoordinates(origin: java.awt.Point): java.awt.Point = when (this) {
     is MenuAnchor.RelativeToInvoker -> java.awt.Point(x, y)
-    is MenuAnchor.Screen -> {
-        val origin = invoker.locationOnScreen
-        java.awt.Point(x - origin.x, y - origin.y)
-    }
+    is MenuAnchor.Screen -> java.awt.Point(x - origin.x, y - origin.y)
 }
 
 /** The screen point this anchor names, if any, for picking the window underneath it. */
@@ -372,8 +388,6 @@ internal class SwingContextMenuRenderer : ContextMenuRenderer {
             onDismiss()
             return
         }
-
-        currentPopup?.isVisible = false
 
         val popup = JPopupMenu().apply {
             background = menuBg
@@ -485,23 +499,6 @@ internal class SwingContextMenuRenderer : ContextMenuRenderer {
 }
 
 /**
- * The OS-native renderer: `java.awt.PopupMenu`.
- *
- * On macOS this is peered by `sun.lwawt.macosx.CPopupMenu`, whose `nativeShowPopupMenu` calls
- * `popUpMenuPositioningItem:atLocation:inView:` on a real `NSMenu` (`CMenu.getNativeMenu()`
- * hands back the `NSMenu*`). On Windows it maps to a real Win32 popup.
- *
- * Three behaviours were measured rather than assumed, and each shapes the code below:
- *
- * 1. `show()` does NOT block — it returns immediately and the EDT stays live, so Compose keeps
- *    painting while the menu is up. It also means its return is not a dismissal signal.
- * 2. NOTHING cancels an open menu: hiding, removing and disposing the invoker all leave it
- *    tracking. Hence [ContextMenuRenderer.hide] here is a no-op and correctness rests on the
- *    controller's generation fence.
- * 3. There is no dismissal event on ANY AWT mask — mouse, motion, key, window, focus or action.
- *    Dismissal is inferred from the next input event the app sees.
- */
-/**
  * A toolkit-independent description of a native menu.
  *
  * Kept separate from the AWT widgets purely so the mapping can be tested: constructing any
@@ -583,6 +580,23 @@ internal fun planNativeMenu(
         }
     }
 
+/**
+ * The OS-native renderer: `java.awt.PopupMenu`.
+ *
+ * On macOS this is peered by `sun.lwawt.macosx.CPopupMenu`, whose `nativeShowPopupMenu` calls
+ * `popUpMenuPositioningItem:atLocation:inView:` on a real `NSMenu` (`CMenu.getNativeMenu()`
+ * hands back the `NSMenu*`). On Windows it maps to a real Win32 popup.
+ *
+ * Three behaviours were measured rather than assumed, and each shapes the code below:
+ *
+ * 1. `show()` does NOT block — it returns immediately and the EDT stays live, so Compose keeps
+ *    painting while the menu is up. It also means its return is not a dismissal signal.
+ * 2. NOTHING cancels an open menu: hiding, removing and disposing the invoker all leave it
+ *    tracking. Hence [ContextMenuRenderer.hide] here is a no-op and correctness rests on the
+ *    controller's generation fence.
+ * 3. There is no dismissal event on ANY AWT mask — mouse, motion, key, window, focus or action.
+ *    Dismissal is inferred from the next input event the app sees.
+ */
 internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
 
     private var attached: Pair<Window, java.awt.PopupMenu>? = null
@@ -672,6 +686,13 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
      * `MOUSE_EXITED`, the Escape key-release, then `MOUSE_ENTERED`. So the flag cannot clear
      * early, and it clears promptly even if the user never moves the mouse afterwards.
      *
+     * `WINDOW_EVENT_MASK` is included because dismissing by switching applications produces no
+     * input event at all, which would otherwise pin the flag until the user came back. By the same
+     * measurement, no window events arrive during tracking either.
+     *
+     * Note the "an open menu swallows everything" property is specifically NSMenu tracking. It is
+     * the first thing to re-measure if [shouldUseNativeMenus] ever widens past macOS.
+     *
      * Only [AWTEvent.getID] is inspected; no event contents are read, which matters because this
      * is a process-wide listener and BossTerm ships as a library inside other apps.
      */
@@ -694,7 +715,7 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
             toolkit.addAWTEventListener(
                 listener,
                 AWTEvent.MOUSE_EVENT_MASK or AWTEvent.MOUSE_MOTION_EVENT_MASK or
-                    AWTEvent.KEY_EVENT_MASK
+                    AWTEvent.KEY_EVENT_MASK or AWTEvent.WINDOW_EVENT_MASK
             )
             listener
         }.getOrElse {

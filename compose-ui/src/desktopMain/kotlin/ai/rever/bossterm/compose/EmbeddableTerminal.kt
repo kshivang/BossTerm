@@ -238,6 +238,9 @@ fun EmbeddableTerminal(
         SettingsLoader.resolveSettings(settings, settingsPath).withOverrides(settingsOverride)
     }
 
+    // Feed the state's live mirror so a settings change reaches the context menu without a restart.
+    effectiveState.nativeContextMenusEnabled = resolvedSettings.useNativeContextMenus
+
 
     // Effective shell command (validates $SHELL exists, falls back to /bin/bash or /bin/sh)
     val effectiveCommand = command ?: ShellCustomizationUtils.getValidShell(resolvedSettings.windowsShell)
@@ -537,6 +540,16 @@ class EmbeddableTerminalState {
     private var initialized = false
 
     /**
+     * Live mirror of the resolved `useNativeContextMenus` setting.
+     *
+     * The session is built once, so capturing the value there would freeze the preference for the
+     * life of this state - tab-bar menus would follow a settings change and embedded ones never
+     * would. The context menu controller reads through this instead.
+     */
+    @Volatile
+    internal var nativeContextMenusEnabled: Boolean = true
+
+    /**
      * Handler for CLI-originated open requests (OSC 1341;OpenTarget from the
      * shell-integration open/xdg-open/$BROWSER shim). Kept on the state (not
      * the composition) so requests are still routed while the composable is
@@ -589,7 +602,7 @@ class EmbeddableTerminalState {
         initialized = true
 
         // Create session
-        session = createTerminalSession(settings, onOutput)
+        session = createTerminalSession(settings, onOutput) { nativeContextMenusEnabled }
 
         // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
         // same handler as Ctrl/Cmd+click links; system default when unhandled.
@@ -857,7 +870,8 @@ fun rememberEmbeddableTerminalState(autoDispose: Boolean = true): EmbeddableTerm
  */
 private fun createTerminalSession(
     settings: TerminalSettings,
-    onOutput: ((String) -> Unit)?
+    onOutput: ((String) -> Unit)?,
+    nativeContextMenus: () -> Boolean
 ): TerminalTab {
     val styleState = StyleState()
     val textBuffer = TerminalTextBuffer(80, 24, styleState, settings.bufferMaxLines)
@@ -924,7 +938,7 @@ private fun createTerminalSession(
         contextMenuController = ContextMenuController(
             nativePreferred = {
                 shouldUseNativeMenus(
-                    settingEnabled = settings.useNativeContextMenus,
+                    settingEnabled = nativeContextMenus(),
                     isMacOs = ShellCustomizationUtils.isMacOS()
                 )
             }

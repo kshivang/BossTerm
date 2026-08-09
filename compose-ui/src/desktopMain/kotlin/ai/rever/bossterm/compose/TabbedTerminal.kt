@@ -77,6 +77,7 @@ import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.util.loadTerminalFont
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
+import ai.rever.bossterm.compose.features.NativeContextMenuOverride
 import ai.rever.bossterm.compose.settings.withOverrides
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkInfo
@@ -260,11 +261,12 @@ fun TabbedTerminal(
     }
 
     // Context menu controllers are built deep in the tree, where the resolved override is not in
-    // scope; publish it for them. Null leaves them reading the global setting live.
+    // scope; publish it for them. Null leaves them reading the global setting live. Restores the
+    // previous value rather than nulling, so unmounting one TabbedTerminal does not clear the
+    // override belonging to a still-mounted sibling.
     DisposableEffect(settingsOverride?.useNativeContextMenus) {
-        ai.rever.bossterm.compose.features.NativeContextMenuOverride
-            .set(settingsOverride?.useNativeContextMenus)
-        onDispose { ai.rever.bossterm.compose.features.NativeContextMenuOverride.set(null) }
+        val previous = NativeContextMenuOverride.set(settingsOverride?.useNativeContextMenus)
+        onDispose { NativeContextMenuOverride.set(previous) }
     }
 
     // Load font once and share across all tabs (supports custom font via settings)

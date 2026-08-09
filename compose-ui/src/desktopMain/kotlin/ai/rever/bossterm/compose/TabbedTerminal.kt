@@ -1626,12 +1626,20 @@ fun TabbedTerminal(
             val activeTab = tabController.tabs[tabController.activeTabIndex]
             val splitState = getOrCreateSplitState(activeTab)
 
-            // Update the OS window title from the FOCUSED pane's window title.
+            // Update the OS window title from the FOCUSED pane's tab title.
             // Re-subscribe when focus moves between split panes so the window title
             // follows the active pane instead of always the root/first pane.
+            //
+            // Deliberately session.title, not display.windowTitleFlow. The latter is the OSC 2
+            // window title, which most shells never emit - so the window was left showing its
+            // initial "BossTerm" while the tab bar beside it tracked the directory. session.title
+            // is the resolved one every other surface already uses: a Rename… custom title if set,
+            // otherwise the cwd label, with an app's OSC 0/1 icon title mirrored in and re-asserted
+            // on each fresh prompt. Sharing that source is what keeps the title bar and the tab
+            // agreeing.
             LaunchedEffect(activeTab, splitState.focusedPaneId) {
                 val focused = splitState.getFocusedSession() ?: activeTab
-                focused.display.windowTitleFlow.collect { newTitle ->
+                snapshotFlow { focused.title.value }.collect { newTitle ->
                     if (newTitle.isNotEmpty()) {
                         onWindowTitleChange(newTitle)
                     }

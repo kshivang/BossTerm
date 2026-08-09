@@ -36,7 +36,6 @@ import ai.rever.bossterm.compose.update.UpdateManager
 import ai.rever.bossterm.compose.window.CustomTitleBar
 import ai.rever.bossterm.compose.window.NATIVE_TITLE_BAR_HEIGHT
 import ai.rever.bossterm.compose.window.applyFullWindowContent
-import ai.rever.bossterm.compose.window.isNativeFullscreen
 import ai.rever.bossterm.compose.window.GlobalHotKeyManager
 import ai.rever.bossterm.compose.window.HotKeyConfig
 import ai.rever.bossterm.compose.window.WindowManager
@@ -753,27 +752,24 @@ fun main(args: Array<String>) {
                     // for every site that has to stay clear of it. Two copies of this predicate
                     // drifted apart once already: the spacer handled fullscreen and the hotkey hint
                     // did not, which put the hint inside the tab bar row.
-                    // Fullscreen is measured from the window bounds AND read from placement, since
-                    // placement is not known to track a green-button fullscreen; either signal
-                    // saying "fullscreen" means the title bar is gone and nothing should be
-                    // reserved. Maximized deliberately does NOT count: macOS zoom keeps the title
-                    // bar, so it keeps its inset.
-                    var boundsSayFullscreen by remember { mutableStateOf(false) }
-                    DisposableEffect(Unit) {
-                        val frame = this@Window.window
-                        val refresh = { boundsSayFullscreen = isNativeFullscreen(frame) }
-                        val listener = object : java.awt.event.ComponentAdapter() {
-                            override fun componentResized(e: java.awt.event.ComponentEvent) = refresh()
-                            override fun componentMoved(e: java.awt.event.ComponentEvent) = refresh()
-                        }
-                        frame.addComponentListener(listener)
-                        refresh()
-                        onDispose { frame.removeComponentListener(listener) }
-                    }
-                    val isFullscreen =
-                        boundsSayFullscreen || windowState.placement == WindowPlacement.Fullscreen
+                    //
+                    // Fullscreen ONLY, never Maximized: macOS zoom keeps its title bar, so a zoomed
+                    // window still needs the inset. placement is trustworthy here, traced rather
+                    // than assumed - Compose syncs it in a componentResized handler specifically
+                    // because "fullscreen changing doesn't fire windowStateChanged, only
+                    // componentResized" (SwingWindow.desktop.kt), and the value it reads bottoms out
+                    // in skiko's osxIsFullscreenNative, i.e. the real NSWindow state rather than a
+                    // flag set only when WE request fullscreen. So the green button is covered.
+                    // A bounds-vs-screen heuristic was tried instead and removed: it cannot tell
+                    // fullscreen from a zoomed window once the menu bar and Dock auto-hide, and
+                    // guessing "fullscreen" there would drop the inset and slide the tab bar under
+                    // the traffic lights.
                     val titleBarInset =
-                        if (fullWindowContent && !isFullscreen) NATIVE_TITLE_BAR_HEIGHT else 0.dp
+                        if (fullWindowContent && windowState.placement != WindowPlacement.Fullscreen) {
+                            NATIVE_TITLE_BAR_HEIGHT
+                        } else {
+                            0.dp
+                        }
 
                     // Load background image if set
                     val backgroundImage = remember(windowSettings.backgroundImagePath) {

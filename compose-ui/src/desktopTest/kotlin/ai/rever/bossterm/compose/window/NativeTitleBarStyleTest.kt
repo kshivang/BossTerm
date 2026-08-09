@@ -1,7 +1,5 @@
 package ai.rever.bossterm.compose.window
 
-import androidx.compose.ui.unit.dp
-import java.awt.Rectangle
 import javax.swing.JRootPane
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -54,48 +52,5 @@ class NativeTitleBarStyleTest {
         val rootPane = JRootPane()
         assertFalse(applyFullWindowContent(rootPane, isMacOS = false))
         assertNull(rootPane.getClientProperty("apple.awt.fullWindowContent"))
-    }
-
-    @Test
-    fun `the reserved strip is the standard macOS title bar height`() {
-        // A constant rather than a measurement: with fullWindowContent the content pane fills the
-        // frame, so the usual "window height minus content height" reports zero. 28pt is what the
-        // traffic lights are laid out against for a regular-size window.
-        assertEquals(28.dp, NATIVE_TITLE_BAR_HEIGHT)
-    }
-
-    // ---- isNativeFullscreen: bounds are the signal, because placement may not be ----
-
-    @Test
-    fun `covering the whole display reads as fullscreen`() {
-        // macOS native fullscreen takes the entire screen, menu bar strip included, so the
-        // window's bounds match the display's exactly.
-        val screen = Rectangle(0, 0, 1920, 1080)
-        assertTrue(isNativeFullscreen(Rectangle(0, 0, 1920, 1080), screen))
-    }
-
-    @Test
-    fun `a zoomed window is not fullscreen and keeps its inset`() {
-        // This is the case the whole function exists to separate. macOS zoom (the green button
-        // WITHOUT fullscreen, or Compose's Maximized) fills the VISIBLE frame - the menu bar is
-        // still there, so the window starts below it and is shorter than the display. The title
-        // bar is still on screen, so the caller must still reserve the strip.
-        val screen = Rectangle(0, 0, 1920, 1080)
-        val zoomedBelowTheMenuBar = Rectangle(0, 25, 1920, 1055)
-        assertFalse(isNativeFullscreen(zoomedBelowTheMenuBar, screen))
-    }
-
-    @Test
-    fun `an ordinary floating window is not fullscreen`() {
-        assertFalse(isNativeFullscreen(Rectangle(120, 80, 1200, 800), Rectangle(0, 0, 1920, 1080)))
-    }
-
-    @Test
-    fun `unknown bounds are not fullscreen`() {
-        // A window with no graphics configuration yet must not be guessed as fullscreen: that
-        // would drop the inset and put the tab bar under the traffic lights.
-        val screen = Rectangle(0, 0, 1920, 1080)
-        assertFalse(isNativeFullscreen(null, screen))
-        assertFalse(isNativeFullscreen(Rectangle(0, 0, 1920, 1080), null))
     }
 }

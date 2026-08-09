@@ -150,9 +150,20 @@ class TabController(
         val titleResetListener = object : ai.rever.bossterm.terminal.model.CommandStateListener {
             override fun onPromptStarted() {
                 session.title.value = session.customTitle.value ?: cwdLabel(session.workingDirectory.value)
-                // Clear the OSC 2 window title too, so an app that set one does not keep
-                // naming the window after it has exited. The window title falls back to the
-                // tab's own title whenever this is empty - see TabbedTerminal.
+            }
+
+            // Clear the OSC 2 window title at COMMAND start (133;B), not prompt start, so an
+            // app that set one does not keep naming the window after it has exited. The window
+            // title falls back to the tab's own title while it is empty - see TabbedTerminal.
+            //
+            // Deliberately B and not A, which is where the tab title resets: shells emit their
+            // own OSC 2 from precmd, the very same hook that emits 133;A, and nothing here
+            // controls the order. oh-my-zsh registers omz_termsupport_precmd before a user's
+            // BossTerm snippet, so its sequence is OSC 1, OSC 2, 133;D, 133;A - clearing on A
+            // would wipe the title it had just set, on every prompt. At B the previous
+            // program's title is genuinely stale and a precmd-set one has already survived the
+            // whole prompt.
+            override fun onCommandStarted() {
                 session.terminal.setWindowTitle("")
             }
         }

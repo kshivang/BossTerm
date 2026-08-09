@@ -1649,7 +1649,7 @@ fun TabbedTerminal(
                 val focused = splitState.getFocusedSession() ?: activeTab
                 snapshotFlow { focused.customTitle.value to focused.title.value }
                     .combine(focused.display.windowTitleFlow) { (custom, tabTitle), windowTitle ->
-                        custom ?: windowTitle.ifEmpty { tabTitle }
+                        resolveWindowTitle(custom, windowTitle, tabTitle)
                     }
                     .collect { newTitle ->
                         if (newTitle.isNotEmpty()) {
@@ -2748,3 +2748,18 @@ private fun remoteMcpMenuItems(
         ),
     )
 }
+
+/**
+ * Which of the three candidate titles the OS window should show.
+ *
+ * Precedence, highest first: a Rename… custom title, then the app's OSC 2 window title, then the
+ * tab's own title. See the call site for why each one is where it is.
+ *
+ * @param osc2 the OSC 2 window title, where empty means "reset, fall back" rather than "blank" -
+ *        TabController clears it at each command start so an exited program stops naming the
+ *        window.
+ * @return empty only when every candidate is empty, which the caller suppresses rather than
+ *         showing a nameless window.
+ */
+internal fun resolveWindowTitle(custom: String?, osc2: String, tabTitle: String): String =
+    custom ?: osc2.ifEmpty { tabTitle }

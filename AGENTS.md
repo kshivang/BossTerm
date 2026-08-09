@@ -95,10 +95,14 @@ macOS itself allows it, which is how Terminal.app is transparent with traffic li
 window that cannot be. So transparency belongs to the undecorated path only, which is exactly what
 `useNativeTitleBar = false` selects. See `compose-ui/.../window/NativeTitleBarStyle.kt`.
 
-One consequence rides along: with `apple.awt.transparentTitleBar` AppKit draws the title text in the
-colour the window's effective appearance dictates, not one picked to contrast with what shows
-through - so a light system appearance draws a dark title over the dark terminal background
-(issue #368).
+One consequence rides along, and it is why the app no longer follows the system appearance: with
+`apple.awt.transparentTitleBar` the title text sits over OUR background, but AppKit still picks that
+text's colour from the window appearance. Following the system therefore guarantees an unreadable
+title whenever the two disagree - confirmed by hand, a light system appearance drew a near-black
+title on the near-black default background. `nativeTitleBarAppearance` derives
+`apple.awt.application.appearance` from the terminal background instead, which fixes both
+directions. It has to be applied before AWT boots, and it is app-wide, so other AWT chrome (the
+native context menus) follows the terminal background too.
 
 ### OSC 1 names the TAB, OSC 2 names the WINDOW
 

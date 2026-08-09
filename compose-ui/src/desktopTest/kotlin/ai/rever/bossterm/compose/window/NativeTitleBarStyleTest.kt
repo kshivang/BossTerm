@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.window
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.WindowPlacement
 import javax.swing.JRootPane
@@ -79,5 +80,50 @@ class NativeTitleBarStyleTest {
         for (placement in WindowPlacement.entries) {
             assertEquals(0.dp, titleBarInset(false, placement), "unstyled $placement must not inset")
         }
+    }
+
+    // ---- the appearance the title text is drawn from ----
+
+    @Test
+    fun `the shipped default background is dark`() {
+        // 0xFF05070B. If this ever reads light, every window ships an unreadable title.
+        assertTrue(isDarkBackground("0xFF05070B"))
+    }
+
+    @Test
+    fun `luminance is weighted, not averaged`() {
+        // A plain channel average calls saturated blue "light" at 0,0,255 (avg 85 vs the 128
+        // threshold is dark, but 0,0,255 against a naive max/mid test is not), while green at the
+        // same value is genuinely light. Weighting is what separates them.
+        assertTrue(isDarkBackground("0xFF0000FF"), "saturated blue reads as dark")
+        assertFalse(isDarkBackground("0xFF00FF00"), "saturated green reads as light")
+    }
+
+    @Test
+    fun `an unparseable background is treated as dark`() {
+        // Guessing "light" would put dark text on what is probably a dark background. The shipped
+        // default is dark, so this is the safe direction.
+        assertTrue(isDarkBackground("not a colour"))
+        assertTrue(isDarkBackground(""))
+    }
+
+    @Test
+    fun `appearance follows the background, not the system`() {
+        if (!ShellCustomizationUtils.isMacOS()) return
+        assertEquals(
+            "NSAppearanceNameDarkAqua",
+            nativeTitleBarAppearance(useNativeTitleBar = true, backgroundHex = "0xFF05070B"),
+        )
+        assertEquals(
+            "NSAppearanceNameAqua",
+            nativeTitleBarAppearance(useNativeTitleBar = true, backgroundHex = "0xFFFFFFFF"),
+        )
+    }
+
+    @Test
+    fun `the custom title bar leaves the system appearance alone`() {
+        // Nothing system-drawn to keep legible there, so forcing the whole app's chrome would be
+        // an unrelated change the user did not ask for.
+        assertNull(nativeTitleBarAppearance(useNativeTitleBar = false, backgroundHex = "0xFF05070B"))
     }
 }

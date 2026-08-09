@@ -35,6 +35,7 @@ import ai.rever.bossterm.compose.update.UpdateBanner
 import ai.rever.bossterm.compose.update.UpdateManager
 import ai.rever.bossterm.compose.window.CustomTitleBar
 import ai.rever.bossterm.compose.window.applyFullWindowContent
+import ai.rever.bossterm.compose.window.nativeTitleBarAppearance
 import ai.rever.bossterm.compose.window.titleBarInset
 import ai.rever.bossterm.compose.window.GlobalHotKeyManager
 import ai.rever.bossterm.compose.window.HotKeyConfig
@@ -77,6 +78,17 @@ fun main(args: Array<String>) {
         if (ShellCustomizationUtils.isMacOS()) System.setProperty("apple.awt.UIElement", "true")
         runDaemon(rest)
         return
+    }
+
+    // Window appearance, derived from OUR background rather than the system's. Must be here:
+    // apple.awt.application.appearance is read once when AWT initializes, so this has to beat the
+    // deep-link handler below (it touches java.awt.Desktop) as well as any window. See
+    // nativeTitleBarAppearance for why following the system is not an option once the title bar is
+    // transparent. Settings are plain file + JSON at this point, no toolkit involved.
+    SettingsManager.instance.settings.value.let { s ->
+        nativeTitleBarAppearance(s.useNativeTitleBar, s.defaultBackground)?.let {
+            System.setProperty("apple.awt.application.appearance", it)
+        }
     }
 
     // Configure GPU rendering (must be before any Skiko/Compose initialization)

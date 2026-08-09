@@ -152,19 +152,30 @@ class TabController(
                 session.title.value = session.customTitle.value ?: cwdLabel(session.workingDirectory.value)
             }
 
-            // Clear the OSC 2 window title at COMMAND start (133;B), not prompt start, so an
-            // app that set one does not keep naming the window after it has exited. The window
-            // title falls back to the tab's own title while it is empty - see TabbedTerminal.
+            // Clear the OSC 2 window title at COMMAND start (133;B) so an app that set one does
+            // not keep naming the window after it has exited. The window title falls back to the
+            // tab's own title while it is empty - see resolveWindowTitle in TabbedTerminal.
             //
-            // Deliberately B and not A, which is where the tab title resets: shells emit their
-            // own OSC 2 from precmd, the very same hook that emits 133;A, and nothing here
-            // controls the order. oh-my-zsh registers omz_termsupport_precmd before a user's
-            // BossTerm snippet, so its sequence is OSC 1, OSC 2, 133;D, 133;A - clearing on A
-            // would wipe the title it had just set, on every prompt. At B the previous
-            // program's title is genuinely stale and a precmd-set one has already survived the
-            // whole prompt.
+            // B rather than A (where the tab title resets) because neither hook is order-safe in
+            // general and B loses less. Shells emit their own OSC 2 from the very hooks that emit
+            // 133;A and 133;B, and nothing here controls registration order: our bundled
+            // integration is sourced from .zshenv so its hooks run FIRST and either choice is
+            // safe, but a user who wires the snippet up from .zshrc after oh-my-zsh gets the
+            // reverse, and then whichever hook we clear on wipes a title omz had just set. At B
+            // the worst case is losing a per-command title for the length of one command; at A it
+            // would be the prompt title, every prompt. Both degrade to the tab title rather than
+            // to a blank window, which is what makes either survivable.
+            //
+            // Only fires where OSC 133 reaches: the bundled integration returns early inside
+            // tmux/screen and for TERM=dumb, and plenty of sessions have no integration at all.
+            // There the title still lingers after the app exits, exactly as it does today.
             override fun onCommandStarted() {
-                session.terminal.setWindowTitle("")
+                // The display, not terminal.setWindowTitle: this is internal bookkeeping, and
+                // going through the terminal would publish it to every application-title
+                // listener as though the program itself had set an empty title. That includes
+                // EmbeddableTerminal's public onTitleChange callback, which only survives it by
+                // way of an isNotEmpty() guard. It also keeps the XTWINOPS title stack out of it.
+                session.display.windowTitle = ""
             }
         }
         session.terminal.addCommandStateListener(titleResetListener)

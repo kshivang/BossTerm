@@ -1642,9 +1642,9 @@ fun TabbedTerminal(
             //
             // But OSC 2 still wins when an app does set it, because that is what it is FOR
             // (xterm's split: OSC 1 names the tab, OSC 2 names the window) and some apps
-            // deliberately give the window a longer string than the tab. The prompt-reset
-            // listener in TabController clears it on each fresh prompt, so it reverts on exit
-            // exactly like the tab title does.
+            // deliberately give the window a longer string than the tab. TabController clears it
+            // at each COMMAND start, so it reverts once the app that set it exits - wherever OSC
+            // 133 reaches, which is not inside tmux/screen or without the shell integration.
             LaunchedEffect(activeTab, splitState.focusedPaneId) {
                 val focused = splitState.getFocusedSession() ?: activeTab
                 snapshotFlow { focused.customTitle.value to focused.title.value }

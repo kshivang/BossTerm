@@ -77,6 +77,7 @@ import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.util.loadTerminalFont
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
+import ai.rever.bossterm.compose.features.NativeContextMenuOverride
 import ai.rever.bossterm.compose.settings.withOverrides
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkInfo
@@ -257,6 +258,25 @@ fun TabbedTerminal(
     // Merge global settings with per-instance overrides
     val settings = remember(globalSettings, settingsOverride) {
         globalSettings.withOverrides(settingsOverride)
+    }
+
+    // Context menu controllers are built deep in the tree, where the resolved override is not in
+    // scope; publish it for them. Null leaves them reading the global setting live. Restores the
+    // previous value rather than nulling, so unmounting one TabbedTerminal does not clear the
+    // override belonging to a still-mounted sibling.
+    val nativeMenuOverride = settingsOverride?.useNativeContextMenus
+    DisposableEffect(nativeMenuOverride) {
+        // Only publish when there IS an override. An instance without one must not call set(null)
+        // and thereby clear a still-mounted sibling's explicit override - the likelier of the two
+        // multi-instance arrangements, and worse than the documented last-writer-wins caveat.
+        val previous = if (nativeMenuOverride != null) {
+            NativeContextMenuOverride.set(nativeMenuOverride)
+        } else {
+            null
+        }
+        onDispose {
+            if (nativeMenuOverride != null) NativeContextMenuOverride.set(previous)
+        }
     }
 
     // Load font once and share across all tabs (supports custom font via settings)

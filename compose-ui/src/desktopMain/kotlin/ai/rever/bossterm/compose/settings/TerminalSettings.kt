@@ -213,6 +213,18 @@ data class TerminalSettings(
     val initialCommandDelayMs: Int = 500,
 
     /**
+     * Use the operating system's own context menus instead of BOSS-themed ones.
+     *
+     * On macOS this renders a real NSMenu: system appearance and metrics, native keyboard
+     * navigation and accessibility, and shortcut glyphs. Native menus cannot be themed, so
+     * turning this off restores the BOSS-coloured Swing menus.
+     *
+     * Currently macOS-only and ignored elsewhere - see `shouldUseNativeMenus` for why Windows
+     * and Linux stay on the themed menu.
+     */
+    val useNativeContextMenus: Boolean = true,
+
+    /**
      * Automatically copy selected text to clipboard
      */
     val copyOnSelect: Boolean = false,

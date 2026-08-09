@@ -72,7 +72,6 @@ import ai.rever.bossterm.compose.splits.NavigationDirection
 import ai.rever.bossterm.compose.menu.MenuActions
 import ai.rever.bossterm.compose.debug.DebugWindow
 import ai.rever.bossterm.compose.features.ContextMenuController
-import ai.rever.bossterm.compose.features.ContextMenuPopup
 import ai.rever.bossterm.compose.features.showHyperlinkContextMenu
 import ai.rever.bossterm.compose.features.showTerminalContextMenu
 import ai.rever.bossterm.compose.hyperlinks.Hyperlink
@@ -2465,12 +2464,33 @@ fun ProperTerminal(
 
         // Restore focus to terminal when context menu closes.
         // Critical for embedded scenarios where focus returns to parent container
-        // instead of terminal after AWT JPopupMenu dismissal. Fixes #126.
-        val contextMenuState by contextMenuController.menuState
-        LaunchedEffect(contextMenuState.isVisible) {
-          if (!contextMenuState.isVisible && isActiveTab) {
-            // Delay for AWT JPopupMenu to fully close before focus restoration
-            kotlinx.coroutines.delay(50)
+        // instead of terminal after popup dismissal. Fixes #126.
+        // Keys off menuVisible, which tracks every menu; the old menuState it watched was only
+        // ever populated by a fallback branch that never ran, so this effect never fired.
+        // Asks "did MY menu just close, and was focus mine to begin with?" rather than "is
+        // nothing I know about focused?".
+        //
+        // An allowlist of overlays cannot be completed: items in this menu open things that take
+        // focus legitimately ("Find...", "Show Debug Panel"), and embedder customItems land in
+        // the same menu and can focus anything in the host window, with no flag here to consult.
+        // So arm only when a menu actually opens, and restore only if the terminal held focus at
+        // that moment - which an item that deliberately moved focus elsewhere will have changed.
+        val contextMenuOnScreen by contextMenuController.menuVisible
+        var menuWasShown by remember { mutableStateOf(false) }
+        var terminalHadFocus by remember { mutableStateOf(false) }
+        LaunchedEffect(contextMenuOnScreen) {
+          if (contextMenuOnScreen) {
+            menuWasShown = true
+            terminalHadFocus = isFocused
+            return@LaunchedEffect
+          }
+          if (!menuWasShown) return@LaunchedEffect
+          menuWasShown = false
+          if (!isActiveTab || !terminalHadFocus) return@LaunchedEffect
+          // Delay for the popup to fully close before focus restoration
+          kotlinx.coroutines.delay(50)
+          // Re-check: an item may have opened an overlay that legitimately took the caret.
+          if (!searchVisible && !commandPaletteVisible && !historySearchVisible && !debugPanelVisible) {
             focusRequester.requestFocus()
           }
         }
@@ -2631,9 +2651,6 @@ fun ProperTerminal(
         }
       }
     } // end Box
-
-    // Context menu popup
-    ContextMenuPopup(controller = contextMenuController)
 
     // Debug window (separate window)
     DebugWindow(

@@ -215,6 +215,17 @@ fun BehaviorSettingsSection(
 
         // Mouse Settings
         SettingsSection(title = "Mouse") {
+            // macOS only for now - see shouldUseNativeMenus. Offering the toggle where it does
+            // nothing would just be a lie.
+            if (ShellCustomizationUtils.isMacOS()) {
+                SettingsToggle(
+                    label = "Native Context Menus",
+                    checked = settings.useNativeContextMenus,
+                    onCheckedChange = { onSettingsChange(settings.copy(useNativeContextMenus = it)) },
+                    description = "Use macOS's own right-click menus. Off restores BOSS-themed menus"
+                )
+            }
+
             SettingsToggle(
                 label = "Enable Mouse Reporting",
                 checked = settings.enableMouseReporting,

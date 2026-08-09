@@ -30,6 +30,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -54,8 +56,10 @@ import ai.rever.bossterm.compose.terminal.drainTerminalEmulator
 import ai.rever.bossterm.compose.ui.ProperTerminal
 import ai.rever.bossterm.compose.util.loadTerminalFont
 import ai.rever.bossterm.compose.features.ContextMenuController
+import ai.rever.bossterm.compose.features.shouldUseNativeMenus
 import ai.rever.bossterm.compose.ime.IMEState
 import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
+import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.SettingsLoader
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
@@ -236,6 +240,26 @@ fun EmbeddableTerminal(
     val resolvedSettings = remember(settings, settingsPath, settingsOverride) {
         SettingsLoader.resolveSettings(settings, settingsPath).withOverrides(settingsOverride)
     }
+
+    // SettingsLoader.resolveSettings is a one-shot file read, so resolvedSettings alone would
+    // freeze the preference for the life of this state. When no explicit source was supplied this
+    // instance IS reading the global file, so observe it directly - matching what TabbedTerminal's
+    // menus do. Collected unconditionally; a composable call cannot sit behind an `if`.
+    // Narrowed to the one field: collecting the whole TerminalSettings would resubscribe this
+    // composable to every global setting, so an unrelated toggle would recompose an embedded
+    // terminal that had explicitly opted out of the global file.
+    val globalNativeMenus by remember {
+        SettingsManager.instance.settings
+            .map { it.useNativeContextMenus }
+            .distinctUntilChanged()
+    }.collectAsState(SettingsManager.instance.settings.value.useNativeContextMenus)
+    val effectiveNativeMenus = settingsOverride?.useNativeContextMenus
+        ?: if (settings == null && settingsPath == null) {
+            globalNativeMenus
+        } else {
+            resolvedSettings.useNativeContextMenus
+        }
+    SideEffect { effectiveState.nativeContextMenusEnabled = effectiveNativeMenus }
 
     // Effective shell command (validates $SHELL exists, falls back to /bin/bash or /bin/sh)
     val effectiveCommand = command ?: ShellCustomizationUtils.getValidShell(resolvedSettings.windowsShell)
@@ -535,6 +559,17 @@ class EmbeddableTerminalState {
     private var initialized = false
 
     /**
+     * Live mirror of the resolved `useNativeContextMenus` setting.
+     *
+     * The session is built once, so capturing the value there would freeze the preference for the
+     * life of this state. The composable keeps this fed from whichever source actually applies -
+     * an explicit override, the observed global settings, or a host-supplied snapshot - and the
+     * context menu controller reads through it.
+     */
+    @Volatile
+    internal var nativeContextMenusEnabled: Boolean = true
+
+    /**
      * Handler for CLI-originated open requests (OSC 1341;OpenTarget from the
      * shell-integration open/xdg-open/$BROWSER shim). Kept on the state (not
      * the composition) so requests are still routed while the composable is
@@ -587,7 +622,7 @@ class EmbeddableTerminalState {
         initialized = true
 
         // Create session
-        session = createTerminalSession(settings, onOutput)
+        session = createTerminalSession(settings, onOutput) { nativeContextMenusEnabled }
 
         // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
         // same handler as Ctrl/Cmd+click links; system default when unhandled.
@@ -855,7 +890,8 @@ fun rememberEmbeddableTerminalState(autoDispose: Boolean = true): EmbeddableTerm
  */
 private fun createTerminalSession(
     settings: TerminalSettings,
-    onOutput: ((String) -> Unit)?
+    onOutput: ((String) -> Unit)?,
+    nativeContextMenus: () -> Boolean
 ): TerminalTab {
     val styleState = StyleState()
     val textBuffer = TerminalTextBuffer(80, 24, styleState, settings.bufferMaxLines)
@@ -915,7 +951,18 @@ private fun createTerminalSession(
         currentSearchMatchIndex = mutableStateOf(-1),
         selectionClipboard = mutableStateOf(null),
         imeState = IMEState(),
-        contextMenuController = ContextMenuController(),
+        // Resolved settings are in scope here, so decide locally rather than going through the
+        // process-wide override holder: an embedder using `settings`/`settingsPath` may not be
+        // reading the global settings file at all, and pinning the holder would impose this
+        // instance's answer on every other controller in the process.
+        contextMenuController = ContextMenuController(
+            nativePreferred = {
+                shouldUseNativeMenus(
+                    settingEnabled = nativeContextMenus(),
+                    isMacOs = ShellCustomizationUtils.isMacOS()
+                )
+            }
+        ),
         hyperlinks = mutableStateOf(emptyList()),
         hoveredHyperlink = mutableStateOf(null)
     )

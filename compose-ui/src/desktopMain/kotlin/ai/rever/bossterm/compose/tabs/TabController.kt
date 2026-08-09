@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.merge
 import ai.rever.bossterm.compose.vcs.GitUtils
 import ai.rever.bossterm.compose.ComposeQuestioner
 import ai.rever.bossterm.compose.ComposeTerminalDisplay
@@ -155,13 +156,18 @@ class TabController(
         session.terminal.addCommandStateListener(titleResetListener)
         session.commandStateListeners.add(titleResetListener)
 
-        // Mirror an app's OSC 0/1 icon title (e.g. "claude") onto the tab name so the
-        // LEFT TAB BAR reflects title changes even for BACKGROUND (unfocused) tabs.
-        // ProperTerminal also collects this, but only for the active tab's mounted
-        // Composable; this runs for the session's whole life regardless of focus.
-        // customTitle (Rename…) always wins and is re-asserted by the snapshotFlow above.
+        // Mirror an app's OSC 0/1 icon title AND its OSC 2 window title (e.g. "claude")
+        // onto the tab name so the LEFT TAB BAR reflects title changes even for
+        // BACKGROUND (unfocused) tabs. ProperTerminal also collects this, but only for
+        // the active tab's mounted Composable; this runs for the session's whole life
+        // regardless of focus.
+        // Both, not just the icon title: shells emit OSC 0 (which sets both) but plenty
+        // of TUIs set only OSC 2 - vim's t_ts, and anything doing `printf '\033]2;…'`.
+        // Since the window title is derived from session.title, an OSC-2-only app would
+        // otherwise have no effect anywhere. customTitle (Rename…) always wins, and the
+        // prompt-reset listener above reverts either one when the app exits.
         session.coroutineScope.launch {
-            session.display.iconTitleFlow.collect { newTitle ->
+            merge(session.display.iconTitleFlow, session.display.windowTitleFlow).collect { newTitle ->
                 if (newTitle.isNotEmpty() && session.customTitle.value == null) {
                     session.title.value = newTitle
                 }

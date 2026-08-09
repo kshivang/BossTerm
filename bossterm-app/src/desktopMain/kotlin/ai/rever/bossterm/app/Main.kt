@@ -935,10 +935,17 @@ fun main(args: Array<String>) {
                             // Hotkey hint overlay (top-right corner, like iTerm2)
                             // Shows for native title bar; custom title bar shows it in the title bar itself
                             if (useNativeTitleBar && globalHotkeyHint != null) {
+                                // This Box is a sibling of the Column above, so it is NOT
+                                // covered by that Column's title bar spacer - it anchors to the
+                                // frame top. Without the extra inset it would render inside the
+                                // title bar strip and crowd the centred window title.
                                 Box(
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
-                                        .padding(top = 8.dp, end = 12.dp)
+                                        .padding(
+                                            top = if (fullWindowContent) NATIVE_TITLE_BAR_HEIGHT + 8.dp else 8.dp,
+                                            end = 12.dp
+                                        )
                                 ) {
                                     Text(
                                         text = globalHotkeyHint,

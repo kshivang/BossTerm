@@ -1,6 +1,5 @@
 package ai.rever.bossterm.compose.window
 
-import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import androidx.compose.ui.unit.dp
 import javax.swing.JRootPane
 import kotlin.test.Test
@@ -20,22 +19,22 @@ import kotlin.test.assertTrue
  *
  * These go through the [JRootPane] overload because no [java.awt.Window] can be constructed in a
  * headless JVM at all - the constructor throws `HeadlessException`, and CI is headless on every
- * runner including macOS.
+ * runner including macOS. The platform is passed in rather than detected so that every assertion
+ * runs on every runner; otherwise each machine would skip the half of the contract it cannot see.
  */
 class NativeTitleBarStyleTest {
     @Test
-    fun `a window with no root pane is declined rather than half-styled`() {
+    fun `a window with no root pane is declined on every platform`() {
         // Returning false is what stops the caller reserving 28dp for a title bar that will never
         // be styled, which would show up as a strip of background above the tabs.
-        assertFalse(applyFullWindowContent(null as JRootPane?))
+        assertFalse(applyFullWindowContent(rootPane = null, isMacOS = true))
+        assertFalse(applyFullWindowContent(rootPane = null, isMacOS = false))
     }
 
     @Test
     fun `on macOS the three client properties that produce the style are set`() {
-        if (!ShellCustomizationUtils.isMacOS()) return
-
         val rootPane = JRootPane()
-        assertTrue(applyFullWindowContent(rootPane), "macOS should accept a real root pane")
+        assertTrue(applyFullWindowContent(rootPane, isMacOS = true), "macOS accepts a real root pane")
 
         // fullWindowContent extends the content pane under the title bar, transparentTitleBar stops
         // the system painting its own background over it. Either one alone gives a broken look:
@@ -49,12 +48,10 @@ class NativeTitleBarStyleTest {
 
     @Test
     fun `off macOS nothing is applied and the caller does not inset`() {
-        if (ShellCustomizationUtils.isMacOS()) return
-
         // These client properties are read by the macOS JDK only. Elsewhere the platform draws its
         // own decorations, so this must be a no-op and the window must not reserve the strip.
         val rootPane = JRootPane()
-        assertFalse(applyFullWindowContent(rootPane))
+        assertFalse(applyFullWindowContent(rootPane, isMacOS = false))
         assertNull(rootPane.getClientProperty("apple.awt.fullWindowContent"))
     }
 

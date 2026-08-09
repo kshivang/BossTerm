@@ -52,16 +52,23 @@ fun applyFullWindowContent(window: Window): Boolean =
  * can actually execute.
  *
  * @param rootPane null when the window has no root pane to style, which is a decline, not a crash.
+ * @param isMacOS injectable so a test on any runner can assert both branches, rather than each
+ *        platform's CI silently skipping half the contract.
  */
-internal fun applyFullWindowContent(rootPane: JRootPane?): Boolean {
-    if (!ShellCustomizationUtils.isMacOS()) return false
+internal fun applyFullWindowContent(
+    rootPane: JRootPane?,
+    isMacOS: Boolean = ShellCustomizationUtils.isMacOS(),
+): Boolean {
+    // Null first: a window with no root pane is a decline on every platform, so checking the
+    // platform ahead of it would make the null case unreachable off macOS.
     if (rootPane == null) return false
+    if (!isMacOS) return false
 
     return runCatching {
         rootPane.putClientProperty("apple.awt.fullWindowContent", true)
         rootPane.putClientProperty("apple.awt.transparentTitleBar", true)
         // The title stays visible. It is drawn centred in the title bar strip, and callers reserve
-        // exactly that strip with NATIVE_TITLE_BAR_HEIGHT_DP, so there is nothing for it to overlap
+        // exactly that strip with NATIVE_TITLE_BAR_HEIGHT, so there is nothing for it to overlap
         // - hiding it would just lose the window name for no reason.
         rootPane.putClientProperty("apple.awt.windowTitleVisible", true)
         true

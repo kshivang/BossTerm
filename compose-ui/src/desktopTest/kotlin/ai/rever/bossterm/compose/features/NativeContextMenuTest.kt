@@ -238,65 +238,177 @@ class NativeContextMenuTest {
         assertFalse(c.menuVisible.value, "selecting an item dismisses the menu")
     }
 
-    // ----- the dismissal heuristic -----
+    // ----- Windows mnemonic escaping -----
 
     @Test
-    fun `nothing inside the grace window counts as dismissal`() {
-        // The opening right-click's own MOUSE_RELEASED can still be in flight here.
-        assertFalse(AwtNativeContextMenuRenderer.isDismissalEvent(0))
-        assertFalse(
-            AwtNativeContextMenuRenderer.isDismissalEvent(
-                AwtNativeContextMenuRenderer.DISMISS_GRACE_MS - 1
-            )
+    fun `ampersands are doubled on windows only`() {
+        // A git branch named feat/a&b would otherwise render as "feat/ab" with an underlined b.
+        val items = listOf(item("branch", "feat/a&b"))
+
+        assertEquals(
+            "feat/a&&b",
+            (planNativeMenu(items, isWindows = true).single() as NativeMenuOp.Item).label
+        )
+        assertEquals(
+            "feat/a&b",
+            (planNativeMenu(items, isWindows = false).single() as NativeMenuOp.Item).label
         )
     }
 
     @Test
-    fun `any event after the grace window counts as dismissal`() {
-        // An open menu holds the input grab, so anything reaching us is genuinely post-dismissal.
-        assertTrue(
-            AwtNativeContextMenuRenderer.isDismissalEvent(
-                AwtNativeContextMenuRenderer.DISMISS_GRACE_MS
-            )
+    fun `escaping reaches section headers and submenu labels too`() {
+        val ops = planNativeMenu(
+            listOf(
+                ContextMenuController.MenuSeparator("sec", label = "A&B"),
+                ContextMenuController.MenuSubmenu("sub", "C&D", listOf(item("x", "E&F")))
+            ),
+            isWindows = true
         )
-        assertTrue(AwtNativeContextMenuRenderer.isDismissalEvent(5_000))
+
+        assertEquals("A&&B", (ops[1] as NativeMenuOp.Item).label)
+        val submenu = ops[2] as NativeMenuOp.Submenu
+        assertEquals("C&&D", submenu.label)
+        assertEquals("E&&F", (submenu.ops.single() as NativeMenuOp.Item).label)
+    }
+
+    // ----- invoker selection (the "largest window" bug this PR fixes) -----
+
+    private fun candidate(
+        name: String,
+        active: Boolean = false,
+        w: Int = 100,
+        h: Int = 100,
+        x: Int = 0,
+        y: Int = 0,
+        frameOrDialog: Boolean = true,
+        showing: Boolean = true
+    ) = InvokerCandidate(
+        window = name,
+        isFrameOrDialog = frameOrDialog,
+        isShowing = showing,
+        isActive = active,
+        bounds = java.awt.Rectangle(x, y, w, h)
+    )
+
+    @Test
+    fun `an active window wins over a larger inactive one`() {
+        val picked = pickInvoker(
+            listOf(candidate("big", w = 2000, h = 2000), candidate("active", active = true)),
+            at = null
+        )
+        assertEquals("active", picked?.window)
+    }
+
+    @Test
+    fun `among inactive windows the smallest wins, not the largest`() {
+        // The old rule picked the largest, which is the one most likely to be UNDERNEATH.
+        val picked = pickInvoker(
+            listOf(candidate("fullscreen", w = 3000, h = 2000), candidate("small", w = 400, h = 300)),
+            at = null
+        )
+        assertEquals("small", picked?.window)
+    }
+
+    @Test
+    fun `heavyweight popup windows and hidden windows are not eligible`() {
+        // getWindows() also returns the heavyweight windows Swing makes for popups.
+        val picked = pickInvoker(
+            listOf(
+                candidate("popup", frameOrDialog = false, w = 10, h = 10),
+                candidate("hidden", showing = false, w = 20, h = 20),
+                candidate("frame", w = 900, h = 900)
+            ),
+            at = null
+        )
+        assertEquals("frame", picked?.window)
+    }
+
+    @Test
+    fun `only windows containing the point are eligible`() {
+        val picked = pickInvoker(
+            listOf(
+                candidate("left", x = 0, y = 0, w = 100, h = 100),
+                candidate("right", x = 500, y = 500, w = 300, h = 300)
+            ),
+            at = java.awt.Point(600, 600)
+        )
+        assertEquals("right", picked?.window)
+    }
+
+    @Test
+    fun `no eligible window yields null rather than an arbitrary one`() {
+        assertNull(pickInvoker(listOf(candidate("hidden", showing = false)), at = null))
+        assertNull(pickInvoker(emptyList<InvokerCandidate<String>>(), at = null))
+    }
+
+    // ----- the dismissal heuristic -----
+
+    private val grace = AwtNativeContextMenuRenderer.DISMISS_GRACE_MS
+    private val moved = java.awt.event.MouseEvent.MOUSE_MOVED
+    private val released = java.awt.event.MouseEvent.MOUSE_RELEASED
+
+    @Test
+    fun `nothing inside the grace window counts as dismissal`() {
+        assertFalse(AwtNativeContextMenuRenderer.isDismissalEvent(moved, 0))
+        assertFalse(AwtNativeContextMenuRenderer.isDismissalEvent(moved, grace - 1))
+    }
+
+    @Test
+    fun `an ordinary event after the grace window counts as dismissal`() {
+        // An open menu holds the input grab, so anything reaching us is genuinely post-dismissal.
+        assertTrue(AwtNativeContextMenuRenderer.isDismissalEvent(moved, grace))
+        assertTrue(AwtNativeContextMenuRenderer.isDismissalEvent(moved, 5_000))
+    }
+
+    @Test
+    fun `a mouse release never counts, however late it arrives`() {
+        // Wall-clock alone is not enough: under a busy EDT the opening right-click's own release
+        // can be dispatched well after the grace window expires.
+        assertFalse(AwtNativeContextMenuRenderer.isDismissalEvent(released, grace + 1))
+        assertFalse(AwtNativeContextMenuRenderer.isDismissalEvent(released, 60_000))
     }
 
     // ----- the embedder override -----
 
-    @Test
-    fun `an embedder override wins over the settings file`() {
+    private fun <T> withOverride(value: Boolean?, block: () -> T): T =
         try {
-            NativeContextMenuOverride.set(false)
-            assertFalse(nativeMenusPreferred(), "an explicit override of false must be honoured")
-
-            NativeContextMenuOverride.set(true)
-            // True everywhere except Linux, which is gated separately.
-            assertEquals(
-                !ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isLinux(),
-                nativeMenusPreferred()
-            )
+            NativeContextMenuOverride.set(value)
+            block()
         } finally {
             NativeContextMenuOverride.set(null)
+        }
+
+    @Test
+    fun `an embedder override wins over the settings file`() {
+        withOverride(false) {
+            assertFalse(nativeMenusPreferred(), "an explicit override of false must be honoured")
+        }
+        withOverride(true) {
+            // Native is macOS-only for now, so that is the whole answer here.
+            assertEquals(
+                ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isMacOS(),
+                nativeMenusPreferred()
+            )
         }
     }
 
     @Test
     fun `clearing the override falls back to the settings file`() {
-        NativeContextMenuOverride.set(false)
-        NativeContextMenuOverride.set(null)
+        withOverride(false) { }
         assertNull(NativeContextMenuOverride.current())
     }
 
     @Test
-    fun `linux never gets native menus regardless of the setting`() {
-        assertFalse(shouldUseNativeMenus(settingEnabled = true, isLinux = true))
-        assertFalse(shouldUseNativeMenus(settingEnabled = false, isLinux = true))
+    fun `only macOS gets native menus, and only if the setting allows`() {
+        assertTrue(shouldUseNativeMenus(settingEnabled = true, isMacOs = true))
+        assertFalse(shouldUseNativeMenus(settingEnabled = false, isMacOs = true))
     }
 
     @Test
-    fun `elsewhere the setting decides`() {
-        assertTrue(shouldUseNativeMenus(settingEnabled = true, isLinux = false))
-        assertFalse(shouldUseNativeMenus(settingEnabled = false, isLinux = false))
+    fun `windows and linux stay on the themed menu even with the setting on`() {
+        // Windows is deliberately not enabled: TrackPopupMenu is unverified here and may block
+        // the EDT. Linux's XAWT peer ignores GTK. Widening is one predicate.
+        assertFalse(shouldUseNativeMenus(settingEnabled = true, isMacOs = false))
+        assertFalse(shouldUseNativeMenus(settingEnabled = false, isMacOs = false))
     }
 }

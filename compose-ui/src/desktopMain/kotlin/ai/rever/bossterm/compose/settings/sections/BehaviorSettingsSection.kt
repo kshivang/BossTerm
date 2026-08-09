@@ -215,14 +215,14 @@ fun BehaviorSettingsSection(
 
         // Mouse Settings
         SettingsSection(title = "Mouse") {
-            // Linux always gets the themed menu: the AWT peer there is the Motif-era XAWT menu,
-            // so offering the choice would only ever make things worse.
-            if (!ShellCustomizationUtils.isLinux()) {
+            // macOS only for now - see shouldUseNativeMenus. Offering the toggle where it does
+            // nothing would just be a lie.
+            if (ShellCustomizationUtils.isMacOS()) {
                 SettingsToggle(
                     label = "Native Context Menus",
                     checked = settings.useNativeContextMenus,
                     onCheckedChange = { onSettingsChange(settings.copy(useNativeContextMenus = it)) },
-                    description = "Use the system's own right-click menus. Off restores BOSS-themed menus"
+                    description = "Use macOS's own right-click menus. Off restores BOSS-themed menus"
                 )
             }
 

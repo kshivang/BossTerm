@@ -39,16 +39,12 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
  *   turns `TerminalSettings.useNativeContextMenus` off.
  */
 class ContextMenuController internal constructor(
-    private val swingRenderer: ContextMenuRenderer,
-    private val nativeRenderer: ContextMenuRenderer,
-    private val nativePreferred: () -> Boolean
+    private val nativePreferred: () -> Boolean,
+    private val swingRenderer: ContextMenuRenderer = SwingContextMenuRenderer(),
+    private val nativeRenderer: ContextMenuRenderer = AwtNativeContextMenuRenderer()
 ) {
 
-    constructor() : this(
-        swingRenderer = SwingContextMenuRenderer(),
-        nativeRenderer = AwtNativeContextMenuRenderer(),
-        nativePreferred = ::nativeMenusPreferred
-    )
+    constructor() : this(nativePreferred = ::nativeMenusPreferred)
 
     /** The renderer that put the menu currently on screen there, so [hideMenu] talks to the right one. */
     private var activeRenderer: ContextMenuRenderer? = null
@@ -203,27 +199,45 @@ internal sealed interface MenuAnchor {
 }
 
 /**
- * Native menus on macOS and Windows; themed Swing on Linux regardless of the setting, because
- * the AWT peer there is the Motif-era XAWT menu that ignores GTK.
+ * Native menus on macOS only by default; everywhere else the themed Swing menu, unless the user
+ * opts in.
+ *
+ * macOS is the platform whose behaviour was actually measured (`NSMenu` via `CPopupMenu`:
+ * non-blocking `show()`, no dismissal event, display-only shortcuts). The other two are opt-in for
+ * different reasons:
+ *
+ * - **Linux**: the AWT peer is the Motif-era XAWT menu that ignores GTK, so the themed menu is
+ *   strictly better.
+ * - **Windows**: unverified and plausibly worse. `WPopupMenuPeer` appears to reach
+ *   `::TrackPopupMenu` through `AwtToolkit::SyncCall`, which would block the EDT for as long as
+ *   the menu is open - freezing Compose mid-`tail -f`, and arming the dismissal watcher only
+ *   after the menu had already closed. `TrackPopupMenu` also renders the classic Win32 menu,
+ *   which does not follow system dark mode without `uxtheme` work AWT does not do, so a dark
+ *   BossTerm would likely get a white menu. Measure both on a Windows box with the same harness
+ *   before widening this.
+ *
+ * The native path is otherwise fully cross-platform - widening it is this one predicate.
  */
-internal fun shouldUseNativeMenus(settingEnabled: Boolean, isLinux: Boolean): Boolean =
-    settingEnabled && !isLinux
+internal fun shouldUseNativeMenus(settingEnabled: Boolean, isMacOs: Boolean): Boolean =
+    settingEnabled && isMacOs
 
 /**
  * An embedder's explicit `TerminalSettingsOverride.useNativeContextMenus`, if there is one.
  *
- * A [ContextMenuController] is built deep in the tree - per tab, per tab bar, per status
- * indicator - where the *resolved* settings (the file merged with any per-instance override) are
- * not in scope, so the override has to reach it out of band. `TabbedTerminal` and
- * `EmbeddableTerminal`, the two places that actually resolve settings, publish here.
+ * Inside `TabbedTerminal` a [ContextMenuController] is built deep in the tree - per tab, per tab
+ * bar, per status indicator - where the *resolved* settings are not in scope, so an embedder's
+ * override has to reach it out of band. Only `TabbedTerminal` publishes here; `EmbeddableTerminal`
+ * has its resolved settings at the point it builds its controller and passes `nativePreferred`
+ * directly, precisely so it does not impose its answer on the rest of the process.
  *
- * Deliberately holds only the override and not the whole setting: when it is null the controller
+ * Deliberately holds only the *override* and not the whole setting: when it is null the controller
  * reads [SettingsManager] live, so a user toggling the preference still takes effect on the next
  * right-click with no staleness. This mirrors how this file already reaches `BossUiTheme` for the
  * themed renderer's colours.
  *
- * Limitation: process-wide, so two embedded terminals that set *different* explicit overrides
- * would see last-writer-wins. Everything else (no override, or every instance agreeing) is exact.
+ * Limitation: process-wide, so two `TabbedTerminal`s with *different* explicit overrides see
+ * last-writer-wins, and one unmounting clears the value for the other. Everything else (no
+ * override, or every instance agreeing) is exact.
  */
 internal object NativeContextMenuOverride {
     @Volatile
@@ -243,7 +257,7 @@ internal fun nativeMenusPreferred(): Boolean = shouldUseNativeMenus(
         ?: runCatching {
             SettingsManager.instance.settings.value.useNativeContextMenus
         }.getOrDefault(true),
-    isLinux = ShellCustomizationUtils.isLinux()
+    isMacOs = ShellCustomizationUtils.isMacOS()
 )
 
 /**
@@ -279,16 +293,39 @@ internal fun resolveInvoker(preferred: Window?, at: java.awt.Point?): Window? {
         ?.takeIf { it.isShowing }
         ?.let { return it }
 
-    return Window.getWindows()
-        .filter { (it is Frame || it is Dialog) && it.isShowing }
-        .filter { at == null || it.bounds.contains(at) }
-        .sortedWith(
-            compareByDescending<Window> { it.isActive }
-                .thenBy { it.bounds.width.toLong() * it.bounds.height.toLong() }
+    val candidates = Window.getWindows().map {
+        InvokerCandidate(
+            window = it,
+            isFrameOrDialog = it is Frame || it is Dialog,
+            isShowing = it.isShowing,
+            isActive = it.isActive,
+            bounds = it.bounds
         )
-        .firstOrNull()
+    }
+    return pickInvoker(candidates, at)?.window
         ?.also { if (!it.isActive) { it.toFront(); it.requestFocus() } }
 }
+
+/** The properties [pickInvoker] ranks on, lifted off AWT so the rule can be tested headlessly. */
+internal data class InvokerCandidate<T>(
+    val window: T,
+    val isFrameOrDialog: Boolean,
+    val isShowing: Boolean,
+    val isActive: Boolean,
+    val bounds: java.awt.Rectangle
+)
+
+/** The ordering rule described on [resolveInvoker]. */
+internal fun <T> pickInvoker(
+    candidates: List<InvokerCandidate<T>>,
+    at: java.awt.Point?
+): InvokerCandidate<T>? = candidates
+    .filter { it.isFrameOrDialog && it.isShowing }
+    .filter { at == null || it.bounds.contains(at) }
+    .minWithOrNull(
+        compareByDescending<InvokerCandidate<T>> { it.isActive }
+            .thenBy { it.bounds.width.toLong() * it.bounds.height.toLong() }
+    )
 
 /** Resolve an anchor against its invoker into the invoker-relative point `show()` wants. */
 internal fun MenuAnchor.toInvokerCoordinates(invoker: Window): java.awt.Point = when (this) {
@@ -484,6 +521,18 @@ internal sealed interface NativeMenuOp {
 }
 
 /**
+ * Escape a label for a native menu.
+ *
+ * Win32 `AppendMenu`/`SetMenuItemInfo` treat `&` in an `MFT_STRING` as a mnemonic prefix, so a git
+ * branch named `feat/a&b` would render as `feat/ab` with an underlined `b`. Labels here are
+ * session-derived (branch names from the session's cwd, account emails, embedder items), so this
+ * is reachable in normal use. Swing's `JMenuItem` does not do this, so the fix belongs on the
+ * native path only.
+ */
+internal fun escapeNativeLabel(label: String, isWindows: Boolean): String =
+    if (isWindows) label.replace("&", "&&") else label
+
+/**
  * Flatten the menu model into native-menu operations.
  *
  * Two shapes have no native equivalent and are degraded here:
@@ -491,7 +540,10 @@ internal sealed interface NativeMenuOp {
  *   **disabled** item, which is how macOS renders a section header anyway;
  * - item icons are dropped, because `java.awt.MenuItem` has no icon API.
  */
-internal fun planNativeMenu(elements: List<ContextMenuController.MenuElement>): List<NativeMenuOp> =
+internal fun planNativeMenu(
+    elements: List<ContextMenuController.MenuElement>,
+    isWindows: Boolean = ShellCustomizationUtils.isWindows()
+): List<NativeMenuOp> =
     elements.flatMap { element ->
         when (element) {
             is ContextMenuController.MenuItem ->
@@ -500,7 +552,7 @@ internal fun planNativeMenu(elements: List<ContextMenuController.MenuElement>): 
                 } else {
                     listOf(
                         NativeMenuOp.Item(
-                            label = element.label,
+                            label = escapeNativeLabel(element.label, isWindows),
                             enabled = element.enabled,
                             shortcut = element.shortcut,
                             action = element.action
@@ -512,12 +564,22 @@ internal fun planNativeMenu(elements: List<ContextMenuController.MenuElement>): 
                 listOfNotNull(
                     NativeMenuOp.Separator,
                     element.label?.let {
-                        NativeMenuOp.Item(label = it, enabled = false, shortcut = null, action = {})
+                        NativeMenuOp.Item(
+                            label = escapeNativeLabel(it, isWindows),
+                            enabled = false,
+                            shortcut = null,
+                            action = {}
+                        )
                     }
                 )
 
             is ContextMenuController.MenuSubmenu ->
-                listOf(NativeMenuOp.Submenu(element.label, planNativeMenu(element.items)))
+                listOf(
+                    NativeMenuOp.Submenu(
+                        escapeNativeLabel(element.label, isWindows),
+                        planNativeMenu(element.items, isWindows)
+                    )
+                )
         }
     }
 
@@ -547,9 +609,14 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
             detach()
 
             val popup = java.awt.PopupMenu()
+            // Tear down only what THIS menu installed. `materialize` runs the item action BEFORE
+            // dismissing, so an action that opened another menu on the same controller would
+            // otherwise have its successor's popup and watcher torn down underneath it, and the
+            // generation fence would then swallow the dismissal, pinning menuVisible true.
+            var myWatcher: java.awt.event.AWTEventListener? = null
             val dismissed = {
-                detach()
-                clearDismissWatcher()
+                detachIf(popup)
+                clearDismissWatcherIf(myWatcher)
                 onDismiss()
             }
             materialize(popup, planNativeMenu(items), isCurrent, dismissed)
@@ -560,7 +627,7 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
             popup.show(invoker, at.x, at.y)
             // Armed after show() (which returns in ~0 ms) so the grace window covers only the
             // gap before the OS takes the input grab, not the invoker resolution before it.
-            installDismissWatcher(dismissed)
+            myWatcher = installDismissWatcher(dismissed)
         }
     }
 
@@ -586,6 +653,16 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
         attached = null
     }
 
+    /** Detach, but only if [popup] is still the attached one. */
+    private fun detachIf(popup: java.awt.PopupMenu) {
+        if (attached?.second === popup) detach()
+    }
+
+    /** Clear, but only if [listener] is still the installed watcher. */
+    private fun clearDismissWatcherIf(listener: java.awt.event.AWTEventListener?) {
+        if (listener != null && dismissWatcher === listener) clearDismissWatcher()
+    }
+
     /**
      * Infer dismissal from the next input event, since AWT reports none.
      *
@@ -598,13 +675,13 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
      * Only [AWTEvent.getID] is inspected; no event contents are read, which matters because this
      * is a process-wide listener and BossTerm ships as a library inside other apps.
      */
-    private fun installDismissWatcher(onDismiss: () -> Unit) {
+    private fun installDismissWatcher(onDismiss: () -> Unit): java.awt.event.AWTEventListener? {
         clearDismissWatcher()
         val armedAt = System.currentTimeMillis()
-        val toolkit = Toolkit.getDefaultToolkit()
+        val toolkit = runCatching { Toolkit.getDefaultToolkit() }.getOrNull() ?: return null
         val listener = object : java.awt.event.AWTEventListener {
             override fun eventDispatched(event: AWTEvent) {
-                if (!isDismissalEvent(System.currentTimeMillis() - armedAt)) return
+                if (!isDismissalEvent(event.id, System.currentTimeMillis() - armedAt)) return
                 toolkit.removeAWTEventListener(this)
                 if (dismissWatcher === this) dismissWatcher = null
                 onDismiss()
@@ -613,13 +690,17 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
         dismissWatcher = listener
         // Requires AWTPermission("listenToAllAWTEvents"). If an embedder's policy refuses, lose
         // the visibility flag rather than the menu.
-        runCatching {
+        return runCatching {
             toolkit.addAWTEventListener(
                 listener,
                 AWTEvent.MOUSE_EVENT_MASK or AWTEvent.MOUSE_MOTION_EVENT_MASK or
                     AWTEvent.KEY_EVENT_MASK
             )
-        }.onFailure { dismissWatcher = null }
+            listener
+        }.getOrElse {
+            dismissWatcher = null
+            null
+        }
     }
 
     private fun clearDismissWatcher() {
@@ -670,13 +751,19 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
         /**
          * Whether an AWT input event means the menu has closed.
          *
-         * Inside the grace window nothing counts: `show()` is posted to the EDT, so the opening
-         * right-click's own `MOUSE_RELEASED` tail can still be in flight before the OS takes the
-         * grab. Outside it *everything* counts, `MOUSE_RELEASED` included - by then an open menu
-         * would have swallowed it, so any event that reaches us is genuinely post-dismissal, and
-         * filtering by id would only strand the flag until the user next moved the mouse.
+         * Two independent guards, because the risk is that the *opening* right-click's own tail
+         * is mistaken for a dismissal:
+         *
+         * - nothing inside the grace window counts, since `show()` is posted to the EDT and the
+         *   OS grab is not established the instant it returns;
+         * - `MOUSE_RELEASED` never counts, because wall-clock alone is not enough. Under a busy
+         *   EDT (heavy terminal output is the normal case here) that release can be dispatched
+         *   well after the window expires. Nothing is lost by filtering it: the measured
+         *   dismissal burst is `MOUSE_EXITED` / key-release / `MOUSE_ENTERED`, and a click-away
+         *   has its press swallowed by the menu, so a release is never the only signal.
          */
-        fun isDismissalEvent(elapsedMs: Long): Boolean = elapsedMs >= DISMISS_GRACE_MS
+        fun isDismissalEvent(eventId: Int, elapsedMs: Long): Boolean =
+            elapsedMs >= DISMISS_GRACE_MS && eventId != MouseEvent.MOUSE_RELEASED
     }
 }
 

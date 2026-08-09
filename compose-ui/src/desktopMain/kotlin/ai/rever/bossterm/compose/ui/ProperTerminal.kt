@@ -2467,9 +2467,14 @@ fun ProperTerminal(
         // instead of terminal after popup dismissal. Fixes #126.
         // Keys off menuVisible, which tracks every menu; the old menuState it watched was only
         // ever populated by a fallback branch that never ran, so this effect never fired.
+        // Skipped whenever an overlay owns the caret. "Find..." is reachable FROM this menu:
+        // it sets searchVisible in the same turn the item dismisses the menu, SearchBar focuses
+        // itself on mount, and restoring the terminal 50ms later would yank focus straight back
+        // out of the field the user just asked for.
         val contextMenuOnScreen by contextMenuController.menuVisible
-        LaunchedEffect(contextMenuOnScreen) {
-          if (!contextMenuOnScreen && isActiveTab) {
+        val overlayOwnsFocus = searchVisible || commandPaletteVisible || historySearchVisible
+        LaunchedEffect(contextMenuOnScreen, overlayOwnsFocus) {
+          if (!contextMenuOnScreen && isActiveTab && !overlayOwnsFocus) {
             // Delay for the popup to fully close before focus restoration
             kotlinx.coroutines.delay(50)
             focusRequester.requestFocus()

@@ -627,10 +627,11 @@ TerminalSettingsOverride(
 
 ### Context menus
 
-By default BossTerm shows the operating system's own right-click menus on macOS and Windows: a
-real `NSMenu` / Win32 menu, which follows the system appearance rather than the terminal theme and
-cannot be coloured or given icons. Set `useNativeContextMenus = false` to get the BOSS-themed
-menus back. Linux always uses the themed menus, since the AWT peer there ignores GTK.
+On macOS, BossTerm shows the operating system's own right-click menus by default: a real
+`NSMenu`, which follows the system appearance rather than the terminal theme and cannot be
+coloured or given icons. Set `useNativeContextMenus = false` to get the BOSS-themed menus back.
+
+Windows and Linux always use the themed menus for now, so the setting has no effect there.
 
 ## Custom Link Handling
 

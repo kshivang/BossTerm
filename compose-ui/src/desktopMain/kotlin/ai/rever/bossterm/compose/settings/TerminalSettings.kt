@@ -215,10 +215,12 @@ data class TerminalSettings(
     /**
      * Use the operating system's own context menus instead of BOSS-themed ones.
      *
-     * On macOS and Windows this renders a real NSMenu / Win32 menu: system appearance and
-     * metrics, native keyboard navigation and accessibility, and shortcut glyphs. Native menus
-     * cannot be themed, so turning this off restores the BOSS-coloured Swing menus. Ignored on
-     * Linux, where the AWT peer is the Motif-era XAWT menu and the themed menu is always used.
+     * On macOS this renders a real NSMenu: system appearance and metrics, native keyboard
+     * navigation and accessibility, and shortcut glyphs. Native menus cannot be themed, so
+     * turning this off restores the BOSS-coloured Swing menus.
+     *
+     * Currently macOS-only and ignored elsewhere - see `shouldUseNativeMenus` for why Windows
+     * and Linux stay on the themed menu.
      */
     val useNativeContextMenus: Boolean = true,
 

@@ -54,6 +54,7 @@ import ai.rever.bossterm.compose.terminal.drainTerminalEmulator
 import ai.rever.bossterm.compose.ui.ProperTerminal
 import ai.rever.bossterm.compose.util.loadTerminalFont
 import ai.rever.bossterm.compose.features.ContextMenuController
+import ai.rever.bossterm.compose.features.shouldUseNativeMenus
 import ai.rever.bossterm.compose.ime.IMEState
 import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
 import ai.rever.bossterm.compose.settings.SettingsLoader
@@ -237,14 +238,6 @@ fun EmbeddableTerminal(
         SettingsLoader.resolveSettings(settings, settingsPath).withOverrides(settingsOverride)
     }
 
-    // The context menu controller is built below without the resolved settings in scope, and an
-    // embedder using `settings`/`settingsPath` is not reading the global file at all - so publish
-    // whichever value actually applies here rather than letting it fall back to the singleton.
-    DisposableEffect(resolvedSettings.useNativeContextMenus) {
-        ai.rever.bossterm.compose.features.NativeContextMenuOverride
-            .set(resolvedSettings.useNativeContextMenus)
-        onDispose { ai.rever.bossterm.compose.features.NativeContextMenuOverride.set(null) }
-    }
 
     // Effective shell command (validates $SHELL exists, falls back to /bin/bash or /bin/sh)
     val effectiveCommand = command ?: ShellCustomizationUtils.getValidShell(resolvedSettings.windowsShell)
@@ -924,7 +917,18 @@ private fun createTerminalSession(
         currentSearchMatchIndex = mutableStateOf(-1),
         selectionClipboard = mutableStateOf(null),
         imeState = IMEState(),
-        contextMenuController = ContextMenuController(),
+        // Resolved settings are in scope here, so decide locally rather than going through the
+        // process-wide override holder: an embedder using `settings`/`settingsPath` may not be
+        // reading the global settings file at all, and pinning the holder would impose this
+        // instance's answer on every other controller in the process.
+        contextMenuController = ContextMenuController(
+            nativePreferred = {
+                shouldUseNativeMenus(
+                    settingEnabled = settings.useNativeContextMenus,
+                    isMacOs = ShellCustomizationUtils.isMacOS()
+                )
+            }
+        ),
         hyperlinks = mutableStateOf(emptyList()),
         hoveredHyperlink = mutableStateOf(null)
     )

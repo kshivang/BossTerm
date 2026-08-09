@@ -17,6 +17,7 @@ import ai.rever.bossterm.compose.vcs.GitUtils
 import ai.rever.bossterm.compose.ComposeQuestioner
 import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.compose.notificationTitle
+import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.ConnectionState
 import ai.rever.bossterm.compose.PlatformServices
 import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
@@ -554,22 +555,11 @@ class TabController(
         // Register command state listener for notifications (OSC 133 shell integration).
         // Also captured in `tab.commandStateListeners` after construction so dispose()
         // can remove it (see TerminalTab.commandStateListeners docs).
-        var tabRef: TerminalTab? = null
+        val notificationTitle = NotificationTitleProvider(display, "BossTerm")
         val notificationHandler = CommandNotificationHandler(
             settings = settings,
             isWindowFocused = isWindowFocused,
-            // Same precedence as the window title, so the two agree on which session finished.
-            // Through the tab rather than off display.iconTitle: nothing ever resets that slot, so
-            // it would still say "vim" during the next long build. tabRef is assigned right after
-            // the tab is built below; the lambda is only invoked at command finish.
-            tabTitle = {
-                notificationTitle(
-                    custom = tabRef?.customTitle?.value,
-                    osc2 = display.windowTitle.orEmpty(),
-                    tabTitle = tabRef?.title?.value.orEmpty(),
-                    fallback = "BossTerm",
-                )
-            }
+            tabTitle = notificationTitle,
         )
         terminal.addCommandStateListener(notificationHandler)
 
@@ -656,7 +646,7 @@ class TabController(
         // them when the tab closes.
         val lastCommandTracker = ai.rever.bossterm.compose.mcp.LastCommandTracker(tab)
         terminal.addCommandStateListener(lastCommandTracker)
-        tabRef = tab
+        notificationTitle.attach(tab)
         tab.commandStateListeners.add(notificationHandler)
         tab.commandStateListeners.add(lastCommandTracker)
 
@@ -952,22 +942,11 @@ class TabController(
         })
 
         // Register command state listener for notifications (OSC 133 shell integration)
-        var tabRef: TerminalTab? = null
+        val notificationTitle = NotificationTitleProvider(display, sessionTitle)
         val notificationHandler = CommandNotificationHandler(
             settings = settings,
             isWindowFocused = isWindowFocused,
-            // Same precedence as the window title, so the two agree on which session finished.
-            // Through the tab rather than off display.iconTitle: nothing ever resets that slot, so
-            // it would still say "vim" during the next long build. tabRef is assigned right after
-            // the tab is built below; the lambda is only invoked at command finish.
-            tabTitle = {
-                notificationTitle(
-                    custom = tabRef?.customTitle?.value,
-                    osc2 = display.windowTitle.orEmpty(),
-                    tabTitle = tabRef?.title?.value.orEmpty(),
-                    fallback = sessionTitle,
-                )
-            }
+            tabTitle = notificationTitle,
         )
         terminal.addCommandStateListener(notificationHandler)
 
@@ -1053,7 +1032,7 @@ class TabController(
         // pane closes.
         val lastCommandTracker = ai.rever.bossterm.compose.mcp.LastCommandTracker(session)
         terminal.addCommandStateListener(lastCommandTracker)
-        tabRef = session
+        notificationTitle.attach(session)
         session.commandStateListeners.add(notificationHandler)
         session.commandStateListeners.add(lastCommandTracker)
 
@@ -1211,22 +1190,11 @@ class TabController(
         })
 
         // Register command state listener for notifications (OSC 133 shell integration)
-        var tabRef: TerminalTab? = null
+        val notificationTitle = NotificationTitleProvider(display, "BossTerm")
         val notificationHandler = CommandNotificationHandler(
             settings = settings,
             isWindowFocused = isWindowFocused,
-            // Same precedence as the window title, so the two agree on which session finished.
-            // Through the tab rather than off display.iconTitle: nothing ever resets that slot, so
-            // it would still say "vim" during the next long build. tabRef is assigned right after
-            // the tab is built below; the lambda is only invoked at command finish.
-            tabTitle = {
-                notificationTitle(
-                    custom = tabRef?.customTitle?.value,
-                    osc2 = display.windowTitle.orEmpty(),
-                    tabTitle = tabRef?.title?.value.orEmpty(),
-                    fallback = "BossTerm",
-                )
-            }
+            tabTitle = notificationTitle,
         )
         terminal.addCommandStateListener(notificationHandler)
 
@@ -1282,7 +1250,7 @@ class TabController(
         // are recorded on the tab so dispose() can remove them.
         val lastCommandTracker = ai.rever.bossterm.compose.mcp.LastCommandTracker(tab)
         terminal.addCommandStateListener(lastCommandTracker)
-        tabRef = tab
+        notificationTitle.attach(tab)
         tab.commandStateListeners.add(notificationHandler)
         tab.commandStateListeners.add(lastCommandTracker)
 
@@ -2206,5 +2174,38 @@ class TabController(
                 processHandle.write(string)
             }
         }
+    }
+}
+
+/**
+ * The title a [CommandNotificationHandler] announces, resolved the same way as the window title so
+ * the two agree on which session finished.
+ *
+ * Exists as a class rather than three lambdas because the tab does not exist yet when the handler
+ * is constructed, and because that ordering is not the only guarantee needed: the slot is written
+ * on the constructing thread and read on the terminal reader thread, where `onCommandFinished`
+ * dispatches from. A captured `var` compiles to a non-volatile field with no happens-before edge
+ * between the two, so the reader is not guaranteed to see the assignment at all. [AtomicReference]
+ * gives that edge for nothing.
+ */
+private class NotificationTitleProvider(
+    private val display: ComposeTerminalDisplay,
+    private val fallback: String,
+) : () -> String {
+    private val tab = AtomicReference<TerminalTab?>(null)
+
+    /** Called once the tab exists; the lambda is not invoked before a command finishes. */
+    fun attach(tab: TerminalTab) = this.tab.set(tab)
+
+    override fun invoke(): String {
+        val tab = tab.get()
+        return notificationTitle(
+            custom = tab?.customTitle?.value,
+            osc2 = display.windowTitle.orEmpty(),
+            // Through the tab, not display.iconTitle: nothing ever resets that slot, so it would
+            // still say "vim" during the next long build.
+            tabTitle = tab?.title?.value.orEmpty(),
+            fallback = fallback,
+        )
     }
 }

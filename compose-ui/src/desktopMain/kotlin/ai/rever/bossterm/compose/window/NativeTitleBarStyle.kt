@@ -76,6 +76,10 @@ internal fun applyFullWindowContent(
         // fullscreenable and some fade/shadow keys), so fixing it means either forcing the NSWindow
         // appearance through JNA or hiding the system title and drawing it in the reserved strip.
         // Left as-is deliberately: this is the native title bar, and the native title is part of it.
+        // Tracked in issue #368. The ObjC bridge to build the first option on is in this package,
+        // in window/WindowTransparency.kt - but note before assuming it is turnkey that its only
+        // consumer (configureMacOSBlur) is commented out there as having "compatibility issues
+        // with modern macOS/Java", so the binding is unproven rather than merely unused.
         rootPane.putClientProperty("apple.awt.transparentTitleBar", true)
         // The title stays visible. It is drawn centred in the title bar strip, and callers reserve
         // exactly that strip with NATIVE_TITLE_BAR_HEIGHT, so there is nothing for it to overlap
@@ -86,7 +90,7 @@ internal fun applyFullWindowContent(
         // putClientProperty on a JRootPane essentially cannot throw, so reaching here means
         // something is badly wrong - exactly when a silent un-inset window would be the worst
         // outcome to debug.
-        println("NativeTitleBarStyle: could not apply full window content: $it")
+        System.err.println("NativeTitleBarStyle: could not apply full window content: $it")
         false
     }
 }

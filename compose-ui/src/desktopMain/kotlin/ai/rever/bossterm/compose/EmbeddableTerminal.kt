@@ -57,6 +57,7 @@ import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.features.shouldUseNativeMenus
 import ai.rever.bossterm.compose.ime.IMEState
 import ai.rever.bossterm.compose.mcp.McpTerminalRegistry
+import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.SettingsLoader
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
@@ -238,9 +239,18 @@ fun EmbeddableTerminal(
         SettingsLoader.resolveSettings(settings, settingsPath).withOverrides(settingsOverride)
     }
 
-    // Feed the state's live mirror so a settings change reaches the context menu without a restart.
-    effectiveState.nativeContextMenusEnabled = resolvedSettings.useNativeContextMenus
-
+    // SettingsLoader.resolveSettings is a one-shot file read, so resolvedSettings alone would
+    // freeze the preference for the life of this state. When no explicit source was supplied this
+    // instance IS reading the global file, so observe it directly - matching what TabbedTerminal's
+    // menus do. Collected unconditionally; a composable call cannot sit behind an `if`.
+    val globalSettings by SettingsManager.instance.settings.collectAsState()
+    val effectiveNativeMenus = settingsOverride?.useNativeContextMenus
+        ?: if (settings == null && settingsPath == null) {
+            globalSettings.useNativeContextMenus
+        } else {
+            resolvedSettings.useNativeContextMenus
+        }
+    SideEffect { effectiveState.nativeContextMenusEnabled = effectiveNativeMenus }
 
     // Effective shell command (validates $SHELL exists, falls back to /bin/bash or /bin/sh)
     val effectiveCommand = command ?: ShellCustomizationUtils.getValidShell(resolvedSettings.windowsShell)
@@ -543,8 +553,9 @@ class EmbeddableTerminalState {
      * Live mirror of the resolved `useNativeContextMenus` setting.
      *
      * The session is built once, so capturing the value there would freeze the preference for the
-     * life of this state - tab-bar menus would follow a settings change and embedded ones never
-     * would. The context menu controller reads through this instead.
+     * life of this state. The composable keeps this fed from whichever source actually applies -
+     * an explicit override, the observed global settings, or a host-supplied snapshot - and the
+     * context menu controller reads through it.
      */
     @Volatile
     internal var nativeContextMenusEnabled: Boolean = true

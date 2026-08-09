@@ -40,6 +40,9 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
  */
 class ContextMenuController internal constructor(
     private val nativePreferred: () -> Boolean,
+    // Both are constructed eagerly though only one is used. They hold no state until a menu is
+    // shown, so this is two empty objects per controller; making them lazy only complicates
+    // injecting fakes.
     private val swingRenderer: ContextMenuRenderer = SwingContextMenuRenderer(),
     private val nativeRenderer: ContextMenuRenderer = AwtNativeContextMenuRenderer()
 ) {
@@ -526,6 +529,8 @@ internal sealed interface NativeMenuOp {
  * is reachable in normal use. Swing's `JMenuItem` does not do this, so the fix belongs on the
  * native path only.
  */
+// Unreachable in production while [shouldUseNativeMenus] is macOS-only; kept and tested so
+// widening the gate does not silently mangle branch names.
 internal fun escapeNativeLabel(label: String, isWindows: Boolean): String =
     if (isWindows) label.replace("&", "&&") else label
 
@@ -657,6 +662,12 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
     override fun hide() {
         onEdt {
             clearDismissWatcher()
+            // Grey out an orphan before letting go of it. The generation fence already makes a
+            // lingering menu inert, but "clicks and nothing happens" reads as a hang; measured
+            // that disabling items on an OPEN menu is safe and stops them activating.
+            attached?.let { (_, menu) ->
+                runCatching { for (i in 0 until menu.itemCount) menu.getItem(i).isEnabled = false }
+            }
             detach()
         }
     }
@@ -689,6 +700,11 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
      * `WINDOW_EVENT_MASK` is included because dismissing by switching applications produces no
      * input event at all, which would otherwise pin the flag until the user came back. By the same
      * measurement, no window events arrive during tracking either.
+     *
+     * Modifier keys are covered by the same grab: pressing AND releasing Ctrl across an open menu
+     * was measured to deliver zero AWT events, so the Ctrl+click gesture cannot clear the flag
+     * from under a menu the user is still reading. The Escape key-release that does arrive shows
+     * up only after the menu has already closed.
      *
      * Note the "an open menu swallows everything" property is specifically NSMenu tracking. It is
      * the first thing to re-measure if [shouldUseNativeMenus] ever widens past macOS.

@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.features
 
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -114,7 +115,7 @@ class NativeContextMenuTest {
         }
     }
 
-    private class FakeRenderer : ContextMenuRenderer {
+    private class FakeRenderer(private val hasInvoker: Boolean = true) : ContextMenuRenderer {
         val shown = mutableListOf<ShownMenu>()
         var hides = 0
 
@@ -129,6 +130,10 @@ class NativeContextMenuTest {
             onDismiss: () -> Unit
         ) {
             shown += ShownMenu(isCurrent, onDismiss)
+            // Both real renderers report dismissal immediately when there is nothing to hang the
+            // popup off, so the caller's visibility flag cannot stick true for a menu that never
+            // appeared. Mirror that.
+            if (!hasInvoker) onDismiss()
         }
 
         override fun hide() { hides += 1 }
@@ -337,6 +342,26 @@ class NativeContextMenuTest {
     }
 
     @Test
+    fun `a click on the half-open right or bottom edge still finds a window`() {
+        // Rectangle.contains is half-open, so (100,100) is NOT inside a 0,0 100x100 frame. Without
+        // the ifEmpty fallback this returns null and no menu appears at all.
+        val picked = pickInvoker(
+            listOf(candidate("frame", x = 0, y = 0, w = 100, h = 100)),
+            at = java.awt.Point(100, 100)
+        )
+        assertEquals("frame", picked?.window)
+    }
+
+    @Test
+    fun `menuVisible does not stick true when there is no invoker`() {
+        val native = FakeRenderer(hasInvoker = false)
+        val c = controller(native, FakeRenderer(), nativePreferred = true)
+
+        c.showMenuAtScreenPosition(1, 1, emptyList())
+        assertFalse(c.menuVisible.value, "a menu that never appeared must not pin the flag")
+    }
+
+    @Test
     fun `no eligible window yields null rather than an arbitrary one`() {
         assertNull(pickInvoker(listOf(candidate("hidden", showing = false)), at = null))
         assertNull(pickInvoker(emptyList<InvokerCandidate<String>>(), at = null))
@@ -414,11 +439,18 @@ class NativeContextMenuTest {
 
     @Test
     fun `an unreadable settings source falls back to native rather than throwing`() {
-        withOverride(null) {
-            // nativeMenusPreferred wraps the SettingsManager read in runCatching; whatever it
-            // returns, it must not propagate.
-            nativeMenusPreferred()
-        }
+        // Mirrors nativeMenusPreferred's `runCatching { ... }.getOrDefault(true)`: an unreadable
+        // SettingsManager must leave native enabled, not disable menus or propagate.
+        val settingEnabled = runCatching<Boolean> { error("settings unreadable") }.getOrDefault(true)
+        assertTrue(settingEnabled)
+        assertTrue(shouldUseNativeMenus(settingEnabled = settingEnabled, isMacOs = true))
+    }
+
+    @AfterTest
+    fun clearProcessWideOverride() {
+        // NativeContextMenuOverride is process-global; a mid-test failure must not leak into
+        // siblings. Note this rules out parallel execution for this class.
+        NativeContextMenuOverride.set(null)
     }
 
     // ----- anchor arithmetic -----

@@ -162,6 +162,12 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 - **Search**: Ctrl+F (regex, case-sensitive)
 - **Clipboard**: Copy-on-select, middle-click paste
 - **Mouse**: vim/tmux support, Shift bypasses
+- **Context menus**: real OS menus (`java.awt.PopupMenu` -> `NSMenu`) on **macOS only**;
+  `TerminalSettings.useNativeContextMenus` turns them off, and Windows/Linux always get the
+  BOSS-themed Swing menu. Widening the platform gate is `shouldUseNativeMenus` in
+  `features/ContextMenuController.kt`, but measure `show()` blocking and dark-mode behaviour on
+  that platform first - the macOS facts (non-blocking `show()`, nothing cancels an open menu, no
+  dismissal event, display-only `MenuShortcut`) were measured and do not transfer
 - **AI Menu**: open-source-first (`AIAssistants.AI_ASSISTANTS_OSS_FIRST`) - Hermes Agent, Kimi Code
   CLI, OpenClaw, OpenCode, then Codex, Gemini CLI, Grok Build, then Claude Code. Ordering is derived
   from each entry's `openSource`/`localModels` flags, not declaration order. Adding a CLI means ONE entry in

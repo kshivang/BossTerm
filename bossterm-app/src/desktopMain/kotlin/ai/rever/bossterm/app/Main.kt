@@ -300,9 +300,15 @@ fun main(args: Array<String>) {
                     // initializer is not guaranteed to belong to the one that gets applied.)
                     val fullWindowContent =
                         remember { useNativeTitleBar && ShellCustomizationUtils.isMacOS() }
-                    SideEffect {
+                    // Starts optimistic so the inset is right on frame one, then takes the actual
+                    // result: applyFullWindowContent declines a window it cannot style, and the
+                    // inset has to follow it or we reserve 28dp for a title bar that stayed where
+                    // it was. ComposeWindow is a JFrame so the decline path should never fire -
+                    // this is what makes that a fact about the code rather than a hope.
+                    var styleApplied by remember { mutableStateOf(fullWindowContent) }
+                    LaunchedEffect(fullWindowContent) {
                         if (fullWindowContent) {
-                            applyFullWindowContent(this@Window.window)
+                            styleApplied = applyFullWindowContent(this@Window.window)
                         }
                     }
 
@@ -754,7 +760,7 @@ fun main(args: Array<String>) {
                     // One value for every site that has to stay clear of the title bar. See
                     // titleBarInset for why it is Fullscreen-only, why Maximized still insets, and
                     // why placement is trusted for this.
-                    val titleBarInset = titleBarInset(fullWindowContent, windowState.placement)
+                    val topInset = titleBarInset(styleApplied, windowState.placement)
 
                     // Load background image if set
                     val backgroundImage = remember(windowSettings.backgroundImagePath) {
@@ -842,7 +848,7 @@ fun main(args: Array<String>) {
                                 // lights and be unclickable. The app's background already paints
                                 // through this strip, which is the point. Zero in fullscreen; see
                                 // titleBarInset.
-                                Spacer(modifier = Modifier.height(titleBarInset))
+                                Spacer(modifier = Modifier.height(topInset))
 
                                 // Custom title bar (only when not using native title bar)
                                 if (!useNativeTitleBar) {
@@ -946,7 +952,7 @@ fun main(args: Array<String>) {
                                 Box(
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
-                                        .padding(top = titleBarInset + 8.dp, end = 12.dp)
+                                        .padding(top = topInset + 8.dp, end = 12.dp)
                                 ) {
                                     Text(
                                         text = globalHotkeyHint,

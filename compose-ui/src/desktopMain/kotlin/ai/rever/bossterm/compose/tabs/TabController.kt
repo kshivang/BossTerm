@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import ai.rever.bossterm.compose.vcs.GitUtils
 import ai.rever.bossterm.compose.ComposeQuestioner
 import ai.rever.bossterm.compose.ComposeTerminalDisplay
+import ai.rever.bossterm.compose.notificationTitle
 import ai.rever.bossterm.compose.ConnectionState
 import ai.rever.bossterm.compose.PlatformServices
 import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
@@ -177,7 +178,10 @@ class TabController(
                 // through the terminal would publish it to every application-title listener as though
                 // the program had set an empty title. That includes EmbeddableTerminal's public
                 // onTitleChange, which only survives it by way of an isNotEmpty() guard. It also
-                // keeps the XTWINOPS title stack out of it.
+                // does not trigger the XTWINOPS title stack. (It does not hide from it either -
+                // saveWindowTitleOnStack reads this same field, so an app pushing a title around
+                // itself right after a prompt pushes "", as it already did on any shell that never
+                // emitted OSC 2.)
                 session.display.windowTitle = ""
             }
         }
@@ -550,16 +554,21 @@ class TabController(
         // Register command state listener for notifications (OSC 133 shell integration).
         // Also captured in `tab.commandStateListeners` after construction so dispose()
         // can remove it (see TerminalTab.commandStateListeners docs).
+        var tabRef: TerminalTab? = null
         val notificationHandler = CommandNotificationHandler(
             settings = settings,
             isWindowFocused = isWindowFocused,
-            // Prefer the app's own OSC 2 title, then its OSC 1 icon title, before the app name.
-            // A notification only fires when the window is UNFOCUSED, so its whole job is saying
-            // WHICH session finished - several tabs all announcing "BossTerm" says nothing.
+            // Same precedence as the window title, so the two agree on which session finished.
+            // Through the tab rather than off display.iconTitle: nothing ever resets that slot, so
+            // it would still say "vim" during the next long build. tabRef is assigned right after
+            // the tab is built below; the lambda is only invoked at command finish.
             tabTitle = {
-                display.windowTitle?.ifEmpty { null }
-                    ?: display.iconTitle?.ifEmpty { null }
-                    ?: "BossTerm"
+                notificationTitle(
+                    custom = tabRef?.customTitle?.value,
+                    osc2 = display.windowTitle.orEmpty(),
+                    tabTitle = tabRef?.title?.value.orEmpty(),
+                    fallback = "BossTerm",
+                )
             }
         )
         terminal.addCommandStateListener(notificationHandler)
@@ -647,6 +656,7 @@ class TabController(
         // them when the tab closes.
         val lastCommandTracker = ai.rever.bossterm.compose.mcp.LastCommandTracker(tab)
         terminal.addCommandStateListener(lastCommandTracker)
+        tabRef = tab
         tab.commandStateListeners.add(notificationHandler)
         tab.commandStateListeners.add(lastCommandTracker)
 
@@ -942,16 +952,21 @@ class TabController(
         })
 
         // Register command state listener for notifications (OSC 133 shell integration)
+        var tabRef: TerminalTab? = null
         val notificationHandler = CommandNotificationHandler(
             settings = settings,
             isWindowFocused = isWindowFocused,
-            // Prefer the app's own OSC 2 title, then its OSC 1 icon title, before the app name.
-            // A notification only fires when the window is UNFOCUSED, so its whole job is saying
-            // WHICH session finished - several tabs all announcing "BossTerm" says nothing.
+            // Same precedence as the window title, so the two agree on which session finished.
+            // Through the tab rather than off display.iconTitle: nothing ever resets that slot, so
+            // it would still say "vim" during the next long build. tabRef is assigned right after
+            // the tab is built below; the lambda is only invoked at command finish.
             tabTitle = {
-                display.windowTitle?.ifEmpty { null }
-                    ?: display.iconTitle?.ifEmpty { null }
-                    ?: sessionTitle
+                notificationTitle(
+                    custom = tabRef?.customTitle?.value,
+                    osc2 = display.windowTitle.orEmpty(),
+                    tabTitle = tabRef?.title?.value.orEmpty(),
+                    fallback = sessionTitle,
+                )
             }
         )
         terminal.addCommandStateListener(notificationHandler)
@@ -1038,6 +1053,7 @@ class TabController(
         // pane closes.
         val lastCommandTracker = ai.rever.bossterm.compose.mcp.LastCommandTracker(session)
         terminal.addCommandStateListener(lastCommandTracker)
+        tabRef = session
         session.commandStateListeners.add(notificationHandler)
         session.commandStateListeners.add(lastCommandTracker)
 
@@ -1195,16 +1211,21 @@ class TabController(
         })
 
         // Register command state listener for notifications (OSC 133 shell integration)
+        var tabRef: TerminalTab? = null
         val notificationHandler = CommandNotificationHandler(
             settings = settings,
             isWindowFocused = isWindowFocused,
-            // Prefer the app's own OSC 2 title, then its OSC 1 icon title, before the app name.
-            // A notification only fires when the window is UNFOCUSED, so its whole job is saying
-            // WHICH session finished - several tabs all announcing "BossTerm" says nothing.
+            // Same precedence as the window title, so the two agree on which session finished.
+            // Through the tab rather than off display.iconTitle: nothing ever resets that slot, so
+            // it would still say "vim" during the next long build. tabRef is assigned right after
+            // the tab is built below; the lambda is only invoked at command finish.
             tabTitle = {
-                display.windowTitle?.ifEmpty { null }
-                    ?: display.iconTitle?.ifEmpty { null }
-                    ?: "BossTerm"
+                notificationTitle(
+                    custom = tabRef?.customTitle?.value,
+                    osc2 = display.windowTitle.orEmpty(),
+                    tabTitle = tabRef?.title?.value.orEmpty(),
+                    fallback = "BossTerm",
+                )
             }
         )
         terminal.addCommandStateListener(notificationHandler)
@@ -1261,6 +1282,7 @@ class TabController(
         // are recorded on the tab so dispose() can remove them.
         val lastCommandTracker = ai.rever.bossterm.compose.mcp.LastCommandTracker(tab)
         terminal.addCommandStateListener(lastCommandTracker)
+        tabRef = tab
         tab.commandStateListeners.add(notificationHandler)
         tab.commandStateListeners.add(lastCommandTracker)
 

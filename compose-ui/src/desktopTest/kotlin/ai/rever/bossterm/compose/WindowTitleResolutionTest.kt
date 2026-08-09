@@ -49,4 +49,46 @@ class WindowTitleResolutionTest {
         // is what stops a window being retitled to nothing during startup.
         assertEquals("", resolveWindowTitle(custom = null, osc2 = "", tabTitle = ""))
     }
+
+    @Test
+    fun `a whitespace OSC 2 title falls through like a blank rename does`() {
+        // Same reasoning as the custom title: letting whitespace win leaves the window looking
+        // nameless, which is worse than the fallback it was covering up.
+        assertEquals("src", resolveWindowTitle(custom = null, osc2 = "   ", tabTitle = "src"))
+        assertEquals("src", resolveWindowTitle(custom = "  ", osc2 = "", tabTitle = "src"))
+    }
+
+    // ---- the same precedence, as a completion notification sees it ----
+
+    @Test
+    fun `a notification names the session, not a program that already exited`() {
+        // The regression this guards: display.iconTitle is never reset, so falling back to it left
+        // a finished build announcing "vim" long after vim had quit. The tab title is re-asserted
+        // at each prompt, so it reverts.
+        assertEquals(
+            "src",
+            notificationTitle(custom = null, osc2 = "", tabTitle = "src", fallback = "BossTerm"),
+        )
+    }
+
+    @Test
+    fun `a notification prefers what the running program calls itself`() {
+        assertEquals(
+            "build.gradle.kts",
+            notificationTitle(
+                custom = null,
+                osc2 = "build.gradle.kts",
+                tabTitle = "src",
+                fallback = "BossTerm",
+            ),
+        )
+    }
+
+    @Test
+    fun `a notification falls back to the app name only with nothing to say`() {
+        assertEquals(
+            "BossTerm",
+            notificationTitle(custom = null, osc2 = "", tabTitle = "", fallback = "BossTerm"),
+        )
+    }
 }

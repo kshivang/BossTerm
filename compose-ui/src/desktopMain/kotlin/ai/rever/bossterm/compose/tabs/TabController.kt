@@ -150,31 +150,34 @@ class TabController(
         val titleResetListener = object : ai.rever.bossterm.terminal.model.CommandStateListener {
             override fun onPromptStarted() {
                 session.title.value = session.customTitle.value ?: cwdLabel(session.workingDirectory.value)
-            }
 
-            // Clear the OSC 2 window title at COMMAND start (133;B) so an app that set one does
-            // not keep naming the window after it has exited. The window title falls back to the
-            // tab's own title while it is empty - see resolveWindowTitle in TabbedTerminal.
-            //
-            // B rather than A (where the tab title resets) because neither hook is order-safe in
-            // general and B loses less. Shells emit their own OSC 2 from the very hooks that emit
-            // 133;A and 133;B, and nothing here controls registration order: our bundled
-            // integration is sourced from .zshenv so its hooks run FIRST and either choice is
-            // safe, but a user who wires the snippet up from .zshrc after oh-my-zsh gets the
-            // reverse, and then whichever hook we clear on wipes a title omz had just set. At B
-            // the worst case is losing a per-command title for the length of one command; at A it
-            // would be the prompt title, every prompt. Both degrade to the tab title rather than
-            // to a blank window, which is what makes either survivable.
-            //
-            // Only fires where OSC 133 reaches: the bundled integration returns early inside
-            // tmux/screen and for TERM=dumb, and plenty of sessions have no integration at all.
-            // There the title still lingers after the app exits, exactly as it does today.
-            override fun onCommandStarted() {
-                // The display, not terminal.setWindowTitle: this is internal bookkeeping, and
-                // going through the terminal would publish it to every application-title
-                // listener as though the program itself had set an empty title. That includes
-                // EmbeddableTerminal's public onTitleChange callback, which only survives it by
-                // way of an isNotEmpty() guard. It also keeps the XTWINOPS title stack out of it.
+                // Clear the OSC 2 window title here too, so an app that set one stops naming the
+                // window once it exits. Falls back to the tab's own title while empty - see
+                // resolveWindowTitle in TabbedTerminal.
+                //
+                // Prompt start, NOT command start. Both were tried. The deciding fact is that our
+                // shell integration is sourced from .zshenv, so its hooks are registered before
+                // anything .zshrc adds and therefore run FIRST: a shell that sets its own OSC 2 from
+                // precmd (oh-my-zsh does) emits it just AFTER this clear, so its title survives and
+                // the window is untitled only for the instant in between. Clearing at 133;B instead
+                // leaves the title empty for the whole DURATION of every command on shells that set
+                // no per-command title - which also fed "BossTerm" to the completion notification,
+                // whose whole job is saying which session finished.
+                //
+                // The residual hazard is symmetric and unavoidable: a user who registers the snippet
+                // from .zshrc AFTER oh-my-zsh gets the reverse order, and then this clear discards a
+                // title precmd had just set. It degrades to the tab title rather than to a blank, and
+                // no hook is order-safe in general.
+                //
+                // Only fires where OSC 133 reaches: the bundled integration returns early inside
+                // tmux/screen and for TERM=dumb, and plenty of sessions have no integration at all.
+                // There a title still outlives the program that set it, exactly as it does today.
+                //
+                // The display, not terminal.setWindowTitle: this is internal bookkeeping, and going
+                // through the terminal would publish it to every application-title listener as though
+                // the program had set an empty title. That includes EmbeddableTerminal's public
+                // onTitleChange, which only survives it by way of an isNotEmpty() guard. It also
+                // keeps the XTWINOPS title stack out of it.
                 session.display.windowTitle = ""
             }
         }
@@ -550,7 +553,14 @@ class TabController(
         val notificationHandler = CommandNotificationHandler(
             settings = settings,
             isWindowFocused = isWindowFocused,
-            tabTitle = { display.windowTitle?.ifEmpty { "BossTerm" } ?: "BossTerm" }
+            // Prefer the app's own OSC 2 title, then its OSC 1 icon title, before the app name.
+            // A notification only fires when the window is UNFOCUSED, so its whole job is saying
+            // WHICH session finished - several tabs all announcing "BossTerm" says nothing.
+            tabTitle = {
+                display.windowTitle?.ifEmpty { null }
+                    ?: display.iconTitle?.ifEmpty { null }
+                    ?: "BossTerm"
+            }
         )
         terminal.addCommandStateListener(notificationHandler)
 
@@ -935,7 +945,14 @@ class TabController(
         val notificationHandler = CommandNotificationHandler(
             settings = settings,
             isWindowFocused = isWindowFocused,
-            tabTitle = { display.windowTitle?.ifEmpty { sessionTitle } ?: sessionTitle }
+            // Prefer the app's own OSC 2 title, then its OSC 1 icon title, before the app name.
+            // A notification only fires when the window is UNFOCUSED, so its whole job is saying
+            // WHICH session finished - several tabs all announcing "BossTerm" says nothing.
+            tabTitle = {
+                display.windowTitle?.ifEmpty { null }
+                    ?: display.iconTitle?.ifEmpty { null }
+                    ?: sessionTitle
+            }
         )
         terminal.addCommandStateListener(notificationHandler)
 
@@ -1181,7 +1198,14 @@ class TabController(
         val notificationHandler = CommandNotificationHandler(
             settings = settings,
             isWindowFocused = isWindowFocused,
-            tabTitle = { display.windowTitle?.ifEmpty { "BossTerm" } ?: "BossTerm" }
+            // Prefer the app's own OSC 2 title, then its OSC 1 icon title, before the app name.
+            // A notification only fires when the window is UNFOCUSED, so its whole job is saying
+            // WHICH session finished - several tabs all announcing "BossTerm" says nothing.
+            tabTitle = {
+                display.windowTitle?.ifEmpty { null }
+                    ?: display.iconTitle?.ifEmpty { null }
+                    ?: "BossTerm"
+            }
         )
         terminal.addCommandStateListener(notificationHandler)
 

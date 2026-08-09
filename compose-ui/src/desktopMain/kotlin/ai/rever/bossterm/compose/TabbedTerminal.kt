@@ -1651,6 +1651,10 @@ fun TabbedTerminal(
                     .combine(focused.display.windowTitleFlow) { (custom, tabTitle), windowTitle ->
                         resolveWindowTitle(custom, windowTitle, tabTitle)
                     }
+                    // combine re-emits when EITHER side changes, and a rename writes customTitle
+                    // and title as two separate snapshot writes. window.title bottoms out in an
+                    // AppKit call, so only pass on actual changes.
+                    .distinctUntilChanged()
                     .collect { newTitle ->
                         if (newTitle.isNotEmpty()) {
                             onWindowTitleChange(newTitle)
@@ -2762,4 +2766,6 @@ private fun remoteMcpMenuItems(
  *         showing a nameless window.
  */
 internal fun resolveWindowTitle(custom: String?, osc2: String, tabTitle: String): String =
-    custom ?: osc2.ifEmpty { tabTitle }
+    // ifBlank, not just null: both rename paths normalise blank to null today, but a whitespace
+    // custom title would otherwise win and blank the window rather than falling through.
+    custom?.ifBlank { null } ?: osc2.ifEmpty { tabTitle }

@@ -34,8 +34,8 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.update.UpdateBanner
 import ai.rever.bossterm.compose.update.UpdateManager
 import ai.rever.bossterm.compose.window.CustomTitleBar
-import ai.rever.bossterm.compose.window.NATIVE_TITLE_BAR_HEIGHT
 import ai.rever.bossterm.compose.window.applyFullWindowContent
+import ai.rever.bossterm.compose.window.titleBarInset
 import ai.rever.bossterm.compose.window.GlobalHotKeyManager
 import ai.rever.bossterm.compose.window.HotKeyConfig
 import ai.rever.bossterm.compose.window.WindowManager
@@ -293,15 +293,18 @@ fun main(args: Array<String>) {
                     // content. Only meaningful on the native path - the custom title bar already
                     // owns that area. `this@Window.window` because the loop variable above shadows
                     // FrameWindowScope.window.
-                    // remember rather than SideEffect on purpose: this has to run before the
-                    // content below measures, so the inset is right on the very first frame
-                    // instead of the window jumping once. The write is an idempotent client
-                    // property on a stable window, so a discarded composition costs nothing.
-                    // Keyed on Unit because useNativeTitleBar is itself captured once at startup.
+                    // Split deliberately: whether the content WILL run under the title bar is a
+                    // pure predicate, so the inset below is right on the very first frame, while
+                    // the client-property write that makes it so is a mutation and belongs in the
+                    // effect phase. (A composition can be discarded or re-run; remember's
+                    // initializer is not guaranteed to belong to the one that gets applied.)
                     val fullWindowContent =
-                        remember {
-                            useNativeTitleBar && applyFullWindowContent(this@Window.window)
+                        remember { useNativeTitleBar && ShellCustomizationUtils.isMacOS() }
+                    SideEffect {
+                        if (fullWindowContent) {
+                            applyFullWindowContent(this@Window.window)
                         }
+                    }
 
                     // Update manager state
                     val updateManager = remember { UpdateManager.instance }
@@ -748,28 +751,10 @@ fun main(args: Array<String>) {
                                                    windowState.placement == WindowPlacement.Maximized
                     val cornerRadius = if (useNativeTitleBar || isFullscreenOrMaximized) 0.dp else 20.dp
 
-                    // How much of the top the native title bar is covering right now, as ONE value
-                    // for every site that has to stay clear of it. Two copies of this predicate
-                    // drifted apart once already: the spacer handled fullscreen and the hotkey hint
-                    // did not, which put the hint inside the tab bar row.
-                    //
-                    // Fullscreen ONLY, never Maximized: macOS zoom keeps its title bar, so a zoomed
-                    // window still needs the inset. placement is trustworthy here, traced rather
-                    // than assumed - Compose syncs it in a componentResized handler specifically
-                    // because "fullscreen changing doesn't fire windowStateChanged, only
-                    // componentResized" (SwingWindow.desktop.kt), and the value it reads bottoms out
-                    // in skiko's osxIsFullscreenNative, i.e. the real NSWindow state rather than a
-                    // flag set only when WE request fullscreen. So the green button is covered.
-                    // A bounds-vs-screen heuristic was tried instead and removed: it cannot tell
-                    // fullscreen from a zoomed window once the menu bar and Dock auto-hide, and
-                    // guessing "fullscreen" there would drop the inset and slide the tab bar under
-                    // the traffic lights.
-                    val titleBarInset =
-                        if (fullWindowContent && windowState.placement != WindowPlacement.Fullscreen) {
-                            NATIVE_TITLE_BAR_HEIGHT
-                        } else {
-                            0.dp
-                        }
+                    // One value for every site that has to stay clear of the title bar. See
+                    // titleBarInset for why it is Fullscreen-only, why Maximized still insets, and
+                    // why placement is trusted for this.
+                    val titleBarInset = titleBarInset(fullWindowContent, windowState.placement)
 
                     // Load background image if set
                     val backgroundImage = remember(windowSettings.backgroundImagePath) {

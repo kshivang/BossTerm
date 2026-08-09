@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.window
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.WindowPlacement
 import java.awt.Window
 import javax.swing.JRootPane
 import javax.swing.RootPaneContainer
@@ -89,3 +90,30 @@ internal fun applyFullWindowContent(
         false
     }
 }
+
+/**
+ * How much of the top the native title bar is covering, and therefore how far content must be
+ * pushed down to stay clear of the traffic lights. Zero whenever nothing needs reserving, so
+ * callers can apply it unconditionally instead of repeating the predicate.
+ *
+ * Repeating it is exactly what went wrong once already: two copies drifted, one of them handled
+ * fullscreen and the other did not, and the un-inset one rendered inside the title bar strip.
+ *
+ * Fullscreen ONLY, never Maximized. macOS zoom keeps its title bar, so a zoomed window still needs
+ * the inset; native fullscreen hides the bar entirely, so reserving there would leave a dead band
+ * of background above the content.
+ *
+ * [placement] is trustworthy for this, traced rather than assumed: Compose syncs it from a
+ * `componentResized` handler specifically because "fullscreen changing doesn't fire
+ * windowStateChanged, only componentResized", and the value it reads bottoms out in skiko's
+ * `osxIsFullscreenNative` - the real NSWindow state, not a flag set only when we request
+ * fullscreen. So a fullscreen entered from the green traffic light is covered. A bounds-vs-screen
+ * heuristic was tried in its place and removed: it cannot tell fullscreen from a zoomed window
+ * once the menu bar and Dock auto-hide, and guessing wrong there slides the tab bar under the
+ * traffic lights.
+ *
+ * @param styleApplied what [applyFullWindowContent] returned. False means the platform is drawing
+ *        its own title bar above the content, which needs no inset at all.
+ */
+fun titleBarInset(styleApplied: Boolean, placement: WindowPlacement): Dp =
+    if (styleApplied && placement != WindowPlacement.Fullscreen) NATIVE_TITLE_BAR_HEIGHT else 0.dp

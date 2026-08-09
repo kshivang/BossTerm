@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose.window
 
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.WindowPlacement
 import javax.swing.JRootPane
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -52,5 +54,30 @@ class NativeTitleBarStyleTest {
         val rootPane = JRootPane()
         assertFalse(applyFullWindowContent(rootPane, isMacOS = false))
         assertNull(rootPane.getClientProperty("apple.awt.fullWindowContent"))
+    }
+
+    // ---- titleBarInset: the subtlest decision here, and the one that already drifted ----
+
+    @Test
+    fun `a zoomed window still reserves the strip`() {
+        // The distinction the whole function exists for. macOS zoom KEEPS its title bar, so a
+        // maximized window must still inset or the tab bar slides under the traffic lights.
+        assertEquals(NATIVE_TITLE_BAR_HEIGHT, titleBarInset(true, WindowPlacement.Maximized))
+        assertEquals(NATIVE_TITLE_BAR_HEIGHT, titleBarInset(true, WindowPlacement.Floating))
+    }
+
+    @Test
+    fun `fullscreen reserves nothing because the title bar is gone`() {
+        // Reserving here would leave a dead band of background above the content.
+        assertEquals(0.dp, titleBarInset(true, WindowPlacement.Fullscreen))
+    }
+
+    @Test
+    fun `without the style applied nothing is reserved in any placement`() {
+        // Off macOS, or for a window that could not be styled: the platform draws its own title
+        // bar above the content, so an inset would be pure dead space.
+        for (placement in WindowPlacement.entries) {
+            assertEquals(0.dp, titleBarInset(false, placement), "unstyled $placement must not inset")
+        }
     }
 }

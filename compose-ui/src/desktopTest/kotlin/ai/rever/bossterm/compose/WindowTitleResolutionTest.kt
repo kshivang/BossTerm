@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose
 
+import ai.rever.bossterm.compose.tabs.NotificationTitleProvider
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -33,7 +34,7 @@ class WindowTitleResolutionTest {
 
     @Test
     fun `an empty OSC 2 title falls back to the tab title`() {
-        // Empty is the RESET written at each command start, not a real title - without the
+        // Empty is the RESET written at each prompt start, not a real title - without the
         // fallback an exited program would leave the window nameless.
         assertEquals("src", resolveWindowTitle(custom = null, osc2 = "", tabTitle = "src"))
     }
@@ -90,5 +91,22 @@ class WindowTitleResolutionTest {
             "BossTerm",
             notificationTitle(custom = null, osc2 = "", tabTitle = "", fallback = "BossTerm"),
         )
+    }
+
+    @Test
+    fun `a notification before its tab is attached falls back rather than crashing`() {
+        // NotificationTitleProvider is built before the TerminalTab exists and has the tab dropped
+        // in afterwards. Nothing should invoke it in between, but if anything ever does, the
+        // answer has to be the old behaviour rather than an exception on a background thread.
+        val display = ComposeTerminalDisplay()
+        display.windowTitle = "me@host: ~/src"
+        val provider = NotificationTitleProvider(display, fallback = "BossTerm")
+
+        // The app's own OSC 2 title still comes through with no tab attached...
+        assertEquals("me@host: ~/src", provider())
+
+        // ...and with nothing at all, the fallback, which is exactly pre-PR behaviour.
+        display.windowTitle = ""
+        assertEquals("BossTerm", provider())
     }
 }

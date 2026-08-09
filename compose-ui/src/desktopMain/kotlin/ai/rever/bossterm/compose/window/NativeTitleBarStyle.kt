@@ -65,7 +65,7 @@ internal fun applyFullWindowContent(
     if (rootPane == null) return false
     if (!isMacOS) return false
 
-    return runCatching {
+    return try {
         rootPane.putClientProperty("apple.awt.fullWindowContent", true)
         // Caveat, and the one real cost of the transparent strip: AppKit draws the title text in
         // the colour its EFFECTIVE APPEARANCE dictates, not one picked to contrast with whatever
@@ -86,11 +86,11 @@ internal fun applyFullWindowContent(
         // - hiding it would just lose the window name for no reason.
         rootPane.putClientProperty("apple.awt.windowTitleVisible", true)
         true
-    }.getOrElse {
+    } catch (e: Exception) {
         // putClientProperty on a JRootPane essentially cannot throw, so reaching here means
         // something is badly wrong - exactly when a silent un-inset window would be the worst
         // outcome to debug.
-        System.err.println("NativeTitleBarStyle: could not apply full window content: $it")
+        System.err.println("NativeTitleBarStyle: could not apply full window content: $e")
         false
     }
 }

@@ -17,7 +17,6 @@ import ai.rever.bossterm.compose.vcs.GitUtils
 import ai.rever.bossterm.compose.ComposeQuestioner
 import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.compose.notificationTitle
-import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.ConnectionState
 import ai.rever.bossterm.compose.PlatformServices
 import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
@@ -43,6 +42,7 @@ import ai.rever.bossterm.compose.TerminalSession
 import ai.rever.bossterm.core.typeahead.TerminalTypeAheadManager
 import ai.rever.bossterm.core.typeahead.TypeAheadTerminalModel
 import ai.rever.bossterm.terminal.util.GraphemeBoundaryUtils
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Return the full index permutation for moving a tab only among [movableIndices].
@@ -153,36 +153,18 @@ class TabController(
             override fun onPromptStarted() {
                 session.title.value = session.customTitle.value ?: cwdLabel(session.workingDirectory.value)
 
-                // Clear the OSC 2 window title here too, so an app that set one stops naming the
-                // window once it exits. Falls back to the tab's own title while empty - see
-                // resolveWindowTitle in TabbedTerminal.
+                // Clear the OSC 2 window title too, so a program that set one stops naming
+                // the window after it exits; resolveWindowTitle then falls back to this same
+                // tab title. See AGENTS.md, "OSC 1 names the TAB, OSC 2 names the WINDOW" for
+                // why the split is kept and why the reset lives on THIS hook rather than on
+                // command start. Short version: our integration is sourced from .zshenv so its
+                // hooks run first, and a shell's own precmd OSC 2 lands just after this and
+                // survives; clearing at command start instead left the slot empty for the whole
+                // duration of every command, which fed "BossTerm" to the completion notification.
                 //
-                // Prompt start, NOT command start. Both were tried. The deciding fact is that our
-                // shell integration is sourced from .zshenv, so its hooks are registered before
-                // anything .zshrc adds and therefore run FIRST: a shell that sets its own OSC 2 from
-                // precmd (oh-my-zsh does) emits it just AFTER this clear, so its title survives and
-                // the window is untitled only for the instant in between. Clearing at 133;B instead
-                // leaves the title empty for the whole DURATION of every command on shells that set
-                // no per-command title - which also fed "BossTerm" to the completion notification,
-                // whose whole job is saying which session finished.
-                //
-                // The residual hazard is symmetric and unavoidable: a user who registers the snippet
-                // from .zshrc AFTER oh-my-zsh gets the reverse order, and then this clear discards a
-                // title precmd had just set. It degrades to the tab title rather than to a blank, and
-                // no hook is order-safe in general.
-                //
-                // Only fires where OSC 133 reaches: the bundled integration returns early inside
-                // tmux/screen and for TERM=dumb, and plenty of sessions have no integration at all.
-                // There a title still outlives the program that set it, exactly as it does today.
-                //
-                // The display, not terminal.setWindowTitle: this is internal bookkeeping, and going
-                // through the terminal would publish it to every application-title listener as though
-                // the program had set an empty title. That includes EmbeddableTerminal's public
-                // onTitleChange, which only survives it by way of an isNotEmpty() guard. It also
-                // does not trigger the XTWINOPS title stack. (It does not hide from it either -
-                // saveWindowTitleOnStack reads this same field, so an app pushing a title around
-                // itself right after a prompt pushes "", as it already did on any shell that never
-                // emitted OSC 2.)
+                // display, not terminal.setWindowTitle: that publishes to every application-title
+                // listener as though the program had set an empty title, including
+                // EmbeddableTerminal's public onTitleChange.
                 session.display.windowTitle = ""
             }
         }
@@ -555,11 +537,11 @@ class TabController(
         // Register command state listener for notifications (OSC 133 shell integration).
         // Also captured in `tab.commandStateListeners` after construction so dispose()
         // can remove it (see TerminalTab.commandStateListeners docs).
-        val notificationTitle = NotificationTitleProvider(display, "BossTerm")
+        val notificationTitleProvider = NotificationTitleProvider(display, "BossTerm")
         val notificationHandler = CommandNotificationHandler(
             settings = settings,
             isWindowFocused = isWindowFocused,
-            tabTitle = notificationTitle,
+            tabTitle = notificationTitleProvider,
         )
         terminal.addCommandStateListener(notificationHandler)
 
@@ -646,7 +628,7 @@ class TabController(
         // them when the tab closes.
         val lastCommandTracker = ai.rever.bossterm.compose.mcp.LastCommandTracker(tab)
         terminal.addCommandStateListener(lastCommandTracker)
-        notificationTitle.attach(tab)
+        notificationTitleProvider.attach(tab)
         tab.commandStateListeners.add(notificationHandler)
         tab.commandStateListeners.add(lastCommandTracker)
 
@@ -942,11 +924,11 @@ class TabController(
         })
 
         // Register command state listener for notifications (OSC 133 shell integration)
-        val notificationTitle = NotificationTitleProvider(display, sessionTitle)
+        val notificationTitleProvider = NotificationTitleProvider(display, sessionTitle)
         val notificationHandler = CommandNotificationHandler(
             settings = settings,
             isWindowFocused = isWindowFocused,
-            tabTitle = notificationTitle,
+            tabTitle = notificationTitleProvider,
         )
         terminal.addCommandStateListener(notificationHandler)
 
@@ -1032,7 +1014,7 @@ class TabController(
         // pane closes.
         val lastCommandTracker = ai.rever.bossterm.compose.mcp.LastCommandTracker(session)
         terminal.addCommandStateListener(lastCommandTracker)
-        notificationTitle.attach(session)
+        notificationTitleProvider.attach(session)
         session.commandStateListeners.add(notificationHandler)
         session.commandStateListeners.add(lastCommandTracker)
 
@@ -1190,11 +1172,11 @@ class TabController(
         })
 
         // Register command state listener for notifications (OSC 133 shell integration)
-        val notificationTitle = NotificationTitleProvider(display, "BossTerm")
+        val notificationTitleProvider = NotificationTitleProvider(display, "BossTerm")
         val notificationHandler = CommandNotificationHandler(
             settings = settings,
             isWindowFocused = isWindowFocused,
-            tabTitle = notificationTitle,
+            tabTitle = notificationTitleProvider,
         )
         terminal.addCommandStateListener(notificationHandler)
 
@@ -1250,7 +1232,7 @@ class TabController(
         // are recorded on the tab so dispose() can remove them.
         val lastCommandTracker = ai.rever.bossterm.compose.mcp.LastCommandTracker(tab)
         terminal.addCommandStateListener(lastCommandTracker)
-        notificationTitle.attach(tab)
+        notificationTitleProvider.attach(tab)
         tab.commandStateListeners.add(notificationHandler)
         tab.commandStateListeners.add(lastCommandTracker)
 
@@ -2188,7 +2170,7 @@ class TabController(
  * between the two, so the reader is not guaranteed to see the assignment at all. [AtomicReference]
  * gives that edge for nothing.
  */
-private class NotificationTitleProvider(
+internal class NotificationTitleProvider(
     private val display: ComposeTerminalDisplay,
     private val fallback: String,
 ) : () -> String {

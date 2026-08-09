@@ -132,7 +132,7 @@ class ComposeTerminalDisplay : TerminalDisplay {
     /**
      * The app's OSC 2 window title.
      *
-     * Empty is a RESET, not merely "nothing yet": TabController clears it at each command start
+     * Empty is a RESET, not merely "nothing yet": TabController clears it at each prompt start
      * so a title set by a program that has since exited stops naming the window. Consumers should
      * fall back to something of their own rather than showing a blank - see
      * `resolveWindowTitle` in TabbedTerminal, which falls back to the tab title.

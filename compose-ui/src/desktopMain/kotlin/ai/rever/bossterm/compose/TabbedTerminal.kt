@@ -1630,20 +1630,32 @@ fun TabbedTerminal(
             // Re-subscribe when focus moves between split panes so the window title
             // follows the active pane instead of always the root/first pane.
             //
-            // Deliberately session.title, not display.windowTitleFlow. The latter is the OSC 2
-            // window title, which most shells never emit - so the window was left showing its
-            // initial "BossTerm" while the tab bar beside it tracked the directory. session.title
-            // is the resolved one every other surface already uses: a Rename… custom title if set,
-            // otherwise the cwd label, with an app's OSC 0/1 icon title mirrored in and re-asserted
+            // Precedence, highest first: a Rename… custom title, then the app's OSC 2 window
+            // title, then the tab's own title.
+            //
+            // OSC 2 alone is not enough - most shells never emit it, which is what left the
+            // window showing its initial "BossTerm" while the tab bar beside it tracked the
+            // directory. session.title is the resolved fallback every other surface already
+            // uses: the cwd label, with an app's OSC 0/1 icon title mirrored in and re-asserted
             // on each fresh prompt. Sharing that source is what keeps the title bar and the tab
-            // agreeing.
+            // agreeing whenever nothing more specific has been said.
+            //
+            // But OSC 2 still wins when an app does set it, because that is what it is FOR
+            // (xterm's split: OSC 1 names the tab, OSC 2 names the window) and some apps
+            // deliberately give the window a longer string than the tab. The prompt-reset
+            // listener in TabController clears it on each fresh prompt, so it reverts on exit
+            // exactly like the tab title does.
             LaunchedEffect(activeTab, splitState.focusedPaneId) {
                 val focused = splitState.getFocusedSession() ?: activeTab
-                snapshotFlow { focused.title.value }.collect { newTitle ->
-                    if (newTitle.isNotEmpty()) {
-                        onWindowTitleChange(newTitle)
+                snapshotFlow { focused.customTitle.value to focused.title.value }
+                    .combine(focused.display.windowTitleFlow) { (custom, tabTitle), windowTitle ->
+                        custom ?: windowTitle.ifEmpty { tabTitle }
                     }
-                }
+                    .collect { newTitle ->
+                        if (newTitle.isNotEmpty()) {
+                            onWindowTitleChange(newTitle)
+                        }
+                    }
             }
 
             // Daemon-mirrored pane: route split/close through the daemon instead of touching the

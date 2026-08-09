@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.window
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import java.awt.Rectangle
 import java.awt.Window
 import javax.swing.JRootPane
 import javax.swing.RootPaneContainer
@@ -80,3 +81,26 @@ internal fun applyFullWindowContent(
         false
     }
 }
+
+/**
+ * Whether the window is in macOS native fullscreen, where the system hides the title bar entirely
+ * and the caller must NOT reserve [NATIVE_TITLE_BAR_HEIGHT].
+ *
+ * Measured from the window's own bounds rather than read from `WindowState.placement`. Compose
+ * Desktop syncs `placement` back from AWT's `extendedState`, and macOS native fullscreen (the green
+ * traffic light) is not an `extendedState` transition, so `placement` can stay `Floating` right
+ * through it - leaving the dead band at the top that the inset gate exists to prevent.
+ *
+ * The discriminator is the menu bar. Fullscreen covers the WHOLE display; zoom (Maximized) only
+ * fills the visible frame, leaving the menu bar and the Dock. So an exact match against the screen
+ * bounds separates the two, which is precisely the distinction that matters here: zoom keeps its
+ * title bar and must keep its inset.
+ */
+internal fun isNativeFullscreen(windowBounds: Rectangle?, screenBounds: Rectangle?): Boolean {
+    if (windowBounds == null || screenBounds == null) return false
+    return windowBounds == screenBounds
+}
+
+/** @see isNativeFullscreen */
+fun isNativeFullscreen(window: Window): Boolean =
+    isNativeFullscreen(window.bounds, window.graphicsConfiguration?.bounds)

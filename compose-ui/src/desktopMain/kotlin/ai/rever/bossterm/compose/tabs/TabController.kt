@@ -13,7 +13,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.merge
 import ai.rever.bossterm.compose.vcs.GitUtils
 import ai.rever.bossterm.compose.ComposeQuestioner
 import ai.rever.bossterm.compose.ComposeTerminalDisplay
@@ -151,23 +150,28 @@ class TabController(
         val titleResetListener = object : ai.rever.bossterm.terminal.model.CommandStateListener {
             override fun onPromptStarted() {
                 session.title.value = session.customTitle.value ?: cwdLabel(session.workingDirectory.value)
+                // Clear the OSC 2 window title too, so an app that set one does not keep
+                // naming the window after it has exited. The window title falls back to the
+                // tab's own title whenever this is empty - see TabbedTerminal.
+                session.terminal.setWindowTitle("")
             }
         }
         session.terminal.addCommandStateListener(titleResetListener)
         session.commandStateListeners.add(titleResetListener)
 
-        // Mirror an app's OSC 0/1 icon title AND its OSC 2 window title (e.g. "claude")
-        // onto the tab name so the LEFT TAB BAR reflects title changes even for
-        // BACKGROUND (unfocused) tabs. ProperTerminal also collects this, but only for
-        // the active tab's mounted Composable; this runs for the session's whole life
-        // regardless of focus.
-        // Both, not just the icon title: shells emit OSC 0 (which sets both) but plenty
-        // of TUIs set only OSC 2 - vim's t_ts, and anything doing `printf '\033]2;…'`.
-        // Since the window title is derived from session.title, an OSC-2-only app would
-        // otherwise have no effect anywhere. customTitle (Rename…) always wins, and the
-        // prompt-reset listener above reverts either one when the app exits.
+        // Mirror an app's OSC 0/1 icon title (e.g. "claude") onto the tab name so the
+        // LEFT TAB BAR reflects title changes even for BACKGROUND (unfocused) tabs.
+        // ProperTerminal also collects this, but only for the active tab's mounted
+        // Composable; this runs for the session's whole life regardless of focus.
+        // customTitle (Rename…) always wins and is re-asserted by the snapshotFlow above.
+        // Deliberately NOT the OSC 2 window title as well: xterm's split, which this
+        // codebase follows, is that OSC 1 names the TAB and OSC 2 names the WINDOW, and
+        // apps set them to different strings. oh-my-zsh is the case that bites - precmd
+        // emits a short OSC 1 ("~/src") and a long OSC 2 ("me@host: ~/src") back to back,
+        // so folding both in here would make the tab label whichever arrived last. The
+        // window title picks up OSC 2 at its own consumer in TabbedTerminal instead.
         session.coroutineScope.launch {
-            merge(session.display.iconTitleFlow, session.display.windowTitleFlow).collect { newTitle ->
+            session.display.iconTitleFlow.collect { newTitle ->
                 if (newTitle.isNotEmpty() && session.customTitle.value == null) {
                     session.title.value = newTitle
                 }

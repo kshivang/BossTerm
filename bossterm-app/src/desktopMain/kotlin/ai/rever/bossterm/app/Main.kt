@@ -36,6 +36,7 @@ import ai.rever.bossterm.compose.update.UpdateManager
 import ai.rever.bossterm.compose.window.CustomTitleBar
 import ai.rever.bossterm.compose.window.NATIVE_TITLE_BAR_HEIGHT
 import ai.rever.bossterm.compose.window.applyFullWindowContent
+import ai.rever.bossterm.compose.window.isNativeFullscreen
 import ai.rever.bossterm.compose.window.GlobalHotKeyManager
 import ai.rever.bossterm.compose.window.HotKeyConfig
 import ai.rever.bossterm.compose.window.WindowManager
@@ -748,6 +749,32 @@ fun main(args: Array<String>) {
                                                    windowState.placement == WindowPlacement.Maximized
                     val cornerRadius = if (useNativeTitleBar || isFullscreenOrMaximized) 0.dp else 20.dp
 
+                    // How much of the top the native title bar is covering right now, as ONE value
+                    // for every site that has to stay clear of it. Two copies of this predicate
+                    // drifted apart once already: the spacer handled fullscreen and the hotkey hint
+                    // did not, which put the hint inside the tab bar row.
+                    // Fullscreen is measured from the window bounds AND read from placement, since
+                    // placement is not known to track a green-button fullscreen; either signal
+                    // saying "fullscreen" means the title bar is gone and nothing should be
+                    // reserved. Maximized deliberately does NOT count: macOS zoom keeps the title
+                    // bar, so it keeps its inset.
+                    var boundsSayFullscreen by remember { mutableStateOf(false) }
+                    DisposableEffect(Unit) {
+                        val frame = this@Window.window
+                        val refresh = { boundsSayFullscreen = isNativeFullscreen(frame) }
+                        val listener = object : java.awt.event.ComponentAdapter() {
+                            override fun componentResized(e: java.awt.event.ComponentEvent) = refresh()
+                            override fun componentMoved(e: java.awt.event.ComponentEvent) = refresh()
+                        }
+                        frame.addComponentListener(listener)
+                        refresh()
+                        onDispose { frame.removeComponentListener(listener) }
+                    }
+                    val isFullscreen =
+                        boundsSayFullscreen || windowState.placement == WindowPlacement.Fullscreen
+                    val titleBarInset =
+                        if (fullWindowContent && !isFullscreen) NATIVE_TITLE_BAR_HEIGHT else 0.dp
+
                     // Load background image if set
                     val backgroundImage = remember(windowSettings.backgroundImagePath) {
                         if (windowSettings.backgroundImagePath.isNotEmpty()) {
@@ -832,13 +859,9 @@ fun main(args: Array<String>) {
                                 // The content pane now extends under the title bar, so reserve its
                                 // height - otherwise the tab bar would sit beneath the traffic
                                 // lights and be unclickable. The app's background already paints
-                                // through this strip, which is the point.
-                                // Fullscreen ONLY, never Maximized: macOS zoom keeps the title bar,
-                                // so gating on "fullscreen or maximized" would put the tab bar back
-                                // under the traffic lights whenever the window is zoomed.
-                                if (fullWindowContent && windowState.placement != WindowPlacement.Fullscreen) {
-                                    Spacer(modifier = Modifier.height(NATIVE_TITLE_BAR_HEIGHT))
-                                }
+                                // through this strip, which is the point. Zero in fullscreen; see
+                                // titleBarInset.
+                                Spacer(modifier = Modifier.height(titleBarInset))
 
                                 // Custom title bar (only when not using native title bar)
                                 if (!useNativeTitleBar) {
@@ -935,17 +958,14 @@ fun main(args: Array<String>) {
                             // Hotkey hint overlay (top-right corner, like iTerm2)
                             // Shows for native title bar; custom title bar shows it in the title bar itself
                             if (useNativeTitleBar && globalHotkeyHint != null) {
-                                // This Box is a sibling of the Column above, so it is NOT
-                                // covered by that Column's title bar spacer - it anchors to the
-                                // frame top. Without the extra inset it would render inside the
-                                // title bar strip and crowd the centred window title.
+                                // This Box is a sibling of the Column above, so it is NOT covered
+                                // by that Column's title bar spacer - it anchors to the frame top
+                                // and has to apply the same inset itself, or it renders inside the
+                                // title bar strip and crowds the centred window title.
                                 Box(
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
-                                        .padding(
-                                            top = if (fullWindowContent) NATIVE_TITLE_BAR_HEIGHT + 8.dp else 8.dp,
-                                            end = 12.dp
-                                        )
+                                        .padding(top = titleBarInset + 8.dp, end = 12.dp)
                                 ) {
                                     Text(
                                         text = globalHotkeyHint,

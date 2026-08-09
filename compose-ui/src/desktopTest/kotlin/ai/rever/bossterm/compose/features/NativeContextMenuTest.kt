@@ -353,6 +353,38 @@ class NativeContextMenuTest {
     }
 
     @Test
+    fun `an item that opens another menu does not close out its successor`() {
+        // The subtlest path in the renderer: materialize runs the action BEFORE dismissing, so
+        // the opener's teardown must be scoped to its own popup and watcher, not the renderer's
+        // current ones. Previously defended only by prose.
+        val native = FakeRenderer()
+        val c = controller(native, FakeRenderer(), nativePreferred = true)
+
+        c.showMenuAtScreenPosition(1, 1, emptyList())
+        native.last.fireItem { c.showMenuAtScreenPosition(2, 2, emptyList()) }
+
+        assertEquals(2, native.shows)
+        assertTrue(
+            c.menuVisible.value,
+            "the successor menu must not be closed out by its opener's dismissal"
+        )
+    }
+
+    @Test
+    fun `a menu shown after hideMenu still reports its own dismissal`() {
+        val native = FakeRenderer()
+        val c = controller(native, FakeRenderer(), nativePreferred = true)
+
+        c.showMenuAtScreenPosition(1, 1, emptyList())
+        c.hideMenu()
+        c.showMenuAtScreenPosition(2, 2, emptyList())
+        assertTrue(c.menuVisible.value)
+
+        native.last.onDismiss()
+        assertFalse(c.menuVisible.value, "the generation bump from hideMenu must not deafen the next menu")
+    }
+
+    @Test
     fun `menuVisible does not stick true when there is no invoker`() {
         val native = FakeRenderer(hasInvoker = false)
         val c = controller(native, FakeRenderer(), nativePreferred = true)

@@ -647,6 +647,10 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
             // Armed after show() (which returns in ~0 ms) so the grace window covers only the
             // gap before the OS takes the input grab, not the invoker resolution before it.
             myWatcher = installDismissWatcher(dismissed)
+            // No watcher means no dismissal signal will ever arrive, and a stuck-true flag is the
+            // worse direction: TabBar feeds it into transientInteraction, so a hover-revealed bar
+            // would stay pinned open indefinitely. Report dismissal now instead.
+            if (myWatcher == null) dismissed()
         }
     }
 
@@ -665,10 +669,17 @@ internal class AwtNativeContextMenuRenderer : ContextMenuRenderer {
             // Grey out an orphan before letting go of it. The generation fence already makes a
             // lingering menu inert, but "clicks and nothing happens" reads as a hang; measured
             // that disabling items on an OPEN menu is safe and stops them activating.
-            attached?.let { (_, menu) ->
-                runCatching { for (i in 0 until menu.itemCount) menu.getItem(i).isEnabled = false }
-            }
+            attached?.let { (_, menu) -> runCatching { disableAll(menu) } }
             detach()
+        }
+    }
+
+    /** getItem returns the java.awt.Menu for a submenu, so recurse to reach its children. */
+    private fun disableAll(menu: java.awt.Menu) {
+        for (i in 0 until menu.itemCount) {
+            val item = menu.getItem(i)
+            item.isEnabled = false
+            if (item is java.awt.Menu) disableAll(item)
         }
     }
 

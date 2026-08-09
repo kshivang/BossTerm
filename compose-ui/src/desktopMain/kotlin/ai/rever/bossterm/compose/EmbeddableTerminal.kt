@@ -30,6 +30,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -243,10 +245,17 @@ fun EmbeddableTerminal(
     // freeze the preference for the life of this state. When no explicit source was supplied this
     // instance IS reading the global file, so observe it directly - matching what TabbedTerminal's
     // menus do. Collected unconditionally; a composable call cannot sit behind an `if`.
-    val globalSettings by SettingsManager.instance.settings.collectAsState()
+    // Narrowed to the one field: collecting the whole TerminalSettings would resubscribe this
+    // composable to every global setting, so an unrelated toggle would recompose an embedded
+    // terminal that had explicitly opted out of the global file.
+    val globalNativeMenus by remember {
+        SettingsManager.instance.settings
+            .map { it.useNativeContextMenus }
+            .distinctUntilChanged()
+    }.collectAsState(SettingsManager.instance.settings.value.useNativeContextMenus)
     val effectiveNativeMenus = settingsOverride?.useNativeContextMenus
         ?: if (settings == null && settingsPath == null) {
-            globalSettings.useNativeContextMenus
+            globalNativeMenus
         } else {
             resolvedSettings.useNativeContextMenus
         }

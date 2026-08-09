@@ -1,9 +1,11 @@
 package ai.rever.bossterm.compose.window
 
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import java.awt.Window
-import javax.swing.JDialog
-import javax.swing.JFrame
+import javax.swing.JRootPane
+import javax.swing.RootPaneContainer
 
 /**
  * Height the native macOS title bar occupies once the content extends underneath it.
@@ -13,7 +15,7 @@ import javax.swing.JFrame
  * standard title bar height for a regular-sized window, and it is what the traffic lights are
  * laid out against.
  */
-const val NATIVE_TITLE_BAR_HEIGHT_DP: Int = 28
+val NATIVE_TITLE_BAR_HEIGHT: Dp = 28.dp
 
 /**
  * Make the native title bar part of the window rather than a strip above it.
@@ -35,17 +37,25 @@ const val NATIVE_TITLE_BAR_HEIGHT_DP: Int = 28
  * this is gated on macOS only to keep the intent obvious.
  *
  * @return true when the style was applied, so callers know whether to inset their content by
- *         [NATIVE_TITLE_BAR_HEIGHT_DP] to keep it clear of the traffic lights.
+ *         [NATIVE_TITLE_BAR_HEIGHT] to keep it clear of the traffic lights. False off macOS, or
+ *         for a window with no root pane, in which case the caller must not inset - leaving
+ *         today's behaviour rather than a stray gap.
  */
-fun applyFullWindowContent(window: Window): Boolean {
-    if (!ShellCustomizationUtils.isMacOS()) return false
+fun applyFullWindowContent(window: Window): Boolean =
+    // RootPaneContainer is the interface the JDK itself uses for this, and it covers JWindow too.
+    applyFullWindowContent((window as? RootPaneContainer)?.rootPane)
 
-    val rootPane =
-        when (window) {
-            is JFrame -> window.rootPane
-            is JDialog -> window.rootPane
-            else -> null
-        } ?: return false
+/**
+ * The decision and the three property writes, split out from finding the root pane so a headless
+ * test can reach them: no [java.awt.Window] can be constructed headless (its constructor throws
+ * `HeadlessException`) but a bare [JRootPane] can, so this is the largest part of the contract CI
+ * can actually execute.
+ *
+ * @param rootPane null when the window has no root pane to style, which is a decline, not a crash.
+ */
+internal fun applyFullWindowContent(rootPane: JRootPane?): Boolean {
+    if (!ShellCustomizationUtils.isMacOS()) return false
+    if (rootPane == null) return false
 
     return runCatching {
         rootPane.putClientProperty("apple.awt.fullWindowContent", true)
@@ -55,5 +65,11 @@ fun applyFullWindowContent(window: Window): Boolean {
         // - hiding it would just lose the window name for no reason.
         rootPane.putClientProperty("apple.awt.windowTitleVisible", true)
         true
-    }.getOrDefault(false)
+    }.getOrElse {
+        // putClientProperty on a JRootPane essentially cannot throw, so reaching here means
+        // something is badly wrong - exactly when a silent un-inset window would be the worst
+        // outcome to debug.
+        println("NativeTitleBarStyle: could not apply full window content: $it")
+        false
+    }
 }

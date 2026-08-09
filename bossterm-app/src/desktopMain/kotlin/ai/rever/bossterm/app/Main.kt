@@ -34,7 +34,7 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.update.UpdateBanner
 import ai.rever.bossterm.compose.update.UpdateManager
 import ai.rever.bossterm.compose.window.CustomTitleBar
-import ai.rever.bossterm.compose.window.NATIVE_TITLE_BAR_HEIGHT_DP
+import ai.rever.bossterm.compose.window.NATIVE_TITLE_BAR_HEIGHT
 import ai.rever.bossterm.compose.window.applyFullWindowContent
 import ai.rever.bossterm.compose.window.GlobalHotKeyManager
 import ai.rever.bossterm.compose.window.HotKeyConfig
@@ -293,8 +293,13 @@ fun main(args: Array<String>) {
                     // content. Only meaningful on the native path - the custom title bar already
                     // owns that area. `this@Window.window` because the loop variable above shadows
                     // FrameWindowScope.window.
+                    // remember rather than SideEffect on purpose: this has to run before the
+                    // content below measures, so the inset is right on the very first frame
+                    // instead of the window jumping once. The write is an idempotent client
+                    // property on a stable window, so a discarded composition costs nothing.
+                    // Keyed on Unit because useNativeTitleBar is itself captured once at startup.
                     val fullWindowContent =
-                        remember(useNativeTitleBar) {
+                        remember {
                             useNativeTitleBar && applyFullWindowContent(this@Window.window)
                         }
 
@@ -828,8 +833,11 @@ fun main(args: Array<String>) {
                                 // height - otherwise the tab bar would sit beneath the traffic
                                 // lights and be unclickable. The app's background already paints
                                 // through this strip, which is the point.
-                                if (fullWindowContent) {
-                                    Spacer(modifier = Modifier.height(NATIVE_TITLE_BAR_HEIGHT_DP.dp))
+                                // Fullscreen ONLY, never Maximized: macOS zoom keeps the title bar,
+                                // so gating on "fullscreen or maximized" would put the tab bar back
+                                // under the traffic lights whenever the window is zoomed.
+                                if (fullWindowContent && windowState.placement != WindowPlacement.Fullscreen) {
+                                    Spacer(modifier = Modifier.height(NATIVE_TITLE_BAR_HEIGHT))
                                 }
 
                                 // Custom title bar (only when not using native title bar)

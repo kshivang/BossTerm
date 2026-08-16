@@ -122,24 +122,25 @@ class VoiceCrossLanguageContractTest {
     }
 
     /**
-     * The viewer's Paste must convert newlines to CR before sending, like every other paste path.
+     * The viewer's Paste must go through `term.paste`, not straight to `sendInput`.
      *
-     * It hand-rolls the paste — `clipboard.readText()` straight into `sendInput` — so it gets
-     * neither xterm's own paste normalization nor `TerminalTab.pasteText`'s. The Input lane it lands
-     * on is verbatim by design (it carries xterm's `onData` keystrokes), so nothing downstream will
-     * fix it: a remote viewer pasting `git status\n` at a Windows host lands at a `>>` prompt.
+     * `term.paste` is the only call that does both halves of what `TerminalTab.pasteText` does
+     * in-app: newlines to CR, *and* the ESC[200~ / ESC[201~ wrapper when the pane has bracketed
+     * paste on. Sending the text directly skips both, and the Input lane it lands on is verbatim by
+     * design (it carries `onData` keystrokes), so nothing downstream can make up the difference —
+     * a pasted `git status\n` reaches a Windows host as Ctrl+J, and a multi-line snippet runs line
+     * by line in an editor that asked not to have that happen.
      *
      * Asserted here because `SubmitCharacterCoverageTest` structurally cannot reach it — this is JS,
      * on the far side of a socket — and this class already reads `viewer.js` for exactly that reason.
      */
     @Test
-    fun `the viewer normalizes newlines when pasting`() {
-        val paste = viewerJs.substringAfter("""ctxItem("Paste"""").substringBefore("ctxItem(")
+    fun `the viewer pastes through xterm rather than raw input`() {
+        val paste = viewerJs.substringAfter("""ctxItem("Paste"""").substringBefore("""ctxItem("Select all"""")
         assertTrue(paste.contains("readText"), "expected the Paste handler, got: $paste")
         assertTrue(
-            paste.contains("""replace(/\r\n?|\n/g, "\r")"""),
-            "Paste must convert newlines to CR before sendInput - the Input lane is verbatim " +
-                "and will not do it downstream:\n$paste",
+            paste.contains("term.paste("),
+            "Paste must use term.paste, which applies CR conversion AND bracketed paste:\n$paste",
         )
     }
 

@@ -60,10 +60,13 @@ class SubmitCharacterCoverageTest {
      */
     private fun moduleNames(): List<String> {
         val settings = File(repoRoot, "settings.gradle.kts").readText()
-        // Every include(...) block, not just the first — a second one used to be invisible.
+        // Every include(...) block, not just the first — a second one used to be invisible. And
+        // `:` inside the class, so a nested `include(":foo:bar")` maps to its directory instead of
+        // being dropped: a dropped module never enters `modules`, so the every-module-contributes
+        // assertion below cannot catch it either — the same silent rot this function exists to stop.
         return Regex("""include\s*\(([^)]*)\)""").findAll(settings)
-            .flatMap { block -> Regex(""""\s*:([\w-]+)\s*"""").findAll(block.groupValues[1]) }
-            .map { it.groupValues[1] }
+            .flatMap { block -> Regex(""""\s*:([\w:-]+)\s*"""").findAll(block.groupValues[1]) }
+            .map { it.groupValues[1].replace(':', '/') }
             .distinct()
             .toList()
     }
@@ -99,6 +102,21 @@ class SubmitCharacterCoverageTest {
         while (i < limit) {
             val c = text[i]
             val tripleQuote = c == '"' && text.startsWith("\"\"\"", i)
+            // Comments first, outside strings: an apostrophe ("// don't submit"), a stray quote, or
+            // an unbalanced paren ("// see write(") in a comment inside the call span would
+            // otherwise desync the walk and fail the build on perfectly correct code — landing on
+            // whoever next touched the file rather than whoever wrote the comment.
+            if (!inString && !inRawString && !escaped) {
+                if (text.startsWith("//", i)) {
+                    i = text.indexOf('\n', i).takeIf { it >= 0 } ?: text.length
+                    continue
+                }
+                if (text.startsWith("/*", i)) {
+                    val end = text.indexOf("*/", i + 2)
+                    i = if (end >= 0) end + 2 else text.length
+                    continue
+                }
+            }
             when {
                 // A raw string ends only at the next """, and has no escapes inside it. Handled
                 // first because otherwise its three quotes toggle `inString` an odd number of times
@@ -148,7 +166,8 @@ class SubmitCharacterCoverageTest {
                 if (!lfInsideStringLiteral.containsMatchIn(argument)) continue
                 // The opt-out may sit on any line the call spans.
                 val start = lineOf(match.range.first)
-                val end = lineOf(openParen + argument.length)
+                // +2 spans the closing paren: a marker on a line holding only `)` still counts.
+                val end = lineOf(openParen + argument.length + 2)
                 val spanned = text.lines().subList(start - 1, minOf(end, text.lines().size))
                 if (spanned.any { it.contains(VERBATIM_MARKER) }) continue
                 offenders += "${file.name}:$start  ${match.value}${argument.trim().take(90)})"
@@ -365,6 +384,12 @@ class SubmitCharacterCoverageTest {
         )
         // A `)` inside the command must not end the argument scan early.
         assertTrue(flags("""terminalWriter("echo \$(date)\n")"""))
+        // Comments inside the call must not desync the walk. An apostrophe, a stray quote and an
+        // unbalanced paren each used to run the scanner past the call and fail the build on code
+        // that was correct — the first two by flipping string state, the third by depth.
+        assertTrue(flags("terminalWriter( // don't submit twice\n    \"ls\\n\"\n)"))
+        assertTrue(flags("terminalWriter( /* see write( */ \"ls\\n\")"))
+        assertTrue(!flags("terminalWriter( // don't\n    submitLine(\"ls\")\n)"))
         // Shapes that used to unbalance the scanner and make it run to EOF, turning a correct
         // change to unrelated code into a build failure. A raw string, and a char literal holding
         // a quote — both must parse, and neither is an LF submit.

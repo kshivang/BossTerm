@@ -1353,11 +1353,16 @@
     var canRead = controlGranted && navigator.clipboard && navigator.clipboard.readText;
     ctxEl.appendChild(ctxItem("Paste", canRead, function () {
       navigator.clipboard.readText().then(function (txt) {
-        // CRLF/LF -> CR, the same normalization TerminalTab.pasteText applies in-app and xterm
-        // applies on its own paste path. This menu item hand-rolls the paste and so gets neither:
-        // the Input lane is verbatim by design (it carries xterm's onData keystrokes), so a pasted
-        // "git status\n" would reach a Windows host as Ctrl+J and sit at a >> continuation prompt.
-        if (txt) sendInput(paneId, txt.replace(/\r\n?|\n/g, "\r"));
+        // term.paste, not sendInput: it does BOTH halves of what TerminalTab.pasteText does in-app
+        // — CRLF/LF to CR, and the ESC[200~ / ESC[201~ wrapper when the pane has DECSET 2004 on,
+        // keyed off the ?2004h xterm saw in the mirrored output. It then routes through term.onData
+        // below, which is the same Input lane, so nothing else changes.
+        //
+        // Hand-rolling the newline conversion here got the first half and silently dropped the
+        // second, which is the half that stops a multi-line snippet running line by line in an
+        // editor or a REPL. The Input lane is verbatim by design (it carries onData keystrokes), so
+        // this is the only layer that can apply either.
+        if (txt) { try { term.paste(txt); } catch (e) { sendInput(paneId, txt.replace(/\r\n?|\n/g, "\r")); } }
       }).catch(function () {});
     }));
     ctxEl.appendChild(ctxItem("Select all", true, function () { try { term.selectAll(); } catch (e) {} }));

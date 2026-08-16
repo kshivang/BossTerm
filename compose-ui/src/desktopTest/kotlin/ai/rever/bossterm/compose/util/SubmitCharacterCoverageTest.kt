@@ -23,29 +23,46 @@ import kotlin.test.assertTrue
 class SubmitCharacterCoverageTest {
 
     /**
-     * Every module that can type at a prompt, not just this one.
+     * Every Kotlin source set of every included module — `desktopMain`, `jvmMain`, `commonMain`,
+     * whatever a module happens to use.
      *
-     * The examples are in scope deliberately — `tabbed-example` called `writeToFocusedPane("…\n")`,
+     * The examples are in scope deliberately: `tabbed-example` called `writeToFocusedPane("…\n")`,
      * and because it sat outside the original scan the public API behind it stayed broken through a
      * whole review round. Sample code is the copy-paste source for embedders, so it has to hold the
      * same line as the library.
+     *
+     * Every production source set is taken rather than naming `desktopMain`, because the previous
+     * version filtered non-existent directories away silently — `bossterm-core-mpp` (which uses
+     * `jvmMain`) and `compose-ui`'s `commonMain` were dropped without a word while the KDoc claimed
+     * every included module was covered. Nothing to catch in them today, but "move a source set and
+     * the guard quietly stops guarding" is the precise rot this suite exists to prevent.
+     *
+     * Test source sets are excluded: this very file holds `writeUserInput("clear\n")` as a fixture
+     * for the scan's own self-tests, and scanning them makes the suite fail on its own examples.
      */
-    private val scanRoots = moduleNames()
-        .map { File(repoRoot, "$it/src/desktopMain/kotlin") }
-        .filter { it.isDirectory }
+    private val scanRoots: List<File> = moduleNames().flatMap { module ->
+        File(repoRoot, "$module/src").listFiles().orEmpty()
+            .filter { it.isDirectory && it.name.endsWith("Main") }
+            .map { File(it, "kotlin") }
+            .filter { it.isDirectory }
+    }
 
     /**
      * Every module `settings.gradle.kts` includes, so the guard extends itself.
      *
      * Was a hardcoded four-module list, which meant a new module was silently unguarded and a
-     * renamed one failed with a message about example modules. Reading the include block instead
+     * renamed one failed with a message about example modules. Reading the include blocks instead
      * matters more here than it would elsewhere: the whole point of this suite is catching drift
      * that nobody is looking for, and "nobody added the new module to the scan" is exactly that.
      */
     private fun moduleNames(): List<String> {
         val settings = File(repoRoot, "settings.gradle.kts").readText()
-        val includeBlock = settings.substringAfter("include(").substringBefore(")")
-        return Regex(""""\s*:([\w-]+)\s*"""").findAll(includeBlock).map { it.groupValues[1] }.toList()
+        // Every include(...) block, not just the first — a second one used to be invisible.
+        return Regex("""include\s*\(([^)]*)\)""").findAll(settings)
+            .flatMap { block -> Regex(""""\s*:([\w-]+)\s*"""").findAll(block.groupValues[1]) }
+            .map { it.groupValues[1] }
+            .distinct()
+            .toList()
     }
 
     /** Finds where a write call starts; the argument is then read by balancing parentheses. */
@@ -68,6 +85,7 @@ class SubmitCharacterCoverageTest {
         var depth = 0
         var i = openParen
         var inString = false
+        var inRawString = false
         var escaped = false
         // A write call's argument is one expression. If the parens haven't balanced by here, the
         // scanner has lost track — a raw string, a char literal holding a quote, a quote inside a
@@ -77,11 +95,21 @@ class SubmitCharacterCoverageTest {
         val limit = minOf(text.length, openParen + MAX_CALL_CHARS)
         while (i < limit) {
             val c = text[i]
+            val tripleQuote = c == '"' && text.startsWith("\"\"\"", i)
             when {
+                // A raw string ends only at the next """, and has no escapes inside it. Handled
+                // first because otherwise its three quotes toggle `inString` an odd number of times
+                // and the scan runs on into the rest of the file.
+                inRawString -> if (tripleQuote) { inRawString = false; i += 2 }
                 escaped -> escaped = false
                 inString && c == '\\' -> escaped = true
+                tripleQuote && !inString -> { inRawString = true; i += 2 }
                 c == '"' -> inString = !inString
                 inString -> {}
+                c == '\'' -> {
+                    // Char literal: skip it whole, so '"' doesn't flip the string state.
+                    i += if (text.startsWith("'\\", i)) 3 else 2
+                }
                 c == '(' -> depth++
                 c == ')' -> {
                     depth--
@@ -158,14 +186,23 @@ class SubmitCharacterCoverageTest {
         for (regressed in listOf("TabbedTerminal.kt", "ProperTerminal.kt", "TabbedTerminalState.kt")) {
             assertTrue(files.any { it.name == regressed }, "$regressed must be in scope")
         }
-        // Derived from settings.gradle.kts, so this also fails if the include block stops parsing.
-        assertTrue(moduleNames().size >= 5, "expected every included module, got ${moduleNames()}")
-        for (module in listOf("tabbed-example", "embedded-example")) {
+        // Derived from settings.gradle.kts, so this also fails if the include blocks stop parsing.
+        val modules = moduleNames()
+        assertTrue(modules.size >= 5, "expected every included module, got $modules")
+        // Asserted AFTER the directory filter, which is where the previous version lost modules:
+        // it checked the names and then silently dropped any whose layout wasn't desktopMain.
+        val paths = scanRoots.map { it.path.replace('\\', '/') }
+        for (module in modules) {
             assertTrue(
-                scanRoots.any { it.path.replace('\\', '/').contains("/$module/") },
-                "$module must be scanned - sample code is what embedders copy, and it is where " +
-                    "writeToFocusedPane's LF call slipped through a whole review round",
+                paths.any { it.contains("/$module/src/") },
+                "module '$module' is included but contributes no scanned source root - it has no " +
+                    "src/*/kotlin, or its layout changed. Found roots: $paths",
             )
+        }
+        // Sample code is what embedders copy, and is where writeToFocusedPane's LF call slipped
+        // through a whole review round.
+        for (module in listOf("tabbed-example", "embedded-example")) {
+            assertTrue(paths.any { it.contains("/$module/src/") }, "$module must be scanned")
         }
     }
 
@@ -201,6 +238,36 @@ class SubmitCharacterCoverageTest {
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * A targeted write API must not silently retarget when its tab can't be resolved.
+     *
+     * [ai.rever.bossterm.compose.TabbedTerminalState.writeVerbatim] shipped for one review round
+     * falling back to `activeTab`. `splitStates` is populated lazily, so a tab that had never been
+     * activated resolved to null and the text went to whatever the user was looking at — returning
+     * true. Harmless for a command; on a verbatim keystroke API it misdelivers a `y\r` or a
+     * password. `findSession` is the correct resolver: it validates the tab and falls back to that
+     * tab's own session.
+     *
+     * Structural because constructing a real `TabbedTerminalState` means Compose state plus live
+     * PTY sessions; this at least fails if the fallback returns.
+     */
+    @Test
+    fun `targeted writes resolve through findSession, never the active tab`() {
+        val file = sources().firstOrNull { it.name == "TabbedTerminalState.kt" }
+            ?: error("TabbedTerminalState.kt not found in the scan roots")
+        val lines = file.readLines()
+        for (signature in listOf("fun writeVerbatim(", "fun writeToFocusedPane(")) {
+            val index = lines.indexOfFirst { it.contains(signature) }
+            assertTrue(index >= 0, "no `$signature` in TabbedTerminalState.kt")
+            val body = lines.subList(index, minOf(index + 6, lines.size)).joinToString("\n")
+            assertTrue(
+                !body.contains("?: activeTab"),
+                "`$signature` must not fall back to the active tab - a caller that named a tab " +
+                    "gets its keystrokes delivered somewhere else entirely:\n$body",
+            )
         }
     }
 
@@ -244,6 +311,14 @@ class SubmitCharacterCoverageTest {
         )
         // A `)` inside the command must not end the argument scan early.
         assertTrue(flags("""terminalWriter("echo \$(date)\n")"""))
+        // Shapes that used to unbalance the scanner and make it run to EOF, turning a correct
+        // change to unrelated code into a build failure. A raw string, and a char literal holding
+        // a quote — both must parse, and neither is an LF submit.
+        assertTrue(!flags("terminalWriter(\"\"\"multi\nline\"\"\")"))
+        assertTrue(!flags("""terminalWriter(cmd.trim('"'))"""))
+        assertTrue(!flags("""terminalWriter(cmd.trim('\''))"""))
+        // …and a raw string that DOES carry an escaped LF is still caught.
+        assertTrue(flags("terminalWriter(\"\"\"x\"\"\" + \"y\\n\")"))
         // The normalizing public API is NOT scanned: "cmd\n" is its documented spelling and is
         // correct there. Its own guarantee is covered by `every public write entry point…` instead.
         assertTrue(!flags("""state.writeToFocusedPane("echo hi\n")"""))

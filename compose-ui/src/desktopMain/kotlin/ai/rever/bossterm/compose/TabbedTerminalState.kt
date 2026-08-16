@@ -1010,12 +1010,18 @@ class TabbedTerminalState {
      *
      * Use [write] unless you specifically mean keystrokes: `\r` submits, `\n` does not.
      *
+     * Routes through [findSession], which validates the tab and falls back to that tab's own
+     * session when it has no splits. An earlier version fell back to [activeTab], which meant an
+     * unsplit background tab — `splitStates` is populated lazily, so any tab never activated — or a
+     * stale id would type into whatever the user was looking at, and still return true. On an API
+     * whose whole purpose is raw keystrokes, that misdelivers a `y\r` or a password.
+     *
      * @param text Text to send to the shell, unmodified
      * @param tabId Target tab ID. If null, uses the active tab.
-     * @return true if the text was sent, false if tab/pane not found
+     * @return true if the text was sent, false if the tab was not found
      */
     fun writeVerbatim(text: String, tabId: String? = null): Boolean {
-        val session = getFocusedSplitSession(tabId) ?: activeTab ?: return false
+        val session = findSession(resolveTabId(tabId) ?: return false) ?: return false
         session.writeUserInput(text)
         return true
     }

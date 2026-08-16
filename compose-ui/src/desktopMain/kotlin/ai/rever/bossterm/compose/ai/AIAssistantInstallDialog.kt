@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.ai
 
+import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.compose.EmbeddableTerminal
 import ai.rever.bossterm.compose.settings.SettingsTheme
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
@@ -309,17 +310,17 @@ fun AIInstallDialogHost(
             onInstallComplete = { success ->
                 // Write result to parent terminal using echo for proper ANSI handling
                 if (success) {
-                    p.terminalWriter("echo -e '\\033[32m✓ ${p.assistant.displayName} installed successfully!\\033[0m'\n")
+                    p.terminalWriter(submitLine("echo -e '\\033[32m✓ ${p.assistant.displayName} installed successfully!\\033[0m'"))
                     // If there's a command to run after install, source shell and execute it
                     p.commandToRunAfter?.let { cmd ->
                         // Source shell profile to pick up PATH changes, then run original command
                         // Escape single quotes in the command for safe embedding
                         val escapedCmd = cmd.replace("'", "'\\''")
                         // Use a fresh login shell to get updated PATH, then run the command
-                        p.terminalWriter("\$SHELL -l -c '$escapedCmd'\n")
+                        p.terminalWriter(submitLine("\$SHELL -l -c '$escapedCmd'"))
                     }
                 } else {
-                    p.terminalWriter("echo -e '\\033[31m✗ ${p.assistant.displayName} installation failed.\\033[0m'\n")
+                    p.terminalWriter(submitLine("echo -e '\\033[31m✗ ${p.assistant.displayName} installation failed.\\033[0m'"))
                 }
             }
         )

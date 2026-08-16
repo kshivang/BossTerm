@@ -76,6 +76,7 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.util.loadTerminalFont
 import ai.rever.bossterm.compose.util.normalizeSubmitNewlines
+import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
 import ai.rever.bossterm.compose.features.NativeContextMenuOverride
@@ -636,7 +637,7 @@ fun TabbedTerminal(
             onListLocalModels = { runOllama("list") }
 
             // Git commands (path-aware using GitUtils)
-            onGitInit = { writeToTerminal("git ${GitUtils.Commands.INIT}\n") }
+            onGitInit = { writeToTerminal(submitLine("git ${GitUtils.Commands.INIT}")) }
             onGitClone = { writeToTerminal("git ${GitUtils.Commands.CLONE}") }
             onGitStatus = { gitCmd(GitUtils.Commands.STATUS) }
             onGitDiff = { gitCmd(GitUtils.Commands.DIFF) }
@@ -663,8 +664,8 @@ fun TabbedTerminal(
             onGitStashPop = { gitCmd(GitUtils.Commands.STASH_POP) }
 
             // GitHub CLI commands (path-aware using GitUtils)
-            onGhAuthStatus = { writeToTerminal("gh ${GitUtils.GhCommands.AUTH_STATUS}\n") }
-            onGhAuthLogin = { writeToTerminal("gh ${GitUtils.GhCommands.AUTH_LOGIN}\n") }
+            onGhAuthStatus = { writeToTerminal(submitLine("gh ${GitUtils.GhCommands.AUTH_STATUS}")) }
+            onGhAuthLogin = { writeToTerminal(submitLine("gh ${GitUtils.GhCommands.AUTH_LOGIN}")) }
             onGhSetDefault = { ghCmd(GitUtils.GhCommands.SET_DEFAULT) }
             onGhRepoClone = { writeToTerminal("gh ${GitUtils.GhCommands.REPO_CLONE}") }
             onGhPrList = { ghCmd(GitUtils.GhCommands.PR_LIST) }
@@ -676,32 +677,32 @@ fun TabbedTerminal(
             onGhRepoView = { ghCmd(GitUtils.GhCommands.REPO_VIEW_WEB) }
 
             // Shell config
-            onEditZshrc = { writeToTerminal("\${EDITOR:-nano} ~/.zshrc\n") }
-            onEditBashrc = { writeToTerminal("\${EDITOR:-nano} ~/.bashrc\n") }
-            onEditFishConfig = { writeToTerminal("\${EDITOR:-nano} ~/.config/fish/config.fish\n") }
+            onEditZshrc = { writeToTerminal(submitLine("\${EDITOR:-nano} ~/.zshrc")) }
+            onEditBashrc = { writeToTerminal(submitLine("\${EDITOR:-nano} ~/.bashrc")) }
+            onEditFishConfig = { writeToTerminal(submitLine("\${EDITOR:-nano} ~/.config/fish/config.fish")) }
             onReloadShellConfig = {
                 val sourceCmd = when (currentShell) {
                     "zsh" -> "source ~/.zshrc"
                     "fish" -> "source ~/.config/fish/config.fish"
                     else -> "source ~/.bashrc"
                 }
-                writeToTerminal("$sourceCmd\n")
+                writeToTerminal(submitLine("$sourceCmd"))
             }
 
             // Starship
-            onStarshipEditConfig = { writeToTerminal("\${EDITOR:-nano} ~/.config/starship.toml\n") }
-            onStarshipPresets = { writeToTerminal("starship preset --list\n") }
+            onStarshipEditConfig = { writeToTerminal(submitLine("\${EDITOR:-nano} ~/.config/starship.toml")) }
+            onStarshipPresets = { writeToTerminal(submitLine("starship preset --list")) }
 
             // Oh My Zsh
-            onOhMyZshUpdate = { writeToTerminal("omz update\n") }
-            onOhMyZshThemes = { writeToTerminal("ls ~/.oh-my-zsh/themes/\n") }
-            onOhMyZshPlugins = { writeToTerminal("ls ~/.oh-my-zsh/plugins/\n") }
+            onOhMyZshUpdate = { writeToTerminal(submitLine("omz update")) }
+            onOhMyZshThemes = { writeToTerminal(submitLine("ls ~/.oh-my-zsh/themes/")) }
+            onOhMyZshPlugins = { writeToTerminal(submitLine("ls ~/.oh-my-zsh/plugins/")) }
 
             // Prezto
-            onPreztoUpdate = { writeToTerminal("cd ~/.zprezto && git pull && git submodule update --init --recursive && cd -\n") }
-            onPreztoEditConfig = { writeToTerminal("\${EDITOR:-nano} ~/.zpreztorc\n") }
-            onPreztoListThemes = { writeToTerminal("ls ~/.zprezto/modules/prompt/functions/ | grep prompt_ | sed 's/prompt_//'\n") }
-            onPreztoShowModules = { writeToTerminal("grep '^\\s*zmodule' ~/.zpreztorc 2>/dev/null || grep \"'\" ~/.zpreztorc | head -20\n") }
+            onPreztoUpdate = { writeToTerminal(submitLine("cd ~/.zprezto && git pull && git submodule update --init --recursive && cd -")) }
+            onPreztoEditConfig = { writeToTerminal(submitLine("\${EDITOR:-nano} ~/.zpreztorc")) }
+            onPreztoListThemes = { writeToTerminal(submitLine("ls ~/.zprezto/modules/prompt/functions/ | grep prompt_ | sed 's/prompt_//'")) }
+            onPreztoShowModules = { writeToTerminal(submitLine("grep '^\\s*zmodule' ~/.zpreztorc 2>/dev/null || grep \"'\" ~/.zpreztorc | head -20")) }
         }
     }
 
@@ -845,7 +846,7 @@ fun TabbedTerminal(
                 onInstallConfirm = { assistant, originalCommand, clearLineCallback ->
                     // Show installation wizard directly
                     val terminalWriter: (String) -> Unit = { text ->
-                        tab.writeUserInput(text)
+                        tab.writeUserInput(normalizeSubmitNewlines(text))
                     }
                     val resolved = aiState.launcher.resolveInstallCommands(assistant)
                     toolWizardParams = ToolInstallWizardParams(
@@ -1950,7 +1951,7 @@ fun TabbedTerminal(
                     // Add AI assistant menu items
                     if (settings.aiAssistantsEnabled) {
                         val terminalWriter: (String) -> Unit = { text ->
-                            splitState.getFocusedSession()?.writeUserInput(text)
+                            splitState.getFocusedSession()?.writeUserInput(normalizeSubmitNewlines(text))
                         }
                         val aiItems = aiState.menuProvider.getMenuItems(
                             terminalWriter = terminalWriter,
@@ -2030,9 +2031,11 @@ fun TabbedTerminal(
                         }
                     }
 
-                    // Add Version Control menu items
+                    // Add Version Control menu items. Menu providers spell their commands with a
+                    // readable trailing "\n" (VersionControlMenuProvider alone has ~30); the writer
+                    // is what turns that into an Enter, so it must normalize — see submitLine.
                     val terminalWriter: (String) -> Unit = { text ->
-                        splitState.getFocusedSession()?.writeUserInput(text)
+                        splitState.getFocusedSession()?.writeUserInput(normalizeSubmitNewlines(text))
                     }
                     val vcsItems = vcsMenuProvider.getMenuItems(
                         terminalWriter = terminalWriter,

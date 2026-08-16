@@ -252,10 +252,13 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 
 ```kotlin
 state.sendCtrlC()                    // Interrupt
-state.write("command\n")             // Send text
+state.write("command\n")             // Send text (newlines normalized to CR — submits everywhere)
 state.sendCtrlC(tabIndex = 0)        // Target tab by index
 state.write("cmd\n", tabId = "id")   // Target tab by ID
 ```
+
+`write()` is the embedder-facing convenience and normalizes newlines; `writeUserInput()` underneath
+it is verbatim, for callers that need to send a literal LF. See the CR note above.
 
 ## Development Guidelines
 

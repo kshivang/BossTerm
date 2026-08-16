@@ -10,6 +10,7 @@ import ai.rever.bossterm.compose.ai.AIInstallDialogParams
 import ai.rever.bossterm.compose.search.RabinKarpSearch
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.compose.util.normalizeSubmitNewlines
 import ai.rever.bossterm.compose.splits.NavigationDirection
 import ai.rever.bossterm.compose.splits.SplitOrientation
 import ai.rever.bossterm.compose.splits.SplitViewState
@@ -437,7 +438,8 @@ class TabbedTerminalState {
 
     /**
      * Send text input to the active terminal tab.
-     * Use "\n" for enter key.
+     * Use "\n" (or "\r") for the enter key — newlines are normalized to the CR a terminal actually
+     * sends, so the same call submits on Windows/ConPTY as well as Unix. See `submitLine`.
      *
      * This method is asynchronous - it queues the text and returns immediately.
      *
@@ -446,7 +448,7 @@ class TabbedTerminalState {
      * @param text Text to send to the shell
      */
     fun write(text: String) {
-        activeTab?.writeUserInput(text)
+        activeTab?.writeUserInput(normalizeSubmitNewlines(text))
     }
 
     /**
@@ -460,7 +462,7 @@ class TabbedTerminalState {
      * @param tabIndex Index of the tab to send input to (0-based)
      */
     fun write(text: String, tabIndex: Int) {
-        tabs.getOrNull(tabIndex)?.writeUserInput(text)
+        tabs.getOrNull(tabIndex)?.writeUserInput(normalizeSubmitNewlines(text))
     }
 
     /**
@@ -475,7 +477,7 @@ class TabbedTerminalState {
      */
     fun write(text: String, tabId: String): Boolean {
         val tab = getTabById(tabId) ?: return false
-        tab.writeUserInput(text)
+        tab.writeUserInput(normalizeSubmitNewlines(text))
         return true
     }
 

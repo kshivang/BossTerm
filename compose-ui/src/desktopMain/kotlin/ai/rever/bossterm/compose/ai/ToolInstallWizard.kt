@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.ai
 
+import ai.rever.bossterm.compose.util.submitLine
 import androidx.compose.runtime.*
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -130,19 +131,19 @@ fun ToolInstallWizard(
                 // Build a single command to avoid race conditions between separate terminalWriter calls
                 if (isBrewTool && commandToRunAfter != null) {
                     // For brew: source shellenv AND run the command in ONE line
-                    terminalWriter("echo '✓ ${tool.displayName} installed successfully!' && eval \"\$(/opt/homebrew/bin/brew shellenv 2>/dev/null)\" && eval \"\$(/usr/local/bin/brew shellenv 2>/dev/null)\"; $commandToRunAfter\n")
+                    terminalWriter(submitLine("echo '✓ ${tool.displayName} installed successfully!' && eval \"\$(/opt/homebrew/bin/brew shellenv 2>/dev/null)\" && eval \"\$(/usr/local/bin/brew shellenv 2>/dev/null)\"; $commandToRunAfter"))
                 } else if (isBrewTool) {
                     // Brew install without command to run after
-                    terminalWriter("echo '✓ ${tool.displayName} installed successfully!' && eval \"\$(/opt/homebrew/bin/brew shellenv 2>/dev/null)\" && eval \"\$(/usr/local/bin/brew shellenv 2>/dev/null)\"\n")
+                    terminalWriter(submitLine("echo '✓ ${tool.displayName} installed successfully!' && eval \"\$(/opt/homebrew/bin/brew shellenv 2>/dev/null)\" && eval \"\$(/usr/local/bin/brew shellenv 2>/dev/null)\""))
                 } else if (commandToRunAfter != null) {
                     // Non-brew tool with command to run after
-                    terminalWriter("echo '✓ ${tool.displayName} installed successfully!'\n")
+                    terminalWriter(submitLine("echo '✓ ${tool.displayName} installed successfully!'"))
                     val escapedCmd = commandToRunAfter.replace("'", "'\\''")
                     // Source nvm explicitly since $SHELL -l -c doesn't source .zshrc/.bashrc
-                    terminalWriter("export NVM_DIR=\"\$HOME/.nvm\" && [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\" && $escapedCmd\n")
+                    terminalWriter(submitLine("export NVM_DIR=\"\$HOME/.nvm\" && [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\" && $escapedCmd"))
                 } else {
                     // Just echo success
-                    terminalWriter("echo '✓ ${tool.displayName} installed successfully!'\n")
+                    terminalWriter(submitLine("echo '✓ ${tool.displayName} installed successfully!'"))
                 }
             }
             onComplete(success)

@@ -55,6 +55,7 @@ import ai.rever.bossterm.compose.terminal.PerformanceMode
 import ai.rever.bossterm.compose.terminal.drainTerminalEmulator
 import ai.rever.bossterm.compose.ui.ProperTerminal
 import ai.rever.bossterm.compose.util.loadTerminalFont
+import ai.rever.bossterm.compose.util.normalizeSubmitNewlines
 import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.features.shouldUseNativeMenus
@@ -355,7 +356,7 @@ fun EmbeddableTerminal(
             onInstallConfirm = { assistant, originalCommand, clearLineCallback ->
                 // Show installation wizard directly
                 val terminalWriter: (String) -> Unit = { text ->
-                    session.writeUserInput(text)
+                    session.writeUserInput(normalizeSubmitNewlines(text))
                 }
                 val resolved = aiState.launcher.resolveInstallCommands(assistant)
                 toolWizardParams = ToolInstallWizardParams(
@@ -404,7 +405,7 @@ fun EmbeddableTerminal(
 
                 // Add AI assistant menu items
                 if (resolvedSettings.aiAssistantsEnabled) {
-                    val terminalWriter: (String) -> Unit = { text -> session.writeUserInput(text) }
+                    val terminalWriter: (String) -> Unit = { text -> session.writeUserInput(normalizeSubmitNewlines(text)) }
                     val aiItems = aiState.menuProvider.getMenuItems(
                         terminalWriter = terminalWriter,
                         onInstallRequest = { assistant, command, npmCommand ->
@@ -417,7 +418,7 @@ fun EmbeddableTerminal(
                 }
 
                 // Add Version Control menu items
-                val terminalWriter: (String) -> Unit = { text -> session.writeUserInput(text) }
+                val terminalWriter: (String) -> Unit = { text -> session.writeUserInput(normalizeSubmitNewlines(text)) }
                 val vcsItems = vcsMenuProvider.getMenuItems(
                     terminalWriter = terminalWriter,
                     onInstallRequest = { toolId, command, npmCommand ->
@@ -661,12 +662,13 @@ class EmbeddableTerminalState {
 
     /**
      * Send text input to the terminal.
-     * Use "\n" for enter key.
+     * Use "\n" (or "\r") for the enter key — newlines are normalized to the CR a terminal actually
+     * sends, so the same call submits on Windows/ConPTY as well as Unix. See `submitLine`.
      *
      * @param text Text to send to the shell
      */
     fun write(text: String) {
-        session?.writeUserInput(text)
+        session?.writeUserInput(normalizeSubmitNewlines(text))
     }
 
     /**
@@ -834,7 +836,7 @@ class EmbeddableTerminalState {
             assistant = assistant,
             command = resolved.command,
             npmCommand = resolved.npmFallback,
-            terminalWriter = { text -> currentSession.writeUserInput(text) }
+            terminalWriter = { text -> currentSession.writeUserInput(normalizeSubmitNewlines(text)) }
         )
         return true
     }

@@ -68,6 +68,7 @@ import ai.rever.bossterm.compose.PreConnectScreen
 import ai.rever.bossterm.compose.actions.addSplitPaneActions
 import ai.rever.bossterm.compose.actions.addTabManagementActions
 import ai.rever.bossterm.compose.actions.createBuiltinActions
+import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.compose.splits.NavigationDirection
 import ai.rever.bossterm.compose.menu.MenuActions
 import ai.rever.bossterm.compose.debug.DebugWindow
@@ -514,7 +515,7 @@ fun ProperTerminal(
   // Helper functions for context menu actions
   fun clearBuffer() {
     scope.launch {
-      tab.writeUserInput("clear\n")
+      tab.writeUserInput(submitLine("clear"))
     }
   }
 
@@ -733,7 +734,7 @@ fun ProperTerminal(
       onClear = {
         // Clear screen by sending 'clear' command (same as context menu)
         scope.launch {
-          tab.writeUserInput("clear\n")
+          tab.writeUserInput(submitLine("clear"))
         }
       }
       onFind = { actionRegistry.getAction("search")?.executeFromMenu() }
@@ -1231,7 +1232,7 @@ fun ProperTerminal(
                         .replace("$", "\\$")
                         .replace("`", "\\`")
                       // Send cd command followed by ls to show folder contents
-                      tab.writeUserInput("cd \"$escapedPath\" && ls\n")
+                      tab.writeUserInput(submitLine("cd \"$escapedPath\" && ls"))
                     }
                   }
                 }
@@ -2409,7 +2410,12 @@ fun ProperTerminal(
               }
             },
             onSubmit = { rendered ->
-              tab.writeUserInput(rendered + if (settings.workflowsAutoRun) "\n" else "")
+              // Auto-run submits; otherwise the rendered text is left at the prompt for the user to
+              // edit, so it must NOT be normalized — a multi-line workflow keeps its LFs until they
+              // are actually meant as Enters.
+              tab.writeUserInput(
+                if (settings.workflowsAutoRun) submitLine(rendered) else rendered
+              )
             }
           )
         }

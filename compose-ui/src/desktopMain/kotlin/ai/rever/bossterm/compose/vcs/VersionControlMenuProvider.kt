@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.vcs
 
+import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.compose.ContextMenuElement
 import ai.rever.bossterm.compose.ContextMenuItem
 import ai.rever.bossterm.compose.ContextMenuSection
@@ -221,7 +222,7 @@ class VersionControlMenuProvider {
                     ContextMenuItem(
                         id = "git_init",
                         label = "git init",
-                        action = { terminalWriter("git init\n") }
+                        action = { terminalWriter(submitLine("git init")) }
                     ),
                     ContextMenuItem(
                         id = "git_clone",
@@ -238,66 +239,66 @@ class VersionControlMenuProvider {
             ContextMenuItem(
                 id = "git_status",
                 label = "git status",
-                action = { terminalWriter("git status\n") }
+                action = { terminalWriter(submitLine("git status")) }
             ),
             ContextMenuItem(
                 id = "git_diff",
                 label = "git diff",
-                action = { terminalWriter("git diff\n") }
+                action = { terminalWriter(submitLine("git diff")) }
             ),
             ContextMenuItem(
                 id = "git_log",
                 label = "git log --oneline -10",
-                action = { terminalWriter("git log --oneline -10\n") }
+                action = { terminalWriter(submitLine("git log --oneline -10")) }
             ),
             ContextMenuSection(id = "git_staging_section", label = "Staging"),
             ContextMenuItem(
                 id = "git_add_all",
                 label = "git add .",
-                action = { terminalWriter("git add .\n") }
+                action = { terminalWriter(submitLine("git add .")) }
             ),
             ContextMenuItem(
                 id = "git_add_interactive",
                 label = "git add -p",
-                action = { terminalWriter("git add -p\n") }
+                action = { terminalWriter(submitLine("git add -p")) }
             ),
             ContextMenuItem(
                 id = "git_reset",
                 label = "git reset HEAD",
-                action = { terminalWriter("git reset HEAD\n") }
+                action = { terminalWriter(submitLine("git reset HEAD")) }
             ),
             ContextMenuSection(id = "git_commit_section", label = "Commit"),
             ContextMenuItem(
                 id = "git_commit",
                 label = "git commit",
-                action = { terminalWriter("git commit\n") }
+                action = { terminalWriter(submitLine("git commit")) }
             ),
             ContextMenuItem(
                 id = "git_commit_amend",
                 label = "git commit --amend",
-                action = { terminalWriter("git commit --amend\n") }
+                action = { terminalWriter(submitLine("git commit --amend")) }
             ),
             ContextMenuSection(id = "git_remote_section", label = "Remote"),
             ContextMenuItem(
                 id = "git_push",
                 label = "git push",
-                action = { terminalWriter("git push\n") }
+                action = { terminalWriter(submitLine("git push")) }
             ),
             ContextMenuItem(
                 id = "git_pull",
                 label = "git pull",
-                action = { terminalWriter("git pull\n") }
+                action = { terminalWriter(submitLine("git pull")) }
             ),
             ContextMenuItem(
                 id = "git_fetch",
                 label = "git fetch --all",
-                action = { terminalWriter("git fetch --all\n") }
+                action = { terminalWriter(submitLine("git fetch --all")) }
             ),
             ContextMenuSection(id = "git_branch_section", label = "Branches"),
             ContextMenuItem(
                 id = "git_branch",
                 label = "git branch -a",
-                action = { terminalWriter("git branch -a\n") }
+                action = { terminalWriter(submitLine("git branch -a")) }
             ),
             buildCheckoutSubmenu(terminalWriter),
             buildSwitchSubmenu(terminalWriter)
@@ -321,7 +322,7 @@ class VersionControlMenuProvider {
             ContextMenuItem(
                 id = "git_checkout_prev",
                 label = "Previous branch (-)",
-                action = { terminalWriter("git checkout -\n") }
+                action = { terminalWriter(submitLine("git checkout -")) }
             )
         )
 
@@ -338,7 +339,7 @@ class VersionControlMenuProvider {
                         id = "git_checkout_branch_$branch",
                         label = label,
                         enabled = enabled,
-                        action = { terminalWriter("git checkout $branch\n") }
+                        action = { terminalWriter(submitLine("git checkout $branch")) }
                     )
                 )
             }
@@ -377,7 +378,7 @@ class VersionControlMenuProvider {
             ContextMenuItem(
                 id = "git_checkout_discard",
                 label = "Discard all changes (-- .)",
-                action = { terminalWriter("git checkout -- .\n") }
+                action = { terminalWriter(submitLine("git checkout -- .")) }
             )
         )
 
@@ -399,7 +400,7 @@ class VersionControlMenuProvider {
             ContextMenuItem(
                 id = "git_switch_prev",
                 label = "Previous branch (-)",
-                action = { terminalWriter("git switch -\n") }
+                action = { terminalWriter(submitLine("git switch -")) }
             )
         )
 
@@ -416,7 +417,7 @@ class VersionControlMenuProvider {
                         id = "git_switch_branch_$branch",
                         label = label,
                         enabled = enabled,
-                        action = { terminalWriter("git switch $branch\n") }
+                        action = { terminalWriter(submitLine("git switch $branch")) }
                     )
                 )
             }
@@ -477,12 +478,12 @@ class VersionControlMenuProvider {
                     ContextMenuItem(
                         id = "gh_auth_status",
                         label = "gh auth status",
-                        action = { terminalWriter("gh auth status\n") }
+                        action = { terminalWriter(submitLine("gh auth status")) }
                     ),
                     ContextMenuItem(
                         id = "gh_auth_login",
                         label = "gh auth login",
-                        action = { terminalWriter("gh auth login\n") }
+                        action = { terminalWriter(submitLine("gh auth login")) }
                     ),
                     ContextMenuSection(id = "gh_repo_section", label = "Repository"),
                     ContextMenuItem(
@@ -503,7 +504,7 @@ class VersionControlMenuProvider {
                     ContextMenuItem(
                         id = "gh_set_default",
                         label = "Set default repository",
-                        action = { terminalWriter("gh repo set-default\n") }
+                        action = { terminalWriter(submitLine("gh repo set-default")) }
                     ),
                     ContextMenuSection(id = "gh_warning_section"),
                     ContextMenuItem(
@@ -522,28 +523,28 @@ class VersionControlMenuProvider {
             ContextMenuItem(
                 id = "gh_auth_status",
                 label = "gh auth status",
-                action = { terminalWriter("gh auth status\n") }
+                action = { terminalWriter(submitLine("gh auth status")) }
             ),
             ContextMenuItem(
                 id = "gh_auth_login",
                 label = "gh auth login",
-                action = { terminalWriter("gh auth login\n") }
+                action = { terminalWriter(submitLine("gh auth login")) }
             ),
             ContextMenuSection(id = "gh_pr_section", label = "Pull Requests"),
             ContextMenuItem(
                 id = "gh_pr_list",
                 label = "gh pr list",
-                action = { terminalWriter("gh pr list\n") }
+                action = { terminalWriter(submitLine("gh pr list")) }
             ),
             ContextMenuItem(
                 id = "gh_pr_status",
                 label = "gh pr status",
-                action = { terminalWriter("gh pr status\n") }
+                action = { terminalWriter(submitLine("gh pr status")) }
             ),
             ContextMenuItem(
                 id = "gh_pr_create",
                 label = "gh pr create",
-                action = { terminalWriter("gh pr create\n") }
+                action = { terminalWriter(submitLine("gh pr create")) }
             ),
             ContextMenuItem(
                 id = "gh_pr_checkout",
@@ -553,18 +554,18 @@ class VersionControlMenuProvider {
             ContextMenuItem(
                 id = "gh_pr_view",
                 label = "gh pr view --web",
-                action = { terminalWriter("gh pr view --web\n") }
+                action = { terminalWriter(submitLine("gh pr view --web")) }
             ),
             ContextMenuSection(id = "gh_issue_section", label = "Issues"),
             ContextMenuItem(
                 id = "gh_issue_list",
                 label = "gh issue list",
-                action = { terminalWriter("gh issue list\n") }
+                action = { terminalWriter(submitLine("gh issue list")) }
             ),
             ContextMenuItem(
                 id = "gh_issue_create",
                 label = "gh issue create",
-                action = { terminalWriter("gh issue create\n") }
+                action = { terminalWriter(submitLine("gh issue create")) }
             ),
             ContextMenuItem(
                 id = "gh_issue_view",
@@ -575,7 +576,7 @@ class VersionControlMenuProvider {
             ContextMenuItem(
                 id = "gh_repo_view",
                 label = "gh repo view --web",
-                action = { terminalWriter("gh repo view --web\n") }
+                action = { terminalWriter(submitLine("gh repo view --web")) }
             ),
             ContextMenuItem(
                 id = "gh_repo_clone",

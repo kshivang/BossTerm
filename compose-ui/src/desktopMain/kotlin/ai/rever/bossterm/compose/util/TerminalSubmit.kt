@@ -56,12 +56,17 @@ fun submitLine(command: String): String =
     normalizeSubmitNewlines(command).trimEnd(SUBMIT) + SUBMIT
 
 /**
- * Drop a caller-supplied trailing Enter, for the paths that submit later and would otherwise do it
- * twice.
+ * Drop a caller-supplied trailing Enter from a script that something downstream will submit.
  *
  * MCP `run_in_panel` hands its script to `initialCommand`, which holds it until OSC 133;A and then
- * calls [submitLine] itself — so the tool's contract is "a trailing newline is optional". This used
- * to be `removeSuffix("\n")`, which left the CR of a CRLF-terminated script in place and submitted
- * the command twice.
+ * calls [submitLine] itself — so the tool's contract is "a trailing newline is optional".
+ *
+ * Note what this does and does not buy, because the obvious reason is the wrong one: [submitLine] is
+ * idempotent over any trailing separator, so it cannot double-submit whether or not the caller's
+ * newline was stripped first. (It could when the downstream write was `initialCommand + "\n"` — a
+ * CRLF script kept its CR through `removeSuffix("\n")` and got a second Enter — but that is fixed at
+ * the writer now.) What this still decides is the *empty* case: `run_in_panel` treats an empty
+ * script as "just open the panel", and only stripping CR as well as LF makes `"\r\n"` reach that
+ * branch instead of opening a panel and pressing Enter in it.
  */
 fun stripTrailingSubmit(text: String): String = text.trimEnd('\r', '\n')

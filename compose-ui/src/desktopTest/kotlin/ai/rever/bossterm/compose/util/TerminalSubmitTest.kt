@@ -51,12 +51,13 @@ class TerminalSubmitTest {
     }
 
     /**
-     * `run_in_panel`'s contract: "a trailing newline is optional".
+     * `run_in_panel`'s contract: "a trailing newline is optional", and an empty script just opens
+     * the panel.
      *
-     * The tool hands its script to `initialCommand`, which submits it later, so a caller-supplied
-     * Enter has to come off first. The old `removeSuffix("\n")` handled `"ls\n"` but left the CR of
-     * `"ls\r\n"` behind — the script then arrived as `"ls\r"` and got a second CR appended, running
-     * the command twice. That is the case worth pinning.
+     * The empty case is the one that actually depends on this. `submitLine` downstream is idempotent
+     * over any trailing separator, so stripping cannot be what prevents a double submit — but only
+     * stripping CR as well as LF makes a script of `"\r\n"` reach the `ifEmpty { null }` branch
+     * rather than opening a panel and pressing Enter in it.
      */
     @Test
     fun `a caller-supplied Enter is stripped before a later submit`() {

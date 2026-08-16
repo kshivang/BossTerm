@@ -1109,10 +1109,8 @@ class BossTermMcpServer(
             when (panel) {
                 "new_tab" -> {
                     // Both createTab and the split path (createSessionForSplit) hold
-                    // initialCommand until OSC 133;A and then submit it themselves, so strip
-                    // any caller-provided trailing separator for a consistent contract. Trim
-                    // CR as well as LF: removeSuffix("\n") alone left the CR of a CRLF-ending
-                    // script behind, which then submitted twice.
+                    // initialCommand until OSC 133;A and then submit it themselves, so strip any
+                    // caller-provided trailing separator for a consistent contract.
                     val normalizedScript = stripTrailingSubmit(script)
                     val newId = state.createTab(
                         workingDir = workingDir,

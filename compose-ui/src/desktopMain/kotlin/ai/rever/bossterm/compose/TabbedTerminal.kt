@@ -534,11 +534,11 @@ fun TabbedTerminal(
         val activeTab = tabController.tabs.getOrNull(tabController.activeTabIndex) ?: return@LaunchedEffect
         val splitState = getOrCreateSplitState(activeTab)
 
-        // Helper to write to terminal. Normalizes newlines to CR on the way through, so the menu
-        // handlers below (and GitUtils, and the install wizard's terminalWriter) can keep writing
-        // the readable "cmd\n" and still press Enter rather than Ctrl+J — a bare LF does not submit
-        // under ConPTY. See normalizeSubmitNewlines. Callers that deliberately prefill without
-        // submitting just omit the trailing newline, exactly as before.
+        // Helper to write to terminal. Normalizes newlines to CR on the way through, so a bare LF
+        // handed to it still presses Enter rather than Ctrl+J — see normalizeSubmitNewlines. The
+        // handlers below all submit with submitLine themselves, so this is a backstop for writers
+        // we don't own rather than the thing the menus depend on. Callers that deliberately prefill
+        // without submitting just omit the trailing newline, exactly as before.
         val writeToTerminal: (String) -> Unit = { cmd ->
             activeTab.writeUserInput(normalizeSubmitNewlines(cmd))
         }
@@ -2027,9 +2027,10 @@ fun TabbedTerminal(
                         }
                     }
 
-                    // Add Version Control menu items. Menu providers spell their commands with a
-                    // readable trailing "\n" (VersionControlMenuProvider alone has ~30); the writer
-                    // is what turns that into an Enter, so it must normalize — see submitLine.
+                    // Add Version Control menu items. Normalizing here is defence in depth, not the
+                    // mechanism: every in-repo provider now submits with submitLine, so deleting
+                    // this would break nothing in-tree. It covers writers from outside — an
+                    // embedder's voiceToolSource or a third-party menu provider handing us "cmd\n".
                     val terminalWriter: (String) -> Unit = { text ->
                         splitState.getFocusedSession()?.writeUserInput(normalizeSubmitNewlines(text))
                     }

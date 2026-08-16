@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.ai
 import ai.rever.bossterm.compose.settings.AIAssistantConfigData
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.util.UrlOpener
+import ai.rever.bossterm.compose.util.submitLine
 
 /**
  * Provides commands for launching and installing tools.
@@ -21,11 +22,11 @@ class ToolCommandProvider {
         assistant: AIAssistantDefinition,
         config: AIAssistantConfigData? = null
     ): String {
-        return "${launchCommandText(assistant, config)}\n"
+        return submitLine(launchCommandText(assistant, config))
     }
 
     /**
-     * The launch command as text, without the trailing newline that submits it.
+     * The launch command as text, without the trailing Enter that submits it.
      *
      * Public because "what would launching this look like?" is needed in places that aren't writing
      * to the PTY right now — notably the install wizard's `commandToRunAfter`, which used to pass

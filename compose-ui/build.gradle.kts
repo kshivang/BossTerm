@@ -159,6 +159,21 @@ kotlin {
     }
 }
 
+// SubmitCharacterCoverageTest scans sibling modules, so it needs the repo root rather than whatever
+// working directory the runner picked — its own fallback sniffs upward for settings.gradle.kts,
+// which works but leaves the roots depending on where the runner started. Passed as an argument
+// provider, not a systemProperty: the latter becomes a task input, and an absolute checkout path as
+// an input makes the test task non-relocatable, costing build-cache hits across agents. A
+// CommandLineArgumentProvider with no annotated getters contributes nothing to the input snapshot,
+// which is exactly what's wanted.
+//
+// Captured into a local first, and configureEach rather than withType {}: reading `rootDir` inside a
+// task action is a configuration-cache violation, and the eager form realizes every test task.
+val repoRootPath = rootDir.absolutePath
+tasks.withType<Test>().configureEach {
+    jvmArgumentProviders.add(CommandLineArgumentProvider { listOf("-Dbossterm.repoRoot=$repoRootPath") })
+}
+
 // Configure JAR manifest with version information for library consumers
 // This enables Version.CURRENT to read the version when used as a Maven dependency
 tasks.withType<Jar> {

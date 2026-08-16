@@ -309,7 +309,7 @@ private fun toolDescription(name: String): String = when (name) {
     "search_output" -> "Regex-search a tab/pane's scrollback for matches."
     "get_last_command" -> "Return the most recently completed OSC 133 command."
     "read_debug_console" -> "Read recent entries from a tab's debug-data buffer."
-    "send_input" -> "Write raw text (including newlines) to a tab/pane's stdin."
+    "send_input" -> "Write raw text to a tab/pane's stdin, verbatim (end with \\r to submit)."
     "send_signal" -> "Send ctrl_c / ctrl_d / ctrl_z to a tab/pane."
     "run_in_panel" -> "Open a new tab or split pane and run a script in it (fire-and-forget)."
     "run_command" ->

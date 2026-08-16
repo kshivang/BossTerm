@@ -68,6 +68,7 @@ import ai.rever.bossterm.compose.PreConnectScreen
 import ai.rever.bossterm.compose.actions.addSplitPaneActions
 import ai.rever.bossterm.compose.actions.addTabManagementActions
 import ai.rever.bossterm.compose.actions.createBuiltinActions
+import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.compose.splits.NavigationDirection
 import ai.rever.bossterm.compose.menu.MenuActions
 import ai.rever.bossterm.compose.debug.DebugWindow
@@ -514,7 +515,7 @@ fun ProperTerminal(
   // Helper functions for context menu actions
   fun clearBuffer() {
     scope.launch {
-      tab.writeUserInput("clear\n")
+      tab.writeUserInput(submitLine("clear"))
     }
   }
 
@@ -733,7 +734,7 @@ fun ProperTerminal(
       onClear = {
         // Clear screen by sending 'clear' command (same as context menu)
         scope.launch {
-          tab.writeUserInput("clear\n")
+          tab.writeUserInput(submitLine("clear"))
         }
       }
       onFind = { actionRegistry.getAction("search")?.executeFromMenu() }
@@ -1231,7 +1232,7 @@ fun ProperTerminal(
                         .replace("$", "\\$")
                         .replace("`", "\\`")
                       // Send cd command followed by ls to show folder contents
-                      tab.writeUserInput("cd \"$escapedPath\" && ls\n")
+                      tab.writeUserInput(submitLine("cd \"$escapedPath\" && ls"))
                     }
                   }
                 }
@@ -2378,6 +2379,12 @@ fun ProperTerminal(
             ai.rever.bossterm.compose.palette.PaletteSources.collect(
               actions = actionRegistry,
               recentCommands = commandBlocks.mapNotNull { it.commandText },
+              // Prefill, so verbatim: the command lands at the prompt for the user to edit and
+              // submit themselves. One of four such sites in this file (command palette, history
+              // search, AI suggestion, and the non-auto-run workflow below) — all single-line
+              // today, so no LF reaches the PTY. If a multi-line source ever feeds one, the answer
+              // is bracketed paste like pasteText, not submitLine: converting the newlines would
+              // run the lines instead of offering them. See submitLine for why CR and not LF.
               insertCommand = { cmd -> tab.writeUserInput(cmd) },
               workflows = workflows,
               onRunWorkflow = { wf -> pendingWorkflow = wf }
@@ -2409,7 +2416,13 @@ fun ProperTerminal(
               }
             },
             onSubmit = { rendered ->
-              tab.writeUserInput(rendered + if (settings.workflowsAutoRun) "\n" else "")
+              // Auto-run submits; otherwise the rendered text is left at the prompt for the user to
+              // edit, so it is passed through untouched. Note the prefill only really holds on
+              // Windows: under ICRNL a multi-line workflow's LFs submit each line on arrival
+              // anyway. Unchanged from before this rule existed — just not universal.
+              tab.writeUserInput(
+                if (settings.workflowsAutoRun) submitLine(rendered) else rendered
+              )
             }
           )
         }
@@ -2436,6 +2449,7 @@ fun ProperTerminal(
           ai.rever.bossterm.compose.history.HistorySearchOverlay(
             visible = true,
             history = historyEntries,
+            // Prefill, verbatim — see insertCommand above for why these four sites stay raw.
             onSelect = { cmd -> tab.writeUserInput(cmd); restoreFocus() },
             onDismiss = { restoreFocus() },
             aiEnabled = settings.aiCommandBarEnabled && settings.aiCommandBarPrintFlag.isNotBlank(),
@@ -2447,6 +2461,8 @@ fun ProperTerminal(
                   printFlag = settings.aiCommandBarPrintFlag,
                   naturalLanguage = query
                 )
+                // Prefill, verbatim — see insertCommand above. AiCommandSuggester returns one
+                // trimmed line, so there is nothing to convert even if we wanted to.
                 if (!suggestion.isNullOrBlank()) tab.writeUserInput(suggestion)
               }
             }

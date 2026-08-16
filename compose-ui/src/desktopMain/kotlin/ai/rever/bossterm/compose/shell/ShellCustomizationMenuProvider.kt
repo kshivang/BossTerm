@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.shell
 
+import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.compose.ContextMenuElement
 import ai.rever.bossterm.compose.ContextMenuItem
 import ai.rever.bossterm.compose.ContextMenuSection
@@ -203,12 +204,12 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "starship_config_edit",
                     label = "Edit Config",
-                    action = { terminalWriter("\${EDITOR:-nano} ~/.config/starship.toml\n") }
+                    action = { terminalWriter(submitLine("\${EDITOR:-nano} ~/.config/starship.toml")) }
                 ),
                 ContextMenuItem(
                     id = "starship_config_init",
                     label = "Create Default Config",
-                    action = { terminalWriter("mkdir -p ~/.config && starship preset -o ~/.config/starship.toml\n") }
+                    action = { terminalWriter(submitLine("mkdir -p ~/.config && starship preset -o ~/.config/starship.toml")) }
                 ),
 
                 // Presets section
@@ -220,37 +221,37 @@ class ShellCustomizationMenuProvider {
                         ContextMenuItem(
                             id = "starship_preset_nerd",
                             label = "Nerd Font Symbols",
-                            action = { terminalWriter("starship preset nerd-font-symbols -o ~/.config/starship.toml\n") }
+                            action = { terminalWriter(submitLine("starship preset nerd-font-symbols -o ~/.config/starship.toml")) }
                         ),
                         ContextMenuItem(
                             id = "starship_preset_plain",
                             label = "Plain Text",
-                            action = { terminalWriter("starship preset plain-text-symbols -o ~/.config/starship.toml\n") }
+                            action = { terminalWriter(submitLine("starship preset plain-text-symbols -o ~/.config/starship.toml")) }
                         ),
                         ContextMenuItem(
                             id = "starship_preset_nonerd",
                             label = "No Nerd Font",
-                            action = { terminalWriter("starship preset no-nerd-font -o ~/.config/starship.toml\n") }
+                            action = { terminalWriter(submitLine("starship preset no-nerd-font -o ~/.config/starship.toml")) }
                         ),
                         ContextMenuItem(
                             id = "starship_preset_pastel",
                             label = "Pastel Powerline",
-                            action = { terminalWriter("starship preset pastel-powerline -o ~/.config/starship.toml\n") }
+                            action = { terminalWriter(submitLine("starship preset pastel-powerline -o ~/.config/starship.toml")) }
                         ),
                         ContextMenuItem(
                             id = "starship_preset_bracketed",
                             label = "Bracketed Segments",
-                            action = { terminalWriter("starship preset bracketed-segments -o ~/.config/starship.toml\n") }
+                            action = { terminalWriter(submitLine("starship preset bracketed-segments -o ~/.config/starship.toml")) }
                         ),
                         ContextMenuItem(
                             id = "starship_preset_gruvbox",
                             label = "Gruvbox Rainbow",
-                            action = { terminalWriter("starship preset gruvbox-rainbow -o ~/.config/starship.toml\n") }
+                            action = { terminalWriter(submitLine("starship preset gruvbox-rainbow -o ~/.config/starship.toml")) }
                         ),
                         ContextMenuItem(
                             id = "starship_preset_tokyo",
                             label = "Tokyo Night",
-                            action = { terminalWriter("starship preset tokyo-night -o ~/.config/starship.toml\n") }
+                            action = { terminalWriter(submitLine("starship preset tokyo-night -o ~/.config/starship.toml")) }
                         )
                     )
                 ),
@@ -261,21 +262,21 @@ class ShellCustomizationMenuProvider {
                     id = "starship_setup_bash",
                     label = "Setup for Bash",
                     action = {
-                        terminalWriter("echo 'eval \"\$(starship init bash)\"' >> ~/.bashrc && echo '✓ Added to ~/.bashrc' && source ~/.bashrc\n")
+                        terminalWriter(submitLine("echo 'eval \"\$(starship init bash)\"' >> ~/.bashrc && echo '✓ Added to ~/.bashrc' && source ~/.bashrc"))
                     }
                 ),
                 ContextMenuItem(
                     id = "starship_setup_zsh",
                     label = "Setup for Zsh",
                     action = {
-                        terminalWriter("echo 'eval \"\$(starship init zsh)\"' >> ~/.zshrc && echo '✓ Added to ~/.zshrc' && source ~/.zshrc\n")
+                        terminalWriter(submitLine("echo 'eval \"\$(starship init zsh)\"' >> ~/.zshrc && echo '✓ Added to ~/.zshrc' && source ~/.zshrc"))
                     }
                 ),
                 ContextMenuItem(
                     id = "starship_setup_fish",
                     label = "Setup for Fish",
                     action = {
-                        terminalWriter("echo 'starship init fish | source' >> ~/.config/fish/config.fish && echo '✓ Added to config.fish' && source ~/.config/fish/config.fish\n")
+                        terminalWriter(submitLine("echo 'starship init fish | source' >> ~/.config/fish/config.fish && echo '✓ Added to config.fish' && source ~/.config/fish/config.fish"))
                     }
                 ),
 
@@ -284,7 +285,7 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "starship_help",
                     label = "Help",
-                    action = { terminalWriter("starship --help\n") }
+                    action = { terminalWriter(submitLine("starship --help")) }
                 ),
                 ContextMenuItem(
                     id = "starship_docs",
@@ -303,7 +304,7 @@ class ShellCustomizationMenuProvider {
                         if (onInstallRequest != null) {
                             onInstallRequest("starship-uninstall", uninstallCmd, null)
                         } else {
-                            terminalWriter("$uninstallCmd\n")
+                            terminalWriter(submitLine(uninstallCmd))
                         }
                     }
                 )
@@ -327,7 +328,7 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "ohmyzsh_current_theme",
                     label = "Show Current Theme",
-                    action = { terminalWriter("echo \"Current theme: \$ZSH_THEME\"\n") }
+                    action = { terminalWriter(submitLine("echo \"Current theme: \$ZSH_THEME\"")) }
                 ),
                 ContextMenuSubmenu(
                     id = "ohmyzsh_themes_submenu",
@@ -336,37 +337,37 @@ class ShellCustomizationMenuProvider {
                         ContextMenuItem(
                             id = "ohmyzsh_theme_robbyrussell",
                             label = "robbyrussell (default)",
-                            action = { terminalWriter("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"robbyrussell\"/' ~/.zshrc && echo '✓ Theme changed to robbyrussell - run: source ~/.zshrc'\n") }
+                            action = { terminalWriter(submitLine("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"robbyrussell\"/' ~/.zshrc && echo '✓ Theme changed to robbyrussell - run: source ~/.zshrc'")) }
                         ),
                         ContextMenuItem(
                             id = "ohmyzsh_theme_agnoster",
                             label = "agnoster",
-                            action = { terminalWriter("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"agnoster\"/' ~/.zshrc && echo '✓ Theme changed to agnoster - run: source ~/.zshrc'\n") }
+                            action = { terminalWriter(submitLine("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"agnoster\"/' ~/.zshrc && echo '✓ Theme changed to agnoster - run: source ~/.zshrc'")) }
                         ),
                         ContextMenuItem(
                             id = "ohmyzsh_theme_avit",
                             label = "avit",
-                            action = { terminalWriter("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"avit\"/' ~/.zshrc && echo '✓ Theme changed to avit - run: source ~/.zshrc'\n") }
+                            action = { terminalWriter(submitLine("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"avit\"/' ~/.zshrc && echo '✓ Theme changed to avit - run: source ~/.zshrc'")) }
                         ),
                         ContextMenuItem(
                             id = "ohmyzsh_theme_bira",
                             label = "bira",
-                            action = { terminalWriter("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"bira\"/' ~/.zshrc && echo '✓ Theme changed to bira - run: source ~/.zshrc'\n") }
+                            action = { terminalWriter(submitLine("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"bira\"/' ~/.zshrc && echo '✓ Theme changed to bira - run: source ~/.zshrc'")) }
                         ),
                         ContextMenuItem(
                             id = "ohmyzsh_theme_candy",
                             label = "candy",
-                            action = { terminalWriter("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"candy\"/' ~/.zshrc && echo '✓ Theme changed to candy - run: source ~/.zshrc'\n") }
+                            action = { terminalWriter(submitLine("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"candy\"/' ~/.zshrc && echo '✓ Theme changed to candy - run: source ~/.zshrc'")) }
                         ),
                         ContextMenuItem(
                             id = "ohmyzsh_theme_dst",
                             label = "dst",
-                            action = { terminalWriter("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"dst\"/' ~/.zshrc && echo '✓ Theme changed to dst - run: source ~/.zshrc'\n") }
+                            action = { terminalWriter(submitLine("sed -i 's/^ZSH_THEME=.*/ZSH_THEME=\"dst\"/' ~/.zshrc && echo '✓ Theme changed to dst - run: source ~/.zshrc'")) }
                         ),
                         ContextMenuItem(
                             id = "ohmyzsh_theme_list",
                             label = "List All Themes",
-                            action = { terminalWriter("ls ~/.oh-my-zsh/themes/\n") }
+                            action = { terminalWriter(submitLine("ls ~/.oh-my-zsh/themes/")) }
                         )
                     )
                 ),
@@ -376,17 +377,17 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "ohmyzsh_show_plugins",
                     label = "Show Active Plugins",
-                    action = { terminalWriter("grep '^plugins=' ~/.zshrc\n") }
+                    action = { terminalWriter(submitLine("grep '^plugins=' ~/.zshrc")) }
                 ),
                 ContextMenuItem(
                     id = "ohmyzsh_list_plugins",
                     label = "List Available Plugins",
-                    action = { terminalWriter("ls ~/.oh-my-zsh/plugins/\n") }
+                    action = { terminalWriter(submitLine("ls ~/.oh-my-zsh/plugins/")) }
                 ),
                 ContextMenuItem(
                     id = "ohmyzsh_edit_plugins",
                     label = "Edit Plugins",
-                    action = { terminalWriter("\${EDITOR:-nano} ~/.zshrc\n") }
+                    action = { terminalWriter(submitLine("\${EDITOR:-nano} ~/.zshrc")) }
                 ),
 
                 // Maintenance section
@@ -394,17 +395,17 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "ohmyzsh_update",
                     label = "Update Oh My Zsh",
-                    action = { terminalWriter("omz update\n") }
+                    action = { terminalWriter(submitLine("omz update")) }
                 ),
                 ContextMenuItem(
                     id = "ohmyzsh_reload",
                     label = "Reload Config",
-                    action = { terminalWriter("source ~/.zshrc\n") }
+                    action = { terminalWriter(submitLine("source ~/.zshrc")) }
                 ),
                 ContextMenuItem(
                     id = "ohmyzsh_edit_zshrc",
                     label = "Edit .zshrc",
-                    action = { terminalWriter("\${EDITOR:-nano} ~/.zshrc\n") }
+                    action = { terminalWriter(submitLine("\${EDITOR:-nano} ~/.zshrc")) }
                 ),
 
                 // Help section
@@ -412,7 +413,7 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "ohmyzsh_help",
                     label = "Help",
-                    action = { terminalWriter("omz help\n") }
+                    action = { terminalWriter(submitLine("omz help")) }
                 ),
                 ContextMenuItem(
                     id = "ohmyzsh_docs",
@@ -430,7 +431,7 @@ class ShellCustomizationMenuProvider {
                         if (onInstallRequest != null) {
                             onInstallRequest("oh-my-zsh-uninstall", uninstallCmd, null)
                         } else {
-                            terminalWriter("$uninstallCmd\n")
+                            terminalWriter(submitLine(uninstallCmd))
                         }
                     }
                 )
@@ -454,12 +455,12 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "prezto_show_modules",
                     label = "Show Loaded Modules",
-                    action = { terminalWriter("grep '^\\s*zmodule' ~/.zpreztorc 2>/dev/null || grep \"'\" ~/.zpreztorc | head -20\n") }
+                    action = { terminalWriter(submitLine("grep '^\\s*zmodule' ~/.zpreztorc 2>/dev/null || grep \"'\" ~/.zpreztorc | head -20")) }
                 ),
                 ContextMenuItem(
                     id = "prezto_edit_modules",
                     label = "Edit Modules",
-                    action = { terminalWriter("\${EDITOR:-nano} ~/.zpreztorc\n") }
+                    action = { terminalWriter(submitLine("\${EDITOR:-nano} ~/.zpreztorc")) }
                 ),
 
                 // Theme section
@@ -467,12 +468,12 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "prezto_show_theme",
                     label = "Show Current Theme",
-                    action = { terminalWriter("grep 'zstyle.*theme' ~/.zpreztorc\n") }
+                    action = { terminalWriter(submitLine("grep 'zstyle.*theme' ~/.zpreztorc")) }
                 ),
                 ContextMenuItem(
                     id = "prezto_list_themes",
                     label = "List Themes",
-                    action = { terminalWriter("ls ~/.zprezto/modules/prompt/functions/ | grep prompt_ | sed 's/prompt_//'\n") }
+                    action = { terminalWriter(submitLine("ls ~/.zprezto/modules/prompt/functions/ | grep prompt_ | sed 's/prompt_//'")) }
                 ),
 
                 // Maintenance section
@@ -480,17 +481,17 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "prezto_update",
                     label = "Update Prezto",
-                    action = { terminalWriter("cd ~/.zprezto && git pull && git submodule update --init --recursive && cd -\n") }
+                    action = { terminalWriter(submitLine("cd ~/.zprezto && git pull && git submodule update --init --recursive && cd -")) }
                 ),
                 ContextMenuItem(
                     id = "prezto_reload",
                     label = "Reload Config",
-                    action = { terminalWriter("source ~/.zshrc\n") }
+                    action = { terminalWriter(submitLine("source ~/.zshrc")) }
                 ),
                 ContextMenuItem(
                     id = "prezto_edit_zshrc",
                     label = "Edit .zshrc",
-                    action = { terminalWriter("\${EDITOR:-nano} ~/.zshrc\n") }
+                    action = { terminalWriter(submitLine("\${EDITOR:-nano} ~/.zshrc")) }
                 ),
 
                 // Help section
@@ -512,7 +513,7 @@ class ShellCustomizationMenuProvider {
                         if (onInstallRequest != null) {
                             onInstallRequest("prezto-uninstall", uninstallCmd, null)
                         } else {
-                            terminalWriter("$uninstallCmd\n")
+                            terminalWriter(submitLine(uninstallCmd))
                         }
                     }
                 )
@@ -541,22 +542,22 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "zsh_version",
                     label = "Show Version",
-                    action = { terminalWriter("zsh --version\n") }
+                    action = { terminalWriter(submitLine("zsh --version")) }
                 ),
                 ContextMenuItem(
                     id = "zsh_set_default",
                     label = "Set as Default Shell",
-                    action = { terminalWriter("chsh -s \$(which zsh) && echo '✓ Default shell changed to Zsh. Log out and log back in for new tabs to use Zsh.' && exec zsh -l\n") }
+                    action = { terminalWriter(submitLine("chsh -s \$(which zsh) && echo '✓ Default shell changed to Zsh. Log out and log back in for new tabs to use Zsh.' && exec zsh -l")) }
                 ),
                 ContextMenuItem(
                     id = "zsh_edit_zshrc",
                     label = "Edit .zshrc",
-                    action = { terminalWriter("\${EDITOR:-nano} ~/.zshrc\n") }
+                    action = { terminalWriter(submitLine("\${EDITOR:-nano} ~/.zshrc")) }
                 ),
                 ContextMenuItem(
                     id = "zsh_reload",
                     label = "Reload Config",
-                    action = { terminalWriter("source ~/.zshrc\n") }
+                    action = { terminalWriter(submitLine("source ~/.zshrc")) }
                 )
             )
         )
@@ -573,27 +574,27 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "bash_version",
                     label = "Show Version",
-                    action = { terminalWriter("bash --version\n") }
+                    action = { terminalWriter(submitLine("bash --version")) }
                 ),
                 ContextMenuItem(
                     id = "bash_set_default",
                     label = "Set as Default Shell",
-                    action = { terminalWriter("chsh -s \$(which bash) && echo '✓ Default shell changed to Bash. Log out and log back in for new tabs to use Bash.' && exec bash -l\n") }
+                    action = { terminalWriter(submitLine("chsh -s \$(which bash) && echo '✓ Default shell changed to Bash. Log out and log back in for new tabs to use Bash.' && exec bash -l")) }
                 ),
                 ContextMenuItem(
                     id = "bash_edit_bashrc",
                     label = "Edit .bashrc",
-                    action = { terminalWriter("\${EDITOR:-nano} ~/.bashrc\n") }
+                    action = { terminalWriter(submitLine("\${EDITOR:-nano} ~/.bashrc")) }
                 ),
                 ContextMenuItem(
                     id = "bash_edit_profile",
                     label = "Edit .bash_profile",
-                    action = { terminalWriter("\${EDITOR:-nano} ~/.bash_profile\n") }
+                    action = { terminalWriter(submitLine("\${EDITOR:-nano} ~/.bash_profile")) }
                 ),
                 ContextMenuItem(
                     id = "bash_reload",
                     label = "Reload Config",
-                    action = { terminalWriter("source ~/.bashrc\n") }
+                    action = { terminalWriter(submitLine("source ~/.bashrc")) }
                 )
             )
         )
@@ -649,27 +650,27 @@ class ShellCustomizationMenuProvider {
                 ContextMenuItem(
                     id = "fish_version",
                     label = "Show Version",
-                    action = { terminalWriter("fish --version\n") }
+                    action = { terminalWriter(submitLine("fish --version")) }
                 ),
                 ContextMenuItem(
                     id = "fish_set_default",
                     label = "Set as Default Shell",
-                    action = { terminalWriter("chsh -s \$(which fish) && echo '✓ Default shell changed to Fish. Log out and log back in for new tabs to use Fish.' && exec fish -l\n") }
+                    action = { terminalWriter(submitLine("chsh -s \$(which fish) && echo '✓ Default shell changed to Fish. Log out and log back in for new tabs to use Fish.' && exec fish -l")) }
                 ),
                 ContextMenuItem(
                     id = "fish_edit_config",
                     label = "Edit config.fish",
-                    action = { terminalWriter("\${EDITOR:-nano} ~/.config/fish/config.fish\n") }
+                    action = { terminalWriter(submitLine("\${EDITOR:-nano} ~/.config/fish/config.fish")) }
                 ),
                 ContextMenuItem(
                     id = "fish_reload",
                     label = "Reload Config",
-                    action = { terminalWriter("source ~/.config/fish/config.fish\n") }
+                    action = { terminalWriter(submitLine("source ~/.config/fish/config.fish")) }
                 ),
                 ContextMenuItem(
                     id = "fish_web_config",
                     label = "Web Config (GUI)",
-                    action = { terminalWriter("fish_config\n") }
+                    action = { terminalWriter(submitLine("fish_config")) }
                 )
             )
         )

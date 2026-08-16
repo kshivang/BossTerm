@@ -122,6 +122,29 @@ class VoiceCrossLanguageContractTest {
     }
 
     /**
+     * The viewer's Paste must go through `term.paste`, not straight to `sendInput`.
+     *
+     * `term.paste` is the only call that does both halves of what `TerminalTab.pasteText` does
+     * in-app: newlines to CR, *and* the ESC[200~ / ESC[201~ wrapper when the pane has bracketed
+     * paste on. Sending the text directly skips both, and the Input lane it lands on is verbatim by
+     * design (it carries `onData` keystrokes), so nothing downstream can make up the difference —
+     * a pasted `git status\n` reaches a Windows host as Ctrl+J, and a multi-line snippet runs line
+     * by line in an editor that asked not to have that happen.
+     *
+     * Asserted here because `SubmitCharacterCoverageTest` structurally cannot reach it — this is JS,
+     * on the far side of a socket — and this class already reads `viewer.js` for exactly that reason.
+     */
+    @Test
+    fun `the viewer pastes through xterm rather than raw input`() {
+        val paste = viewerJs.substringAfter("""ctxItem("Paste"""").substringBefore("""ctxItem("Select all"""")
+        assertTrue(paste.contains("readText"), "expected the Paste handler, got: $paste")
+        assertTrue(
+            paste.contains("term.paste("),
+            "Paste must use term.paste, which applies CR conversion AND bracketed paste:\n$paste",
+        )
+    }
+
+    /**
      * Not just "both mention the tool" — the CLIP LENGTHS too. They had drifted: the viewer previewed
      * a command to 60 chars and the typed text to 40, while the host truncated at 48 and said a bare
      * "Typing…". Same call, same product, two different captions depending which surface you were on.
@@ -129,12 +152,27 @@ class VoiceCrossLanguageContractTest {
     @Test
     fun `the two surfaces clip their captions to the same lengths`() {
         val describe = viewerJs.substringAfter("function voiceDescribeTool").substringBefore("\n  }")
-        for ((label, len) in listOf("script" to 60, "pattern" to 40, "text" to 40)) {
+        for ((label, len) in listOf("script" to 60, "pattern" to 40)) {
             assertTrue(
                 describe.contains("a.$label.slice(0, $len)"),
                 "viewer.js must clip $label at $len to match HostVoiceCallController.describeTool",
             )
         }
+        // send_input clips at 40 like the others, but only AFTER newlines become ⏎ — the host does
+        // clip(replace(…), 40), so clipping first would diverge on a CRLF straddling index 40 (one
+        // surface counting two characters where the other counts one). Asserted as ordering rather
+        // than as `a.text.slice(0, 40)`, because the replace has to come between them.
+        // Anchored on the block's closing brace, not the next `if (name ===`: if send_input ever
+        // becomes the last branch in voiceDescribeTool, that slice swallows the rest of the function
+        // and the ordering assertion below could pass against some other branch's .slice(0, 40).
+        val typed = describe
+            .substringAfter("""name === "send_input"""")
+            .substringBefore("\n      }")
+        assertTrue(typed.contains(".slice(0, 40)"), "viewer.js must clip typed text at 40: $typed")
+        assertTrue(
+            typed.indexOf("""replace(/\r\n?|\n/g, "⏎")""") < typed.indexOf(".slice(0, 40)"),
+            "the ⏎ substitution must precede the clip, as it does in describeTool: $typed",
+        )
     }
 
     /**

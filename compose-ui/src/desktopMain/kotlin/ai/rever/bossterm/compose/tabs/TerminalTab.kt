@@ -23,6 +23,7 @@ import ai.rever.bossterm.terminal.emulator.BossEmulator
 import ai.rever.bossterm.terminal.model.BossTerminal
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import ai.rever.bossterm.compose.debug.DebugDataCollector
+import ai.rever.bossterm.compose.util.normalizeSubmitNewlines
 import ai.rever.bossterm.compose.selection.SelectionTracker
 import ai.rever.bossterm.compose.typeahead.ComposeTypeAheadModel
 import ai.rever.bossterm.compose.ai.AICommandInterceptor
@@ -545,8 +546,9 @@ data class TerminalTab(
     override fun pasteText(text: String) {
         if (text.isEmpty()) return
 
-        // Normalize newlines: CRLF/LF → CR (terminal standard)
-        var normalized = text.replace("\r\n", "\n").replace('\n', '\r')
+        // Normalize newlines: CRLF/LF → CR (terminal standard). Shared with every programmatic
+        // writer so the two can't drift — see submitLine for why CR and not LF.
+        var normalized = normalizeSubmitNewlines(text)
 
         // Wrap with bracketed paste sequences if mode enabled
         if (display.bracketedPasteMode.value) {

@@ -86,11 +86,19 @@ private fun builtInRules(names: Set<String>, confirmationWording: String): Strin
         // reads a scrollback showing no result and reports the command as having failed or hung. Stated
         // once, as its own rule, because it applies to every use of the tool: shell commands, a REPL, a
         // y/n prompt, a password.
+        //
+        // CR alone, and this rule used to say \r\n, which is measurably wrong. Enter is CR; the LF is
+        // a second keystroke (Ctrl+J) that arrives at the NEXT prompt and drops it into continuation
+        // mode, so the agent's command runs and the following one lands in a multiline buffer. Verified
+        // against Windows PowerShell over ConPTY: `echo x` + CRLF printed x and left a `>>` prompt
+        // behind, while CR alone left the shell clean.
         appendLine(
-            "- send_input types text but does not press Enter. End every send with \\r\\n to submit " +
+            "- send_input types text but does not press Enter. End every send with \\r to submit " +
                 "it - shell commands, REPL lines, and answers to interactive prompts alike. Text " +
                 "without it just sits at the prompt unexecuted, which reads as a hung command rather " +
-                "than a missing keystroke. Send \\r\\n on its own to press Enter with no text."
+                "than a missing keystroke. Send \\r on its own to press Enter with no text. Do not " +
+                "add \\n after the \\r: Enter is the \\r, and the extra \\n gets typed into the next " +
+                "prompt."
         )
     }
     if ("run_command" in names || "send_input" in names) {

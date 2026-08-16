@@ -33,6 +33,7 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.ime.IMEState
 import ai.rever.bossterm.compose.osc.WorkingDirectoryOSCListener
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.compose.typeahead.ComposeTypeAheadModel
 import ai.rever.bossterm.compose.typeahead.CoroutineDebouncer
 import ai.rever.bossterm.compose.notification.CommandNotificationHandler
@@ -435,7 +436,8 @@ class TabController(
      * @param command Shell command to execute (default: $SHELL or /bin/sh)
      * @param arguments Command-line arguments for the shell (default: empty)
      * @param onProcessExit Callback invoked when shell process exits (before auto-closing tab)
-     * @param initialCommand Optional command to execute after terminal is ready (sent as input with newline)
+     * @param initialCommand Optional command to execute after terminal is ready (submitted via
+     *                       `submitLine`, so a trailing newline is optional)
      * @param tabId Optional stable ID for this tab (default: auto-generated UUID). Use this to assign
      *              a predictable ID that survives tab reordering and can be used for reliable lookup.
      * @return The newly created TerminalTab
@@ -1693,8 +1695,8 @@ class TabController(
                                 tab.terminal.addCommandStateListener(completionListener)
                             }
 
-                            // Send the command followed by newline
-                            handle.write(initialCommand + "\n")
+                            // Send the command followed by Enter (CR — see submitLine)
+                            handle.write(submitLine(initialCommand))
                         } finally {
                             // Clean up the pre-registered listener
                             tab.terminal.removeCommandStateListener(promptListener)

@@ -246,8 +246,13 @@ collection is enabled for the tab. Supports incremental polling via
 
 ### `send_input` (write tool)
 
-Write text to a tab's shell stdin. Append `\n` to the text yourself if you
-want the shell to execute it.
+Write text to a tab's shell stdin, verbatim — this tool presses no keys of its
+own. Append `\r` (carriage return, what Enter sends) if you want the shell to
+execute the text. A bare `\n` is Ctrl+J: it inserts a newline without
+submitting, which under Windows ConPTY leaves the text at a `>>` continuation
+prompt. Don't send `\r\n` — the `\r` submits and the leftover `\n` is typed into
+the next prompt. This is the one write tool that does not normalize for you, so
+that sending a real newline stays possible.
 
 - Required: `tab_id` (string), `text` (string).
 - Optional: `pane_id` (string).
@@ -271,8 +276,10 @@ with shell startup.
 
 - Required:
   - `panel`: `"new_tab"`, `"horizontal_split"`, or `"vertical_split"`.
-  - `script`: text to write to the new panel's shell. Include `\n` to submit
-    as a command.
+  - `script`: the command to run in the new panel. Submitted for you with a
+    carriage return, so trailing newlines are optional and collapse into that
+    one Enter. A script that is empty, or only newlines, means "just open the
+    panel".
 - Optional:
   - `tab_id` (string) - source tab id. Required for splits; defaults to the
     primary window's active tab.

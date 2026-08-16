@@ -304,8 +304,22 @@ collection is enabled for the tab. Supports incremental polling via
 
 ### `send_input` (write tool)
 
-Write text to a tab's shell stdin. Append `\n` to the text yourself if you
-want the shell to execute it.
+Write text to a tab's shell stdin, verbatim — this tool presses no keys of its
+own. Append `\r` yourself if you want the shell to execute the text.
+
+`\r`, not `\n`. Enter is a carriage return: it is what `TerminalKeyEncoder`
+sends for the key, and what `pasteText` converts pasted newlines into. A bare
+`\n` is Ctrl+J, which inserts a newline into the line editor without submitting
+— on a Unix pty `ICRNL` hides the difference, but under Windows ConPTY there is
+no such translation and the text sits at a `>>` continuation prompt while
+`read_scrollback` shows no result. Don't send `\r\n` either: the `\r` submits and
+the orphan `\n` is then typed into the *next* prompt.
+
+`send_input` is deliberately the one write tool that does not normalize this for
+you, because `\n` is a keystroke a caller may genuinely want — a newline inside a
+multi-line prompt to an AI CLI, for instance. Every other write path
+(`run_command`, `run_in_panel`, the AI/git menus) submits with `\r` on your
+behalf via `submitLine`.
 
 - Required: `tab_id` (string), `text` (string).
 - Optional: `pane_id` (string).
@@ -329,8 +343,10 @@ with shell startup.
 
 - Required:
   - `panel`: `"new_tab"`, `"horizontal_split"`, or `"vertical_split"`.
-  - `script`: text to write to the new panel's shell. Include `\n` to submit
-    as a command.
+  - `script`: the command to run in the new panel. Submitted for you with a
+    carriage return, so trailing newlines are optional — however many you send,
+    they collapse into the one Enter. A script that is empty, or only newlines,
+    means "just open the panel".
 - Optional:
   - `tab_id` (string) - source tab id. Required for splits; defaults to the
     primary window's active tab.
@@ -378,8 +394,10 @@ Requires OSC 133 shell integration on the user's shell. See
 [`.claude/rules/shell-integration.md`](../.claude/rules/shell-integration.md).
 
 - Required:
-  - `script` (string) - shell command. A trailing newline is added if
-    absent. **Avoid embedded `\n`** for multi-statement scripts (the shell
+  - `script` (string) - shell command. Submitted for you with a carriage
+    return; trailing newlines are optional and collapse into that one Enter, so
+    a script ending in a deliberate blank line needs `send_input` instead.
+    **Avoid embedded `\n`** for multi-statement scripts (the shell
     fires multiple OSC 133;B/D cycles; the response carries the FIRST D's
     exit code and the slice covers from the first B onward). Use
     `bash -lc '…'` or `sh -c '…'` to bundle compound logic into a single

@@ -35,7 +35,7 @@ class AIAssistantLaunchCommandTest {
     @Test
     fun `codex launches with danger full access sandbox`() {
         assertEquals(
-            "codex --sandbox danger-full-access\n",
+            "codex --sandbox danger-full-access\r",
             provider.getLaunchCommand(builtin(AIAssistantIds.CODEX))
         )
     }
@@ -53,7 +53,7 @@ class AIAssistantLaunchCommandTest {
     @Test
     fun `yolo disabled launches the bare command`() {
         assertEquals(
-            "codex\n",
+            "codex\r",
             provider.getLaunchCommand(builtin(AIAssistantIds.CODEX), AIAssistantConfigData(yoloEnabled = false))
         )
     }
@@ -61,7 +61,7 @@ class AIAssistantLaunchCommandTest {
     @Test
     fun `custom yolo flag overrides the built-in default`() {
         assertEquals(
-            "codex --my-flag\n",
+            "codex --my-flag\r",
             provider.getLaunchCommand(builtin(AIAssistantIds.CODEX), AIAssistantConfigData(customYoloFlag = "--my-flag"))
         )
     }
@@ -75,15 +75,15 @@ class AIAssistantLaunchCommandTest {
     @Test
     fun `open source assistants launch with their own auto-mode flags`() {
         assertEquals(
-            "grok --always-approve\n",
+            "grok --always-approve\r",
             provider.getLaunchCommand(builtin(AIAssistantIds.GROK_BUILD))
         )
         assertEquals(
-            "kimi --yolo\n",
+            "kimi --yolo\r",
             provider.getLaunchCommand(builtin(AIAssistantIds.KIMI_CODE))
         )
         assertEquals(
-            "hermes --yolo\n",
+            "hermes --yolo\r",
             provider.getLaunchCommand(builtin(AIAssistantIds.HERMES))
         )
     }
@@ -94,7 +94,7 @@ class AIAssistantLaunchCommandTest {
         // appended to every launch and break it.
         val ollama = builtin(AIAssistantIds.OLLAMA)
         assertEquals("", ollama.yoloFlag)
-        assertEquals("ollama\n", provider.getLaunchCommand(ollama))
+        assertEquals("ollama\r", provider.getLaunchCommand(ollama))
     }
 
     /**
@@ -140,17 +140,17 @@ class AIAssistantLaunchCommandTest {
         val openclaw = builtin(AIAssistantIds.OPENCLAW)
         assertEquals("openclaw", openclaw.command, "command must stay a bare binary name for PATH detection")
         assertEquals(
-            "openclaw tui --message '/exec security=full ask=off'\n",
+            "openclaw tui --message '/exec security=full ask=off'\r",
             provider.getLaunchCommand(openclaw)
         )
         // Auto mode off still has to launch a usable session, i.e. keep the subcommand.
         assertEquals(
-            "openclaw tui\n",
+            "openclaw tui\r",
             provider.getLaunchCommand(openclaw, AIAssistantConfigData(yoloEnabled = false))
         )
         // A custom command replaces the whole invocation, subcommand included.
         assertEquals(
-            "my-claw\n",
+            "my-claw\r",
             provider.getLaunchCommand(
                 openclaw,
                 AIAssistantConfigData(customCommand = "my-claw", yoloEnabled = false)
@@ -193,7 +193,7 @@ class AIAssistantLaunchCommandTest {
                 "\"grep\":\"allow\",\"bash\":\"allow\",\"task\":\"allow\",\"skill\":\"allow\"," +
                 "\"lsp\":\"allow\",\"question\":\"allow\",\"webfetch\":\"allow\"," +
                 "\"websearch\":\"allow\",\"external_directory\":\"allow\"," +
-                "\"doom_loop\":\"allow\"}' opencode\n",
+                "\"doom_loop\":\"allow\"}' opencode\r",
             provider.getLaunchCommand(opencode)
         )
         listOf("--auto-approve", "--auto", "--dangerously-skip-permissions").forEach { rejected ->
@@ -204,7 +204,7 @@ class AIAssistantLaunchCommandTest {
         }
         // Auto mode OFF must drop the env prefix entirely, or it isn't really off.
         assertEquals(
-            "opencode\n",
+            "opencode\r",
             provider.getLaunchCommand(opencode, AIAssistantConfigData(yoloEnabled = false))
         )
     }

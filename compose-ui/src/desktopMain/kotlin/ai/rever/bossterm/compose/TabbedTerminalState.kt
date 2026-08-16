@@ -10,6 +10,7 @@ import ai.rever.bossterm.compose.ai.AIInstallDialogParams
 import ai.rever.bossterm.compose.search.RabinKarpSearch
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.compose.util.normalizeSubmitNewlines
 import ai.rever.bossterm.compose.splits.NavigationDirection
 import ai.rever.bossterm.compose.splits.SplitOrientation
 import ai.rever.bossterm.compose.splits.SplitViewState
@@ -437,7 +438,8 @@ class TabbedTerminalState {
 
     /**
      * Send text input to the active terminal tab.
-     * Use "\n" for enter key.
+     * Use "\n" (or "\r") for the enter key — newlines are normalized to the CR a terminal actually
+     * sends, so the same call submits on Windows/ConPTY as well as Unix. See `submitLine`.
      *
      * This method is asynchronous - it queues the text and returns immediately.
      *
@@ -446,7 +448,7 @@ class TabbedTerminalState {
      * @param text Text to send to the shell
      */
     fun write(text: String) {
-        activeTab?.writeUserInput(text)
+        activeTab?.writeUserInput(normalizeSubmitNewlines(text))
     }
 
     /**
@@ -460,7 +462,7 @@ class TabbedTerminalState {
      * @param tabIndex Index of the tab to send input to (0-based)
      */
     fun write(text: String, tabIndex: Int) {
-        tabs.getOrNull(tabIndex)?.writeUserInput(text)
+        tabs.getOrNull(tabIndex)?.writeUserInput(normalizeSubmitNewlines(text))
     }
 
     /**
@@ -475,7 +477,7 @@ class TabbedTerminalState {
      */
     fun write(text: String, tabId: String): Boolean {
         val tab = getTabById(tabId) ?: return false
-        tab.writeUserInput(text)
+        tab.writeUserInput(normalizeSubmitNewlines(text))
         return true
     }
 
@@ -981,12 +983,50 @@ class TabbedTerminalState {
     /**
      * Send text input to the focused pane of the specified tab.
      *
+     * Newlines are normalized to CR, same as the [write] overloads — this is the split-pane
+     * sibling of that API and has to press Enter the same way. See `submitLine`. Use
+     * [writeVerbatim] when you mean keystrokes rather than a command.
+     *
+     * Resolves through [findSession], like [writeVerbatim]. It used to use [getFocusedSplitSession],
+     * which returns null when `splitStates` has no entry for the tab — populated lazily, so an
+     * unsplit tab that had never been activated returned false even though it has exactly one pane
+     * to write to. The two are documented as a pair and now resolve as one.
+     *
      * @param text Text to send
      * @param tabId Target tab ID. If null, uses the active tab.
-     * @return true if the text was sent, false if tab/pane not found
+     * @return true if the text was sent, false if the tab was not found
      */
     fun writeToFocusedPane(text: String, tabId: String? = null): Boolean {
-        val session = getFocusedSplitSession(tabId) ?: return false
+        val session = findSession(resolveTabId(tabId) ?: return false) ?: return false
+        session.writeUserInput(normalizeSubmitNewlines(text))
+        return true
+    }
+
+    /**
+     * Send text to the focused pane byte-for-byte, with no newline conversion.
+     *
+     * The escape hatch [write] and [writeToFocusedPane] give up by normalizing. A bare LF is Ctrl+J
+     * — "insert a newline without submitting" — which is how a multi-line prompt gets typed into an
+     * AI CLI, and is the same need that keeps MCP `send_input` verbatim.
+     *
+     * Mirrors `EmbeddableTerminalState.writeVerbatim`. Reachable before this existed only via the
+     * public `activeTab` / [getFocusedSplitSession], which is not where anyone would look; the two
+     * public APIs now offer the same shape for the same need.
+     *
+     * Use [write] unless you specifically mean keystrokes: `\r` submits, `\n` does not.
+     *
+     * Routes through [findSession], which validates the tab and falls back to that tab's own
+     * session when it has no splits. An earlier version fell back to [activeTab], which meant an
+     * unsplit background tab — `splitStates` is populated lazily, so any tab never activated — or a
+     * stale id would type into whatever the user was looking at, and still return true. On an API
+     * whose whole purpose is raw keystrokes, that misdelivers a `y\r` or a password.
+     *
+     * @param text Text to send to the shell, unmodified
+     * @param tabId Target tab ID. If null, uses the active tab.
+     * @return true if the text was sent, false if the tab was not found
+     */
+    fun writeVerbatim(text: String, tabId: String? = null): Boolean {
+        val session = findSession(resolveTabId(tabId) ?: return false) ?: return false
         session.writeUserInput(text)
         return true
     }
@@ -1099,7 +1139,7 @@ class TabbedTerminalState {
             assistant = assistant,
             command = resolved.command,
             npmCommand = resolved.npmFallback,
-            terminalWriter = { text -> tab.writeUserInput(text) }
+            terminalWriter = { text -> tab.writeUserInput(normalizeSubmitNewlines(text)) }
         )
         return true
     }

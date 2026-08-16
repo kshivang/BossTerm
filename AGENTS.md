@@ -116,6 +116,31 @@ own title. The OSC 2 slot is cleared at prompt start so a program that set one s
 window after it exits - which needs OSC 133, so it does not happen inside tmux/screen or without the
 shell integration.
 
+### The submit character is CR, and LF is not a fallback (measured)
+
+Anything writing a command to a PTY programmatically must end it with `\r`, via `submitLine()` in
+`compose-ui/.../util/TerminalSubmit.kt`. Never `\n`, never `\r\n`.
+
+`TerminalKeyEncoder` sends CR for the Enter key and `pasteText` normalizes pasted newlines to CR, so
+a writer using LF is not simulating a keypress. On a Unix pty you cannot tell — the line discipline's
+`ICRNL` maps CR to NL on input, so LF submits too, which is why LF sat in the AI-launch path, the git
+menu items, `run_command` and `run_in_panel` for years. ConPTY does no such translation:
+
+| sent | runs? | after |
+|---|---|---|
+| `\n` | **no** | text stranded at a `>>` continuation prompt (LF is Ctrl+J → PSReadLine inserts a newline) |
+| `\r` | yes | clean prompt |
+| `\r\n` | yes | **the NEXT prompt is `>>`** — the orphan LF is typed into it |
+| `\n\r` | yes | runs, but the command echoes on a continuation line |
+
+Measured against Windows PowerShell 5.1 over ConPTY by writing each form to a real pane and reading
+the scrollback back. The `\r\n` row is the trap: it looks correct because the command works, and the
+damage lands on the user's next keystrokes.
+
+`send_input` (MCP) is the deliberate exception — it stays byte-verbatim, because a bare LF is a
+keystroke a caller may actually want (a newline inside a multi-line prompt to an AI CLI) and
+rewriting it would remove the only way to send one. Its tool description carries the warning instead.
+
 ### Emoji Rendering
 Skia ignores variation selectors (U+FE0F). Peek-ahead to detect, switch to `FontFamily.Default`, render as unit.
 
@@ -227,10 +252,17 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 
 ```kotlin
 state.sendCtrlC()                    // Interrupt
-state.write("command\n")             // Send text
+state.write("command\n")             // Send text (newlines normalized to CR — submits everywhere)
 state.sendCtrlC(tabIndex = 0)        // Target tab by index
 state.write("cmd\n", tabId = "id")   // Target tab by ID
 ```
+
+`write()` / `writeToFocusedPane()` are the embedder-facing convenience and normalize newlines, so
+`"\n"` presses Enter on every platform. The verbatim path underneath is `TerminalTab.writeUserInput()`
+— reachable on the tabbed API via the public `activeTab`, as `EmbeddableTerminalState.writeVerbatim()`
+on the single-terminal API, and used by MCP `send_input`. Reach for it only when you mean keystrokes
+rather than a command: a bare LF is Ctrl+J, which is how a multi-line prompt gets typed into an AI
+CLI. See the CR note above.
 
 ## Development Guidelines
 

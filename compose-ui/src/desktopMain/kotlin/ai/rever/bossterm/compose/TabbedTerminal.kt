@@ -75,6 +75,8 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.util.loadTerminalFont
+import ai.rever.bossterm.compose.util.normalizeSubmitNewlines
+import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
 import ai.rever.bossterm.compose.features.NativeContextMenuOverride
@@ -532,8 +534,14 @@ fun TabbedTerminal(
         val activeTab = tabController.tabs.getOrNull(tabController.activeTabIndex) ?: return@LaunchedEffect
         val splitState = getOrCreateSplitState(activeTab)
 
-        // Helper to write to terminal
-        val writeToTerminal: (String) -> Unit = { cmd -> activeTab.writeUserInput(cmd) }
+        // Helper to write to terminal. Normalizes newlines to CR on the way through, so a bare LF
+        // handed to it still presses Enter rather than Ctrl+J — see normalizeSubmitNewlines. The
+        // handlers below all submit with submitLine themselves, so this is a backstop for writers
+        // we don't own rather than the thing the menus depend on. Callers that deliberately prefill
+        // without submitting just omit the trailing newline, exactly as before.
+        val writeToTerminal: (String) -> Unit = { cmd ->
+            activeTab.writeUserInput(normalizeSubmitNewlines(cmd))
+        }
 
         // Get current working directory from focused session
         val getWorkingDir: () -> String? = {
@@ -555,12 +563,12 @@ fun TabbedTerminal(
 
         // Helper to run git command in working directory using shared GitUtils
         val gitCmd: (String) -> Unit = { cmd ->
-            writeToTerminal(GitUtils.gitCommand(cmd, getWorkingDir()))
+            writeToTerminal(submitLine(GitUtils.gitCommand(cmd, getWorkingDir())))
         }
 
         // Helper to run gh command in working directory using shared GitUtils
         val ghCmd: (String) -> Unit = { cmd ->
-            writeToTerminal(GitUtils.ghCommand(cmd, getWorkingDir()))
+            writeToTerminal(submitLine(GitUtils.ghCommand(cmd, getWorkingDir())))
         }
 
         // Get current shell from environment
@@ -619,9 +627,10 @@ fun TabbedTerminal(
                     )
                     return
                 }
-                // A null args means "let the user finish the line" — no trailing newline.
+                // A null args means "let the user finish the line" — prefill, don't submit.
                 writeToTerminal(
-                    if (argsOrNull == null) "${ollama.command} run " else "${ollama.command} $argsOrNull\n"
+                    if (argsOrNull == null) "${ollama.command} run "
+                    else submitLine("${ollama.command} $argsOrNull")
                 )
             }
             onRunLocalModel = { model -> runOllama(model?.let { "run $it" }) }
@@ -629,7 +638,7 @@ fun TabbedTerminal(
             onListLocalModels = { runOllama("list") }
 
             // Git commands (path-aware using GitUtils)
-            onGitInit = { writeToTerminal("git ${GitUtils.Commands.INIT}\n") }
+            onGitInit = { writeToTerminal(submitLine("git ${GitUtils.Commands.INIT}")) }
             onGitClone = { writeToTerminal("git ${GitUtils.Commands.CLONE}") }
             onGitStatus = { gitCmd(GitUtils.Commands.STATUS) }
             onGitDiff = { gitCmd(GitUtils.Commands.DIFF) }
@@ -645,19 +654,15 @@ fun TabbedTerminal(
             onGitBranch = { gitCmd(GitUtils.Commands.BRANCH) }
             onGitCheckoutPrev = { gitCmd(GitUtils.Commands.CHECKOUT_PREV) }
             onGitCheckoutNew = {
-                // Prefill only: the user still needs to type the new branch name.
-                val command = GitUtils.gitCommand(
-                    GitUtils.Commands.CHECKOUT_NEW,
-                    getWorkingDir()
-                ).removeSuffix("\n")
-                writeToTerminal(command)
+                // Prefill only: the user still needs to type the new branch name, so no submitLine.
+                writeToTerminal(GitUtils.gitCommand(GitUtils.Commands.CHECKOUT_NEW, getWorkingDir()))
             }
             onGitStash = { gitCmd(GitUtils.Commands.STASH) }
             onGitStashPop = { gitCmd(GitUtils.Commands.STASH_POP) }
 
             // GitHub CLI commands (path-aware using GitUtils)
-            onGhAuthStatus = { writeToTerminal("gh ${GitUtils.GhCommands.AUTH_STATUS}\n") }
-            onGhAuthLogin = { writeToTerminal("gh ${GitUtils.GhCommands.AUTH_LOGIN}\n") }
+            onGhAuthStatus = { writeToTerminal(submitLine("gh ${GitUtils.GhCommands.AUTH_STATUS}")) }
+            onGhAuthLogin = { writeToTerminal(submitLine("gh ${GitUtils.GhCommands.AUTH_LOGIN}")) }
             onGhSetDefault = { ghCmd(GitUtils.GhCommands.SET_DEFAULT) }
             onGhRepoClone = { writeToTerminal("gh ${GitUtils.GhCommands.REPO_CLONE}") }
             onGhPrList = { ghCmd(GitUtils.GhCommands.PR_LIST) }
@@ -669,32 +674,32 @@ fun TabbedTerminal(
             onGhRepoView = { ghCmd(GitUtils.GhCommands.REPO_VIEW_WEB) }
 
             // Shell config
-            onEditZshrc = { writeToTerminal("\${EDITOR:-nano} ~/.zshrc\n") }
-            onEditBashrc = { writeToTerminal("\${EDITOR:-nano} ~/.bashrc\n") }
-            onEditFishConfig = { writeToTerminal("\${EDITOR:-nano} ~/.config/fish/config.fish\n") }
+            onEditZshrc = { writeToTerminal(submitLine("\${EDITOR:-nano} ~/.zshrc")) }
+            onEditBashrc = { writeToTerminal(submitLine("\${EDITOR:-nano} ~/.bashrc")) }
+            onEditFishConfig = { writeToTerminal(submitLine("\${EDITOR:-nano} ~/.config/fish/config.fish")) }
             onReloadShellConfig = {
                 val sourceCmd = when (currentShell) {
                     "zsh" -> "source ~/.zshrc"
                     "fish" -> "source ~/.config/fish/config.fish"
                     else -> "source ~/.bashrc"
                 }
-                writeToTerminal("$sourceCmd\n")
+                writeToTerminal(submitLine(sourceCmd))
             }
 
             // Starship
-            onStarshipEditConfig = { writeToTerminal("\${EDITOR:-nano} ~/.config/starship.toml\n") }
-            onStarshipPresets = { writeToTerminal("starship preset --list\n") }
+            onStarshipEditConfig = { writeToTerminal(submitLine("\${EDITOR:-nano} ~/.config/starship.toml")) }
+            onStarshipPresets = { writeToTerminal(submitLine("starship preset --list")) }
 
             // Oh My Zsh
-            onOhMyZshUpdate = { writeToTerminal("omz update\n") }
-            onOhMyZshThemes = { writeToTerminal("ls ~/.oh-my-zsh/themes/\n") }
-            onOhMyZshPlugins = { writeToTerminal("ls ~/.oh-my-zsh/plugins/\n") }
+            onOhMyZshUpdate = { writeToTerminal(submitLine("omz update")) }
+            onOhMyZshThemes = { writeToTerminal(submitLine("ls ~/.oh-my-zsh/themes/")) }
+            onOhMyZshPlugins = { writeToTerminal(submitLine("ls ~/.oh-my-zsh/plugins/")) }
 
             // Prezto
-            onPreztoUpdate = { writeToTerminal("cd ~/.zprezto && git pull && git submodule update --init --recursive && cd -\n") }
-            onPreztoEditConfig = { writeToTerminal("\${EDITOR:-nano} ~/.zpreztorc\n") }
-            onPreztoListThemes = { writeToTerminal("ls ~/.zprezto/modules/prompt/functions/ | grep prompt_ | sed 's/prompt_//'\n") }
-            onPreztoShowModules = { writeToTerminal("grep '^\\s*zmodule' ~/.zpreztorc 2>/dev/null || grep \"'\" ~/.zpreztorc | head -20\n") }
+            onPreztoUpdate = { writeToTerminal(submitLine("cd ~/.zprezto && git pull && git submodule update --init --recursive && cd -")) }
+            onPreztoEditConfig = { writeToTerminal(submitLine("\${EDITOR:-nano} ~/.zpreztorc")) }
+            onPreztoListThemes = { writeToTerminal(submitLine("ls ~/.zprezto/modules/prompt/functions/ | grep prompt_ | sed 's/prompt_//'")) }
+            onPreztoShowModules = { writeToTerminal(submitLine("grep '^\\s*zmodule' ~/.zpreztorc 2>/dev/null || grep \"'\" ~/.zpreztorc | head -20")) }
         }
     }
 
@@ -838,7 +843,7 @@ fun TabbedTerminal(
                 onInstallConfirm = { assistant, originalCommand, clearLineCallback ->
                     // Show installation wizard directly
                     val terminalWriter: (String) -> Unit = { text ->
-                        tab.writeUserInput(text)
+                        tab.writeUserInput(normalizeSubmitNewlines(text))
                     }
                     val resolved = aiState.launcher.resolveInstallCommands(assistant)
                     toolWizardParams = ToolInstallWizardParams(
@@ -1585,8 +1590,7 @@ fun TabbedTerminal(
                     tabController.switchToTab(tabIndex)
                     splitStates[tab.id]?.setFocusedPane(paneId)
                     val cwd = session.workingDirectory.value
-                    val command = GitUtils.gitCommand("worktree add ", cwd).removeSuffix("\n")
-                    session.writeUserInput(command)
+                    session.writeUserInput(GitUtils.gitCommand("worktree add ", cwd))
                 },
                 onShareTab = { index ->
                     tabController.tabs.getOrNull(index)?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
@@ -1943,7 +1947,7 @@ fun TabbedTerminal(
                     // Add AI assistant menu items
                     if (settings.aiAssistantsEnabled) {
                         val terminalWriter: (String) -> Unit = { text ->
-                            splitState.getFocusedSession()?.writeUserInput(text)
+                            splitState.getFocusedSession()?.writeUserInput(normalizeSubmitNewlines(text))
                         }
                         val aiItems = aiState.menuProvider.getMenuItems(
                             terminalWriter = terminalWriter,
@@ -2023,9 +2027,12 @@ fun TabbedTerminal(
                         }
                     }
 
-                    // Add Version Control menu items
+                    // Add Version Control menu items. Normalizing here is defence in depth, not the
+                    // mechanism: every in-repo provider now submits with submitLine, so deleting
+                    // this would break nothing in-tree. It covers writers from outside — an
+                    // embedder's voiceToolSource or a third-party menu provider handing us "cmd\n".
                     val terminalWriter: (String) -> Unit = { text ->
-                        splitState.getFocusedSession()?.writeUserInput(text)
+                        splitState.getFocusedSession()?.writeUserInput(normalizeSubmitNewlines(text))
                     }
                     val vcsItems = vcsMenuProvider.getMenuItems(
                         terminalWriter = terminalWriter,

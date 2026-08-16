@@ -65,13 +65,19 @@ class VoiceInstructionsTest {
      * available, not only in the fallback branch that first mentioned it.
      */
     @Test
-    fun `the agent is told that send_input needs a newline to submit`() {
+    fun `the agent is told that send_input needs a carriage return to submit`() {
         for (surface in listOf(fullToolset, fullToolset - "run_command")) {
             val rules = voiceAgentRules(surface, confirmationWording = "verbal")
             assertTrue(rules.contains("does not press Enter"), rules)
-            // Both characters, together: a bare \n submits in most shells but not every interactive
-            // program, and CRLF is what a terminal actually sends for Enter.
-            assertTrue(rules.contains("""\r\n"""), "the exact sequence must be named: $rules")
+            // CR, and only CR. This assertion used to demand \r\n on the theory that CRLF is what a
+            // terminal sends for Enter; it isn't. Enter is CR, and the trailing LF is delivered to
+            // the next prompt as Ctrl+J, leaving the shell in continuation mode after every command
+            // the agent runs. Measured on Windows PowerShell over ConPTY.
+            assertTrue(rules.contains("""\r"""), "the exact character must be named: $rules")
+            assertFalse(
+                rules.contains("""\r\n"""),
+                "CRLF poisons the following prompt - the rule must ask for a bare CR: $rules",
+            )
         }
     }
 

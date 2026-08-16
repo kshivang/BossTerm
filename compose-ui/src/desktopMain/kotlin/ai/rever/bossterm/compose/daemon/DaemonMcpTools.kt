@@ -72,7 +72,7 @@ class DaemonMcpTools(private val host: SessionHost) {
         return buildJsonObject { put("text", sb.toString()) }.toString()
     }
 
-    /** Write text to a session's stdin (caller appends '\n' to submit). */
+    /** Write text to a session's stdin (caller appends '\r' to submit — a bare '\n' is Ctrl+J). */
     fun sendInput(args: JsonObject): String {
         val id = args.str("session_id") ?: return err("Missing required argument: session_id")
         val text = args.str("text") ?: return err("Missing required argument: text")

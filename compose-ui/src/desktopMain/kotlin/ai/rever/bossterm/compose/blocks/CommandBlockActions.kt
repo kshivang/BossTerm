@@ -9,6 +9,7 @@ import ai.rever.bossterm.compose.actions.KeyStroke
 import ai.rever.bossterm.compose.actions.TerminalAction
 import ai.rever.bossterm.compose.selection.SelectionEngine
 import ai.rever.bossterm.compose.settings.SettingsManager
+import ai.rever.bossterm.compose.util.submitLine
 
 /**
  * Keyboard actions for command blocks (Phase 1). All actions are gated by
@@ -135,7 +136,7 @@ object CommandBlockActions {
             handler = handler@{ _ ->
                 if (!enabled()) return@handler false
                 val cmd = blocks().lastOrNull { it.commandText != null }?.commandText ?: return@handler false
-                session.writeUserInput(cmd + "\n")
+                session.writeUserInput(submitLine(cmd))
                 true
             }
         )

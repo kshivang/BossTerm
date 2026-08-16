@@ -159,29 +159,40 @@ object GitUtils {
 
     /**
      * Build a git command that runs in the specified directory.
+     *
+     * Returns the command text only — no trailing separator. It used to end in "\n", which made
+     * this the one builder still handing out a submit character: two of its callers had to
+     * `removeSuffix` it back off, and a new `writeUserInput(gitCommand(…))` would have compiled,
+     * shipped, and failed on Windows only, with no literal for `SubmitCharacterCoverageTest` to
+     * catch. Callers that mean to run it wrap in `submitLine`; callers prefilling the prompt
+     * (Checkout New Branch…, Add Worktree…) just use it as-is.
+     *
      * @param cmd The git subcommand and arguments (e.g., "status", "log --oneline -10")
      * @param cwd The working directory (if null, runs without -C flag)
-     * @return The full command string with newline
+     * @return The full command string, unsubmitted
      */
     fun gitCommand(cmd: String, cwd: String?): String {
         return if (cwd != null) {
-            "git -C ${shellQuote(cwd)} $cmd\n"
+            "git -C ${shellQuote(cwd)} $cmd"
         } else {
-            "git $cmd\n"
+            "git $cmd"
         }
     }
 
     /**
      * Build a gh command that runs in the specified directory.
+     *
+     * Unsubmitted, same as [gitCommand].
+     *
      * @param cmd The gh subcommand and arguments (e.g., "pr list", "issue create")
      * @param cwd The working directory (if null, runs without cd)
-     * @return The full command string with newline
+     * @return The full command string, unsubmitted
      */
     fun ghCommand(cmd: String, cwd: String?): String {
         return if (cwd != null) {
-            "cd ${shellQuote(cwd)} && gh $cmd\n"
+            "cd ${shellQuote(cwd)} && gh $cmd"
         } else {
-            "gh $cmd\n"
+            "gh $cmd"
         }
     }
 

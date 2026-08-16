@@ -55,6 +55,8 @@ import ai.rever.bossterm.compose.terminal.PerformanceMode
 import ai.rever.bossterm.compose.terminal.drainTerminalEmulator
 import ai.rever.bossterm.compose.ui.ProperTerminal
 import ai.rever.bossterm.compose.util.loadTerminalFont
+import ai.rever.bossterm.compose.util.normalizeSubmitNewlines
+import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.features.shouldUseNativeMenus
 import ai.rever.bossterm.compose.ime.IMEState
@@ -354,7 +356,7 @@ fun EmbeddableTerminal(
             onInstallConfirm = { assistant, originalCommand, clearLineCallback ->
                 // Show installation wizard directly
                 val terminalWriter: (String) -> Unit = { text ->
-                    session.writeUserInput(text)
+                    session.writeUserInput(normalizeSubmitNewlines(text))
                 }
                 val resolved = aiState.launcher.resolveInstallCommands(assistant)
                 toolWizardParams = ToolInstallWizardParams(
@@ -403,7 +405,7 @@ fun EmbeddableTerminal(
 
                 // Add AI assistant menu items
                 if (resolvedSettings.aiAssistantsEnabled) {
-                    val terminalWriter: (String) -> Unit = { text -> session.writeUserInput(text) }
+                    val terminalWriter: (String) -> Unit = { text -> session.writeUserInput(normalizeSubmitNewlines(text)) }
                     val aiItems = aiState.menuProvider.getMenuItems(
                         terminalWriter = terminalWriter,
                         onInstallRequest = { assistant, command, npmCommand ->
@@ -416,7 +418,7 @@ fun EmbeddableTerminal(
                 }
 
                 // Add Version Control menu items
-                val terminalWriter: (String) -> Unit = { text -> session.writeUserInput(text) }
+                val terminalWriter: (String) -> Unit = { text -> session.writeUserInput(normalizeSubmitNewlines(text)) }
                 val vcsItems = vcsMenuProvider.getMenuItems(
                     terminalWriter = terminalWriter,
                     onInstallRequest = { toolId, command, npmCommand ->
@@ -660,11 +662,29 @@ class EmbeddableTerminalState {
 
     /**
      * Send text input to the terminal.
-     * Use "\n" for enter key.
+     * Use "\n" (or "\r") for the enter key — newlines are normalized to the CR a terminal actually
+     * sends, so the same call submits on Windows/ConPTY as well as Unix. See `submitLine`.
      *
      * @param text Text to send to the shell
      */
     fun write(text: String) {
+        session?.writeUserInput(normalizeSubmitNewlines(text))
+    }
+
+    /**
+     * Send text to the terminal byte-for-byte, with no newline conversion.
+     *
+     * The escape hatch [write] gives up by normalizing. A bare LF is Ctrl+J — "insert a newline
+     * without submitting" — which is how you type a multi-line prompt into an AI CLI, and is the
+     * same need that keeps MCP `send_input` verbatim. The tabbed API reaches this through its public
+     * `activeTab.writeUserInput`; this class keeps `session` internal, so without this method the
+     * single-terminal embedder would have no way to express it at all.
+     *
+     * Use [write] unless you specifically mean keystrokes: `\r` submits, `\n` does not.
+     *
+     * @param text Text to send to the shell, unmodified
+     */
+    fun writeVerbatim(text: String) {
         session?.writeUserInput(text)
     }
 
@@ -833,7 +853,7 @@ class EmbeddableTerminalState {
             assistant = assistant,
             command = resolved.command,
             npmCommand = resolved.npmFallback,
-            terminalWriter = { text -> currentSession.writeUserInput(text) }
+            terminalWriter = { text -> currentSession.writeUserInput(normalizeSubmitNewlines(text)) }
         )
         return true
     }
@@ -1150,8 +1170,8 @@ private suspend fun initializeProcess(
                         session.terminal.addCommandStateListener(completionListener)
                     }
 
-                    // Send the command followed by newline
-                    processHandle.write(initialCommand + "\n")
+                    // Send the command followed by Enter (CR — see submitLine)
+                    processHandle.write(submitLine(initialCommand))
                 } finally {
                     // Clean up the temporary listener
                     session.terminal.removeCommandStateListener(promptListener)

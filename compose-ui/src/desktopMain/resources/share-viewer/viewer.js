@@ -567,15 +567,18 @@
         return "Running: " + a.script.slice(0, 60) + (a.script.length > 60 ? "…" : "");
       if (name === "read_scrollback") return "Reading the terminal…";
       if (name === "search_output" && a.pattern) return "Searching for “" + a.pattern.slice(0, 40) + "”…";
-      if (name === "send_input" && a.text)
+      if (name === "send_input" && a.text) {
         // The ellipsis only when it actually truncates — "Typing: ls…" for a two-character command
         // read as though something were still coming. Matches describeTool.
         // \r as well as \n, CRLF first so one Enter renders as one ⏎. The agent is told to submit
         // with \r, so matching only \n left a raw CR in the caption. Mirrors HostVoiceCallController
         // — including the order: replace THEN clip, or a CRLF straddling index 40 clips differently
         // on the two surfaces.
+        // Braces are load-bearing: a `const` under a braceless `if` is a SyntaxError that takes the
+        // whole file's parse down with it.
         const typed = a.text.replace(/\r\n?|\n/g, "⏎");
         return "Typing: " + typed.slice(0, 40) + (typed.length > 40 ? "…" : "");
+      }
       if (name === "send_signal" && a.signal) return "Sending " + a.signal + "…";
       if (name === "get_last_command") return "Checking the last command…";
       if (name === "list_panes") return "Looking at the split panes…";

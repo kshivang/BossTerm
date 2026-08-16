@@ -75,6 +75,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
 import ai.rever.bossterm.compose.util.loadTerminalFont
+import ai.rever.bossterm.compose.util.normalizeSubmitNewlines
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
 import ai.rever.bossterm.compose.features.NativeContextMenuOverride
@@ -532,8 +533,14 @@ fun TabbedTerminal(
         val activeTab = tabController.tabs.getOrNull(tabController.activeTabIndex) ?: return@LaunchedEffect
         val splitState = getOrCreateSplitState(activeTab)
 
-        // Helper to write to terminal
-        val writeToTerminal: (String) -> Unit = { cmd -> activeTab.writeUserInput(cmd) }
+        // Helper to write to terminal. Normalizes newlines to CR on the way through, so the menu
+        // handlers below (and GitUtils, and the install wizard's terminalWriter) can keep writing
+        // the readable "cmd\n" and still press Enter rather than Ctrl+J — a bare LF does not submit
+        // under ConPTY. See normalizeSubmitNewlines. Callers that deliberately prefill without
+        // submitting just omit the trailing newline, exactly as before.
+        val writeToTerminal: (String) -> Unit = { cmd ->
+            activeTab.writeUserInput(normalizeSubmitNewlines(cmd))
+        }
 
         // Get current working directory from focused session
         val getWorkingDir: () -> String? = {

@@ -5,6 +5,7 @@ import ai.rever.bossterm.compose.TerminalSession
 import ai.rever.bossterm.compose.debug.ChunkSource
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.terminal.model.CommandStateListener
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import java.io.ByteArrayInputStream
@@ -67,7 +68,10 @@ import kotlinx.serialization.json.putJsonObject
  *   - `read_debug_console`  — read recent entries from a tab's debug-data buffer.
  *
  * Write tools (gated by `BossTermMcpConfig.allowWriteTools`):
- *   - `send_input`          — write raw text to a tab's stdin (queued).
+ *   - `send_input`          — write raw text to a tab's stdin (queued). The one tool that does
+ *                             NOT submit for the caller, because a bare LF is a meaningful
+ *                             keystroke here (Ctrl+J) and rewriting it would remove the only way
+ *                             to send it. Every other write path goes through `submitLine`.
  *   - `send_signal`         — send ctrl_c / ctrl_d / ctrl_z to a tab (queued).
  *   - `run_in_panel`        — open a new tab / split pane and run a script in it.
  *   - `close_panel`         — close a split pane, or a whole tab (never a window's last tab).
@@ -825,8 +829,14 @@ class BossTermMcpServer(
             name = toolName("send_input"),
             description = describe(
                 "send_input",
-                "Write text to a tab's shell stdin. The caller is responsible for " +
-                        "appending a trailing '\\n' if they want a command to actually execute. " +
+                "Write text to a tab's shell stdin, verbatim — this tool presses no keys of its " +
+                        "own. To run a command, end the text with '\\r' (carriage return, what the " +
+                        "Enter key sends). A bare '\\n' is NOT Enter: it is Ctrl+J, which inserts a " +
+                        "newline into the line editor without submitting, so the command sits at a " +
+                        "'>>' continuation prompt and read_scrollback shows no result. Send '\\r' on " +
+                        "its own to press Enter with nothing typed. '\\n' is still the right choice " +
+                        "when you want that newline — a multi-line prompt to an AI CLI, for " +
+                        "instance — which is why this tool does not rewrite it for you. " +
                         "When `pane_id` is supplied (e.g. the value returned by run_in_panel), " +
                         "writes go to that specific split; otherwise to the tab's primary session."
             ),
@@ -838,7 +848,8 @@ class BossTermMcpServer(
                     }
                     putJsonObject("text") {
                         put("type", "string")
-                        put("description", "Raw text to write. Include '\\n' to submit.")
+                        put("description", "Raw text to write. End with '\\r' to submit it; " +
+                                "'\\n' inserts a newline without submitting.")
                     }
                     putJsonObject("pane_id") {
                         put("type", "string")
@@ -1033,7 +1044,8 @@ class BossTermMcpServer(
                 "Open a new terminal panel and write a script to it. Modes: " +
                         "'new_tab' (fresh tab with initialCommand), 'horizontal_split' (split " +
                         "below focused pane), 'vertical_split' (split beside focused pane). " +
-                        "Include '\\n' in the script to submit it as a command. " +
+                        "The script is always submitted, so a trailing newline is optional " +
+                        "(and is stripped rather than pressing Enter twice). " +
                         "All three modes wait for the shell's OSC 133;A prompt-ready signal " +
                         "(or the configured fallback delay) before sending the script, so the " +
                         "command runs cleanly rather than racing with shell startup."
@@ -1046,7 +1058,9 @@ class BossTermMcpServer(
                     }
                     putJsonObject("script") {
                         put("type", "string")
-                        put("description", "Raw text to write to the new panel's shell. Include '\\n' to submit.")
+                        put("description", "The command to run in the new panel. Submitted for " +
+                                "you; a trailing newline is optional. Empty means \"just open the " +
+                                "panel and run nothing\".")
                     }
                     putJsonObject("tab_id") {
                         put("type", "string")
@@ -1093,9 +1107,11 @@ class BossTermMcpServer(
             when (panel) {
                 "new_tab" -> {
                     // Both createTab and the split path (createSessionForSplit) hold
-                    // initialCommand until OSC 133;A and auto-append '\n', so strip
-                    // any caller-provided trailing newline for a consistent contract.
-                    val normalizedScript = script.removeSuffix("\n")
+                    // initialCommand until OSC 133;A and then submit it themselves, so strip
+                    // any caller-provided trailing separator for a consistent contract. Trim
+                    // CR as well as LF: removeSuffix("\n") alone left the CR of a CRLF-ending
+                    // script behind, which then submitted twice.
+                    val normalizedScript = script.trimEnd('\r', '\n')
                     val newId = state.createTab(
                         workingDir = workingDir,
                         initialCommand = normalizedScript.ifEmpty { null }
@@ -1112,10 +1128,10 @@ class BossTermMcpServer(
                     val configuredDefault = SettingsManager.instance.settings.value.mcpDefaultSplitRatio
                     val requestedRatio = args.optionalFloat("split_ratio")
                     val effectiveRatio = (requestedRatio ?: configuredDefault).coerceIn(0.05f, 0.95f)
-                    // Normalize the trailing newline: createSessionForSplit's initialCommand
-                    // path auto-appends '\n', matching the new_tab branch. An empty script
-                    // means "just split, don't run anything".
-                    val normalizedScript = script.removeSuffix("\n").ifEmpty { null }
+                    // Normalize the trailing separator: createSessionForSplit's initialCommand
+                    // path submits it, matching the new_tab branch. An empty script means
+                    // "just split, don't run anything".
+                    val normalizedScript = script.trimEnd('\r', '\n').ifEmpty { null }
                     // Anchor stacking: if there's already an MCP scratch pane for
                     // this tab and the caller asked for horizontal_split, stack
                     // the new pane to the RIGHT of that existing pane instead of
@@ -1862,7 +1878,7 @@ class BossTermMcpServer(
             val historyAtSend = textBuffer.historyLinesCount
             val cursorYAtSend = terminal.cursorY - 1
 
-            val toWrite = if (script.endsWith("\n")) script else script + "\n"
+            val toWrite = submitLine(script)
             // Flip the gate BEFORE the write so the listener counts the next
             // B as ours. This races ONLY with the user concurrently running
             // their own command in this same pane: if they hit Enter (firing a

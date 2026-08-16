@@ -110,11 +110,13 @@ class DaemonMcpServer(
 
         server.addTool(
             name = "send_input",
-            description = "Write text to a daemon session's stdin. Include '\\n' to submit.",
+            description = "Write text to a daemon session's stdin, verbatim. End with '\\r' " +
+                    "(what Enter sends) to submit; a bare '\\n' is Ctrl+J and inserts a newline " +
+                    "without running anything.",
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("session_id") { put("type", "string") }
-                    putJsonObject("text") { put("type", "string"); put("description", "Raw text; include '\\n' to submit.") }
+                    putJsonObject("text") { put("type", "string"); put("description", "Raw text; end with '\\r' to submit.") }
                 },
                 required = listOf("session_id", "text"),
             ),

@@ -111,7 +111,7 @@ object VoiceToolCatalog {
         VoiceToolDef(
             name = "send_input",
             description = "Type raw text into a tab's terminal (for interactive programs - TUIs, prompts). " +
-                    "Include a trailing \\n to submit.",
+                    "Include a trailing \\r to submit it; \\n only inserts a newline.",
             parameters = objectSchema(required = listOf("text")) {
                 putJsonObject("text") { put("type", "string"); put("description", "Text to type.") }
                 putJsonObject("tab_id") { put("type", "string"); put("description", TAB_ID_DESC) }

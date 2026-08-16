@@ -55,6 +55,7 @@ import ai.rever.bossterm.compose.terminal.PerformanceMode
 import ai.rever.bossterm.compose.terminal.drainTerminalEmulator
 import ai.rever.bossterm.compose.ui.ProperTerminal
 import ai.rever.bossterm.compose.util.loadTerminalFont
+import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.features.shouldUseNativeMenus
 import ai.rever.bossterm.compose.ime.IMEState
@@ -1150,8 +1151,8 @@ private suspend fun initializeProcess(
                         session.terminal.addCommandStateListener(completionListener)
                     }
 
-                    // Send the command followed by newline
-                    processHandle.write(initialCommand + "\n")
+                    // Send the command followed by Enter (CR — see submitLine)
+                    processHandle.write(submitLine(initialCommand))
                 } finally {
                     // Clean up the temporary listener
                     session.terminal.removeCommandStateListener(promptListener)

@@ -33,6 +33,7 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.ime.IMEState
 import ai.rever.bossterm.compose.osc.WorkingDirectoryOSCListener
 import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.compose.typeahead.ComposeTypeAheadModel
 import ai.rever.bossterm.compose.typeahead.CoroutineDebouncer
 import ai.rever.bossterm.compose.notification.CommandNotificationHandler
@@ -1693,8 +1694,8 @@ class TabController(
                                 tab.terminal.addCommandStateListener(completionListener)
                             }
 
-                            // Send the command followed by newline
-                            handle.write(initialCommand + "\n")
+                            // Send the command followed by Enter (CR — see submitLine)
+                            handle.write(submitLine(initialCommand))
                         } finally {
                             // Clean up the pre-registered listener
                             tab.terminal.removeCommandStateListener(promptListener)

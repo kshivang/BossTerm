@@ -83,5 +83,21 @@ class TerminalSubmitTest {
         assertTrue(normalizeSubmitNewlines("echo hi\n").endsWith("\r"))
     }
 
+    /**
+     * The composition every in-tree menu item now relies on: the literal adds the CR via
+     * [submitLine], and the writer runs [normalizeSubmitNewlines] over the result on the way through.
+     *
+     * Which means a CR must survive normalization untouched. Nothing else in the suite pins that —
+     * the other cases feed it LF and CRLF — so a future rewrite that mapped CR to anything else
+     * would stay green here and break every git and AI menu item, on every platform rather than
+     * just Windows.
+     */
+    @Test
+    fun `normalizing an already-submitted command is a no-op`() {
+        assertEquals("ls\r", normalizeSubmitNewlines("ls\r"))
+        assertEquals(submitLine("git status"), normalizeSubmitNewlines(submitLine("git status")))
+        assertEquals("cd /tmp\rls\r", normalizeSubmitNewlines(submitLine("cd /tmp\nls")))
+    }
+
     private fun String.debug() = replace("\r", "\\r").replace("\n", "\\n")
 }

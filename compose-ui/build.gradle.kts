@@ -159,6 +159,14 @@ kotlin {
     }
 }
 
+// SubmitCharacterCoverageTest scans sibling modules for LF submits, so it needs the repo root
+// rather than whatever working directory the runner picked. Injected instead of sniffed upward for
+// settings.gradle.kts: the sniff resolves nothing when an IDE run config starts at the repo root,
+// and an empty scan is a test that passes without looking at anything.
+tasks.withType<Test> {
+    systemProperty("bossterm.repoRoot", rootDir.absolutePath)
+}
+
 // Configure JAR manifest with version information for library consumers
 // This enables Version.CURRENT to read the version when used as a Maven dependency
 tasks.withType<Jar> {

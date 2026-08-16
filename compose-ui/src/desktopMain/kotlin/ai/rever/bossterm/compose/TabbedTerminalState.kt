@@ -984,7 +984,8 @@ class TabbedTerminalState {
      * Send text input to the focused pane of the specified tab.
      *
      * Newlines are normalized to CR, same as the [write] overloads — this is the split-pane
-     * sibling of that API and has to press Enter the same way. See `submitLine`.
+     * sibling of that API and has to press Enter the same way. See `submitLine`. Use
+     * [writeVerbatim] when you mean keystrokes rather than a command.
      *
      * @param text Text to send
      * @param tabId Target tab ID. If null, uses the active tab.
@@ -993,6 +994,29 @@ class TabbedTerminalState {
     fun writeToFocusedPane(text: String, tabId: String? = null): Boolean {
         val session = getFocusedSplitSession(tabId) ?: return false
         session.writeUserInput(normalizeSubmitNewlines(text))
+        return true
+    }
+
+    /**
+     * Send text to the focused pane byte-for-byte, with no newline conversion.
+     *
+     * The escape hatch [write] and [writeToFocusedPane] give up by normalizing. A bare LF is Ctrl+J
+     * — "insert a newline without submitting" — which is how a multi-line prompt gets typed into an
+     * AI CLI, and is the same need that keeps MCP `send_input` verbatim.
+     *
+     * Mirrors `EmbeddableTerminalState.writeVerbatim`. Reachable before this existed only via the
+     * public `activeTab` / [getFocusedSplitSession], which is not where anyone would look; the two
+     * public APIs now offer the same shape for the same need.
+     *
+     * Use [write] unless you specifically mean keystrokes: `\r` submits, `\n` does not.
+     *
+     * @param text Text to send to the shell, unmodified
+     * @param tabId Target tab ID. If null, uses the active tab.
+     * @return true if the text was sent, false if tab/pane not found
+     */
+    fun writeVerbatim(text: String, tabId: String? = null): Boolean {
+        val session = getFocusedSplitSession(tabId) ?: activeTab ?: return false
+        session.writeUserInput(text)
         return true
     }
 

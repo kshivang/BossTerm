@@ -1536,7 +1536,9 @@ class BossTermMcpServer(
                 properties = buildJsonObject {
                     putJsonObject("script") {
                         put("type", "string")
-                        put("description", "Shell command to run. A trailing newline is added if absent.")
+                        put("description", "Shell command to run. Submitted for you, so a trailing " +
+                                "newline is optional — and only ever one Enter is sent, however " +
+                                "many trailing newlines you include.")
                     }
                     putJsonObject("pane_id") {
                         put("type", "string")

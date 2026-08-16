@@ -30,12 +30,23 @@ class SubmitCharacterCoverageTest {
      * whole review round. Sample code is the copy-paste source for embedders, so it has to hold the
      * same line as the library.
      */
-    private val scanRoots = listOf(
-        "compose-ui/src/desktopMain/kotlin",
-        "bossterm-app/src/desktopMain/kotlin",
-        "tabbed-example/src/desktopMain/kotlin",
-        "embedded-example/src/desktopMain/kotlin",
-    ).map { File(repoRoot, it) }.filter { it.isDirectory }
+    private val scanRoots = moduleNames()
+        .map { File(repoRoot, "$it/src/desktopMain/kotlin") }
+        .filter { it.isDirectory }
+
+    /**
+     * Every module `settings.gradle.kts` includes, so the guard extends itself.
+     *
+     * Was a hardcoded four-module list, which meant a new module was silently unguarded and a
+     * renamed one failed with a message about example modules. Reading the include block instead
+     * matters more here than it would elsewhere: the whole point of this suite is catching drift
+     * that nobody is looking for, and "nobody added the new module to the scan" is exactly that.
+     */
+    private fun moduleNames(): List<String> {
+        val settings = File(repoRoot, "settings.gradle.kts").readText()
+        val includeBlock = settings.substringAfter("include(").substringBefore(")")
+        return Regex(""""\s*:([\w-]+)\s*"""").findAll(includeBlock).map { it.groupValues[1] }.toList()
+    }
 
     /** Finds where a write call starts; the argument is then read by balancing parentheses. */
     private val writerCall = Regex("""$WRITERS\s*\(""")
@@ -53,12 +64,18 @@ class SubmitCharacterCoverageTest {
      * separator chosen by a conditional — because in both the writer name and the `\n` sit on
      * different lines, or the `\n` isn't adjacent to the closing paren.
      */
-    private fun argumentText(text: String, openParen: Int): String {
+    private fun argumentText(text: String, openParen: Int): String? {
         var depth = 0
         var i = openParen
         var inString = false
         var escaped = false
-        while (i < text.length) {
+        // A write call's argument is one expression. If the parens haven't balanced by here, the
+        // scanner has lost track — a raw string, a char literal holding a quote, a quote inside a
+        // comment — and running on to EOF would blame a later `\n` in the file on this call. Give up
+        // instead: `argumentText` returns null and the caller reports it as unparseable, which sends
+        // the next reader to the right place rather than a confidently wrong one.
+        val limit = minOf(text.length, openParen + MAX_CALL_CHARS)
+        while (i < limit) {
             val c = text[i]
             when {
                 escaped -> escaped = false
@@ -73,7 +90,7 @@ class SubmitCharacterCoverageTest {
             }
             i++
         }
-        return text.substring(openParen + 1)
+        return null
     }
 
     /** An LF escape appearing inside a string literal — `"…\n"`, however the call is spelled. */
@@ -82,6 +99,7 @@ class SubmitCharacterCoverageTest {
     @Test
     fun `no write path submits with a bare line feed`() {
         val offenders = mutableListOf<String>()
+        val unparseable = mutableListOf<String>()
 
         sources().forEach { file ->
             val text = file.readText()
@@ -92,6 +110,10 @@ class SubmitCharacterCoverageTest {
             for (match in writerCall.findAll(text)) {
                 val openParen = match.range.last
                 val argument = argumentText(text, openParen)
+                if (argument == null) {
+                    unparseable += "${file.name}:${lineOf(match.range.first)}  ${match.value}…"
+                    continue
+                }
                 if (!lfInsideStringLiteral.containsMatchIn(argument)) continue
                 // The opt-out may sit on any line the call spans.
                 val start = lineOf(match.range.first)
@@ -111,6 +133,18 @@ class SubmitCharacterCoverageTest {
                 offenders.forEach { appendLine("  $it") }
             },
         )
+        // Reported separately from a plain pass: a call the scanner couldn't read is a call it
+        // didn't check, and silently treating that as clean is how a guard rots into decoration.
+        assertTrue(
+            unparseable.isEmpty(),
+            buildString {
+                appendLine("Could not find the end of these write calls within $MAX_CALL_CHARS chars.")
+                appendLine("argumentText balances parens and tracks double quotes only, so a raw")
+                appendLine("string, a char literal holding a quote, or a quote inside a comment in")
+                appendLine("the call will throw it off. Teach it that shape, or simplify the call:")
+                unparseable.forEach { appendLine("  $it") }
+            },
+        )
     }
 
     /**
@@ -124,10 +158,15 @@ class SubmitCharacterCoverageTest {
         for (regressed in listOf("TabbedTerminal.kt", "ProperTerminal.kt", "TabbedTerminalState.kt")) {
             assertTrue(files.any { it.name == regressed }, "$regressed must be in scope")
         }
-        assertTrue(
-            scanRoots.size >= 4,
-            "the example modules must be scanned - that is where writeToFocusedPane slipped through",
-        )
+        // Derived from settings.gradle.kts, so this also fails if the include block stops parsing.
+        assertTrue(moduleNames().size >= 5, "expected every included module, got ${moduleNames()}")
+        for (module in listOf("tabbed-example", "embedded-example")) {
+            assertTrue(
+                scanRoots.any { it.path.replace('\\', '/').contains("/$module/") },
+                "$module must be scanned - sample code is what embedders copy, and it is where " +
+                    "writeToFocusedPane's LF call slipped through a whole review round",
+            )
+        }
     }
 
     /**
@@ -168,7 +207,7 @@ class SubmitCharacterCoverageTest {
     /** Runs the real scan over one snippet, so these cases can't drift from what the scan does. */
     private fun flags(snippet: String): Boolean {
         val match = writerCall.find(snippet) ?: return false
-        val argument = argumentText(snippet, match.range.last)
+        val argument = argumentText(snippet, match.range.last) ?: return false
         return lfInsideStringLiteral.containsMatchIn(argument)
     }
 
@@ -246,17 +285,24 @@ class SubmitCharacterCoverageTest {
          */
         const val VERBATIM_MARKER = "verbatim-by-design"
 
+        /** Generous for one expression, short enough that a lost scanner gives up near the call. */
+        const val MAX_CALL_CHARS = 600
+
         /**
-         * Anchored on `settings.gradle.kts` rather than relative paths, so the scan roots resolve
-         * the same whichever directory the runner picks.
+         * Injected by the build (`bossterm.repoRoot`), so the scan roots resolve the same whichever
+         * directory the runner picks.
          *
-         * Gradle sets the working dir to the project dir, but an IDE run config may use the repo
-         * root — and with relative roots that produced an empty scan, which the LF test passes
-         * vacuously. `the scan reaches the sources it claims to cover` does catch it, but reports
-         * "found 0" rather than pointing at the cause.
+         * Falls back to sniffing upward for `settings.gradle.kts`, which covers running the class
+         * outside Gradle. Relative paths were the original approach and they resolved to nothing
+         * when an IDE run config started at the repo root — an empty scan that the LF test passes
+         * vacuously. Failing loudly here beats a green test that looked at no files.
          */
-        val repoRoot: File = generateSequence(File(".").absoluteFile) { it.parentFile }
-            .firstOrNull { File(it, "settings.gradle.kts").isFile }
-            ?: error("could not locate the repo root from ${File(".").absolutePath}")
+        val repoRoot: File = System.getProperty("bossterm.repoRoot")?.let(::File)
+            ?: generateSequence(File(".").absoluteFile) { it.parentFile }
+                .firstOrNull { File(it, "settings.gradle.kts").isFile }
+            ?: error(
+                "repo root not found: pass -Dbossterm.repoRoot, or run from inside the repo " +
+                    "(cwd was ${File(".").absolutePath})"
+            )
     }
 }

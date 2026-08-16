@@ -1,5 +1,9 @@
-/**
+/*
  * The bytes that press Enter at a shell prompt: CR, never LF.
+ *
+ * A plain block comment, not KDoc: sitting before `package` it attaches to no declaration, so it
+ * would never surface on hover or in Dokka however it were spelled. The load-bearing text is
+ * repeated on the two functions below, where it does.
  *
  * CR (0x0D) is what `TerminalKeyEncoder` sends for the Enter key (`putCode(VK_ENTER, Ascii.CR.code)`)
  * and what `TerminalTab.pasteText` normalizes pasted newlines to, so anything writing a command

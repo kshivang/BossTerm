@@ -139,7 +139,12 @@ class VoiceCrossLanguageContractTest {
         // clip(replace(…), 40), so clipping first would diverge on a CRLF straddling index 40 (one
         // surface counting two characters where the other counts one). Asserted as ordering rather
         // than as `a.text.slice(0, 40)`, because the replace has to come between them.
-        val typed = describe.substringAfter("""name === "send_input"""").substringBefore("if (name ===")
+        // Anchored on the block's closing brace, not the next `if (name ===`: if send_input ever
+        // becomes the last branch in voiceDescribeTool, that slice swallows the rest of the function
+        // and the ordering assertion below could pass against some other branch's .slice(0, 40).
+        val typed = describe
+            .substringAfter("""name === "send_input"""")
+            .substringBefore("\n      }")
         assertTrue(typed.contains(".slice(0, 40)"), "viewer.js must clip typed text at 40: $typed")
         assertTrue(
             typed.indexOf("""replace(/\r\n?|\n/g, "⏎")""") < typed.indexOf(".slice(0, 40)"),

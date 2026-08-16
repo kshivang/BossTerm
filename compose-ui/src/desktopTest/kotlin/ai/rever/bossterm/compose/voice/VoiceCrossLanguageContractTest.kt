@@ -129,12 +129,22 @@ class VoiceCrossLanguageContractTest {
     @Test
     fun `the two surfaces clip their captions to the same lengths`() {
         val describe = viewerJs.substringAfter("function voiceDescribeTool").substringBefore("\n  }")
-        for ((label, len) in listOf("script" to 60, "pattern" to 40, "text" to 40)) {
+        for ((label, len) in listOf("script" to 60, "pattern" to 40)) {
             assertTrue(
                 describe.contains("a.$label.slice(0, $len)"),
                 "viewer.js must clip $label at $len to match HostVoiceCallController.describeTool",
             )
         }
+        // send_input clips at 40 like the others, but only AFTER newlines become ⏎ — the host does
+        // clip(replace(…), 40), so clipping first would diverge on a CRLF straddling index 40 (one
+        // surface counting two characters where the other counts one). Asserted as ordering rather
+        // than as `a.text.slice(0, 40)`, because the replace has to come between them.
+        val typed = describe.substringAfter("""name === "send_input"""").substringBefore("if (name ===")
+        assertTrue(typed.contains(".slice(0, 40)"), "viewer.js must clip typed text at 40: $typed")
+        assertTrue(
+            typed.indexOf("""replace(/\r\n?|\n/g, "⏎")""") < typed.indexOf(".slice(0, 40)"),
+            "the ⏎ substitution must precede the clip, as it does in describeTool: $typed",
+        )
     }
 
     /**

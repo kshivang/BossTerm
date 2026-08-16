@@ -45,12 +45,12 @@ class SubmitCharacterCoverageTest {
      * mean "type this at a shell prompt" belong here.
      */
     private val literalLfSubmit = Regex(
-        """(writeUserInput|terminalWriter|writeToTerminal)\(\s*"[^"]*\\n"\s*\)"""
+        """$WRITERS\(\s*"(?:\\.|[^"\\])*\\n"\s*\)"""
     )
 
     /** `writeUserInput(cmd + "\n")` — the same mistake spelled with concatenation. */
     private val concatenatedLfSubmit = Regex(
-        """(writeUserInput|terminalWriter|writeToTerminal)\([^)"]*\+\s*"\\n"\s*\)"""
+        """$WRITERS\(.*\+\s*"\\n"\s*\)"""
     )
 
     private fun sources() = scanRoots.asSequence()
@@ -139,6 +139,18 @@ class SubmitCharacterCoverageTest {
         assertTrue(literalLfSubmit.containsMatchIn("""tab.writeUserInput("clear\n")"""))
         assertTrue(literalLfSubmit.containsMatchIn("""terminalWriter("git status\n")"""))
         assertTrue(concatenatedLfSubmit.containsMatchIn("""session.writeUserInput(cmd + "\n")"""))
+        // A command containing an escaped quote. `[^"]*` stopped dead at the backslash-quote, so
+        // ~10 real lines in ShellCustomizationMenuProvider — starship_setup_*, *_set_default,
+        // ohmyzsh_current_theme — were invisible to this scan while looking guarded.
+        assertTrue(
+            literalLfSubmit.containsMatchIn("""terminalWriter("echo \"theme: \${'$'}ZSH_THEME\"\n")"""),
+            "an escaped quote inside the command must not hide the LF",
+        )
+        // The initialCommand path behind run_in_panel, which the plain-name list used to miss.
+        assertTrue(concatenatedLfSubmit.containsMatchIn("""handle.write(initialCommand + "\n")"""))
+        assertTrue(concatenatedLfSubmit.containsMatchIn("""processHandle.write(initialCommand + "\n")"""))
+        // A call nested in the argument, which `[^)"]*` used to let through.
+        assertTrue(concatenatedLfSubmit.containsMatchIn("""tab.writeUserInput(render(x) + "\n")"""))
         // The normalizing public API is NOT in the pattern: "cmd\n" is its documented spelling and
         // is correct there. Its own guarantee is covered by the test above instead.
         assertTrue(!literalLfSubmit.containsMatchIn("""state.writeToFocusedPane("echo hi\n")"""))
@@ -150,6 +162,17 @@ class SubmitCharacterCoverageTest {
     }
 
     private companion object {
+        /**
+         * The names that mean "type this at a shell prompt".
+         *
+         * `handle`/`processHandle` are qualified rather than a bare `write(`, because `DaemonClient`
+         * and `DaemonControlChannel` write newline-delimited JSON to a socket, where LF is the
+         * protocol and correct. Those two are the `initialCommand` path behind MCP `run_in_panel`,
+         * which is one of the bugs this PR fixed and so has to stay guarded.
+         */
+        const val WRITERS =
+            """(writeUserInput|terminalWriter|writeToTerminal|(?:handle|processHandle)\.write)"""
+
         /**
          * Per-line opt-out. Narrow on purpose: excluding a whole file left `BossTermMcpServer`'s
          * `run_command` and `run_in_panel` — two of the paths this rule exists to protect —

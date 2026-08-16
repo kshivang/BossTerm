@@ -1045,8 +1045,9 @@ class BossTermMcpServer(
                 "Open a new terminal panel and write a script to it. Modes: " +
                         "'new_tab' (fresh tab with initialCommand), 'horizontal_split' (split " +
                         "below focused pane), 'vertical_split' (split beside focused pane). " +
-                        "The script is always submitted, so a trailing newline is optional " +
-                        "(and is stripped rather than pressing Enter twice). " +
+                        "A non-empty script is always submitted, so a trailing newline is optional " +
+                        "(and is stripped rather than pressing Enter twice); an empty one just " +
+                        "opens the panel. " +
                         "All three modes wait for the shell's OSC 133;A prompt-ready signal " +
                         "(or the configured fallback delay) before sending the script, so the " +
                         "command runs cleanly rather than racing with shell startup."

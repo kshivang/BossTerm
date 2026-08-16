@@ -24,10 +24,13 @@ class GitUtilsTest {
 
     @Test
     fun `git command quotes cwd before worktree command`() {
+        // No trailing separator: the builder returns command text, and whoever runs it adds the
+        // Enter via submitLine. The Add Worktree… caller depends on that — it prefills the prompt
+        // for the user to finish typing, and used to have to strip the newline back off.
         val expected = if (ShellCustomizationUtils.isWindows()) {
-            "git -C \"/tmp/a b\" worktree add \n"
+            "git -C \"/tmp/a b\" worktree add "
         } else {
-            "git -C '/tmp/a b' worktree add \n"
+            "git -C '/tmp/a b' worktree add "
         }
         assertEquals(expected, GitUtils.gitCommand("worktree add ", "/tmp/a b"))
     }

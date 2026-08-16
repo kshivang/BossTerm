@@ -258,11 +258,11 @@ state.write("cmd\n", tabId = "id")   // Target tab by ID
 ```
 
 `write()` / `writeToFocusedPane()` are the embedder-facing convenience and normalize newlines, so
-`"\n"` presses Enter on every platform. `TerminalTab.writeUserInput()` underneath them is verbatim —
-reachable on the tabbed API via the public `activeTab`, and used by MCP `send_input`, which is the
-one caller that must be able to send a literal LF. `EmbeddableTerminalState` keeps its `session`
-internal, so the single-terminal API has no verbatim path; add one if an embedder needs Ctrl+J.
-See the CR note above.
+`"\n"` presses Enter on every platform. The verbatim path underneath is `TerminalTab.writeUserInput()`
+— reachable on the tabbed API via the public `activeTab`, as `EmbeddableTerminalState.writeVerbatim()`
+on the single-terminal API, and used by MCP `send_input`. Reach for it only when you mean keystrokes
+rather than a command: a bare LF is Ctrl+J, which is how a multi-line prompt gets typed into an AI
+CLI. See the CR note above.
 
 ## Development Guidelines
 

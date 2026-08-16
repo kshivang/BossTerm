@@ -672,6 +672,23 @@ class EmbeddableTerminalState {
     }
 
     /**
+     * Send text to the terminal byte-for-byte, with no newline conversion.
+     *
+     * The escape hatch [write] gives up by normalizing. A bare LF is Ctrl+J — "insert a newline
+     * without submitting" — which is how you type a multi-line prompt into an AI CLI, and is the
+     * same need that keeps MCP `send_input` verbatim. The tabbed API reaches this through its public
+     * `activeTab.writeUserInput`; this class keeps `session` internal, so without this method the
+     * single-terminal embedder would have no way to express it at all.
+     *
+     * Use [write] unless you specifically mean keystrokes: `\r` submits, `\n` does not.
+     *
+     * @param text Text to send to the shell, unmodified
+     */
+    fun writeVerbatim(text: String) {
+        session?.writeUserInput(text)
+    }
+
+    /**
      * Send raw bytes to the terminal process.
      * Useful for sending control characters like Ctrl+C (0x03) or Ctrl+D (0x04).
      *

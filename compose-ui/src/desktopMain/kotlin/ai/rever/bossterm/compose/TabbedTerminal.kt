@@ -563,12 +563,12 @@ fun TabbedTerminal(
 
         // Helper to run git command in working directory using shared GitUtils
         val gitCmd: (String) -> Unit = { cmd ->
-            writeToTerminal(GitUtils.gitCommand(cmd, getWorkingDir()))
+            writeToTerminal(submitLine(GitUtils.gitCommand(cmd, getWorkingDir())))
         }
 
         // Helper to run gh command in working directory using shared GitUtils
         val ghCmd: (String) -> Unit = { cmd ->
-            writeToTerminal(GitUtils.ghCommand(cmd, getWorkingDir()))
+            writeToTerminal(submitLine(GitUtils.ghCommand(cmd, getWorkingDir())))
         }
 
         // Get current shell from environment
@@ -654,12 +654,8 @@ fun TabbedTerminal(
             onGitBranch = { gitCmd(GitUtils.Commands.BRANCH) }
             onGitCheckoutPrev = { gitCmd(GitUtils.Commands.CHECKOUT_PREV) }
             onGitCheckoutNew = {
-                // Prefill only: the user still needs to type the new branch name.
-                val command = GitUtils.gitCommand(
-                    GitUtils.Commands.CHECKOUT_NEW,
-                    getWorkingDir()
-                ).removeSuffix("\n")
-                writeToTerminal(command)
+                // Prefill only: the user still needs to type the new branch name, so no submitLine.
+                writeToTerminal(GitUtils.gitCommand(GitUtils.Commands.CHECKOUT_NEW, getWorkingDir()))
             }
             onGitStash = { gitCmd(GitUtils.Commands.STASH) }
             onGitStashPop = { gitCmd(GitUtils.Commands.STASH_POP) }
@@ -1594,8 +1590,7 @@ fun TabbedTerminal(
                     tabController.switchToTab(tabIndex)
                     splitStates[tab.id]?.setFocusedPane(paneId)
                     val cwd = session.workingDirectory.value
-                    val command = GitUtils.gitCommand("worktree add ", cwd).removeSuffix("\n")
-                    session.writeUserInput(command)
+                    session.writeUserInput(GitUtils.gitCommand("worktree add ", cwd))
                 },
                 onShareTab = { index ->
                     tabController.tabs.getOrNull(index)?.let { startShare(it.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }

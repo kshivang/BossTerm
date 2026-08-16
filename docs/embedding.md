@@ -1119,3 +1119,37 @@ EmbeddableTerminal(
     }
 )
 ```
+
+## Sending input: `write()` vs `writeVerbatim()`
+
+`write()` — and `TabbedTerminalState.write(text, tabId)` / `writeToFocusedPane()` — normalize
+newlines to CR before sending, so `write("ls\n")` presses Enter on every platform.
+
+CR is what the Enter key sends, and what a terminal's line editor accepts. LF is a different
+keystroke (Ctrl+J, "insert a newline without submitting"). On Linux and macOS the pty's `ICRNL`
+maps CR to NL on input, so both appear to work; ConPTY does no such translation, and a bare LF
+leaves the command sitting at a `>>` continuation prompt. See the CR note in `AGENTS.md`.
+
+Use `writeVerbatim()` when you mean keystrokes rather than a command — typing a newline into an
+AI CLI's multi-line prompt, for instance:
+
+```kotlin
+state.write("claude\n")            // runs it
+state.writeVerbatim("line 1\n")    // types a newline into the prompt, submits nothing
+```
+
+### Migration (behaviour changed, source unchanged)
+
+These compile exactly as before, so nothing flags at the call site — the difference only shows at
+runtime, and only on Windows.
+
+| API | Was | Now | If you relied on the old behaviour |
+|---|---|---|---|
+| `EmbeddableTerminalState.write`, `TabbedTerminalState.write`, `writeToFocusedPane` | bytes passed through | newlines normalized to CR, **including interior ones** | `writeVerbatim(text)` |
+| `GitUtils.gitCommand` / `ghCommand` | returned the command with a trailing `\n` | return the command text only | `submitLine(gitCommand(…))` to run it; as-is to prefill |
+| `writeToFocusedPane` | returned `false` for an unsplit tab that had never been activated | writes to that tab's single pane | nothing — the old `false` was a bug |
+
+The concrete case: on Windows, `write("line1\nline2")` used to *insert* a newline into an AI CLI's
+prompt and now submits each line. Unix is unchanged, so this closes a platform gap rather than
+opening one — but it is a change for any embedder using `write()` to feed multi-line text rather
+than to type a command.

@@ -314,8 +314,15 @@ fun AIInstallDialogHost(
                     // If there's a command to run after install, source shell and execute it
                     p.commandToRunAfter?.let { cmd ->
                         // Source shell profile to pick up PATH changes, then run original command
-                        // Escape single quotes in the command for safe embedding
-                        val escapedCmd = cmd.replace("'", "'\\''")
+                        // Escape single quotes in the command for safe embedding, and flatten it to
+                        // one line. submitLine rewrites INTERIOR newlines too, so an LF surviving
+                        // into the quoted argument would become a real Enter inside the quotes —
+                        // splitting the command and leaving the quote unterminated, rather than
+                        // passing a multi-line argument. Nothing reaches here with an LF today
+                        // (commandToRunAfter is a launch line or an intercepted prompt line); this
+                        // makes that a guarantee of this call rather than a property of its callers.
+                        val escapedCmd = cmd.lineSequence().joinToString(" ") { it.trim() }
+                            .replace("'", "'\\''")
                         // Use a fresh login shell to get updated PATH, then run the command
                         p.terminalWriter(submitLine("\$SHELL -l -c '$escapedCmd'"))
                     }

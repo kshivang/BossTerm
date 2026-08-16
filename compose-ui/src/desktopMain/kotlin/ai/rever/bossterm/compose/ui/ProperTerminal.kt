@@ -2379,6 +2379,12 @@ fun ProperTerminal(
             ai.rever.bossterm.compose.palette.PaletteSources.collect(
               actions = actionRegistry,
               recentCommands = commandBlocks.mapNotNull { it.commandText },
+              // Prefill, so verbatim: the command lands at the prompt for the user to edit and
+              // submit themselves. One of four such sites in this file (command palette, history
+              // search, AI suggestion, and the non-auto-run workflow below) — all single-line
+              // today, so no LF reaches the PTY. If a multi-line source ever feeds one, the answer
+              // is bracketed paste like pasteText, not submitLine: converting the newlines would
+              // run the lines instead of offering them. See submitLine for why CR and not LF.
               insertCommand = { cmd -> tab.writeUserInput(cmd) },
               workflows = workflows,
               onRunWorkflow = { wf -> pendingWorkflow = wf }
@@ -2443,6 +2449,7 @@ fun ProperTerminal(
           ai.rever.bossterm.compose.history.HistorySearchOverlay(
             visible = true,
             history = historyEntries,
+            // Prefill, verbatim — see insertCommand above for why these four sites stay raw.
             onSelect = { cmd -> tab.writeUserInput(cmd); restoreFocus() },
             onDismiss = { restoreFocus() },
             aiEnabled = settings.aiCommandBarEnabled && settings.aiCommandBarPrintFlag.isNotBlank(),
@@ -2454,6 +2461,8 @@ fun ProperTerminal(
                   printFlag = settings.aiCommandBarPrintFlag,
                   naturalLanguage = query
                 )
+                // Prefill, verbatim — see insertCommand above. AiCommandSuggester returns one
+                // trimmed line, so there is nothing to convert even if we wanted to.
                 if (!suggestion.isNullOrBlank()) tab.writeUserInput(suggestion)
               }
             }

@@ -64,7 +64,12 @@ class SubmitCharacterCoverageTest {
         // `:` inside the class, so a nested `include(":foo:bar")` maps to its directory instead of
         // being dropped: a dropped module never enters `modules`, so the every-module-contributes
         // assertion below cannot catch it either — the same silent rot this function exists to stop.
-        return Regex("""include\s*\(([^)]*)\)""").findAll(settings)
+        //
+        // Line comments stripped first, or a commented-out `// include(":legacy")` yields a phantom
+        // module that then fails that same assertion. (argumentText goes to this trouble too; this
+        // parser had no excuse not to.)
+        val live = settings.lines().joinToString("\n") { it.substringBefore("//") }
+        return Regex("""include\s*\(([^)]*)\)""").findAll(live)
             .flatMap { block -> Regex(""""\s*:([\w:-]+)\s*"""").findAll(block.groupValues[1]) }
             .map { it.groupValues[1].replace(':', '/') }
             .distinct()
@@ -213,12 +218,21 @@ class SubmitCharacterCoverageTest {
         assertTrue(modules.size >= 5, "expected every included module, got $modules")
         // Asserted AFTER the directory filter, which is where the previous version lost modules:
         // it checked the names and then silently dropped any whose layout wasn't desktopMain.
+        //
+        // Only modules that actually hold Kotlin, though. Demanding a scanned root from EVERY
+        // included module was stronger than the intent: a Java-only, resources-only or BOM-style
+        // module would fail this suite with a message about submit characters, a long way from its
+        // cause. What the check is really for is a source set that MOVED — a module with Kotlin
+        // somewhere but none of it reachable.
         val paths = scanRoots.map { it.path.replace('\\', '/') }
         for (module in modules) {
+            val dir = File(repoRoot, module)
+            val hasKotlin = dir.walkTopDown().any { it.isFile && it.extension == "kt" }
+            if (!hasKotlin) continue
             assertTrue(
                 paths.any { it.contains("/$module/src/") },
-                "module '$module' is included but contributes no scanned source root - it has no " +
-                    "src/*/kotlin, or its layout changed. Found roots: $paths",
+                "module '$module' has Kotlin sources but contributes no scanned root - its source " +
+                    "set moved out of src/*Main/kotlin or src/main/kotlin. Found roots: $paths",
             )
         }
         // Sample code is what embedders copy, and is where writeToFocusedPane's LF call slipped

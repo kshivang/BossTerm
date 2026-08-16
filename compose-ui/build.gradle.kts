@@ -163,8 +163,11 @@ kotlin {
 // rather than whatever working directory the runner picked. Injected instead of sniffed upward for
 // settings.gradle.kts: the sniff resolves nothing when an IDE run config starts at the repo root,
 // and an empty scan is a test that passes without looking at anything.
+// Set in doFirst rather than as a task property on purpose: a systemProperty becomes a task input,
+// and an absolute checkout path as an input makes the test task non-relocatable, costing build-cache
+// hits across CI agents. Applied at execution time instead, before the test JVM forks.
 tasks.withType<Test> {
-    systemProperty("bossterm.repoRoot", rootDir.absolutePath)
+    doFirst { systemProperty("bossterm.repoRoot", rootDir.absolutePath) }
 }
 
 // Configure JAR manifest with version information for library consumers

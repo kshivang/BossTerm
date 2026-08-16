@@ -987,12 +987,17 @@ class TabbedTerminalState {
      * sibling of that API and has to press Enter the same way. See `submitLine`. Use
      * [writeVerbatim] when you mean keystrokes rather than a command.
      *
+     * Resolves through [findSession], like [writeVerbatim]. It used to use [getFocusedSplitSession],
+     * which returns null when `splitStates` has no entry for the tab — populated lazily, so an
+     * unsplit tab that had never been activated returned false even though it has exactly one pane
+     * to write to. The two are documented as a pair and now resolve as one.
+     *
      * @param text Text to send
      * @param tabId Target tab ID. If null, uses the active tab.
-     * @return true if the text was sent, false if tab/pane not found
+     * @return true if the text was sent, false if the tab was not found
      */
     fun writeToFocusedPane(text: String, tabId: String? = null): Boolean {
-        val session = getFocusedSplitSession(tabId) ?: return false
+        val session = findSession(resolveTabId(tabId) ?: return false) ?: return false
         session.writeUserInput(normalizeSubmitNewlines(text))
         return true
     }

@@ -42,7 +42,10 @@ class SubmitCharacterCoverageTest {
      */
     private val scanRoots: List<File> = moduleNames().flatMap { module ->
         File(repoRoot, "$module/src").listFiles().orEmpty()
-            .filter { it.isDirectory && it.name.endsWith("Main") }
+            // "main" as well as "*Main": a plain-JVM module uses the conventional src/main/kotlin,
+            // and "main".endsWith("Main") is false — which would fail the every-module assertion
+            // below for a module that is laid out perfectly normally.
+            .filter { it.isDirectory && (it.name.endsWith("Main") || it.name == "main") }
             .map { File(it, "kotlin") }
             .filter { it.isDirectory }
     }
@@ -224,17 +227,20 @@ class SubmitCharacterCoverageTest {
         for ((fileName, signatures) in surfaces) {
             val file = sources().firstOrNull { it.name == fileName }
                 ?: error("$fileName not found in the scan roots")
-            val lines = file.readLines()
+            val text = file.readText()
             for (signature in signatures) {
-                val declarations = lines.withIndex().filter { it.value.contains(signature) }
-                assertTrue(declarations.isNotEmpty(), "no `$signature` found in $fileName")
-                for ((index, decl) in declarations) {
-                    // The body is short by construction; a handful of lines covers every overload.
-                    val body = lines.subList(index, minOf(index + 6, lines.size)).joinToString("\n")
+                // Every overload, not just the first: TabbedTerminalState.write has three.
+                val declarations = Regex(Regex.escape(signature)).findAll(text).count()
+                assertTrue(declarations > 0, "no `$signature` found in $fileName")
+                var searchFrom = 0
+                repeat(declarations) {
+                    val at = text.indexOf(signature, searchFrom)
+                    val body = bodyFrom(text, at, "$signature in $fileName")
+                    searchFrom = at + signature.length
                     assertTrue(
                         body.contains("normalizeSubmitNewlines") || body.contains("submitLine"),
-                        "$fileName:${index + 1} `${decl.trim()}` must normalize newlines — it is a " +
-                            "public write API and its documented contract is that \\n presses Enter",
+                        "`$signature` in $fileName must normalize newlines — it is a public write " +
+                            "API and its documented contract is that \\n presses Enter:\n$body",
                     )
                 }
             }
@@ -256,19 +262,67 @@ class SubmitCharacterCoverageTest {
      */
     @Test
     fun `targeted writes resolve through findSession, never the active tab`() {
-        val file = sources().firstOrNull { it.name == "TabbedTerminalState.kt" }
-            ?: error("TabbedTerminalState.kt not found in the scan roots")
-        val lines = file.readLines()
         for (signature in listOf("fun writeVerbatim(", "fun writeToFocusedPane(")) {
-            val index = lines.indexOfFirst { it.contains(signature) }
-            assertTrue(index >= 0, "no `$signature` in TabbedTerminalState.kt")
-            val body = lines.subList(index, minOf(index + 6, lines.size)).joinToString("\n")
+            val body = bodyOf("TabbedTerminalState.kt", signature)
             assertTrue(
                 !body.contains("?: activeTab"),
                 "`$signature` must not fall back to the active tab - a caller that named a tab " +
                     "gets its keystrokes delivered somewhere else entirely:\n$body",
             )
         }
+    }
+
+    /**
+     * The verbatim APIs must stay verbatim.
+     *
+     * Their whole reason for existing is that `write()` normalizes: a bare LF is Ctrl+J, the way a
+     * multi-line prompt gets typed into an AI CLI. Nothing pinned the Embeddable one at all, and the
+     * Tabbed one only against the old `?: activeTab` shape — so a well-meaning "make all the write
+     * paths consistent" sweep could normalize them and remove the only escape hatch either public
+     * API has, with the whole suite still green.
+     */
+    @Test
+    fun `the verbatim write APIs do not normalize`() {
+        for ((fileName, signature) in listOf(
+            "TabbedTerminalState.kt" to "fun writeVerbatim(",
+            "EmbeddableTerminal.kt" to "fun writeVerbatim(",
+        )) {
+            val body = bodyOf(fileName, signature)
+            assertTrue(
+                !body.contains("normalizeSubmitNewlines") && !body.contains("submitLine"),
+                "`$signature` in $fileName must pass bytes through untouched:\n$body",
+            )
+        }
+    }
+
+    /**
+     * The body of the function declared by [signature], from its brace to the matching one.
+     *
+     * Braces rather than a fixed line window: a 6-line window silently changed meaning whenever a
+     * KDoc line was added or a body reformatted, so these assertions could start passing (or
+     * failing) for reasons unrelated to the rule they encode.
+     */
+    private fun bodyOf(fileName: String, signature: String): String {
+        val file = sources().firstOrNull { it.name == fileName }
+            ?: error("$fileName not found in the scan roots")
+        val text = file.readText()
+        val start = text.indexOf(signature)
+        require(start >= 0) { "no `$signature` in $fileName" }
+        return bodyFrom(text, start, "$signature in $fileName")
+    }
+
+    /** The braced body of the declaration starting at [declIndex]. */
+    private fun bodyFrom(text: String, declIndex: Int, what: String): String {
+        val open = text.indexOf('{', declIndex)
+        require(open >= 0) { "`$what` has no body" }
+        var depth = 0
+        for (i in open until text.length) {
+            when (text[i]) {
+                '{' -> depth++
+                '}' -> if (--depth == 0) return text.substring(open, i + 1)
+            }
+        }
+        error("unbalanced braces after `$what`")
     }
 
     /** Runs the real scan over one snippet, so these cases can't drift from what the scan does. */

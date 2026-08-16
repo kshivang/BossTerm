@@ -277,8 +277,9 @@ with shell startup.
 - Required:
   - `panel`: `"new_tab"`, `"horizontal_split"`, or `"vertical_split"`.
   - `script`: the command to run in the new panel. Submitted for you with a
-    carriage return, so a trailing newline is optional. Empty means "just open
-    the panel".
+    carriage return, so trailing newlines are optional and collapse into that
+    one Enter. A script that is empty, or only newlines, means "just open the
+    panel".
 - Optional:
   - `tab_id` (string) - source tab id. Required for splits; defaults to the
     primary window's active tab.

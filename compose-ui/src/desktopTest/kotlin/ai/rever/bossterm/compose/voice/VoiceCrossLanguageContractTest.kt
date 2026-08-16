@@ -122,6 +122,28 @@ class VoiceCrossLanguageContractTest {
     }
 
     /**
+     * The viewer's Paste must convert newlines to CR before sending, like every other paste path.
+     *
+     * It hand-rolls the paste — `clipboard.readText()` straight into `sendInput` — so it gets
+     * neither xterm's own paste normalization nor `TerminalTab.pasteText`'s. The Input lane it lands
+     * on is verbatim by design (it carries xterm's `onData` keystrokes), so nothing downstream will
+     * fix it: a remote viewer pasting `git status\n` at a Windows host lands at a `>>` prompt.
+     *
+     * Asserted here because `SubmitCharacterCoverageTest` structurally cannot reach it — this is JS,
+     * on the far side of a socket — and this class already reads `viewer.js` for exactly that reason.
+     */
+    @Test
+    fun `the viewer normalizes newlines when pasting`() {
+        val paste = viewerJs.substringAfter("""ctxItem("Paste"""").substringBefore("ctxItem(")
+        assertTrue(paste.contains("readText"), "expected the Paste handler, got: $paste")
+        assertTrue(
+            paste.contains("""replace(/\r\n?|\n/g, "\r")"""),
+            "Paste must convert newlines to CR before sendInput - the Input lane is verbatim " +
+                "and will not do it downstream:\n$paste",
+        )
+    }
+
+    /**
      * Not just "both mention the tool" — the CLIP LENGTHS too. They had drifted: the viewer previewed
      * a command to 60 chars and the typed text to 40, while the host truncated at 48 and said a bare
      * "Typing…". Same call, same product, two different captions depending which surface you were on.

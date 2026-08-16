@@ -1353,7 +1353,11 @@
     var canRead = controlGranted && navigator.clipboard && navigator.clipboard.readText;
     ctxEl.appendChild(ctxItem("Paste", canRead, function () {
       navigator.clipboard.readText().then(function (txt) {
-        if (txt) sendInput(paneId, txt);
+        // CRLF/LF -> CR, the same normalization TerminalTab.pasteText applies in-app and xterm
+        // applies on its own paste path. This menu item hand-rolls the paste and so gets neither:
+        // the Input lane is verbatim by design (it carries xterm's onData keystrokes), so a pasted
+        // "git status\n" would reach a Windows host as Ctrl+J and sit at a >> continuation prompt.
+        if (txt) sendInput(paneId, txt.replace(/\r\n?|\n/g, "\r"));
       }).catch(function () {});
     }));
     ctxEl.appendChild(ctxItem("Select all", true, function () { try { term.selectAll(); } catch (e) {} }));

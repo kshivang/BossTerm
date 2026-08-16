@@ -344,8 +344,9 @@ with shell startup.
 - Required:
   - `panel`: `"new_tab"`, `"horizontal_split"`, or `"vertical_split"`.
   - `script`: the command to run in the new panel. Submitted for you with a
-    carriage return, so a trailing newline is optional (it is stripped rather
-    than pressing Enter twice). Empty means "just open the panel".
+    carriage return, so trailing newlines are optional — however many you send,
+    they collapse into the one Enter. A script that is empty, or only newlines,
+    means "just open the panel".
 - Optional:
   - `tab_id` (string) - source tab id. Required for splits; defaults to the
     primary window's active tab.
@@ -394,7 +395,8 @@ Requires OSC 133 shell integration on the user's shell. See
 
 - Required:
   - `script` (string) - shell command. Submitted for you with a carriage
-    return; a trailing newline is optional. **Avoid embedded `\n`** for multi-statement scripts (the shell
+    return; trailing newlines are optional and collapse into that one Enter, so
+    a script ending in a deliberate blank line needs `send_input` instead. **Avoid embedded `\n`** for multi-statement scripts (the shell
     fires multiple OSC 133;B/D cycles; the response carries the FIRST D's
     exit code and the slice covers from the first B onward). Use
     `bash -lc '…'` or `sh -c '…'` to bundle compound logic into a single

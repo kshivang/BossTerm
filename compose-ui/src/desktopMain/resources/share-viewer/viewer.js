@@ -570,7 +570,9 @@
       if (name === "send_input" && a.text)
         // The ellipsis only when it actually truncates — "Typing: ls…" for a two-character command
         // read as though something were still coming. Matches describeTool.
-        return "Typing: " + a.text.slice(0, 40).replace(/\n/g, "⏎") + (a.text.length > 40 ? "…" : "");
+        // \r as well as \n, CRLF first so one Enter renders as one ⏎. The agent is told to submit
+        // with \r, so matching only \n left a raw CR in the caption. Mirrors HostVoiceCallController.
+        return "Typing: " + a.text.slice(0, 40).replace(/\r\n?|\n/g, "⏎") + (a.text.length > 40 ? "…" : "");
       if (name === "send_signal" && a.signal) return "Sending " + a.signal + "…";
       if (name === "get_last_command") return "Checking the last command…";
       if (name === "list_panes") return "Looking at the split panes…";

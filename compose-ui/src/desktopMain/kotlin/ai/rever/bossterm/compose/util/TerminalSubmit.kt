@@ -54,3 +54,14 @@ fun normalizeSubmitNewlines(text: String): String =
  */
 fun submitLine(command: String): String =
     normalizeSubmitNewlines(command).trimEnd(SUBMIT) + SUBMIT
+
+/**
+ * Drop a caller-supplied trailing Enter, for the paths that submit later and would otherwise do it
+ * twice.
+ *
+ * MCP `run_in_panel` hands its script to `initialCommand`, which holds it until OSC 133;A and then
+ * calls [submitLine] itself — so the tool's contract is "a trailing newline is optional". This used
+ * to be `removeSuffix("\n")`, which left the CR of a CRLF-terminated script in place and submitted
+ * the command twice.
+ */
+fun stripTrailingSubmit(text: String): String = text.trimEnd('\r', '\n')

@@ -5,6 +5,7 @@ import ai.rever.bossterm.compose.TerminalSession
 import ai.rever.bossterm.compose.debug.ChunkSource
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import ai.rever.bossterm.compose.util.stripTrailingSubmit
 import ai.rever.bossterm.compose.util.submitLine
 import ai.rever.bossterm.terminal.model.CommandStateListener
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
@@ -1111,7 +1112,7 @@ class BossTermMcpServer(
                     // any caller-provided trailing separator for a consistent contract. Trim
                     // CR as well as LF: removeSuffix("\n") alone left the CR of a CRLF-ending
                     // script behind, which then submitted twice.
-                    val normalizedScript = script.trimEnd('\r', '\n')
+                    val normalizedScript = stripTrailingSubmit(script)
                     val newId = state.createTab(
                         workingDir = workingDir,
                         initialCommand = normalizedScript.ifEmpty { null }
@@ -1131,7 +1132,7 @@ class BossTermMcpServer(
                     // Normalize the trailing separator: createSessionForSplit's initialCommand
                     // path submits it, matching the new_tab branch. An empty script means
                     // "just split, don't run anything".
-                    val normalizedScript = script.trimEnd('\r', '\n').ifEmpty { null }
+                    val normalizedScript = stripTrailingSubmit(script).ifEmpty { null }
                     // Anchor stacking: if there's already an MCP scratch pane for
                     // this tab and the caller asked for horizontal_split, stack
                     // the new pane to the RIGHT of that existing pane instead of

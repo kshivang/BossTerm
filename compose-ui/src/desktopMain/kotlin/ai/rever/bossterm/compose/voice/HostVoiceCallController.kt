@@ -870,7 +870,9 @@ internal class HostVoiceCallController(
             // No trailing "…" in the template: clip() adds one when it actually truncates, so this
             // rendered "Typing: hello wor……". run_command above gets it right; the viewer's mirror
             // produces a single ellipsis too.
-            "send_input" -> arg("text")?.let { "Typing: ${clip(it.replace("\n", "⏎"), 40)}" } ?: "Typing…"
+            // CR as well as LF: the agent is told to submit with \r, so matching only \n left a raw
+            // carriage return in the pill for every command it ran. Mirrored in viewer.js.
+            "send_input" -> arg("text")?.let { "Typing: ${clip(it.replace(SUBMIT_KEYS, "⏎"), 40)}" } ?: "Typing…"
             "send_signal" -> arg("signal")?.let { "Sending $it…" } ?: "Sending a signal…"
             "get_last_command" -> "Checking the last command…"
             "list_panes" -> "Looking at the split panes…"
@@ -901,6 +903,13 @@ internal class HostVoiceCallController(
 
     internal companion object {
         val json = Json { ignoreUnknownKeys = true }
+
+        /**
+         * Every submit spelling the agent might send, so the status pill shows one ⏎ per Enter.
+         *
+         * CRLF first, or a `\r\n` would render as two. Matches `viewer.js`'s `/\r\n?|\n/g`.
+         */
+        val SUBMIT_KEYS = Regex("\r\n?|\n")
 
         /**
          * Hard ceiling on one in-app call — deliberately SHORTER than OpenAI's own 60-minute session

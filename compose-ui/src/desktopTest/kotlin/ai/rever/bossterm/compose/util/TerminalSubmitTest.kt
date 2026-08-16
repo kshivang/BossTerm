@@ -51,6 +51,27 @@ class TerminalSubmitTest {
     }
 
     /**
+     * `run_in_panel`'s contract: "a trailing newline is optional".
+     *
+     * The tool hands its script to `initialCommand`, which submits it later, so a caller-supplied
+     * Enter has to come off first. The old `removeSuffix("\n")` handled `"ls\n"` but left the CR of
+     * `"ls\r\n"` behind — the script then arrived as `"ls\r"` and got a second CR appended, running
+     * the command twice. That is the case worth pinning.
+     */
+    @Test
+    fun `a caller-supplied Enter is stripped before a later submit`() {
+        for (input in listOf("ls", "ls\n", "ls\r", "ls\r\n", "ls\n\r", "ls\r\n\r\n")) {
+            assertEquals("ls", stripTrailingSubmit(input), "input was ${input.debug()}")
+        }
+        // Round-tripped through the submit it precedes: still exactly one Enter.
+        assertEquals("ls\r", submitLine(stripTrailingSubmit("ls\r\n")))
+        // Interior newlines are a multi-command script and must survive.
+        assertEquals("cd /tmp\nls", stripTrailingSubmit("cd /tmp\nls\n"))
+        // Empty stays empty — run_in_panel reads that as "just open the panel".
+        assertEquals("", stripTrailingSubmit("\r\n"))
+    }
+
+    /**
      * The normalize-only helper must NOT add a submit — it backs paste-like writes where trailing
      * text is still being typed.
      */

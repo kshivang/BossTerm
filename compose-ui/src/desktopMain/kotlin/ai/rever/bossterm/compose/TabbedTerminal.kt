@@ -627,9 +627,10 @@ fun TabbedTerminal(
                     )
                     return
                 }
-                // A null args means "let the user finish the line" — no trailing newline.
+                // A null args means "let the user finish the line" — prefill, don't submit.
                 writeToTerminal(
-                    if (argsOrNull == null) "${ollama.command} run " else "${ollama.command} $argsOrNull\n"
+                    if (argsOrNull == null) "${ollama.command} run "
+                    else submitLine("${ollama.command} $argsOrNull")
                 )
             }
             onRunLocalModel = { model -> runOllama(model?.let { "run $it" }) }
@@ -686,7 +687,7 @@ fun TabbedTerminal(
                     "fish" -> "source ~/.config/fish/config.fish"
                     else -> "source ~/.bashrc"
                 }
-                writeToTerminal(submitLine("$sourceCmd"))
+                writeToTerminal(submitLine(sourceCmd))
             }
 
             // Starship

@@ -2411,8 +2411,9 @@ fun ProperTerminal(
             },
             onSubmit = { rendered ->
               // Auto-run submits; otherwise the rendered text is left at the prompt for the user to
-              // edit, so it must NOT be normalized — a multi-line workflow keeps its LFs until they
-              // are actually meant as Enters.
+              // edit, so it is passed through untouched. Note the prefill only really holds on
+              // Windows: under ICRNL a multi-line workflow's LFs submit each line on arrival
+              // anyway. Unchanged from before this rule existed — just not universal.
               tab.writeUserInput(
                 if (settings.workflowsAutoRun) submitLine(rendered) else rendered
               )

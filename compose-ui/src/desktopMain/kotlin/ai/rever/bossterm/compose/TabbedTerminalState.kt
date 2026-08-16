@@ -983,13 +983,16 @@ class TabbedTerminalState {
     /**
      * Send text input to the focused pane of the specified tab.
      *
+     * Newlines are normalized to CR, same as the [write] overloads — this is the split-pane
+     * sibling of that API and has to press Enter the same way. See `submitLine`.
+     *
      * @param text Text to send
      * @param tabId Target tab ID. If null, uses the active tab.
      * @return true if the text was sent, false if tab/pane not found
      */
     fun writeToFocusedPane(text: String, tabId: String? = null): Boolean {
         val session = getFocusedSplitSession(tabId) ?: return false
-        session.writeUserInput(text)
+        session.writeUserInput(normalizeSubmitNewlines(text))
         return true
     }
 
@@ -1101,7 +1104,7 @@ class TabbedTerminalState {
             assistant = assistant,
             command = resolved.command,
             npmCommand = resolved.npmFallback,
-            terminalWriter = { text -> tab.writeUserInput(text) }
+            terminalWriter = { text -> tab.writeUserInput(normalizeSubmitNewlines(text)) }
         )
         return true
     }

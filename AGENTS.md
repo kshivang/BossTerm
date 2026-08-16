@@ -257,8 +257,12 @@ state.sendCtrlC(tabIndex = 0)        // Target tab by index
 state.write("cmd\n", tabId = "id")   // Target tab by ID
 ```
 
-`write()` is the embedder-facing convenience and normalizes newlines; `writeUserInput()` underneath
-it is verbatim, for callers that need to send a literal LF. See the CR note above.
+`write()` / `writeToFocusedPane()` are the embedder-facing convenience and normalize newlines, so
+`"\n"` presses Enter on every platform. `TerminalTab.writeUserInput()` underneath them is verbatim —
+reachable on the tabbed API via the public `activeTab`, and used by MCP `send_input`, which is the
+one caller that must be able to send a literal LF. `EmbeddableTerminalState` keeps its `session`
+internal, so the single-terminal API has no verbatim path; add one if an embedder needs Ctrl+J.
+See the CR note above.
 
 ## Development Guidelines
 

@@ -304,7 +304,7 @@ class ShellCustomizationMenuProvider {
                         if (onInstallRequest != null) {
                             onInstallRequest("starship-uninstall", uninstallCmd, null)
                         } else {
-                            terminalWriter(submitLine("$uninstallCmd"))
+                            terminalWriter(submitLine(uninstallCmd))
                         }
                     }
                 )
@@ -431,7 +431,7 @@ class ShellCustomizationMenuProvider {
                         if (onInstallRequest != null) {
                             onInstallRequest("oh-my-zsh-uninstall", uninstallCmd, null)
                         } else {
-                            terminalWriter(submitLine("$uninstallCmd"))
+                            terminalWriter(submitLine(uninstallCmd))
                         }
                     }
                 )
@@ -513,7 +513,7 @@ class ShellCustomizationMenuProvider {
                         if (onInstallRequest != null) {
                             onInstallRequest("prezto-uninstall", uninstallCmd, null)
                         } else {
-                            terminalWriter(submitLine("$uninstallCmd"))
+                            terminalWriter(submitLine(uninstallCmd))
                         }
                     }
                 )

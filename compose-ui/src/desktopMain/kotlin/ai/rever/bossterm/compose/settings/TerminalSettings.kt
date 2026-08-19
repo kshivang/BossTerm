@@ -76,6 +76,23 @@ data class TerminalSettings(
     val useAntialiasing: Boolean = true,
 
     /**
+     * Minimum WCAG contrast ratio for glyphs painted on a **light** cell
+     * background. `1.0` disables the guard (contrast cannot go below 1:1, so it is
+     * the natural off sentinel).
+     *
+     * Truecolor CLIs hardcode a dark-terminal palette — Claude Code emits a literal
+     * `ESC[38;2;255;255;255m` for its primary text, which is 1.07:1 against a light
+     * theme's paper floor and therefore invisible. A 24-bit color bypasses the theme
+     * and palette layers entirely, so the only place to rescue it is per cell at
+     * paint time; see [ai.rever.bossterm.compose.util.ColorUtils.legibleOnLightBackground].
+     *
+     * Applies only where the painted background is light, so dark themes render
+     * byte-identically and a cell carrying its own dark background (Claude Code's
+     * `ESC[48;2;0;0;0m` blocks) keeps its white text.
+     */
+    val lightBackgroundMinContrast: Float = 4.5f,
+
+    /**
      * Use bundled symbol font (Noto Sans Symbols 2) for symbols like ⏵ ★ ⚡.
      * null (default): Platform-specific - macOS uses Apple Color Emoji, Linux uses bundled font.
      * true: Always use bundled Noto Sans Symbols 2.

@@ -228,6 +228,20 @@ sealed class ServerMessage {
         val ansi: List<String>,
         val fontFamily: String,
         val fontSize: Int,
+        /**
+         * Floor for xterm.js's own `minimumContrastRatio`, or `1f` for "off" — the same
+         * sentinel `TerminalSettings.lightBackgroundMinContrast` uses.
+         *
+         * The host decides rather than the viewer because the decision needs the user's
+         * setting and the theme floor, and only the host has both. Sent as a floor rather
+         * than pre-corrected colors because the viewer's live text is a raw pty stream
+         * (see `MirrorShare`'s output tap), so the truecolor a CLI hardcodes never passes
+         * through anything host-side that could rewrite it.
+         *
+         * Defaulted, so an older host that never sends it leaves the viewer's guard off
+         * instead of failing to decode.
+         */
+        val minimumContrastRatio: Float = 1f,
     ) : ServerMessage()
 
     /**

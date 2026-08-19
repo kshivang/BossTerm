@@ -2203,7 +2203,9 @@
       fontFamily: typeof m.fontFamily === "string" ? m.fontFamily : DEFAULT_TERMINAL_FONT_FAMILY,
       fontSize: isFinite(Number(m.fontSize))
         ? Math.max(8, Math.min(72, Math.floor(Number(m.fontSize))))
-        : 13
+        : 13,
+      // The host sends a floor only when its own terminal floor is light; 1 means off.
+      minimumContrastRatio: viewerLogic.validMinimumContrastRatio(m.minimumContrastRatio)
     };
     var ansi = Array.isArray(m.ansi) ? m.ansi : [];
     for (var i = 0; i < 16; i += 1) next.ansi[i] = safeCssColor(ansi[i], undefined);
@@ -2221,6 +2223,13 @@
     };
     if (theme.fontFamily) opts.fontFamily = theme.fontFamily;
     if (theme.fontSize) opts.fontSize = theme.fontSize;
+    // Let xterm.js rescue glyph colors a CLI hardcoded for a dark terminal. Always assigned,
+    // never conditionally: switching from a light host theme back to a dark one has to turn
+    // the guard back OFF, and `if (ratio)` would leave the old floor latched.
+    opts.minimumContrastRatio = theme.minimumContrastRatio || 1;
+    // Let xterm.js rescue glyph colors a CLI hardcoded for a dark terminal. Always assigned,
+    // never conditionally: switching from a light host theme back to a dark one has to turn
+    // the guard back OFF, and `if (ratio)` would leave the old floor latched.
   }
 
   function applyTheme(m) {
@@ -2233,6 +2242,7 @@
       panes[id].host.style.background = theme.background;
       if (o.fontFamily) t.options.fontFamily = o.fontFamily;
       if (o.fontSize) t.options.fontSize = o.fontSize;
+      t.options.minimumContrastRatio = o.minimumContrastRatio;
     });
     document.documentElement.style.background = theme.background;
     document.body.style.background = theme.background;

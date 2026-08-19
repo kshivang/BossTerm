@@ -6,6 +6,7 @@ import androidx.compose.ui.graphics.luminance
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -191,6 +192,31 @@ class ColorUtilsContrastTest {
             ColorUtils.contrastRatio(strict, paper) >= 7f,
             "raising the floor served a stale result: $strict"
         )
+    }
+
+    @Test
+    fun `the share viewer gets a floor only on a light theme`() {
+        // What the host pushes to the web viewer, which cannot run the guard itself: the
+        // floor on a light theme, off on a dark one, and off whenever the user disabled it.
+        assertEquals(4.5f, ColorUtils.lightBackgroundGuardRatio(paper, 4.5f))
+        assertEquals(1f, ColorUtils.lightBackgroundGuardRatio(blueprintInk, 4.5f))
+        assertEquals(1f, ColorUtils.lightBackgroundGuardRatio(paper, 1f), "off must stay off")
+
+        // The pivot is shared with the renderer, so a mid-grey floor counts as light in both.
+        assertTrue(ColorUtils.isLightBackground(Color(0xFFAAAAAA)))
+        assertFalse(ColorUtils.isLightBackground(Color(0xFF505050)))
+
+        // Every built-in theme agrees with its own background, so the viewer and the app can
+        // never disagree about whether a theme is light.
+        for (theme in BuiltinThemes.ALL) {
+            val bg = theme.backgroundColorValue
+            val armed = ColorUtils.lightBackgroundGuardRatio(bg, 4.5f) > 1f
+            assertEquals(
+                ColorUtils.isLightBackground(bg),
+                armed,
+                "${theme.id}: the viewer's floor disagrees with the renderer's own gate"
+            )
+        }
     }
 
     @Test

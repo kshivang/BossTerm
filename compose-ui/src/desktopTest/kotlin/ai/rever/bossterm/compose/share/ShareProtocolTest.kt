@@ -82,6 +82,32 @@ class ShareProtocolTest {
     }
 
     @Test
+    fun `theme carries a contrast floor and an older host without one decodes as off`() {
+        val theme = ServerMessage.Theme(
+            background = "#f5f7fb",
+            foreground = "#05070b",
+            cursor = "#0f5bff",
+            cursorAccent = "#f5f7fb",
+            selectionBackground = "rgba(15,91,255,0.3)",
+            ansi = List(16) { "#000000" },
+            fontFamily = "monospace",
+            fontSize = 13,
+            minimumContrastRatio = 4.5f,
+        )
+        assertEquals(theme, ShareProtocol.decodeServer(ShareProtocol.encodeServer(theme)))
+
+        // A host built before the floor existed sends no such key. It must decode as off
+        // rather than throwing, which would take the whole theme frame down.
+        val legacy = ShareProtocol.decodeServer(
+            """{"t":"theme","background":"#1e1e1e","foreground":"#f8f8f2","cursor":"#f8f8f2",""" +
+                """"cursorAccent":"#1e1e1e","selectionBackground":"rgba(255,255,255,0.25)",""" +
+                """"ansi":[],"fontFamily":"monospace","fontSize":13}"""
+        )
+        assertIs<ServerMessage.Theme>(legacy)
+        assertEquals(1f, legacy.minimumContrastRatio, "an absent floor must mean the guard is off")
+    }
+
+    @Test
     fun `layout serializes a recursive split tree`() {
         val tree = PaneTreeNode.Split(
             dir = "v",

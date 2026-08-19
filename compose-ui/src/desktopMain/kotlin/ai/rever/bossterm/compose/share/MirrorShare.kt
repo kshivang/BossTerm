@@ -10,6 +10,7 @@ import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import ai.rever.bossterm.compose.splits.SplitNode
 import ai.rever.bossterm.compose.tabs.TerminalTab
+import ai.rever.bossterm.compose.util.ColorUtils
 import ai.rever.bossterm.compose.voice.GuiVoiceToolExecutor
 import ai.rever.bossterm.compose.voice.VoiceAgentStorage
 import ai.rever.bossterm.compose.voice.RemoteVoiceCalls
@@ -1137,6 +1138,12 @@ class MirrorShare(
             ansi = (0..15).map { hexToCss(palette.getAnsiColorHex(it)) },
             fontFamily = webTerminalFontFamily(settings.fontName),
             fontSize = settings.fontSize.toInt(),
+            // The in-process guard cannot reach the viewer, so hand xterm.js the floor and
+            // let it do the per-cell correction on its side.
+            minimumContrastRatio = ColorUtils.lightBackgroundGuardRatio(
+                theme.backgroundColorValue,
+                settings.lightBackgroundMinContrast,
+            ),
         )
     }
 

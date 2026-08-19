@@ -232,6 +232,23 @@ object ColorUtils {
     /** Steps used when walking a color toward black to reach the contrast floor. */
     private const val CLAMP_STEPS = 20
 
+    /** Whether [bg] is light enough that dark-authored glyph colors stop being readable on it. */
+    fun isLightBackground(bg: Color): Boolean = bg.luminance() > LIGHT_BACKGROUND_PIVOT
+
+    /**
+     * The guard's effective floor for a surface whose background is [bg] — [minRatio] on a
+     * light background, `1f` (off) otherwise.
+     *
+     * Exists so the share path can push the same decision to the web viewer without
+     * restating [LIGHT_BACKGROUND_PIVOT]. The viewer cannot reuse the guard itself: it
+     * renders through xterm.js, whose glyph pipeline has no per-cell color hook, and its
+     * live text arrives as a raw pty stream rather than through this process's renderer.
+     * What it *does* have is xterm.js's own `minimumContrastRatio`, which takes a floor —
+     * so the floor is the part worth sharing.
+     */
+    fun lightBackgroundGuardRatio(bg: Color, minRatio: Float): Float =
+        if (minRatio > 1f && isLightBackground(bg)) minRatio else 1f
+
     /**
      * WCAG contrast ratio between two colors, ignoring alpha.
      *

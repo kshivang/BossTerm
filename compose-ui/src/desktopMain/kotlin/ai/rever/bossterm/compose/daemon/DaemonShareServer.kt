@@ -25,6 +25,7 @@ import ai.rever.bossterm.compose.share.isShareViewerIndexResource
 import ai.rever.bossterm.compose.share.resyncSentinel
 import ai.rever.bossterm.compose.share.webViewerScrollbackLines
 import ai.rever.bossterm.compose.share.webTerminalFontFamily
+import ai.rever.bossterm.compose.util.ColorUtils
 import ai.rever.bossterm.compose.voice.DaemonVoiceToolExecutor
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.voice.StampCachedValue
@@ -1330,6 +1331,10 @@ class DaemonShareServer(
             ansi = (0..15).map { hexToCss(palette.getAnsiColorHex(it)) },
             fontFamily = webTerminalFontFamily(s.fontName),
             fontSize = s.fontSize.toInt(),
+            minimumContrastRatio = ColorUtils.lightBackgroundGuardRatio(
+                theme.backgroundColorValue,
+                s.lightBackgroundMinContrast,
+            ),
         )
     }
 

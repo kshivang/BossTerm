@@ -94,6 +94,22 @@ class ViewerLogicTest {
                   logic.graphicsMemoryFits(0, 0, 72 * MiB, 0, 96 * MiB, 192 * MiB),
                   true
                 );
+
+                // The contrast floor crosses the wire and xterm.js throws on some invalid
+                // option values, so anything unusable must resolve to "off" (1) rather than
+                // reaching the terminal. Mirrors xterm.js's own clamp: [1, 21], one decimal.
+                assert.strictEqual(logic.validMinimumContrastRatio(4.5), 4.5);
+                assert.strictEqual(logic.validMinimumContrastRatio(1), 1);
+                assert.strictEqual(logic.validMinimumContrastRatio(999), 21);
+                assert.strictEqual(logic.validMinimumContrastRatio(-5), 1);
+                assert.strictEqual(logic.validMinimumContrastRatio(0), 1);
+                assert.strictEqual(logic.validMinimumContrastRatio(4.567), 4.6);
+                assert.strictEqual(logic.validMinimumContrastRatio("nope"), 1);
+                assert.strictEqual(logic.validMinimumContrastRatio(undefined), 1);
+                assert.strictEqual(logic.validMinimumContrastRatio(null), 1);
+                assert.strictEqual(logic.validMinimumContrastRatio(NaN), 1);
+                assert.strictEqual(logic.validMinimumContrastRatio(Infinity), 1);
+                assert.strictEqual(logic.validMinimumContrastRatio({}), 1);
             """.trimIndent()
         val script = Files.createTempFile("bossterm-viewer-logic-", ".cjs")
         try {

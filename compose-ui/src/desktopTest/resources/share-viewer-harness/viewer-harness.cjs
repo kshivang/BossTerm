@@ -945,6 +945,84 @@ const scenarios = {
     assert.strictEqual(terminal.options.fontSize, 13, "an unparseable font size falls back");
   },
 
+  "a light host theme arms xterm's contrast guard and a dark one disarms it"() {
+    // On a light theme, a CLI that hardcodes truecolor white (Claude Code emits a literal
+    // ESC[38;2;255;255;255m) paints at 1.07:1 and vanishes. The viewer's live text is a raw
+    // pty stream, so nothing host-side can rewrite that color — the host sends a floor and
+    // xterm.js corrects per cell.
+    loadViewer();
+    const socket = connectPanes(["pane-1"]);
+    const terminal = lastTerminal();
+
+    socket.deliver({ t: "theme", background: "#f5f7fb", minimumContrastRatio: 4.5 });
+    assert.strictEqual(
+      terminal.options.minimumContrastRatio,
+      4.5,
+      "a light host theme must arm the contrast guard"
+    );
+
+    // Switching back to a dark theme has to turn it OFF again, not latch the old floor.
+    socket.deliver({ t: "theme", background: "#05070b", minimumContrastRatio: 1 });
+    assert.strictEqual(
+      terminal.options.minimumContrastRatio,
+      1,
+      "a dark host theme must disarm the guard rather than latch the previous floor"
+    );
+
+    // Out-of-range and unparseable values are clamped/ignored rather than passed through:
+    // xterm.js throws on some invalid option values, which would take the viewer down.
+    socket.deliver({ t: "theme", minimumContrastRatio: 999 });
+    assert.strictEqual(terminal.options.minimumContrastRatio, 21, "an absurd floor must clamp");
+    socket.deliver({ t: "theme", minimumContrastRatio: "nope" });
+    assert.strictEqual(terminal.options.minimumContrastRatio, 1, "an unparseable floor means off");
+    socket.deliver({ t: "theme", minimumContrastRatio: -5 });
+    assert.strictEqual(terminal.options.minimumContrastRatio, 1, "a negative floor means off");
+
+    // An older host that never sends the field must leave the guard off, not undefined.
+    socket.deliver({ t: "theme", background: "#f5f7fb" });
+    assert.strictEqual(
+      terminal.options.minimumContrastRatio,
+      1,
+      "a host that omits the floor must leave the guard off"
+    );
+  },
+
+  "a pane created after a light theme arrives is guarded too"() {
+    // applyThemeToOpts feeds both live panes and newly created ones; a pane that joins after
+    // the theme frame must not come up unguarded.
+    loadViewer();
+    const socket = connectPanes(["pane-1"]);
+    socket.deliver({ t: "theme", background: "#f5f7fb", minimumContrastRatio: 4.5 });
+    const before = FakeTerminal.created.length;
+    socket.deliver({
+      t: "layout",
+      tabs: [
+        {
+          id: "tab-1",
+          title: "zsh",
+          tree: {
+            t: "split",
+            v: true,
+            a: { t: "pane", paneId: "pane-1" },
+            b: { t: "pane", paneId: "pane-2" },
+          },
+        },
+      ],
+      activeTabId: "tab-1",
+    });
+    socket.deliver({ t: "paneSnapshot", paneId: "pane-2", data: "$ ", cols: 80, rows: 24 });
+    flushFrames();
+    assert.ok(
+      FakeTerminal.created.length > before,
+      "precondition: the split must have created a new terminal"
+    );
+    assert.strictEqual(
+      lastTerminal().options.minimumContrastRatio,
+      4.5,
+      "a pane created after the theme frame must inherit the floor"
+    );
+  },
+
   "pane output never moves the viewer's scroll position"() {
     loadViewer();
     const socket = connectPanes(["pane-1"]);

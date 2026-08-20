@@ -71,7 +71,24 @@
     return requestPending && attempts > 0 ? attempts - 1 : attempts;
   }
 
+  // Floor for xterm.js's minimumContrastRatio, as sent by the host.
+  //
+  // A CLI that hardcodes a dark-terminal palette emits truecolor the host cannot rewrite
+  // (the viewer's live text is a raw pty stream), so on a light theme its white text lands
+  // at 1.07:1 and vanishes. xterm.js corrects per cell if given a floor.
+  //
+  // Validated here rather than trusted: the value crosses the wire, and xterm.js THROWS on
+  // some out-of-range option values. Mirrors its own normalisation - clamp to [1, 21], one
+  // decimal - so a hostile or stale host cannot take the viewer down, and anything
+  // unparseable means "off" rather than a guessed floor.
+  function validMinimumContrastRatio(value) {
+    var n = Number(value);
+    if (!isFinite(n) || n <= 1) return 1;
+    return Math.max(1, Math.min(21, Math.round(n * 10) / 10));
+  }
+
   return {
+    validMinimumContrastRatio: validMinimumContrastRatio,
     nextReconnectAttempt: nextReconnectAttempt,
     isTerminalWebSocketClose: isTerminalWebSocketClose,
     captureRowOffset: captureRowOffset,

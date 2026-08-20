@@ -108,6 +108,18 @@ fun VisualSettingsSection(
                 description = "Smooth text rendering"
             )
 
+            SettingsSlider(
+                label = "Minimum Text Contrast (Light Backgrounds)",
+                value = settings.lightBackgroundMinContrast,
+                onValueChange = { onSettingsChange(settings.copy(lightBackgroundMinContrast = it)) },
+                onValueChangeFinished = onSettingsSave,
+                valueRange = 1f..7f,
+                valueDisplay = { if (it <= 1f) "Off" else "%.1f:1".format(it) },
+                description = "Darkens text that a CLI hardcoded for a dark terminal so it " +
+                    "stays readable on a light theme. Only affects cells with a light " +
+                    "background; dark themes are untouched"
+            )
+
             SettingsDropdown(
                 label = "Symbol Font",
                 options = listOf("Platform Default", "Bundled (Noto Sans Symbols 2)", "System Default"),

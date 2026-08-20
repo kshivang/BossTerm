@@ -1001,6 +1001,18 @@ object TerminalCanvasRenderer {
                     ?: ctx.settings.defaultBackgroundColor
                 var fgColor = if (isInverse) baseBg else baseFg
                 if (isDim) fgColor = ColorUtils.applyDimColor(fgColor)
+                // Rescue glyphs a truecolor CLI authored for a dark terminal. Measured
+                // against the background Pass 1 actually painted — for an INVERSE cell
+                // that is baseFg, so a white-on-white inverse cell is corrected too.
+                //
+                // Deliberately AFTER dim: plain white mirrors all the way to #000000,
+                // while dim white only reaches the floor at ~#727272, so ESC[2m still
+                // reads as secondary text without applyDimColor needing to change.
+                fgColor = ColorUtils.legibleOnLightBackground(
+                    fgColor,
+                    if (isInverse) baseFg else baseBg,
+                    ctx.settings.lightBackgroundMinContrast
+                )
 
                 val isBlinkVisible = when {
                     isSlowBlink -> ctx.slowBlinkVisible
@@ -1687,6 +1699,12 @@ object TerminalCanvasRenderer {
             ?: ctx.settings.defaultBackgroundColor
         var fgColor = if (isInverse) baseBg else baseFg
         if (isDim) fgColor = ColorUtils.applyDimColor(fgColor)
+        // Same legibility guard as the main text pass; see renderText.
+        fgColor = ColorUtils.legibleOnLightBackground(
+            fgColor,
+            if (isInverse) baseFg else baseBg,
+            ctx.settings.lightBackgroundMinContrast
+        )
 
         val textStyle = TextStyle(
             color = fgColor,

@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.voice
 
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import ai.rever.bossterm.compose.share.CallSegmentState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -22,14 +23,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private val Bg = Color(0xFF2B2B2B)
-private val Line = Color(0xFF404040)
-private val Label = Color(0xFFCCCCCC)
-private val Muted = Color(0xFF999999)
-private val Green = Color(0xFF4CAF50)
-private val Blue = Color(0xFF4A90E2)
-private val Amber = Color(0xFFE5A54B)
-private val Danger = Color(0xFFD9534F)
+// Getters, not vals - see the note in McpStatusIndicator. `Blue` and `Green` are
+// status DOT fills here, so the fill tokens are the right ones; `Danger` is also
+// used as label text and as a button tint, which `alert` covers in both roles.
+private val Bg: Color get() = BossUiTheme.current.panel
+private val Line: Color get() = BossUiTheme.current.line
+private val Label: Color get() = BossUiTheme.current.chalk
+private val Muted: Color get() = BossUiTheme.current.muted
+private val Green: Color get() = BossUiTheme.current.ok
+private val Blue: Color get() = BossUiTheme.current.data
+private val Amber: Color get() = BossUiTheme.current.warn
+private val Danger: Color get() = BossUiTheme.current.alert
 
 /**
  * The in-app call strip, shown under the status pills while a call is up: a live microphone level
@@ -122,7 +126,7 @@ private fun LevelMeter(muted: Boolean, color: Color) {
 @Composable
 private fun BarButton(label: String, onClick: () -> Unit, tint: Color = Label) {
     Surface(
-        color = Color(0xFF1E1E1E),
+        color = BossUiTheme.current.panel,
         shape = RoundedCornerShape(10.dp),
         border = BorderStroke(1.dp, if (tint == Label) Line else tint),
         modifier = Modifier.clickable(onClick = onClick),

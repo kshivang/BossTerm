@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.history
 
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -94,6 +95,9 @@ fun HistorySearchOverlay(
     Box(
         modifier = modifier
             .fillMaxSize()
+            // The modal scrim stays literal black. A scrim's job is to dim whatever is
+            // behind it, and it is black under a light theme too - that is what every
+            // light-mode design system does. Allowlisted in ChromeTokenCoverageTest.
             .background(Color(0x88000000))
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
@@ -110,7 +114,7 @@ fun HistorySearchOverlay(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                 ) { },
-            color = Color(0xFF2A2A2A),
+            color = BossUiTheme.current.panel,
             shape = RoundedCornerShape(8.dp),
             shadowElevation = 8.dp,
         ) {
@@ -119,8 +123,8 @@ fun HistorySearchOverlay(
                     value = query,
                     onValueChange = { query = it; selected = 0 },
                     singleLine = true,
-                    textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                    cursorBrush = SolidColor(Color.White),
+                    textStyle = TextStyle(color = BossUiTheme.current.chalk, fontSize = 14.sp),
+                    cursorBrush = SolidColor(BossUiTheme.current.chalk),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(12.dp)
@@ -143,13 +147,13 @@ fun HistorySearchOverlay(
                         },
                     decorationBox = { inner ->
                         if (query.isEmpty()) {
-                            Text("Search history…", color = Color(0xFF808080), fontSize = 14.sp)
+                            Text("Search history…", color = BossUiTheme.current.muted, fontSize = 14.sp)
                         }
                         inner()
                     },
                 )
 
-                Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF3A3A3A)))
+                Box(Modifier.fillMaxWidth().height(1.dp).background(BossUiTheme.current.line))
 
                 if (aiRowVisible) {
                     Row(
@@ -159,9 +163,9 @@ fun HistorySearchOverlay(
                             .padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("✨ Ask AI:  $query", color = Color(0xFF66D9EF), fontSize = 13.sp, maxLines = 1)
+                        Text("✨ Ask AI:  $query", color = BossUiTheme.current.data, fontSize = 13.sp, maxLines = 1)
                     }
-                    Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF3A3A3A)))
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(BossUiTheme.current.line))
                 }
 
                 LazyColumn(Modifier.heightIn(max = 360.dp)) {
@@ -169,12 +173,12 @@ fun HistorySearchOverlay(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .background(if (i == selected) Color(0xFF094771) else Color.Transparent)
+                                .background(if (i == selected) BossUiTheme.current.signalWash else Color.Transparent)
                                 .clickable { onDismiss(); onSelect(cmd) }
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(cmd, color = Color.White, fontSize = 13.sp, maxLines = 1)
+                            Text(cmd, color = BossUiTheme.current.chalk, fontSize = 13.sp, maxLines = 1)
                         }
                     }
                 }

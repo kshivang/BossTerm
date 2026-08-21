@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose
 
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
@@ -2240,7 +2241,7 @@ fun TabbedTerminal(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.White.copy(alpha = 0.15f))
+                    .background(BossUiTheme.current.chalk.copy(alpha = 0.15f))
             )
         }
 
@@ -2412,12 +2413,12 @@ fun TabbedTerminal(
                     Box(
                         modifier = Modifier
                             .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
-                            .background(Color(0xE6252526))
-                            .border(1.dp, Color(0xFF404040), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            .background(BossUiTheme.current.panel.copy(alpha = 0.90f))
+                            .border(1.dp, BossUiTheme.current.line, androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
                     ) {
                         androidx.compose.material3.Text(
                             "Signed in as $email",
-                            color = Color(0xFF81C784),
+                            color = BossUiTheme.current.ok,
                             fontSize = 11.sp,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                         )
@@ -2437,13 +2438,13 @@ fun TabbedTerminal(
                     Box(
                         modifier = Modifier
                             .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
-                            .background(Color(0xE6252526))
-                            .border(1.dp, Color(0xFF404040), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            .background(BossUiTheme.current.panel.copy(alpha = 0.90f))
+                            .border(1.dp, BossUiTheme.current.line, androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
                             .clickable { session.requestControl() }
                     ) {
                         androidx.compose.material3.Text(
                             "View only - click to request control",
-                            color = Color(0xFFB0B0B0),
+                            color = BossUiTheme.current.mist,
                             fontSize = 11.sp,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                         )
@@ -2456,15 +2457,15 @@ fun TabbedTerminal(
                     Box(
                         modifier = Modifier
                             .clip(androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
-                            .background(Color(0xE6252526))
-                            .border(1.dp, Color(0xFF404040), androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                            .background(BossUiTheme.current.panel.copy(alpha = 0.90f))
+                            .border(1.dp, BossUiTheme.current.line, androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
                             .clickable {
                                 tabController.activeTab?.id?.let { id -> activeRemoteSession?.requestControlFor(id) }
                             }
                     ) {
                         androidx.compose.material3.Text(
                             "View only - click to request control of ${up.name ?: "the origin"}",
-                            color = Color(0xFFB0B0B0),
+                            color = BossUiTheme.current.mist,
                             fontSize = 11.sp,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                         )

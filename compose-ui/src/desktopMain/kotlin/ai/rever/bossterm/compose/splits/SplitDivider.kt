@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.splits
 
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
@@ -12,7 +13,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
@@ -63,7 +63,7 @@ fun SplitDividerLine(
                     SplitOrientation.VERTICAL -> Modifier.fillMaxHeight().width(DIVIDER_THICKNESS)
                 }
             )
-            .background(Color(0xFF2D2D2D))
+            .background(BossUiTheme.current.line2)
     )
 }
 
@@ -178,7 +178,7 @@ fun SplitDivider(
                     SplitOrientation.VERTICAL -> Modifier.fillMaxHeight().width(DIVIDER_THICKNESS)
                 }
             )
-            .background(Color(0xFF2D2D2D))
+            .background(BossUiTheme.current.line2)
             .then(cursorModifier)
             .pointerInput(orientation) {
                 detectDragGestures { change, dragAmount ->

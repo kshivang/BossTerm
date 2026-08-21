@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose.search
 
+import androidx.compose.foundation.border
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -12,7 +14,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -90,7 +91,7 @@ fun SearchBar(
                         }
                     }
                 },
-            color = Color(0xFF252526),
+            color = BossUiTheme.current.panel,
             shape = RoundedCornerShape(4.dp),
             shadowElevation = 8.dp
         ) {
@@ -104,7 +105,8 @@ fun SearchBar(
                 modifier = Modifier
                     .weight(1f)
                     .height(28.dp)
-                    .background(Color(0xFF3C3C3C), RoundedCornerShape(2.dp))
+                    .background(BossUiTheme.current.raised, RoundedCornerShape(2.dp))
+                    .border(1.dp, BossUiTheme.current.line, RoundedCornerShape(2.dp))
                     .padding(horizontal = 8.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
@@ -135,15 +137,15 @@ fun SearchBar(
                         },
                     singleLine = true,
                     textStyle = TextStyle(
-                        color = Color.White,
+                        color = BossUiTheme.current.chalk,
                         fontSize = 13.sp
                     ),
-                    cursorBrush = SolidColor(Color.White),
+                    cursorBrush = SolidColor(BossUiTheme.current.chalk),
                     decorationBox = { innerTextField ->
                         if (searchQuery.isEmpty()) {
                             Text(
                                 "Find",
-                                color = Color(0xFF808080),
+                                color = BossUiTheme.current.muted,
                                 fontSize = 13.sp
                             )
                         }
@@ -156,7 +158,7 @@ fun SearchBar(
             if (searchQuery.isNotEmpty()) {
                 Text(
                     text = if (totalMatches > 0) "$currentMatch/$totalMatches" else "0/0",
-                    color = if (totalMatches > 0) Color(0xFFCCCCCC) else Color(0xFFFF6B6B),
+                    color = if (totalMatches > 0) BossUiTheme.current.chalk else BossUiTheme.current.alert,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(horizontal = 4.dp)
                 )
@@ -175,7 +177,7 @@ fun SearchBar(
                     Icon(
                         imageVector = Icons.Default.KeyboardArrowUp,
                         contentDescription = "Previous",
-                        tint = if (totalMatches > 0) Color(0xFFCCCCCC) else Color(0xFF606060),
+                        tint = if (totalMatches > 0) BossUiTheme.current.mist else BossUiTheme.current.muted,
                         modifier = Modifier.size(18.dp)
                     )
                 }
@@ -189,7 +191,7 @@ fun SearchBar(
                     Icon(
                         imageVector = Icons.Default.KeyboardArrowDown,
                         contentDescription = "Next",
-                        tint = if (totalMatches > 0) Color(0xFFCCCCCC) else Color(0xFF606060),
+                        tint = if (totalMatches > 0) BossUiTheme.current.mist else BossUiTheme.current.muted,
                         modifier = Modifier.size(18.dp)
                     )
                 }
@@ -201,7 +203,7 @@ fun SearchBar(
                 ) {
                     Text(
                         "Aa",
-                        color = if (caseSensitive) Color(0xFF4A90E2) else Color(0xFF808080),
+                        color = if (caseSensitive) BossUiTheme.current.signalText else BossUiTheme.current.muted,
                         fontSize = 12.sp,
                         fontWeight = if (caseSensitive) FontWeight.Bold else FontWeight.Normal
                     )
@@ -215,7 +217,7 @@ fun SearchBar(
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Close",
-                        tint = Color(0xFFCCCCCC),
+                        tint = BossUiTheme.current.mist,
                         modifier = Modifier.size(16.dp)
                     )
                 }

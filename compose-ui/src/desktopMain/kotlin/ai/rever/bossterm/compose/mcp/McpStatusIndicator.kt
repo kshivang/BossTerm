@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.mcp
 
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.TooltipPlacement
@@ -33,17 +34,26 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.features.ContextMenuController
 
-private val McpOnColor = Color(0xFF4CAF50) // green
-private val McpOnGlow = Color(0x33_4C_AF_50) // 20% green halo
-private val McpOnLabelColor = Color(0xFFCFEFD4)
-private val McpOffColor = Color(0xFFE57373) // red
-private val McpOffGlow = Color(0x33_E5_73_73) // 20% red halo
-private val McpOffLabelColor = Color(0xFFF2C9C9)
-private val McpOffBorderColor = Color(0xFFB71C1C)
-private val McpToastBg = Color(0xCC_1E_1E_1E)
-private val McpToastTextColor = Color(0xFFE0E0E0)
-private val McpToastSuccessColor = Color(0xFF4CAF50)
-private val McpToastWarnColor = Color(0xFFFFC107)
+// All getters, never `val`: a file-scope val is initialised at class-init and
+// would pin these to whichever theme was active then, so they could not follow a
+// theme switch even between two dark themes. Same rule as SettingsTheme.
+//
+// The two LABEL colours become plain text tokens rather than tinted greens/reds.
+// The pale #CFEFD4 and #F2C9C9 were legible only on a dark floor, and there is no
+// "ok held to the text floor" token to reach for the way `signalText` is for the
+// accent. The dot, its halo and the border still carry the status, so nothing is
+// lost but the tint.
+private val McpOnColor: Color get() = BossUiTheme.current.ok
+private val McpOnGlow: Color get() = BossUiTheme.current.ok.copy(alpha = 0.20f)
+private val McpOnLabelColor: Color get() = BossUiTheme.current.chalk
+private val McpOffColor: Color get() = BossUiTheme.current.alert
+private val McpOffGlow: Color get() = BossUiTheme.current.alert.copy(alpha = 0.20f)
+private val McpOffLabelColor: Color get() = BossUiTheme.current.alert
+private val McpOffBorderColor: Color get() = BossUiTheme.current.alert
+private val McpToastBg: Color get() = BossUiTheme.current.panel.copy(alpha = 0.80f)
+private val McpToastTextColor: Color get() = BossUiTheme.current.chalk
+private val McpToastSuccessColor: Color get() = BossUiTheme.current.ok
+private val McpToastWarnColor: Color get() = BossUiTheme.current.warn
 
 /**
  * Lifecycle state of a one-click attach attempt, used by [AttachToast] to
@@ -133,7 +143,7 @@ fun McpStatusIndicator(
         ) {
             val dotColor = if (isRunning) McpOnColor else McpOffColor
             val haloColor = if (isRunning) McpOnGlow else McpOffGlow
-            val borderColor = if (isRunning) Color(0xFF388E3C) else McpOffBorderColor
+            val borderColor = if (isRunning) BossUiTheme.current.ok else McpOffBorderColor
             val labelColor = if (isRunning) McpOnLabelColor else McpOffLabelColor
             Box(
                 modifier = Modifier.size(16.dp),

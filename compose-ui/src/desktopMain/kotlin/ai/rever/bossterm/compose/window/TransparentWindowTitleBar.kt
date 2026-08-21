@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.window
 
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -95,7 +96,7 @@ fun WindowScope.CustomTitleBar(
             ) {
                 Text(
                     text = title,
-                    color = Color.White.copy(alpha = 0.9f),
+                    color = BossUiTheme.current.chalk.copy(alpha = 0.9f),
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium
                 )
@@ -109,7 +110,7 @@ fun WindowScope.CustomTitleBar(
                 if (globalHotkeyHint != null) {
                     Text(
                         text = globalHotkeyHint,
-                        color = Color.White.copy(alpha = 0.5f),
+                        color = BossUiTheme.current.mist,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Normal
                     )
@@ -119,7 +120,16 @@ fun WindowScope.CustomTitleBar(
     }
 }
 
-// macOS traffic light colors (from official specs)
+/**
+ * macOS traffic light colors, from Apple's specs.
+ *
+ * Deliberately NOT themed, and the one set of literals in this file that should
+ * stay literal. These are the operating system's window controls: macOS paints the
+ * same red/yellow/green in light and dark appearance, so a user identifies them by
+ * colour before reading anything else in the window. Recolouring them per terminal
+ * theme would make BossTerm the only app on the machine whose close button is not
+ * red. `ChromeTokenCoverageTest` allowlists this object for that reason.
+ */
 private object TrafficLightColors {
     // Close button (red) - with transparency for glass effect
     val closeDefault = Color(0xFFFF6159)

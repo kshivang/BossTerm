@@ -16,7 +16,8 @@ import kotlin.test.assertNotNull
  *     that would otherwise silently fall back at runtime), and PRODUCT_DEFAULT is
  *     the theme it names.
  *  2. Each BOSS palette's ANSI 16 stays identical to its theme's, so the
- *     "derive the palette from the theme" wiring can never drift.
+ *     "derive the palette from the theme" wiring can never drift - and every BOSS
+ *     theme HAS a palette, which the per-pair tests alone cannot promise.
  *  3. TerminalSettings' fresh-install colors equal the default theme's.
  */
 class ThemeDefaultsTest {
@@ -52,6 +53,49 @@ class ThemeDefaultsTest {
     @Test
     fun `boss-operator palette ANSI matches the theme`() {
         assertAnsiMatches(BuiltinThemes.BOSS_OPERATOR, BuiltinColorPalettes.BOSS_OPERATOR)
+    }
+
+    @Test
+    fun `boss-blueprint-light palette ANSI matches the theme`() {
+        assertAnsiMatches(
+            BuiltinThemes.BOSS_BLUEPRINT_LIGHT,
+            BuiltinColorPalettes.BOSS_BLUEPRINT_LIGHT,
+        )
+    }
+
+    @Test
+    fun `boss-daylight palette ANSI matches the theme`() {
+        assertAnsiMatches(BuiltinThemes.BOSS_DAYLIGHT, BuiltinColorPalettes.BOSS_DAYLIGHT)
+    }
+
+    /**
+     * Every BOSS theme needs a same-id palette, and vice versa.
+     *
+     * The per-theme tests above only check the pairs someone remembered to name. A
+     * new identity whose palette was never added to [BuiltinColorPalettes.ALL] still
+     * passes all of them, and the failure is invisible in the picker: selecting the
+     * theme recolors the terminal, but the Palette tab has no matching entry, so
+     * `ColorPaletteManager` keeps whatever palette was active and the ANSI 16 quietly
+     * stay from the previous theme.
+     */
+    @Test
+    fun `every BOSS theme has a palette with the same id`() {
+        val bossThemes = BuiltinThemes.ALL.filter { it.id.startsWith("boss-") }.map { it.id }.toSet()
+        val bossPalettes =
+            BuiltinColorPalettes.ALL.filter { it.id.startsWith("boss-") }.map { it.id }.toSet()
+        assertEquals(
+            bossThemes,
+            bossPalettes,
+            "BOSS themes and BOSS palettes must correspond one-to-one",
+        )
+        // And each pair must really carry the same ANSI 16, not just the same id.
+        for (id in bossThemes) {
+            val theme = BuiltinThemes.getById(id)
+            assertNotNull(theme, "no builtin theme for id '$id'")
+            val palette = BuiltinColorPalettes.getById(id)
+            assertNotNull(palette, "no builtin palette for id '$id'")
+            assertAnsiMatches(theme, palette)
+        }
     }
 
     @Test

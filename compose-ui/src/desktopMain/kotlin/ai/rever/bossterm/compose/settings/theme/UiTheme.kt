@@ -10,9 +10,9 @@ import androidx.compose.ui.graphics.luminance
  * properties in docs/design-system.html.
  *
  * Tokens are derived from the active terminal [Theme] so the chrome follows
- * whatever theme the user picks. The two BOSS identities — BOSS Blueprint (the
- * default) and BOSS Operator — skip the derivation and map to their exact
- * design-system values; see [EXACT_TOKENS].
+ * whatever theme the user picks. The four BOSS identities - BOSS Blueprint (the
+ * default), BOSS Blueprint Light, BOSS Operator and BOSS Daylight - skip the
+ * derivation and map to their exact design-system values; see [EXACT_TOKENS].
  */
 data class UiTheme(
     // Surfaces
@@ -93,6 +93,87 @@ data class UiTheme(
         )
 
         /**
+         * Exact tokens for the paper half of the bossconsole.ai identity,
+         * mirroring the host's `BossBlueprintLightColorScheme`.
+         *
+         * **Deliberate divergence from the host:** the host sets `panel` and
+         * `raised` to the SAME pure white. That cannot be copied here. `raised` is
+         * `SettingsTheme.SurfaceColor`, which is the background of every row and
+         * card inside the settings panel, and `panel` is the panel window behind
+         * them - and those rows carry no border of their own (only the input fields
+         * nested inside them do). White on white would erase every one of them. So
+         * the ladder runs paper -> near-white -> white: the same direction a light
+         * design system elevates in, just with the step the host omits.
+         *
+         * The direction is the mirror image of the dark identities, where the ladder
+         * climbs from ink toward the text. `UiThemeTest` asserts monotonicity rather
+         * than a fixed direction for exactly this reason.
+         *
+         * `signalText` equals `signal` because `--blue` clears 4.9:1 against paper,
+         * so unlike the dark identity there is no separate glyph blue to author.
+         */
+        val BOSS_BLUEPRINT_LIGHT = UiTheme(
+            ink = Color(0xFFF5F7FB),      // host `ink` / site `--paper`
+            panel = Color(0xFFFAFBFD),    // the step the host omits - see above
+            raised = Color(0xFFFFFFFF),   // host `panel` / `raised`
+            line = Color(0xFFDCE2EB),
+            // Softened from the site's full-ink card border: a hard black edge is a
+            // signature on one landing-page card and a wall of noise on every text
+            // field in an app. The host softens it the same way.
+            line2 = Color(0xFFA8B2C2),
+            chalk = Color(0xFF05070B),
+            mist = Color(0xFF687081),
+            muted = Color(0xFF9AA3B2),
+            signal = Color(0xFF0F5BFF),
+            signalDim = Color(0xFF0A45C4),
+            signalWash = Color(0xFFDCE7FF),
+            signalText = Color(0xFF0F5BFF),
+            onSignal = Color(0xFFFFFFFF),
+            // Deeper than `signal` so a link stays distinct from the action blue,
+            // which on paper are otherwise the same colour doing two jobs.
+            data = Color(0xFF0C3FBF),
+            ok = Color(0xFF1E9E63),
+            warn = Color(0xFFA8710A),
+            alert = Color(0xFFD33B4A),
+        )
+
+        /**
+         * Exact tokens for the paper half of the Operator identity, mirroring the
+         * host's `BossLightColorScheme`.
+         *
+         * Same paper -> near-white -> white ladder as [BOSS_BLUEPRINT_LIGHT], and for
+         * the same reason: the host's identical `panel`/`raised` would erase every
+         * settings row.
+         *
+         * `signalText` is a much darker amber than `signal`: #D9871A is 2.6:1 on
+         * this floor, fine as a fill and unreadable as a glyph. That split is the
+         * whole reason both tokens exist, and it is also why
+         * [BuiltinThemes.BOSS_DAYLIGHT] gives its cursor and its ANSI 3 the darker
+         * value rather than the signature one.
+         */
+        val BOSS_DAYLIGHT = UiTheme(
+            ink = Color(0xFFF5F7FA),      // host `ink`
+            panel = Color(0xFFFAFBFC),    // the step the host omits - see above
+            raised = Color(0xFFFFFFFF),   // host `panel` / `raised`
+            line = Color(0xFFE2E7EE),
+            line2 = Color(0xFFC9D2DC),
+            chalk = Color(0xFF131820),
+            mist = Color(0xFF5A6675),
+            muted = Color(0xFF94A0AE),
+            signal = Color(0xFFD9871A),
+            signalDim = Color(0xFFB36F12),
+            signalWash = Color(0xFFFBEFD8),
+            signalText = Color(0xFF95580A),
+            onSignal = Color(0xFF2A1B05),
+            data = Color(0xFF1E7FA8),
+            ok = Color(0xFF2F9E54),
+            // Darkened from #C5860C, which was 2.88:1 on this near-white floor and
+            // so under the 3:1 UI-component floor. The host carries the same value.
+            warn = Color(0xFFB87D0A),
+            alert = Color(0xFFD2453B),
+        )
+
+        /**
          * The BOSS identities, whose chrome tokens are hand-authored rather than
          * derived.
          *
@@ -104,7 +185,9 @@ data class UiTheme(
         private val EXACT_TOKENS: Map<String, UiTheme> =
             mapOf(
                 BuiltinThemes.BOSS_BLUEPRINT.id to BOSS_BLUEPRINT,
+                BuiltinThemes.BOSS_BLUEPRINT_LIGHT.id to BOSS_BLUEPRINT_LIGHT,
                 BuiltinThemes.BOSS_OPERATOR.id to BOSS_OPERATOR,
+                BuiltinThemes.BOSS_DAYLIGHT.id to BOSS_DAYLIGHT,
             )
 
         /**

@@ -435,11 +435,138 @@ object BuiltinThemes {
     )
 
     /**
+     * BOSS Blueprint Light - the paper half of the bossconsole.ai identity.
+     *
+     * Mirrors the host's `BossBlueprintLightColorScheme` (the site's `--paper`
+     * sections), so the terminal and the chrome around it read as one surface on
+     * a light host theme exactly as they do on a dark one.
+     *
+     * Three rules govern a light ANSI palette, and all three are the opposite of
+     * the dark case (`LightThemeContrastTest` enforces them):
+     *
+     * 1. Every `bright*` slot is DARKER than its base, not lighter. Bold text is
+     *    ANSI 8-15; brighten those on paper and every bold line disappears.
+     * 2. `white` (ANSI 7) is a mid grey, never near-white. This is the bug fixed
+     *    in `terminal-tab` PR #72: a near-white ANSI 7 is 1.27:1 on paper, and no
+     *    render-time guard reaches it because the palette IS the source.
+     * 3. The cursor is an opaque block, so it needs contrast against the FLOOR,
+     *    not against the text. `--blue` gives 4.90:1 here, which is why it can be
+     *    the cursor on paper while `boss-daylight` has to darken its amber.
+     */
+    val BOSS_BLUEPRINT_LIGHT = Theme(
+        id = "boss-blueprint-light",
+        name = "BOSS Blueprint Light",
+        // Softened off pure ink, the same way dark Blueprint's foreground sits a
+        // shade under its `chalk`: body copy, not headline weight. 14.6:1.
+        foreground = "0xFF141A24",
+        background = "0xFFF5F7FB",   // host `ink` / site `--paper`
+        cursor = "0xFF0F5BFF",       // host `signal` (--blue), 4.90:1 on paper
+        cursorText = "0xFFFFFFFF",   // host `onSignal`, 5.26:1 on the cursor fill
+        // Deepened from the host's `signalWash` #DCE7FF (1.16:1 on paper). That
+        // wash sits BEHIND a 2.dp indicator on a selected sidebar row; a terminal
+        // selection has no indicator, so the fill carries the whole signal alone.
+        // 1.30:1, and ink text still reads on it at 12.5:1.
+        selection = "0xFFC9DBFF",
+        selectionText = "0xFF05070B",// host `textPrimary`
+        // A warm fill has to do two jobs at once: separate from paper (3.1:1) and
+        // still carry ink-coloured text (11.9:1). The dark theme's pale #F1DF9E
+        // does neither on paper.
+        searchMatch = "0xFFFFC93B",
+        hyperlink = "0xFF0C3FBF",    // host `data` - deeper than signal, so links stay distinct
+        // ANSI 16 - warm-neutral hues re-grounded for paper
+        black = "0xFF1B2330",
+        red = "0xFFD33B4A",          // host `alert`
+        // Darkened off the host's `ok` #1E9E63, which is only 3.20:1 on paper.
+        // Green on white is the classic light-palette trap. 4.24:1.
+        green = "0xFF178750",
+        yellow = "0xFFA8710A",       // host `warn`
+        blue = "0xFF0F5BFF",         // host `signal`
+        magenta = "0xFF8B2FBF",
+        cyan = "0xFF0E7490",
+        white = "0xFF687081",        // host `textSecondary` - see rule 2 above
+        // ANSI 8 is the dim companion of ANSI 0, and on paper ANSI 0 is the ink,
+        // so 8 is necessarily LIGHTER than its base - the one slot exempt from
+        // rule 1. It still has to clear the 3:1 UI floor, which the host's
+        // `textMuted` #9AA3B2 does not (2.37:1). Dimmer than ANSI 7, readable. 3.38:1.
+        brightBlack = "0xFF7E8797",
+        brightRed = "0xFFB02A38",
+        brightGreen = "0xFF106340",
+        brightYellow = "0xFF87590A",
+        brightBlue = "0xFF0C3FBF",
+        brightMagenta = "0xFF6E1F99",
+        brightCyan = "0xFF0B5B73",
+        brightWhite = "0xFF05070B",  // host `textPrimary` - the strongest text
+        isBuiltin = true
+    )
+
+    /**
+     * BOSS Daylight - the paper half of the Operator identity.
+     *
+     * Mirrors the host's `BossLightColorScheme`. Same three light-palette rules as
+     * [BOSS_BLUEPRINT_LIGHT], plus one identity compromise that is deliberate:
+     *
+     * **The cursor is the darkened amber #95580A, not the identity's #D9871A.**
+     * The host scheme's own note records why - the amber signal is 2.6:1 on this
+     * floor, which is exactly why the host carries a separate `signalText` of
+     * #95580A for amber glyphs. An opaque block cursor at 2.6:1 is a smear, so the
+     * terminal takes the darker amber (5.29:1) and ANSI 3 follows it. The chrome
+     * still FILLS with #D9871A, so the signature survives where a fill can carry
+     * it. Amber on paper is a hard combination; this is the trade, not an oversight.
+     */
+    val BOSS_DAYLIGHT = Theme(
+        id = "boss-daylight",
+        name = "BOSS Daylight",
+        foreground = "0xFF1D242E",   // softened off the host's `textPrimary` #131820
+        background = "0xFFF5F7FA",   // host `ink`
+        cursor = "0xFF95580A",       // host `signalText`, 5.29:1 - see the note above
+        cursorText = "0xFFFFFFFF",   // 5.68:1 on the cursor fill
+        // Deepened from the host's `signalWash` #FBEFD8, which is 1.06:1 here and
+        // effectively invisible as a standalone selection. Same reasoning as
+        // BOSS_BLUEPRINT_LIGHT's selection. 1.41:1, text on it 10.3:1.
+        selection = "0xFFEFCE8C",
+        selectionText = "0xFF131820",// host `textPrimary`
+        searchMatch = "0xFFFFC44D",
+        // Darkened off the host's `data` #1E7FA8: that value is 4.20:1 on this
+        // floor, which clears the 3:1 UI-component floor but not the 4.5:1 text
+        // floor - and a hyperlink is text. 5.60:1.
+        hyperlink = "0xFF186A8E",
+        // ANSI 16 - the Operator hues re-grounded for paper
+        black = "0xFF20262E",
+        red = "0xFFD2453B",          // host `alert`
+        // Darkened off the host's `ok` #2F9E54 (3.19:1 here), as in
+        // BOSS_BLUEPRINT_LIGHT. 4.66:1.
+        green = "0xFF257F44",
+        // The darker amber again, not the host's `warn` #B87D0A: warn is 3.3:1 on
+        // this floor, which passes as a fill but not as a glyph, and ANSI 3 is text.
+        yellow = "0xFF95580A",
+        blue = "0xFF186A8E",         // the same darkened `data` as `hyperlink`
+        magenta = "0xFF9B2C8F",
+        cyan = "0xFF127C86",
+        white = "0xFF5A6675",        // host `textSecondary`
+        // The dim slot, exempt from rule 1 for the reason recorded on
+        // BOSS_BLUEPRINT_LIGHT. 3.06:1; the host's `textMuted` is 2.48:1.
+        brightBlack = "0xFF848F9E",
+        brightRed = "0xFFA8342C",
+        brightGreen = "0xFF1C6B39",
+        brightYellow = "0xFF7A4708",
+        brightBlue = "0xFF175F7E",
+        brightMagenta = "0xFF77206D",
+        brightCyan = "0xFF0D5C64",
+        brightWhite = "0xFF131820",  // host `textPrimary`
+        isBuiltin = true
+    )
+
+    /**
      * All built-in themes.
+     *
+     * BOSS_BLUEPRINT stays first: `ThemeDefaultsTest` asserts the default leads
+     * both builtin lists. Each light identity sits next to its dark sibling.
      */
     val ALL = listOf(
         BOSS_BLUEPRINT,
+        BOSS_BLUEPRINT_LIGHT,
         BOSS_OPERATOR,
+        BOSS_DAYLIGHT,
         DEFAULT,
         DRACULA,
         NORD,

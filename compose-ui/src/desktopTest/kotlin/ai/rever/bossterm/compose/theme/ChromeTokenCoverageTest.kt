@@ -88,8 +88,27 @@ class ChromeTokenCoverageTest {
         "splits/SplitContainer.kt" to listOf("0xFF4A90E2"),
     )
 
-    /** `Color(0xAARRGGBB)` / `Color(0xRRGGBB)`, plus the two named extremes. */
-    private val literalPattern = Regex("""Color\((0x[0-9A-Fa-f_]{6,11})\)|Color\.(White|Black)""")
+    /**
+     * `Color(0x…)`, `Color(r, g, b…)`, and any named `Color.Foo`.
+     *
+     * The named branch is a negated set rather than a list of the ones seen so far:
+     * an earlier version matched only `White` and `Black`, so `Color.Red`,
+     * `Color.Gray` and `Color.Cyan` would all have walked straight through the guard
+     * that exists to stop exactly them. `Transparent` and `Unspecified` are excluded
+     * because they carry no colour - both are legitimately used here for an unfilled
+     * row background.
+     *
+     * The component constructor is included for the same reason: `Color(0.1f, 0.2f,
+     * 0.3f)` is as hardcoded as any hex, and the hex-only pattern could not see it.
+     *
+     * Still out of reach: a literal split across lines, and a colour arriving through
+     * a parameter. Named so the limit is known rather than assumed.
+     */
+    private val literalPattern = Regex(
+        """Color\((0x[0-9A-Fa-f_]{6,11})\)""" +
+            """|Color\(\s*(?:red\s*=|[0-9.]+f\s*[,)])""" +
+            """|Color\.(?!Transparent\b|Unspecified\b)([A-Z]\w+)""",
+    )
 
     @Test
     fun `converted chrome holds no colour literals outside the allowlist`() {
@@ -98,10 +117,10 @@ class ChromeTokenCoverageTest {
             val file = sourceFile(rel)
             val ok = allowed[rel].orEmpty()
             file.readLines().forEachIndexed { index, line ->
-                // Comments quote literals when explaining why a token replaced one.
-                if (line.trimStart().startsWith("//")) return@forEachIndexed
-                for (match in literalPattern.findAll(line)) {
-                    val literal = match.groupValues[1].ifEmpty { "Color.${match.groupValues[2]}" }
+                for (match in literalPattern.findAll(codeOf(line))) {
+                    val literal = match.groupValues.drop(1).firstOrNull { it.isNotEmpty() }
+                        ?.let { if (it.startsWith("0x")) it else "Color.$it" }
+                        ?: "Color(components)"
                     if (literal !in ok) {
                         offenders += "$rel:${index + 1}  $literal   (${line.trim().take(80)})"
                     }
@@ -114,6 +133,51 @@ class ChromeTokenCoverageTest {
                 "value to this test's allowlist WITH the reason it must stay literal:\n" +
                 offenders.joinToString("\n"),
         )
+    }
+
+    /**
+     * The detector's own unit test.
+     *
+     * This regex is what holds the line for 13 files, so its reach is worth pinning
+     * directly rather than inferring from "the tree is clean". An earlier version
+     * matched only `Color.White` and `Color.Black`, so every other named colour walked
+     * through it, and the comment skip was start-of-line only, so a KDoc line quoting a
+     * literal would have failed the build pointing at prose.
+     *
+     * Both halves are exercised here because they compose: `codeOf` decides what the
+     * pattern even sees.
+     */
+    @Test
+    fun `the literal detector catches hardcoded colours and ignores prose`() {
+        val shouldFlag = listOf(
+            "            .background(Color(0xFF404040))",
+            "    private val X = Color(0x88000000)",
+            "        val c = Color.Red",
+            "        val c = Color.Gray",
+            "        val c = Color.Cyan",
+            "        val c = Color(0.1f, 0.2f, 0.3f)",
+            "        val c = Color(red = 0.1f, green = 0.2f, blue = 0.3f)",
+            "        Text(\"x\", color = Color.White)",
+        )
+        val shouldIgnore = listOf(
+            // Carry no colour, and both are used for an unfilled row background.
+            "        val c = Color.Transparent",
+            "        val c = Color.Unspecified",
+            // Prose, in each of the three shapes these files actually use.
+            "        // was Color(0xFF404040) before the sweep",
+            "     * Replaced Color(0xFF2D2D2D) with the line2 token.",
+            "        /* Color.White here was 1.07:1 on paper */",
+            "            .background(BossUiTheme.current.line2) // was Color(0xFF2D2D2D)",
+            // Tokens, which is the whole point.
+            "            .background(BossUiTheme.current.panel.copy(alpha = 0.90f))",
+            "        cursorBrush = SolidColor(BossUiTheme.current.chalk),",
+        )
+
+        val missed = shouldFlag.filter { !literalPattern.containsMatchIn(codeOf(it)) }
+        assertEquals(emptyList(), missed, "hardcoded colours the detector does not see")
+
+        val falsePositives = shouldIgnore.filter { literalPattern.containsMatchIn(codeOf(it)) }
+        assertEquals(emptyList(), falsePositives, "lines the detector flags but should not")
     }
 
     /**
@@ -155,6 +219,27 @@ class ChromeTokenCoverageTest {
             }
         }
         assertEquals(emptyList(), stale, "stale allowlist entries")
+    }
+
+    /**
+     * The code part of a line, with comments removed.
+     *
+     * These files explain in prose why a token replaced a literal, and several of
+     * those explanations quote the literal. Matching the whole line would fail the
+     * build with a message pointing at a comment - and the previous
+     * `trimStart().startsWith("//")` check only covered a comment that owns its whole
+     * line, so a KDoc `*` line or a trailing `// was Color(0xFF404040)` still counted.
+     * Nothing in the tree trips that today, which is exactly why it would have been a
+     * surprise later.
+     *
+     * Deliberately naive about `//` inside a string literal: no colour literal in
+     * these files lives inside a string, and a cheap over-strip only ever loses
+     * coverage on a line that has none.
+     */
+    private fun codeOf(line: String): String {
+        val trimmed = line.trimStart()
+        if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) return ""
+        return line.substringBefore("//")
     }
 
     private fun sourceFile(rel: String): File {

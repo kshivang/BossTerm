@@ -1291,7 +1291,10 @@ private fun TabItem(
                     if (!branch.isNullOrBlank()) {
                         Text(
                             text = "⎇ $branch",
-                            color = BossUiTheme.current.ok,
+                            // `mist`, not `ok`: `ok` is a FILL token at the 3:1
+                            // component floor and is 3.2:1 on the light identities.
+                            // The ⎇ glyph already says "branch"; the green did not.
+                            color = itemMuted,
                             fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace,
                             maxLines = 1,

@@ -27,6 +27,9 @@ import androidx.compose.ui.unit.sp
 // status DOT fills here, so the fill tokens are the right ones; `Danger` is also
 // used as label text and as a button tint, which `alert` covers in both roles.
 private val Bg: Color get() = BossUiTheme.current.panel
+// The button sits ON the bar, so it needs the rung above `Bg`. It was #1E1E1E on a
+// #2B2B2B bar - recessed; pointing both at `panel` left it with only its border.
+private val ButtonBg: Color get() = BossUiTheme.current.raised
 private val Line: Color get() = BossUiTheme.current.line
 private val Label: Color get() = BossUiTheme.current.chalk
 private val Muted: Color get() = BossUiTheme.current.muted
@@ -126,7 +129,7 @@ private fun LevelMeter(muted: Boolean, color: Color) {
 @Composable
 private fun BarButton(label: String, onClick: () -> Unit, tint: Color = Label) {
     Surface(
-        color = BossUiTheme.current.panel,
+        color = ButtonBg,
         shape = RoundedCornerShape(10.dp),
         border = BorderStroke(1.dp, if (tint == Label) Line else tint),
         modifier = Modifier.clickable(onClick = onClick),

@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.theme
 
+import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.theme.BuiltinThemes
 import ai.rever.bossterm.compose.settings.theme.Theme
 import ai.rever.bossterm.compose.util.ColorUtils
@@ -31,6 +32,16 @@ import kotlin.test.assertTrue
  *  3. **The cursor is an opaque block, so it is measured against the FLOOR.** This is
  *     what forces `boss-daylight` to give its cursor and its ANSI 3 the darker amber
  *     #95580A instead of the identity's #D9871A, which is 2.6:1 on paper.
+ *  4. **The authored palette must BE the shipped palette.** `TerminalCanvasRenderer`
+ *     runs every glyph colour through [ColorUtils.legibleOnLightBackground], and
+ *     indexed colours resolve from the palette before that call, so any slot below
+ *     `TerminalSettings.lightBackgroundMinContrast` is rewritten at paint time. In the
+ *     first draft that quietly undid rule 1's whole argument: ANSI 8 `#7E8797` became
+ *     `#687181`, one green-channel step from ANSI 7's `#687081`, so the dim slot the
+ *     KDoc reasons out so carefully collapsed into the slot it is supposed to be
+ *     dimmer than. Asserting the raw values would have passed. The floors below are
+ *     therefore the SETTING, not a restated 4.5, and one test asserts the guard is a
+ *     no-op for every slot.
  *
  * Scoped to the BOSS light themes on purpose. `solarized-light` is a faithful port of
  * a published palette that deliberately inverts (its `brightBlack` IS its background,
@@ -43,6 +54,15 @@ class LightThemeContrastTest {
 
     /** UI-component floor: fills, block cursors, hairlines. WCAG 1.4.11. */
     private val uiFloor = 3.0f
+
+    /**
+     * The floor an ANSI slot has to clear to survive the render guard untouched.
+     *
+     * Read from the setting rather than restated, so the palettes track the guard if
+     * its default ever moves. See rule 4 above: below this, the shipped colour is not
+     * the authored one.
+     */
+    private val guardFloor = TerminalSettings().lightBackgroundMinContrast
 
     /** Text floor for anything painted as a glyph. WCAG 1.4.3 AA. */
     private val textFloor = 4.5f
@@ -125,7 +145,7 @@ class LightThemeContrastTest {
     }
 
     @Test
-    fun `every ANSI slot clears the UI floor on paper`() {
+    fun `every ANSI slot clears the render guard's floor on paper`() {
         for (t in lightIdentities) {
             val bg = t.backgroundColorValue
             for (i in 0..15) {
@@ -133,9 +153,41 @@ class LightThemeContrastTest {
                     t,
                     "ANSI $i (${Theme.ANSI_COLOR_NAMES[i]})",
                     ratio(t.getAnsiColor(i), bg),
-                    uiFloor,
+                    guardFloor,
                 )
             }
+        }
+    }
+
+    /**
+     * The teeth behind rule 4, and the assertion the first draft needed.
+     *
+     * Stated as "the guard changes nothing" rather than as a contrast number, because
+     * that is the actual property: whatever the guard would do to a slot, the user
+     * sees, and the only way the authored palette is the shipped palette is if the
+     * guard is a no-op on all sixteen.
+     */
+    @Test
+    fun `the render guard leaves every authored slot untouched`() {
+        for (t in lightIdentities) {
+            val bg = t.backgroundColorValue
+            for (i in 0..15) {
+                val raw = t.getAnsiColor(i)
+                val painted = ColorUtils.legibleOnLightBackground(raw, bg, guardFloor)
+                assertEquals(
+                    raw,
+                    painted,
+                    "${t.id}: ANSI $i (${Theme.ANSI_COLOR_NAMES[i]}) is rewritten at paint " +
+                        "time, so the authored value is not what ships - darken the slot until " +
+                        "it clears $guardFloor:1 on ${t.background}",
+                )
+            }
+            // The same for the plain foreground, which is painted through the guard too.
+            assertEquals(
+                t.foregroundColor,
+                ColorUtils.legibleOnLightBackground(t.foregroundColor, bg, guardFloor),
+                "${t.id}: foreground is rewritten at paint time",
+            )
         }
     }
 
@@ -145,17 +197,27 @@ class LightThemeContrastTest {
             for (i in 9..15) {
                 val base = t.getAnsiColor(i - 8)
                 val bright = t.getAnsiColor(i)
+                // Strictly darker: `<=` would admit bright == base, which erases the
+                // bold distinction just as thoroughly as inverting it, and is the same
+                // collapsed-rung failure the UiTheme ladder test guards against.
                 assertTrue(
-                    bright.luminance() <= base.luminance(),
-                    "${t.id}: ANSI $i (${Theme.ANSI_COLOR_NAMES[i]}) is LIGHTER than ANSI ${i - 8} " +
-                        "(${Theme.ANSI_COLOR_NAMES[i - 8]}) - on paper that makes bold text fade out",
+                    bright.luminance() < base.luminance(),
+                    "${t.id}: ANSI $i (${Theme.ANSI_COLOR_NAMES[i]}) is not darker than ANSI " +
+                        "${i - 8} (${Theme.ANSI_COLOR_NAMES[i - 8]}) - on paper that makes bold " +
+                        "text fade out",
                 )
             }
             // ANSI 8's exemption comes with its own obligation: it must still be the
-            // dimmer of the two greys, or the palette has no dim slot at all.
+            // dimmer of the two greys, or the palette has no dim slot at all. Held to a
+            // real margin rather than mere inequality - the first draft satisfied `>` by
+            // 0.002 luminance once the guard had finished with it, which is a dim slot
+            // on paper only.
+            val dim = t.getAnsiColor(8).luminance()
+            val normal = t.getAnsiColor(7).luminance()
             assertTrue(
-                t.getAnsiColor(8).luminance() > t.getAnsiColor(7).luminance(),
-                "${t.id}: ANSI 8 must be dimmer than ANSI 7 to serve as the dim slot",
+                dim > normal * 1.5f,
+                "${t.id}: ANSI 8 (lum $dim) must be visibly dimmer than ANSI 7 (lum $normal) " +
+                    "to serve as the dim slot, not merely a shade off it",
             )
         }
     }

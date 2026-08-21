@@ -253,9 +253,10 @@ fun AlwaysVisibleScrollbar(
                 // search markers; colored per block exit state).
                 if (blockMarkerPositions.isNotEmpty()) {
                     val density = LocalDensity.current
-                    // Hoisted out of the draw lambda on purpose: a token read inside
-                    // Canvas runs in the draw phase and does not subscribe the
-                    // composition to theme changes.
+                    // Hoisted out of the draw lambda for cost, not correctness: Compose
+                    // observes snapshot reads in the draw phase too, so reading the token
+                    // inside Canvas would still repaint on a theme change - it would just
+                    // do it once per marker per frame instead of once per composition.
                     val unknownBlockMarker = BossUiTheme.current.muted
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         val markerHeightPx = with(density) { 2.dp.toPx() }

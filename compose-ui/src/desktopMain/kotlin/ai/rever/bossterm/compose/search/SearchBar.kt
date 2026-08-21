@@ -158,7 +158,9 @@ fun SearchBar(
             if (searchQuery.isNotEmpty()) {
                 Text(
                     text = if (totalMatches > 0) "$currentMatch/$totalMatches" else "0/0",
-                    color = if (totalMatches > 0) BossUiTheme.current.chalk else BossUiTheme.current.alert,
+                    // `mist` to match the arrows beside it - the count and the two nav
+                    // buttons are one visual group and were one colour before.
+                    color = if (totalMatches > 0) BossUiTheme.current.mist else BossUiTheme.current.alert,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(horizontal = 4.dp)
                 )

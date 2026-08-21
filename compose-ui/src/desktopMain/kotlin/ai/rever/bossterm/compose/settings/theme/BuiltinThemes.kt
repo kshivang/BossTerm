@@ -452,6 +452,14 @@ object BuiltinThemes {
      * 3. The cursor is an opaque block, so it needs contrast against the FLOOR,
      *    not against the text. `--blue` gives 4.90:1 here, which is why it can be
      *    the cursor on paper while `boss-daylight` has to darken its amber.
+     * 4. Every slot must clear `TerminalSettings.lightBackgroundMinContrast`, not
+     *    merely the 3:1 UI floor. `TerminalCanvasRenderer` runs EVERY glyph colour
+     *    through `ColorUtils.legibleOnLightBackground`, and indexed colours are
+     *    resolved from the palette BEFORE that call - so a slot below the setting
+     *    (4.5 by default) is silently mirrored-and-clamped at paint time and the
+     *    shipped colour is not the authored one. That is not a theoretical risk: it
+     *    ate the dim slot in the first draft, and `LightThemeContrastTest` now
+     *    asserts the guard is a no-op for every slot of these themes.
      */
     val BOSS_BLUEPRINT_LIGHT = Theme(
         id = "boss-blueprint-light",
@@ -475,20 +483,25 @@ object BuiltinThemes {
         hyperlink = "0xFF0C3FBF",    // host `data` - deeper than signal, so links stay distinct
         // ANSI 16 - warm-neutral hues re-grounded for paper
         black = "0xFF1B2330",
-        red = "0xFFD33B4A",          // host `alert`
+        red = "0xFFC63746",          // host `alert` #D33B4A, darkened to clear the guard
         // Darkened off the host's `ok` #1E9E63, which is only 3.20:1 on paper.
         // Green on white is the classic light-palette trap. 4.24:1.
-        green = "0xFF178750",
-        yellow = "0xFFA8710A",       // host `warn`
+        green = "0xFF157C4A",
+        yellow = "0xFF946309",       // host `warn` #A8710A, darkened to clear the guard
         blue = "0xFF0F5BFF",         // host `signal`
         magenta = "0xFF8B2FBF",
         cyan = "0xFF0E7490",
-        white = "0xFF687081",        // host `textSecondary` - see rule 2 above
+        // Darker than the host's `textSecondary` #687081 (4.64:1). Two reasons, both
+        // from rule 4: it has to clear the guard floor with margin, and ANSI 8 has to
+        // fit ABOVE it and still clear the floor itself. 7.22:1.
+        white = "0xFF4A5364",
         // ANSI 8 is the dim companion of ANSI 0, and on paper ANSI 0 is the ink,
         // so 8 is necessarily LIGHTER than its base - the one slot exempt from
-        // rule 1. It still has to clear the 3:1 UI floor, which the host's
-        // `textMuted` #9AA3B2 does not (2.37:1). Dimmer than ANSI 7, readable. 3.38:1.
-        brightBlack = "0xFF7E8797",
+        // rule 1. It still has to clear the guard floor (rule 4), which neither the
+        // host's `textMuted` #9AA3B2 (2.37:1) nor a mid-grey #7E8797 (3.38:1) does:
+        // the guard rewrote #7E8797 to #687181, one green-channel step off ANSI 7,
+        // collapsing the dim slot into it. 4.79:1, a clear 2.4 points lighter than 7.
+        brightBlack = "0xFF656E7E",
         brightRed = "0xFFB02A38",
         brightGreen = "0xFF106340",
         brightYellow = "0xFF87590A",
@@ -532,7 +545,7 @@ object BuiltinThemes {
         hyperlink = "0xFF186A8E",
         // ANSI 16 - the Operator hues re-grounded for paper
         black = "0xFF20262E",
-        red = "0xFFD2453B",          // host `alert`
+        red = "0xFFC13F36",          // host `alert` #D2453B, darkened to clear the guard
         // Darkened off the host's `ok` #2F9E54 (3.19:1 here), as in
         // BOSS_BLUEPRINT_LIGHT. 4.66:1.
         green = "0xFF257F44",
@@ -542,10 +555,13 @@ object BuiltinThemes {
         blue = "0xFF186A8E",         // the same darkened `data` as `hyperlink`
         magenta = "0xFF9B2C8F",
         cyan = "0xFF127C86",
-        white = "0xFF5A6675",        // host `textSecondary`
+        // Darker than the host's `textSecondary` #5A6675, to leave ANSI 8 room above it
+        // while both clear the guard floor. Same reasoning as BOSS_BLUEPRINT_LIGHT. 7.37:1.
+        white = "0xFF49525F",
         // The dim slot, exempt from rule 1 for the reason recorded on
-        // BOSS_BLUEPRINT_LIGHT. 3.06:1; the host's `textMuted` is 2.48:1.
-        brightBlack = "0xFF848F9E",
+        // BOSS_BLUEPRINT_LIGHT - but not from rule 4. 4.82:1; #848F9E (3.06:1) was
+        // rewritten to #616C7B by the guard, which erased the gap to ANSI 7.
+        brightBlack = "0xFF646E7C",
         brightRed = "0xFFA8342C",
         brightGreen = "0xFF1C6B39",
         brightYellow = "0xFF7A4708",

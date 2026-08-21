@@ -194,7 +194,10 @@ private fun ReadyToInstallBanner(onInstall: () -> Unit) {
 
             TextButton(
                 onClick = onInstall,
-                colors = ButtonDefaults.textButtonColors(contentColor = AccentOrange),
+                // The banner's primary action, so it takes the accent held to the text
+                // floor - `warn` is a fill token and 3.3:1 on daylight. The Info icon
+                // above keeps AccentOrange: an icon is held to the 3:1 component floor.
+                colors = ButtonDefaults.textButtonColors(contentColor = AccentBlue),
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                 modifier = Modifier.height(28.dp)
             ) {

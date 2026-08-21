@@ -4,6 +4,9 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /**
  * Desktop platform services implementation.
@@ -87,22 +90,63 @@ class DesktopFileSystemService : PlatformServices.FileSystemService {
     override fun getTempDirectory(): String = System.getProperty("java.io.tmpdir")
 }
 
-class DesktopProcessService : PlatformServices.ProcessService {
+/**
+ * @param startPty how a pty is actually started. Injectable for ONE reason: the failure this
+ *   class's error handling exists for is a `LinkageError` from a closed plugin classloader, and
+ *   there is no way to provoke one through the real `PtyProcessBuilder`. Without a seam here the
+ *   Throwable-vs-Exception distinction below is untestable, and an untested catch clause is how it
+ *   came to be `catch (e: Exception)` in the first place - which does not catch an Error.
+ */
+class DesktopProcessService(
+    private val startPty: (
+        command: Array<String>,
+        config: PlatformServices.ProcessService.ProcessConfig,
+        isWindows: Boolean,
+    ) -> com.pty4j.PtyProcess = { command, config, isWindows ->
+        com.pty4j.PtyProcessBuilder()
+            .setCommand(command)
+            .setEnvironment(config.environment)
+            .setDirectory(config.workingDirectory ?: System.getProperty("user.home"))
+            .setConsole(false) // Don't attach to parent console
+            .setWindowsAnsiColorEnabled(isWindows) // Enable ANSI colors on Windows
+            .setUseWinConPty(isWindows) // Use Windows ConPTY for better compatibility
+            .start()
+    },
+) : PlatformServices.ProcessService {
     override suspend fun spawnProcess(config: PlatformServices.ProcessService.ProcessConfig): PlatformServices.ProcessService.ProcessHandle? {
+        // Do not start a process for a session that has already been cancelled.
+        //
+        // Cancellation is cooperative and `PtyProcessBuilder.start()` is a blocking JNI chain with
+        // no suspension point, so a coroutine already inside it never notices. Session init does
+        // real work before this line - environment assembly, shell-integration injection - which is
+        // exactly the span during which a tab can be disposed. Checking here narrows the window
+        // from all of that to the gap between this line and the next.
+        //
+        // It matters because of where a late spawn ends up. When BossTerm runs inside the
+        // terminal-tab plugin, disposal is followed by the plugin's classloader being closed, and a
+        // spawn that arrives after it produced:
+        //
+        //   ClassNotFoundException: Plugin classloader for '...terminaltab' is UNLOADED; refusing
+        //   to resolve 'com.pty4j.util.PtyUtil' against the host classloader.
+        //
+        // from `PtyHelpers.<clinit>` - the first pty spawn in that classloader happening during its
+        // teardown.
+        currentCoroutineContext().ensureActive()
         return try {
             val command = arrayOf(config.command) + config.arguments.toTypedArray()
-            val isWindows = ShellCustomizationUtils.isWindows()
-            val pty = com.pty4j.PtyProcessBuilder()
-                .setCommand(command)
-                .setEnvironment(config.environment)
-                .setDirectory(config.workingDirectory ?: System.getProperty("user.home"))
-                .setConsole(false)  // Don't attach to parent console
-                .setWindowsAnsiColorEnabled(isWindows)  // Enable ANSI colors on Windows
-                .setUseWinConPty(isWindows)  // Use Windows ConPTY for better compatibility
-                .start()
-            PtyProcessHandle(pty)
-        } catch (e: Exception) {
-            e.printStackTrace()
+            PtyProcessHandle(startPty(command, config, ShellCustomizationUtils.isWindows()))
+        } catch (e: CancellationException) {
+            // Rethrown, not reported. `Exception` below would otherwise swallow it and turn a tab
+            // being disposed into a visible "Failed to spawn process" error on its way out.
+            throw e
+        } catch (t: Throwable) {
+            // Throwable, not Exception. A closed plugin classloader raises
+            // ExceptionInInitializerError / NoClassDefFoundError - which are Errors, so the old
+            // `catch (e: Exception)` did not catch them and the whole "returns null on failure"
+            // contract broke in precisely the case that produced the stack above. The caller's
+            // null branch already renders a connection error, which is the right outcome for a
+            // session that cannot start.
+            t.printStackTrace()
             null
         }
     }

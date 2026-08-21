@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.update
 
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.*
 import androidx.compose.material.icons.Icons
@@ -56,11 +57,15 @@ fun UpdateBanner(
 }
 
 // Colors matching TabBar
-private val BannerBackground = Color(0xFF1E1E1E)
-private val AccentBlue = Color(0xFF4A90E2)
-private val AccentGreen = Color(0xFF4CAF50)
-private val AccentOrange = Color(0xFFFF9800)
-private val AccentRed = Color(0xFFF44336)
+// Getters, not vals: a file-scope val is initialised at class-init and cannot
+// follow a theme switch. AccentBlue is used for text and icons as well as fills, so
+// it takes `signalText` - the accent held to the 4.5:1 text floor - rather than
+// `signal`, which is only held to the 3:1 component floor.
+private val BannerBackground: Color get() = BossUiTheme.current.panel
+private val AccentBlue: Color get() = BossUiTheme.current.signalText
+private val AccentGreen: Color get() = BossUiTheme.current.ok
+private val AccentOrange: Color get() = BossUiTheme.current.warn
+private val AccentRed: Color get() = BossUiTheme.current.alert
 
 @Composable
 private fun UpdateAvailableBanner(
@@ -92,12 +97,12 @@ private fun UpdateAvailableBanner(
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     "Update v${updateInfo.latestVersion} available",
-                    color = Color.White,
+                    color = BossUiTheme.current.chalk,
                     fontSize = 12.sp
                 )
                 Text(
                     " (current: v${updateInfo.currentVersion})",
-                    color = Color(0xFF808080),
+                    color = BossUiTheme.current.muted,
                     fontSize = 12.sp
                 )
             }
@@ -113,7 +118,7 @@ private fun UpdateAvailableBanner(
                 }
                 TextButton(
                     onClick = onDismiss,
-                    colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF808080)),
+                    colors = ButtonDefaults.textButtonColors(contentColor = BossUiTheme.current.muted),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                     modifier = Modifier.height(28.dp)
                 ) {
@@ -145,7 +150,7 @@ private fun DownloadProgressBanner(progress: Float) {
             Spacer(modifier = Modifier.width(6.dp))
             Text(
                 "Downloading... ${(progress * 100).toInt()}%",
-                color = Color.White,
+                color = BossUiTheme.current.chalk,
                 fontSize = 12.sp
             )
             Spacer(modifier = Modifier.width(12.dp))
@@ -153,7 +158,7 @@ private fun DownloadProgressBanner(progress: Float) {
                 progress = progress,
                 modifier = Modifier.weight(1f).height(4.dp),
                 color = AccentGreen,
-                backgroundColor = Color(0xFF404040)
+                backgroundColor = BossUiTheme.current.line
             )
         }
     }
@@ -182,14 +187,17 @@ private fun ReadyToInstallBanner(onInstall: () -> Unit) {
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     "Update ready to install - password prompt will appear",
-                    color = Color.White,
+                    color = BossUiTheme.current.chalk,
                     fontSize = 12.sp
                 )
             }
 
             TextButton(
                 onClick = onInstall,
-                colors = ButtonDefaults.textButtonColors(contentColor = AccentOrange),
+                // The banner's primary action, so it takes the accent held to the text
+                // floor - `warn` is a fill token and 3.3:1 on daylight. The Info icon
+                // above keeps AccentOrange: an icon is held to the 3:1 component floor.
+                colors = ButtonDefaults.textButtonColors(contentColor = AccentBlue),
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                 modifier = Modifier.height(28.dp)
             ) {
@@ -220,7 +228,7 @@ private fun RestartRequiredBanner() {
             Spacer(modifier = Modifier.width(6.dp))
             Text(
                 "Installing update... App will relaunch automatically. Check /tmp/bossterm-updater/ for logs if needed.",
-                color = Color.White,
+                color = BossUiTheme.current.chalk,
                 fontSize = 12.sp
             )
         }
@@ -260,7 +268,7 @@ private fun ErrorBanner(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         "Update error: $message",
-                        color = Color.White,
+                        color = BossUiTheme.current.chalk,
                         fontSize = 12.sp,
                         maxLines = 2
                     )
@@ -277,7 +285,7 @@ private fun ErrorBanner(
                     }
                     TextButton(
                         onClick = onDismiss,
-                        colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF808080)),
+                        colors = ButtonDefaults.textButtonColors(contentColor = BossUiTheme.current.muted),
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                         modifier = Modifier.height(28.dp)
                     ) {
@@ -287,7 +295,7 @@ private fun ErrorBanner(
             }
             Text(
                 "Check logs: /tmp/bossterm-updater/update-*.log or /tmp/bossterm-update-debug-*.log",
-                color = Color(0xFF808080),
+                color = BossUiTheme.current.muted,
                 fontSize = 10.sp,
                 modifier = Modifier.padding(top = 2.dp, start = 22.dp)
             )

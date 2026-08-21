@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.share
 
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.TooltipArea
@@ -31,10 +32,12 @@ import androidx.compose.ui.unit.sp
  *
  * The call segment's wording is the embedder's — see `TabbedTerminal`'s `callLabel` parameter.
  */
-private val ON = Color(0xFF4CAF50)
-private val OFF = Color(0xFF6B6B6B)
-private val BUSY = Color(0xFFE5A54B)
-private val LIVE_TALK = Color(0xFF4A90E2)
+// Getters, not vals: a file-scope val freezes at class-init and cannot follow a
+// theme switch. These four are status dot/pill fills, so the fill tokens apply.
+private val ON: Color get() = BossUiTheme.current.ok
+private val OFF: Color get() = BossUiTheme.current.muted
+private val BUSY: Color get() = BossUiTheme.current.warn
+private val LIVE_TALK: Color get() = BossUiTheme.current.data
 
 /**
  * What the in-app call button says when the embedder has not renamed it — i.e. always, in plain
@@ -112,9 +115,9 @@ fun StatusStrip(
     if (!showMcp && !showSharing && !showCall) return
     Surface(
         modifier = modifier,
-        color = Color(0xFF2B2B2B),
+        color = BossUiTheme.current.panel,
         shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, Color(0xFF404040))
+        border = BorderStroke(1.dp, BossUiTheme.current.line)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
@@ -125,7 +128,7 @@ fun StatusStrip(
                 Segment(dot = if (mcpOn) ON else OFF, label = "MCP", onClick = onMcpClick)
             }
             if (showMcp && (showSharing || remoteCalls > 0)) {
-                Text("|", color = Color(0xFF555555), fontSize = 12.sp)
+                Text("|", color = BossUiTheme.current.line2, fontSize = 12.sp)
             }
             // A live remote call forces the segment on. Rendering it only inside `showSharing`
             // restored exactly the no-signal state RemoteVoiceCalls exists to close: a cosmetic
@@ -164,7 +167,7 @@ fun StatusStrip(
                 )
             }
             if ((showMcp || showSharing || remoteCalls > 0) && showCall) {
-                Text("|", color = Color(0xFF555555), fontSize = 12.sp)
+                Text("|", color = BossUiTheme.current.line2, fontSize = 12.sp)
             }
             if (showCall) {
                 Segment(
@@ -172,7 +175,7 @@ fun StatusStrip(
                         CallSegmentState.Connecting, CallSegmentState.Working -> BUSY
                         CallSegmentState.Speaking -> LIVE_TALK
                         CallSegmentState.Live -> ON
-                        CallSegmentState.Failed -> Color(0xFFD9534F)
+                        CallSegmentState.Failed -> BossUiTheme.current.alert
                         else -> OFF
                     },
                     label = callSegmentLabel(call, callLabel),
@@ -193,7 +196,7 @@ private fun Segment(dot: Color, label: String, onClick: () -> Unit, tooltip: Str
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Box(Modifier.size(7.dp).background(dot, CircleShape))
-            Text(label, color = Color(0xFFCCCCCC), fontSize = 11.sp)
+            Text(label, color = BossUiTheme.current.chalk, fontSize = 11.sp)
         }
     }
     if (tooltip == null) {
@@ -204,12 +207,12 @@ private fun Segment(dot: Color, label: String, onClick: () -> Unit, tooltip: Str
         tooltip = {
             Text(
                 text = tooltip,
-                color = Color(0xFFDDDDDD),
+                color = BossUiTheme.current.chalk,
                 fontSize = 11.sp,
                 modifier = Modifier
                     .widthIn(max = 320.dp)
-                    .background(Color(0xFF2B2B2B), RoundedCornerShape(6.dp))
-                    .border(1.dp, Color(0xFF505050), RoundedCornerShape(6.dp))
+                    .background(BossUiTheme.current.raised, RoundedCornerShape(6.dp))
+                    .border(1.dp, BossUiTheme.current.line2, RoundedCornerShape(6.dp))
                     .padding(horizontal = 10.dp, vertical = 7.dp),
             )
         },

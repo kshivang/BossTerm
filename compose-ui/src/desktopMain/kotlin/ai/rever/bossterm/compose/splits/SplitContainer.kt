@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.splits
 
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import ai.rever.bossterm.compose.ContextMenuElement
 import ai.rever.bossterm.compose.TerminalSession
 import ai.rever.bossterm.compose.hyperlinks.HyperlinkDetector
@@ -304,7 +305,7 @@ private fun RenderPane(
         if (isFocusedPane && !splitState.isSinglePane) {
             Modifier.border(2.dp, splitFocusBorderColor)
         } else {
-            Modifier.border(1.dp, Color(0xFF404040))
+            Modifier.border(1.dp, BossUiTheme.current.line2)
         }
     } else {
         Modifier

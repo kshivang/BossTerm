@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.tabs
 
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.settings.theme.Theme
@@ -41,7 +42,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -86,8 +86,14 @@ enum class TabBarOrientation { TOP, LEFT }
 /** Gap between tab-groups (each group = one tab's panes). Larger than within a group. */
 private val TabGroupGap: Dp = 18.dp
 
-/** Accent for remote (mirrored) sessions — the box border + tab-chip color. */
-private val RemoteAccent: Color = Color(0xFF4FC3F7)
+/**
+ * Accent for remote (mirrored) sessions - the box border + tab-chip color.
+ *
+ * A `get()` and not a `val`: a file-scope val is initialised once at class-init and
+ * would pin the colour to whatever theme happened to be active then. Same reason
+ * every member of `SettingsTheme` is a getter.
+ */
+private val RemoteAccent: Color get() = BossUiTheme.current.data
 
 /** Gap between pane chips within the same tab-group. Tight, so they read as one cluster. */
 private val TabChipGap: Dp = 3.dp
@@ -863,7 +869,7 @@ fun TabBar(
                                     )
                                 } else {
                                     Text(
-                                        rg.header, color = Color(0xFFB0B0B0), fontSize = 11.sp,
+                                        rg.header, color = BossUiTheme.current.mist, fontSize = 11.sp,
                                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
                                     )
                                 }
@@ -872,7 +878,7 @@ fun TabBar(
                                     // it may heal, red when it gave up.
                                     Text(
                                         "· $label",
-                                        color = if (rg.statusError) Color(0xFFE57373) else Color(0xFFE0A030),
+                                        color = if (rg.statusError) BossUiTheme.current.alert else BossUiTheme.current.warn,
                                         fontSize = 10.sp, maxLines = 1
                                     )
                                 }
@@ -886,10 +892,10 @@ fun TabBar(
                                         horizontalArrangement = Arrangement.spacedBy(3.dp)
                                     ) {
                                         Box(Modifier.size(6.dp).background(
-                                            if (rg.mcpRunning) Color(0xFF4CAF50) else Color(0xFF6B6B6B),
+                                            if (rg.mcpRunning) BossUiTheme.current.ok else BossUiTheme.current.muted,
                                             androidx.compose.foundation.shape.CircleShape
                                         ))
-                                        Text("MCP", color = Color(0xFFB0B0B0), fontSize = 10.sp, maxLines = 1)
+                                        Text("MCP", color = BossUiTheme.current.mist, fontSize = 10.sp, maxLines = 1)
                                     }
                                 }
                                 if (!rg.canControl) {
@@ -897,13 +903,13 @@ fun TabBar(
                                     Icon(
                                         Icons.Default.Visibility,
                                         contentDescription = "View only - right-click to request control",
-                                        tint = Color(0xFF808080),
+                                        tint = BossUiTheme.current.muted,
                                         modifier = Modifier.size(12.dp)
                                     )
                                 }
                                 Box(
                                     modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = rg.onDisconnect).padding(2.dp)
-                                ) { Icon(Icons.Default.Close, contentDescription = "Disconnect remote", tint = Color(0xFF808080), modifier = Modifier.size(13.dp)) }
+                                ) { Icon(Icons.Default.Close, contentDescription = "Disconnect remote", tint = BossUiTheme.current.muted, modifier = Modifier.size(13.dp)) }
                             }
                             // Match the local bar: split panes of one tab hug together
                             // (TabChipGap), separate tabs are spaced further apart (TabGroupGap).
@@ -925,11 +931,11 @@ fun TabBar(
                                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                                             ) {
                                                 Text(
-                                                    sec.label, color = Color(0xFF8A8A8A), fontSize = 10.sp,
+                                                    sec.label, color = BossUiTheme.current.muted, fontSize = 10.sp,
                                                     maxLines = 1, overflow = TextOverflow.Ellipsis
                                                 )
                                                 // Hairline ties the sub-title to its section.
-                                                Box(Modifier.weight(1f).height(1.dp).background(Color(0xFF3A3A3A)))
+                                                Box(Modifier.weight(1f).height(1.dp).background(BossUiTheme.current.line))
                                             }
                                             Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
                                                 sec.groups.forEach { group ->
@@ -990,24 +996,24 @@ fun TabBar(
                                 ) {
                                     Icon(Icons.Default.Cloud, contentDescription = null, tint = groupAccent, modifier = Modifier.size(13.dp))
                                     Text(
-                                        "${nest.label} · via ${rg.header}", color = Color(0xFFB0B0B0), fontSize = 11.sp,
+                                        "${nest.label} · via ${rg.header}", color = BossUiTheme.current.mist, fontSize = 11.sp,
                                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
                                     )
                                     if (nest.offline) {
                                         // The host lost its upstream — these tabs are frozen.
-                                        Text("· offline", color = Color(0xFFE57373), fontSize = 10.sp, maxLines = 1)
+                                        Text("· offline", color = BossUiTheme.current.alert, fontSize = 10.sp, maxLines = 1)
                                     }
                                     if (nest.readOnly) {
                                         Icon(
                                             Icons.Default.Visibility,
                                             contentDescription = "Read-only via this host",
-                                            tint = Color(0xFF808080),
+                                            tint = BossUiTheme.current.muted,
                                             modifier = Modifier.size(12.dp)
                                         )
                                     }
                                     Box(
                                         modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = nest.onClose).padding(2.dp)
-                                    ) { Icon(Icons.Default.Close, contentDescription = "Ask host to disconnect this upstream", tint = Color(0xFF808080), modifier = Modifier.size(13.dp)) }
+                                    ) { Icon(Icons.Default.Close, contentDescription = "Ask host to disconnect this upstream", tint = BossUiTheme.current.muted, modifier = Modifier.size(13.dp)) }
                                 }
                                 // The origin may share ALL its windows — section its tabs per
                                 // origin window (sub-title + targeted actions), like the host box.
@@ -1027,10 +1033,10 @@ fun TabBar(
                                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                                 ) {
                                                     Text(
-                                                        sec.label, color = Color(0xFF8A8A8A), fontSize = 10.sp,
+                                                        sec.label, color = BossUiTheme.current.muted, fontSize = 10.sp,
                                                         maxLines = 1, overflow = TextOverflow.Ellipsis
                                                     )
-                                                    Box(Modifier.weight(1f).height(1.dp).background(Color(0xFF3A3A3A)))
+                                                    Box(Modifier.weight(1f).height(1.dp).background(BossUiTheme.current.line))
                                                 }
                                                 Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
                                                     sec.groups.forEach { group ->
@@ -1092,10 +1098,10 @@ fun TabBar(
                         Icon(
                             imageVector = Icons.Default.Cloud,
                             contentDescription = "Add remote session",
-                            tint = Color(0xFFB0B0B0),
+                            tint = BossUiTheme.current.mist,
                             modifier = Modifier.size(16.dp)
                         )
-                        Text("Add remote", color = Color(0xFFB0B0B0), fontSize = 12.sp)
+                        Text("Add remote", color = BossUiTheme.current.mist, fontSize = 12.sp)
                     }
                     // A hover reveal pins itself open; the real bar collapses. Same slot, so
                     // the icon is the state: pin = "this will go away", chevron = "it's mine".
@@ -1171,7 +1177,13 @@ private fun TabItem(
     // passed in (one subscriber for the whole bar, not one per tab).
     val itemBg = tabTheme.backgroundColorValue
     val itemFg = tabTheme.foregroundColor
-    val itemRaised = lerp(itemBg, itemFg, 0.12f)    // active chip surface
+    // The `raised` token rather than an interpolation. Compose's Color lerp
+    // interpolates in Oklab, where a small step off a near-black floor rounds back
+    // to the floor - so on BOSS Blueprint (#05070B) the active chip had barely any
+    // surface at all. `raised` is the same idea (the floor stepped toward the text)
+    // computed in gamma sRGB by UiTheme's own mix, and on the light identities it is
+    // the white card the active chip should be.
+    val itemRaised = BossUiTheme.current.raised     // active chip surface
     val itemAccent = tabTheme.cursorColor           // active chip border
     val itemMuted = itemFg.copy(alpha = 0.62f)      // inactive text / active close-icon
     val itemSubtle = itemFg.copy(alpha = 0.22f)     // inactive border (hairline)
@@ -1268,7 +1280,7 @@ private fun TabItem(
                     if (!subtitle.isNullOrBlank() && subtitle != title) {
                         Text(
                             text = subtitle,
-                            color = Color(0xFF808080),
+                            color = itemMuted,
                             fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace,
                             maxLines = 1,
@@ -1279,7 +1291,10 @@ private fun TabItem(
                     if (!branch.isNullOrBlank()) {
                         Text(
                             text = "⎇ $branch",
-                            color = Color(0xFF6A9955),
+                            // `mist`, not `ok`: `ok` is a FILL token at the 3:1
+                            // component floor and is 3.2:1 on the light identities.
+                            // The ⎇ glyph already says "branch"; the green did not.
+                            color = itemMuted,
                             fontSize = 11.sp,
                             fontFamily = FontFamily.Monospace,
                             maxLines = 1,
@@ -1327,11 +1342,11 @@ private fun TabRenameField(
         onValueChange = { text = it },
         singleLine = true,
         textStyle = TextStyle(
-            color = Color.White,
+            color = BossUiTheme.current.chalk,
             fontSize = 13.sp,
             fontFamily = FontFamily.Monospace
         ),
-        cursorBrush = SolidColor(Color.White),
+        cursorBrush = SolidColor(BossUiTheme.current.chalk),
         modifier = modifier
             .focusRequester(focusRequester)
             .onPreviewKeyEvent { event ->

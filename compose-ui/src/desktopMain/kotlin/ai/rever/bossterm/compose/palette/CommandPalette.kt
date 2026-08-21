@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.palette
 
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -81,6 +82,9 @@ fun CommandPalette(
     Box(
         modifier = modifier
             .fillMaxSize()
+            // The modal scrim stays literal black. A scrim's job is to dim whatever is
+            // behind it, and it is black under a light theme too - that is what every
+            // light-mode design system does. Allowlisted in ChromeTokenCoverageTest.
             .background(Color(0x88000000))
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
@@ -97,7 +101,7 @@ fun CommandPalette(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                 ) { },
-            color = Color(0xFF2A2A2A),
+            color = BossUiTheme.current.panel,
             shape = RoundedCornerShape(8.dp),
             shadowElevation = 8.dp,
         ) {
@@ -106,8 +110,8 @@ fun CommandPalette(
                     value = query,
                     onValueChange = { query = it; selected = 0 },
                     singleLine = true,
-                    textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                    cursorBrush = SolidColor(Color.White),
+                    textStyle = TextStyle(color = BossUiTheme.current.chalk, fontSize = 14.sp),
+                    cursorBrush = SolidColor(BossUiTheme.current.chalk),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(12.dp)
@@ -130,34 +134,34 @@ fun CommandPalette(
                         },
                     decorationBox = { inner ->
                         if (query.isEmpty()) {
-                            Text("Run a command…", color = Color(0xFF808080), fontSize = 14.sp)
+                            Text("Run a command…", color = BossUiTheme.current.muted, fontSize = 14.sp)
                         }
                         inner()
                     },
                 )
 
-                Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF3A3A3A)))
+                Box(Modifier.fillMaxWidth().height(1.dp).background(BossUiTheme.current.line))
 
                 LazyColumn(Modifier.heightIn(max = 360.dp)) {
                     itemsIndexed(filtered) { i, c ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .background(if (i == selected) Color(0xFF094771) else Color.Transparent)
+                                .background(if (i == selected) BossUiTheme.current.signalWash else Color.Transparent)
                                 .clickable { onDismiss(); c.run() }
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
                                 c.group,
-                                color = Color(0xFF888888),
+                                color = BossUiTheme.current.muted,
                                 fontSize = 11.sp,
                                 modifier = Modifier.width(64.dp),
                             )
                             Column(Modifier.weight(1f)) {
-                                Text(c.title, color = Color.White, fontSize = 13.sp, maxLines = 1)
+                                Text(c.title, color = BossUiTheme.current.chalk, fontSize = 13.sp, maxLines = 1)
                                 c.subtitle?.let {
-                                    Text(it, color = Color(0xFFAAAAAA), fontSize = 11.sp, maxLines = 1)
+                                    Text(it, color = BossUiTheme.current.mist, fontSize = 11.sp, maxLines = 1)
                                 }
                             }
                         }

@@ -405,11 +405,36 @@ object BuiltinColorPalettes {
     )
 
     /**
+     * BOSS Blueprint Light - the ANSI 16 of the paper half of the same identity.
+     * Mix over any light theme to carry the BOSS palette onto paper.
+     */
+    // Derived from the theme, like the two above, so palette and theme cannot drift.
+    val BOSS_BLUEPRINT_LIGHT = ColorPalette.fromTheme(BuiltinThemes.BOSS_BLUEPRINT_LIGHT).copy(
+        id = "boss-blueprint-light",
+        name = "BOSS Blueprint Light",
+    )
+
+    /**
+     * BOSS Daylight - the ANSI 16 of the paper half of the Operator identity.
+     * Mix over any light theme to carry the amber palette onto paper.
+     */
+    // Derived from the theme, like the three above, so palette and theme cannot drift.
+    val BOSS_DAYLIGHT = ColorPalette.fromTheme(BuiltinThemes.BOSS_DAYLIGHT).copy(
+        id = "boss-daylight",
+        name = "BOSS Daylight",
+    )
+
+    /**
      * All built-in color palettes.
+     *
+     * BOSS_BLUEPRINT stays first: `ThemeDefaultsTest` asserts the default identity
+     * leads both builtin lists. Each light palette sits next to its dark sibling.
      */
     val ALL = listOf(
         BOSS_BLUEPRINT,
+        BOSS_BLUEPRINT_LIGHT,
         BOSS_OPERATOR,
+        BOSS_DAYLIGHT,
         XTERM,
         TANGO,
         UBUNTU,

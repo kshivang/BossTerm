@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.scrollbar
 
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -252,12 +253,17 @@ fun AlwaysVisibleScrollbar(
                 // search markers; colored per block exit state).
                 if (blockMarkerPositions.isNotEmpty()) {
                     val density = LocalDensity.current
+                    // Hoisted out of the draw lambda for cost, not correctness: Compose
+                    // observes snapshot reads in the draw phase too, so reading the token
+                    // inside Canvas would still repaint on a theme change - it would just
+                    // do it once per marker per frame instead of once per composition.
+                    val unknownBlockMarker = BossUiTheme.current.muted
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         val markerHeightPx = with(density) { 2.dp.toPx() }
                         blockMarkerPositions.forEachIndexed { index, position ->
                             val y = position * size.height
                             drawRect(
-                                color = blockMarkerColors.getOrElse(index) { Color(0xFF9E9E9E) },
+                                color = blockMarkerColors.getOrElse(index) { unknownBlockMarker },
                                 topLeft = Offset(0f, y - markerHeightPx / 2),
                                 size = Size(size.width, markerHeightPx)
                             )

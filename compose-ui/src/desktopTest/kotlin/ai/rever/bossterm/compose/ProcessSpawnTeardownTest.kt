@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -39,6 +40,23 @@ import kotlin.test.assertTrue
 class ProcessSpawnTeardownTest {
     private val service = DesktopProcessService()
 
+    /**
+     * A shell that actually exists on the host running the test.
+     *
+     * `/bin/sh` was hardcoded, which made `an active caller still gets a process` a
+     * Unix-only test: on Windows the path does not resolve, `spawnProcess` returns null
+     * exactly as `a command that cannot start resolves to null` asserts it should, and
+     * the assertion that a normal spawn succeeds failed. macOS and Linux passed, so the
+     * gap only showed up on the third runner.
+     *
+     * `getValidShell` is the resolver the app itself uses - `$SHELL`, then `/bin/bash`,
+     * then `/bin/sh` on Unix; `cmd.exe` on Windows. Asking for "cmd" rather than the
+     * default "powershell" keeps this cheap: the PowerShell branch shells out to check
+     * whether powershell.exe is installed, and this test only needs a process that
+     * starts and can be killed.
+     */
+    private val shell = ShellCustomizationUtils.getValidShell("cmd")
+
     private fun config(command: String) =
         PlatformServices.ProcessService.ProcessConfig(
             command = command,
@@ -58,7 +76,7 @@ class ProcessSpawnTeardownTest {
                 scope.launch {
                     scope.cancel()
                     try {
-                        spawned = service.spawnProcess(config("/bin/sh"))
+                        spawned = service.spawnProcess(config(shell))
                     } catch (e: CancellationException) {
                         cancelled = true
                         throw e
@@ -80,7 +98,7 @@ class ProcessSpawnTeardownTest {
             DesktopProcessService { _, _, _ ->
                 throw NoClassDefFoundError("com/pty4j/util/PtyUtil")
             }
-        val handle = runBlocking { failing.spawnProcess(config("/bin/sh")) }
+        val handle = runBlocking { failing.spawnProcess(config(shell)) }
         assertNull(handle, "a LinkageError escaped instead of resolving to a failed spawn")
     }
 
@@ -96,7 +114,7 @@ class ProcessSpawnTeardownTest {
         var caught: Throwable? = null
         runBlocking {
             try {
-                cancelling.spawnProcess(config("/bin/sh"))
+                cancelling.spawnProcess(config(shell))
             } catch (t: Throwable) {
                 caught = t
             }
@@ -113,7 +131,7 @@ class ProcessSpawnTeardownTest {
         // a real shell, and it kills it immediately.
         val handle =
             runBlocking {
-                service.spawnProcess(config("/bin/sh"))
+                service.spawnProcess(config(shell))
             }
         assertNotNull(handle, "a normal spawn was refused")
         runBlocking { handle.kill() }

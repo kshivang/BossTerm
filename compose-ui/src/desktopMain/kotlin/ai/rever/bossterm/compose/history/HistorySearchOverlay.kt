@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose.history
 
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.IntrinsicSize
 import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -147,7 +149,7 @@ fun HistorySearchOverlay(
                         },
                     decorationBox = { inner ->
                         if (query.isEmpty()) {
-                            Text("Search history…", color = BossUiTheme.current.muted, fontSize = 14.sp)
+                            Text("Search history…", color = BossUiTheme.current.mist, fontSize = 14.sp)
                         }
                         inner()
                     },
@@ -173,12 +175,31 @@ fun HistorySearchOverlay(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                // See the note in CommandPalette: IntrinsicSize.Min is what
+                                // lets the indicator's fillMaxHeight() resolve inside a
+                                // LazyColumn item.
+                                .height(IntrinsicSize.Min)
                                 .background(if (i == selected) BossUiTheme.current.signalWash else Color.Transparent)
-                                .clickable { onDismiss(); onSelect(cmd) }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                .clickable { onDismiss(); onSelect(cmd) },
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(cmd, color = BossUiTheme.current.chalk, fontSize = 13.sp, maxLines = 1)
+                            Box(
+                                Modifier
+                                    .width(2.dp)
+                                    .fillMaxHeight()
+                                    .background(
+                                        if (i == selected) BossUiTheme.current.signal
+                                        else Color.Transparent
+                                    )
+                            )
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(cmd, color = BossUiTheme.current.chalk, fontSize = 13.sp, maxLines = 1)
+                            }
                         }
                     }
                 }

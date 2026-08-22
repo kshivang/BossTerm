@@ -199,6 +199,42 @@ class ChromeTokenCoverageTest {
     }
 
     /**
+     * `muted` may not be a text colour in converted chrome.
+     *
+     * A literal scan cannot see this class of bug: swapping a hardcoded grey for a
+     * token that is *wrong for the role* passes every check above, and that is exactly
+     * what happened - the sweep routed section labels, placeholders, group labels and
+     * two button labels to `muted`, which is 2.4:1 on the light identities. See
+     * [UiThemeContrastTest], which pins `muted` as the deliberately sub-floor disabled
+     * tier.
+     *
+     * Scans the argument NAMES that put a colour on text (`color =`, `contentColor =`)
+     * rather than trying to understand the call. `tint =` is left out on purpose: an
+     * icon tint is sometimes a genuinely disabled control, which is what `muted` is
+     * for - `SearchBar`'s nav arrows with no matches are the case in point - so a blanket
+     * ban there would be wrong. That is a real hole in the coverage, and it is named
+     * here rather than papered over.
+     */
+    @Test
+    fun `muted is never used as a text colour in converted chrome`() {
+        val offenders = mutableListOf<String>()
+        for (rel in converted) {
+            sourceFile(rel).readLines().forEachIndexed { index, line ->
+                val code = codeOf(line)
+                val textRole = "color =" in code || "contentColor =" in code
+                val muted = "current.muted" in code || "TextMuted" in code
+                if (textRole && muted) offenders += "$rel:${index + 1}  ${line.trim().take(90)}"
+            }
+        }
+        assertEquals(
+            emptyList(),
+            offenders,
+            "`muted` is the disabled tier, not a text colour - it is 2.4:1 on the light " +
+                "identities. Use `mist` for secondary text:\n" + offenders.joinToString("\n"),
+        )
+    }
+
+    /**
      * The allowlist may not name a file that is not being scanned, or a literal that
      * is no longer in it.
      *

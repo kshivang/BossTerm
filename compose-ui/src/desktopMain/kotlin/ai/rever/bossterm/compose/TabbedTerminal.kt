@@ -2418,8 +2418,9 @@ fun TabbedTerminal(
                     ) {
                         androidx.compose.material3.Text(
                             "Signed in as $email",
-                            // `chalk`, not `ok` - see the note in TabBar on the ⎇
-                            // label. The toast frame carries the "something happened".
+                            // `chalk`, not `ok`: `ok` is a fill token at the 3:1
+                            // component floor and is 3.2:1 on the light identities.
+                            // The toast frame carries the "something happened".
                             color = BossUiTheme.current.chalk,
                             fontSize = 11.sp,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)

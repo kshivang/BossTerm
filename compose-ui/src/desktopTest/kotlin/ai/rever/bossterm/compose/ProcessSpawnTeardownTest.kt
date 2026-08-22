@@ -36,24 +36,23 @@ import kotlin.test.assertTrue
  * What is NOT claimed: this is a cooperative check, not a lock. A cancellation landing between the
  * check and the blocking call still gets through. It narrows the window from the whole of session
  * init to an instruction gap; it does not close it, and there is no test here pretending otherwise.
+ *
+ * Nor is it claimed that pty4j can bring up a pty on any given machine. Every test here either
+ * injects `startPty` or uses a command that is meant not to resolve, so the suite is hermetic and
+ * says nothing about the native layer. That is deliberate: the one test that did spawn a real shell
+ * could not pass on a windows-latest runner, and its failure carried no cause, because
+ * `spawnProcess` swallows the throwable and returns null by contract.
  */
 class ProcessSpawnTeardownTest {
     private val service = DesktopProcessService()
 
     /**
-     * A shell that actually exists on the host running the test.
+     * A shell name that means something on whatever host runs the test.
      *
-     * `/bin/sh` was hardcoded, which made `an active caller still gets a process` a
-     * Unix-only test: on Windows the path does not resolve, `spawnProcess` returns null
-     * exactly as `a command that cannot start resolves to null` asserts it should, and
-     * the assertion that a normal spawn succeeds failed. macOS and Linux passed, so the
-     * gap only showed up on the third runner.
-     *
-     * `getValidShell` is the resolver the app itself uses - `$SHELL`, then `/bin/bash`,
-     * then `/bin/sh` on Unix; `cmd.exe` on Windows. Asking for "cmd" rather than the
-     * default "powershell" keeps this cheap: the PowerShell branch shells out to check
-     * whether powershell.exe is installed, and this test only needs a process that
-     * starts and can be killed.
+     * No test in this class spawns it any more - the one that did is injected now - so this is
+     * about not carrying a Unix-only literal through a suite that runs on three platforms.
+     * `getValidShell` is the resolver the app itself uses: `$SHELL`, then `/bin/bash`, then
+     * `/bin/sh` on Unix, and `cmd.exe` on Windows.
      */
     private val shell = ShellCustomizationUtils.getValidShell("cmd")
 
@@ -127,14 +126,59 @@ class ProcessSpawnTeardownTest {
 
     @Test
     fun `an active caller still gets a process`() {
-        // The guard must not have made spawning impossible. This is the only test here that starts
-        // a real shell, and it kills it immediately.
-        val handle =
-            runBlocking {
-                service.spawnProcess(config(shell))
+        // The guard must not have made spawning impossible: an active context has to reach
+        // `startPty` and get a handle back.
+        //
+        // Injected rather than spawning a real shell. This test used to start `/bin/sh`, which made
+        // it Unix-only; pointing it at the platform's shell instead did not fix Windows either, and
+        // that is the tell - whether a windows-latest runner can bring up a pty at all is a
+        // property of the environment, not of the guard this PR adds. `spawnProcess` swallows the
+        // cause and returns null by design, so the failure could not even say why.
+        //
+        // Asserting on a real pty here was buying an end-to-end signal the suite could not keep:
+        // it never held on the third platform, and `a command that cannot start resolves to null`
+        // passes on Windows whether pty4j works or not, so nothing here was ever evidence that it
+        // does. What this test is FOR - that the cancellation check does not refuse a live caller -
+        // is fully covered by the seam.
+        var startPtyCalled = false
+        val spawning =
+            DesktopProcessService { _, _, _ ->
+                startPtyCalled = true
+                FakePtyProcess()
             }
+        val handle = runBlocking { spawning.spawnProcess(config(shell)) }
+        assertTrue(startPtyCalled, "the guard refused a caller whose context was still active")
         assertNotNull(handle, "a normal spawn was refused")
         runBlocking { handle.kill() }
+    }
+
+    /**
+     * The smallest thing `PtyProcessHandle` will accept.
+     *
+     * `PtyProcess` is abstract over two methods of its own; the rest comes from
+     * `java.lang.Process`, whose `isAlive`, `waitFor(timeout, unit)` and `destroyForcibly` are all
+     * defined in terms of the abstracts below - so an already-exited process needs nothing more
+     * than these, and `kill()` returns without waiting on anything.
+     */
+    private class FakePtyProcess : com.pty4j.PtyProcess() {
+        private val stdin = java.io.ByteArrayInputStream(ByteArray(0))
+        private val stdout = java.io.ByteArrayOutputStream()
+
+        override fun getInputStream(): java.io.InputStream = stdin
+
+        override fun getOutputStream(): java.io.OutputStream = stdout
+
+        override fun getErrorStream(): java.io.InputStream = java.io.ByteArrayInputStream(ByteArray(0))
+
+        override fun waitFor(): Int = 0
+
+        override fun exitValue(): Int = 0
+
+        override fun destroy() = Unit
+
+        override fun setWinSize(winSize: com.pty4j.WinSize) = Unit
+
+        override fun getWinSize(): com.pty4j.WinSize = com.pty4j.WinSize(80, 24)
     }
 
     @Test

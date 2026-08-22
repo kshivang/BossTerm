@@ -588,6 +588,9 @@ fun TabBar(
     val barFg = tabBarTheme.foregroundColor
     val barMuted = barFg.copy(alpha = 0.62f)
     val barDivider = barFg.copy(alpha = 0.14f)
+    // Read here and passed down, not read inside TabItem: one subscriber for the whole
+    // bar rather than one per chip, which is what the note in TabItem promises.
+    val barRaised = BossUiTheme.current.raised
 
     val newTabButton: @Composable () -> Unit = {
         IconButton(onClick = onNewTab, modifier = Modifier.size(36.dp)) {
@@ -631,6 +634,7 @@ fun TabBar(
             branch = pane.branch,
             multiLine = vertical,
             tabTheme = tabBarTheme,
+            chipRaised = barRaised,
             isActive = group.tabIndex == activeTabIndex && pane.paneId == focusedPaneId,
             colorHex = pane.colorHex,
             isEditing = pane.paneId == editingPaneId,
@@ -903,13 +907,13 @@ fun TabBar(
                                     Icon(
                                         Icons.Default.Visibility,
                                         contentDescription = "View only - right-click to request control",
-                                        tint = BossUiTheme.current.muted,
+                                        tint = BossUiTheme.current.mist,
                                         modifier = Modifier.size(12.dp)
                                     )
                                 }
                                 Box(
                                     modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = rg.onDisconnect).padding(2.dp)
-                                ) { Icon(Icons.Default.Close, contentDescription = "Disconnect remote", tint = BossUiTheme.current.muted, modifier = Modifier.size(13.dp)) }
+                                ) { Icon(Icons.Default.Close, contentDescription = "Disconnect remote", tint = BossUiTheme.current.mist, modifier = Modifier.size(13.dp)) }
                             }
                             // Match the local bar: split panes of one tab hug together
                             // (TabChipGap), separate tabs are spaced further apart (TabGroupGap).
@@ -931,7 +935,7 @@ fun TabBar(
                                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                                             ) {
                                                 Text(
-                                                    sec.label, color = BossUiTheme.current.muted, fontSize = 10.sp,
+                                                    sec.label, color = BossUiTheme.current.mist, fontSize = 10.sp,
                                                     maxLines = 1, overflow = TextOverflow.Ellipsis
                                                 )
                                                 // Hairline ties the sub-title to its section.
@@ -1007,13 +1011,13 @@ fun TabBar(
                                         Icon(
                                             Icons.Default.Visibility,
                                             contentDescription = "Read-only via this host",
-                                            tint = BossUiTheme.current.muted,
+                                            tint = BossUiTheme.current.mist,
                                             modifier = Modifier.size(12.dp)
                                         )
                                     }
                                     Box(
                                         modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable(onClick = nest.onClose).padding(2.dp)
-                                    ) { Icon(Icons.Default.Close, contentDescription = "Ask host to disconnect this upstream", tint = BossUiTheme.current.muted, modifier = Modifier.size(13.dp)) }
+                                    ) { Icon(Icons.Default.Close, contentDescription = "Ask host to disconnect this upstream", tint = BossUiTheme.current.mist, modifier = Modifier.size(13.dp)) }
                                 }
                                 // The origin may share ALL its windows — section its tabs per
                                 // origin window (sub-title + targeted actions), like the host box.
@@ -1033,7 +1037,7 @@ fun TabBar(
                                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                                 ) {
                                                     Text(
-                                                        sec.label, color = BossUiTheme.current.muted, fontSize = 10.sp,
+                                                        sec.label, color = BossUiTheme.current.mist, fontSize = 10.sp,
                                                         maxLines = 1, overflow = TextOverflow.Ellipsis
                                                     )
                                                     Box(Modifier.weight(1f).height(1.dp).background(BossUiTheme.current.line))
@@ -1160,6 +1164,14 @@ private fun TabItem(
     title: String,
     isActive: Boolean,
     tabTheme: Theme,
+    /**
+     * `UiTheme.raised`, collected once by [TabBar].
+     *
+     * A parameter rather than a `BossUiTheme.current` read in here, so the claim below
+     * about one subscriber for the whole bar stays true - a token read inside this
+     * composable subscribes every chip independently.
+     */
+    chipRaised: Color,
     colorHex: String?,
     isEditing: Boolean,
     onSelected: () -> Unit,
@@ -1183,7 +1195,7 @@ private fun TabItem(
     // surface at all. `raised` is the same idea (the floor stepped toward the text)
     // computed in gamma sRGB by UiTheme's own mix, and on the light identities it is
     // the white card the active chip should be.
-    val itemRaised = BossUiTheme.current.raised     // active chip surface
+    val itemRaised = chipRaised                     // active chip surface
     val itemAccent = tabTheme.cursorColor           // active chip border
     val itemMuted = itemFg.copy(alpha = 0.62f)      // inactive text / active close-icon
     val itemSubtle = itemFg.copy(alpha = 0.22f)     // inactive border (hairline)
@@ -1291,8 +1303,8 @@ private fun TabItem(
                     if (!branch.isNullOrBlank()) {
                         Text(
                             text = "⎇ $branch",
-                            // `mist`, not `ok`: `ok` is a FILL token at the 3:1
-                            // component floor and is 3.2:1 on the light identities.
+                            // `itemMuted`, not `ok`: `ok` is a FILL token held to the
+                            // 3:1 component floor and is 3.2:1 on the light identities.
                             // The ⎇ glyph already says "branch"; the green did not.
                             color = itemMuted,
                             fontSize = 11.sp,

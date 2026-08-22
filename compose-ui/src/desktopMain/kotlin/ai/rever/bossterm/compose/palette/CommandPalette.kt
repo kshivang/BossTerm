@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose.palette
 
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.IntrinsicSize
 import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -134,7 +136,7 @@ fun CommandPalette(
                         },
                     decorationBox = { inner ->
                         if (query.isEmpty()) {
-                            Text("Run a command…", color = BossUiTheme.current.muted, fontSize = 14.sp)
+                            Text("Run a command…", color = BossUiTheme.current.mist, fontSize = 14.sp)
                         }
                         inner()
                     },
@@ -147,21 +149,45 @@ fun CommandPalette(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                // Bounds the height so the indicator's fillMaxHeight()
+                                // resolves; a LazyColumn item's incoming max height is
+                                // unbounded and would collapse it to nothing.
+                                .height(IntrinsicSize.Min)
                                 .background(if (i == selected) BossUiTheme.current.signalWash else Color.Transparent)
-                                .clickable { onDismiss(); c.run() }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                .clickable { onDismiss(); c.run() },
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                c.group,
-                                color = BossUiTheme.current.muted,
-                                fontSize = 11.sp,
-                                modifier = Modifier.width(64.dp),
+                            // The wash cannot carry the selection alone: it is 1.10:1 on
+                            // daylight and 1.20:1 on blueprint-light against `panel`. The
+                            // design system's answer is a wash PLUS a 2.dp indicator, which
+                            // is what UiTheme.BOSS_BLUEPRINT's KDoc prescribes and what this
+                            // row was missing.
+                            Box(
+                                Modifier
+                                    .width(2.dp)
+                                    .fillMaxHeight()
+                                    .background(
+                                        if (i == selected) BossUiTheme.current.signal
+                                        else Color.Transparent
+                                    )
                             )
-                            Column(Modifier.weight(1f)) {
-                                Text(c.title, color = BossUiTheme.current.chalk, fontSize = 13.sp, maxLines = 1)
-                                c.subtitle?.let {
-                                    Text(it, color = BossUiTheme.current.mist, fontSize = 11.sp, maxLines = 1)
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    c.group,
+                                    color = BossUiTheme.current.mist,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.width(64.dp),
+                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text(c.title, color = BossUiTheme.current.chalk, fontSize = 13.sp, maxLines = 1)
+                                    c.subtitle?.let {
+                                        Text(it, color = BossUiTheme.current.mist, fontSize = 11.sp, maxLines = 1)
+                                    }
                                 }
                             }
                         }

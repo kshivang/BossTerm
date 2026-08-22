@@ -145,7 +145,7 @@ fun SearchBar(
                         if (searchQuery.isEmpty()) {
                             Text(
                                 "Find",
-                                color = BossUiTheme.current.muted,
+                                color = BossUiTheme.current.mist,
                                 fontSize = 13.sp
                             )
                         }
@@ -205,7 +205,7 @@ fun SearchBar(
                 ) {
                     Text(
                         "Aa",
-                        color = if (caseSensitive) BossUiTheme.current.signalText else BossUiTheme.current.muted,
+                        color = if (caseSensitive) BossUiTheme.current.signalText else BossUiTheme.current.mist,
                         fontSize = 12.sp,
                         fontWeight = if (caseSensitive) FontWeight.Bold else FontWeight.Normal
                     )

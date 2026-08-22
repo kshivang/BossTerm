@@ -102,7 +102,7 @@ private fun UpdateAvailableBanner(
                 )
                 Text(
                     " (current: v${updateInfo.currentVersion})",
-                    color = BossUiTheme.current.muted,
+                    color = BossUiTheme.current.mist,
                     fontSize = 12.sp
                 )
             }
@@ -118,7 +118,7 @@ private fun UpdateAvailableBanner(
                 }
                 TextButton(
                     onClick = onDismiss,
-                    colors = ButtonDefaults.textButtonColors(contentColor = BossUiTheme.current.muted),
+                    colors = ButtonDefaults.textButtonColors(contentColor = BossUiTheme.current.mist),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                     modifier = Modifier.height(28.dp)
                 ) {
@@ -285,7 +285,7 @@ private fun ErrorBanner(
                     }
                     TextButton(
                         onClick = onDismiss,
-                        colors = ButtonDefaults.textButtonColors(contentColor = BossUiTheme.current.muted),
+                        colors = ButtonDefaults.textButtonColors(contentColor = BossUiTheme.current.mist),
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                         modifier = Modifier.height(28.dp)
                     ) {
@@ -295,7 +295,7 @@ private fun ErrorBanner(
             }
             Text(
                 "Check logs: /tmp/bossterm-updater/update-*.log or /tmp/bossterm-update-debug-*.log",
-                color = BossUiTheme.current.muted,
+                color = BossUiTheme.current.mist,
                 fontSize = 10.sp,
                 modifier = Modifier.padding(top = 2.dp, start = 22.dp)
             )

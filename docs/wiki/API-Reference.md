@@ -315,7 +315,7 @@ data class TerminalSettings(
     val splitDefaultRatio: Float = 0.5f,
     val splitMinimumSize: Float = 0.1f,
     val splitFocusBorderEnabled: Boolean = true,
-    val splitFocusBorderColor: String = "0xFF4A90E2",
+    val splitFocusBorderColor: String = "",  // blank follows the active theme
     val splitInheritWorkingDirectory: Boolean = true,
 
     // Tab Bar

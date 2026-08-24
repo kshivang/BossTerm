@@ -109,7 +109,7 @@ Location: `~/.bossterm/settings.json`
 | `splitDefaultRatio` | Float | `0.5` | Default split ratio (0.0-1.0) |
 | `splitMinimumSize` | Float | `0.1` | Minimum pane size (0.0-0.5) |
 | `splitFocusBorderEnabled` | Boolean | `true` | Show border on focused pane |
-| `splitFocusBorderColor` | String | `"0xFF4A90E2"` | Focus border color |
+| `splitFocusBorderColor` | String | `""` | Focus border color; blank follows the active theme |
 | `splitInheritWorkingDirectory` | Boolean | `true` | New splits inherit CWD |
 
 ### Clipboard Settings (OSC 52)

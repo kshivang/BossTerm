@@ -28,6 +28,33 @@ internal fun migrateCursorRenderingDefaults(
 }
 
 /**
+ * Clear the focus border's pre-theme default once, so an existing install picks the
+ * theme up.
+ *
+ * `0xFF4A90E2` was [TerminalSettings.splitFocusBorderColor]'s factory value and is
+ * serialized verbatim into every settings file written before the focus border
+ * became theme-derived. Nobody chose it, but nothing in the file says so - the same
+ * missing provenance [migrateCursorRenderingDefaults] records - so it is read as the
+ * old default and cleared once. Any other colour is a real choice and survives.
+ *
+ * Doing this here rather than in [TerminalSettings] is what keeps the blue a colour
+ * the picker can still select: after the migration a stored `0xFF4A90E2` means the
+ * user picked it, and the marker stops it being cleared a second time.
+ */
+internal fun migrateSplitFocusBorderDefault(
+    settings: TerminalSettings,
+    hasSplitFocusBorderVersion: Boolean,
+): TerminalSettings {
+    if (hasSplitFocusBorderVersion) return settings
+
+    return if (settings.splitFocusBorderColor.equals(TerminalSettings.LEGACY_FOCUS_BORDER_BLUE, ignoreCase = true)) {
+        settings.copy(splitFocusBorderColor = "", splitFocusBorderVersion = 2)
+    } else {
+        settings.copy(splitFocusBorderVersion = 2)
+    }
+}
+
+/**
  * Manager for terminal settings with persistence support.
  * Settings are saved to ~/.bossterm/settings.json by default,
  * or to a custom path if specified.
@@ -252,9 +279,12 @@ class SettingsManager(private val customSettingsPath: String? = null) {
                 wasFreshInstall = false
                 val jsonString = settingsFile.readText()
                 val rawSettings = json.parseToJsonElement(jsonString).jsonObject
-                val loadedSettings = migrateCursorRenderingDefaults(
-                    settings = json.decodeFromJsonElement(TerminalSettings.serializer(), rawSettings),
-                    hasCursorRenderingVersion = "cursorRenderingVersion" in rawSettings,
+                val loadedSettings = migrateSplitFocusBorderDefault(
+                    settings = migrateCursorRenderingDefaults(
+                        settings = json.decodeFromJsonElement(TerminalSettings.serializer(), rawSettings),
+                        hasCursorRenderingVersion = "cursorRenderingVersion" in rawSettings,
+                    ),
+                    hasSplitFocusBorderVersion = "splitFocusBorderVersion" in rawSettings,
                 )
                 publish(loadedSettings)
                 println("Settings loaded from: ${settingsFile.absolutePath}")

@@ -1885,7 +1885,7 @@ fun TabbedTerminal(
                 // piece of pane chrome that used to sit at a hardcoded blue while
                 // everything around it followed the theme.
                 splitFocusBorderColor = settings.splitFocusBorderColorOverride
-                    ?: BossUiTheme.current.signal,
+                    ?: BossUiTheme.current.focusRing,
                 splitMinimumSize = settings.splitMinimumSize,
                 // Shared handler: SSH URLs open a new tab, everything else
                 // delegates to the caller's onLinkClick (see linkOpenHandler).

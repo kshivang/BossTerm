@@ -939,21 +939,28 @@ data class TerminalSettings(
 
     /**
      * Colour of the focus border (serialized as ARGB hex), or **blank to follow the
-     * active theme's `signal`**. Blank is the default, so a fresh install and every
-     * install that never opened this setting track the theme.
+     * active theme's focus ring**. Blank is the default, so a fresh install and
+     * every install that never opened this setting track the theme.
      *
-     * [LEGACY_FOCUS_BORDER_BLUE] counts as blank. It was the old default: a generic
-     * blue belonging to no BOSS identity, which passed unnoticed for as long as
-     * Blueprint was the default theme and reads as a foreign object on NVIDIA
-     * (green on pure black). Treating it as "never set" is what lets an existing
-     * settings file - which has the old default written into it verbatim - pick the
-     * theme up at all. The one case this gets wrong is a user who deliberately
-     * chose that exact blue; every other custom colour is preserved, which makes
-     * this the narrowest reinterpretation available.
+     * The old default was the literal [LEGACY_FOCUS_BORDER_BLUE], a generic blue
+     * belonging to no BOSS identity. It passed unnoticed for as long as Blueprint
+     * was the default theme and reads as a foreign object on NVIDIA (green on pure
+     * black). Existing installs carry it verbatim, so
+     * [ai.rever.bossterm.compose.settings.migrateSplitFocusBorderDefault] clears it
+     * once on load. That is a migration rather than a rule in this class on
+     * purpose: reading the blue as "unset" forever would make it the one colour the
+     * picker can never select.
      *
      * Only visible when [splitFocusBorderEnabled] is true.
      */
     val splitFocusBorderColor: String = "",
+
+    /**
+     * Schema marker for the one-time [splitFocusBorderColor] migration, persisted so
+     * that picking the old blue by hand after upgrading stays a stable preference.
+     * Mirrors [cursorRenderingVersion].
+     */
+    val splitFocusBorderVersion: Int = 2,
 
     /**
      * New split panes inherit working directory from parent.
@@ -1409,12 +1416,18 @@ data class TerminalSettings(
      * this one's default is blank, so a throw here would come out of the
      * constructor of *every* [TerminalSettings]. A garbage value falls back to the
      * theme instead.
+     *
+     * A fully transparent value is garbage too, and it is the one an ordinary
+     * mistake produces: a 6-digit `"0xFF0000"` parses fine and lands as alpha 0,
+     * which would otherwise read as "the user chose something" while painting an
+     * invisible border.
      */
     @Transient
     val splitFocusBorderColorOverride: Color? =
         splitFocusBorderColor
-            .takeIf { it.isNotBlank() && !it.equals(LEGACY_FOCUS_BORDER_BLUE, ignoreCase = true) }
+            .takeIf { it.isNotBlank() }
             ?.let { hex -> runCatching { Color(hex.removePrefix("0x").toULong(16).toLong()) }.getOrNull() }
+            ?.takeIf { it.alpha > 0f }
 
     @Transient
     val commandBlockSuccessColorValue: Color = Color(commandBlockSuccessColor.removePrefix("0x").toULong(16).toLong())
@@ -1432,9 +1445,9 @@ data class TerminalSettings(
         val DEFAULT = TerminalSettings()
 
         /**
-         * The pre-theme default for [splitFocusBorderColor], kept as a named
-         * constant because it is now a *value to ignore* rather than a value to
-         * use, and that only reads as deliberate with a name on it.
+         * The pre-theme default for [splitFocusBorderColor]. Named rather than
+         * inlined in the migration because it is a value with a history, not a
+         * colour anyone chose.
          */
         const val LEGACY_FOCUS_BORDER_BLUE = "0xFF4A90E2"
 

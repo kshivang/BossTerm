@@ -148,6 +148,10 @@ data class TerminalSettingsOverride(
     val splitDefaultRatio: Float? = null,
     val splitMinimumSize: Float? = null,
     val splitFocusBorderEnabled: Boolean? = null,
+    // Two levels of "unset": null does not override at all, and `""` overrides with
+    // "follow the active theme". An override never passes through
+    // `migrateSplitFocusBorderDefault`, so an embedder pinning the old 0xFF4A90E2
+    // still gets that blue - the migration only clears it from a user's own file.
     val splitFocusBorderColor: String? = null,
     val splitInheritWorkingDirectory: Boolean? = null,
 

@@ -64,7 +64,7 @@ fun SplitContainer(
     splitFocusBorderEnabled: Boolean = true,
     // The real call site passes the user's colour when they set one; this default is
     // what an embedder gets, and it follows the theme like the unfocused border below.
-    splitFocusBorderColor: Color = BossUiTheme.current.signal,
+    splitFocusBorderColor: Color = BossUiTheme.current.focusRing,
     splitMinimumSize: Float = 0.1f,
     onLinkClick: ((HyperlinkInfo) -> Boolean)? = null,
     customContextMenuItems: List<ContextMenuElement> = emptyList(),

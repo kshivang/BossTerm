@@ -75,17 +75,23 @@ class ChromeTokenCoverageTest {
         "palette/CommandPalette.kt" to listOf("0x88000000"),
         "history/HistorySearchOverlay.kt" to listOf("0x88000000"),
         // These are @Composable PARAMETER DEFAULTS for values the user owns, not
-        // chrome. Every real call site passes the setting instead
-        // (`ProperTerminal` -> scrollbarThumbColor / scrollbarColor /
-        // searchMarkerColor, `TabbedTerminal` -> splitFocusBorderColor), and
+        // chrome. Every real call site passes the setting instead (`ProperTerminal`
+        // -> scrollbarThumbColor / scrollbarColor / searchMarkerColor), and
         // `ThemeDefaultsTest.scrollbar search markers stay independent of the theme`
         // pins the markers as deliberately theme-independent. Pointing these at a
         // token would let the active theme silently override a colour the user set in
         // Settings, which is a worse bug than the one this test exists to catch.
+        //
+        // `splits/SplitContainer.kt` used to be on this list for the same reason and
+        // is no longer: "a colour the user set in Settings" was never true of its
+        // 0xFF4A90E2, which nobody had set - it was the factory default, and it
+        // outvoted the theme for everyone who never opened the Splits section. The
+        // user's ownership now lives one level up, in
+        // `TerminalSettings.splitFocusBorderColorOverride`, which is null until they
+        // pick something; only then does a colour beat the theme.
         "scrollbar/AlwaysVisibleScrollbar.kt" to listOf(
             "Color.White", "0xFFFFFF00", "0xFFFF6600",
         ),
-        "splits/SplitContainer.kt" to listOf("0xFF4A90E2"),
     )
 
     /**

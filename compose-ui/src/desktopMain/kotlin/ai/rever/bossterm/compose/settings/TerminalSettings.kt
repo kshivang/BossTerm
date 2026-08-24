@@ -938,10 +938,29 @@ data class TerminalSettings(
     val splitFocusBorderEnabled: Boolean = true,
 
     /**
-     * Color of the focus border (serialized as ARGB hex).
-     * Only visible when splitFocusBorderEnabled is true.
+     * Colour of the focus border (serialized as ARGB hex), or **blank to follow the
+     * active theme's focus ring**. Blank is the default, so a fresh install and
+     * every install that never opened this setting track the theme.
+     *
+     * The old default was the literal [LEGACY_FOCUS_BORDER_BLUE], a generic blue
+     * belonging to no BOSS identity. It passed unnoticed for as long as Blueprint
+     * was the default theme and reads as a foreign object on NVIDIA (green on pure
+     * black). Existing installs carry it verbatim, so
+     * [ai.rever.bossterm.compose.settings.migrateSplitFocusBorderDefault] clears it
+     * once on load. That is a migration rather than a rule in this class on
+     * purpose: reading the blue as "unset" forever would make it the one colour the
+     * picker can never select.
+     *
+     * Only visible when [splitFocusBorderEnabled] is true.
      */
-    val splitFocusBorderColor: String = "0xFF4A90E2",
+    val splitFocusBorderColor: String = "",
+
+    /**
+     * Schema marker for the one-time [splitFocusBorderColor] migration, persisted so
+     * that picking the old blue by hand after upgrading stays a stable preference.
+     * Mirrors [cursorRenderingVersion].
+     */
+    val splitFocusBorderVersion: Int = 2,
 
     /**
      * New split panes inherit working directory from parent.
@@ -1384,8 +1403,31 @@ data class TerminalSettings(
     @Transient
     val currentSearchMarkerColorValue: Color = Color(currentSearchMarkerColor.removePrefix("0x").toULong(16).toLong())
 
+    /**
+     * The colour the user explicitly chose for the focus border, or null to follow
+     * the active theme.
+     *
+     * Nullable rather than resolved here on purpose: the theme lives in
+     * `BossUiTheme`, a Compose snapshot read that a plain serializable data class
+     * must not make. The composable call sites resolve the fallback.
+     *
+     * Parsed defensively, unlike its siblings above. Those carry a valid literal as
+     * their default, so a malformed value can only come from a hand-edited file;
+     * this one's default is blank, so a throw here would come out of the
+     * constructor of *every* [TerminalSettings]. A garbage value falls back to the
+     * theme instead.
+     *
+     * A fully transparent value is garbage too, and it is the one an ordinary
+     * mistake produces: a 6-digit `"0xFF0000"` parses fine and lands as alpha 0,
+     * which would otherwise read as "the user chose something" while painting an
+     * invisible border.
+     */
     @Transient
-    val splitFocusBorderColorValue: Color = Color(splitFocusBorderColor.removePrefix("0x").toULong(16).toLong())
+    val splitFocusBorderColorOverride: Color? =
+        splitFocusBorderColor
+            .takeIf { it.isNotBlank() }
+            ?.let { hex -> runCatching { Color(hex.removePrefix("0x").toULong(16).toLong()) }.getOrNull() }
+            ?.takeIf { it.alpha > 0f }
 
     @Transient
     val commandBlockSuccessColorValue: Color = Color(commandBlockSuccessColor.removePrefix("0x").toULong(16).toLong())
@@ -1401,6 +1443,13 @@ data class TerminalSettings(
          * Default settings instance
          */
         val DEFAULT = TerminalSettings()
+
+        /**
+         * The pre-theme default for [splitFocusBorderColor]. Named rather than
+         * inlined in the migration because it is a value with a history, not a
+         * colour anyone chose.
+         */
+        const val LEGACY_FOCUS_BORDER_BLUE = "0xFF4A90E2"
 
         /**
          * Convert Color to hex string for serialization (0xAARRGGBB format)

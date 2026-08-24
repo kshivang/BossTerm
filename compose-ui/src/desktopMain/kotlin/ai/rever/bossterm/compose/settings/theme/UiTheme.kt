@@ -38,7 +38,34 @@ data class UiTheme(
 ) {
     val isDark: Boolean get() = ink.luminance() < 0.5f
 
+    /**
+     * The colour for a focus ring - the border that says "this pane has keyboard
+     * focus". [signal] normally, [signalText] where signal cannot clear
+     * [FOCUS_RING_MIN_CONTRAST] against [ink].
+     *
+     * A focus ring is a hairline with nothing behind it, so unlike a `signalWash`
+     * fill it has only its own contrast to be seen by, and unlike [signal] as a
+     * fill it has no [onSignal] content riding on it. [signal] alone is not enough:
+     * it is the theme's cursor colour for every derived theme and is nudged for
+     * legibility nowhere, so an amber-on-paper identity lands under the floor -
+     * measured, `boss-daylight` is 2.63:1 and `solarized-light` 2.98:1, while their
+     * [signalText] is 5.32:1 and 5.34:1. Reaching for the token that IS held to a
+     * legibility floor is cheaper than nudging a second one, and on the twelve
+     * builtins already over the line it changes nothing.
+     *
+     * `SplitFocusBorderTest` holds every builtin to the floor through this property,
+     * which is why it needs no by-name exemption for the two above.
+     */
+    val focusRing: Color
+        get() = if (contrastRatio(signal, ink) >= FOCUS_RING_MIN_CONTRAST) signal else signalText
+
     companion object {
+        /**
+         * WCAG 1.4.11's floor for a non-text UI component, which is what a focus
+         * ring is. The same number `UiThemeContrastTest` already holds indicators to.
+         */
+        const val FOCUS_RING_MIN_CONTRAST = 3f
+
         /**
          * Exact tokens for the bossconsole.ai identity, mirroring the host's
          * `BossBlueprintColorScheme` (`line2` is the host's `lineStrong`).

@@ -4,10 +4,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.*
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import ai.rever.bossterm.compose.settings.toSettingsHex
 
 /**
@@ -62,12 +67,45 @@ fun SplitsSettingsSection(
                 description = "Highlight the focused pane with a colored border"
             )
 
+            val themeFocusRing = BossUiTheme.current.focusRing
+            val override = settings.splitFocusBorderColorOverride
+            val followsTheme = override == null
+
+            // Turning Match Theme off has to write *some* colour, and the stored one
+            // is gone by then. Holding the last explicit choice for as long as the
+            // window is open makes on -> off -> on lossless, which is the round trip
+            // someone actually performs (flip it on, look at it, flip it back).
+            // Deliberately not persisted: a colour nobody can see in the UI is worse
+            // than re-picking one.
+            var lastExplicit by remember { mutableStateOf(override) }
+            if (override != null && override != lastExplicit) lastExplicit = override
+
+            SettingsToggle(
+                label = "Match Theme",
+                checked = followsTheme,
+                onCheckedChange = { follow ->
+                    onSettingsChange(
+                        settings.copy(
+                            splitFocusBorderColor = when {
+                                follow -> ""
+                                // Falls back to what is on screen for someone who has
+                                // never picked a colour, so the picker opens on what
+                                // they were just looking at.
+                                else -> (lastExplicit ?: themeFocusRing).toSettingsHex()
+                            }
+                        )
+                    )
+                },
+                description = "Use the active theme's accent for the focus indicator",
+                enabled = settings.splitFocusBorderEnabled
+            )
+
             ColorSetting(
                 label = "Focus Border Color",
-                color = settings.splitFocusBorderColorValue,
+                color = override ?: themeFocusRing,
                 onColorChange = { onSettingsChange(settings.copy(splitFocusBorderColor = it.toSettingsHex())) },
                 description = "Color of the focus indicator border",
-                enabled = settings.splitFocusBorderEnabled
+                enabled = settings.splitFocusBorderEnabled && !followsTheme
             )
         }
     }

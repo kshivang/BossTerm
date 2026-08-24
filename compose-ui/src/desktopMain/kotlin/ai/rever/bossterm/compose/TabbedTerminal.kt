@@ -1279,11 +1279,50 @@ fun TabbedTerminal(
                 }
             }
 
+            // The same path with the home prefix folded to "~" but nothing elided — the
+            // hover tooltip's job is to show what abbreviateCwd() had to drop.
+            fun fullCwd(path: String?): String? {
+                if (path.isNullOrBlank()) return null
+                val home = System.getProperty("user.home")?.trimEnd('/')
+                val clean = path.trimEnd('/').ifEmpty { "/" }
+                return if (!home.isNullOrEmpty() && (clean == home || clean.startsWith("$home/")))
+                    "~" + clean.removePrefix(home) else clean
+            }
+
+            // Tooltip-only: which remote a mirrored chip belongs to. Same label precedence as
+            // the remote box header, so the box and the chip name the host identically.
+            fun hostLabelFor(session: TerminalSession): String? {
+                val remote = rm?.sessionForMirror(session) ?: return null
+                return remote.customName.value
+                    ?: remote.hostName.value
+                    ?: runCatching { java.net.URI(remote.link).host ?: remote.link }.getOrDefault(remote.link)
+            }
+
+            // Tooltip-only: state worth calling out. Connected is the norm and says nothing;
+            // the rest is why a chip looks idle or empty.
+            fun statusLabelFor(session: TerminalSession): String? =
+                when (val st = session.connectionState.value) {
+                    is ConnectionState.Initializing, is ConnectionState.Connecting -> "starting…"
+                    is ConnectionState.Error -> "error: ${st.message}"
+                    else -> null
+                }
+
             // Resolve the session a chip refers to: a split pane by id, or the tab
             // itself for the synthetic tab-level chip (summary mode / not-yet-split).
             fun sessionFor(tabIndex: Int, paneId: String): TerminalSession? {
                 val tab = tabController.tabs.getOrNull(tabIndex) ?: return null
                 return splitStates[tab.id]?.getAllPanes()?.firstOrNull { it.id == paneId }?.session ?: tab
+            }
+
+            // Raw screen text behind the tooltip's scrollback preview. Called only while a
+            // tooltip is on screen, so the buffer lock is taken on hover and nowhere else.
+            //
+            // The visible screen, not the history: its bottom rows ARE the most recent output,
+            // and the history-inclusive read (createSnapshot, what read_scrollback uses) copies
+            // every scrollback line — thousands of them — which is not a hover's price to pay.
+            fun screenTextFor(tabIndex: Int, paneId: String): String? {
+                val session = sessionFor(tabIndex, paneId) ?: return null
+                return runCatching { session.textBuffer.getScreenLines() }.getOrNull()
             }
 
             // Each tab contributes a group of pane-chips (one chip per split pane).
@@ -1298,7 +1337,10 @@ fun TabbedTerminal(
                             p.id, p.session.title.value, colorHexFor(p.session),
                             subtitle = abbreviateCwd(p.session.workingDirectory.value),
                             branch = terminalPane?.gitBranch?.value,
-                            isGitRepo = if (terminalPane == null) false else terminalPane.isGitRepo.value
+                            isGitRepo = if (terminalPane == null) false else terminalPane.isGitRepo.value,
+                            fullPath = fullCwd(p.session.workingDirectory.value),
+                            hostLabel = hostLabelFor(p.session),
+                            statusLabel = statusLabelFor(p.session)
                         )
                     }
                 } else {
@@ -1306,7 +1348,10 @@ fun TabbedTerminal(
                         tab.id, tab.title.value, colorHexFor(tab),
                         subtitle = abbreviateCwd(tab.workingDirectory.value),
                         branch = tab.gitBranch.value,
-                        isGitRepo = tab.isGitRepo.value
+                        isGitRepo = tab.isGitRepo.value,
+                        fullPath = fullCwd(tab.workingDirectory.value),
+                        hostLabel = hostLabelFor(tab),
+                        statusLabel = statusLabelFor(tab)
                     ))
                 }
                 tab to ai.rever.bossterm.compose.tabs.TabBarGroup(index, panes)
@@ -1620,7 +1665,8 @@ fun TabbedTerminal(
                 collapsed = collapsed,
                 onToggleCollapse = if (tabBarOnLeft) onToggleCollapse else null,
                 onPin = if (tabBarOnLeft) drawer?.onPin else null,
-                onTransientInteraction = drawer?.onBusyChange
+                onTransientInteraction = drawer?.onBusyChange,
+                scrollbackPreview = { tabIndex, paneId -> screenTextFor(tabIndex, paneId) }
             )
             }
         }

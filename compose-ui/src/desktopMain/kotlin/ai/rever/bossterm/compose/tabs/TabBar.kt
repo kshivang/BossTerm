@@ -112,9 +112,26 @@ private const val TabTooltipPreviewLines: Int = 6
 
 /**
  * Per-row character clip for the preview. Rows arrive padded to the terminal's full width and
- * a wide pane is 200+ columns; laying all of that out to then ellipsise it is wasted work.
+ * a wide pane is 200+ columns; laying all of that out is wasted work.
+ *
+ * NOT the visible boundary — at 10sp monospace the card's 360dp fits roughly 55 characters, so
+ * the row's own `maxLines = 1` ellipsis always lands first (and eats the "…" this clip appends).
+ * It exists to bound layout work, so tuning it changes nothing you can see.
  */
 private const val TabTooltipPreviewChars: Int = 96
+
+/**
+ * Character clip for the title and detail rows.
+ *
+ * Every one of them is terminal-controlled: the title is whatever OSC 1/2 said, the path
+ * whatever OSC 7 said, the status an exception's message. The chip caps its own title at one
+ * line, so without this the tooltip would be the one surface where a program that emits a
+ * multi-kilobyte title paints a card taller than the window.
+ */
+private const val TabTooltipTextChars: Int = 200
+
+/** Rows a title or detail line may wrap to before it is ellipsised. */
+private const val TabTooltipTextLines: Int = 2
 
 /**
  * Consume secondary presses before click gestures can treat them as primary actions.
@@ -176,20 +193,54 @@ data class TabBarPane(
 )
 
 /**
+ * Fold a leading [home] in [path] to "~", trimming a trailing slash. Nothing is elided — this
+ * is the whole path, which is what the tooltip promises and what the chip's abbreviation drops.
+ *
+ * [home] is a parameter, not a `user.home` read, for two reasons: it is testable, and a
+ * MIRRORED pane's cwd belongs to the remote host, where the local home means nothing (fold
+ * `/home/alice` there and a same-named remote user turns `/home/alice/proj` into `~/proj`).
+ * Callers pass null for those.
+ *
+ * The "$home/" guard is what keeps a sibling directory intact: `/Users/alice-backup` must stay
+ * itself and not become `~-backup`.
+ */
+internal fun tildePath(path: String?, home: String?): String? {
+    if (path.isNullOrBlank()) return null
+    val cleanHome = home?.trimEnd('/')
+    val clean = path.trimEnd('/').ifEmpty { "/" }
+    return if (!cleanHome.isNullOrEmpty() && (clean == cleanHome || clean.startsWith("$cleanHome/"))) {
+        "~" + clean.removePrefix(cleanHome)
+    } else {
+        clean
+    }
+}
+
+/** Clip one terminal-controlled tooltip line to [TabTooltipTextChars]. */
+private fun clipTooltipText(text: String): String =
+    if (text.length > TabTooltipTextChars) text.take(TabTooltipTextChars) + "…" else text
+
+/** The tooltip's title line: the chip's title, bounded (see [TabTooltipTextChars]). */
+internal fun tabTooltipTitle(title: String): String = clipTooltipText(title)
+
+/**
  * Detail lines of a chip's hover tooltip, in render order. The title is rendered
  * separately (emphasized), so it never appears here, and a line that would only
  * restate the title is dropped — a tooltip that says "BossTerm" twice is noise.
  */
 internal fun tabTooltipDetails(pane: TabBarPane): List<String> {
     val details = mutableListOf<String>()
-    // The untruncated path when the caller has it; the chip's elided subtitle is the
-    // fallback so remote chips (no local cwd) still say where they are.
-    val path = pane.fullPath?.takeIf { it.isNotBlank() } ?: pane.subtitle?.takeIf { it.isNotBlank() }
-    if (path != null && path != pane.title) details += path
+    // Prefer the untruncated path, but fall THROUGH to the chip's elided subtitle when the
+    // full one only restates the title, rather than emitting no path at all. That case is
+    // real: at $HOME the title is "~" and so is the folded path, while the subtitle
+    // deliberately carries the expanded "/Users/you" — the one thing worth showing there.
+    // (The subtitle is also the only path a remote chip has.)
+    val path = listOfNotNull(pane.fullPath, pane.subtitle)
+        .firstOrNull { it.isNotBlank() && it != pane.title }
+    if (path != null) details += path
     pane.branch?.takeIf { it.isNotBlank() }?.let { details += "⎇ $it" }
     pane.hostLabel?.takeIf { it.isNotBlank() }?.let { details += "via $it" }
     pane.statusLabel?.takeIf { it.isNotBlank() }?.let { details += it }
-    return details
+    return details.map(::clipTooltipText)
 }
 
 /**
@@ -704,10 +755,13 @@ fun TabBar(
     val chip: @Composable (TabBarGroup, TabBarPane, Modifier) -> Unit = { group, pane, chipModifier ->
         // Hover reveals what the chip had to clip: the full title, the untruncated path,
         // the branch, and the remote it mirrors. Suppressed while renaming — the tooltip
-        // would sit over the field being typed into, describing its stale title.
+        // would sit over the field being typed into, describing its stale title — and while
+        // a sidebar drag is in flight: reordering slides chips under a held pointer, so each
+        // one entered starts a fresh dwell that a slow drag outlasts, and the card would land
+        // on the bar being rearranged.
         TabHoverTooltip(
             pane = pane,
-            enabled = pane.paneId != editingPaneId,
+            enabled = pane.paneId != editingPaneId && draggedTabIndex == null,
             beside = vertical,
             bg = barBg,
             fg = barFg,
@@ -1283,23 +1337,30 @@ private fun TabTooltipCard(
         border = androidx.compose.foundation.BorderStroke(1.dp, fg.copy(alpha = 0.14f))
     ) {
         Column(
-            // Wide enough for a real project path, and wrapping (no maxLines) past that:
-            // a tooltip that ellipsises the path it exists to reveal would be pointless.
+            // Wide enough for a real project path, wrapping past that rather than ellipsising
+            // it away. A card carrying a preview always measures to the full width anyway —
+            // preview rows are single-line with unbounded intrinsic width.
             modifier = Modifier.widthIn(max = 360.dp).padding(horizontal = 10.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
+            // maxLines on both, not just the clip: 200 characters of a narrow path still wrap
+            // to four rows, and the card must stay a tooltip.
             Text(
-                text = pane.title,
+                text = tabTooltipTitle(pane.title),
                 color = fg,
                 fontSize = 12.sp,
-                fontFamily = FontFamily.Monospace
+                fontFamily = FontFamily.Monospace,
+                maxLines = TabTooltipTextLines,
+                overflow = TextOverflow.Ellipsis
             )
             tabTooltipDetails(pane).forEach { line ->
                 Text(
                     text = line,
                     color = muted,
                     fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = TabTooltipTextLines,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
             if (previewLines.isNotEmpty()) {

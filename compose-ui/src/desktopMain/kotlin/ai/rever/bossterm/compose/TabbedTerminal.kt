@@ -105,6 +105,9 @@ import ai.rever.bossterm.compose.voice.VoiceToolSource
 import ai.rever.bossterm.compose.voice.segmentState
 import ai.rever.bossterm.compose.ui.ProperTerminal
 
+/** Tab-bar diagnostics that must never surface as UI (a hover cannot show an error). */
+private val tabBarLog = org.slf4j.LoggerFactory.getLogger("ai.rever.bossterm.compose.TabBar")
+
 /**
  * Terminal composable with multi-tab support.
  *
@@ -1239,14 +1242,26 @@ fun TabbedTerminal(
             val rm = state?.remoteSessions
             val tabBarClipboard = androidx.compose.ui.platform.LocalClipboardManager.current
 
+            // Read once per bar composition, not once per chip.
+            val userHome = remember { System.getProperty("user.home")?.trimEnd('/') }
+            // link → display host, for the one label branch that has to parse a URI.
+            val remoteLinkHosts = remember { mutableMapOf<String, String>() }
+
             // Resolve the per-tab accent color: a manual color (Color ▸ menu) always
             // wins; otherwise, when color-by-directory is on, derive a stable accent
             // from the session's cwd. Reads MutableState so the bar recomposes live.
-            fun colorHexFor(session: TerminalSession): String? {
+            //
+            // [remote] is passed in rather than looked up: it is an O(sessions) scan over
+            // `ownsMirror`, this runs for every chip on every recomposition of the bar, and the
+            // tooltip's host label needs the same answer.
+            fun colorHexFor(
+                session: TerminalSession,
+                remote: ai.rever.bossterm.compose.remote.RemoteSession?
+            ): String? {
                 if (session.isRemote) {
                     // Group accent (set via the remote box header's right-click) wins; the
                     // default cyan marks mirrored remote tabs.
-                    return rm?.sessionForMirror(session)?.accent?.value ?: "0xFF4FC3F7"
+                    return remote?.accent?.value ?: "0xFF4FC3F7"
                 }
                 session.tabColor.value?.let { return it }
                 if (settings.tabColorByDirectory) {
@@ -1265,10 +1280,8 @@ fun TabbedTerminal(
             // full home path there, matching the web viewer (its second line is never blank/"~").
             fun abbreviateCwd(path: String?): String? {
                 if (path.isNullOrBlank()) return null
-                val home = System.getProperty("user.home")?.trimEnd('/')
                 val clean = path.trimEnd('/').ifEmpty { "/" }
-                val withTilde = if (!home.isNullOrEmpty() && (clean == home || clean.startsWith("$home/")))
-                    "~" + clean.removePrefix(home) else clean
+                val withTilde = ai.rever.bossterm.compose.tabs.tildePath(path, userHome) ?: return null
                 val parts = withTilde.split('/').filter { it.isNotEmpty() }
                 return when {
                     withTilde == "~" -> clean // home: show the real path (the "~" title carries the tilde)
@@ -1280,22 +1293,23 @@ fun TabbedTerminal(
             }
 
             // The same path with the home prefix folded to "~" but nothing elided — the
-            // hover tooltip's job is to show what abbreviateCwd() had to drop.
-            fun fullCwd(path: String?): String? {
-                if (path.isNullOrBlank()) return null
-                val home = System.getProperty("user.home")?.trimEnd('/')
-                val clean = path.trimEnd('/').ifEmpty { "/" }
-                return if (!home.isNullOrEmpty() && (clean == home || clean.startsWith("$home/")))
-                    "~" + clean.removePrefix(home) else clean
-            }
+            // hover tooltip's job is to show what abbreviateCwd() had to drop. A mirrored
+            // pane's cwd is the HOST's, so the local home is not folded into it.
+            fun fullCwd(path: String?, remote: ai.rever.bossterm.compose.remote.RemoteSession?): String? =
+                ai.rever.bossterm.compose.tabs.tildePath(path, if (remote != null) null else userHome)
 
             // Tooltip-only: which remote a mirrored chip belongs to. Same label precedence as
             // the remote box header, so the box and the chip name the host identically.
-            fun hostLabelFor(session: TerminalSession): String? {
-                val remote = rm?.sessionForMirror(session) ?: return null
+            fun hostLabelFor(remote: ai.rever.bossterm.compose.remote.RemoteSession?): String? {
+                if (remote == null) return null
                 return remote.customName.value
                     ?: remote.hostName.value
-                    ?: runCatching { java.net.URI(remote.link).host ?: remote.link }.getOrDefault(remote.link)
+                    // Last resort, and the only expensive branch — memoised, since a live
+                    // session's link never changes but this is read on every recomposition.
+                    ?: remoteLinkHosts.getOrPut(remote.link) {
+                        runCatching { java.net.URI(remote.link).host ?: remote.link }
+                            .getOrDefault(remote.link)
+                    }
             }
 
             // Tooltip-only: state worth calling out. Connected is the norm and says nothing;
@@ -1322,7 +1336,16 @@ fun TabbedTerminal(
             // every scrollback line — thousands of them — which is not a hover's price to pay.
             fun screenTextFor(tabIndex: Int, paneId: String): String? {
                 val session = sessionFor(tabIndex, paneId) ?: return null
-                return runCatching { session.textBuffer.getScreenLines() }.getOrNull()
+                return try {
+                    session.textBuffer.getScreenLines()
+                } catch (e: IndexOutOfBoundsException) {
+                    // The plausible throw: line-storage index churn against a concurrent
+                    // resize. Caught (a hover must not take the app down) but not swallowed —
+                    // if it ever becomes systematic, a silently preview-less tooltip would be
+                    // the only symptom.
+                    tabBarLog.debug("Tooltip preview read failed for pane {}: {}", paneId, e.toString())
+                    null
+                }
             }
 
             // Each tab contributes a group of pane-chips (one chip per split pane).
@@ -1333,24 +1356,26 @@ fun TabbedTerminal(
                 val panes = if (st != null && !summaryMode) {
                     st.getAllPanes().map { p ->
                         val terminalPane = p.session as? ai.rever.bossterm.compose.tabs.TerminalTab
+                        val paneRemote = if (p.session.isRemote) rm?.sessionForMirror(p.session) else null
                         ai.rever.bossterm.compose.tabs.TabBarPane(
-                            p.id, p.session.title.value, colorHexFor(p.session),
+                            p.id, p.session.title.value, colorHexFor(p.session, paneRemote),
                             subtitle = abbreviateCwd(p.session.workingDirectory.value),
                             branch = terminalPane?.gitBranch?.value,
                             isGitRepo = if (terminalPane == null) false else terminalPane.isGitRepo.value,
-                            fullPath = fullCwd(p.session.workingDirectory.value),
-                            hostLabel = hostLabelFor(p.session),
+                            fullPath = fullCwd(p.session.workingDirectory.value, paneRemote),
+                            hostLabel = hostLabelFor(paneRemote),
                             statusLabel = statusLabelFor(p.session)
                         )
                     }
                 } else {
+                    val tabRemote = if (tab.isRemote) rm?.sessionForMirror(tab) else null
                     listOf(ai.rever.bossterm.compose.tabs.TabBarPane(
-                        tab.id, tab.title.value, colorHexFor(tab),
+                        tab.id, tab.title.value, colorHexFor(tab, tabRemote),
                         subtitle = abbreviateCwd(tab.workingDirectory.value),
                         branch = tab.gitBranch.value,
                         isGitRepo = tab.isGitRepo.value,
-                        fullPath = fullCwd(tab.workingDirectory.value),
-                        hostLabel = hostLabelFor(tab),
+                        fullPath = fullCwd(tab.workingDirectory.value, tabRemote),
+                        hostLabel = hostLabelFor(tabRemote),
                         statusLabel = statusLabelFor(tab)
                     ))
                 }
@@ -1666,7 +1691,13 @@ fun TabbedTerminal(
                 onToggleCollapse = if (tabBarOnLeft) onToggleCollapse else null,
                 onPin = if (tabBarOnLeft) drawer?.onPin else null,
                 onTransientInteraction = drawer?.onBusyChange,
-                scrollbackPreview = { tabIndex, paneId -> screenTextFor(tabIndex, paneId) }
+                // Null, not an empty-string provider: the tooltip drops the whole preview
+                // section (and its rule) when the setting is off.
+                scrollbackPreview = if (settings.tabHoverPreview) {
+                    { tabIndex, paneId -> screenTextFor(tabIndex, paneId) }
+                } else {
+                    null
+                }
             )
             }
         }

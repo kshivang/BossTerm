@@ -122,6 +122,13 @@ fun BehaviorSettingsSection(
                 onCheckedChange = { onSettingsChange(settings.copy(tabColorByDirectory = it)) },
                 description = "Auto-assign a stable accent color per working directory (a manual color always wins)"
             )
+            SettingsToggle(
+                label = "Preview Output on Tab Hover",
+                checked = settings.tabHoverPreview,
+                onCheckedChange = { onSettingsChange(settings.copy(tabHoverPreview = it)) },
+                description = "Include the last few rows of a tab's screen in its hover tooltip. " +
+                    "Off still shows the title, path and branch"
+            )
         }
 
         Spacer(modifier = Modifier.height(24.dp))

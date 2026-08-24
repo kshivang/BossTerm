@@ -524,6 +524,15 @@ data class TerminalSettings(
      */
     val tabColorByDirectory: Boolean = false,
 
+    /**
+     * Include a few rows of a pane's screen in its tab hover tooltip. On by default.
+     *
+     * Off leaves the rest of the tooltip (title, path, branch) alone — it exists because the
+     * preview draws a BACKGROUND pane's output into a popup, which during a screen share or a
+     * recording is content that was not on screen a moment ago.
+     */
+    val tabHoverPreview: Boolean = true,
+
     // ===== Session restore (Phase 6) =====
 
     /** Reopen tabs / split layout / cwds on launch. */

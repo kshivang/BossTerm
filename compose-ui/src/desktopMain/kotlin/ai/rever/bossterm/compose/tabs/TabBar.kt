@@ -7,6 +7,7 @@ import ai.rever.bossterm.compose.settings.theme.Theme
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.TooltipArea
+import androidx.compose.foundation.TooltipPlacement
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -60,6 +61,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -97,6 +99,39 @@ private val RemoteAccent: Color get() = BossUiTheme.current.data
 
 /** Gap between pane chips within the same tab-group. Tight, so they read as one cluster. */
 private val TabChipGap: Dp = 3.dp
+
+/**
+ * Hover dwell before a chip's tooltip appears. Deliberately slower than the MCP pill's
+ * 350ms: the bar is a row of adjacent hover targets, and the pointer crosses several of
+ * them on any trip to the terminal.
+ */
+private const val TabTooltipDelayMillis: Int = 500
+
+/** Preview rows kept from the tail of a pane's screen. Enough to recognise, not to read. */
+private const val TabTooltipPreviewLines: Int = 6
+
+/**
+ * Per-row character clip for the preview. Rows arrive padded to the terminal's full width and
+ * a wide pane is 200+ columns; laying all of that out is wasted work.
+ *
+ * NOT the visible boundary — at 10sp monospace the card's 360dp fits roughly 55 characters, so
+ * the row's own `maxLines = 1` ellipsis always lands first (and eats the "…" this clip appends).
+ * It exists to bound layout work, so tuning it changes nothing you can see.
+ */
+private const val TabTooltipPreviewChars: Int = 96
+
+/**
+ * Character clip for the title and detail rows.
+ *
+ * Every one of them is terminal-controlled: the title is whatever OSC 1/2 said, the path
+ * whatever OSC 7 said, the status an exception's message. The chip caps its own title at one
+ * line, so without this the tooltip would be the one surface where a program that emits a
+ * multi-kilobyte title paints a card taller than the window.
+ */
+private const val TabTooltipTextChars: Int = 200
+
+/** Rows a title or detail line may wrap to before it is ellipsised. */
+private const val TabTooltipTextLines: Int = 2
 
 /**
  * Consume secondary presses before click gestures can treat them as primary actions.
@@ -137,6 +172,10 @@ internal fun parseTabColor(hex: String?): Color? {
  * the second and third lines shown on the vertical (left) bar's Warp-style chips;
  * both are ignored by the single-line top bar. [isGitRepo] gates repository-only
  * actions in the local chip menu; null means repository detection is pending.
+ *
+ * [fullPath], [hostLabel] and [statusLabel] are tooltip-only: neither bar has the
+ * room for them, but a chip clipped to 200dp of monospace hides exactly the detail
+ * needed to tell two same-named tabs apart, and hover is where that belongs.
  */
 data class TabBarPane(
     val paneId: String,
@@ -144,8 +183,88 @@ data class TabBarPane(
     val colorHex: String? = null,
     val subtitle: String? = null,
     val branch: String? = null,
-    val isGitRepo: Boolean? = null
+    val isGitRepo: Boolean? = null,
+    /** Untruncated working directory (home as "~"), not the elided [subtitle]. */
+    val fullPath: String? = null,
+    /** For a mirrored chip, the remote session it belongs to (shown as "via <host>"). */
+    val hostLabel: String? = null,
+    /** Session state worth calling out while it is not simply connected ("starting…", an error). */
+    val statusLabel: String? = null
 )
+
+/**
+ * Fold a leading [home] in [path] to "~", trimming a trailing slash. Nothing is elided — this
+ * is the whole path, which is what the tooltip promises and what the chip's abbreviation drops.
+ *
+ * [home] is a parameter, not a `user.home` read, for two reasons: it is testable, and a
+ * MIRRORED pane's cwd belongs to the remote host, where the local home means nothing (fold
+ * `/home/alice` there and a same-named remote user turns `/home/alice/proj` into `~/proj`).
+ * Callers pass null for those.
+ *
+ * The "$home/" guard is what keeps a sibling directory intact: `/Users/alice-backup` must stay
+ * itself and not become `~-backup`.
+ */
+internal fun tildePath(path: String?, home: String?): String? {
+    if (path.isNullOrBlank()) return null
+    val cleanHome = home?.trimEnd('/')
+    val clean = path.trimEnd('/').ifEmpty { "/" }
+    return if (!cleanHome.isNullOrEmpty() && (clean == cleanHome || clean.startsWith("$cleanHome/"))) {
+        "~" + clean.removePrefix(cleanHome)
+    } else {
+        clean
+    }
+}
+
+/** Clip one terminal-controlled tooltip line to [TabTooltipTextChars]. */
+private fun clipTooltipText(text: String): String =
+    if (text.length > TabTooltipTextChars) text.take(TabTooltipTextChars) + "…" else text
+
+/** The tooltip's title line: the chip's title, bounded (see [TabTooltipTextChars]). */
+internal fun tabTooltipTitle(title: String): String = clipTooltipText(title)
+
+/**
+ * Detail lines of a chip's hover tooltip, in render order. The title is rendered
+ * separately (emphasized), so it never appears here, and a line that would only
+ * restate the title is dropped — a tooltip that says "BossTerm" twice is noise.
+ */
+internal fun tabTooltipDetails(pane: TabBarPane): List<String> {
+    val details = mutableListOf<String>()
+    // Prefer the untruncated path, but fall THROUGH to the chip's elided subtitle when the
+    // full one only restates the title, rather than emitting no path at all. That case is
+    // real: at $HOME the title is "~" and so is the folded path, while the subtitle
+    // deliberately carries the expanded "/Users/you" — the one thing worth showing there.
+    // (The subtitle is also the only path a remote chip has.)
+    val path = listOfNotNull(pane.fullPath, pane.subtitle)
+        .firstOrNull { it.isNotBlank() && it != pane.title }
+    if (path != null) details += path
+    pane.branch?.takeIf { it.isNotBlank() }?.let { details += "⎇ $it" }
+    pane.hostLabel?.takeIf { it.isNotBlank() }?.let { details += "via $it" }
+    pane.statusLabel?.takeIf { it.isNotBlank() }?.let { details += it }
+    return details.map(::clipTooltipText)
+}
+
+/**
+ * Shape a raw screen dump (see `TerminalTextBuffer.getScreenLines`, whose rows are padded to
+ * the terminal width) into the tooltip's preview: trailing padding stripped, blank rows
+ * dropped, the last [maxLines] kept, each clipped to [maxChars].
+ *
+ * Blank rows are dropped rather than kept, so an idle shell previews its last real output
+ * instead of six empty rows below the prompt.
+ */
+internal fun tabTooltipPreview(
+    screenText: String?,
+    maxLines: Int = TabTooltipPreviewLines,
+    maxChars: Int = TabTooltipPreviewChars
+): List<String> {
+    if (screenText.isNullOrBlank()) return emptyList()
+    val rows = screenText.lineSequence()
+        .map { it.trimEnd() }
+        .filter { it.isNotBlank() }
+        .toList()
+    return rows.takeLast(maxLines).map { row ->
+        if (row.length > maxChars) row.take(maxChars) + "…" else row
+    }
+}
 
 /** Keep worktree creation optimistic while repository detection is still pending. */
 internal fun canCreateWorktree(isGitRepo: Boolean?): Boolean = isGitRepo != false
@@ -340,6 +459,12 @@ fun TabBar(
      * "Rename…" silently does nothing and a drag past the edge is dropped.
      */
     onTransientInteraction: ((Boolean) -> Unit)? = null,
+    /**
+     * Raw screen text for one pane (the caller's `TerminalTextBuffer.getScreenLines()`), read
+     * ONLY while that pane's hover tooltip is on screen — never per composition, since it
+     * locks the buffer. Null omits the tooltip's preview section entirely.
+     */
+    scrollbackPreview: ((tabIndex: Int, paneId: String) -> String?)? = null,
     modifier: Modifier = Modifier
 ) {
     // Context menu controller for chip right-click menu
@@ -628,26 +753,46 @@ fun TabBar(
     // separate tabs are spaced further apart (TabGroupGap). The focused pane of the
     // active tab is highlighted.
     val chip: @Composable (TabBarGroup, TabBarPane, Modifier) -> Unit = { group, pane, chipModifier ->
-        TabItem(
-            title = pane.title,
-            subtitle = pane.subtitle,
-            branch = pane.branch,
-            multiLine = vertical,
-            tabTheme = tabBarTheme,
-            chipRaised = barRaised,
-            isActive = group.tabIndex == activeTabIndex && pane.paneId == focusedPaneId,
-            colorHex = pane.colorHex,
-            isEditing = pane.paneId == editingPaneId,
-            onSelected = { onPaneSelected(group.tabIndex, pane.paneId) },
-            onCommitRename = { newTitle ->
-                editingPaneId = null
-                onRename(group.tabIndex, pane.paneId, newTitle)
-            },
-            onCancelRename = { editingPaneId = null },
-            onClose = { onPaneClosed(group.tabIndex, pane.paneId) },
-            onContextMenu = { showMenuFor(group.tabIndex, pane.paneId) },
+        // Hover reveals what the chip had to clip: the full title, the untruncated path,
+        // the branch, and the remote it mirrors. Suppressed while renaming — the tooltip
+        // would sit over the field being typed into, describing its stale title — and while
+        // a sidebar drag is in flight: reordering slides chips under a held pointer, so each
+        // one entered starts a fresh dwell that a slow drag outlasts, and the card would land
+        // on the bar being rearranged.
+        TabHoverTooltip(
+            pane = pane,
+            enabled = pane.paneId != editingPaneId && draggedTabIndex == null,
+            beside = vertical,
+            bg = barBg,
+            fg = barFg,
+            muted = barMuted,
+            divider = barDivider,
+            preview = scrollbackPreview?.let { read -> { read(group.tabIndex, pane.paneId) } },
             modifier = chipModifier
-        )
+        ) {
+            TabItem(
+                title = pane.title,
+                subtitle = pane.subtitle,
+                branch = pane.branch,
+                multiLine = vertical,
+                tabTheme = tabBarTheme,
+                chipRaised = barRaised,
+                isActive = group.tabIndex == activeTabIndex && pane.paneId == focusedPaneId,
+                colorHex = pane.colorHex,
+                isEditing = pane.paneId == editingPaneId,
+                onSelected = { onPaneSelected(group.tabIndex, pane.paneId) },
+                onCommitRename = { newTitle ->
+                    editingPaneId = null
+                    onRename(group.tabIndex, pane.paneId, newTitle)
+                },
+                onCancelRename = { editingPaneId = null },
+                onClose = { onPaneClosed(group.tabIndex, pane.paneId) },
+                onContextMenu = { showMenuFor(group.tabIndex, pane.paneId) },
+                // fillMaxWidth again inside the tooltip's wrapper Box: `chipModifier` sized
+                // that Box, and the chip would otherwise shrink to its text inside it.
+                modifier = if (vertical) Modifier.fillMaxWidth() else Modifier
+            )
+        }
     }
 
     // Right-clicking empty sidebar chrome targets the active pane. Child controls consume
@@ -721,14 +866,20 @@ fun TabBar(
                             group.panes.forEach { pane ->
                                 val active = group.tabIndex == activeTabIndex && pane.paneId == focusedPaneId
                                 val accent = parseTabColor(pane.colorHex) ?: barMuted
-                                TooltipArea(tooltip = {
-                                    Surface(color = barBg, shadowElevation = 4.dp, shape = RoundedCornerShape(4.dp)) {
-                                        Text(
-                                            pane.title, color = barFg, fontSize = 11.sp,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                        )
+                                // The rail is nothing but coloured dots, so its tooltip is the
+                                // only label there is — the same card the chips get.
+                                TabHoverTooltip(
+                                    pane = pane,
+                                    enabled = true,
+                                    beside = true,
+                                    bg = barBg,
+                                    fg = barFg,
+                                    muted = barMuted,
+                                    divider = barDivider,
+                                    preview = scrollbackPreview?.let { read ->
+                                        { read(group.tabIndex, pane.paneId) }
                                     }
-                                }) {
+                                ) {
                                     Box(
                                         modifier = Modifier.size(24.dp).clip(RoundedCornerShape(6.dp))
                                             .consumeSecondaryPress {
@@ -1153,6 +1304,130 @@ fun TabBar(
             }
         }
     }
+}
+
+/**
+ * Hover tooltip for one chip: the full title, [tabTooltipDetails], and — under a rule — the
+ * tail of the pane's own screen from [preview] (see [tabTooltipPreview]), so a tab can be
+ * identified by what it is *showing* and not just by what it is called.
+ *
+ * Rendered as a small raised card in the bar's own theme colors, matching the
+ * status-pill tooltip rather than the Material default (which paints a surface the
+ * terminal palette never asked for).
+ */
+@Composable
+private fun TabTooltipCard(
+    pane: TabBarPane,
+    bg: Color,
+    fg: Color,
+    muted: Color,
+    divider: Color,
+    preview: (() -> String?)? = null
+) {
+    // Read once, when the card appears — NOT on every recomposition. The provider locks the
+    // terminal buffer, and a preview that re-read itself under a live `tail -f` would both
+    // churn the lock and reflow the card under the pointer. The popup subtree is disposed on
+    // hide, so this re-reads on the next hover; keyed on the pane alone, since `preview` is a
+    // fresh closure every composition and would otherwise invalidate on each one.
+    val previewLines = remember(pane.paneId) { tabTooltipPreview(preview?.invoke()) }
+    Surface(
+        color = bg,
+        shadowElevation = 4.dp,
+        shape = RoundedCornerShape(4.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, fg.copy(alpha = 0.14f))
+    ) {
+        Column(
+            // Wide enough for a real project path, wrapping past that rather than ellipsising
+            // it away. A card carrying a preview always measures to the full width anyway —
+            // preview rows are single-line with unbounded intrinsic width.
+            modifier = Modifier.widthIn(max = 360.dp).padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            // maxLines on both, not just the clip: 200 characters of a narrow path still wrap
+            // to four rows, and the card must stay a tooltip.
+            Text(
+                text = tabTooltipTitle(pane.title),
+                color = fg,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = TabTooltipTextLines,
+                overflow = TextOverflow.Ellipsis
+            )
+            tabTooltipDetails(pane).forEach { line ->
+                Text(
+                    text = line,
+                    color = muted,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = TabTooltipTextLines,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (previewLines.isNotEmpty()) {
+                // A rule, not a gap: without it the terminal's own text reads as more tooltip
+                // metadata — and the pane's last line can be anything, including a path.
+                Box(Modifier.fillMaxWidth().padding(vertical = 3.dp).height(1.dp).background(divider))
+                previewLines.forEach { line ->
+                    Text(
+                        text = line,
+                        // Dimmer than the detail lines: this is quoted terminal output, and it
+                        // must not out-shout the title it is attached to.
+                        color = muted.copy(alpha = 0.72f),
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        // Clipped rather than wrapped — one screen row stays one preview row,
+                        // so the shape of the output survives (a wrapped row reads as two).
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Wraps a chip in its hover tooltip. [enabled] false renders [content] bare, so a
+ * chip being renamed is left alone — the popup would otherwise sit over the field
+ * being typed into, describing the title it is replacing.
+ *
+ * Cursor-placed, like the MCP pill's tooltip, and not `ComponentRect` anchored to the
+ * chip: only the cursor provider flips and clamps against the window, and a full path
+ * on the last chip of a narrow window is exactly where an anchored card gets clipped
+ * off the edge. [beside] (the left bar and its rail) nudges it clear to the right
+ * instead of straight down, where it would cover the next chip.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun TabHoverTooltip(
+    pane: TabBarPane,
+    enabled: Boolean,
+    beside: Boolean,
+    bg: Color,
+    fg: Color,
+    muted: Color,
+    divider: Color,
+    preview: (() -> String?)? = null,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    if (!enabled) {
+        Box(modifier) { content() }
+        return
+    }
+    TooltipArea(
+        tooltip = {
+            TabTooltipCard(
+                pane = pane, bg = bg, fg = fg, muted = muted, divider = divider, preview = preview
+            )
+        },
+        modifier = modifier,
+        delayMillis = TabTooltipDelayMillis,
+        tooltipPlacement = TooltipPlacement.CursorPoint(
+            offset = if (beside) DpOffset(14.dp, 10.dp) else DpOffset(0.dp, 20.dp)
+        ),
+        content = content
+    )
 }
 
 /**

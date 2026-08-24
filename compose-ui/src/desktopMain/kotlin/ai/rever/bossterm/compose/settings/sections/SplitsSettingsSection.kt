@@ -8,6 +8,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.*
+import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import ai.rever.bossterm.compose.settings.toSettingsHex
 
 /**
@@ -62,12 +63,32 @@ fun SplitsSettingsSection(
                 description = "Highlight the focused pane with a colored border"
             )
 
+            val themeSignal = BossUiTheme.current.signal
+            val followsTheme = settings.splitFocusBorderColorOverride == null
+
+            SettingsToggle(
+                label = "Match Theme",
+                checked = followsTheme,
+                // Turning this OFF writes the colour that is currently on screen
+                // rather than a stored one, so the picker below opens on what the
+                // user was just looking at instead of jumping to an old value.
+                onCheckedChange = { follow ->
+                    onSettingsChange(
+                        settings.copy(
+                            splitFocusBorderColor = if (follow) "" else themeSignal.toSettingsHex()
+                        )
+                    )
+                },
+                description = "Use the active theme's accent for the focus indicator",
+                enabled = settings.splitFocusBorderEnabled
+            )
+
             ColorSetting(
                 label = "Focus Border Color",
-                color = settings.splitFocusBorderColorValue,
+                color = settings.splitFocusBorderColorOverride ?: themeSignal,
                 onColorChange = { onSettingsChange(settings.copy(splitFocusBorderColor = it.toSettingsHex())) },
                 description = "Color of the focus indicator border",
-                enabled = settings.splitFocusBorderEnabled
+                enabled = settings.splitFocusBorderEnabled && !followsTheme
             )
         }
     }

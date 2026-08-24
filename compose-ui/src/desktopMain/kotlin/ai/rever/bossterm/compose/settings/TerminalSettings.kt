@@ -938,10 +938,22 @@ data class TerminalSettings(
     val splitFocusBorderEnabled: Boolean = true,
 
     /**
-     * Color of the focus border (serialized as ARGB hex).
-     * Only visible when splitFocusBorderEnabled is true.
+     * Colour of the focus border (serialized as ARGB hex), or **blank to follow the
+     * active theme's `signal`**. Blank is the default, so a fresh install and every
+     * install that never opened this setting track the theme.
+     *
+     * [LEGACY_FOCUS_BORDER_BLUE] counts as blank. It was the old default: a generic
+     * blue belonging to no BOSS identity, which passed unnoticed for as long as
+     * Blueprint was the default theme and reads as a foreign object on NVIDIA
+     * (green on pure black). Treating it as "never set" is what lets an existing
+     * settings file - which has the old default written into it verbatim - pick the
+     * theme up at all. The one case this gets wrong is a user who deliberately
+     * chose that exact blue; every other custom colour is preserved, which makes
+     * this the narrowest reinterpretation available.
+     *
+     * Only visible when [splitFocusBorderEnabled] is true.
      */
-    val splitFocusBorderColor: String = "0xFF4A90E2",
+    val splitFocusBorderColor: String = "",
 
     /**
      * New split panes inherit working directory from parent.
@@ -1384,8 +1396,25 @@ data class TerminalSettings(
     @Transient
     val currentSearchMarkerColorValue: Color = Color(currentSearchMarkerColor.removePrefix("0x").toULong(16).toLong())
 
+    /**
+     * The colour the user explicitly chose for the focus border, or null to follow
+     * the active theme.
+     *
+     * Nullable rather than resolved here on purpose: the theme lives in
+     * `BossUiTheme`, a Compose snapshot read that a plain serializable data class
+     * must not make. The composable call sites resolve the fallback.
+     *
+     * Parsed defensively, unlike its siblings above. Those carry a valid literal as
+     * their default, so a malformed value can only come from a hand-edited file;
+     * this one's default is blank, so a throw here would come out of the
+     * constructor of *every* [TerminalSettings]. A garbage value falls back to the
+     * theme instead.
+     */
     @Transient
-    val splitFocusBorderColorValue: Color = Color(splitFocusBorderColor.removePrefix("0x").toULong(16).toLong())
+    val splitFocusBorderColorOverride: Color? =
+        splitFocusBorderColor
+            .takeIf { it.isNotBlank() && !it.equals(LEGACY_FOCUS_BORDER_BLUE, ignoreCase = true) }
+            ?.let { hex -> runCatching { Color(hex.removePrefix("0x").toULong(16).toLong()) }.getOrNull() }
 
     @Transient
     val commandBlockSuccessColorValue: Color = Color(commandBlockSuccessColor.removePrefix("0x").toULong(16).toLong())
@@ -1401,6 +1430,13 @@ data class TerminalSettings(
          * Default settings instance
          */
         val DEFAULT = TerminalSettings()
+
+        /**
+         * The pre-theme default for [splitFocusBorderColor], kept as a named
+         * constant because it is now a *value to ignore* rather than a value to
+         * use, and that only reads as deliberate with a name on it.
+         */
+        const val LEGACY_FOCUS_BORDER_BLUE = "0xFF4A90E2"
 
         /**
          * Convert Color to hex string for serialization (0xAARRGGBB format)

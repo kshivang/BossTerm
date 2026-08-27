@@ -1050,13 +1050,29 @@ class BossTermMcpServer(
                         "(or only newlines) just opens the panel. " +
                         "All three modes wait for the shell's OSC 133;A prompt-ready signal " +
                         "(or the configured fallback delay) before sending the script, so the " +
-                        "command runs cleanly rather than racing with shell startup."
+                        "command runs cleanly rather than racing with shell startup. " +
+                        "A split mode REUSES the pane this tool already owns in the target tab " +
+                        "when there is one, rather than splitting again - so calling this " +
+                        "repeatedly gives you one panel with a scrollback, not a tab sliced into " +
+                        "N unreadable strips. Pass force_new to opt out."
             ),
             inputSchema = ToolSchema(
                 properties = buildJsonObject {
                     putJsonObject("panel") {
                         put("type", "string")
                         put("description", "One of: new_tab, horizontal_split, vertical_split.")
+                    }
+                    putJsonObject("force_new") {
+                        put("type", "boolean")
+                        put(
+                            "description",
+                            "Split even when this tool already has a live pane in the target " +
+                                "tab. Default false: a split mode reuses that pane and runs the " +
+                                "script there, so repeated calls stack output in ONE panel " +
+                                "instead of carving the tab into ever-smaller slices. Pass true " +
+                                "only when panels genuinely need to sit side by side, such as " +
+                                "watching two logs at once."
+                        )
                     }
                     putJsonObject("script") {
                         put("type", "string")
@@ -1092,6 +1108,7 @@ class BossTermMcpServer(
                 ?: return@addTool errorResult("Missing required argument: script")
             val requestedTabId = args.requireString("tab_id")
             val workingDir = args.requireString("working_dir")
+            val forceNew = args.optionalBoolean("force_new") ?: false
 
             // Resolve the target state. If tab_id given, find the state that
             // owns it. Otherwise prefer the window the calling client lives
@@ -1132,16 +1149,49 @@ class BossTermMcpServer(
                     // path submits it, matching the new_tab branch. An empty script means
                     // "just split, don't run anything".
                     val normalizedScript = stripTrailingSubmit(script).ifEmpty { null }
+                    // The pane this tool already owns in this tab, if it is still alive.
+                    // Verified through findSession rather than trusted: the user may have
+                    // closed it, in which case the cache entry is a stale hint.
+                    val existing = registry.getScratchPane(targetTabId)
+                        ?.takeIf { state.findSession(targetTabId, it) != null }
+
+                    // Reuse by default. Every call used to split, so an agent running six
+                    // commands left six panes and a tab too narrow to read - the cost of
+                    // that is silent and lands on the user, while the cost of reuse is a
+                    // caller occasionally passing force_new. Anchor stacking below is kept
+                    // for the force_new path, so opting out still lays panes out sanely
+                    // instead of carving up whatever happens to be focused.
+                    if (existing != null && !forceNew) {
+                        val reuseSession = state.findSession(targetTabId, existing)
+                            ?: return@addTool errorResult(
+                                "Pane $existing vanished while resolving it"
+                            )
+                        val reuseScript = stripTrailingSubmit(script)
+                        if (reuseScript.isNotEmpty()) {
+                            // Same per-pane mutex run_command takes: two overlapping calls
+                            // on one pane would otherwise interleave in the shell's stdin.
+                            registry.paneMutex(existing).withLock {
+                                reuseSession.writeUserInput(reuseScript + "\r")
+                            }
+                        }
+                        val payload = RunInPanelResult(
+                            ok = true,
+                            tabId = targetTabId,
+                            paneId = existing,
+                            reused = true
+                        )
+                        return@addTool successJson(
+                            json.encodeToString(RunInPanelResult.serializer(), payload)
+                        )
+                    }
+
                     // Anchor stacking: if there's already an MCP scratch pane for
                     // this tab and the caller asked for horizontal_split, stack
                     // the new pane to the RIGHT of that existing pane instead of
                     // splitting whatever's focused — keeps consecutive MCP panes
                     // in a horizontal strip along the bottom rather than fighting
                     // for the focused pane's real estate.
-                    val anchor = if (panel == "horizontal_split") {
-                        registry.getScratchPane(targetTabId)
-                            ?.takeIf { state.findSession(targetTabId, it) != null }
-                    } else null
+                    val anchor = if (panel == "horizontal_split") existing else null
                     val paneId = when {
                         anchor != null -> state.splitVerticalFromPane(
                             tabId = targetTabId,
@@ -2540,7 +2590,13 @@ class BossTermMcpServer(
         val ok: Boolean,
         val tabId: String,
         /** Non-null only for split modes — the new pane's session id. */
-        val paneId: String?
+        val paneId: String?,
+        /**
+         * True when the script went into a pane that already existed rather than a
+         * freshly created split. Lets a caller tell "your panel is the one already on
+         * screen" from "a new one appeared" without diffing list_panes.
+         */
+        val reused: Boolean = false
     )
 
     @Serializable

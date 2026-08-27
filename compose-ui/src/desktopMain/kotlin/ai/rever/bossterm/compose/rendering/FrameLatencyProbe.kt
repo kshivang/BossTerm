@@ -80,6 +80,19 @@ object FrameLatencyProbe {
      * long debounce are indistinguishable, and they have opposite fixes.
      */
     val triggerToPaint: Histogram = Histogram()
+
+    /**
+     * How long a PTY chunk sat in the data-stream queue before the emulator took it.
+     *
+     * Recorded per chunk, not per paint: this is the one series that says whether bulk
+     * output is slow because the parser cannot keep up (queue backs up) or because
+     * something downstream of the parse is stalling. Those have completely different fixes.
+     */
+    val queueWait: Histogram = Histogram()
+
+    /** Total bytes' worth of chunks dequeued, so a sustained parse rate can be derived. */
+    private val chunksDequeued = AtomicLong(0)
+    private val charsDequeued = AtomicLong(0)
     val paintCost: Histogram = Histogram()
     val snapshotCost: Histogram = Histogram()
     val drawCallsPerFrame: Histogram = Histogram()
@@ -150,6 +163,9 @@ object FrameLatencyProbe {
             .append(",\n")
         append("  \"byteToPaintMs\": ").append(byteToPaint.jsonMillis()).append(",\n")
         append("  \"triggerToPaintMs\": ").append(triggerToPaint.jsonMillis()).append(",\n")
+        append("  \"queueWaitMs\": ").append(queueWait.jsonMillis()).append(",\n")
+        append("  \"chunksDequeued\": ").append(chunksDequeued.get()).append(",\n")
+        append("  \"charsDequeued\": ").append(charsDequeued.get()).append(",\n")
         append("  \"paintCostMs\": ").append(paintCost.jsonMillis()).append(",\n")
         append("  \"lockedCaptureMs\": ").append(snapshotCost.jsonMillis()).append(",\n")
         append("  \"drawCallsPerFrame\": ").append(drawCallsPerFrame.jsonRaw()).append(",\n")
@@ -168,6 +184,14 @@ object FrameLatencyProbe {
         if (!enabled) return
         // Keep the earliest pending arrival; a later chunk must not reset the clock.
         pendingArrival.compareAndSet(NONE, nanos)
+    }
+
+    /** A chunk of [length] chars left the queue after waiting since [arrivalNanos]. */
+    fun markDequeued(arrivalNanos: Long, length: Int) {
+        if (!enabled) return
+        queueWait.recordNanos(System.nanoTime() - arrivalNanos)
+        chunksDequeued.incrementAndGet()
+        charsDequeued.addAndGet(length.toLong())
     }
 
     /** Timestamp for a later `record*` call, or 0 when the probe is off. */
@@ -219,6 +243,9 @@ object FrameLatencyProbe {
     fun reset() {
         byteToPaint.reset()
         triggerToPaint.reset()
+        queueWait.reset()
+        chunksDequeued.set(0)
+        charsDequeued.set(0)
         paintCost.reset()
         snapshotCost.reset()
         drawCallsPerFrame.reset()

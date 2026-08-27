@@ -82,7 +82,10 @@ class BlockingTerminalDataStream(
     /** Pair every successful take from [dataQueue] with its arrival stamp. */
     private fun took(chunk: String?): String? {
         if (FrameLatencyProbe.enabled && chunk != null && chunk != CLOSE_SENTINEL) {
-            arrivalNanos.poll()?.let(FrameLatencyProbe::markArrival)
+            arrivalNanos.poll()?.let { stamped ->
+                FrameLatencyProbe.markArrival(stamped)
+                FrameLatencyProbe.markDequeued(stamped, chunk.length)
+            }
         }
         return chunk
     }

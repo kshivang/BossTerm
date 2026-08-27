@@ -74,7 +74,10 @@ reliable one here; `byteToPaintMs` on this workload sometimes lands only a handf
 |---|---|---|
 | before | 786 - 1179 | 1572 - 1966 |
 | + `isAlive()` cached, redraw sends coalesced | 524 - 655 | 1048 - 1180 |
-| + ASCII grapheme fast path | **262 - 459** | **491 - 655** |
+| + ASCII grapheme fast path | 262 - 459 | 491 - 655 |
+| + `visualColToBufferCol` fast path | **147 - 262** | **262 - 360** |
+
+End to end that is roughly **5x** on the bulk queue wait (786-1179 -> 147-262 ms p50).
 
 Stack-sampling the emulator thread (`DefaultDispatcher-worker-N`, found by matching
 `drainTerminalEmulator` in the stack) through a sustained `cat` loop found three costs, none
@@ -101,9 +104,43 @@ proves the fast path against the BreakIterator path it replaces, over every prin
 character and a corpus of real terminal output; loosening the guard to admit non-ASCII makes
 it fail.
 
-Still ~260-460 ms, so bulk output is improved rather than solved. What remains on the
-emulator thread after these three: `ColumnConversionUtils.visualColToBufferCol` (~9%),
-`TerminalLine.toBuf` / `merge` line rebuilding (~11%), and a residual AWT dispatch cost.
+**4. Column conversion on every line wrap (~10%, all of it from one call site).**
+`BossTerminal.wrapLines` calls `visualColToBufferCol(line, terminalWidth, line.length())` -
+a walk from column 0 to the full width, with an O(runs) `charAt` inside it - every time a
+line wraps, which for output wider than the window is every line. A line that needs no
+visual-column mapping holds nothing above U+007F, so buffer column and terminal cell are the
+same number and the answer is the identity. `ColumnConversionUtils` now short-circuits on
+`line.requiresVisualColumnMapping`, which benefits the renderer's hit-testing too.
+
+That guard IS the correctness argument, so it is tested against a line carrying DWC markers.
+Worth noting how that test was arrived at: the first version asserted only columns where the
+identity happens to agree, so it passed against a deliberately broken build. The assertions
+that matter are the second cell of each wide character, where the buffer index has to snap
+back to the glyph's start rather than land on the DWC marker.
+
+Still ~150-260 ms, so bulk output is improved rather than solved. What remains on the
+emulator thread: `TerminalLine.toBuf` / `merge` (~12% of non-parked time), residual AWT
+dispatch (~20%), and `joinTo` / `appendElement` string building (~10%).
+
+### `TerminalLine.merge`: analysed, deliberately not shipped
+
+`writeCharacters` rebuilds the ENTIRE line through `toBuf` (a `CharArray` plus a
+`TextStyle` array of the full line length) and re-derives every style run, whenever a write
+lands anywhere but the end. Lines are NUL-filled to width, so that is most writes.
+
+The obvious fix is a rope-style entry walk: keep the untouched entries, split only the ones
+the write overlaps. It is O(entries) instead of O(lineLength) and was written out - but it
+is **not** a safe drop-in, because `collectFromBuffer` coalesces adjacent runs with
+reference-equal styles and an entry walk does not. Without matching that, every overwrite
+fragments the line a little more, and since `charAt` is O(entries), the result is a
+permanently slower line in exchange for a one-off saving. That degradation would not show up
+in a five-second benchmark; it would show up in a long session, which is the worst way to
+find it.
+
+Doing it properly needs run coalescing across the splice boundaries, and that deserves its
+own change rather than being tacked onto a latency pass. `TerminalLineWriteModelTest` is
+committed as the harness for it: a randomised model check that pins what `writeString` must
+produce, cell by cell, independently of how the line is stored.
 
 ### A fix that did not work, and why it looked like it would
 

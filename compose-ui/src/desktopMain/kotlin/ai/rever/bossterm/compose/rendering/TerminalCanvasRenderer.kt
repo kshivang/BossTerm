@@ -439,18 +439,6 @@ internal fun imageCellSlice(
 }
 
 /**
- * MEASUREMENT SCAFFOLDING - `BOSSTERM_FAST_TEXT=1`.
- *
- * Gates the renderer-side reductions so one process can A/B them against the same warmed
- * JIT, window geometry and shell history as the baseline. Rebuilding and relaunching between
- * samples is the largest source of run-to-run noise in a latency measurement and it is
- * avoidable here. The flag comes out, and the fast path becomes unconditional, once the
- * numbers say what it is worth.
- */
-private val fastTextPath: Boolean =
-    System.getenv("BOSSTERM_FAST_TEXT").let { it == "1" || it.equals("true", ignoreCase = true) }
-
-/**
  * How much of a batched run actually needs shaping.
  *
  * A blank draws no glyph, so trailing blanks are invisible and laying them out is pure
@@ -981,7 +969,7 @@ object TerminalCanvasRenderer {
                 // fire, so the 20-char lookahead, the String it builds and the three scans are
                 // dead work - per cell, per frame, on every line of a log, a diff or source
                 // code. Anything non-ASCII nearby takes the original path unchanged.
-                val plainAscii = fastTextPath && isPlainAsciiRun(line, col, bufferLimit)
+                val plainAscii = isPlainAsciiRun(line, col, bufferLimit)
 
                 // Check for ZWJ sequences using ThreadLocal builder (issue #143 optimization)
                 val builder = zwjCheckBuilder.get()
@@ -1104,7 +1092,7 @@ object TerminalCanvasRenderer {
                 val canBatch = analysis.lowSurrogate == null &&
                     !analysis.isDoubleWidth && !analysis.isEmojiOrWideSymbol && !analysis.isCursiveOrMath && !analysis.isTechnicalSymbol &&
                     !isHidden && isBlinkVisible &&
-                    (!isBlankCell || (fastTextPath && batchText.isNotEmpty()))
+                    (!isBlankCell || batchText.isNotEmpty())
 
                 val styleMatches = batchText.isNotEmpty() &&
                     (isBlankCell || batchFgColor == fgColor) &&

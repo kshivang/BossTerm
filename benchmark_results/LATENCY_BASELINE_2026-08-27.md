@@ -40,10 +40,9 @@ this file reported 262-917 ms numbers that were entirely this artefact.
 | bulk | latency mode only | 196.6 | 1441.8 | 2.56 | - |
 | bulk | **shipped defaults** | 491.5 | **983.0** | 4.10 | 128 |
 | tui | baseline | 9.2 | 15.4 | 11.26 | 208 |
-| tui | fast-text only | 8.2 | 15.4 | 9.22 | **28** |
-| tui | shipped defaults | 13.3 | 15.4 | 12.29 | 208 |
+| tui | **shipped defaults (all on)** | 11.3 | 12.3 | 10.24 | **30** |
 | scroll | baseline | 41.0 | 73.7 | 5.63 | 176 |
-| scroll | shipped defaults | 20.5 | 65.5 | 4.61 | 176 |
+| scroll | **shipped defaults (all on)** | 45.1 | 98.3 | **2.30** | **60** |
 
 The `interactive` and `bulk` "shipped defaults" rows are the median of three consecutive
 runs each; they were tight (interactive p50 1.9/2.3/2.0, bulk p95 983.0 three times).
@@ -88,11 +87,25 @@ That is a different piece of work from anything on this branch.
 
 ## Also measured, and worth knowing before scoping renderer work
 
-**Draw-call count is not the dominant paint cost.** Blank batching (`BOSSTERM_FAST_TEXT=1`)
-cut `drawText` calls 208 -> 28 per frame on `tui`, an 86% reduction, while `paintCost` moved
-only 11.26 -> 9.22 ms, 19%. Caching `TextLayoutResult`, or dropping to a Skia `TextBlob` fast
-path, both attack that same 19% slice. The per-cell scan and colour-conversion work in the two
-full-grid passes is the bigger target.
+**Draw-call count is not the dominant paint cost.** Blank batching cut `drawText` calls
+208 -> 30 per frame on `tui`, an 86% reduction, while `paintCost` moved only 11.26 -> 10.24 ms.
+On `scroll` the same change took draw calls 176 -> 60 and paint cost 5.63 -> 2.30 ms, which is
+a better return but still nothing like proportional.
+
+The consequence for planning: caching `TextLayoutResult`, or dropping to a Skia `TextBlob`
+fast path, both attack the slice that run-merging just showed is small. The per-cell scan and
+colour-conversion work in the two full-grid passes is the bigger target, and that is where
+renderer work should go next.
+
+**The renderer change was verified by pixel comparison, not by tests.** Blank batching and
+the ASCII probe skip fail by producing a wrong *picture*, which no unit test sees. So
+`benchmark/latency/unicode-torture.sh` was rendered twice, with the fast path off and on, and
+the two window captures diffed: ZWJ families, flags, skin tones, variation selectors, CJK,
+powerline glyphs, underlines spanning gaps, bold/italic, inverse, truecolour runs and aligned
+columns are pixel-identical apart from subpixel antialiasing (0.31% of pixels, thin glyph
+outlines, no positional drift). Column alignment in particular was checked directly, since a
+merged run advancing by font metrics rather than cell width would drift progressively along
+a line. It does not.
 
 **Recomposition is not a bottleneck.** `triggerToPaint` covers recomposition, layout and draw;
 it is 1.8-13.3 ms and tracks `paintCost` closely. The 2400-line `ProperTerminal` recomposing
@@ -114,5 +127,5 @@ BOSSTERM_FRAME_PROBE=1 ./gradlew :bossterm-app:run --no-daemon
 ./benchmark/latency/probe.sh show
 ```
 
-`BOSSTERM_FAST_TEXT=1` enables the renderer reductions, which remain opt-in. **Raise the
-window before every run** or finding 0 will dominate the result.
+Everything measured here shipped as a default; no flags remain. **Raise the window before
+every run** or finding 0 will dominate the result.

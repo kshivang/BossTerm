@@ -58,38 +58,27 @@ BOSSTERM_FRAME_PROBE=1 ./gradlew :bossterm-app:run --no-daemon
 Workload (e) is the one that exposes scrollback-dependent cost: run it in the *same* tab as
 a preceding `bulk`, never a fresh one.
 
-## A/B without a rebuild
+## What shipped, and what it bought
 
-Two configurations can be compared inside one process, against the same warmed JIT and the
-same window geometry, which removes the largest source of run-to-run noise:
+Measured on this harness, then made default (no flags remain):
 
-| Knob | Baseline | Alternative |
-|---|---|---|
-| `BOSSTERM_REDRAW_DEBOUNCE_MS` | unset (8 ms) | `0` |
-| `BOSSTERM_HIGH_VOLUME_DEBOUNCE_MS` | unset (50 ms) | `0` |
-| `BOSSTERM_FAST_TEXT` | unset | `1` |
-| `performanceMode` in `~/.bossterm/settings.json` | `balanced` | `latency` |
+| change | effect |
+|---|---|
+| redraw debounce removed (was 8 ms, 50 ms under load) | interactive echo 16.4 ms -> ~2-4 ms |
+| `performanceMode` default `balanced` -> `latency` | ~4 ms of that, on its own |
+| blanks extend a batched run; ASCII cells skip the grapheme probes | `drawText` 208 -> 30 per frame on `tui`, 176 -> 60 on `scroll` |
 
-`BOSSTERM_FAST_TEXT` turns on the renderer reductions: ASCII cells skip the grapheme
-sequence probes, and blanks extend a batched run instead of flushing it (one `drawText` per
-line rather than per word). Watch `drawCallsPerFrame` and `paintCostMs` for its effect;
-`byteToPaintMs` should follow only if paint cost was actually on the critical path.
+Not fixed, and not a render problem: bulk output still shows a ~1.2 s p95 on a 5 MB `cat`.
+`triggerToPaint` there is single-digit milliseconds, so the time is queue wait and parse,
+upstream of anything the renderer or the debounce controls.
 
-All three env vars are measurement scaffolding and come out once the questions they answer
-are settled. With none set, the build behaves exactly as shipped, so a run with no env is a
-true baseline.
+## Verifying a renderer change
 
-Suggested ladder, one workload at a time, resetting between each:
-
-1. nothing set - baseline
-2. `performanceMode=latency` - removes the 5 ms data-stream poll
-3. `+ BOSSTERM_REDRAW_DEBOUNCE_MS=0` - removes the 8 ms interactive debounce
-4. `+ BOSSTERM_HIGH_VOLUME_DEBOUNCE_MS=0` - removes the 50 ms bulk-output throttle
-5. `+ BOSSTERM_FAST_TEXT=1` - renderer reductions
-
-Step 4 is the one to watch for regressions rather than gains: if paint cost is still high,
-removing the throttle can cost throughput without buying latency. That is the measurement
-that decides whether the renderer work in step 5 is a prerequisite or an optimisation.
+A renderer change fails by producing a wrong *picture*, which no unit test sees. Render
+`unicode-torture.sh` twice, once before and once after, capture the window both times, and
+diff the two images. Check column alignment specifically: a merged glyph run that advances by
+font metrics rather than by cell width drifts progressively along a line, which a
+whole-image pixel count will not make obvious.
 
 ## External anchor - do this once
 

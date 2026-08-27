@@ -728,17 +728,40 @@ class VoiceToolSafetyTest {
      */
     @Test
     fun `approval spends the tool's budget rather than adding to it`() {
+        // Budget spent by the modal is SCRIPTED through the injected clock, not slept away.
+        //
+        // The original version slept `delay(250)` inside the approver against an approval
+        // slice of min(APPROVAL_MS, 400) = 400 ms, leaving ~150 ms of headroom for two
+        // `Dispatchers.IO` hops and the runner's scheduler. On a loaded macOS CI box that
+        // headroom ran out: the approval itself timed out, `confirmationRefusal` returned
+        // the refusal payload instead of the call ever running, no exception was thrown,
+        // and `assertFailsWith` failed. It went red twice in four days on macOS only, and
+        // passed everywhere else - a test asserting on the scheduler, not on the executor.
+        //
+        // With the clock scripted, the approver returns immediately while REPORTING that it
+        // spent 250 ms, which is precisely the input the property is about.
+        var clockMs = 0L
         val source = FakeToolSource(
             list = listOf(externalTool("git_discard")),
-            policy = VoiceToolPolicy(approve = { _, _ -> kotlinx.coroutines.delay(250); true }),
+            policy = VoiceToolPolicy(approve = { _, _ -> clockMs += 250L; true }),
             onCall = { _, _ -> kotlinx.coroutines.delay(250); """{"ok":true}""" },
         )
-        val exec = composite(FakeBaseExecutor(emptyList()), source, callTimeoutMs = 400L)
+        val exec = composite(
+            FakeBaseExecutor(emptyList()),
+            source,
+            callTimeoutMs = 400L,
+            nowMs = { clockMs },
+        )
 
         val failure = assertFailsWith<VoiceToolException> {
             runBlocking { exec.execute("git_discard", noArgs, null) }
         }
         assertTrue(failure.message!!.contains("timed out"), failure.message!!)
+        // Why this is now deterministic in the direction that matters: the approval reports
+        // 250 ms of a 400 ms budget, so the call runs under `withTimeoutOrNull(150)` while
+        // sleeping 250 ms. `delay` can overshoot but never finish early, so the timeout
+        // always wins. Reintroduce the bug - hand the call a fresh 400 ms instead of the
+        // remaining 150 - and the 250 ms call completes, nothing throws, and this fails.
     }
 
     /**

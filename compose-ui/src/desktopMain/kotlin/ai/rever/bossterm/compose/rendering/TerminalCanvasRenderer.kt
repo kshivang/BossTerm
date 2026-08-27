@@ -439,6 +439,52 @@ internal fun imageCellSlice(
 }
 
 /**
+ * MEASUREMENT SCAFFOLDING - `BOSSTERM_FAST_TEXT=1`.
+ *
+ * Gates the renderer-side reductions so one process can A/B them against the same warmed
+ * JIT, window geometry and shell history as the baseline. Rebuilding and relaunching between
+ * samples is the largest source of run-to-run noise in a latency measurement and it is
+ * avoidable here. The flag comes out, and the fast path becomes unconditional, once the
+ * numbers say what it is worth.
+ */
+private val fastTextPath: Boolean =
+    System.getenv("BOSSTERM_FAST_TEXT").let { it == "1" || it.equals("true", ignoreCase = true) }
+
+/**
+ * How much of a batched run actually needs shaping.
+ *
+ * A blank draws no glyph, so trailing blanks are invisible and laying them out is pure
+ * cost - and a run that is nothing but blanks need not be drawn at all. An underlined run
+ * is the exception: there the blanks carry the rule, so the full length stands.
+ *
+ * Separated out because this is the one place the blank-batching change could drop a
+ * character that should have been drawn.
+ */
+internal fun visibleRunLength(text: CharSequence, underlined: Boolean): Int {
+    if (underlined) return text.length
+    var length = text.length
+    while (length > 0 && text[length - 1] == ' ') length--
+    return length
+}
+
+/**
+ * True when no multi-cell grapheme cluster can begin at, or reach into, [col].
+ *
+ * ZWJ (U+200D), the skin-tone modifiers (U+1F3FB..U+1F3FF) and the regional indicators
+ * (U+1F1E6..U+1F1FF) are all non-ASCII, and all three can only reach this cell from
+ * `col..col + 2`: `checkFollowingSkinTone` looks one ahead and steps over a DWC marker, and
+ * `checkRegionalIndicatorSequence` requires the indicator to sit at `col` itself. Past the
+ * end of the line there is no character, so nothing can attach there either.
+ */
+internal fun isPlainAsciiRun(line: TerminalLine, col: Int, bufferLimit: Int): Boolean {
+    for (i in col..col + 2) {
+        if (i >= bufferLimit) return true
+        if (line.charAt(i).code >= 0x80) return false
+    }
+    return true
+}
+
+/**
  * Terminal canvas renderer that handles all drawing operations.
  * Separates rendering logic from the composable for better maintainability.
  */
@@ -845,12 +891,19 @@ object TerminalCanvasRenderer {
                             else androidx.compose.ui.text.font.FontStyle.Normal
                     ).also { variants[variantIndex] = it }
 
-                    drawTextClipped(
-                        textMeasurer = ctx.textMeasurer,
-                        text = batchText.toString(),
-                        topLeft = Offset(x, y),
-                        style = textStyle
-                    )
+                    // A blank paints nothing unless the run is underlined, so a run that is
+                    // only blanks, or that trails off into them, is asking the shaper to lay
+                    // out invisible cells. Trim before layout; the underline below deliberately
+                    // keeps the full width so an underlined gap still gets its rule.
+                    val drawLength = visibleRunLength(batchText, batchIsUnderline)
+                    if (drawLength > 0) {
+                        drawTextClipped(
+                            textMeasurer = ctx.textMeasurer,
+                            text = batchText.substring(0, drawLength),
+                            topLeft = Offset(x, y),
+                            style = textStyle
+                        )
+                    }
 
                     // Draw underline for entire batch if needed
                     if (batchIsUnderline) {
@@ -924,13 +977,19 @@ object TerminalCanvasRenderer {
                     continue
                 }
 
+                // In a plain ASCII neighbourhood none of the three sequence probes below can
+                // fire, so the 20-char lookahead, the String it builds and the three scans are
+                // dead work - per cell, per frame, on every line of a log, a diff or source
+                // code. Anything non-ASCII nearby takes the original path unchanged.
+                val plainAscii = fastTextPath && isPlainAsciiRun(line, col, bufferLimit)
+
                 // Check for ZWJ sequences using ThreadLocal builder (issue #143 optimization)
                 val builder = zwjCheckBuilder.get()
                 builder.setLength(0)
                 run {
                     var i = col
                     var count = 0
-                    while (i < bufferLimit && count < 20) {
+                    while (!plainAscii && i < bufferLimit && count < 20) {
                         val c = line.charAt(i)
                         if (c != CharUtils.DWC) {
                             builder.append(c)
@@ -942,9 +1001,9 @@ object TerminalCanvasRenderer {
                 val cleanText = builder.toString()
 
                 // Use fast-path detection functions (issue #143 optimization)
-                val hasZWJ = GraphemeUtils.containsZWJ(cleanText)
-                val hasSkinTone = checkFollowingSkinTone(line, col, bufferLimit)
-                val hasRegionalIndicator = checkRegionalIndicatorSequence(line, col, bufferLimit) > 0
+                val hasZWJ = !plainAscii && GraphemeUtils.containsZWJ(cleanText)
+                val hasSkinTone = !plainAscii && checkFollowingSkinTone(line, col, bufferLimit)
+                val hasRegionalIndicator = !plainAscii && checkRegionalIndicatorSequence(line, col, bufferLimit) > 0
 
                 if (hasZWJ || hasSkinTone || hasRegionalIndicator) {
                     val graphemes = GraphemeUtils.segmentIntoGraphemes(cleanText)
@@ -1030,17 +1089,27 @@ object TerminalCanvasRenderer {
                     else -> true
                 }
 
+                val isBlankCell = char == ' ' || char == '\u0000'
+
                 // The batching path appends one Char at a time. Keep surrogate
                 // pairs on the per-character path so their low surrogate is not
                 // dropped and rendered as U+FFFD by the text shaper.
+                //
+                // A blank draws no glyph, so only an underline makes it visible: it can extend
+                // a run whose underline state matches, whatever colour or weight it nominally
+                // carries. Letting it do so is what turns one drawText per WORD into one per
+                // line - aligned tables, indented source and powerline prompts are mostly
+                // blanks. It may not START a run, since leading blanks would shift the origin
+                // and shape nothing.
                 val canBatch = analysis.lowSurrogate == null &&
                     !analysis.isDoubleWidth && !analysis.isEmojiOrWideSymbol && !analysis.isCursiveOrMath && !analysis.isTechnicalSymbol &&
-                    !isHidden && isBlinkVisible && char != ' ' && char != '\u0000'
+                    !isHidden && isBlinkVisible &&
+                    (!isBlankCell || (fastTextPath && batchText.isNotEmpty()))
 
                 val styleMatches = batchText.isNotEmpty() &&
-                    batchFgColor == fgColor &&
-                    batchIsBold == isBold &&
-                    batchIsItalic == isItalic &&
+                    (isBlankCell || batchFgColor == fgColor) &&
+                    (isBlankCell || batchIsBold == isBold) &&
+                    (isBlankCell || batchIsItalic == isItalic) &&
                     batchIsUnderline == isUnderline
 
                 if (canBatch && (batchText.isEmpty() || styleMatches)) {
@@ -1051,7 +1120,9 @@ object TerminalCanvasRenderer {
                         batchIsItalic = isItalic
                         batchIsUnderline = isUnderline
                     }
-                    batchText.append(char)
+                    // NUL is a blank cell, not a glyph: appending it verbatim would hand the
+                    // shaper a control character to draw.
+                    batchText.append(if (isBlankCell) ' ' else char)
                 } else {
                     flushBatch()
 
@@ -1609,7 +1680,7 @@ object TerminalCanvasRenderer {
     /**
      * Check if current character is followed by skin tone modifier.
      */
-    private fun checkFollowingSkinTone(line: TerminalLine, col: Int, width: Int): Boolean {
+    internal fun checkFollowingSkinTone(line: TerminalLine, col: Int, width: Int): Boolean {
         var checkCol = col
         val currentChar = line.charAt(checkCol)
 
@@ -1648,7 +1719,7 @@ object TerminalCanvasRenderer {
      *         - [High1][Low1][DWC][High2][Low2] = 5 chars (DWC after first indicator)
      *         - [High1][Low1][DWC][High2][Low2][DWC] = 6 chars (DWC after both)
      */
-    private fun checkRegionalIndicatorSequence(line: TerminalLine, col: Int, width: Int): Int {
+    internal fun checkRegionalIndicatorSequence(line: TerminalLine, col: Int, width: Int): Int {
         if (col + 3 >= width) return 0  // Need at least 4 chars for 2 surrogate pairs
 
         val c1 = line.charAt(col)

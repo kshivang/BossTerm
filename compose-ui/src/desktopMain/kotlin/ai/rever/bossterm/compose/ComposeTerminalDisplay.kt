@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose
 
+import ai.rever.bossterm.compose.rendering.FrameLatencyProbe
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.State
 import ai.rever.bossterm.core.util.TermSize
@@ -604,6 +605,7 @@ class ComposeTerminalDisplay : TerminalDisplay {
      * Perform the actual redraw by updating Compose state.
      */
     private fun actualRedraw() {
+        FrameLatencyProbe.markRedrawTriggered()
         _redrawTrigger.value += 1
     }
 

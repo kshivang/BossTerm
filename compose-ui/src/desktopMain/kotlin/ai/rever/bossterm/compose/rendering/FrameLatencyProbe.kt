@@ -63,10 +63,23 @@ object FrameLatencyProbe {
      */
     private val pendingArrival = AtomicLong(NONE)
 
+    /** Oldest redraw trigger not yet painted, or [NONE]. Same earliest-wins rule as arrival. */
+    private val pendingTrigger = AtomicLong(NONE)
+
     /** Reset per paint by [beginFrame], read by [endFrame]. */
     private val drawCalls = AtomicInteger(0)
 
     val byteToPaint: Histogram = Histogram()
+
+    /**
+     * Redraw trigger to paint: the recomposition and layout window.
+     *
+     * [byteToPaint] alone cannot say WHERE the time goes. This splits it: everything up to
+     * `actualRedraw` (queue wait, parse, debounce) versus everything after it (recomposing
+     * the composable, layout, then the draw). Without the split, a slow recomposition and a
+     * long debounce are indistinguishable, and they have opposite fixes.
+     */
+    val triggerToPaint: Histogram = Histogram()
     val paintCost: Histogram = Histogram()
     val snapshotCost: Histogram = Histogram()
     val drawCallsPerFrame: Histogram = Histogram()
@@ -136,6 +149,7 @@ object FrameLatencyProbe {
             .append(String.format(java.util.Locale.ROOT, "%.1f", (System.nanoTime() - startedAtNanos) / 1e9))
             .append(",\n")
         append("  \"byteToPaintMs\": ").append(byteToPaint.jsonMillis()).append(",\n")
+        append("  \"triggerToPaintMs\": ").append(triggerToPaint.jsonMillis()).append(",\n")
         append("  \"paintCostMs\": ").append(paintCost.jsonMillis()).append(",\n")
         append("  \"lockedCaptureMs\": ").append(snapshotCost.jsonMillis()).append(",\n")
         append("  \"drawCallsPerFrame\": ").append(drawCallsPerFrame.jsonRaw()).append(",\n")
@@ -159,6 +173,12 @@ object FrameLatencyProbe {
     /** Timestamp for a later `record*` call, or 0 when the probe is off. */
     fun startTiming(): Long = if (enabled) System.nanoTime() else 0L
 
+    /** `actualRedraw` bumped the Compose state that will cause the next recomposition. */
+    fun markRedrawTriggered() {
+        if (!enabled) return
+        pendingTrigger.compareAndSet(NONE, System.nanoTime())
+    }
+
     /** Start of a paint pass. Returns the start timestamp to hand back to [endFrame]. */
     fun beginFrame(): Long {
         if (!enabled) return 0L
@@ -172,6 +192,8 @@ object FrameLatencyProbe {
         val now = System.nanoTime()
         paintCost.recordNanos(now - startNanos)
         drawCallsPerFrame.record(drawCalls.get().toLong())
+        val trigger = pendingTrigger.getAndSet(NONE)
+        if (trigger != NONE) triggerToPaint.recordNanos(now - trigger)
         val arrival = pendingArrival.getAndSet(NONE)
         if (arrival == NONE) idleFrames.incrementAndGet() else byteToPaint.recordNanos(now - arrival)
     }
@@ -196,11 +218,13 @@ object FrameLatencyProbe {
     /** Drop every sample. Call between workloads so runs do not contaminate each other. */
     fun reset() {
         byteToPaint.reset()
+        triggerToPaint.reset()
         paintCost.reset()
         snapshotCost.reset()
         drawCallsPerFrame.reset()
         idleFrames.set(0)
         pendingArrival.set(NONE)
+        pendingTrigger.set(NONE)
         drawCalls.set(0)
     }
 

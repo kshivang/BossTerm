@@ -67,11 +67,29 @@ same window geometry, which removes the largest source of run-to-run noise:
 |---|---|---|
 | `BOSSTERM_REDRAW_DEBOUNCE_MS` | unset (8 ms) | `0` |
 | `BOSSTERM_HIGH_VOLUME_DEBOUNCE_MS` | unset (50 ms) | `0` |
+| `BOSSTERM_FAST_TEXT` | unset | `1` |
 | `performanceMode` in `~/.bossterm/settings.json` | `balanced` | `latency` |
 
-The two env vars are measurement scaffolding and are removed once the debounce question is
-settled. With neither set, the build behaves exactly as shipped, so a run with no env is a
+`BOSSTERM_FAST_TEXT` turns on the renderer reductions: ASCII cells skip the grapheme
+sequence probes, and blanks extend a batched run instead of flushing it (one `drawText` per
+line rather than per word). Watch `drawCallsPerFrame` and `paintCostMs` for its effect;
+`byteToPaintMs` should follow only if paint cost was actually on the critical path.
+
+All three env vars are measurement scaffolding and come out once the questions they answer
+are settled. With none set, the build behaves exactly as shipped, so a run with no env is a
 true baseline.
+
+Suggested ladder, one workload at a time, resetting between each:
+
+1. nothing set - baseline
+2. `performanceMode=latency` - removes the 5 ms data-stream poll
+3. `+ BOSSTERM_REDRAW_DEBOUNCE_MS=0` - removes the 8 ms interactive debounce
+4. `+ BOSSTERM_HIGH_VOLUME_DEBOUNCE_MS=0` - removes the 50 ms bulk-output throttle
+5. `+ BOSSTERM_FAST_TEXT=1` - renderer reductions
+
+Step 4 is the one to watch for regressions rather than gains: if paint cost is still high,
+removing the throttle can cost throughput without buying latency. That is the measurement
+that decides whether the renderer work in step 5 is a prerequisite or an optimisation.
 
 ## External anchor - do this once
 

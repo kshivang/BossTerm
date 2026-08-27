@@ -116,6 +116,18 @@ object ColumnConversionUtils {
     fun visualColToBufferCol(line: TerminalLine, visualCol: Int, width: Int): Int {
         if (visualCol <= 0) return 0
 
+        // A line that needs no visual-column mapping holds nothing above U+007F: no
+        // double-width characters, no DWC markers (U+E000), no combining marks, no
+        // surrogates. Every buffer column is therefore exactly one terminal cell, and the
+        // answer is the identity, clamped to the line.
+        //
+        // The scan below is O(visualCol) with an O(runs) `charAt` inside it, and
+        // `BossTerminal.wrapLines` calls it with the FULL terminal width every time a line
+        // wraps - which, for output whose lines exceed the window, is every line. Stack
+        // sampling the emulator thread through a sustained `cat` put ~10% of its time here,
+        // all of it from that one call site.
+        if (!line.requiresVisualColumnMapping) return minOf(visualCol, width)
+
         var currentVisualCol = 0
         var col = 0
 

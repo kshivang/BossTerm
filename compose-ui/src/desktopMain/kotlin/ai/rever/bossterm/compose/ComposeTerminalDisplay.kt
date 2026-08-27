@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose
 
+import ai.rever.bossterm.compose.rendering.FrameLatencyProbe
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.State
 import ai.rever.bossterm.core.util.TermSize
@@ -17,36 +18,38 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Compose implementation of TerminalDisplay interface with adaptive debouncing.
+ * Compose implementation of TerminalDisplay.
  *
- * Phase 2 Optimization: Automatically switches between three rendering modes
- * based on output rate to reduce redraws by 51-91% for medium/large files
- * while maintaining zero latency for interactive use.
+ * Redraws are coalesced by the CONFLATED [redrawChannel] and, downstream of it, by Compose
+ * itself: many writes to [_redrawTrigger] between two frames collapse into one
+ * recomposition. Nothing here waits on a clock.
+ *
+ * It used to. An adaptive debounce slept 8 ms per redraw, and 50 ms once output passed 100
+ * redraws/sec, to cut redraw COUNT on large files. Measured against the thing a user
+ * actually feels, that trade was bad: an isolated keystroke echo took 16.4 ms, of which only
+ * 1.8 ms was downstream of the redraw trigger. Removing the wait (with the data stream's own
+ * poll, see TerminalSettings.performanceMode) takes it to ~2.0 ms, and `byteToPaint` then
+ * equals `triggerToPaint`, which is the signature of nothing being spent before the trigger.
+ *
+ * Frame counts stay vsync-capped (~62/sec) without it, so the sleep was never what kept the
+ * terminal from over-rendering: the frame clock was, and the CONFLATED channel plus Compose's
+ * per-frame coalescing already do the job this was added for.
+ *
+ * What it does NOT fix is bulk output: a 5 MB `cat` still shows a ~983 ms p95, down only
+ * ~25% from 1310 ms, and on that workload `triggerToPaint` is 6.7 ms against a `byteToPaint`
+ * of 491 ms. That ~485 ms is queue wait and parse, upstream of anything here.
+ *
+ * See `benchmark_results/LATENCY_BASELINE_2026-08-27.md`.
  */
 class ComposeTerminalDisplay : TerminalDisplay {
-    // ===== ADAPTIVE DEBOUNCING (Phase 2) =====
 
     /**
-     * Rendering modes that adapt to output rate.
-     */
-    enum class RedrawMode(val debounceMs: Long, val description: String) {
-        INTERACTIVE(8L, "120fps equivalent for responsive typing"),
-        HIGH_VOLUME(50L, "20fps for bulk output, triggered at >100 redraws/sec"),
-        IMMEDIATE(0L, "Instant for keyboard/mouse input")
-    }
-
-    /**
-     * Redraw request with priority.
+     * Redraw request. Carries no priority any more: with the debounce gone, an "immediate"
+     * and a "normal" request do exactly the same thing.
      */
     data class RedrawRequest(
         val timestamp: Long = System.currentTimeMillis(),
-        val priority: RedrawPriority = RedrawPriority.NORMAL
     )
-
-    enum class RedrawPriority {
-        IMMEDIATE,  // User input - bypass debounce
-        NORMAL      // PTY output - apply debounce
-    }
 
     /**
      * The four cursor fields as ONE value.
@@ -63,23 +66,27 @@ class ComposeTerminalDisplay : TerminalDisplay {
         val shape: CursorShape?,
     )
 
-    // Current rendering mode
-    @Volatile
-    private var currentMode = RedrawMode.INTERACTIVE
-
     // Channel for queuing redraw requests with conflation
     private val redrawChannel = Channel<RedrawRequest>(Channel.CONFLATED)
 
+    /**
+     * Whether a redraw is already queued and unclaimed.
+     *
+     * The channel is CONFLATED, so a second `trySend` is harmless to correctness - but it
+     * is NOT free. When the processor is parked on the channel, each send resumes its
+     * continuation through the Swing dispatcher, and that means `EventQueue.invokeLater`,
+     * an `InvocationEvent`, and an `AccessController.getContext` stack walk, per call. The
+     * emulator requests a redraw on every buffer mutation, so bulk output turned that into
+     * an AWT event storm: stack-sampling the parse thread under load put 20% of its time
+     * in `AWTEvent.<init>` beneath `requestRedraw`.
+     *
+     * Cleared by the processor BEFORE it redraws, so a mutation that lands during a redraw
+     * still schedules the next one.
+     */
+    private val redrawQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+
     // Coroutine scope for redraw processing
     private val redrawScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-
-    // Timestamp tracking for burst detection
-    private val recentRedraws = ArrayDeque<Long>(100)
-    private val redrawTimestampsLock = Any()
-
-    // Mode transition tracking
-    private var lastModeSwitch = System.currentTimeMillis()
-    private var returnToInteractiveJob: Job? = null
 
     init {
         // Start redraw processor coroutine
@@ -249,18 +256,7 @@ class ComposeTerminalDisplay : TerminalDisplay {
     override fun scrollArea(scrollRegionTop: Int, scrollRegionSize: Int, dy: Int) {
         // Note: This method is only called for actual scrolling operations (cursor past bottom, etc.)
         // Regular text output is handled by the ModelListener registered on TerminalTextBuffer
-        // Smart priority detection: Use IMMEDIATE for interactive use, NORMAL for bulk output
-        val isHighVolume = synchronized(redrawTimestampsLock) {
-            currentMode == RedrawMode.HIGH_VOLUME
-        }
-
-        if (isHighVolume) {
-            // Bulk output detected (cat, streaming) - use debouncing for 98% reduction
-            requestRedraw()
-        } else {
-            // Interactive use (typing, prompts) - instant response for best UX
-            requestImmediateRedraw()
-        }
+        requestRedraw()
     }
 
     override fun useAlternateScreenBuffer(useAlternateScreenBuffer: Boolean) {
@@ -340,36 +336,20 @@ class ComposeTerminalDisplay : TerminalDisplay {
 
                 try {
                     for (request in redrawChannel) {
+                        // Released before the redraw, not after, so a buffer mutation that
+                        // lands mid-redraw still queues the next frame.
+                        redrawQueued.set(false)
                         try {
-                            when (request.priority) {
-                                RedrawPriority.IMMEDIATE -> {
-                                    // Re-check sync mode: a ?2026h may have arrived after this
-                                    // redraw was queued (e.g., rapid ?2026l/?2026h toggle by CLIs
-                                    // like "claude" that use synchronized output for spinner frames).
-                                    synchronized(syncUpdateLock) {
-                                        if (_synchronizedUpdateEnabled) {
-                                            _pendingRedrawDuringSync = true
-                                            null
-                                        } else Unit
-                                    } ?: continue
-                                    actualRedraw()
-                                }
-
-                                RedrawPriority.NORMAL -> {
-                                    val mode = detectAndUpdateMode()
-                                    delay(mode.debounceMs)
-
-                                    // Re-check sync mode after debounce delay: a new ?2026h may
-                                    // have been processed by the emulator while we were waiting.
-                                    synchronized(syncUpdateLock) {
-                                        if (_synchronizedUpdateEnabled) {
-                                            _pendingRedrawDuringSync = true
-                                            null
-                                        } else Unit
-                                    } ?: continue
-                                    actualRedraw()
-                                }
-                            }
+                            // Re-check sync mode: a ?2026h may have arrived after this
+                            // redraw was queued (e.g., rapid ?2026l/?2026h toggle by CLIs
+                            // like "claude" that use synchronized output for spinner frames).
+                            synchronized(syncUpdateLock) {
+                                if (_synchronizedUpdateEnabled) {
+                                    _pendingRedrawDuringSync = true
+                                    null
+                                } else Unit
+                            } ?: continue
+                            actualRedraw()
                         } catch (e: Exception) {
                             // Log but don't crash the loop - individual redraw failures
                             // should not kill the entire rendering pipeline
@@ -392,61 +372,6 @@ class ComposeTerminalDisplay : TerminalDisplay {
     }
 
     /**
-     * Detect current redraw rate and update mode accordingly.
-     * Switches to HIGH_VOLUME when >100 redraws/sec detected.
-     */
-    private fun detectAndUpdateMode(): RedrawMode {
-        val now = System.currentTimeMillis()
-
-        synchronized(redrawTimestampsLock) {
-            // Add current timestamp
-            recentRedraws.addLast(now)
-
-            // Remove timestamps older than 1 second
-            while (recentRedraws.isNotEmpty() &&
-                   now - recentRedraws.first() > 1000) {
-                recentRedraws.removeFirst()
-            }
-
-            // Calculate redraws per second
-            val rate = recentRedraws.size
-
-            // Determine appropriate mode
-            val newMode = when {
-                rate > 100 -> RedrawMode.HIGH_VOLUME  // Bulk output detected
-                else -> RedrawMode.INTERACTIVE         // Normal interactive use
-            }
-
-            // Handle mode transition
-            if (newMode != currentMode && newMode != RedrawMode.IMMEDIATE) {
-                onModeTransition(currentMode, newMode)
-                currentMode = newMode
-                lastModeSwitch = now
-            }
-
-            return currentMode
-        }
-    }
-
-    /**
-     * Handle transitions between rendering modes.
-     */
-    private fun onModeTransition(from: RedrawMode, to: RedrawMode) {
-        // Schedule automatic return to INTERACTIVE after bulk output stops
-        if (to == RedrawMode.HIGH_VOLUME) {
-            returnToInteractiveJob?.cancel()
-            returnToInteractiveJob = redrawScope.launch {
-                delay(500) // Wait 500ms of low activity
-                synchronized(redrawTimestampsLock) {
-                    if (recentRedraws.size < 50) { // Less than 50 redraws/sec
-                        currentMode = RedrawMode.INTERACTIVE
-                    }
-                }
-            }
-        }
-    }
-
-    /**
      * Trigger a redraw of the terminal (normal priority, applies debouncing).
      */
     fun requestRedraw() {
@@ -459,9 +384,14 @@ class ComposeTerminalDisplay : TerminalDisplay {
             }
         }
 
-        // Conflated channel: a full channel simply coalesces this request into the
-        // pending one, which is the intended debouncing behaviour.
-        redrawChannel.trySend(RedrawRequest(priority = RedrawPriority.NORMAL))
+        // Skip the send entirely when one is already pending: see [redrawQueued].
+        if (redrawQueued.compareAndSet(false, true)) {
+            // Release the claim if the send did not land, or a closed channel would latch
+            // the flag and silently stop every future redraw.
+            if (redrawChannel.trySend(RedrawRequest()).isFailure) {
+                redrawQueued.set(false)
+            }
+        }
     }
 
     /**
@@ -564,22 +494,13 @@ class ComposeTerminalDisplay : TerminalDisplay {
             }
             actualRedraw()
         }
-
-        // Reset to INTERACTIVE mode after brief delay
-        redrawScope.launch {
-            delay(100)
-            synchronized(redrawTimestampsLock) {
-                if (currentMode != RedrawMode.HIGH_VOLUME) {
-                    currentMode = RedrawMode.INTERACTIVE
-                }
-            }
-        }
     }
 
     /**
      * Perform the actual redraw by updating Compose state.
      */
     private fun actualRedraw() {
+        FrameLatencyProbe.markRedrawTriggered()
         _redrawTrigger.value += 1
     }
 
@@ -594,7 +515,6 @@ class ComposeTerminalDisplay : TerminalDisplay {
      * and closing an already-closed channel are both no-ops.
      */
     fun dispose() {
-        returnToInteractiveJob?.cancel()
         redrawJob?.cancel()
         redrawScope.cancel()
         redrawChannel.close()

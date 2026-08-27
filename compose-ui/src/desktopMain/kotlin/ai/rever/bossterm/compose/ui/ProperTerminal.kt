@@ -91,6 +91,7 @@ import ai.rever.bossterm.compose.search.SearchBar
 import ai.rever.bossterm.compose.rendering.RenderingContext
 import ai.rever.bossterm.compose.rendering.RenderableBlock
 import ai.rever.bossterm.compose.rendering.ImageRenderer
+import ai.rever.bossterm.compose.rendering.FrameLatencyProbe
 import ai.rever.bossterm.compose.rendering.TerminalCanvasRenderer
 import ai.rever.bossterm.terminal.model.TerminalLine
 import kotlin.math.abs
@@ -2054,6 +2055,7 @@ fun ProperTerminal(
             // after it returns, never during. myLock is reentrant, so the nested acquisitions
             // below are free, and this replaces TWO acquisitions per composition with one: the
             // type-ahead column used to take it again, live, outside the capture entirely.
+            val probeCaptureStart = FrameLatencyProbe.startTiming()
             textBuffer.lock()
             try {
               // Type-ahead FIRST: its reset path clears predictions off the lines, and doing
@@ -2068,6 +2070,7 @@ fun ProperTerminal(
               )
             } finally {
               textBuffer.unlock()
+              FrameLatencyProbe.recordSnapshot(probeCaptureStart)
             }
           }
         }

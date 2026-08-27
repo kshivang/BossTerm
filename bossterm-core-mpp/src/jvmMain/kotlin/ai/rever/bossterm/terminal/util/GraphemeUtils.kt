@@ -168,7 +168,57 @@ object GraphemeUtils {
      * @param text The string to segment
      * @return List of grapheme clusters
      */
+    /**
+     * True when every character is printable ASCII (U+0020..U+007E).
+     *
+     * Control characters are excluded deliberately: the emulator routes them separately and
+     * their width is not simply 1, so letting them into the fast path would be a behaviour
+     * change rather than an optimisation.
+     */
+    internal fun isAllPrintableAscii(text: String): Boolean {
+        for (ch in text) {
+            if (ch.code < 0x20 || ch.code > 0x7E) return false
+        }
+        return true
+    }
+
+    /** Interned single-character clusters for printable ASCII, built once. */
+    private val asciiClusters: Array<GraphemeCluster> = Array(0x7F - 0x20) { i ->
+        val ch = (0x20 + i).toChar()
+        GraphemeCluster(ch.toString(), 1, intArrayOf(ch.code))
+    }
+
+    private fun asciiCluster(ch: Char): GraphemeCluster = asciiClusters[ch.code - 0x20]
+
     fun segmentIntoGraphemes(text: String): List<GraphemeCluster> {
+        if (text.isEmpty()) return emptyList()
+
+        // Printable ASCII cannot form a multi-character grapheme cluster and is always one
+        // column wide: no combining marks, no ZWJ, no variation selectors, no surrogates,
+        // nothing wide or ambiguous lives below U+0080. So the ICU BreakIterator, the
+        // per-cluster substring and the width calculation are all decidable without them.
+        //
+        // This is not a marginal case - it is essentially all terminal output. Stack
+        // sampling the emulator thread through a 5 MB `cat` put ~27% of its time in this
+        // call chain (`segmentIntoGraphemes` -> `calculateGraphemeWidth` ->
+        // `extractCodePoints` / `isEmojiPresentation` / `RuleBasedBreakIterator`), for text
+        // that was ASCII from end to end.
+        //
+        // Anything non-ASCII falls through to ICU unchanged; the boundary is one cheap scan.
+        if (isAllPrintableAscii(text)) {
+            return ArrayList<GraphemeCluster>(text.length).apply {
+                for (ch in text) add(asciiCluster(ch))
+            }
+        }
+
+        return segmentViaBreakIterator(text)
+    }
+
+    /**
+     * The full ICU segmentation, split out so the ASCII fast path above can be proved
+     * equivalent to it rather than argued to be.
+     */
+    internal fun segmentViaBreakIterator(text: String): List<GraphemeCluster> {
         if (text.isEmpty()) return emptyList()
 
         val result = mutableListOf<GraphemeCluster>()

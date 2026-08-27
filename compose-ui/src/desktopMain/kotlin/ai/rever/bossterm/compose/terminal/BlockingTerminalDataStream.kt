@@ -1,10 +1,12 @@
 package ai.rever.bossterm.compose.terminal
 
+import ai.rever.bossterm.compose.rendering.FrameLatencyProbe
 import ai.rever.bossterm.terminal.TerminalDataStream
 import ai.rever.bossterm.terminal.util.GraphemeUtils
 import ai.rever.bossterm.terminal.util.GraphemeBoundaryUtils
 import java.io.IOException
 import java.util.concurrent.BlockingQueue
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
@@ -59,6 +61,34 @@ class BlockingTerminalDataStream(
     private val buffer = StringBuilder()
     private var position = 0
     private val dataQueue: BlockingQueue<String> = LinkedBlockingQueue()
+
+    /**
+     * Arrival timestamps for the chunks in [dataQueue], one per entry, in the same order.
+     *
+     * Kept alongside rather than inside the queue so the shipped type stays `String` and
+     * nothing on the hot path changes when [FrameLatencyProbe] is off - the queue is only
+     * ever written under `FrameLatencyProbe.enabled`. Stamped here, before the poll wait
+     * below, so that whatever the performance mode spends waiting lands inside the
+     * measurement instead of ahead of it.
+     */
+    private val arrivalNanos = ConcurrentLinkedQueue<Long>()
+
+    /** Offer a chunk plus, when probing, its arrival time. Keeps the two queues aligned. */
+    private fun enqueue(chunk: String) {
+        if (FrameLatencyProbe.enabled) arrivalNanos.offer(System.nanoTime())
+        dataQueue.offer(chunk)
+    }
+
+    /** Pair every successful take from [dataQueue] with its arrival stamp. */
+    private fun took(chunk: String?): String? {
+        if (FrameLatencyProbe.enabled && chunk != null && chunk != CLOSE_SENTINEL) {
+            arrivalNanos.poll()?.let { stamped ->
+                FrameLatencyProbe.markArrival(stamped)
+                FrameLatencyProbe.markDequeued(stamped, chunk.length)
+            }
+        }
+        return chunk
+    }
     @Volatile private var closed = false
     private val pushBackStack = mutableListOf<Char>()
 
@@ -174,14 +204,14 @@ class BlockingTerminalDataStream(
             val completeData = fullData.substring(0, lastCompleteIndex)
 
             if (completeData.isNotEmpty()) {
-                dataQueue.offer(completeData)
+                enqueue(completeData)
                 // Invoke debug callback only for complete data
                 debugCallback?.invoke(completeData)
                 notifyRawOutput(completeData)
             }
         } else {
             // All graphemes are complete
-            dataQueue.offer(fullData)
+            enqueue(fullData)
             debugCallback?.invoke(fullData)
             notifyRawOutput(fullData)
         }
@@ -223,7 +253,7 @@ class BlockingTerminalDataStream(
                 onTerminalStateChanged?.invoke()
 
                 // Need more data - behavior depends on performance mode (issue #146)
-                val chunk = if (closed) {
+                val chunk = took(if (closed) {
                     dataQueue.poll() // Non-blocking if closed
                 } else {
                     when (performanceMode) {
@@ -236,7 +266,7 @@ class BlockingTerminalDataStream(
                         // BALANCED: Poll with 10ms timeout as middle ground
                         PerformanceMode.BALANCED -> dataQueue.poll(10, TimeUnit.MILLISECONDS)
                     }
-                }
+                })
 
                 // Check for close sentinel
                 if (chunk == CLOSE_SENTINEL) {
@@ -286,14 +316,14 @@ class BlockingTerminalDataStream(
                 // Compact buffer to prevent memory leak (issue #179)
                 compactBuffer()
 
-                val chunk = when (performanceMode) {
+                val chunk = took(when (performanceMode) {
                     // LATENCY: Non-blocking - return immediately with what we have
                     PerformanceMode.LATENCY -> dataQueue.poll()
                     // THROUGHPUT: Wait longer for better batching
                     PerformanceMode.THROUGHPUT -> dataQueue.poll(10, TimeUnit.MILLISECONDS)
                     // BALANCED: Short wait for moderate batching
                     PerformanceMode.BALANCED -> dataQueue.poll(5, TimeUnit.MILLISECONDS)
-                }
+                })
                 if (chunk != null && chunk != CLOSE_SENTINEL) {
                     buffer.append(chunk)
                 } else {

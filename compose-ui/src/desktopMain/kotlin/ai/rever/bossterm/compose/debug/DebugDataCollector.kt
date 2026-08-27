@@ -39,6 +39,28 @@ class DebugDataCollector(
     private val snapshots = ConcurrentLinkedQueue<TerminalSnapshot>()
     private val chunkIndex = AtomicInteger(0)
 
+    /**
+     * Sizes of [chunks] and [snapshots], tracked rather than asked for.
+     *
+     * `ConcurrentLinkedQueue.size()` is O(n): it walks the list. Both ring buffers trimmed
+     * with `while (queue.size > max) queue.poll()`, so every chunk that crossed the tty paid
+     * an O(maxChunks) scan - 1000 node traversals per chunk, on the PTY reader thread.
+     */
+    private val chunkCount = AtomicInteger(0)
+    private val snapshotCount = AtomicInteger(0)
+
+    /** Drop entries until [count] is back within [max]. */
+    private fun <T> trim(queue: ConcurrentLinkedQueue<T>, count: AtomicInteger, max: Int) {
+        while (count.get() > max) {
+            if (queue.poll() == null) {
+                // Someone else drained it; do not let the counter drift below the queue.
+                count.set(queue.size)
+                return
+            }
+            count.decrementAndGet()
+        }
+    }
+
     @Volatile
     private var enabled = true
 
@@ -66,15 +88,28 @@ class DebugDataCollector(
         )
 
         chunks.offer(chunk)
-
-        // Trim to maxChunks (circular buffer)
-        while (chunks.size > maxChunks) {
-            chunks.poll()
-        }
+        chunkCount.incrementAndGet()
+        trim(chunks, chunkCount, maxChunks)
 
         // Write to file log if active
         writeChunkToFile(chunk)
     }
+
+    /**
+     * Whether a state snapshot is worth taking.
+     *
+     * TerminalTab carries TWO debug flags and they mean different things:
+     *
+     * - `debugEnabled` is background COLLECTION, seeded from `settings.debugModeEnabled`.
+     * - `debugPanelVisible` is the UI, toggled with Cmd/Ctrl+Shift+D.
+     *
+     * Either one means somebody wants the data, so either one must capture. Reading only
+     * the first is a real bug that shipped for one commit: pressing Cmd+Shift+D showed an
+     * empty panel, because opening the panel does not set the collection flag. It is a pure
+     * function so that mistake is testable rather than only visible by hand.
+     */
+    internal fun shouldCaptureState(collectionEnabled: Boolean, panelVisible: Boolean): Boolean =
+        collectionEnabled || panelVisible
 
     /**
      * Capture a snapshot of the current terminal state.
@@ -87,6 +122,18 @@ class DebugDataCollector(
         if (!enabled) return
 
         val currentTab = tab ?: return  // Skip if tab not set yet
+
+        // Nobody is looking: skip the snapshot entirely.
+        //
+        // This is not a micro-optimisation. `createSnapshot()` is the FULL deep copy - every
+        // line in the buffer, screen and history, cloned - and this runs on a timer every
+        // `debugCaptureInterval` (100 ms) for the life of every tab. With debug off, which
+        // is the default, all of it was thrown away. Profiling a 5 MB `cat` put 59% of
+        // samples in this call chain.
+        //
+        // The loop keeps ticking rather than being torn down, because the panel can be
+        // toggled at any time (Cmd/Ctrl+Shift+D) and must start showing data immediately.
+        if (!shouldCaptureState(currentTab.debugEnabled.value, currentTab.debugPanelVisible.value)) return
 
         try {
             val textBuffer = currentTab.textBuffer
@@ -133,11 +180,8 @@ class DebugDataCollector(
             )
 
             snapshots.offer(snapshot)
-
-            // Trim to maxSnapshots (circular buffer)
-            while (snapshots.size > maxSnapshots) {
-                snapshots.poll()
-            }
+            snapshotCount.incrementAndGet()
+            trim(snapshots, snapshotCount, maxSnapshots)
 
         } catch (e: Exception) {
             println("WARN: Failed to capture terminal state: ${e.message}")
@@ -232,6 +276,10 @@ class DebugDataCollector(
     fun clear() {
         chunks.clear()
         snapshots.clear()
+        // Counters shadow the queues; clearing one without the other would make trim()
+        // evict live entries forever.
+        chunkCount.set(0)
+        snapshotCount.set(0)
         chunkIndex.set(0)
     }
 

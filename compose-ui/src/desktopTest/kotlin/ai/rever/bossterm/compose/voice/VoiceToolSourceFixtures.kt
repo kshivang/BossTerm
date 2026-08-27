@@ -100,10 +100,17 @@ internal fun composite(
     gate: VoiceConfirmationGate = VoiceConfirmationGate(),
     enumerateTimeoutMs: Long = 1_000L,
     callTimeoutMs: Long = 1_000L,
+    /**
+     * The executor's clock. Pass a scripted one to make a budget test deterministic: a test
+     * that spends budget with a real `delay` is asserting on the CI runner's scheduler, not
+     * on the executor.
+     */
+    nowMs: () -> Long = { System.currentTimeMillis() },
 ) = CompositeVoiceToolExecutor(
     base = base,
     source = source,
     confirmations = gate,
     enumerateTimeoutMs = enumerateTimeoutMs,
     callTimeoutMs = { callTimeoutMs },
+    nowMs = nowMs,
 )

@@ -23,6 +23,12 @@ import java.util.concurrent.atomic.AtomicReference
  * based on output rate to reduce redraws by 51-91% for medium/large files
  * while maintaining zero latency for interactive use.
  */
+private val interactiveDebounceOverrideMs: Long? =
+    System.getenv("BOSSTERM_REDRAW_DEBOUNCE_MS")?.toLongOrNull()?.coerceAtLeast(0L)
+
+private val highVolumeDebounceOverrideMs: Long? =
+    System.getenv("BOSSTERM_HIGH_VOLUME_DEBOUNCE_MS")?.toLongOrNull()?.coerceAtLeast(0L)
+
 class ComposeTerminalDisplay : TerminalDisplay {
     // ===== ADAPTIVE DEBOUNCING (Phase 2) =====
 
@@ -33,6 +39,24 @@ class ComposeTerminalDisplay : TerminalDisplay {
         INTERACTIVE(8L, "120fps equivalent for responsive typing"),
         HIGH_VOLUME(50L, "20fps for bulk output, triggered at >100 redraws/sec"),
         IMMEDIATE(0L, "Instant for keyboard/mouse input")
+    }
+
+    /**
+     * Effective debounce for [mode], with a measurement-time override.
+     *
+     * MEASUREMENT SCAFFOLDING - to be removed once the debounce question is settled.
+     * `BOSSTERM_REDRAW_DEBOUNCE_MS` and `BOSSTERM_HIGH_VOLUME_DEBOUNCE_MS` let a single
+     * build A/B the wait without a rebuild-and-relaunch between every sample, which is the
+     * only way to compare two configurations against the same warmed JIT, the same window
+     * size and the same shell history. Unset, both fall through to the shipped constants,
+     * so a run with no env set is a true baseline.
+     *
+     * `delay(0)` returns without suspending, so an override of 0 costs no dispatch hop.
+     */
+    private fun debounceMsFor(mode: RedrawMode): Long = when (mode) {
+        RedrawMode.INTERACTIVE -> interactiveDebounceOverrideMs ?: mode.debounceMs
+        RedrawMode.HIGH_VOLUME -> highVolumeDebounceOverrideMs ?: mode.debounceMs
+        RedrawMode.IMMEDIATE -> mode.debounceMs
     }
 
     /**
@@ -357,7 +381,7 @@ class ComposeTerminalDisplay : TerminalDisplay {
 
                                 RedrawPriority.NORMAL -> {
                                     val mode = detectAndUpdateMode()
-                                    delay(mode.debounceMs)
+                                    delay(debounceMsFor(mode))
 
                                     // Re-check sync mode after debounce delay: a new ?2026h may
                                     // have been processed by the emulator while we were waiting.

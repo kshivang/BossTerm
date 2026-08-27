@@ -549,6 +549,7 @@ object TerminalCanvasRenderer {
         style: TextStyle
     ) {
         if (topLeft.x >= size.width || topLeft.y >= size.height) return
+        FrameLatencyProbe.countDrawCall()
         drawText(
             textMeasurer = textMeasurer,
             text = text,
@@ -566,6 +567,15 @@ object TerminalCanvasRenderer {
      *
      */
     fun DrawScope.renderTerminal(ctx: RenderingContext) {
+        val probeStart = FrameLatencyProbe.beginFrame()
+        try {
+            renderTerminalPasses(ctx)
+        } finally {
+            FrameLatencyProbe.endFrame(probeStart)
+        }
+    }
+
+    private fun DrawScope.renderTerminalPasses(ctx: RenderingContext) {
         // Cache character analysis to avoid redundant computation between passes
         val analysisCache = AnalysisCache(ctx.visibleRows, ctx.visibleCols)
 

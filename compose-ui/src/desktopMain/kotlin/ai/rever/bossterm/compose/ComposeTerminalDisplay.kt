@@ -69,6 +69,22 @@ class ComposeTerminalDisplay : TerminalDisplay {
     // Channel for queuing redraw requests with conflation
     private val redrawChannel = Channel<RedrawRequest>(Channel.CONFLATED)
 
+    /**
+     * Whether a redraw is already queued and unclaimed.
+     *
+     * The channel is CONFLATED, so a second `trySend` is harmless to correctness - but it
+     * is NOT free. When the processor is parked on the channel, each send resumes its
+     * continuation through the Swing dispatcher, and that means `EventQueue.invokeLater`,
+     * an `InvocationEvent`, and an `AccessController.getContext` stack walk, per call. The
+     * emulator requests a redraw on every buffer mutation, so bulk output turned that into
+     * an AWT event storm: stack-sampling the parse thread under load put 20% of its time
+     * in `AWTEvent.<init>` beneath `requestRedraw`.
+     *
+     * Cleared by the processor BEFORE it redraws, so a mutation that lands during a redraw
+     * still schedules the next one.
+     */
+    private val redrawQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+
     // Coroutine scope for redraw processing
     private val redrawScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
@@ -320,6 +336,9 @@ class ComposeTerminalDisplay : TerminalDisplay {
 
                 try {
                     for (request in redrawChannel) {
+                        // Released before the redraw, not after, so a buffer mutation that
+                        // lands mid-redraw still queues the next frame.
+                        redrawQueued.set(false)
                         try {
                             // Re-check sync mode: a ?2026h may have arrived after this
                             // redraw was queued (e.g., rapid ?2026l/?2026h toggle by CLIs
@@ -365,9 +384,14 @@ class ComposeTerminalDisplay : TerminalDisplay {
             }
         }
 
-        // Conflated channel: a full channel simply coalesces this request into the
-        // pending one, which is the intended debouncing behaviour.
-        redrawChannel.trySend(RedrawRequest())
+        // Skip the send entirely when one is already pending: see [redrawQueued].
+        if (redrawQueued.compareAndSet(false, true)) {
+            // Release the claim if the send did not land, or a closed channel would latch
+            // the flag and silently stop every future redraw.
+            if (redrawChannel.trySend(RedrawRequest()).isFailure) {
+                redrawQueued.set(false)
+            }
+        }
     }
 
     /**

@@ -64,6 +64,60 @@ channel plus Compose's own per-frame coalescing already do the job the debounce 
 
 ---
 
+## Bulk output: profiled, then fixed (3 changes, ~2.5x)
+
+Measured as `queueWaitMs` p50/p95, the time a PTY chunk sits in the data-stream queue before
+the emulator takes it. That series has n ~5400 per run (one sample per chunk), so it is the
+reliable one here; `byteToPaintMs` on this workload sometimes lands only a handful of frames.
+
+| state | queueWait p50 | p95 |
+|---|---|---|
+| before | 786 - 1179 | 1572 - 1966 |
+| + `isAlive()` cached, redraw sends coalesced | 524 - 655 | 1048 - 1180 |
+| + ASCII grapheme fast path | **262 - 459** | **491 - 655** |
+
+Stack-sampling the emulator thread (`DefaultDispatcher-worker-N`, found by matching
+`drainTerminalEmulator` in the stack) through a sustained `cat` loop found three costs, none
+of which was visible from reading the code:
+
+**1. An exception per character (20% of parse time).** `drainTerminalEmulator` loops
+`while (shouldContinue())`, and `shouldContinue` is `handle::isAlive` ->
+`Process.hasExited()` -> `UnixPtyProcess.exitValue()`, which **throws
+`IllegalThreadStateException` whenever the child is alive** - the normal case. Java catches
+it internally, so the call site looks free. A 5 MB `cat` built ~5.5 million exceptions, each
+with a filled-in stack trace. `isAlive()` now caches for 20 ms and latches death.
+
+**2. An AWT event per redraw request (20%).** `requestRedraw` does `trySend` on the redraw
+channel; when the processor is parked, each send resumes its continuation through the Swing
+dispatcher, which means `EventQueue.invokeLater`, an `InvocationEvent`, and an
+`AccessController.getContext` native stack walk. The emulator requests a redraw on every
+buffer mutation. A pending-flag now skips the send when one is already queued.
+
+**3. ICU grapheme segmentation on plain ASCII (~27%).** `segmentIntoGraphemes` ran the ICU
+`RuleBasedBreakIterator`, a per-cluster substring and a width calculation over text that was
+ASCII end to end. Nothing below U+0080 is wide, ambiguous, combining, a surrogate, a ZWJ or a
+variation selector, so the answer is decidable without ICU. `GraphemeAsciiFastPathTest`
+proves the fast path against the BreakIterator path it replaces, over every printable ASCII
+character and a corpus of real terminal output; loosening the guard to admit non-ASCII makes
+it fail.
+
+Still ~260-460 ms, so bulk output is improved rather than solved. What remains on the
+emulator thread after these three: `ColumnConversionUtils.visualColToBufferCol` (~9%),
+`TerminalLine.toBuf` / `merge` line rebuilding (~11%), and a residual AWT dispatch cost.
+
+### A fix that did not work, and why it looked like it would
+
+Profiling first pointed at `DebugDataCollector`: 59% of execution samples sat in
+`captureState` -> `createSnapshot` -> `TerminalLine.copy`, a full deep copy of the whole
+buffer on a 100 ms timer, for a debug panel that defaults to off. Gating it changed bulk
+latency **not at all**.
+
+The samples were real; the inference was wrong. That work runs on `Dispatchers.IO` workers,
+*parallel* to the parse, and `JavaMonitorEnter` events were zero - so it never blocked the
+emulator thread. A whole-JVM profile answers "where is CPU spent", which is not the same
+question as "what is the critical path". The fix was kept anyway (it removes 10 full-buffer
+deep copies per second per tab of pure waste) but it is an idle-CPU fix, not this one.
+
 ## Correction: the debounce does NOT own the bulk-output tail
 
 An earlier revision of this file claimed removing the debounce took `bulk` p95 from 1310 ms to

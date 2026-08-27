@@ -168,6 +168,11 @@ class DesktopProcessService(
          */
         private val isShuttingDown = java.util.concurrent.atomic.AtomicBoolean(false)
 
+        private companion object {
+            /** 20 ms: far longer than a parse step, far shorter than a human notices. */
+            const val ALIVE_CACHE_NANOS = 20_000_000L
+        }
+
         override suspend fun write(data: String) {
             outputStream.write(data.toByteArray())
             outputStream.flush()
@@ -269,7 +274,41 @@ class DesktopProcessService(
             return bytes.size
         }
 
-        override fun isAlive(): Boolean = process.isAlive
+        /**
+         * Liveness, cached for [ALIVE_CACHE_NANOS].
+         *
+         * `Process.isAlive()` calls `hasExited()`, which on pty4j calls
+         * `UnixPtyProcess.exitValue()` and lets it THROW `IllegalThreadStateException`
+         * whenever the child is still running - the normal case. Java catches it, so the
+         * cost is invisible at the call site: a full exception with a filled-in stack
+         * trace, every call.
+         *
+         * The emulator drain loop calls this once per CHARACTER
+         * (`drainTerminalEmulator`'s `while (shouldContinue())`), so a 5 MB `cat` built
+         * ~5.5 million exceptions. Stack-sampling the parse thread under load put 20% of
+         * its time in `Throwable.fillInStackTrace` beneath this call.
+         *
+         * A short TTL is safe here because nothing depends on sub-millisecond precision:
+         * the drain loop's real termination signal is EOF from the data stream, which the
+         * PTY reader closes when the child goes away. This check is the belt-and-braces
+         * one. Death is also latched - a process that has exited never comes back, so a
+         * false result is cached forever and never pays the syscall again.
+         */
+        override fun isAlive(): Boolean {
+            if (knownDead) return false
+            val now = System.nanoTime()
+            val checked = aliveCheckedAtNanos
+            if (checked != 0L && now - checked < ALIVE_CACHE_NANOS) return cachedAlive
+            val alive = process.isAlive
+            cachedAlive = alive
+            aliveCheckedAtNanos = now
+            if (!alive) knownDead = true
+            return alive
+        }
+
+        @Volatile private var cachedAlive: Boolean = true
+        @Volatile private var aliveCheckedAtNanos: Long = 0L
+        @Volatile private var knownDead: Boolean = false
 
         override suspend fun kill() {
             // Signal shutdown to prevent race conditions with read()

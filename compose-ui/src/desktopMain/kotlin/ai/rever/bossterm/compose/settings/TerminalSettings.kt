@@ -620,14 +620,20 @@ data class TerminalSettings(
 
     /**
      * Performance optimization mode.
-     * - "latency": Optimized for interactive responsiveness (faster command response, lower throughput)
-     * - "throughput": Optimized for bulk output (higher throughput, slightly higher latency)
-     * - "balanced": Balance between latency and throughput (default)
+     * - "latency" (default): the data stream never waits for more bytes than it already has
+     * - "throughput": waits up to 10 ms on buffer exhaustion to batch more aggressively
+     * - "balanced": waits up to 5 ms
      *
-     * Use "latency" for: SSH sessions, interactive commands, shell usage
-     * Use "throughput" for: Large file operations, build logs, data processing
+     * The wait happens in `readNonControlCharacters` with the printable characters already
+     * in hand, so on an interactive echo it is pure added latency. Measured: switching the
+     * default from "balanced" to "latency" took byte-to-pixel p50 from 16.4 ms to 12.3 ms
+     * with nothing else changed (`benchmark_results/LATENCY_BASELINE_2026-08-27.md`). The
+     * throughput this was trading for is not visible at 8 KB chunk sizes.
+     *
+     * Use "throughput" only for a session that is genuinely bulk-output bound and whose
+     * latency nobody is watching.
      */
-    val performanceMode: String = "balanced",
+    val performanceMode: String = "latency",
 
     /**
      * Maximum refresh rate in FPS (0 = unlimited)

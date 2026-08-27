@@ -1,13 +1,13 @@
-# Glass-to-pixel latency baseline
+# Glass-to-pixel latency: baseline and the debounce removal
 
 **Date:** 2026-08-27
-**Base:** `perf/terminal-latency` @ 736b646b, off `origin/master` @ cacaba54
+**Base:** `perf/terminal-latency`, off `origin/master` @ cacaba54
 **Platform:** macOS (Darwin 25.5.0, Apple Silicon), Compose Multiplatform 1.9.3
 **Method:** `FrameLatencyProbe` + `benchmark/latency/workloads.sh`, one process per config,
-probe reset and scrollback wiped before each workload. All figures are milliseconds.
+probe reset and scrollback wiped before each workload. Figures are milliseconds.
 
 Latencies are measured to **draw-issued**, excluding GPU present and vsync, so they are a
-lower bound. Comparisons between configs are sound; absolute values still need the external
+lower bound. Comparisons between configs are sound; absolute values still want the external
 camera anchor described in `benchmark/latency/README.md`.
 
 ---
@@ -18,16 +18,14 @@ Same workload, same process, only window visibility differing:
 
 | `tui` | paints | byteToPaint p50 | triggerToPaint p50 |
 |---|---|---|---|
-| occluded behind another window | 29 | 294.9 | 294.9 |
+| covered by another window | 29 | 294.9 | 294.9 |
 | raised and focused | 653 | **9.2** | 13.3 |
 
-macOS throttles a covered window and Compose's frame clock follows it down. This is not a
-BossTerm defect, but it is a measurement trap: it is ~30x larger than any effect being
-measured, and it silently makes a healthy build look catastrophic. **Every measurement in
-this document was taken with the window raised**, verified per run by asserting the
-frontmost process before the workload starts.
-
-An earlier draft of this file reported 262-917 ms figures that were entirely this artefact.
+macOS throttles a covered window and Compose's frame clock follows it down. Not a BossTerm
+defect, but a measurement trap: it is ~30x larger than any effect being measured, so it does
+not look like noise, it looks like a catastrophic product bug. **Every figure below was taken
+with the window raised**, asserted per run before the workload starts. An earlier draft of
+this file reported 262-917 ms numbers that were entirely this artefact.
 
 ---
 
@@ -35,65 +33,74 @@ An earlier draft of this file reported 262-917 ms figures that were entirely thi
 
 | workload | config | byteToPaint p50 | p95 | paintCost p50 | drawCalls p50 |
 |---|---|---|---|---|---|
-| interactive | baseline | 16.4 | 18.4 | 1.15 | 11 |
-| interactive | fast-text only | 20.5 | 24.6 | 1.79 | 10 |
-| interactive | debounce 0 + fast-text | **10.2** | 14.3 | 3.07 | 10 |
-| bulk | baseline | 81.9 | **1310.7** | 1.41 | 20 |
-| bulk | fast-text only | 589.8 | **1703.9** | 2.56 | 56 |
-| bulk | debounce 0 + fast-text | **9.2** | **10.2** | 1.92 | 15 |
-| tui | baseline | 9.2 | 15.4 | 11.26 | **208** |
+| interactive | baseline (balanced, 8/50 ms debounce) | 16.4 | 18.4 | 1.15 | 11 |
+| interactive | latency mode only | 12.3 | 14.3 | 1.54 | - |
+| interactive | **shipped defaults (debounce removed + latency)** | **1.9 - 2.3** | 2.6 - 3.1 | 1.92 | 11 |
+| bulk | baseline | 81.9 | 1310.7 | 1.41 | 20 |
+| bulk | latency mode only | 196.6 | 1441.8 | 2.56 | - |
+| bulk | **shipped defaults** | 491.5 | **983.0** | 4.10 | 128 |
+| tui | baseline | 9.2 | 15.4 | 11.26 | 208 |
 | tui | fast-text only | 8.2 | 15.4 | 9.22 | **28** |
-| tui | debounce 0 + fast-text | 10.2 | 12.3 | 9.22 | 28 |
+| tui | shipped defaults | 13.3 | 15.4 | 12.29 | 208 |
 | scroll | baseline | 41.0 | 73.7 | 5.63 | 176 |
-| scroll | debounce 0 + fast-text | 32.8 | 73.7 | **1.66** | 56 |
+| scroll | shipped defaults | 20.5 | 65.5 | 4.61 | 176 |
+
+The `interactive` and `bulk` "shipped defaults" rows are the median of three consecutive
+runs each; they were tight (interactive p50 1.9/2.3/2.0, bulk p95 983.0 three times).
 
 ---
 
-## What the numbers say
+## What shipped, and what it bought
 
-**1. The interactive echo path costs what the constants said it would.**
-Baseline `interactive` is 16.4 ms, of which only 1.8 ms is `triggerToPaint`. So ~14.6 ms is
-spent before the redraw trigger: the 5 ms `BALANCED` poll plus the 8 ms debounce plus parse.
-That is the ~13 ms predicted from reading the code, confirmed independently. Setting
-`BOSSTERM_REDRAW_DEBOUNCE_MS=0` recovers 6 ms of it.
+**The interactive echo path: 16.4 ms -> ~2.0 ms, an 87% cut.**
+Baseline `interactive` was 16.4 ms of which only 1.8 ms was `triggerToPaint`, so ~14.6 ms sat
+ahead of the redraw trigger: the 5 ms `BALANCED` poll, the 8 ms debounce, and parse. Removing
+both leaves `byteToPaint` essentially equal to `triggerToPaint` (1.9 vs 1.8), which is the
+signature of nothing being spent before the trigger. This is the path a user feels while
+typing, and it is now bounded by the frame clock rather than by a sleep.
 
-**2. The debounce, not the renderer, owns the multi-second lag on bulk output.**
-This is the largest single effect found:
+**Frame counts stayed vsync-capped without the debounce** (~62/sec on `tui`), so the sleep was
+not what kept the terminal from over-rendering: the frame clock was, and the CONFLATED
+channel plus Compose's own per-frame coalescing already do the job the debounce was added for.
 
-| bulk p95 | |
-|---|---|
-| baseline | 1310.7 |
-| fast-text only, debounce untouched | 1703.9 |
-| debounce 0 | **10.2** |
+---
 
-Turning the renderer reductions on while leaving the debounce alone does **not** help - the
-tail stays above a second. Zeroing the debounce collapses it by ~99%. `triggerToPaint` p95
-stays at 12-18 ms throughout, so the time is all upstream of the trigger: output piles up
-behind `HIGH_VOLUME`'s 50 ms sleep once the rate detector trips, and the queue never drains
-while the workload runs.
+## Correction: the debounce does NOT own the bulk-output tail
 
-**3. Blank batching cuts draw calls ~7x, but paint cost only ~19%.**
-On `tui`, where frame content is comparable across configs, `drawCallsPerFrame` p50 goes
-208 -> 28 while `paintCost` p50 goes 11.26 -> 9.22. So the number of `drawText` calls was
-**not** the dominant paint cost. Whatever remains is per-cell work in the two full-grid
-passes, not per-run text layout.
+An earlier revision of this file claimed removing the debounce took `bulk` p95 from 1310 ms to
+10.2 ms, a ~99% collapse. **That was wrong.** It rested on a single run that returned only 33
+samples, which should have been treated as suspect rather than reported. Three consecutive
+runs on the shipped defaults give p95 983.0 ms every time.
 
-This is the most consequential result for planning, because it argues **against** the
-next renderer step as originally scoped: caching `TextLayoutResult`, or dropping to a Skia
-`TextBlob` fast path, both attack the same ~19% slice that run-merging just showed is small.
-The per-cell scan and colour-conversion work in `renderBackgrounds` / `renderText` is the
-bigger target.
+The honest result is a ~25% improvement on the bulk tail (1310 -> 983 ms), not a fix.
 
-**4. Recomposition is not a bottleneck.**
-`triggerToPaint` - the window covering recomposition, layout and draw - is 1.8-13.3 ms and
-tracks `paintCost` closely. The 2400-line `ProperTerminal` recomposing per frame was
-suspected as a major cost; it is not.
+Where the remaining second goes is now unambiguous, because the probe is split at the redraw
+trigger: on `bulk`, `triggerToPaint` p50 is 6.7 ms while `byteToPaint` p50 is 491.5 ms. So
+~485 ms of it is upstream of the trigger, and with the debounce gone that leaves **queue wait
+and parse**. A 5 MB `cat` arrives as ~640 chunks through an 8 KiB read buffer
+(`PlatformServices.desktop.kt`), each one allocating a `ByteArray`, a `copyOf`, and a
+`String`, before an emulator that pulls them back out one `Char` at a time.
 
-**5. The O(scrollback) snapshot is real but small.**
-`lockedCaptureMs` p50 rises from 0.03 ms on a fresh buffer to 1.28 ms with 10 000 lines of
-history (`aged`), ~40x, confirming the per-frame walk over screen plus full history. But
-1.3 ms of a 16.7 ms frame is ~8%, not the reason long sessions feel worse. Worth fixing,
-not worth prioritising.
+**So the bulk-output fix is the PTY and parse path, not the renderer and not the debounce.**
+That is a different piece of work from anything on this branch.
+
+---
+
+## Also measured, and worth knowing before scoping renderer work
+
+**Draw-call count is not the dominant paint cost.** Blank batching (`BOSSTERM_FAST_TEXT=1`)
+cut `drawText` calls 208 -> 28 per frame on `tui`, an 86% reduction, while `paintCost` moved
+only 11.26 -> 9.22 ms, 19%. Caching `TextLayoutResult`, or dropping to a Skia `TextBlob` fast
+path, both attack that same 19% slice. The per-cell scan and colour-conversion work in the two
+full-grid passes is the bigger target.
+
+**Recomposition is not a bottleneck.** `triggerToPaint` covers recomposition, layout and draw;
+it is 1.8-13.3 ms and tracks `paintCost` closely. The 2400-line `ProperTerminal` recomposing
+per frame had been suspected as a major cost. It is not.
+
+**The O(scrollback) snapshot is real but small.** `lockedCapture` p50 rises 0.03 -> 1.28 ms
+with 10 000 lines of history (`aged`), roughly 40x, confirming the per-frame walk over screen
+plus full history. But 1.3 ms of a 16.7 ms frame is ~8%: worth fixing, not worth prioritising.
 
 ---
 
@@ -107,6 +114,5 @@ BOSSTERM_FRAME_PROBE=1 ./gradlew :bossterm-app:run --no-daemon
 ./benchmark/latency/probe.sh show
 ```
 
-Add `BOSSTERM_REDRAW_DEBOUNCE_MS=0`, `BOSSTERM_HIGH_VOLUME_DEBOUNCE_MS=0` and
-`BOSSTERM_FAST_TEXT=1` to the launch for the other configs. **Raise the window before each
-run** or finding 0 will dominate the result.
+`BOSSTERM_FAST_TEXT=1` enables the renderer reductions, which remain opt-in. **Raise the
+window before every run** or finding 0 will dominate the result.

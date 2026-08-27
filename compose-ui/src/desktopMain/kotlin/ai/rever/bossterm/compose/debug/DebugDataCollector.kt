@@ -96,6 +96,22 @@ class DebugDataCollector(
     }
 
     /**
+     * Whether a state snapshot is worth taking.
+     *
+     * TerminalTab carries TWO debug flags and they mean different things:
+     *
+     * - `debugEnabled` is background COLLECTION, seeded from `settings.debugModeEnabled`.
+     * - `debugPanelVisible` is the UI, toggled with Cmd/Ctrl+Shift+D.
+     *
+     * Either one means somebody wants the data, so either one must capture. Reading only
+     * the first is a real bug that shipped for one commit: pressing Cmd+Shift+D showed an
+     * empty panel, because opening the panel does not set the collection flag. It is a pure
+     * function so that mistake is testable rather than only visible by hand.
+     */
+    internal fun shouldCaptureState(collectionEnabled: Boolean, panelVisible: Boolean): Boolean =
+        collectionEnabled || panelVisible
+
+    /**
      * Capture a snapshot of the current terminal state.
      *
      * Uses snapshot-based reading to minimize lock contention (reduces lock hold from 5-10ms to <1ms).
@@ -111,13 +127,13 @@ class DebugDataCollector(
         //
         // This is not a micro-optimisation. `createSnapshot()` is the FULL deep copy - every
         // line in the buffer, screen and history, cloned - and this runs on a timer every
-        // `debugCaptureInterval` (100 ms) for the life of every tab. With the debug panel
-        // off, which is the default (`debugModeEnabled = false`), all of it was thrown away.
-        // Profiling a 5 MB `cat` put 59% of samples in this call chain.
+        // `debugCaptureInterval` (100 ms) for the life of every tab. With debug off, which
+        // is the default, all of it was thrown away. Profiling a 5 MB `cat` put 59% of
+        // samples in this call chain.
         //
         // The loop keeps ticking rather than being torn down, because the panel can be
         // toggled at any time (Cmd/Ctrl+Shift+D) and must start showing data immediately.
-        if (!currentTab.debugEnabled.value) return
+        if (!shouldCaptureState(currentTab.debugEnabled.value, currentTab.debugPanelVisible.value)) return
 
         try {
             val textBuffer = currentTab.textBuffer

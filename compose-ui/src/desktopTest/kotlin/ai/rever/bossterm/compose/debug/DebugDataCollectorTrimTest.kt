@@ -2,6 +2,7 @@ package ai.rever.bossterm.compose.debug
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -59,5 +60,27 @@ class DebugDataCollectorTrimTest {
         repeat(30) { collector.recordChunk("c-$it", ChunkSource.PTY_OUTPUT) }
         assertEquals(30, collector.getChunkCount())
         assertTrue(collector.getDebugChunks().first().data.concatToString() == "c-0")
+    }
+
+    @Test
+    fun snapshotsAreCapturedWheneverEitherDebugFlagIsSet() {
+        // This is a REGRESSION TEST for a bug that shipped. TerminalTab has two debug
+        // flags: `debugEnabled` (background collection, from settings) and
+        // `debugPanelVisible` (the UI, toggled with Cmd/Ctrl+Shift+D). The gate originally
+        // read only the first, so pressing Cmd+Shift+D opened a permanently empty panel -
+        // opening the panel does not set the collection flag.
+        val collector = DebugDataCollector(tab = null, maxChunks = 8, maxSnapshots = 4)
+
+        // The case that was broken: panel open, collection flag untouched.
+        assertTrue(
+            collector.shouldCaptureState(collectionEnabled = false, panelVisible = true),
+            "opening the debug panel must start capturing, or the panel renders empty"
+        )
+        // Background collection with the panel closed is the other real configuration.
+        assertTrue(collector.shouldCaptureState(collectionEnabled = true, panelVisible = false))
+        assertTrue(collector.shouldCaptureState(collectionEnabled = true, panelVisible = true))
+
+        // And the default, which is the whole point of the gate: no deep copy per tick.
+        assertFalse(collector.shouldCaptureState(collectionEnabled = false, panelVisible = false))
     }
 }

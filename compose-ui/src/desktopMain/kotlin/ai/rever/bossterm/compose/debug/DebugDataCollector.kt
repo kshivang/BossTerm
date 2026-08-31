@@ -39,6 +39,10 @@ class DebugDataCollector(
     private val snapshots = ConcurrentLinkedQueue<TerminalSnapshot>()
     private val chunkIndex = AtomicInteger(0)
 
+    private companion object {
+        const val PTY_LOG_ENV = "BOSSTERM_PTY_LOG"
+    }
+
     /**
      * Sizes of [chunks] and [snapshots], tracked rather than asked for.
      *
@@ -395,6 +399,34 @@ class DebugDataCollector(
      * @param filePath Path to the log file
      * @throws java.io.IOException If the file cannot be created or written to
      */
+    /**
+     * Start recording to disk automatically when `BOSSTERM_PTY_LOG` is set.
+     *
+     * The escaped format [writeChunkToFile] emits is reversible, so a recording made this
+     * way replays byte-for-byte through `PtyReplay` in the test sources. That is the point:
+     * a redraw glitch in a TUI is intermittent and unscreenshotable, but the byte stream
+     * that produced it is a deterministic input. Capture it once, and the bug becomes a
+     * failing test instead of a theory.
+     *
+     * Off unless the variable is set, and `startFileLogging` had NO callers before this -
+     * the facility existed and was unreachable.
+     *
+     * Set to `1` for the default location, or to a directory to choose one:
+     *   BOSSTERM_PTY_LOG=1 ./gradlew :bossterm-app:run
+     *   BOSSTERM_PTY_LOG=/tmp/ptylogs ./gradlew :bossterm-app:run
+     */
+    fun startFileLoggingIfRequested(tabLabel: String) {
+        val requested = System.getenv(PTY_LOG_ENV)?.takeIf { it.isNotBlank() } ?: return
+        val dir = if (requested == "1" || requested.equals("true", ignoreCase = true)) {
+            "${System.getProperty("user.home")}/.bossterm/pty-log"
+        } else {
+            requested
+        }
+        val safe = tabLabel.replace(Regex("[^A-Za-z0-9._-]"), "_").take(40)
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss").format(Date())
+        runCatching { startFileLogging("$dir/$stamp-$safe.log") }
+    }
+
     fun startFileLogging(filePath: String) {
         synchronized(this) {
             stopFileLogging()
@@ -448,14 +480,19 @@ class DebugDataCollector(
                     ChunkSource.CONSOLE_LOG -> "LOG#"
                 }
                 writer.print("[$timestamp] $sourceTag ")
-                // Escape non-printable characters for readability
+                // Escape non-printables for readability - and LOSSLESSLY, because
+                // `PtyReplay` in the test sources reverses this to replay a recording
+                // byte for byte. A literal backslash was previously written through
+                // unescaped, which made "\\e" ambiguous between an escape character and
+                // the two characters `\` and `e`: readable, but not replayable.
                 val escaped = chunk.data.joinToString("") { c ->
                     when {
+                        c == '\\' -> "\\\\"
                         c == '\u001b' -> "\\e"
                         c == '\n' -> "\\n"
                         c == '\r' -> "\\r"
                         c == '\t' -> "\\t"
-                        c.code < 32 -> "\\x${c.code.toString(16).padStart(2, '0')}"
+                        c.code < 32 || c.code == 127 -> "\\x${c.code.toString(16).padStart(2, '0')}"
                         else -> c.toString()
                     }
                 }

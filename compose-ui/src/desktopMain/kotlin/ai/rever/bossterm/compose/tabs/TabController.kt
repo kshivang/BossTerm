@@ -551,7 +551,7 @@ class TabController(
             tab = null,  // Will be set after tab creation
             maxChunks = settings.debugMaxChunks,
             maxSnapshots = settings.debugMaxSnapshots
-        )
+        ).also { it.startFileLoggingIfRequested(tabId ?: "tab") }
 
         // Create type-ahead model and manager if enabled
         val typeAheadModel = if (settings.typeAheadEnabled) {
@@ -938,7 +938,7 @@ class TabController(
             tab = null,  // Will be set after tab creation
             maxChunks = settings.debugMaxChunks,
             maxSnapshots = settings.debugMaxSnapshots
-        )
+        ).also { it.startFileLoggingIfRequested(tabId ?: "tab") }
 
         // Create type-ahead model and manager if enabled
         val tabCoroutineScope = CoroutineScope(SupervisorJob(parentScope?.coroutineContext?.get(Job)) + Dispatchers.Default)

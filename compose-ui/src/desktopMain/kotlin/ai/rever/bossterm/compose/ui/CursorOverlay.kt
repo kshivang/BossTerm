@@ -2,20 +2,19 @@ package ai.rever.bossterm.compose.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.unit.dp
 import ai.rever.bossterm.compose.rendering.CursorGlyph
 import ai.rever.bossterm.compose.rendering.GlyphBlink
 import ai.rever.bossterm.compose.rendering.isBlinkingShape
@@ -101,8 +100,8 @@ internal class TerminalPaintState {
  * from composition into a recomposition loop.
  */
 @Composable
-internal fun CursorOverlay(state: TerminalPaintState) {
-  Canvas(modifier = Modifier.padding(start = 4.dp, top = 4.dp).fillMaxSize().clipToBounds()) {
+internal fun CursorOverlay(state: TerminalPaintState, scrollbarWidth: Dp) {
+  Canvas(modifier = Modifier.terminalContentPadding(scrollbarWidth).fillMaxSize().clipToBounds()) {
     val f = state.cursorFrame ?: return@Canvas
     if (size.width < f.cellWidth || size.height < f.cellHeight) return@Canvas
 

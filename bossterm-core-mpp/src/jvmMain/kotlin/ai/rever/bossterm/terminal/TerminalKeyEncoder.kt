@@ -156,16 +156,17 @@ class TerminalKeyEncoder @JvmOverloads constructor(private val myPlatform: Platf
             return null
         }
 
+        // Cursor/function keys carry modifiers in CSI parameters, not an Escape prefix.
+        if (isCursorKey(key) || isFunctionKey(key)) {
+            return getCodeWithModifiers(bytes, modifiers)
+        }
+
         if ((myAltSendsEscape || alwaysSendEsc(key)) && (modifiers and InputEvent.ALT_MASK) != 0) {
             return insertCodeAt(bytes, CharUtils.makeCode(ESC), 0)
         }
 
         if ((myMetaSendsEscape || alwaysSendEsc(key)) && (modifiers and InputEvent.META_MASK) != 0) {
             return insertCodeAt(bytes, CharUtils.makeCode(ESC), 0)
-        }
-
-        if (isCursorKey(key) || isFunctionKey(key)) {
-            return getCodeWithModifiers(bytes, modifiers)
         }
 
         return bytes
@@ -191,11 +192,12 @@ class TerminalKeyEncoder @JvmOverloads constructor(private val myPlatform: Platf
 
         if (code > 0 && bytes.size > 2) {
             // SS3 needs to become CSI.
-            if (bytes[0].toInt() == ESC && bytes[1] == 'O'.code.toByte()) bytes[1] = '['.code.toByte()
+            val sequence = bytes.copyOf()
+            if (sequence[0].toInt() == ESC && sequence[1] == 'O'.code.toByte()) sequence[1] = '['.code.toByte()
             // If the control sequence has no parameters, it needs a default parameter.
             // Either way it also needs a semicolon separator.
             val prefix = if (bytes.size == 3) "1;" else ";"
-            return insertCodeAt(bytes, (prefix + code).toByteArray(), bytes.size - 1)
+            return insertCodeAt(sequence, (prefix + code).toByteArray(), sequence.size - 1)
         }
         return bytes
     }

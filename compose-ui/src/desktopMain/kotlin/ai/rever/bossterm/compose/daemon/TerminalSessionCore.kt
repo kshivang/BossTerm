@@ -5,6 +5,7 @@ import ai.rever.bossterm.compose.TerminalSessionDispatcher
 import ai.rever.bossterm.compose.TerminalSessionSlots
 import ai.rever.bossterm.compose.getPlatformServices
 import ai.rever.bossterm.compose.putBossTermGraphicsEnvironment
+import androidx.compose.ui.graphics.toArgb
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.tabs.ShellIntegrationInjector
@@ -72,7 +73,11 @@ class TerminalSessionCore(
     private val initRows = initialRows.coerceIn(1, MAX_GRID_DIM)
     private val styleState = StyleState()
     val textBuffer: TerminalTextBuffer = TerminalTextBuffer(initCols, initRows, styleState, settings.bufferMaxLines)
-    val display: HeadlessTerminalDisplay = HeadlessTerminalDisplay(initCols, initRows)
+    val display: HeadlessTerminalDisplay = HeadlessTerminalDisplay(
+        initCols, initRows,
+        ai.rever.bossterm.core.Color(settings.defaultForegroundColor.toArgb()),
+        ai.rever.bossterm.core.Color(settings.defaultBackgroundColor.toArgb()),
+    )
     val terminal: BossTerminal = BossTerminal(display, textBuffer, styleState)
     val dataStream: BlockingTerminalDataStream =
         BlockingTerminalDataStream(performanceMode = PerformanceMode.fromString(settings.performanceMode))

@@ -1,6 +1,9 @@
 package ai.rever.bossterm.compose
 
 import ai.rever.bossterm.compose.rendering.FrameLatencyProbe
+import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.core.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.State
 import ai.rever.bossterm.core.util.TermSize
@@ -41,7 +44,21 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * See `benchmark_results/LATENCY_BASELINE_2026-08-27.md`.
  */
-class ComposeTerminalDisplay : TerminalDisplay {
+class ComposeTerminalDisplay @JvmOverloads constructor(
+    initialSettings: TerminalSettings = TerminalSettings(),
+) : TerminalDisplay {
+    @Volatile private var colorSettings = initialSettings
+
+    // OSC 10/11 queries must report the colors actually used by the renderer.
+    override val windowForeground: Color
+        get() = Color(colorSettings.defaultForegroundColor.toArgb())
+    override val windowBackground: Color
+        get() = Color(colorSettings.defaultBackgroundColor.toArgb())
+
+    fun updateColorSettings(settings: TerminalSettings) {
+        colorSettings = settings
+    }
+
 
     /**
      * Redraw request. Carries no priority any more: with the debounce gone, an "immediate"

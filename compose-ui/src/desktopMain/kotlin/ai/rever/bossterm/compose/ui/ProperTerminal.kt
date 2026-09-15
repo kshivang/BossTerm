@@ -293,6 +293,7 @@ fun ProperTerminal(
   val terminal = tab.terminal
   val textBuffer = tab.textBuffer
   val display = tab.display
+  SideEffect { display.updateColorSettings(settings) }
   val gridStabilityTracker = remember(terminal) { GridStabilityTracker() }
 
   DisposableEffect(terminal) {

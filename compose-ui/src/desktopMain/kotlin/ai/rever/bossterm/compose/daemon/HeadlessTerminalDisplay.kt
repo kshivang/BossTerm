@@ -21,7 +21,12 @@ import kotlinx.coroutines.flow.asStateFlow
  * ([ai.rever.bossterm.compose.share.MirrorShare]). The `StateFlow`s let the daemon relay title /
  * size / cursor to attached clients without touching Compose or `Dispatchers.Main`.
  */
-class HeadlessTerminalDisplay(initialCols: Int = 80, initialRows: Int = 24) : TerminalDisplay {
+class HeadlessTerminalDisplay(
+    initialCols: Int = 80,
+    initialRows: Int = 24,
+    override val windowForeground: ai.rever.bossterm.core.Color? = null,
+    override val windowBackground: ai.rever.bossterm.core.Color? = null,
+) : TerminalDisplay {
 
     private val _windowTitle = MutableStateFlow("")
     val windowTitleFlow: StateFlow<String> = _windowTitle.asStateFlow()

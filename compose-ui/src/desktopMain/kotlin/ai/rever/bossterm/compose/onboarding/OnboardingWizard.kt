@@ -133,14 +133,25 @@ enum class ShellCustomizationChoice(
     KEEP_EXISTING("keep", "Keep Existing", "You already have customization installed", false, false)
 }
 
+/** Package manager setup requested before installing the selected command-line tools. */
+enum class PackageManagerChoice(val displayName: String) {
+    AUTO("Recommended for this computer"),
+    HOMEBREW("Homebrew"),
+    WINGET("winget"),
+    CHOCOLATEY("Chocolatey"),
+    NONE("Do not install a package manager"),
+}
+
 /**
  * User selections data class.
  */
 data class OnboardingSelections(
+    val packageManager: PackageManagerChoice = PackageManagerChoice.AUTO,
     val shell: ShellChoice = ShellChoice.ZSH,
     val shellCustomization: ShellCustomizationChoice = ShellCustomizationChoice.STARSHIP,
     val installGit: Boolean = true,
     val installGitHubCLI: Boolean = true,
+    val authenticateGitHub: Boolean = false,
     val aiAssistants: Set<String> = AIAssistants.DEFAULT_ONBOARDING_SELECTION
 )
 
@@ -200,7 +211,7 @@ data class InstalledTools(
  * @param settingsManager Settings manager for persisting onboardingCompleted
  */
 @Composable
-fun OnboardingWizard(
+private fun LegacyOnboardingWizard(
     onDismiss: () -> Unit,
     onComplete: () -> Unit,
     settingsManager: SettingsManager
@@ -827,15 +838,17 @@ private fun getRestartCommand(): String? {
  * @param targetOs which platform's branch to emit. Defaults to the running OS; tests pass an
  *   explicit value so the Windows branch is covered from any host — it previously wasn't reachable
  *   in tests at all, which is how a `curl … | bash` line ended up in the PowerShell chain.
+ * @param currentShell current login shell name, separated so an installed-shell change is testable.
  * @return The combined installation command, or an error message if building fails
  */
 fun buildInstallCommand(
     selections: OnboardingSelections,
     installed: InstalledTools,
-    targetOs: TargetOs = TargetOs.current()
+    targetOs: TargetOs = TargetOs.current(),
+    currentShell: String = System.getenv("SHELL").orEmpty().substringAfterLast('/'),
 ): String {
     return try {
-        buildInstallCommandInternal(selections, installed, targetOs)
+        buildInstallCommandInternal(selections, installed, targetOs, currentShell)
     } catch (e: Exception) {
         "echo 'Error building installation command: ${e.message?.replace("'", "\\'")}' && exit 1"
     }
@@ -885,7 +898,8 @@ private fun nonFatalInstall(displayName: String, command: String, isWindows: Boo
 private fun buildInstallCommandInternal(
     selections: OnboardingSelections,
     installed: InstalledTools,
-    targetOs: TargetOs
+    targetOs: TargetOs,
+    currentShell: String,
 ): String {
     val sudoCommands = mutableListOf<String>()
     val userCommands = mutableListOf<String>()
@@ -938,8 +952,9 @@ private fun buildInstallCommandInternal(
                 else -> sudoCommands.add(getLinuxInstall(shellCmd))
             }
         }
-        // Set selected shell as default using chsh (Unix only, not needed on Windows)
-        if (!isWindows && !shellInstalled) {
+        // Set the selected shell as default even when it was already installed. The old
+        // `!shellInstalled` condition made choosing an existing Bash/Fish entry a silent no-op.
+        if (!isWindows && currentShell != shellCmd) {
             sudoCommands.add("sudo chsh -s \$(which $shellCmd) \$USER && echo '✓ Default shell changed to $shellCmd'")
         }
     }
@@ -1226,8 +1241,12 @@ private fun buildInstallCommandInternal(
         (isMac && aiToInstall.isNotEmpty()))
     if (needsSudo) {
         allCommands.add("echo '🔐 Authenticating administrator access...'")
-        // Use sudo -S to read password from stdin (provided via env var)
-        allCommands.add("echo \"\$BOSSTERM_SUDO_PWD\" | sudo -S -v 2>/dev/null")
+        // Use the ephemeral environment value when supplied; otherwise let the attached PTY
+        // present sudo's normal interactive password prompt.
+        allCommands.add(
+            "if [ -n \"\$BOSSTERM_SUDO_PWD\" ]; then " +
+                "printf '%s\\n' \"\$BOSSTERM_SUDO_PWD\" | sudo -S -v; else sudo -v; fi",
+        )
         // Keep sudo credentials alive in background
         allCommands.add("(while true; do sudo -n true; sleep 50; kill -0 \"\$\$\" 2>/dev/null || exit; done) &")
         allCommands.add("SUDO_KEEPALIVE_PID=\$!")

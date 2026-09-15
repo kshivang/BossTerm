@@ -392,6 +392,9 @@ fun EmbeddableTerminal(
             tab = session,
             isActiveTab = true,
             autoFocus = autoFocus,
+            // EmbeddableTerminalState owns this process. An externally-owned state must keep the
+            // PTY alive when the renderer leaves composition (for example, backgrounded setup).
+            killProcessOnDispose = false,
             sharedFont = terminalFont,
             onTabTitleChange = { onTitleChange?.invoke(it) },
             onNewWindow = onNewWindow,
@@ -598,6 +601,24 @@ class EmbeddableTerminalState {
      */
     val isDisposed: Boolean
         get() = session == null && initialized
+
+    /** Stable id of this live PTY, suitable for terminal-tool targeting. */
+    val terminalId: String?
+        get() = session?.id
+
+    data class Scrollback(val lines: List<String>, val totalAvailable: Int)
+
+    /** Plain terminal history for a host tool targeting this embedded PTY. */
+    fun readScrollback(maxLines: Int = 200): Scrollback? {
+        val snapshot = session?.textBuffer?.createSnapshot() ?: return null
+        val total = snapshot.historyLinesCount + snapshot.height
+        val take = maxLines.coerceAtLeast(1).coerceAtMost(total)
+        val lines = ArrayList<String>(take)
+        for (row in (snapshot.height - take) until snapshot.height) {
+            lines += snapshot.getLine(row).text.trimEnd()
+        }
+        return Scrollback(lines, total)
+    }
 
     /**
      * Current scroll offset in lines from the bottom.

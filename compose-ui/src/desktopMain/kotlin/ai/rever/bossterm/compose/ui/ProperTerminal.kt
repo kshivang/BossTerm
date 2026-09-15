@@ -233,6 +233,7 @@ fun ProperTerminal(
   tab: TerminalSession,
   isActiveTab: Boolean,
   autoFocus: Boolean = false,  // Request focus after a delay (useful for dialogs)
+  killProcessOnDispose: Boolean = true,
   sharedFont: FontFamily,
   onTabTitleChange: (String) -> Unit,
   onNewTab: (() -> Unit)? = null,
@@ -2685,8 +2686,10 @@ fun ProperTerminal(
         if (previousHoveredHyperlink != null) {
           tab.hoverConsumers.forEach { it.onMouseExited() }
         }
-        scope.launch {
-          processHandle?.kill()
+        if (killProcessOnDispose) {
+          scope.launch {
+            processHandle?.kill()
+          }
         }
       }
     }

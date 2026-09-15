@@ -30,6 +30,24 @@ class OnboardingInstallScriptTest {
     private fun defaultScript(): String =
         buildInstallCommand(OnboardingSelections(), InstalledTools())
 
+    @Test
+    fun `choosing an already installed shell still changes the default`() {
+        val script = buildInstallCommand(
+            OnboardingSelections(
+                shell = ShellChoice.FISH,
+                shellCustomization = ShellCustomizationChoice.KEEP_EXISTING,
+                installGit = false,
+                installGitHubCLI = false,
+                aiAssistants = emptySet(),
+            ),
+            InstalledTools(fish = true),
+            TargetOs.MAC,
+            currentShell = "zsh",
+        )
+
+        assertTrue(script.contains("sudo chsh -s \$(which fish) \$USER"), script)
+    }
+
     /** The default script plus Codex, whose registry entry installs via `npm install -g`. */
     private fun scriptWithNpmAssistant(): String =
         buildInstallCommand(

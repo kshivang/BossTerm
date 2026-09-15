@@ -151,6 +151,7 @@ kotlin {
 
         val desktopTest by getting {
             dependencies {
+                implementation(compose.desktop.uiTestJUnit4)
                 // In-process ktor app for the streamable HTTP MCP endpoint
                 // contract test (StreamableMcpSessionsTest).
                 implementation("io.ktor:ktor-server-test-host:3.2.3")

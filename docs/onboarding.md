@@ -1,274 +1,105 @@
-# Welcome Wizard (Onboarding)
+# BOSS Term setup
 
-BossTerm includes a Welcome Wizard that guides first-time users through setting up their terminal environment. The wizard helps users install shells, customization tools, version control, and AI coding assistants.
+BOSS Term starts with a confirmation screen for first-run setup. It detects the current shell and
+installed tools and shows an illustrative prompt preview above the setup choices. The preview
+responds to the selected shell and customization; it does not reproduce the user's existing theme.
+Starship is selected by default for compatible shells, even when another prompt framework is
+detected. **Keep existing** remains available as an explicit choice. The user can review:
 
-## Features
+- the default shell;
+- the shell prompt (Starship is recommended on a fresh Unix install);
+- the detected package manager used by setup;
+- administrator authorization for Unix installs (kept only for the active setup session);
+- Git and GitHub CLI;
+- every registered AI coding agent and local model runtime.
 
-- **Shell Selection**: Choose between Zsh, Bash, or Fish
-- **Shell Customization**: Install Starship, Oh My Zsh, or Prezto
-- **Version Control**: Install Git and GitHub CLI
-- **AI Assistants**: Install Claude Code, Gemini CLI, Codex, or OpenCode
-- **GitHub Authentication**: Authenticate with GitHub CLI after installation
-- **Progress Tracking**: Embedded terminal shows installation progress
+Package manager, shell, and shell customization share a row. Version-control tools and AI tools
+appear as checkbox groups, with installed tools marked. Smaller windows and larger fonts allow
+scrolling while the setup actions remain visible.
 
-## Automatic First-Run
+Choosing **Set up BOSS Term** keeps the wizard open and moves it to an interactive installation
+terminal. The current task and progress appear above the terminal; the full task list expands on
+request. Users can type into installer prompts. The controller runs installation and verification
+commands in the same terminal session. A failed task stops the sequence and remains available in
+`failureMessage` and the bounded `failureOutput` diagnostic, with a **Try again** action.
 
-The wizard automatically appears on first launch when `onboardingCompleted` is `false` in settings. After completion (or skipping), this flag is set to `true` and the wizard won't auto-show again.
+Successful setup opens a dedicated completion screen after any requested GitHub sign-in has
+finished or been explicitly skipped. It stays visible until acknowledged; failed or unfinished
+setup does not show this success screen.
 
-## Manual Access
+`BossTermSetupController` owns the installation outside the dialog's Compose lifecycle and publishes
+task state through `BossTermSetupController.state`. An embedder can use **Continue in background** to
+dismiss only the dialog while the same work continues, then call `bringToForeground()` and render the
+wizard again. BOSS exposes that state as a clickable bottom-bar progress item; clicking it reopens the
+same setup session and terminal process. Closing the terminal view does not dispose this
+controller-owned process.
 
-Users can access the wizard anytime from **Help > Welcome Wizard** in the menu bar.
+The wizard appears while `TerminalSettings.onboardingCompleted` is false and remains available from
+**Help > Welcome Wizard**. Choosing **Not now** also marks first-run onboarding complete.
 
-## Using in Your Application
-
-### Basic Usage
-
-```kotlin
-import ai.rever.bossterm.compose.onboarding.OnboardingWizard
-import ai.rever.bossterm.compose.settings.SettingsManager
-
-@Composable
-fun MyApp() {
-    val settingsManager = remember { SettingsManager.instance }
-    val settings by settingsManager.settings.collectAsState()
-    var showWizard by remember { mutableStateOf(false) }
-
-    // Show wizard on first launch
-    LaunchedEffect(Unit) {
-        if (!settings.onboardingCompleted) {
-            showWizard = true
-        }
-    }
-
-    // Your main UI
-    MainContent()
-
-    // Wizard dialog
-    if (showWizard) {
-        OnboardingWizard(
-            onDismiss = { showWizard = false },
-            onComplete = { showWizard = false },
-            settingsManager = settingsManager
-        )
-    }
-}
-```
-
-### With Menu Bar
+## Embedding
 
 ```kotlin
-MenuBar {
-    Menu("Help") {
-        Item("Welcome Wizard...", onClick = { showWizard = true })
-    }
-}
-```
-
-### Full Example
-
-See the [tabbed-example](../tabbed-example) module for a complete implementation:
-
-```bash
-./gradlew :tabbed-example:run
-```
-
-## API Reference
-
-### OnboardingWizard
-
-The main wizard composable.
-
-```kotlin
-@Composable
-fun OnboardingWizard(
-    onDismiss: () -> Unit,
-    onComplete: () -> Unit,
-    settingsManager: SettingsManager
+OnboardingWizard(
+    onDismiss = { showWizard = false },
+    onComplete = { showWizard = false },
+    settingsManager = SettingsManager.instance,
 )
 ```
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `onDismiss` | `() -> Unit` | Called when wizard is closed or skipped |
-| `onComplete` | `() -> Unit` | Called when wizard completes successfully |
-| `settingsManager` | `SettingsManager` | Settings manager for persisting `onboardingCompleted` |
+An embedder that exposes a way to reopen the same controller session can pass
+`canRunInBackground = true`. This capability is independent of optional Fluck Agent supervision.
 
-### Wizard Steps
+The UI follows the active `BossUiTheme`, including the terminal preview.
 
-The wizard guides users through these steps:
+## Optional supervision
 
-1. **Welcome**: Introduction and option to skip
-2. **Shell Selection**: Choose Zsh, Bash, Fish, or keep current
-3. **Shell Customization**: Choose Starship, Oh My Zsh, Prezto, or none
-4. **Version Control**: Select Git and/or GitHub CLI
-5. **AI Assistants**: Multi-select Claude Code, Gemini CLI, Codex, OpenCode
-6. **Review**: Summary of selections before installation
-7. **Installing**: Embedded terminal showing installation progress
-8. **GitHub Auth**: (Conditional) Run `gh auth login` if GitHub CLI was installed
-9. **Complete**: Success message with Relaunch/Dismiss buttons
-
-### Data Classes
-
-#### OnboardingSelections
-
-Holds user selections during the wizard:
+Embedders can supply a `BossTermSetupSupervisor`:
 
 ```kotlin
-data class OnboardingSelections(
-    val shell: ShellChoice = ShellChoice.ZSH,
-    val shellCustomization: ShellCustomizationChoice = ShellCustomizationChoice.STARSHIP,
-    val installGit: Boolean = true,
-    val installGitHubCLI: Boolean = true,
-    val aiAssistants: Set<String> = setOf("claude-code", "gemini-cli", "codex", "opencode")
+OnboardingWizard(
+    onDismiss = { showWizard = false },
+    onComplete = { showWizard = false },
+    settingsManager = SettingsManager.instance,
+    supervisor = hostSupervisor,
 )
 ```
 
-#### InstalledTools
+At setup start, the controller calls `start`. A `true` response enables progress events and up to two
+repair decisions after a task failure. Repair responses are deliberately bounded:
 
-Detected installed tools:
+- `RETRY` reruns the same code-owned task;
+- `REFRESH_PACKAGES_AND_RETRY` refreshes package metadata, then reruns the same task;
+- `STOP` leaves the task in `NEEDS_ATTENTION`.
 
-```kotlin
-data class InstalledTools(
-    val zsh: Boolean,
-    val bash: Boolean,
-    val fish: Boolean,
-    val starship: Boolean,
-    val ohMyZsh: Boolean,
-    val prezto: Boolean,
-    val git: Boolean,
-    val gh: Boolean,
-    val claudeCode: Boolean,
-    val gemini: Boolean,
-    val codex: Boolean,
-    val opencode: Boolean
-)
-```
+The supervisor never provides a shell command. Administrator passwords, authentication prompts,
+and other user decisions cannot be approved through this interface.
+The administrator password is passed only to the local installer process. It is not persisted,
+rendered in progress output, or included in supervisor events.
 
-### Enums
+### Ask Fluck to debug and fix
 
-#### ShellChoice
+During installation or after a failure, the user can request an interactive Fluck debugging
+session. This explicit handoff is separate from automatic, bounded repair decisions. The
+controller pauses its command queue and gives the host the actual embedded terminal ID, the
+current task, and recent redacted output. If an active command cannot be interrupted cleanly,
+the handoff reports an error instead of allowing competing terminal commands.
 
-```kotlin
-enum class ShellChoice(val id: String, val displayName: String, val description: String) {
-    ZSH("zsh", "Zsh", "Modern shell with powerful features"),
-    BASH("bash", "Bash", "Classic Unix shell, widely compatible"),
-    FISH("fish", "Fish", "User-friendly shell with autosuggestions"),
-    KEEP_CURRENT("keep", "Keep Current", "Use your current default shell")
-}
-```
+BOSS exposes dedicated setup-terminal tools for status, scrollback, input, and signals. Input
+and signals require the current terminal ID and debugging request ID, and only work while that
+handoff is active. Fluck opens a conversation for the repair. When the turn finishes, the user
+chooses **Resume and verify**; the controller checks the step's postcondition before continuing
+the remaining setup. Finishing an agent turn alone does not mark installation successful.
 
-#### ShellCustomizationChoice
+## Platform behavior
 
-```kotlin
-enum class ShellCustomizationChoice(
-    val id: String,
-    val displayName: String,
-    val description: String,
-    val requiresZsh: Boolean
-) {
-    STARSHIP("starship", "Starship", "Fast, customizable prompt for any shell", false),
-    OH_MY_ZSH("oh-my-zsh", "Oh My Zsh", "Framework with 300+ plugins", true),
-    PREZTO("prezto", "Prezto", "Lightweight Zsh framework", true),
-    NONE("none", "None", "Keep the default shell prompt", false),
-    KEEP_EXISTING("keep", "Keep Existing", "You already have customization installed", false)
-}
-```
+| Platform | Package manager used by setup |
+|---|---|
+| macOS | Homebrew |
+| Debian/Ubuntu | APT |
+| Fedora/RHEL | DNF |
+| Arch | Pacman |
+| Windows | WinGet, with Chocolatey fallback |
 
-## Conflict Handling
-
-The wizard automatically handles conflicts between shell customization tools:
-
-- **Installing Starship**: Uninstalls Oh My Zsh and Prezto if present
-- **Installing Oh My Zsh**: Uninstalls Prezto and Starship if present
-- **Installing Prezto**: Uninstalls Oh My Zsh and Starship if present
-- **Selecting None**: Uninstalls all existing customization tools
-
-## Platform Support
-
-The wizard detects the platform and uses appropriate installation commands:
-
-| Platform | Package Manager |
-|----------|-----------------|
-| macOS | Homebrew (`brew install`) |
-| Linux (Debian/Ubuntu) | APT (`sudo apt install`) |
-| Linux (Fedora/RHEL) | DNF (`sudo dnf install`) |
-| Linux (Arch) | Pacman (`sudo pacman -S`) |
-| Windows | WinGet (`winget install`) |
-
-### Node.js Handling
-
-For AI assistants (npm-based), the wizard:
-
-1. Checks if npm is available
-2. If not on macOS: installs Node.js via Homebrew
-3. If not on Linux: installs nvm, then Node.js LTS
-4. Installs the selected AI assistants via `npm install -g`
-
-## Settings Integration
-
-The wizard uses `SettingsManager` to persist the `onboardingCompleted` flag:
-
-```kotlin
-// In TerminalSettings
-data class TerminalSettings(
-    // ... other settings
-    val onboardingCompleted: Boolean = false
-)
-```
-
-After the wizard completes (or is skipped), this flag is set to `true`:
-
-```kotlin
-settingsManager.updateSetting {
-    copy(onboardingCompleted = true)
-}
-```
-
-## Customization
-
-### Custom Default Selections
-
-Override the default selections by modifying `OnboardingSelections`:
-
-```kotlin
-// Default selections (all AI assistants selected, Git/GitHub CLI selected)
-data class OnboardingSelections(
-    val shell: ShellChoice = ShellChoice.ZSH,
-    val shellCustomization: ShellCustomizationChoice = ShellCustomizationChoice.STARSHIP,
-    val installGit: Boolean = true,
-    val installGitHubCLI: Boolean = true,
-    val aiAssistants: Set<String> = setOf("claude-code", "gemini-cli", "codex", "opencode")
-)
-```
-
-### Skipping the Wizard
-
-To programmatically mark onboarding as completed (skip the wizard):
-
-```kotlin
-LaunchedEffect(Unit) {
-    settingsManager.updateSetting {
-        copy(onboardingCompleted = true)
-    }
-}
-```
-
-### Resetting the Wizard
-
-To show the wizard again (for testing or user request):
-
-```kotlin
-// Reset the flag
-settingsManager.updateSetting {
-    copy(onboardingCompleted = false)
-}
-
-// Then show the wizard
-showWizard = true
-```
-
-## Related Documentation
-
-- [Embedding Guide](embedding.md) - Embed a single terminal
-- [Tabbed Terminal Guide](tabbed-terminal.md) - Full-featured tabbed terminal
-- [Main README](../README.md) - Overview and installation
+Changing to an already installed shell still emits the `chsh` operation; earlier versions only
+changed the default when the selected shell also needed installation.

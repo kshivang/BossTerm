@@ -486,7 +486,7 @@ class TabController(
         // Initialize terminal components
         val styleState = StyleState()
         val textBuffer = TerminalTextBuffer(80, 24, styleState, settings.bufferMaxLines)
-        val display = ComposeTerminalDisplay()
+        val display = ComposeTerminalDisplay(settings)
         val terminal = BossTerminal(display, textBuffer, styleState)
 
         // CRITICAL: Register ModelListener to trigger redraws when buffer content changes
@@ -722,7 +722,7 @@ class TabController(
     ): TerminalTab {
         val styleState = StyleState()
         val textBuffer = TerminalTextBuffer(80, 24, styleState, settings.bufferMaxLines)
-        val display = ComposeTerminalDisplay()
+        val display = ComposeTerminalDisplay(settings)
         val terminal = BossTerminal(display, textBuffer, styleState)
         terminal.setCharacterEncoding(settings.characterEncoding)
         val modelListener = object : ai.rever.bossterm.terminal.model.TerminalModelListener {
@@ -880,7 +880,7 @@ class TabController(
         // Initialize terminal components (same as createTab)
         val styleState = StyleState()
         val textBuffer = TerminalTextBuffer(80, 24, styleState, settings.bufferMaxLines)
-        val display = ComposeTerminalDisplay()
+        val display = ComposeTerminalDisplay(settings)
         val terminal = BossTerminal(display, textBuffer, styleState)
 
         // Register ModelListener to trigger redraws when buffer content changes
@@ -1134,7 +1134,7 @@ class TabController(
         // Initialize terminal components (same as createTab)
         val styleState = StyleState()
         val textBuffer = TerminalTextBuffer(80, 24, styleState, settings.bufferMaxLines)
-        val display = ComposeTerminalDisplay()
+        val display = ComposeTerminalDisplay(settings)
         val terminal = BossTerminal(display, textBuffer, styleState)
 
         // IMPORTANT: Store reference for cleanup in dispose()

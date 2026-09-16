@@ -15,6 +15,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class SessionHost(
     private val settings: TerminalSettings,
+    private val colorSettingsProvider: () -> TerminalSettings = { settings },
 ) {
     private val log = LoggerFactory.getLogger(SessionHost::class.java)
     private val sessions = ConcurrentHashMap<String, TerminalSessionCore>()
@@ -76,6 +77,7 @@ class SessionHost(
             arguments = arguments,
             initialCols = cols,
             initialRows = rows,
+            colorSettingsProvider = colorSettingsProvider,
         )
         sessions[core.id] = core
         // Reap on exit so a dead shell doesn't linger in the registry. Also collapses the session

@@ -915,7 +915,7 @@ private fun createTerminalSession(
 ): TerminalTab {
     val styleState = StyleState()
     val textBuffer = TerminalTextBuffer(80, 24, styleState, settings.bufferMaxLines)
-    val display = ComposeTerminalDisplay()
+    val display = ComposeTerminalDisplay(settings)
     val terminal = BossTerminal(display, textBuffer, styleState)
 
     // Register buffer listener for redraws

@@ -1,5 +1,8 @@
 package ai.rever.bossterm.compose.daemon
 
+import ai.rever.bossterm.compose.settings.TerminalSettings
+import ai.rever.bossterm.core.Color
+import androidx.compose.ui.graphics.toArgb
 import ai.rever.bossterm.core.util.TermSize
 import ai.rever.bossterm.terminal.CursorShape
 import ai.rever.bossterm.terminal.RequestOrigin
@@ -21,7 +24,24 @@ import kotlinx.coroutines.flow.asStateFlow
  * ([ai.rever.bossterm.compose.share.MirrorShare]). The `StateFlow`s let the daemon relay title /
  * size / cursor to attached clients without touching Compose or `Dispatchers.Main`.
  */
-class HeadlessTerminalDisplay(initialCols: Int = 80, initialRows: Int = 24) : TerminalDisplay {
+class HeadlessTerminalDisplay(
+    initialCols: Int = 80,
+    initialRows: Int = 24,
+    windowForeground: Color? = null,
+    windowBackground: Color? = null,
+    private val colorSettingsProvider: (() -> TerminalSettings)? = null,
+) : TerminalDisplay {
+
+    private val initialForeground = windowForeground
+    private val initialBackground = windowBackground
+    override val windowForeground: Color?
+        get() = colorSettingsProvider?.invoke()?.let {
+            Color(it.defaultForegroundColor.toArgb())
+        } ?: initialForeground
+    override val windowBackground: Color?
+        get() = colorSettingsProvider?.invoke()?.let {
+            Color(it.defaultBackgroundColor.toArgb())
+        } ?: initialBackground
 
     private val _windowTitle = MutableStateFlow("")
     val windowTitleFlow: StateFlow<String> = _windowTitle.asStateFlow()

@@ -100,8 +100,8 @@ internal class TerminalPaintState {
  * from composition into a recomposition loop.
  */
 @Composable
-internal fun CursorOverlay(state: TerminalPaintState, scrollbarWidth: Dp) {
-  Canvas(modifier = Modifier.terminalContentPadding(scrollbarWidth).fillMaxSize().clipToBounds()) {
+internal fun CursorOverlay(state: TerminalPaintState, scrollbarWidth: Dp, rightGap: Dp) {
+  Canvas(modifier = Modifier.terminalContentPadding(scrollbarWidth, rightGap).fillMaxSize().clipToBounds()) {
     val f = state.cursorFrame ?: return@Canvas
     if (size.width < f.cellWidth || size.height < f.cellHeight) return@Canvas
 

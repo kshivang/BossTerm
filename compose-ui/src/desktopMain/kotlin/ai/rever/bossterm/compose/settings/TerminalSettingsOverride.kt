@@ -75,6 +75,8 @@ data class TerminalSettingsOverride(
 
     // ===== Scrollbar Settings =====
     val showScrollbar: Boolean? = null,
+    val terminalRightGapEnabled: Boolean? = null,
+    val terminalRightGap: Float? = null,
     val scrollbarAlwaysVisible: Boolean? = null,
     val scrollbarWidth: Float? = null,
     val scrollbarColor: String? = null,
@@ -229,6 +231,8 @@ fun TerminalSettings.withOverrides(override: TerminalSettingsOverride?): Termina
 
         // Scrollbar Settings
         showScrollbar = override.showScrollbar ?: showScrollbar,
+        terminalRightGapEnabled = override.terminalRightGapEnabled ?: terminalRightGapEnabled,
+        terminalRightGap = override.terminalRightGap ?: terminalRightGap,
         scrollbarAlwaysVisible = override.scrollbarAlwaysVisible ?: scrollbarAlwaysVisible,
         scrollbarWidth = override.scrollbarWidth ?: scrollbarWidth,
         scrollbarColor = override.scrollbarColor ?: scrollbarColor,

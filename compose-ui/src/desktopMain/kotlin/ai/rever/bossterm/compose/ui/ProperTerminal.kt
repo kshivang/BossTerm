@@ -285,6 +285,7 @@ fun ProperTerminal(
   // Settings integration
   val settingsManager = remember { SettingsManager.instance }
   val settings by settingsManager.settings.collectAsState()
+  val terminalRightGap = settings.rightEdgeGap()
   val terminalScrollbarWidth = if (settings.showScrollbar) settings.scrollbarWidth.dp else 0.dp
 
   // Active theme, used as a fallback cursor color when no app has set one via OSC 12
@@ -1042,7 +1043,7 @@ fun ProperTerminal(
           if (tab.isRemote) {
             (tab as? ai.rever.bossterm.compose.tabs.TerminalTab)?.let { t ->
               if (cellWidth > 0f && cellHeight > 0f) {
-                val contentSize = terminalContentSize(coordinates.size, density, terminalScrollbarWidth)
+                val contentSize = terminalContentSize(coordinates.size, density, terminalScrollbarWidth, terminalRightGap)
                 val w = contentSize.width
                 val h = contentSize.height
                 if (w >= 10 && h >= 10) {
@@ -1063,7 +1064,7 @@ fun ProperTerminal(
           // Detect window size changes and resize terminal accordingly
           // Note: This fires frequently, but we validate dimensions carefully to prevent crashes
           // Match both canvases at every display density, including the trailing margin.
-          val contentSize = terminalContentSize(coordinates.size, density, terminalScrollbarWidth)
+          val contentSize = terminalContentSize(coordinates.size, density, terminalScrollbarWidth, terminalRightGap)
           val newWidth = contentSize.width
           val newHeight = contentSize.height
 
@@ -2153,7 +2154,7 @@ fun ProperTerminal(
             fillIsAppSet = appCursorColor != null,
           )
 
-          Canvas(modifier = Modifier.terminalContentPadding(terminalScrollbarWidth).fillMaxSize().clipToBounds()) {
+          Canvas(modifier = Modifier.terminalContentPadding(terminalScrollbarWidth, terminalRightGap).fillMaxSize().clipToBounds()) {
             // Guard against invalid canvas sizes during resize - prevents drawText constraint failures
             if (size.width < cellWidth || size.height < cellHeight) return@Canvas
 
@@ -2312,7 +2313,7 @@ fun ProperTerminal(
                 ?.let { ImageRenderer.getOrDecodeImage(it) },
             )
           }
-          CursorOverlay(paintState, terminalScrollbarWidth)
+          CursorOverlay(paintState, terminalScrollbarWidth, terminalRightGap)
 
           // IME (Input Method Editor) handler for CJK input
           // Provides invisible TextField for IME composition (Pinyin, Hiragana, etc.)

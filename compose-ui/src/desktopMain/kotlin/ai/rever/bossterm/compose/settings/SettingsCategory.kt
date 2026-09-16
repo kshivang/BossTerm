@@ -31,7 +31,7 @@ enum class SettingsCategory(
     SCROLLBAR(
         displayName = "Scrollbar",
         icon = Icons.Default.Menu,
-        description = "Scrollbar appearance and markers"
+        description = "Scrollbar appearance, terminal spacing and markers"
     ),
     COMMAND_BLOCKS(
         displayName = "Command Blocks",

@@ -52,6 +52,27 @@ fun ScrollbarSettingsSection(
 
         Spacer(modifier = Modifier.height(24.dp))
 
+        SettingsSection(title = "Terminal spacing") {
+            SettingsToggle(
+                label = "Right edge gap",
+                checked = settings.terminalRightGapEnabled,
+                onCheckedChange = { onSettingsChange(settings.copy(terminalRightGapEnabled = it)) },
+                description = "Leave extra space after terminal text, before the scrollbar or window edge"
+            )
+            SettingsSlider(
+                label = "Gap width",
+                value = settings.terminalRightGap,
+                onValueChange = { onSettingsChange(settings.copy(terminalRightGap = it)) },
+                onValueChangeFinished = onSettingsSave,
+                valueRange = 0f..32f,
+                steps = 31,
+                valueDisplay = { "${it.toInt()} dp" },
+                enabled = settings.terminalRightGapEnabled
+            )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
         // Colors
         SettingsSection(title = "Colors") {
             ColorSetting(

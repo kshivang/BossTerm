@@ -1,6 +1,9 @@
 package ai.rever.bossterm.compose.ui
 
 import ai.rever.bossterm.compose.SelectionMode
+import ai.rever.bossterm.compose.settings.TerminalSettingsOverride
+import ai.rever.bossterm.compose.settings.withOverrides
+import kotlinx.serialization.json.Json
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.terminal.CursorShape
 import ai.rever.bossterm.terminal.TerminalColor
@@ -34,6 +37,31 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import kotlin.test.assertEquals
 
 class TerminalViewportTest {
+    @Test fun gapSettingsPreserveDefaultsAndRoundTripOverrides() {
+        val defaults = Json.decodeFromString(TerminalSettings.serializer(), "{}")
+        assertEquals(4.dp, defaults.rightEdgeGap())
+        val custom = defaults.withOverrides(TerminalSettingsOverride(terminalRightGap = 12f))
+        val restored = Json.decodeFromString(TerminalSettings.serializer(),
+            Json.encodeToString(TerminalSettings.serializer(), custom))
+        assertEquals(12.dp, restored.rightEdgeGap())
+        val disabled = restored.withOverrides(TerminalSettingsOverride(terminalRightGapEnabled = false))
+        assertEquals(0.dp, disabled.rightEdgeGap())
+        assertEquals(12f, disabled.terminalRightGap)
+        for (scale in listOf(1f, 1.25f, 2f)) {
+            val density = Density(scale)
+            val outer = IntSize(640, 480)
+            for (scrollbar in listOf(0.dp, 14.dp)) {
+                for (settings in listOf(defaults, restored, disabled)) {
+                    val size = terminalContentSize(outer, density, scrollbar, settings.rightEdgeGap())
+                    val expected = with(density) {
+                        640 - 4.dp.roundToPx() - (scrollbar + settings.rightEdgeGap()).roundToPx()
+                    }
+                    assertEquals(expected, size.width)
+                }
+            }
+        }
+    }
+
     @Test fun contentSizeUsesPhysicalInsetsAtFractionalAndRetinaDensities() {
         for (scale in listOf(1f, 1.25f, 1.5f, 1.75f, 2f)) {
             val density = Density(scale)

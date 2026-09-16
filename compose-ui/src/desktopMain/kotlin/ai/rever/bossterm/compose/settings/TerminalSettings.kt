@@ -375,7 +375,7 @@ data class TerminalSettings(
     val terminalRightGapEnabled: Boolean = false,
 
     /** Right edge gap in density-independent pixels. */
-    val terminalRightGap: Float = 4f,
+    val terminalRightGap: Float = 2f,
 
     /**
      * Always show scrollbar (vs. auto-hide on inactivity)

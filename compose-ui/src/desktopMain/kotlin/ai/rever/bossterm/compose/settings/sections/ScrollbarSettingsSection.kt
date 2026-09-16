@@ -31,6 +31,14 @@ fun ScrollbarSettingsSection(
             )
 
             SettingsToggle(
+                label = "Show scrollbar gutter",
+                checked = settings.showScrollbarGutter,
+                onCheckedChange = { onSettingsChange(settings.copy(showScrollbarGutter = it)) },
+                description = "Show the background behind the scrollbar thumb",
+                enabled = settings.showScrollbar
+            )
+
+            SettingsToggle(
                 label = "Always Visible",
                 checked = settings.scrollbarAlwaysVisible,
                 onCheckedChange = { onSettingsChange(settings.copy(scrollbarAlwaysVisible = it)) },
@@ -75,6 +83,14 @@ fun ScrollbarSettingsSection(
 
         // Colors
         SettingsSection(title = "Colors") {
+            ColorSetting(
+                label = "Gutter Color",
+                color = settings.scrollbarColorValue,
+                onColorChange = { onSettingsChange(settings.copy(scrollbarColor = it.toSettingsHex())) },
+                description = "Background behind the scrollbar thumb",
+                enabled = settings.showScrollbar && settings.showScrollbarGutter
+            )
+
             ColorSetting(
                 label = "Thumb Color",
                 color = settings.scrollbarThumbColorValue,

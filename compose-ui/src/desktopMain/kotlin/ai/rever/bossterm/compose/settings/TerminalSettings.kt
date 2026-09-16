@@ -368,6 +368,9 @@ data class TerminalSettings(
      */
     val showScrollbar: Boolean = true,
 
+    /** Paint the scrollbar background; independent of reserved layout space. */
+    val showScrollbarGutter: Boolean = false,
+
     /** Extra space after terminal text, independent of the scrollbar's reserved width. */
     val terminalRightGapEnabled: Boolean = false,
 

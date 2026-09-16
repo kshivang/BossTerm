@@ -2569,6 +2569,7 @@ fun ProperTerminal(
 
         AlwaysVisibleScrollbar(
           alwaysVisible = settings.scrollbarAlwaysVisible,
+          trackColor = if (settings.showScrollbarGutter) settings.scrollbarColorValue else Color.Transparent,
           adapter = scrollbarAdapter,
           redrawTrigger = display.redrawTrigger,
           modifier = Modifier

@@ -72,7 +72,8 @@ fun AlwaysVisibleScrollbar(
     userScrollTrigger: State<Int> = mutableStateOf(0),
     blockMarkerPositions: List<Float> = emptyList(),
     blockMarkerColors: List<Color> = emptyList(),
-    alwaysVisible: Boolean = true
+    alwaysVisible: Boolean = true,
+    trackColor: Color = Color.Transparent
 ) {
     var containerHeight by remember { mutableStateOf(0f) }
     val interactionSource = remember { MutableInteractionSource() }
@@ -147,6 +148,7 @@ fun AlwaysVisibleScrollbar(
                 modifier = Modifier
                     .width(thickness)
                     .fillMaxHeight()
+                    .background(trackColor, shape = RoundedCornerShape(4.dp))
                     .hoverable(interactionSource)
                     // Drag gesture for scrolling - works anywhere on track
                     .pointerInput(maxScroll, containerHeight, thumbHeightPx) {

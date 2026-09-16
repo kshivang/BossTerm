@@ -256,6 +256,7 @@ fun TabbedTerminal(
     // Last on purpose: every other parameter keeps its position, so a downstream caller passing
     // arguments positionally is not broken by this one being added.
     voiceToolSource: VoiceToolSource? = null,
+    parentScope: kotlinx.coroutines.CoroutineScope? = null
 ) {
     // Settings integration
     val settingsManager = remember { SettingsManager.instance }
@@ -321,7 +322,8 @@ fun TabbedTerminal(
             onLastTabClosed = onExit,
             isWindowFocused = isWindowFocused,
             onTabClose = onTabClose,
-            platformServices = platformServices
+            platformServices = platformServices,
+            parentScope = parentScope
         )
     }
 
@@ -332,7 +334,8 @@ fun TabbedTerminal(
             onLastTabClosed = onExit,
             isWindowFocused = isWindowFocused,
             onTabClose = onTabClose,
-            platformServices = platformServices
+            platformServices = platformServices,
+            parentScope = parentScope
         )
     }
 

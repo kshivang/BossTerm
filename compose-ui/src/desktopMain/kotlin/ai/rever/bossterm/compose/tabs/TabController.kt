@@ -97,7 +97,8 @@ class TabController(
     private val onLastTabClosed: () -> Unit,
     private val isWindowFocused: () -> Boolean = { true },
     private val onTabClose: ((tabId: String) -> Unit)? = null,
-    private val platformServices: PlatformServices = getPlatformServices()
+    private val platformServices: PlatformServices = getPlatformServices(),
+    private val parentScope: CoroutineScope? = null
 ) {
     /**
      * List of all terminal tabs (observable, triggers recomposition).
@@ -214,15 +215,6 @@ class TabController(
      * Thread-safe: uses CopyOnWriteArrayList for safe iteration during modification.
      */
     private val sessionListeners = java.util.concurrent.CopyOnWriteArrayList<TerminalSessionListener>()
-
-    /**
-     * Dedicated scope for cleanup operations (process kills).
-     * Using a dedicated scope instead of GlobalScope ensures:
-     * 1. Coroutines are cancelled when the controller is disposed
-     * 2. Better lifecycle management than orphaned GlobalScope coroutines
-     * 3. SupervisorJob prevents individual failures from cancelling siblings
-     */
-    private val cleanupScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     /**
      * Raised when a new session is refused because [TerminalSessionSlots] is exhausted
@@ -578,7 +570,7 @@ class TabController(
         }
 
         // Create coroutine scope for type-ahead (will be shared with tab scope)
-        val tabCoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val tabCoroutineScope = CoroutineScope(SupervisorJob(parentScope?.coroutineContext?.get(Job)) + Dispatchers.Default)
 
         val typeAheadManager = typeAheadModel?.let { model ->
             TerminalTypeAheadManager(model).also { manager ->
@@ -736,7 +728,7 @@ class TabController(
         dataStream.onChunkStart = { textBuffer.beginBatch() }
         dataStream.onChunkEnd = { textBuffer.endBatch() }
         val emulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val scope = CoroutineScope(SupervisorJob(parentScope?.coroutineContext?.get(Job)) + Dispatchers.Default)
 
         val tab = TerminalTab(
             id = java.util.UUID.randomUUID().toString(),
@@ -949,7 +941,7 @@ class TabController(
         )
 
         // Create type-ahead model and manager if enabled
-        val tabCoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val tabCoroutineScope = CoroutineScope(SupervisorJob(parentScope?.coroutineContext?.get(Job)) + Dispatchers.Default)
 
         val typeAheadModel = if (settings.typeAheadEnabled) {
             ComposeTypeAheadModel(
@@ -1195,7 +1187,7 @@ class TabController(
             maxSnapshots = settings.debugMaxSnapshots
         )
 
-        val tabCoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val tabCoroutineScope = CoroutineScope(SupervisorJob(parentScope?.coroutineContext?.get(Job)) + Dispatchers.Default)
 
         // Create tab with Initializing state
         val tab = TerminalTab(
@@ -1396,7 +1388,7 @@ class TabController(
                 return
             }
 
-            tab.processHandle.value = handle
+            tab.attachProcess(handle)
             tab.connectionState.value = ConnectionState.Connected(handle)
 
             // Connect terminal output to PTY
@@ -1583,7 +1575,7 @@ class TabController(
                     return@launchSessionCoroutine
                 }
 
-                tab.processHandle.value = handle
+                tab.attachProcess(handle)
                 tab.connectionState.value = ConnectionState.Connected(handle)
 
                 // Connect terminal output to PTY for bidirectional communication
@@ -1819,14 +1811,7 @@ class TabController(
             println("WARN: onTabClose callback threw exception: ${e.message}")
         }
 
-        // Hold reference to process before tab disposal to prevent GC during kill()
-        val processToKill = tab.processHandle.value
-
-        // Capture debug collector reference BEFORE disposal for async logging
-        // After dispose(), accessing tab.debugCollector is semantically incorrect
-        val debugCollectorForLogging = tab.debugCollector
-
-        // Clean up resources (cancels coroutines only, process kill handled below)
+        // Cancellation closes the stream and kills the owned process.
         tab.dispose()
 
         // Remove from list
@@ -1834,27 +1819,6 @@ class TabController(
 
         // Notify listeners about session closure (after removal so tab count is accurate)
         notifySessionClosed(tab)
-
-        // Kill process asynchronously with guaranteed reference and timeout
-        // This prevents theoretical GC issue where tab might be GC'd before kill() completes
-        // Uses cleanupScope to ensure proper lifecycle management
-        if (processToKill != null) {
-            cleanupScope.launch {
-                try {
-                    kotlinx.coroutines.withTimeout(5000) {  // 5 second timeout
-                        processToKill.kill()
-                    }
-                } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                    val message = "[${java.time.Instant.now()}] WARN: Process kill timed out after 5 seconds"
-                    System.err.println(message)
-                    debugCollectorForLogging?.recordChunk(message, ChunkSource.CONSOLE_LOG)
-                } catch (e: Exception) {
-                    val message = "[${java.time.Instant.now()}] WARN: Error killing process: ${e.message}"
-                    System.err.println(message)
-                    debugCollectorForLogging?.recordChunk(message, ChunkSource.CONSOLE_LOG)
-                }
-            }
-        }
 
         // Handle tab switching
         if (tabs.isEmpty()) {
@@ -1923,10 +1887,6 @@ class TabController(
      * Call this when the window is being closed to prevent memory leaks.
      */
     fun disposeAll() {
-        // Collect all processes before disposal to prevent GC issues
-        val processesToKill = tabs.mapNotNull { it.processHandle.value }
-
-        // Dispose all tabs (cancels coroutines)
         tabs.forEach { tab ->
             tab.dispose()
             notifySessionClosed(tab)
@@ -1934,27 +1894,6 @@ class TabController(
 
         // Clear the list
         tabs.clear()
-
-        // Kill all processes asynchronously with timeout
-        // Uses cleanupScope to ensure proper lifecycle management
-        if (processesToKill.isNotEmpty()) {
-            cleanupScope.launch {
-                processesToKill.forEach { process ->
-                    try {
-                        kotlinx.coroutines.withTimeout(5000) {  // 5 second timeout per process
-                            process.kill()
-                        }
-                    } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                        System.err.println("WARN: Process kill timed out after 5 seconds")
-                    } catch (e: Exception) {
-                        System.err.println("WARN: Error killing process: ${e.message}")
-                    }
-                }
-            }
-        }
-
-        // Cancel cleanup scope to abort any pending process kills on full disposal
-        cleanupScope.cancel()
 
         // Notify listeners
         notifyAllSessionsClosed()

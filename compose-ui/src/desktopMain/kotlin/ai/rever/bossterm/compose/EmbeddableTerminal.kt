@@ -233,10 +233,11 @@ fun EmbeddableTerminal(
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     autoFocus: Boolean = false,  // Request focus after a delay (useful for dialogs)
     modifier: Modifier = Modifier,
-    platformServices: PlatformServices = getPlatformServices()
+    platformServices: PlatformServices = getPlatformServices(),
+    parentScope: kotlinx.coroutines.CoroutineScope? = null
 ) {
     // Use provided state or create auto-disposing one
-    val effectiveState = state ?: rememberEmbeddableTerminalState(autoDispose = true)
+    val effectiveState = state ?: rememberEmbeddableTerminalState(autoDispose = true, parentScope = parentScope)
 
     // Resolve settings: direct > path > default, then apply overrides
     val resolvedSettings = remember(settings, settingsPath, settingsOverride) {
@@ -304,7 +305,8 @@ fun EmbeddableTerminal(
                 onInitialCommandComplete = onInitialCommandComplete,
                 onOutput = onOutput,
                 onExit = onExit,
-                platformServices = platformServices
+                platformServices = platformServices,
+                parentScope = parentScope
             )
         }
     }
@@ -556,7 +558,9 @@ fun EmbeddableTerminal(
  * }
  * ```
  */
-class EmbeddableTerminalState {
+class EmbeddableTerminalState(
+    val parentScope: CoroutineScope? = null
+) {
     internal var session: TerminalTab? by mutableStateOf(null)
     private var initialized = false
 
@@ -618,13 +622,15 @@ class EmbeddableTerminalState {
         onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)?,
         onOutput: ((String) -> Unit)?,
         onExit: ((Int) -> Unit)?,
-        platformServices: PlatformServices = getPlatformServices()
+        platformServices: PlatformServices = getPlatformServices(),
+        parentScope: CoroutineScope? = null
     ) {
+        val owner = resolveTerminalParentScope(this.parentScope, parentScope)
         if (initialized) return
         initialized = true
 
         // Create session
-        session = createTerminalSession(settings, onOutput) { nativeContextMenusEnabled }
+        session = createTerminalSession(settings, onOutput, { nativeContextMenusEnabled }, owner)
 
         // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
         // same handler as Ctrl/Cmd+click links; system default when unhandled.
@@ -893,8 +899,11 @@ class EmbeddableTerminalState {
  * @return EmbeddableTerminalState instance that persists across recompositions
  */
 @Composable
-fun rememberEmbeddableTerminalState(autoDispose: Boolean = true): EmbeddableTerminalState {
-    val state = remember { EmbeddableTerminalState() }
+fun rememberEmbeddableTerminalState(
+    autoDispose: Boolean = true,
+    parentScope: kotlinx.coroutines.CoroutineScope? = null
+): EmbeddableTerminalState {
+    val state = remember { EmbeddableTerminalState(parentScope) }
 
     if (autoDispose) {
         DisposableEffect(state) {
@@ -911,7 +920,8 @@ fun rememberEmbeddableTerminalState(autoDispose: Boolean = true): EmbeddableTerm
 private fun createTerminalSession(
     settings: TerminalSettings,
     onOutput: ((String) -> Unit)?,
-    nativeContextMenus: () -> Boolean
+    nativeContextMenus: () -> Boolean,
+    parentScope: kotlinx.coroutines.CoroutineScope? = null
 ): TerminalTab {
     val styleState = StyleState()
     val textBuffer = TerminalTextBuffer(80, 24, styleState, settings.bufferMaxLines)
@@ -950,7 +960,7 @@ private fun createTerminalSession(
     }
 
     val emulator = BossEmulator(dataStream, terminal, settings.allowKittyFileTransfers)
-    val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val coroutineScope = CoroutineScope(SupervisorJob(parentScope?.coroutineContext?.get(kotlinx.coroutines.Job)) + kotlinx.coroutines.Dispatchers.Default)
 
     return TerminalTab(
         title = mutableStateOf("Terminal"),
@@ -1079,7 +1089,7 @@ private suspend fun initializeProcess(
         }
         spawnedHandle = processHandle
 
-        session.processHandle.value = processHandle
+        session.attachProcess(processHandle)
         session.connectionState.value = ConnectionState.Connected(processHandle)
 
         // Start emulator coroutine. Blocks in dataStream.char between chunks, so it

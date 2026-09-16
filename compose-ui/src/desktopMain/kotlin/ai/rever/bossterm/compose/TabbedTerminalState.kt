@@ -86,7 +86,9 @@ import kotlinx.coroutines.flow.StateFlow
  * })
  * ```
  */
-class TabbedTerminalState {
+class TabbedTerminalState(
+    val parentScope: CoroutineScope? = null
+) {
     internal var tabController: TabController? by mutableStateOf(null)
     private var initialized = false
 
@@ -180,8 +182,10 @@ class TabbedTerminalState {
         onLastTabClosed: () -> Unit,
         isWindowFocused: () -> Boolean,
         onTabClose: ((tabId: String) -> Unit)? = null,
-        platformServices: PlatformServices = getPlatformServices()
+        platformServices: PlatformServices = getPlatformServices(),
+        parentScope: CoroutineScope? = null
     ) {
+        val owner = resolveTerminalParentScope(this.parentScope, parentScope)
         if (initialized) return
         initialized = true
 
@@ -190,11 +194,12 @@ class TabbedTerminalState {
             onLastTabClosed = onLastTabClosed,
             isWindowFocused = isWindowFocused,
             onTabClose = onTabClose,
-            platformServices = platformServices
+            platformServices = platformServices,
+            parentScope = owner
         )
 
         // Wire up snapshotFlow bridges for reactive state (T7)
-        flowScope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { scope ->
+        flowScope = CoroutineScope(SupervisorJob(owner?.coroutineContext?.get(kotlinx.coroutines.Job)) + Dispatchers.Main).also { scope ->
             scope.launch {
                 snapshotFlow { tabController?.tabs?.map { it.toTabInfo() } ?: emptyList() }
                     .collect { _tabsFlow.value = it }
@@ -1359,8 +1364,11 @@ data class PaneSnapshot(
  * @return TabbedTerminalState instance that persists across recompositions
  */
 @Composable
-fun rememberTabbedTerminalState(autoDispose: Boolean = true): TabbedTerminalState {
-    val state = remember { TabbedTerminalState() }
+fun rememberTabbedTerminalState(
+    autoDispose: Boolean = true,
+    parentScope: CoroutineScope? = null
+): TabbedTerminalState {
+    val state = remember { TabbedTerminalState(parentScope) }
 
     if (autoDispose) {
         DisposableEffect(state) {

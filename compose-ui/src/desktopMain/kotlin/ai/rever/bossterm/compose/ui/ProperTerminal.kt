@@ -2568,6 +2568,7 @@ fun ProperTerminal(
         }
 
         AlwaysVisibleScrollbar(
+          alwaysVisible = settings.scrollbarAlwaysVisible,
           adapter = scrollbarAdapter,
           redrawTrigger = display.redrawTrigger,
           modifier = Modifier

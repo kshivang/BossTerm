@@ -377,7 +377,7 @@ data class TerminalSettings(
     /**
      * Always show scrollbar (vs. auto-hide on inactivity)
      */
-    val scrollbarAlwaysVisible: Boolean = false,
+    val scrollbarAlwaysVisible: Boolean = true,
 
     /**
      * Scrollbar width in pixels

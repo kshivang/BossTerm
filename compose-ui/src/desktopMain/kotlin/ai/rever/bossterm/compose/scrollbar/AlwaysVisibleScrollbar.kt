@@ -135,7 +135,7 @@ fun AlwaysVisibleScrollbar(
             .onSizeChanged { containerHeight = it.height.toFloat() }
             .alpha(scrollbarAlpha)
     ) {
-        // Always-visible mode also shows the full thumb when there is no scrollback.
+        // Always-visible mode keeps the track visible even without scrollback.
         if (containerHeight > 0f && (alwaysVisible || maxScroll > 0.0)) {
             val thumb = scrollbarThumbGeometry(
                 containerHeight.toDouble(), maxScroll, scrollOffset,
@@ -265,8 +265,9 @@ fun AlwaysVisibleScrollbar(
                     }
                 }
 
-                // Thumb (visual only - track handles all pointer events)
-                Box(
+                // A full viewport has no scroll position to indicate. Keep the track in
+                // always-visible mode, but only show a thumb when content can scroll.
+                if (maxScroll > 0.0) Box(
                     modifier = Modifier
                         .offset { IntOffset(0, thumbOffsetPx.toInt()) }
                         .width(thickness)

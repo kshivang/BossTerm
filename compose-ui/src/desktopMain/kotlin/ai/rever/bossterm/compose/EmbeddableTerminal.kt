@@ -305,7 +305,8 @@ fun EmbeddableTerminal(
                 onInitialCommandComplete = onInitialCommandComplete,
                 onOutput = onOutput,
                 onExit = onExit,
-                platformServices = platformServices
+                platformServices = platformServices,
+                parentScope = parentScope
             )
         }
     }
@@ -621,13 +622,15 @@ class EmbeddableTerminalState(
         onInitialCommandComplete: ((success: Boolean, exitCode: Int) -> Unit)?,
         onOutput: ((String) -> Unit)?,
         onExit: ((Int) -> Unit)?,
-        platformServices: PlatformServices = getPlatformServices()
+        platformServices: PlatformServices = getPlatformServices(),
+        parentScope: CoroutineScope? = null
     ) {
+        val owner = resolveTerminalParentScope(this.parentScope, parentScope)
         if (initialized) return
         initialized = true
 
         // Create session
-        session = createTerminalSession(settings, onOutput, { nativeContextMenusEnabled }, parentScope)
+        session = createTerminalSession(settings, onOutput, { nativeContextMenusEnabled }, owner)
 
         // Route CLI-originated open requests (OSC 1341;OpenTarget) through the
         // same handler as Ctrl/Cmd+click links; system default when unhandled.
@@ -1086,7 +1089,7 @@ private suspend fun initializeProcess(
         }
         spawnedHandle = processHandle
 
-        session.processHandle.value = processHandle
+        session.attachProcess(processHandle)
         session.connectionState.value = ConnectionState.Connected(processHandle)
 
         // Start emulator coroutine. Blocks in dataStream.char between chunks, so it

@@ -217,15 +217,6 @@ class TabController(
     private val sessionListeners = java.util.concurrent.CopyOnWriteArrayList<TerminalSessionListener>()
 
     /**
-     * Dedicated scope for cleanup operations (process kills).
-     * Using a dedicated scope instead of GlobalScope ensures:
-     * 1. Coroutines are cancelled when the controller is disposed
-     * 2. Better lifecycle management than orphaned GlobalScope coroutines
-     * 3. SupervisorJob prevents individual failures from cancelling siblings
-     */
-    private val cleanupScope = CoroutineScope(SupervisorJob(parentScope?.coroutineContext?.get(Job)) + Dispatchers.IO)
-
-    /**
      * Raised when a new session is refused because [TerminalSessionSlots] is exhausted
      * (every TerminalSessionDispatcher thread is pinned by a live session). The hosting
      * UI shows a dialog asking the user to close some terminals; the affected pane
@@ -1397,7 +1388,7 @@ class TabController(
                 return
             }
 
-            tab.processHandle.value = handle
+            tab.attachProcess(handle)
             tab.connectionState.value = ConnectionState.Connected(handle)
 
             // Connect terminal output to PTY
@@ -1584,7 +1575,7 @@ class TabController(
                     return@launchSessionCoroutine
                 }
 
-                tab.processHandle.value = handle
+                tab.attachProcess(handle)
                 tab.connectionState.value = ConnectionState.Connected(handle)
 
                 // Connect terminal output to PTY for bidirectional communication
@@ -1820,14 +1811,7 @@ class TabController(
             println("WARN: onTabClose callback threw exception: ${e.message}")
         }
 
-        // Hold reference to process before tab disposal to prevent GC during kill()
-        val processToKill = tab.processHandle.value
-
-        // Capture debug collector reference BEFORE disposal for async logging
-        // After dispose(), accessing tab.debugCollector is semantically incorrect
-        val debugCollectorForLogging = tab.debugCollector
-
-        // Clean up resources (cancels coroutines only, process kill handled below)
+        // Cancellation closes the stream and kills the owned process.
         tab.dispose()
 
         // Remove from list
@@ -1835,27 +1819,6 @@ class TabController(
 
         // Notify listeners about session closure (after removal so tab count is accurate)
         notifySessionClosed(tab)
-
-        // Kill process asynchronously with guaranteed reference and timeout
-        // This prevents theoretical GC issue where tab might be GC'd before kill() completes
-        // Uses cleanupScope to ensure proper lifecycle management
-        if (processToKill != null) {
-            cleanupScope.launch {
-                try {
-                    kotlinx.coroutines.withTimeout(5000) {  // 5 second timeout
-                        processToKill.kill()
-                    }
-                } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                    val message = "[${java.time.Instant.now()}] WARN: Process kill timed out after 5 seconds"
-                    System.err.println(message)
-                    debugCollectorForLogging?.recordChunk(message, ChunkSource.CONSOLE_LOG)
-                } catch (e: Exception) {
-                    val message = "[${java.time.Instant.now()}] WARN: Error killing process: ${e.message}"
-                    System.err.println(message)
-                    debugCollectorForLogging?.recordChunk(message, ChunkSource.CONSOLE_LOG)
-                }
-            }
-        }
 
         // Handle tab switching
         if (tabs.isEmpty()) {
@@ -1924,10 +1887,6 @@ class TabController(
      * Call this when the window is being closed to prevent memory leaks.
      */
     fun disposeAll() {
-        // Collect all processes before disposal to prevent GC issues
-        val processesToKill = tabs.mapNotNull { it.processHandle.value }
-
-        // Dispose all tabs (cancels coroutines)
         tabs.forEach { tab ->
             tab.dispose()
             notifySessionClosed(tab)
@@ -1935,27 +1894,6 @@ class TabController(
 
         // Clear the list
         tabs.clear()
-
-        // Kill all processes asynchronously with timeout
-        // Uses cleanupScope to ensure proper lifecycle management
-        if (processesToKill.isNotEmpty()) {
-            cleanupScope.launch {
-                processesToKill.forEach { process ->
-                    try {
-                        kotlinx.coroutines.withTimeout(5000) {  // 5 second timeout per process
-                            process.kill()
-                        }
-                    } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-                        System.err.println("WARN: Process kill timed out after 5 seconds")
-                    } catch (e: Exception) {
-                        System.err.println("WARN: Error killing process: ${e.message}")
-                    }
-                }
-            }
-        }
-
-        // Cancel cleanup scope to abort any pending process kills on full disposal
-        cleanupScope.cancel()
 
         // Notify listeners
         notifyAllSessionsClosed()

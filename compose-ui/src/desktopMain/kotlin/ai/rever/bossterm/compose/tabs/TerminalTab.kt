@@ -10,6 +10,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.withContext
 import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.compose.ConnectionState
 import ai.rever.bossterm.compose.PlatformServices
@@ -397,6 +401,38 @@ data class TerminalTab(
      * Uses WriteOperation sealed class to handle both text and raw bytes in FIFO order.
      */
     private val writeChannel = Channel<WriteOperation>(capacity = 256)
+
+    // Unblock emulator reads as soon as the owning scope is cancelled.
+    init {
+        coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                awaitCancellation()
+            } finally {
+                dataStream.close()
+            }
+        }
+    }
+
+    /**
+     * Register cleanup before starting readers. UNDISPATCHED also runs the finally
+     * block if a blocking spawn returns after the owning scope was cancelled.
+     */
+    internal fun attachProcess(handle: PlatformServices.ProcessService.ProcessHandle) {
+        processHandle.value = handle
+        coroutineScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                awaitCancellation()
+            } finally {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    try {
+                        handle.kill()
+                    } catch (e: Exception) {
+                        System.err.println("WARN: Error killing terminal process: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
 
     /**
      * Background job that consumes from writeChannel and writes to PTY sequentially.

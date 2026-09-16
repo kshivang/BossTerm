@@ -644,18 +644,16 @@ object TerminalCanvasRenderer {
     }
 
     /**
-     * Pass 1.25: draw the command-block gutter — a thin colored bar at the left
-     * edge spanning each visible block's rows. Pure overlay at x=0: the text
-     * origin is unchanged, so column math and mouse hit-testing are untouched.
+     * Pass 1.25: draw the command-block gutter at the content canvas's right edge.
+     * It overlays each visible block without changing the text origin.
      * No-op when [RenderingContext.commandBlocks] is empty (feature disabled).
      */
     private fun DrawScope.renderCommandBlockGutter(ctx: RenderingContext) {
         if (ctx.commandBlocks.isEmpty()) return
-        // Gutter width is in dp (DPI-correct). Place it on the RIGHT edge, just
-        // inside the scrollbar so it doesn't sit under it.
+        // The content canvas already excludes the outer margin and scrollbar.
+        // Reserve no additional scrollbar space inside this coordinate system.
         val width = ctx.settings.commandBlockGutterWidth.dp.toPx()
-        val rightInset = if (ctx.settings.showScrollbar) ctx.settings.scrollbarWidth.dp.toPx() else 0f
-        val x = (size.width - width - rightInset).coerceAtLeast(0f)
+        val x = (size.width - width).coerceAtLeast(0f)
         val tintBackground = ctx.settings.commandBlockHighlightBackground
         val snapshot = ctx.bufferSnapshot
         val cols = ctx.visibleCols
@@ -690,7 +688,7 @@ object TerminalCanvasRenderer {
                 drawRect(
                     color = block.color.copy(alpha = 0.12f),
                     topLeft = Offset(0f, top),
-                    size = Size(size.width - rightInset, height)
+                    size = Size(size.width, height)
                 )
             }
             // Solid gutter bar on the right edge.

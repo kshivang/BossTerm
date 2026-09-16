@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
+import ai.rever.bossterm.compose.rendering.RenderableBlock
 import ai.rever.bossterm.compose.rendering.RenderingContext
 import ai.rever.bossterm.compose.rendering.TerminalCanvasRenderer
 import androidx.compose.ui.unit.IntSize
@@ -73,7 +74,13 @@ class TerminalViewportTest {
         }
     }
 
-    private fun paintFullRow(width: Int, density: Density, scrollbar: Int) {
+    @Test fun commandBlockMarkerAndTintReachTheContentEdgeWithoutEnteringTheGutter() {
+        for (scale in listOf(1f, 1.5f, 2f)) for (scrollbar in listOf(0, 14)) {
+            paintFullRow(640, Density(scale), scrollbar, commandBlock = true)
+        }
+    }
+
+    private fun paintFullRow(width: Int, density: Density, scrollbar: Int, commandBlock: Boolean = false) {
         val outerHeight = 100
         val content = terminalContentSize(IntSize(width, outerHeight), density, scrollbar.dp)
         val edge = with(density) { 4.dp.roundToPx() }
@@ -85,9 +92,10 @@ class TerminalViewportTest {
         val cellHeight = measurer.measure("W", style).size.height.toFloat()
         val cols = (content.width / cellWidth).toInt()
         val settings = TerminalSettings(defaultForeground = "0xFFFFFFFF", defaultBackground = "0xFF000000",
-            fillBackgroundInLineSpacing = false)
+            fillBackgroundInLineSpacing = false, showScrollbar = scrollbar > 0,
+            scrollbarWidth = scrollbar.toFloat(), commandBlockHighlightBackground = commandBlock)
         val line = TerminalLine.createEmpty()
-        line.writeString(0, CharBuffer("W".repeat(cols)), TextStyle(TerminalColor.WHITE, TerminalColor.BLACK))
+        line.writeString(0, CharBuffer("W".repeat(cols)), TextStyle(TerminalColor.rgb(255, 255, 255), TerminalColor.rgb(0, 0, 0)))
         val snapshot = VersionedBufferSnapshot(
             screenLines = listOf(VersionedLine(line, line, 1L)), historyLines = emptyList(),
             width = cols, height = 1, historyLinesCount = 0, isUsingAlternateBuffer = false)
@@ -124,7 +132,8 @@ class TerminalViewportTest {
             slowBlinkVisible = true,
             rapidBlinkVisible = true,
             terminalWidthCells = cols,
-            terminalHeightCells = 1
+            terminalHeightCells = 1,
+            commandBlocks = if (commandBlock) listOf(RenderableBlock(0, 1, Color.Red)) else emptyList()
         )
 
         val bitmap = ImageBitmap(width, outerHeight)
@@ -137,6 +146,15 @@ class TerminalViewportTest {
             }
         }
         var pixels = bitmap.toPixelMap()
+        if (commandBlock) {
+            // The top of the row is above the glyph ink: measure the bar and background tint.
+            val lastContentX = width - end - 1
+            assertEquals(Color.Red, pixels[lastContentX, edge])
+            val barWidth = with(density) { settings.commandBlockGutterWidth.dp.roundToPx() }
+            val tint = pixels[lastContentX - barWidth, edge]
+            assertTrue(tint.red in 0.10f..0.14f && tint.green < 0.01f && tint.blue < 0.01f,
+                "Block tint must extend to the bar, including the former scrollbar inset")
+        }
         // Full row, including final glyph: every column has foreground ink.
         for (col in 0 until cols) {
             var ink = 0

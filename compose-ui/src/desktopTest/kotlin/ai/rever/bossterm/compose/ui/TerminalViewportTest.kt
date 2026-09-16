@@ -37,6 +37,21 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import kotlin.test.assertEquals
 
 class TerminalViewportTest {
+    @Test fun onlyAlwaysVisibleScrollbarsReserveContentWidth() {
+        for (scale in listOf(1f, 1.25f, 2f)) {
+            val density = Density(scale)
+            for (show in listOf(false, true)) for (always in listOf(false, true)) {
+                val settings = TerminalSettings(showScrollbar = show, scrollbarAlwaysVisible = always,
+                    scrollbarWidth = 14f, terminalRightGapEnabled = false)
+                val reserved = if (show && always) 14.dp else 0.dp
+                assertEquals(reserved, settings.reservedScrollbarWidth())
+                val size = terminalContentSize(IntSize(640, 480), density,
+                    settings.reservedScrollbarWidth(), settings.rightEdgeGap())
+                assertEquals(with(density) { 640 - 4.dp.roundToPx() - reserved.roundToPx() }, size.width)
+            }
+        }
+    }
+
     @Test fun gapSettingsPreserveDefaultsAndRoundTripOverrides() {
         val defaults = Json.decodeFromString(TerminalSettings.serializer(), "{}")
         assertEquals(0.dp, defaults.rightEdgeGap())

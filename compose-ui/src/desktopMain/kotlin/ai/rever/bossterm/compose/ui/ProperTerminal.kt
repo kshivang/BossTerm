@@ -286,7 +286,7 @@ fun ProperTerminal(
   val settingsManager = remember { SettingsManager.instance }
   val settings by settingsManager.settings.collectAsState()
   val terminalRightGap = settings.rightEdgeGap()
-  val terminalScrollbarWidth = if (settings.showScrollbar) settings.scrollbarWidth.dp else 0.dp
+  val terminalScrollbarWidth = settings.reservedScrollbarWidth()
 
   // Active theme, used as a fallback cursor color when no app has set one via OSC 12
   val activeTheme by ThemeManager.instance.currentTheme.collectAsState()

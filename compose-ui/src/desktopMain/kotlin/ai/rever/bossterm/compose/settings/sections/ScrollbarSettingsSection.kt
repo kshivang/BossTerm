@@ -34,7 +34,7 @@ fun ScrollbarSettingsSection(
                 label = "Always Visible",
                 checked = settings.scrollbarAlwaysVisible,
                 onCheckedChange = { onSettingsChange(settings.copy(scrollbarAlwaysVisible = it)) },
-                description = "Always show scrollbar (vs auto-hide on inactivity)",
+                description = "Reserve space for the scrollbar. When off, it overlays text while scrolling or hovered.",
                 enabled = settings.showScrollbar
             )
 

@@ -11,6 +11,10 @@ import androidx.compose.ui.unit.dp
 /** The text canvas, caret canvas and PTY must agree on the same content rectangle. */
 internal val terminalContentInset = 4.dp
 
+/** Auto-hide scrollbars overlay content so they leave no empty lane while hidden. */
+internal fun TerminalSettings.reservedScrollbarWidth(): Dp =
+  if (showScrollbar && scrollbarAlwaysVisible) scrollbarWidth.dp else 0.dp
+
 internal fun TerminalSettings.rightEdgeGap(): Dp =
   if (terminalRightGapEnabled) {
     terminalRightGap.takeIf { it.isFinite() }?.coerceIn(0f, 32f)?.dp ?: terminalContentInset

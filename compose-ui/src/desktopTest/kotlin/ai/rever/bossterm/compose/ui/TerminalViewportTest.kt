@@ -65,7 +65,8 @@ class TerminalViewportTest {
 
     @Test fun gapSettingsPreserveDefaultsAndRoundTripOverrides() {
         val defaults = Json.decodeFromString(TerminalSettings.serializer(), "{}")
-        assertEquals(0.dp, defaults.rightEdgeGap())
+        assertEquals(true, defaults.terminalRightGapEnabled)
+        assertEquals(2.dp, defaults.rightEdgeGap())
         assertEquals(2f, defaults.terminalRightGap)
         val custom = defaults.withOverrides(TerminalSettingsOverride(terminalRightGapEnabled = true, terminalRightGap = 12f))
         val restored = Json.decodeFromString(TerminalSettings.serializer(),

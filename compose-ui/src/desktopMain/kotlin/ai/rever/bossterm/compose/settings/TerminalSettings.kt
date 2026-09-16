@@ -372,7 +372,7 @@ data class TerminalSettings(
     val showScrollbarGutter: Boolean = false,
 
     /** Extra space after terminal text, independent of the scrollbar's reserved width. */
-    val terminalRightGapEnabled: Boolean = false,
+    val terminalRightGapEnabled: Boolean = true,
 
     /** Right edge gap in density-independent pixels. */
     val terminalRightGap: Float = 2f,

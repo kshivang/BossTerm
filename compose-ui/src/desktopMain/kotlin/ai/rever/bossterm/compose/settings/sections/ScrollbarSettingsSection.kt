@@ -31,10 +31,18 @@ fun ScrollbarSettingsSection(
             )
 
             SettingsToggle(
+                label = "Show scrollbar gutter",
+                checked = settings.showScrollbarGutter,
+                onCheckedChange = { onSettingsChange(settings.copy(showScrollbarGutter = it)) },
+                description = "Show the background behind the scrollbar thumb",
+                enabled = settings.showScrollbar
+            )
+
+            SettingsToggle(
                 label = "Always Visible",
                 checked = settings.scrollbarAlwaysVisible,
                 onCheckedChange = { onSettingsChange(settings.copy(scrollbarAlwaysVisible = it)) },
-                description = "Always show scrollbar (vs auto-hide on inactivity)",
+                description = "Reserve space for the scrollbar. When off, it overlays text while scrolling or hovered.",
                 enabled = settings.showScrollbar
             )
 
@@ -52,14 +60,35 @@ fun ScrollbarSettingsSection(
 
         Spacer(modifier = Modifier.height(24.dp))
 
+        SettingsSection(title = "Terminal spacing") {
+            SettingsToggle(
+                label = "Right edge gap",
+                checked = settings.terminalRightGapEnabled,
+                onCheckedChange = { onSettingsChange(settings.copy(terminalRightGapEnabled = it)) },
+                description = "Leave extra space after terminal text, before the scrollbar or window edge"
+            )
+            SettingsSlider(
+                label = "Gap width",
+                value = settings.terminalRightGap,
+                onValueChange = { onSettingsChange(settings.copy(terminalRightGap = it)) },
+                onValueChangeFinished = onSettingsSave,
+                valueRange = 0f..32f,
+                steps = 31,
+                valueDisplay = { "${it.toInt()} dp" },
+                enabled = settings.terminalRightGapEnabled
+            )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
         // Colors
         SettingsSection(title = "Colors") {
             ColorSetting(
-                label = "Track Color",
+                label = "Gutter Color",
                 color = settings.scrollbarColorValue,
                 onColorChange = { onSettingsChange(settings.copy(scrollbarColor = it.toSettingsHex())) },
-                description = "Scrollbar background track",
-                enabled = settings.showScrollbar
+                description = "Background behind the scrollbar thumb",
+                enabled = settings.showScrollbar && settings.showScrollbarGutter
             )
 
             ColorSetting(

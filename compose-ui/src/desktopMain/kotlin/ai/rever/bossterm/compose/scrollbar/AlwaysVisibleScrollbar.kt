@@ -42,15 +42,13 @@ import kotlin.math.roundToInt
 private const val AUTO_HIDE_DELAY_MS = 1500L  // Hide after 1.5 seconds of inactivity
 
 /**
- * Custom scrollbar with auto-hide behavior.
- * Shows when scrolling, hovered, or dragging; hides smoothly after inactivity.
+ * Custom scrollbar that stays visible by default, with optional auto-hide after inactivity.
  *
  * @param adapter ScrollbarAdapter that provides scroll position information
  * @param redrawTrigger State that changes when terminal content updates (for buffer changes)
  * @param modifier Modifier to be applied to the scrollbar container
  * @param thickness Width of the scrollbar in Dp
  * @param thumbColor Color of the scrollbar thumb
- * @param trackColor Color of the scrollbar track background
  * @param minThumbHeight Minimum height of the thumb in Dp
  * @param matchPositions Normalized [0, 1] positions of search matches for scrollbar markers
  * @param currentMatchIndex Index of the current match (-1 if none)
@@ -65,7 +63,6 @@ fun AlwaysVisibleScrollbar(
     modifier: Modifier = Modifier,
     thickness: Dp = 10.dp,
     thumbColor: Color = Color.White,
-    trackColor: Color = Color.White.copy(alpha = 0.12f),
     minThumbHeight: Dp = 32.dp,
     matchPositions: List<Float> = emptyList(),
     currentMatchIndex: Int = -1,
@@ -74,7 +71,9 @@ fun AlwaysVisibleScrollbar(
     onMatchClicked: ((Int) -> Unit)? = null,
     userScrollTrigger: State<Int> = mutableStateOf(0),
     blockMarkerPositions: List<Float> = emptyList(),
-    blockMarkerColors: List<Color> = emptyList()
+    blockMarkerColors: List<Color> = emptyList(),
+    alwaysVisible: Boolean = true,
+    trackColor: Color = Color.Transparent
 ) {
     var containerHeight by remember { mutableStateOf(0f) }
     val interactionSource = remember { MutableInteractionSource() }
@@ -106,8 +105,8 @@ fun AlwaysVisibleScrollbar(
     }
 
     // Auto-hide timer: hide after inactivity threshold
-    LaunchedEffect(isVisible, isHovered, isDragging) {
-        if (isVisible && !isHovered && !isDragging) {
+    LaunchedEffect(alwaysVisible, isVisible, isHovered, isDragging, userScrollTrigger.value) {
+        if (!alwaysVisible && isVisible && !isHovered && !isDragging) {
             delay(AUTO_HIDE_DELAY_MS)
             // Recheck conditions after delay (might have changed)
             if (!isHovered && !isDragging) {
@@ -117,7 +116,7 @@ fun AlwaysVisibleScrollbar(
     }
 
     // Calculate target alpha based on visibility state
-    val shouldShow = isVisible || isHovered || isDragging
+    val shouldShow = alwaysVisible || isVisible || isHovered || isDragging
     val targetAlpha = if (shouldShow) 1f else 0f
     val scrollbarAlpha by animateFloatAsState(
         targetValue = targetAlpha,
@@ -135,27 +134,21 @@ fun AlwaysVisibleScrollbar(
             .onSizeChanged { containerHeight = it.height.toFloat() }
             .alpha(scrollbarAlpha)
     ) {
-        // Only render visible scrollbar when there's content to scroll
-        if (containerHeight > 0f && maxScroll > 0.0) {
-            // Calculate thumb dimensions
-            val thumbHeightPx = run {
-                val visibleRatio = containerHeight / (containerHeight + maxScroll)
-                max(
-                    with(LocalDensity.current) { minThumbHeight.toPx() }.toDouble(),
-                    containerHeight * visibleRatio
-                )
-            }
-            val thumbOffsetPx = run {
-                val scrollableHeight = containerHeight - thumbHeightPx
-                (scrollOffset / maxScroll) * scrollableHeight
-            }
+        // Keep the transparent interaction area; the thumb requires scrollback.
+        if (containerHeight > 0f && (alwaysVisible || maxScroll > 0.0)) {
+            val thumb = scrollbarThumbGeometry(
+                containerHeight.toDouble(), maxScroll, scrollOffset,
+                with(LocalDensity.current) { minThumbHeight.toPx() }.toDouble(),
+            )
+            val thumbHeightPx = thumb.height
+            val thumbOffsetPx = thumb.offset
 
             // Track - handles all pointer events (tap and drag)
             Box(
                 modifier = Modifier
                     .width(thickness)
                     .fillMaxHeight()
-                    .background(Color.Transparent, shape = RoundedCornerShape(4.dp))
+                    .background(trackColor, shape = RoundedCornerShape(4.dp))
                     .hoverable(interactionSource)
                     // Drag gesture for scrolling - works anywhere on track
                     .pointerInput(maxScroll, containerHeight, thumbHeightPx) {
@@ -271,8 +264,9 @@ fun AlwaysVisibleScrollbar(
                     }
                 }
 
-                // Thumb (visual only - track handles all pointer events)
-                Box(
+                // A full viewport has no scroll position to indicate.
+                // Only show a thumb when content can scroll.
+                if (maxScroll > 0.0) Box(
                     modifier = Modifier
                         .offset { IntOffset(0, thumbOffsetPx.toInt()) }
                         .width(thickness)
@@ -284,4 +278,21 @@ fun AlwaysVisibleScrollbar(
             }
         }
     }
+}
+
+/** Thumb geometry stays finite with no scrollback and fits even a very short track. */
+internal data class ScrollbarThumbGeometry(val height: Double, val offset: Double)
+
+internal fun scrollbarThumbGeometry(
+    trackHeight: Double,
+    maxScroll: Double,
+    scrollOffset: Double,
+    minThumbHeight: Double,
+): ScrollbarThumbGeometry {
+    if (trackHeight <= 0.0) return ScrollbarThumbGeometry(0.0, 0.0)
+    if (maxScroll <= 0.0) return ScrollbarThumbGeometry(trackHeight, 0.0)
+    val height = max(minThumbHeight, trackHeight * trackHeight / (trackHeight + maxScroll))
+        .coerceIn(0.0, trackHeight)
+    val offset = (scrollOffset / maxScroll).coerceIn(0.0, 1.0) * (trackHeight - height)
+    return ScrollbarThumbGeometry(height, offset)
 }

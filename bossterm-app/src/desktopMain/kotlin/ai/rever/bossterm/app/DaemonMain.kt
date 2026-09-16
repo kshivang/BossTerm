@@ -9,6 +9,7 @@ import ai.rever.bossterm.compose.daemon.DaemonMcpServer
 import ai.rever.bossterm.compose.daemon.DaemonShareServer
 import ai.rever.bossterm.compose.daemon.DaemonTray
 import ai.rever.bossterm.compose.daemon.SessionHost
+import ai.rever.bossterm.compose.daemon.DaemonColorSettings
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.update.Version
 import kotlinx.coroutines.CoroutineScope
@@ -87,7 +88,10 @@ fun runDaemon(args: Array<String>) {
     }
 
     val settings = SettingsManager.instance.settings.value
-    val sessionHost = SessionHost(settings)
+    val sessionHost = SessionHost(
+        settings,
+        colorSettingsProvider = DaemonColorSettings(SettingsManager.instance)::current,
+    )
     // Long-lived scope for the daemon's settings watchers (cancelled in shutdown()).
     val daemonScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 

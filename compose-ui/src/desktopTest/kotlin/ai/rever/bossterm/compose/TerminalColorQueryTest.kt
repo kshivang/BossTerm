@@ -1,5 +1,9 @@
 package ai.rever.bossterm.compose
 
+import ai.rever.bossterm.compose.daemon.DaemonColorSettings
+import ai.rever.bossterm.compose.daemon.TerminalSessionCore
+import ai.rever.bossterm.compose.settings.SettingsManager
+import java.nio.file.Files
 import ai.rever.bossterm.compose.daemon.HeadlessTerminalDisplay
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.core.Color
@@ -34,6 +38,40 @@ class TerminalColorQueryTest {
     fun headlessDisplayAlsoAnswersColorQueries() {
         val display = HeadlessTerminalDisplay(windowForeground = Color(255, 255, 255), windowBackground = Color(0, 0, 0))
         assertEquals(listOf("\u001b]10;rgb:ffff/ffff/ffff\u0007", "\u001b]11;rgb:0000/0000/0000\u001b\\"), query(display))
+    }
+
+    @Test
+    fun daemonQueriesFollowPersistedThemeAcrossSessionsAndUnreadableSettings() {
+        val directory = Files.createTempDirectory("daemon-color-query").toFile()
+        val sessions = mutableListOf<TerminalSessionCore>()
+        try {
+            val file = directory.resolve("settings.json")
+            val initial = TerminalSettings(defaultForeground = "0xFFABCDEF", defaultBackground = "0xFF123456")
+            val gui = SettingsManager(file.path)
+            gui.updateSettings(initial)
+            // A separate manager models the daemon's stale in-memory copy.
+            val daemon = SettingsManager(file.path)
+            val colors = DaemonColorSettings(daemon)
+            val session = TerminalSessionCore(settings = initial, workingDir = null, colorSettingsProvider = colors::current).also { sessions += it }
+            val darkReplies = listOf("\u001b]10;rgb:abab/cdcd/efef\u0007", "\u001b]11;rgb:1212/3434/5656\u001b\\")
+            val lightReplies = listOf("\u001b]10;rgb:1212/3434/5656\u0007", "\u001b]11;rgb:abab/cdcd/efef\u001b\\")
+            assertEquals(darkReplies, query(session.display))
+
+            val light = initial.copy(defaultForeground = "0xFF123456", defaultBackground = "0xFFABCDEF")
+            gui.updateSettings(light)
+            assertEquals(initial.defaultBackground, daemon.settings.value.defaultBackground)
+            assertEquals(lightReplies, query(session.display))
+            val newSession = TerminalSessionCore(settings = initial, workingDir = null, colorSettingsProvider = colors::current).also { sessions += it }
+            assertEquals(lightReplies, query(newSession.display))
+
+            file.writeText("incomplete settings")
+            assertEquals(lightReplies, query(session.display))
+            gui.updateSettings(initial)
+            assertEquals(darkReplies, query(session.display))
+        } finally {
+            sessions.forEach { it.close() }
+            directory.deleteRecursively()
+        }
     }
 
     private fun query(display: TerminalDisplay): List<String> {

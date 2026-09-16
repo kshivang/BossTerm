@@ -63,6 +63,7 @@ class TerminalSessionCore(
     initialCols: Int = 80,
     initialRows: Int = 24,
     private val platformServices: PlatformServices = getPlatformServices(),
+    colorSettingsProvider: () -> TerminalSettings = { settings },
 ) {
     private val log = LoggerFactory.getLogger(TerminalSessionCore::class.java)
 
@@ -77,6 +78,7 @@ class TerminalSessionCore(
         initCols, initRows,
         ai.rever.bossterm.core.Color(settings.defaultForegroundColor.toArgb()),
         ai.rever.bossterm.core.Color(settings.defaultBackgroundColor.toArgb()),
+        colorSettingsProvider = colorSettingsProvider,
     )
     val terminal: BossTerminal = BossTerminal(display, textBuffer, styleState)
     val dataStream: BlockingTerminalDataStream =

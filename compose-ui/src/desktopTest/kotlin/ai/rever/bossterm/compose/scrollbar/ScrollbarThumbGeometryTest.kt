@@ -4,7 +4,6 @@ import ai.rever.bossterm.compose.settings.TerminalSettings
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 class ScrollbarThumbGeometryTest {
     @Test fun noScrollbackShowsAFullFiniteThumb() {
@@ -22,9 +21,12 @@ class ScrollbarThumbGeometryTest {
         assertEquals(ScrollbarThumbGeometry(200.0, 200.0), scrollbarThumbGeometry(400.0, 400.0, 500.0, 32.0))
     }
 
-    @Test fun defaultIsAlwaysVisibleAndExplicitAutoHideIsPreserved() {
-        assertTrue(Json.decodeFromString(TerminalSettings.serializer(), "{}").scrollbarAlwaysVisible)
-        assertEquals(false, Json.decodeFromString(TerminalSettings.serializer(),
-            """{"scrollbarAlwaysVisible":false}""").scrollbarAlwaysVisible)
+    @Test fun defaultsUseThumbOnlyAutoHideAndPreserveExplicitAlwaysVisible() {
+        val defaults = Json.decodeFromString(TerminalSettings.serializer(), "{}")
+        assertEquals(true, defaults.showScrollbar)
+        assertEquals(false, defaults.showScrollbarGutter)
+        assertEquals(false, defaults.scrollbarAlwaysVisible)
+        assertEquals(true, Json.decodeFromString(TerminalSettings.serializer(),
+            """{"scrollbarAlwaysVisible":true}""").scrollbarAlwaysVisible)
     }
 }

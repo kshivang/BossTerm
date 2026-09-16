@@ -39,8 +39,9 @@ import kotlin.test.assertEquals
 class TerminalViewportTest {
     @Test fun gapSettingsPreserveDefaultsAndRoundTripOverrides() {
         val defaults = Json.decodeFromString(TerminalSettings.serializer(), "{}")
-        assertEquals(4.dp, defaults.rightEdgeGap())
-        val custom = defaults.withOverrides(TerminalSettingsOverride(terminalRightGap = 12f))
+        assertEquals(0.dp, defaults.rightEdgeGap())
+        assertEquals(4f, defaults.terminalRightGap)
+        val custom = defaults.withOverrides(TerminalSettingsOverride(terminalRightGapEnabled = true, terminalRightGap = 12f))
         val restored = Json.decodeFromString(TerminalSettings.serializer(),
             Json.encodeToString(TerminalSettings.serializer(), custom))
         assertEquals(12.dp, restored.rightEdgeGap())

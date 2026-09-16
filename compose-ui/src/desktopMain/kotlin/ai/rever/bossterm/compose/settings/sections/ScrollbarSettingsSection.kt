@@ -76,14 +76,6 @@ fun ScrollbarSettingsSection(
         // Colors
         SettingsSection(title = "Colors") {
             ColorSetting(
-                label = "Track Color",
-                color = settings.scrollbarColorValue,
-                onColorChange = { onSettingsChange(settings.copy(scrollbarColor = it.toSettingsHex())) },
-                description = "Scrollbar background track",
-                enabled = settings.showScrollbar
-            )
-
-            ColorSetting(
                 label = "Thumb Color",
                 color = settings.scrollbarThumbColorValue,
                 onColorChange = { onSettingsChange(settings.copy(scrollbarThumbColor = it.toSettingsHex())) },

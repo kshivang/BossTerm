@@ -49,7 +49,6 @@ private const val AUTO_HIDE_DELAY_MS = 1500L  // Hide after 1.5 seconds of inact
  * @param modifier Modifier to be applied to the scrollbar container
  * @param thickness Width of the scrollbar in Dp
  * @param thumbColor Color of the scrollbar thumb
- * @param trackColor Color of the scrollbar track background
  * @param minThumbHeight Minimum height of the thumb in Dp
  * @param matchPositions Normalized [0, 1] positions of search matches for scrollbar markers
  * @param currentMatchIndex Index of the current match (-1 if none)
@@ -64,7 +63,6 @@ fun AlwaysVisibleScrollbar(
     modifier: Modifier = Modifier,
     thickness: Dp = 10.dp,
     thumbColor: Color = Color.White,
-    trackColor: Color = Color.White.copy(alpha = 0.12f),
     minThumbHeight: Dp = 32.dp,
     matchPositions: List<Float> = emptyList(),
     currentMatchIndex: Int = -1,
@@ -135,7 +133,7 @@ fun AlwaysVisibleScrollbar(
             .onSizeChanged { containerHeight = it.height.toFloat() }
             .alpha(scrollbarAlpha)
     ) {
-        // Always-visible mode keeps the track visible even without scrollback.
+        // Keep the transparent interaction area; the thumb requires scrollback.
         if (containerHeight > 0f && (alwaysVisible || maxScroll > 0.0)) {
             val thumb = scrollbarThumbGeometry(
                 containerHeight.toDouble(), maxScroll, scrollOffset,
@@ -149,7 +147,6 @@ fun AlwaysVisibleScrollbar(
                 modifier = Modifier
                     .width(thickness)
                     .fillMaxHeight()
-                    .background(trackColor, shape = RoundedCornerShape(4.dp))
                     .hoverable(interactionSource)
                     // Drag gesture for scrolling - works anywhere on track
                     .pointerInput(maxScroll, containerHeight, thumbHeightPx) {
@@ -265,8 +262,8 @@ fun AlwaysVisibleScrollbar(
                     }
                 }
 
-                // A full viewport has no scroll position to indicate. Keep the track in
-                // always-visible mode, but only show a thumb when content can scroll.
+                // A full viewport has no scroll position to indicate.
+                // Only show a thumb when content can scroll.
                 if (maxScroll > 0.0) Box(
                     modifier = Modifier
                         .offset { IntOffset(0, thumbOffsetPx.toInt()) }

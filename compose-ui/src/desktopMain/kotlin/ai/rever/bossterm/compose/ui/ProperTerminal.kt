@@ -2576,7 +2576,6 @@ fun ProperTerminal(
             .fillMaxHeight(),
           thickness = settings.scrollbarWidth.dp,
           thumbColor = settings.scrollbarThumbColorValue,
-          trackColor = settings.scrollbarColorValue,
           minThumbHeight = 32.dp,
           matchPositions = matchPositions,
           currentMatchIndex = currentMatchIndex,

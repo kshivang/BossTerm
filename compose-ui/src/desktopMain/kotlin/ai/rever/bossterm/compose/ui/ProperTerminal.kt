@@ -2741,7 +2741,8 @@ private fun CursorShape?.isBlock(): Boolean =
  *  - **Anything needing a fallback font family** is declined via the SAME
  *    classifier the text pass uses ([analyzeCharacter]). `renderCharacter` routes
  *    emoji, technical symbols and cursive/math to Apple Color Emoji,
- *    `NotoSansSymbols2` or `FontFamily.Default`; this overlay only carries the
+ *    `NotoSansSymbols2` (which also carries Braille, see issue #407) or
+ *    `FontFamily.Default`; this overlay only carries the
  *    terminal font, so repainting those here would draw a different glyph than
  *    the one on screen a frame earlier. That also subsumes double-width, whose
  *    glyph would be sliced by the one-cell clip.
@@ -2788,7 +2789,8 @@ internal fun resolveCursorGlyph(
         analysis.isEmojiOrWideSymbol ||
         analysis.isEmojiWithVariationSelector ||
         analysis.isTechnicalSymbol ||
-        analysis.isCursiveOrMath
+        analysis.isCursiveOrMath ||
+        analysis.isBraille
     ) {
         return null
     }

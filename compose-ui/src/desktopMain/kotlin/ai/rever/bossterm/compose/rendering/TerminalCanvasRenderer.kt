@@ -211,7 +211,8 @@ data class CharacterAnalysis(
     // Character classification for font selection
     val isCursiveOrMath: Boolean,
     val isTechnicalSymbol: Boolean,
-    val isEmojiOrWideSymbol: Boolean
+    val isEmojiOrWideSymbol: Boolean,
+    val isBraille: Boolean
 )
 
 /**
@@ -287,6 +288,11 @@ fun analyzeCharacter(
     // Character classification for font selection
     val isCursiveOrMath = actualCodePoint in 0x1D400..0x1D7FF
     val isTechnicalSymbol = actualCodePoint in 0x23E9..0x23FF
+    // Braille Patterns get an explicit fallback (issue #407): macOS resolves the
+    // "Apple Braille" family to AppleBraille-Outline6Dot under newer Skiko, which draws
+    // hollow outlines at the dot positions the pattern does NOT set. A Codex spinner then
+    // shows a full six-dot grid instead of one moving dot.
+    val isBraille = actualCodePoint in 0x2800..0x28FF
     // Use shared emoji detection to ensure renderer is consistent with buffer DWC markers
     val isEmojiOrWideSymbol = ai.rever.bossterm.terminal.util.GraphemeUtils.isEmojiPresentation(actualCodePoint)
 
@@ -302,7 +308,8 @@ fun analyzeCharacter(
         visualWidth = visualWidth,
         isCursiveOrMath = isCursiveOrMath,
         isTechnicalSymbol = isTechnicalSymbol,
-        isEmojiOrWideSymbol = isEmojiOrWideSymbol
+        isEmojiOrWideSymbol = isEmojiOrWideSymbol,
+        isBraille = isBraille
     )
 }
 
@@ -1089,6 +1096,7 @@ object TerminalCanvasRenderer {
                 // and shape nothing.
                 val canBatch = analysis.lowSurrogate == null &&
                     !analysis.isDoubleWidth && !analysis.isEmojiOrWideSymbol && !analysis.isCursiveOrMath && !analysis.isTechnicalSymbol &&
+                    !analysis.isBraille &&
                     !isHidden && isBlinkVisible &&
                     (!isBlankCell || batchText.isNotEmpty())
 
@@ -1116,7 +1124,7 @@ object TerminalCanvasRenderer {
                         renderCharacter(
                             ctx, x, y, analysis.charTextToRender, analysis.actualCodePoint,
                             analysis.isDoubleWidth, analysis.isEmojiOrWideSymbol, analysis.isEmojiWithVariationSelector,
-                            analysis.isCursiveOrMath, analysis.isTechnicalSymbol, nextChar,
+                            analysis.isCursiveOrMath, analysis.isTechnicalSymbol, analysis.isBraille, nextChar,
                             fgColor, isBold, isItalic, isUnderline
                         )
 
@@ -1874,6 +1882,7 @@ object TerminalCanvasRenderer {
         isEmojiWithVariationSelector: Boolean,
         isCursiveOrMath: Boolean,
         isTechnicalSymbol: Boolean,
+        isBraille: Boolean,
         nextChar: Char?,
         fgColor: Color,
         isBold: Boolean,
@@ -1902,6 +1911,13 @@ object TerminalCanvasRenderer {
             } else {
                 ai.rever.bossterm.compose.util.bundledSymbolFont
             }
+        } else if (isBraille) {
+            // Always the bundled Noto Sans Symbols 2, regardless of the symbol-font
+            // preference: it covers all 256 patterns (U+2800 blank, dots 7/8 included) and
+            // draws only the dots the pattern sets. Leaving this to system fallback is what
+            // produces the hollow-outline grid on macOS (issue #407), and the terminal font
+            // itself (MesloLGS NF) has no Braille coverage to prefer.
+            ai.rever.bossterm.compose.util.bundledSymbolFont
         } else if (isTechnicalSymbol || isCursiveOrMath) {
             // Technical symbols (⏸ ⏵) and math - platform specific like other symbols
             // Use cached font to avoid expensive FontMgr lookup per character (issue #147)
@@ -2005,7 +2021,7 @@ object TerminalCanvasRenderer {
                 topLeft = Offset(x + centeringOffset, y),
                 style = textStyle
             )
-        } else if (isTechnicalSymbol) {
+        } else if (isTechnicalSymbol || isBraille) {
             // Use cached measurement to avoid expensive measure() calls (issue #147)
             val cached = getCachedMeasurement(ctx, charTextToRender, fontForChar, textStyle)
             val glyphWidth = cached.width

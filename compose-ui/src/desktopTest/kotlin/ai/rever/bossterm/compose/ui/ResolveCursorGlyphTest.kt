@@ -171,6 +171,26 @@ class ResolveCursorGlyphTest {
         )
     }
 
+    /**
+     * Braille Patterns route to the bundled NotoSansSymbols2 (issue #407), so the
+     * overlay - which carries only the terminal font - must decline them too, or a
+     * Codex spinner under the caret would flip back to the system's hollow-dot face.
+     */
+    @Test
+    fun `braille patterns are rejected`() {
+        assertNull(resolveCursorGlyph(line("\u2801"), 0, 1, false), "U+2801 is Braille")
+        assertNull(resolveCursorGlyph(line("\u28FF"), 0, 1, false), "U+28FF is Braille, dots 7 and 8 included")
+        // Just outside the block on both sides: still the terminal font, still repainted.
+        assertEquals(
+            CursorGlyph("\u27FF", isBold = false, isItalic = false, isUnderline = false),
+            resolveCursorGlyph(line("\u27FF"), 0, 1, false),
+        )
+        assertEquals(
+            CursorGlyph("\u2900", isBold = false, isItalic = false, isUnderline = false),
+            resolveCursorGlyph(line("\u2900"), 0, 1, false),
+        )
+    }
+
     /** BMP math the terminal font handles is repainted, since both paths agree. */
     @Test
     fun `plain BMP math is repainted in the terminal font`() {

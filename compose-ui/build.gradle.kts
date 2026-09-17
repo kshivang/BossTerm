@@ -103,7 +103,7 @@ kotlin {
                 implementation(project(":bossterm-core-mpp"))
                 implementation(compose.desktop.currentOs)
                 implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
-                implementation("org.jetbrains.pty4j:pty4j:0.13.9")
+                implementation("org.jetbrains.pty4j:pty4j:0.13.12")
 
                 // JNA for native macOS notifications
                 implementation("net.java.dev.jna:jna:5.18.1")

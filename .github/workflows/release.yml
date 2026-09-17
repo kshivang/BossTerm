@@ -203,7 +203,7 @@ jobs:
           fi
 
       - name: Upload macOS DMG
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bossterm-macos-${{ needs.prepare-version.outputs.version }}
           path: .gradleBuild/bossterm-app/compose/binaries/main/dmg/*.dmg
@@ -262,21 +262,21 @@ jobs:
           APP_VERSION: ${{ needs.prepare-version.outputs.version }}
 
       - name: Upload Deb Package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bossterm-linux-amd64-deb-${{ needs.prepare-version.outputs.version }}
           path: .gradleBuild/bossterm-app/compose/binaries/main/deb/*.deb
           retention-days: 30
 
       - name: Upload RPM Package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bossterm-linux-amd64-rpm-${{ needs.prepare-version.outputs.version }}
           path: .gradleBuild/bossterm-app/compose/binaries/main/rpm/*.rpm
           retention-days: 30
 
       - name: Upload Uber JAR
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bossterm-jar-${{ needs.prepare-version.outputs.version }}
           path: .gradleBuild/bossterm-app/compose/jars/*.jar
@@ -329,14 +329,14 @@ jobs:
           APP_VERSION: ${{ needs.prepare-version.outputs.version }}
 
       - name: Upload Deb Package (ARM64)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bossterm-linux-arm64-deb-${{ needs.prepare-version.outputs.version }}
           path: .gradleBuild/bossterm-app/compose/binaries/main/deb/*.deb
           retention-days: 30
 
       - name: Upload RPM Package (ARM64)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bossterm-linux-arm64-rpm-${{ needs.prepare-version.outputs.version }}
           path: .gradleBuild/bossterm-app/compose/binaries/main/rpm/*.rpm
@@ -376,7 +376,7 @@ jobs:
         id: snapcraft
 
       - name: Upload Snap
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bossterm-snap-${{ needs.prepare-version.outputs.version }}
           path: ${{ steps.snapcraft.outputs.snap }}

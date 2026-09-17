@@ -80,10 +80,10 @@ kotlin {
                 implementation(compose.components.uiToolingPreview)
 
                 // Coroutines
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
 
                 // Serialization
-                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
 
                 // Logging
                 implementation("org.slf4j:slf4j-api:2.0.17")
@@ -93,7 +93,7 @@ kotlin {
         val commonTest by getting {
             dependencies {
                 implementation(kotlin("test"))
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
             }
         }
 
@@ -102,7 +102,7 @@ kotlin {
             dependencies {
                 implementation(project(":bossterm-core-mpp"))
                 implementation(compose.desktop.currentOs)
-                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
+                implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.11.0")
                 implementation("org.jetbrains.pty4j:pty4j:0.13.9")
 
                 // JNA for native macOS notifications

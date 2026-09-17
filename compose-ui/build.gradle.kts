@@ -145,7 +145,7 @@ kotlin {
                 implementation("io.ktor:ktor-server-websockets:3.2.3")
                 implementation("io.ktor:ktor-server-default-headers:3.2.3")
                 // QR code for the share dialog (pure-Java, no Android deps).
-                implementation("com.google.zxing:core:3.5.3")
+                implementation("com.google.zxing:core:3.5.4")
             }
         }
 

@@ -111,6 +111,7 @@ kotlin {
                 implementation("net.java.dev.jna:jna-platform:5.19.1")
 
                 // Ktor client for auto-update
+                implementation(project.dependencies.platform("io.ktor:ktor-bom:$ktorVersion"))
                 implementation("io.ktor:ktor-client-core:$ktorVersion")
                 implementation("io.ktor:ktor-client-cio:$ktorVersion")
                 implementation("io.ktor:ktor-client-content-negotiation:$ktorVersion")

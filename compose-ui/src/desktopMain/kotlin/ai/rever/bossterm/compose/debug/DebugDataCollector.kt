@@ -437,15 +437,21 @@ class DebugDataCollector(
      * @param filePath Path to the log file
      * @throws java.io.IOException If the file cannot be created or written to
      */
-    fun startFileLogging(filePath: String) {
+    fun startFileLogging(filePath: String) =
+        startFileLogging(filePath) { file ->
+            PrintWriter(file.outputStream().bufferedWriter(Charsets.UTF_8), true)
+        }
+
+    internal fun startFileLogging(filePath: String, writerFactory: (File) -> PrintWriter) {
         synchronized(this) {
             stopFileLogging()
             val file = File(filePath)
             file.parentFile?.mkdirs()
-            fileLogWriter = PrintWriter(file.outputStream().bufferedWriter(Charsets.UTF_8), true)
+            fileLogWriter = writerFactory(file)
             fileLogPath = filePath
             fileLogWriter?.println("=== BossTerm Debug Log Started: ${dateFormat.format(Date())} ===")
             fileLogWriter?.println()
+            if (stopOnWriteFailure()) return
             // Completion waits for final reader output, and also handles an already-cancelled tab.
             tab?.coroutineScope?.coroutineContext?.get(Job)?.invokeOnCompletion {
                 stopFileLogging()
@@ -458,14 +464,31 @@ class DebugDataCollector(
      */
     fun stopFileLogging() {
         synchronized(this) {
-            fileLogWriter?.let { writer ->
-                writer.println()
-                writer.println("=== BossTerm Debug Log Ended: ${dateFormat.format(Date())} ===")
-                writer.close()
-            }
+            val writer = fileLogWriter ?: return
+            val path = fileLogPath
             fileLogWriter = null
             fileLogPath = null
+            writer.println()
+            writer.println("=== BossTerm Debug Log Ended: ${dateFormat.format(Date())} ===")
+            writer.close()
+            if (writer.checkError()) reportRecordingFailure(path)
         }
+    }
+
+    /** Called under this collector's lock; clear state before reporting to avoid recursion. */
+    private fun stopOnWriteFailure(): Boolean {
+        val writer = fileLogWriter ?: return false
+        if (!writer.checkError()) return false
+        val path = fileLogPath
+        fileLogWriter = null
+        fileLogPath = null
+        writer.close()
+        reportRecordingFailure(path)
+        return true
+    }
+
+    private fun reportRecordingFailure(path: String?) {
+        System.err.println("WARN: PTY recording stopped after an I/O failure; log may be incomplete: $path")
     }
 
     /**
@@ -513,6 +536,7 @@ class DebugDataCollector(
                     }
                 }
                 writer.println(escaped)
+                stopOnWriteFailure()
             }
         }
     }

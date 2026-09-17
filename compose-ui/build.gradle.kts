@@ -135,15 +135,15 @@ kotlin {
                 // MCP SDK's transitive ktor — 3.4.3 as of SDK 0.8.3 — so all
                 // ktor artifacts land on one version at runtime. Verify with
                 // :compose-ui:dependencies before bumping anything here.
-                implementation("io.ktor:ktor-server-cio:3.2.3")
+                implementation("io.ktor:ktor-server-cio:3.5.2")
                 // Streamable HTTP MCP endpoint (/mcp, for Codex): the SDK's
                 // JSON-response mode replies via call.respond(JSONRPCMessage),
                 // which needs server-side content negotiation (route-scoped to
                 // /mcp, wired to the SDK's McpJson).
-                implementation("io.ktor:ktor-server-content-negotiation:3.2.3")
+                implementation("io.ktor:ktor-server-content-negotiation:3.5.2")
                 // Session sharing (issue #276): WebSocket endpoint for the web viewer.
-                implementation("io.ktor:ktor-server-websockets:3.2.3")
-                implementation("io.ktor:ktor-server-default-headers:3.2.3")
+                implementation("io.ktor:ktor-server-websockets:3.5.2")
+                implementation("io.ktor:ktor-server-default-headers:3.5.2")
                 // QR code for the share dialog (pure-Java, no Android deps).
                 implementation("com.google.zxing:core:3.5.3")
             }
@@ -153,7 +153,7 @@ kotlin {
             dependencies {
                 // In-process ktor app for the streamable HTTP MCP endpoint
                 // contract test (StreamableMcpSessionsTest).
-                implementation("io.ktor:ktor-server-test-host:3.2.3")
+                implementation("io.ktor:ktor-server-test-host:3.5.2")
             }
         }
     }

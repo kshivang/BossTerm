@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Run ShellCheck on install.sh
         run: |
@@ -59,7 +59,7 @@ jobs:
         method: [auto, dmg]
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Test --help
         run: ./install.sh --help
@@ -106,7 +106,7 @@ jobs:
         method: [auto, deb, jar]
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Java 17 (for JAR test)
         if: matrix.method == 'jar'
@@ -151,7 +151,7 @@ jobs:
     continue-on-error: true  # ARM runners may not be available
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Test platform detection (dry-run)
         run: |
@@ -173,7 +173,7 @@ jobs:
     needs: shellcheck
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Test snap method detection (dry-run)
         run: |
@@ -191,7 +191,7 @@ jobs:
     container: fedora:39
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install dependencies
         run: dnf install -y curl which findutils
@@ -221,7 +221,7 @@ jobs:
     container: debian:12
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install dependencies
         run: apt-get update && apt-get install -y curl ca-certificates
@@ -246,7 +246,7 @@ jobs:
     needs: shellcheck
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Test --help output
         run: |
@@ -283,7 +283,7 @@ jobs:
     needs: shellcheck
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Test -Help
         run: .\install.ps1 -Help
@@ -330,7 +330,7 @@ jobs:
     needs: shellcheck
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Test /help
         run: install.bat /help
@@ -405,7 +405,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4

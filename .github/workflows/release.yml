@@ -46,7 +46,7 @@ jobs:
       base_version: ${{ steps.version.outputs.base_version }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -112,7 +112,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup JDK
         uses: actions/setup-java@v5
@@ -216,7 +216,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup JDK
         uses: actions/setup-java@v5
@@ -292,7 +292,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup JDK
         uses: actions/setup-java@v5
@@ -352,7 +352,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Generate Snap Icon
         run: |
@@ -413,7 +413,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Download Artifacts
         uses: actions/download-artifact@v4
@@ -559,7 +559,7 @@ jobs:
 
     steps:
       - name: Checkout Homebrew Tap
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: kshivang/homebrew-bossterm
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -626,7 +626,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup JDK
         uses: actions/setup-java@v5

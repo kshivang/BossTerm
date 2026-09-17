@@ -128,7 +128,7 @@ kotlin {
                 // `api` for the SDK because BossTermMcpConfig's additionalTools
                 // hook exposes the SDK's Server type to embedders, which would
                 // otherwise be inaccessible from a downstream module.
-                api("io.modelcontextprotocol:kotlin-sdk-server:0.8.3")
+                api("io.modelcontextprotocol:kotlin-sdk-server:0.15.0")
                 // The 3.2.3 declared on the ktor-server artifacts is a floor,
                 // not the effective version: Gradle conflict resolution lifts
                 // the whole ktor graph (client 3.3.2 above included) to the

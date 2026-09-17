@@ -28,7 +28,7 @@ object KeyMappingUtils {
             Key.DirectionDown -> JavaKeyEvent.VK_DOWN
             Key.DirectionLeft -> JavaKeyEvent.VK_LEFT
             Key.DirectionRight -> JavaKeyEvent.VK_RIGHT
-            Key.Home -> JavaKeyEvent.VK_HOME
+            Key.MoveHome -> JavaKeyEvent.VK_HOME
             Key.MoveEnd -> JavaKeyEvent.VK_END
             Key.PageUp -> JavaKeyEvent.VK_PAGE_UP
             Key.PageDown -> JavaKeyEvent.VK_PAGE_DOWN

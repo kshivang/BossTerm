@@ -16,19 +16,18 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
 import kotlin.test.Test
-import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
  * Regression tests for the live-resize / update-banner crash: the window died
  * with "maxWidth must be >= than minWidth, maxHeight must be >= than minHeight,
  * minWidth and minHeight must be >= 0" whenever a glyph's topLeft ended up past
- * the canvas edge, because Compose's drawText derives text-layout constraints
+ * the canvas edge, because older Compose drawText derived text-layout constraints
  * from `canvasSize - topLeft` without clamping.
  *
  * [TerminalCanvasRenderer.drawTextClipped] guards every glyph draw against
- * this; these tests pin both the framework behavior being guarded against and
- * the guard itself.
+ * this. Compose 1.12 also handles these coordinates; keep testing both paths
+ * so a future dependency update cannot reintroduce the crash unnoticed.
  */
 class DrawTextClippedTest {
 
@@ -51,25 +50,27 @@ class DrawTextClippedTest {
         return bitmap
     }
 
-    // Documents the Compose behavior the guard exists for: drawText with a
-    // topLeft right of the canvas throws from Constraints(). If this test ever
-    // fails, Compose has started clamping internally and drawTextClipped can go.
     @Test
-    fun frameworkDrawTextThrowsWhenTopLeftIsRightOfCanvas() {
-        assertFailsWith<IllegalArgumentException> {
-            draw(100, 50) {
-                drawText(textMeasurer = measurer, text = "A", topLeft = Offset(150f, 0f), style = style)
-            }
+    fun frameworkDrawTextHandlesTopLeftRightOfCanvas() {
+        val bitmap = draw(100, 50) {
+            drawText(textMeasurer = measurer, text = "A", topLeft = Offset(150f, 0f), style = style)
         }
+        assertTransparent(bitmap)
     }
 
     @Test
-    fun frameworkDrawTextThrowsWhenTopLeftIsBelowCanvas() {
-        assertFailsWith<IllegalArgumentException> {
-            draw(100, 50) {
-                drawText(textMeasurer = measurer, text = "A", topLeft = Offset(0f, 90f), style = style)
-            }
+    fun frameworkDrawTextHandlesTopLeftBelowCanvas() {
+        val bitmap = draw(100, 50) {
+            drawText(textMeasurer = measurer, text = "A", topLeft = Offset(0f, 90f), style = style)
         }
+        assertTransparent(bitmap)
+    }
+
+    private fun assertTransparent(bitmap: ImageBitmap) {
+        val pixels = bitmap.toPixelMap()
+        assertTrue((0 until pixels.height).all { y ->
+            (0 until pixels.width).all { x -> pixels[x, y].alpha == 0f }
+        }, "an off-canvas glyph must not paint visible pixels")
     }
 
     @Test

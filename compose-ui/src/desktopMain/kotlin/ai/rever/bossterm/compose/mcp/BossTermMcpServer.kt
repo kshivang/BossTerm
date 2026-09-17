@@ -282,8 +282,10 @@ class BossTermMcpServer(
         }
 
     /** The handler registered for [name], resolved under [toolsLock]. Null when not registered. */
-    fun handlerFor(name: String): (suspend (CallToolRequest) -> CallToolResult)? =
-        synchronized(toolsLock) { serverRef?.tools?.get(name)?.handler }
+    fun handlerFor(name: String): (suspend (CallToolRequest) -> CallToolResult)? {
+        val handler = synchronized(toolsLock) { serverRef?.tools?.get(name)?.handler } ?: return null
+        return { request -> handler(InProcessClientConnection, request) }
+    }
 
     /**
      * Sync the live server's exposed tool set to match [disabled]. Adds back any

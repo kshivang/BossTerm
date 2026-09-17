@@ -1,18 +1,25 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import com.vanniktech.maven.publish.SonatypeHost
 import com.vanniktech.maven.publish.KotlinMultiplatform
 import com.vanniktech.maven.publish.JavadocJar
 
 plugins {
     kotlin("multiplatform")
-    id("com.android.library")
+    id("com.android.kotlin.multiplatform.library")
     id("com.vanniktech.maven.publish")
 }
 
 kotlin {
     jvmToolchain(17)
     jvm()
-    androidTarget()
+    android {
+        namespace = "ai.rever.bossterm"
+        compileSdk = 36
+        minSdk = 24
+        withJava()
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_17)
+        }
+    }
 
     // Note: iOS, JS, and Wasm targets are not yet implemented
     // They can be added when actual source implementations exist
@@ -20,8 +27,8 @@ kotlin {
     sourceSets {
         val commonMain by getting {
             dependencies {
-                implementation("org.slf4j:slf4j-api:2.0.9")
-                implementation("org.jetbrains:annotations:24.0.1")
+                implementation("org.slf4j:slf4j-api:2.0.19")
+                implementation("org.jetbrains:annotations:26.1.0")
             }
         }
         val commonTest by getting {
@@ -31,29 +38,15 @@ kotlin {
         }
         val jvmMain by getting {
             dependencies {
-                implementation("com.ibm.icu:icu4j:74.1") // For grapheme cluster segmentation
+                implementation("com.ibm.icu:icu4j:78.3") // For grapheme cluster segmentation
             }
         }
         val jvmTest by getting {
             dependencies {
                 implementation("junit:junit:4.13.2")
-                runtimeOnly("org.slf4j:slf4j-simple:2.0.9")
+                runtimeOnly("org.slf4j:slf4j-simple:2.0.19")
             }
         }
-    }
-}
-
-android {
-    namespace = "ai.rever.bossterm"
-    compileSdk = 34
-
-    defaultConfig {
-        minSdk = 24
-    }
-
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
     }
 }
 
@@ -77,7 +70,7 @@ tasks.withType<Jar> {
 
 // Maven Central + GitHub Packages publishing
 mavenPublishing {
-    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
+    publishToMavenCentral()
     signAllPublications()
 
     coordinates("com.risaboss", "bossterm-core", version.toString())
@@ -85,7 +78,6 @@ mavenPublishing {
     configure(KotlinMultiplatform(
         javadocJar = JavadocJar.Empty(),
         sourcesJar = true,
-        androidVariantsToPublish = listOf("release"),
     ))
 
     pom {

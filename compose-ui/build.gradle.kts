@@ -110,7 +110,7 @@ kotlin {
                 implementation("net.java.dev.jna:jna-platform:5.18.1")
 
                 // Ktor client for auto-update
-                val ktorVersion = "3.3.2"
+                val ktorVersion = "3.5.2"
                 implementation("io.ktor:ktor-client-core:$ktorVersion")
                 implementation("io.ktor:ktor-client-cio:$ktorVersion")
                 implementation("io.ktor:ktor-client-content-negotiation:$ktorVersion")

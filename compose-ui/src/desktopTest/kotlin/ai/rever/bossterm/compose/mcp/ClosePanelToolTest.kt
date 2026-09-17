@@ -38,7 +38,7 @@ class ClosePanelToolTest {
                 arguments = buildJsonObject { args.forEach { (k, v) -> put(k, v) } },
             )
         )
-        val result = runBlocking { tool.handler(request) }
+        val result = runBlocking { tool.handler(InProcessClientConnection, request) }
         return result.content.filterIsInstance<TextContent>().joinToString("") { it.text.orEmpty() }
     }
 

@@ -46,7 +46,7 @@ jobs:
       base_version: ${{ steps.version.outputs.base_version }}
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -112,16 +112,16 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup JDK
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v5
+        uses: gradle/actions/setup-gradle@v6
         with:
           cache-read-only: false
 
@@ -203,7 +203,7 @@ jobs:
           fi
 
       - name: Upload macOS DMG
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bossterm-macos-${{ needs.prepare-version.outputs.version }}
           path: .gradleBuild/bossterm-app/compose/binaries/main/dmg/*.dmg
@@ -216,16 +216,16 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup JDK
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v5
+        uses: gradle/actions/setup-gradle@v6
         with:
           cache-read-only: false
 
@@ -262,21 +262,21 @@ jobs:
           APP_VERSION: ${{ needs.prepare-version.outputs.version }}
 
       - name: Upload Deb Package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bossterm-linux-amd64-deb-${{ needs.prepare-version.outputs.version }}
           path: .gradleBuild/bossterm-app/compose/binaries/main/deb/*.deb
           retention-days: 30
 
       - name: Upload RPM Package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bossterm-linux-amd64-rpm-${{ needs.prepare-version.outputs.version }}
           path: .gradleBuild/bossterm-app/compose/binaries/main/rpm/*.rpm
           retention-days: 30
 
       - name: Upload Uber JAR
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bossterm-jar-${{ needs.prepare-version.outputs.version }}
           path: .gradleBuild/bossterm-app/compose/jars/*.jar
@@ -292,16 +292,16 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup JDK
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v5
+        uses: gradle/actions/setup-gradle@v6
         with:
           cache-read-only: false
 
@@ -329,14 +329,14 @@ jobs:
           APP_VERSION: ${{ needs.prepare-version.outputs.version }}
 
       - name: Upload Deb Package (ARM64)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bossterm-linux-arm64-deb-${{ needs.prepare-version.outputs.version }}
           path: .gradleBuild/bossterm-app/compose/binaries/main/deb/*.deb
           retention-days: 30
 
       - name: Upload RPM Package (ARM64)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bossterm-linux-arm64-rpm-${{ needs.prepare-version.outputs.version }}
           path: .gradleBuild/bossterm-app/compose/binaries/main/rpm/*.rpm
@@ -352,7 +352,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Generate Snap Icon
         run: |
@@ -376,7 +376,7 @@ jobs:
         id: snapcraft
 
       - name: Upload Snap
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bossterm-snap-${{ needs.prepare-version.outputs.version }}
           path: ${{ steps.snapcraft.outputs.snap }}
@@ -413,10 +413,10 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Download Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: ./artifacts
 
@@ -466,7 +466,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ needs.prepare-version.outputs.version }}
           name: BossTerm v${{ needs.prepare-version.outputs.version }}
@@ -559,7 +559,7 @@ jobs:
 
     steps:
       - name: Checkout Homebrew Tap
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: kshivang/homebrew-bossterm
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -626,16 +626,16 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup JDK
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v5
+        uses: gradle/actions/setup-gradle@v6
         with:
           cache-read-only: false
 

@@ -1898,7 +1898,7 @@ fun ProperTerminal(
                 // Don't clear on navigation keys or function keys
                 val isNavigationKey = keyEvent.key in listOf(
                   Key.DirectionUp, Key.DirectionDown, Key.DirectionLeft, Key.DirectionRight,
-                  Key.Home, Key.MoveEnd, Key.PageUp, Key.PageDown,
+                  Key.MoveHome, Key.MoveEnd, Key.PageUp, Key.PageDown,
                   Key.F1, Key.F2, Key.F3, Key.F4, Key.F5, Key.F6,
                   Key.F7, Key.F8, Key.F9, Key.F10, Key.F11, Key.F12
                 )

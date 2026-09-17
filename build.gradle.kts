@@ -1,13 +1,11 @@
 plugins {
-    // Kotlin 2.2.20: bumped from 2.1.21 so this module can consume supabase-kt 3.6.0
-    // (its 2.3.0 metadata is readable by a 2.2.x compiler). Compose Multiplatform stays
-    // on 1.9.3 — only the Kotlin/Compose-compiler version moves, so the Compose runtime
-    // API surface is unchanged.
-    kotlin("jvm") version "2.2.20" apply false
-    id("org.jetbrains.compose") version "1.9.3" apply false
-    id("org.jetbrains.kotlin.plugin.compose") version "2.2.20" apply false
-    id("com.android.library") version "8.5.2" apply false
-    id("com.vanniktech.maven.publish") version "0.30.0" apply false
+    // Keep Kotlin and its compiler plugins on the same release.
+    id("org.jetbrains.kotlin.multiplatform") version "2.4.20" apply false
+    id("org.jetbrains.compose") version "1.12.0" apply false
+    id("org.jetbrains.kotlin.plugin.compose") version "2.4.20" apply false
+    id("org.jetbrains.kotlin.plugin.serialization") version "2.4.20" apply false
+    id("com.android.kotlin.multiplatform.library") version "9.4.0" apply false
+    id("com.vanniktech.maven.publish") version "0.37.0" apply false
 }
 
 // Version format: MAJOR.MINOR.PATCH

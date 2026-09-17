@@ -1,7 +1,6 @@
 package ai.rever.bossterm.terminal.model
 
 import ai.rever.bossterm.terminal.TextStyle
-import java.util.*
 import kotlin.concurrent.Volatile
 
 class StyleState {
@@ -20,8 +19,8 @@ class StyleState {
     }
 
     val defaultBackground: ai.rever.bossterm.terminal.TerminalColor
-        get() = Objects.requireNonNull<ai.rever.bossterm.terminal.TerminalColor?>(myDefaultStyle.background)
+        get() = myDefaultStyle.background!!
 
     val defaultForeground: ai.rever.bossterm.terminal.TerminalColor
-        get() = Objects.requireNonNull<ai.rever.bossterm.terminal.TerminalColor?>(myDefaultStyle.foreground)
+        get() = myDefaultStyle.foreground!!
 }

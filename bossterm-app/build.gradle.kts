@@ -68,7 +68,7 @@ kotlin {
                 // SLF4J binding so logs from compose-ui (e.g. BossTermMcpManager,
                 // Ktor server) actually reach stderr instead of being dropped by
                 // the NOP logger.
-                runtimeOnly("org.slf4j:slf4j-simple:2.0.17")
+                runtimeOnly("org.slf4j:slf4j-simple:2.0.19")
             }
         }
     }
@@ -205,7 +205,7 @@ compose.desktop {
         // ProGuard configuration for release builds
         buildTypes.release {
             proguard {
-                version.set("7.7.0")
+                version.set("7.10.0")
                 configurationFiles.from(project.file("../compose-ui/proguard-rules.pro"))
             }
         }

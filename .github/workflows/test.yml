@@ -14,19 +14,19 @@ jobs:
         os: [macos-latest, ubuntu-latest, windows-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           java-version: '17'
           distribution: 'temurin'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: Build Desktop
-        run: ./gradlew :bossterm-core-mpp:jvmJar :compose-ui:compileKotlinDesktop --no-daemon
+        run: ./gradlew :bossterm-core-mpp:jvmJar :compose-ui:compileKotlinDesktop :bossterm-app:compileKotlinDesktop :embedded-example:compileKotlinDesktop :tabbed-example:compileKotlinDesktop --no-daemon
 
       - name: Test Desktop
-        run: ./gradlew :compose-ui:desktopTest --no-daemon
+        run: ./gradlew :bossterm-core-mpp:jvmTest :compose-ui:desktopTest --no-daemon

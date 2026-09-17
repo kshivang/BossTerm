@@ -8,6 +8,7 @@ import ai.rever.bossterm.terminal.TextStyle
 import ai.rever.bossterm.terminal.model.image.DimensionSpec
 import ai.rever.bossterm.terminal.model.image.TerminalImage
 import ai.rever.bossterm.terminal.model.image.TerminalImagePlacement
+import org.junit.Assume.assumeTrue
 import java.lang.reflect.Proxy
 import java.nio.file.Files
 import java.nio.file.Path
@@ -264,11 +265,19 @@ class KittyGraphicsProtocolTest {
             recording.terminal
         )
 
-        assertTrue(recording.responses.single().contains("EACCES: image path is not allowed"))
+        // Unix device paths are not absolute on Windows, so validation rejects them
+        // before canonicalization and the Unix virtual-filesystem denylist.
+        val expectedError = if (Path.of("/dev/null").isAbsolute) {
+            "EACCES: image path is not allowed"
+        } else {
+            "EINVAL: image file path must be absolute"
+        }
+        assertTrue(recording.responses.single().contains(expectedError))
     }
 
     @Test
     fun sensitiveFileTransportRootsStayDenylisted() {
+        assumeTrue("Unix virtual-filesystem roots require Unix path semantics", Path.of("/dev/null").isAbsolute)
         val protocol = KittyGraphicsProtocol()
 
         assertTrue(protocol.isSensitivePath(Path.of("/proc/version")))

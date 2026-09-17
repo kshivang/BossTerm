@@ -1,9 +1,15 @@
 package ai.rever.bossterm.compose.debug
 
 import java.io.File
+import ai.rever.bossterm.compose.tabs.TabController
+import ai.rever.bossterm.compose.settings.TerminalSettings
+import kotlinx.coroutines.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
+import java.nio.file.Files
 
 /**
  * The replay harness is only worth anything if a recording round-trips exactly. If the
@@ -25,12 +31,90 @@ class PtyReplayTest {
         return chunks.single().data
     }
 
+
+
+    @Test
+    fun recordingClosesWhenOwningTabCompletesEvenIfAlreadyCancelled() = runBlocking {
+        for (cancelFirst in listOf(false, true)) {
+            val parent = Job()
+            val controller = TabController(TerminalSettings(), {}, parentScope = CoroutineScope(parent))
+            val tab = controller.createRemoteSession("recording", feedsStream = false)
+            val collector = DebugDataCollector(tab)
+            val file = File.createTempFile("pty-lifecycle", ".log")
+            try {
+                if (cancelFirst) withTimeout(5000) { parent.cancelAndJoin() }
+                collector.startFileLogging(file.path)
+                withTimeout(5000) { parent.cancelAndJoin() }
+                assertFalse(collector.isFileLoggingActive())
+            } finally {
+                controller.disposeAll()
+                parent.cancel()
+                collector.stopFileLogging()
+                file.delete()
+            }
+        }
+    }
+
+    @Test
+    fun recordingUsesUtf8RegardlessOfPlatformDefault() {
+        val file = File.createTempFile("pty-utf8", ".log")
+        val collector = DebugDataCollector(null)
+        try {
+            collector.startFileLogging(file.absolutePath)
+            collector.recordChunk("你好 ✻", ChunkSource.PTY_OUTPUT)
+            collector.stopFileLogging()
+            assertEquals("你好 ✻", PtyReplay.parseLog(file.readText(Charsets.UTF_8)).single().data)
+            assertTrue(file.readBytes().toList().windowed(6).any {
+                it == "你好".toByteArray(Charsets.UTF_8).toList()
+            })
+        } finally {
+            collector.stopFileLogging()
+            file.delete()
+        }
+    }
+
+    @Test
+    fun recordingsWithTheSameLabelNeverOverwriteEachOther() {
+        val dir = Files.createTempDirectory("pty-recordings").toFile()
+        val first = DebugDataCollector(null)
+        val second = DebugDataCollector(null)
+        try {
+            first.startFileLoggingIfRequested("same-tab", dir.path)
+            first.recordChunk("first", ChunkSource.PTY_OUTPUT)
+            second.startFileLoggingIfRequested("same-tab", dir.path)
+            second.recordChunk("second", ChunkSource.PTY_OUTPUT)
+            val firstPath = first.getLogFilePath()!!
+            val secondPath = second.getLogFilePath()!!
+            assertNotEquals(firstPath, secondPath)
+            first.stopFileLogging()
+            second.stopFileLogging()
+            assertEquals("first", PtyReplay.parseLog(File(firstPath).readText()).single().data)
+            assertEquals("second", PtyReplay.parseLog(File(secondPath).readText()).single().data)
+        } finally {
+            first.stopFileLogging()
+            second.stopFileLogging()
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun explicitFalseAndZeroDisableRecording() {
+        for (value in listOf(null, "", " ", "0", "false", "FALSE")) {
+            val collector = DebugDataCollector(null)
+            collector.startFileLoggingIfRequested("disabled", value)
+            assertFalse(collector.isFileLoggingActive())
+        }
+    }
+
     @Test
     fun aRecordingRoundTripsThroughTheProductionEscaper() {
         // Through the real writeChunkToFile, not a reimplementation of it, so the two halves
         // cannot drift apart silently.
         listOf(
             "plain ascii",
+            "line separators \u0085 \u2028 \u2029",
+            "split high surrogate \uD83D",
+            "split low surrogate \uDCBB",
             "\u001B[?2026h\u001B[?25l\u001B[H\r\u001B[27B",
             "\u001B[38;2;255;193;7m\u001B[1m\u001B[22m\u001B[39m",
             "tab\there\nnewline\rcarriage",

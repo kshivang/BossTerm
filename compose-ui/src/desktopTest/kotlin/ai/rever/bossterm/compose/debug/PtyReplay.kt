@@ -11,7 +11,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /**
- * Replay a recorded PTY byte stream into a headless terminal and read the grid back.
+ * Replay recorded PTY output into a headless terminal and read the grid back.
  *
  * Why this exists: a redraw glitch in a TUI is intermittent, and a screenshot of one is
  * evidence that something is wrong but not evidence of what. The byte stream that produced
@@ -28,6 +28,9 @@ import java.util.concurrent.TimeUnit
  * permanent visible corruption, because nothing ever repaints the line to resync - and it
  * surfaces later, somewhere unrelated to where it started. Comparing a replayed grid against
  * the expected one is how that divergence gets localised to the chunk that caused it.
+ *
+ * This reconstructs the final text grid at a fixed, caller-supplied size. It does not
+ * reproduce resize history, rendering frames, or wall-clock scheduling.
  *
  * Recordings come from `BOSSTERM_PTY_LOG=1`, which writes the same escaped format this
  * parser reverses.
@@ -65,11 +68,12 @@ object PtyReplay {
                 'n' -> { out.append('\n'); i += 2 }
                 'r' -> { out.append('\r'); i += 2 }
                 't' -> { out.append('\t'); i += 2 }
-                'x' -> {
-                    val hex = s.substring(i + 2, minOf(i + 4, s.length))
+                'x', 'u' -> {
+                    val digits = if (next == 'u') 4 else 2
+                    val hex = s.substring(i + 2, minOf(i + 2 + digits, s.length))
                     val code = hex.toIntOrNull(16)
-                    if (code != null && hex.length == 2) {
-                        out.append(code.toChar()); i += 4
+                    if (code != null && hex.length == digits) {
+                        out.append(code.toChar()); i += 2 + digits
                     } else {
                         out.append(c); i++
                     }
@@ -89,6 +93,7 @@ object PtyReplay {
      * exactly the kind of thing a recording should be able to re-expose.
      */
     fun replay(chunks: List<Chunk>, width: Int, height: Int): List<String> {
+        require(width > 0 && height > 0) { "Replay dimensions must be positive" }
         val display = ComposeTerminalDisplay()
         val styleState = StyleState()
         val textBuffer = TerminalTextBuffer(width, height, styleState)
@@ -106,23 +111,30 @@ object PtyReplay {
                 dataStream = dataStream,
                 terminal = terminal,
                 shouldContinue = { true },
+                onProcessingError = { throw it },
             )
         }
         try {
             chunks.filter { it.source == "PTY>" }.forEach { dataStream.append(it.data) }
             dataStream.close()
             drain.get(30, TimeUnit.SECONDS)
-        } finally {
-            executor.shutdownNow()
-        }
-
-        textBuffer.lock()
-        try {
-            return (0 until height).map { row ->
-                textBuffer.getLine(row).text.trimEnd()
+            textBuffer.lock()
+            try {
+                return (0 until height).map { row ->
+                    textBuffer.getLine(row).text.trimEnd()
+                }
+            } finally {
+                textBuffer.unlock()
             }
         } finally {
-            textBuffer.unlock()
+            dataStream.close()
+            drain.cancel(true)
+            executor.shutdownNow()
+            try {
+                check(executor.awaitTermination(5, TimeUnit.SECONDS)) { "Replay worker did not stop" }
+            } finally {
+                display.dispose()
+            }
         }
     }
 

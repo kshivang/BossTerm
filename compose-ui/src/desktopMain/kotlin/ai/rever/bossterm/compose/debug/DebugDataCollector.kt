@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.debug
 import ai.rever.bossterm.terminal.LoggingTtyConnector
 import ai.rever.bossterm.compose.tabs.TerminalTab
 import java.io.File
+import kotlinx.coroutines.Job
 import java.io.FileWriter
 import java.io.PrintWriter
 import java.text.SimpleDateFormat
@@ -391,19 +392,10 @@ class DebugDataCollector(
     // === File Logging Methods ===
 
     /**
-     * Start logging to a file.
-     *
-     * Creates or overwrites the specified file and writes all I/O data to it.
-     * Each chunk is written with a timestamp and source indicator.
-     *
-     * @param filePath Path to the log file
-     * @throws java.io.IOException If the file cannot be created or written to
-     */
-    /**
      * Start recording to disk automatically when `BOSSTERM_PTY_LOG` is set.
      *
      * The escaped format [writeChunkToFile] emits is reversible, so a recording made this
-     * way replays byte-for-byte through `PtyReplay` in the test sources. That is the point:
+     * way replays character-for-character through `PtyReplay` in the test sources. That is the point:
      * a redraw glitch in a TUI is intermittent and unscreenshotable, but the byte stream
      * that produced it is a deterministic input. Capture it once, and the bug becomes a
      * failing test instead of a theory.
@@ -415,8 +407,11 @@ class DebugDataCollector(
      *   BOSSTERM_PTY_LOG=1 ./gradlew :bossterm-app:run
      *   BOSSTERM_PTY_LOG=/tmp/ptylogs ./gradlew :bossterm-app:run
      */
-    fun startFileLoggingIfRequested(tabLabel: String) {
-        val requested = System.getenv(PTY_LOG_ENV)?.takeIf { it.isNotBlank() } ?: return
+    fun startFileLoggingIfRequested(tabLabel: String) =
+        startFileLoggingIfRequested(tabLabel, System.getenv(PTY_LOG_ENV))
+
+    internal fun startFileLoggingIfRequested(tabLabel: String, requested: String?) {
+        if (requested.isNullOrBlank() || requested == "0" || requested.equals("false", true)) return
         val dir = if (requested == "1" || requested.equals("true", ignoreCase = true)) {
             "${System.getProperty("user.home")}/.bossterm/pty-log"
         } else {
@@ -424,18 +419,37 @@ class DebugDataCollector(
         }
         val safe = tabLabel.replace(Regex("[^A-Za-z0-9._-]"), "_").take(40)
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss").format(Date())
-        runCatching { startFileLogging("$dir/$stamp-$safe.log") }
+        runCatching {
+            val directory = File(dir).apply { mkdirs() }
+            val file = File.createTempFile("$stamp-$safe-", ".log", directory)
+            startFileLogging(file.absolutePath)
+        }.onFailure {
+            System.err.println("WARN: Unable to start PTY recording: ${it.message}")
+        }
     }
 
+    /**
+     * Start logging to a file.
+     *
+     * Creates or overwrites the specified file and writes all I/O data to it.
+     * Each chunk is written with a timestamp and source indicator.
+     *
+     * @param filePath Path to the log file
+     * @throws java.io.IOException If the file cannot be created or written to
+     */
     fun startFileLogging(filePath: String) {
         synchronized(this) {
             stopFileLogging()
             val file = File(filePath)
             file.parentFile?.mkdirs()
-            fileLogWriter = PrintWriter(FileWriter(file, false), true)
+            fileLogWriter = PrintWriter(file.outputStream().bufferedWriter(Charsets.UTF_8), true)
             fileLogPath = filePath
             fileLogWriter?.println("=== BossTerm Debug Log Started: ${dateFormat.format(Date())} ===")
             fileLogWriter?.println()
+            // Completion waits for final reader output, and also handles an already-cancelled tab.
+            tab?.coroutineScope?.coroutineContext?.get(Job)?.invokeOnCompletion {
+                stopFileLogging()
+            }
         }
     }
 
@@ -470,8 +484,8 @@ class DebugDataCollector(
      * Write a chunk to the log file (called internally from recordChunk).
      */
     private fun writeChunkToFile(chunk: DebugChunk) {
-        fileLogWriter?.let { writer ->
-            synchronized(this) {
+        synchronized(this) {
+            fileLogWriter?.let { writer ->
                 val timestamp = dateFormat.format(Date(chunk.timestamp))
                 val sourceTag = when (chunk.source) {
                     ChunkSource.PTY_OUTPUT -> "PTY>"
@@ -482,7 +496,7 @@ class DebugDataCollector(
                 writer.print("[$timestamp] $sourceTag ")
                 // Escape non-printables for readability - and LOSSLESSLY, because
                 // `PtyReplay` in the test sources reverses this to replay a recording
-                // byte for byte. A literal backslash was previously written through
+                // character for character. A literal backslash was previously written through
                 // unescaped, which made "\\e" ambiguous between an escape character and
                 // the two characters `\` and `e`: readable, but not replayable.
                 val escaped = chunk.data.joinToString("") { c ->
@@ -493,6 +507,8 @@ class DebugDataCollector(
                         c == '\r' -> "\\r"
                         c == '\t' -> "\\t"
                         c.code < 32 || c.code == 127 -> "\\x${c.code.toString(16).padStart(2, '0')}"
+                        c.isSurrogate() || c == '\u0085' || c == '\u2028' || c == '\u2029' ->
+                            "\\u${c.code.toString(16).padStart(4, '0')}"
                         else -> c.toString()
                     }
                 }

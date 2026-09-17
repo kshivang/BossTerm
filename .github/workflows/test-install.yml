@@ -407,6 +407,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # OpenClaw's live installer requires Node 26; do not rely on the runner default.
+      - name: Setup Node 26
+        uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+
       - name: Setup JDK 17
         uses: actions/setup-java@v6
         with:
@@ -432,7 +438,7 @@ jobs:
       - name: Verify the tools landed
         run: |
           set -e
-          export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" || true
+          export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" --no-use || true
           command -v starship && starship --version
           command -v git && git --version
 

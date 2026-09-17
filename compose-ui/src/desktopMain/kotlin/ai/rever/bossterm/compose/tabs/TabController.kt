@@ -651,6 +651,7 @@ class TabController(
         debugCollector?.let { collector ->
             // Set the tab reference now that tab is created
             collector.setTab(tab)
+            collector.startFileLoggingIfRequested(tab.id)
 
             // Hook into data stream for PTY output capture
             dataStream.debugCallback = { data ->
@@ -1036,6 +1037,7 @@ class TabController(
         // Complete debug collector initialization
         debugCollector?.let { collector ->
             collector.setTab(session)
+            collector.startFileLoggingIfRequested(session.id)
             dataStream.debugCallback = { data ->
                 collector.recordChunk(data, ChunkSource.PTY_OUTPUT)
             }
@@ -1253,6 +1255,7 @@ class TabController(
 
         debugCollector?.let { collector ->
             collector.setTab(tab)
+            collector.startFileLoggingIfRequested(tab.id)
             dataStream.debugCallback = { data ->
                 collector.recordChunk(data, ChunkSource.PTY_OUTPUT)
             }

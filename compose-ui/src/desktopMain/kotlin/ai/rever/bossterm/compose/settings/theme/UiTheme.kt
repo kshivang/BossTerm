@@ -125,7 +125,7 @@ data class UiTheme(
          *
          * **Deliberate divergence from the host:** the host sets `panel` and
          * `raised` to the SAME pure white. That cannot be copied here. `raised` is
-         * `SettingsTheme.SurfaceColor`, which is the background of every row and
+         * `ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor`, which is the background of every row and
          * card inside the settings panel, and `panel` is the panel window behind
          * them - and those rows carry no border of their own (only the input fields
          * nested inside them do). White on white would erase every one of them. So

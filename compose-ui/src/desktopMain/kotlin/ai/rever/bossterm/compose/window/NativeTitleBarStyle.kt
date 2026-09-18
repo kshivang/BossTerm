@@ -144,9 +144,9 @@ internal fun isDarkBackground(argbHex: String): Boolean {
  * Deriving it from the terminal background instead fixes both directions at once, and does it
  * through a supported system property rather than JNA. There is no per-window appearance client
  * property to reach for - `CPlatformWindow` honours only `fullWindowContent`,
- * `transparentTitleBar`, `windowTitleVisible`, `fullscreenable` and some fade/shadow keys - and the
- * ObjC bridge in `window/WindowTransparency.kt` is not the alternative it looks like: its only
- * consumer is commented out there as having "compatibility issues with modern macOS/Java".
+ * `transparentTitleBar`, `windowTitleVisible`, `fullscreenable` and some fade/shadow keys.
+ * [MacOSWindowGlass] installs a native material only for the custom-title-bar path;
+ * it does not change the decorated AWT frame's transparency restriction.
  *
  * The cost is that this is app-wide, so other AWT chrome (notably the native context menus) follows
  * the terminal background rather than the system. For a terminal that is the more consistent

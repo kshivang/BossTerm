@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.settings.sections
 
+import ai.rever.bossterm.compose.window.GlassAlertDialog as AlertDialog
 import ai.rever.bossterm.compose.ai.AIAssistantDetector
 import ai.rever.bossterm.compose.ai.AIAssistantDefinition
 import ai.rever.bossterm.compose.ai.ToolCommandProvider
@@ -9,11 +10,11 @@ import ai.rever.bossterm.compose.settings.CustomAIAssistantData
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
-import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
+import ai.rever.bossterm.compose.settings.DialogTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
 import ai.rever.bossterm.compose.settings.SettingsTheme.Success
-import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary

@@ -1,11 +1,12 @@
 package ai.rever.bossterm.compose.remote
 
+import ai.rever.bossterm.compose.window.GlassAlertDialog3 as AlertDialog
 import ai.rever.bossterm.compose.settings.SettingsTheme
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
-import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
+import ai.rever.bossterm.compose.settings.DialogTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
-import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
@@ -46,7 +47,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Window
+import ai.rever.bossterm.compose.window.GlassWindow as Window
 import androidx.compose.ui.window.rememberWindowState
 
 private val Green get() = SettingsTheme.Success
@@ -176,7 +177,7 @@ fun AddRemoteDialog(manager: RemoteSessionManager, onDismiss: () -> Unit) {
  */
 @Composable
 fun RequestControlPrompt(onConfirm: () -> Unit, onDismiss: () -> Unit) {
-    androidx.compose.material3.AlertDialog(
+    AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = SurfaceColor,
         title = { Text("View-only session", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
@@ -212,7 +213,7 @@ fun RemoteFitPrompt(
     onFitHost: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    androidx.compose.material3.AlertDialog(
+    AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = SurfaceColor,
         title = { Text("Match window sizes?", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
@@ -256,7 +257,7 @@ fun RemoteDisconnectedDialog(
     onDisconnect: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    androidx.compose.material3.AlertDialog(
+    AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = SurfaceColor,
         title = { Text("Remote disconnected", color = TextPrimary, fontWeight = FontWeight.SemiBold) },

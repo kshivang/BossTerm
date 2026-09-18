@@ -3,7 +3,7 @@ package ai.rever.bossterm.compose.debug
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Window
+import ai.rever.bossterm.compose.window.GlassWindow as Window
 import androidx.compose.ui.window.rememberWindowState
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 

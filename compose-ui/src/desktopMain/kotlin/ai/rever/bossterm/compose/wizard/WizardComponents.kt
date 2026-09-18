@@ -15,7 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
-import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary

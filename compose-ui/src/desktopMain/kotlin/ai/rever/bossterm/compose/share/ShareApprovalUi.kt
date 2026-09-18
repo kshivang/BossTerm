@@ -3,7 +3,7 @@ package ai.rever.bossterm.compose.share
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
 import ai.rever.bossterm.compose.settings.SettingsTheme.Success
-import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.theme.BossUiTheme

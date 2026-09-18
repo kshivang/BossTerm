@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.settings.sections
 
+import ai.rever.bossterm.compose.window.GlassAlertDialog as AlertDialog
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,10 +24,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
-import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
+import ai.rever.bossterm.compose.settings.DialogTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
-import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
@@ -39,6 +40,11 @@ import ai.rever.bossterm.compose.settings.theme.ColorPalette
 import ai.rever.bossterm.compose.settings.theme.ColorPaletteManager
 import ai.rever.bossterm.compose.settings.theme.Theme
 import ai.rever.bossterm.compose.settings.theme.ThemeManager
+import ai.rever.bossterm.compose.settings.components.SettingsDropdown
+import ai.rever.bossterm.compose.settings.components.SettingsSlider
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
+import ai.rever.bossterm.compose.window.WindowGlassMode
+import ai.rever.bossterm.compose.window.isLiquidGlassTheme
 
 /**
  * Theme settings section: theme selection, ANSI palette editing.
@@ -47,7 +53,9 @@ import ai.rever.bossterm.compose.settings.theme.ThemeManager
 fun ThemeSettingsSection(
     settings: TerminalSettings,
     onSettingsChange: (TerminalSettings) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onSettingsSave: (() -> Unit)? = null,
+    onRestartApp: (() -> Unit)? = null
 ) {
     val themeManager = remember { ThemeManager.instance }
     val paletteManager = remember { ColorPaletteManager.instance }
@@ -80,6 +88,104 @@ fun ThemeSettingsSection(
         }
 
         Spacer(modifier = Modifier.height(24.dp))
+
+        if (settings.isLiquidGlassTheme) {
+            SettingsSection(title = "Glass") {
+                if (settings.useNativeTitleBar) {
+                    Text(
+                        "Glass in the main window needs the custom title bar. Enable it and restart BossTerm to apply the material.",
+                        color = TextSecondary, fontSize = 12.sp
+                    )
+                    Button(onClick = {
+                        onSettingsChange(settings.copy(useNativeTitleBar = false))
+                        onSettingsSave?.invoke()
+                        onRestartApp?.invoke()
+                    }) {
+                        Text(if (onRestartApp != null) "Enable and Restart" else "Enable (restart required)")
+                    }
+                }
+                val glassMode = WindowGlassMode.fromSetting(settings.windowGlassMode)
+                SettingsDropdown(
+                    label = "Glass Coverage",
+                    options = WindowGlassMode.entries.filter { it != WindowGlassMode.OFF }.map { it.label },
+                    selectedOption = glassMode.label,
+                    onOptionSelected = { label ->
+                        val mode = WindowGlassMode.entries.first { it.label == label }
+                        onSettingsChange(settings.copy(
+                            windowGlassMode = mode.setting,
+                            windowGlassOpacity = if (mode == WindowGlassMode.WINDOW && settings.windowGlassOpacity >= 1f)
+                                0.85f else settings.windowGlassOpacity
+                        ))
+                    },
+                    description = "Native Liquid Glass on macOS 26+, Desktop Acrylic on Windows 11 22H2+, " +
+                        "and KDE/KWin blur on Linux (X11/XWayland). Opaque when unavailable. " +
+                        "Tab bar and top bar keeps the terminal opaque. Changes apply immediately."
+                )
+
+                if (glassMode != WindowGlassMode.OFF) {
+                    SettingsSlider(
+                        label = "Glass Tint",
+                        value = settings.windowGlassTint,
+                        onValueChange = { onSettingsChange(settings.copy(windowGlassTint = it)) },
+                        onValueChangeFinished = onSettingsSave,
+                        valueRange = 0f..1f,
+                        valueDisplay = { "${(it * 100).toInt()}%" },
+                        description = "Lower shows more of the backdrop; higher adds more of your theme color"
+                    )
+                    if (ShellCustomizationUtils.isMacOS()) {
+                        SettingsDropdown(
+                            label = "Glass Style",
+                            options = listOf("Regular", "Clear"),
+                            selectedOption = if (settings.windowGlassStyle == "clear") "Clear" else "Regular",
+                            onOptionSelected = { onSettingsChange(settings.copy(windowGlassStyle = it.lowercase())) },
+                            description = "Regular softens the backdrop for readability. Clear is more transparent. Requires macOS 26+."
+                        )
+                    }
+                }
+
+                if (glassMode != WindowGlassMode.BARS) {
+                    SettingsSlider(
+                        label = "Background Opacity",
+                        value = settings.windowGlassOpacity,
+                        onValueChange = { onSettingsChange(settings.copy(windowGlassOpacity = it)) },
+                        onValueChangeFinished = onSettingsSave,
+                        valueRange = 0f..1.0f,
+                        steps = 19,
+                        valueDisplay = { "${(it * 100).toInt()}%" },
+                        description = if (glassMode == WindowGlassMode.WINDOW)
+                            "Lower opacity reveals more glass behind the terminal; 100% keeps terminal text on a solid background"
+                            else "Make the terminal background transparent to see through to desktop"
+                    )
+                }
+
+            }
+            Spacer(modifier = Modifier.height(24.dp))
+        }
+
+        // Ordinary themes keep their transparency controls here.
+        if (!settings.isLiquidGlassTheme) {
+            SettingsSection(title = "Transparency") {
+                if (settings.useNativeTitleBar) {
+                    Text(
+                        text = "Transparency requires custom title bar. Disable 'Use Native Title Bar' in Visuals → Window Style to enable transparency.",
+                        color = TextMuted,
+                        fontSize = 12.sp
+                    )
+                } else {
+                    SettingsSlider(
+                        label = "Background Opacity",
+                        value = settings.backgroundOpacity,
+                        onValueChange = { onSettingsChange(settings.copy(backgroundOpacity = it)) },
+                        onValueChangeFinished = onSettingsSave,
+                        valueRange = 0f..1f,
+                        steps = 19,
+                        valueDisplay = { "${(it * 100).toInt()}%" },
+                        description = "Make the terminal background transparent to see through to desktop"
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(24.dp))
+        }
 
         // Current theme info and actions
         SettingsSection(title = "Current Theme: ${currentTheme.name}") {

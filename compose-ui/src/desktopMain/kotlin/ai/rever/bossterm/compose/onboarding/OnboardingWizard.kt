@@ -14,13 +14,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.DialogWindow
+import ai.rever.bossterm.compose.window.GlassDialogWindow as DialogWindow
 import androidx.compose.ui.window.rememberDialogState
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
-import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
+import ai.rever.bossterm.compose.settings.DialogTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
-import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary

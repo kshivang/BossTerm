@@ -2,11 +2,11 @@ package ai.rever.bossterm.compose.daemon
 
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
-import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
+import ai.rever.bossterm.compose.settings.DialogTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
 import ai.rever.bossterm.compose.settings.SettingsTheme.Success
-import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
@@ -61,7 +61,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Window
+import ai.rever.bossterm.compose.window.GlassWindow as Window
 import androidx.compose.ui.window.rememberWindowState
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType

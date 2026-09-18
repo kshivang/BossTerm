@@ -252,7 +252,7 @@ class UiThemeTest {
         // cannot be asserted here — sibling tests call update() and test order is not
         // guaranteed — so assert the expression instead. A wrong seed shows up as a
         // flash of the other identity in chrome composed before ThemeManager loads.
-        assertEquals(UiTheme.BOSS_BLUEPRINT, UiTheme.fromTheme(BuiltinThemes.PRODUCT_DEFAULT))
+        assertEquals(UiTheme.fromTheme(BuiltinThemes.LIQUID_GLASS_DARK), UiTheme.fromTheme(BuiltinThemes.PRODUCT_DEFAULT))
     }
 
     @Test

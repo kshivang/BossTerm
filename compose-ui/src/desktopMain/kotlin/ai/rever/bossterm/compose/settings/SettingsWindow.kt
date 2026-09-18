@@ -3,7 +3,7 @@ package ai.rever.bossterm.compose.settings
 import androidx.compose.runtime.*
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Window
+import ai.rever.bossterm.compose.window.GlassWindow as Window
 import androidx.compose.ui.window.rememberWindowState
 import kotlinx.coroutines.delay
 

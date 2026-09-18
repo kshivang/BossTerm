@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose.debug
 
+import ai.rever.bossterm.compose.settings.DialogTheme
+import ai.rever.bossterm.compose.settings.SettingsTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -34,7 +36,7 @@ fun BufferTypeSelector(
 ) {
     Row(
         modifier = modifier
-            .background(Color(0xFF2A2A2A), RoundedCornerShape(6.dp))
+            .background(DialogTheme.SurfaceColor, RoundedCornerShape(6.dp))
             .padding(4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
@@ -43,7 +45,7 @@ fun BufferTypeSelector(
                 onClick = { onSelectType(type) },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (selectedType == type) Color(0xFF4A90E2) else Color.Transparent,
-                    contentColor = if (selectedType == type) Color.White else Color.Gray
+                    contentColor = if (selectedType == type) SettingsTheme.TextPrimary else SettingsTheme.TextMuted
                 ),
                 shape = RoundedCornerShape(4.dp),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
@@ -72,7 +74,7 @@ fun TimeSlider(
     if (totalStates == 0) {
         Text(
             text = "No snapshots captured yet",
-            color = Color.Gray,
+            color = SettingsTheme.TextMuted,
             fontSize = 13.sp,
             modifier = modifier.padding(8.dp)
         )
@@ -83,7 +85,7 @@ fun TimeSlider(
         // Slider label
         Text(
             text = "Snapshot: ${currentIndex + 1} / $totalStates",
-            color = Color.White,
+            color = SettingsTheme.TextPrimary,
             fontSize = 13.sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.padding(bottom = 4.dp)
@@ -103,7 +105,7 @@ fun TimeSlider(
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                     contentDescription = "Previous snapshot",
-                    tint = if (currentIndex > 0) Color.White else Color.Gray
+                    tint = if (currentIndex > 0) SettingsTheme.TextPrimary else SettingsTheme.TextMuted
                 )
             }
 
@@ -116,7 +118,7 @@ fun TimeSlider(
                 colors = SliderDefaults.colors(
                     thumbColor = Color(0xFF4A90E2),
                     activeTrackColor = Color(0xFF4A90E2),
-                    inactiveTrackColor = Color(0xFF3A3A3A)
+                    inactiveTrackColor = SettingsTheme.BorderColor
                 ),
                 modifier = Modifier.weight(1f)
             )
@@ -130,7 +132,7 @@ fun TimeSlider(
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                     contentDescription = "Next snapshot",
-                    tint = if (currentIndex < totalStates - 1) Color.White else Color.Gray
+                    tint = if (currentIndex < totalStates - 1) SettingsTheme.TextPrimary else SettingsTheme.TextMuted
                 )
             }
         }
@@ -147,12 +149,12 @@ fun BufferView(
 ) {
     Box(
         modifier = modifier
-            .background(Color(0xFF1A1A1A), RoundedCornerShape(6.dp))
+            .background(DialogTheme.SurfaceColor, RoundedCornerShape(6.dp))
             .padding(12.dp)
     ) {
         Text(
             text = content.ifEmpty { "No data available" },
-            color = if (content.isEmpty()) Color.Gray else Color(0xFFE0E0E0),
+            color = if (content.isEmpty()) SettingsTheme.TextMuted else SettingsTheme.TextPrimary,
             fontSize = 12.sp,
             fontFamily = FontFamily.Monospace,
             modifier = Modifier
@@ -202,13 +204,13 @@ fun ControlSequenceView(
 
     Box(
         modifier = modifier
-            .background(Color(0xFF1A1A1A), RoundedCornerShape(6.dp))
+            .background(DialogTheme.SurfaceColor, RoundedCornerShape(6.dp))
             .padding(12.dp)
     ) {
         // Scrollable text content
         Text(
             text = visualized,
-            color = if (chunks.isEmpty()) Color.Gray else Color(0xFFE0E0E0),
+            color = if (chunks.isEmpty()) SettingsTheme.TextMuted else SettingsTheme.TextPrimary,
             fontSize = 11.sp,
             fontFamily = FontFamily.Monospace,
             lineHeight = 16.sp,
@@ -258,7 +260,7 @@ fun ControlSequenceView(
             ) {
                 Text(
                     text = "Copied!",
-                    color = Color.White,
+                    color = SettingsTheme.TextPrimary,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -282,7 +284,7 @@ fun VisualizationControls(
 
     Row(
         modifier = modifier
-            .background(Color(0xFF2A2A2A), RoundedCornerShape(6.dp))
+            .background(DialogTheme.SurfaceColor, RoundedCornerShape(6.dp))
             .padding(8.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -346,14 +348,14 @@ private fun CheckboxWithLabel(
             onCheckedChange = onCheckedChange,
             colors = CheckboxDefaults.colors(
                 checkedColor = Color(0xFF4A90E2),
-                uncheckedColor = Color.Gray,
-                checkmarkColor = Color.White
+                uncheckedColor = SettingsTheme.TextMuted,
+                checkmarkColor = SettingsTheme.TextPrimary
             ),
             modifier = Modifier.size(18.dp)
         )
         Text(
             text = label,
-            color = Color.White,
+            color = SettingsTheme.TextPrimary,
             fontSize = 13.sp
         )
     }
@@ -370,7 +372,7 @@ fun DebugStatsView(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        color = Color(0xFF2A2A2A),
+        color = DialogTheme.SurfaceColor,
         shape = RoundedCornerShape(6.dp)
     ) {
         Row(
@@ -384,16 +386,16 @@ fun DebugStatsView(
             ) {
                 Text(
                     text = "Debug Statistics",
-                    color = Color.White,
+                    color = SettingsTheme.TextPrimary,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold
                 )
 
-                HorizontalDivider(color = Color(0xFF3A3A3A), thickness = 1.dp)
+                HorizontalDivider(color = SettingsTheme.BorderColor, thickness = 1.dp)
 
                 Text(
                     text = stats.toDisplayString(),
-                    color = Color(0xFFE0E0E0),
+                    color = SettingsTheme.TextPrimary,
                     fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace,
                     lineHeight = 18.sp
@@ -408,16 +410,16 @@ fun DebugStatsView(
                 ) {
                     Text(
                         text = "Snapshot Builder (COW)",
-                        color = Color.White,
+                        color = SettingsTheme.TextPrimary,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
                     )
 
-                    HorizontalDivider(color = Color(0xFF3A3A3A), thickness = 1.dp)
+                    HorizontalDivider(color = SettingsTheme.BorderColor, thickness = 1.dp)
 
                     Text(
                         text = snapshotBuilderStats.toString(),
-                        color = Color(0xFFE0E0E0),
+                        color = SettingsTheme.TextPrimary,
                         fontSize = 12.sp,
                         fontFamily = FontFamily.Monospace,
                         lineHeight = 18.sp

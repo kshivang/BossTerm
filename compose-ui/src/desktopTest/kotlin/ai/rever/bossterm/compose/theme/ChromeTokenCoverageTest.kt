@@ -66,9 +66,11 @@ class ChromeTokenCoverageTest {
         // else, so recolouring these per terminal theme would make BossTerm the only
         // app on the machine whose close button is not red.
         "window/TransparentWindowTitleBar.kt" to listOf(
-            "0xFFFF6159", "0xFFBF4942", "0xFF4D0000", "0x33000000",
-            "0xFFFFBD2E", "0xFFBF8E22", "0xFF995700",
-            "0xFF28C941", "0xFF1D9730", "0xFF006500",
+            "0xFFFF6159", "0xFF4D0000", "0x33000000",
+            "0xFFFFBD2E", "0xFF995700",
+            "0xFF28C941", "0xFF006500",
+            // Unfocused native traffic lights use the same neutral gray in both themes.
+            "0xFF8E8E93",
         ),
         // A modal scrim dims whatever is behind it. It is black under a light theme
         // too, exactly as in every light-mode design system.

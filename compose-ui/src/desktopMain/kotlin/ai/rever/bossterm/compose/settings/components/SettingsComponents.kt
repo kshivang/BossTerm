@@ -1,5 +1,8 @@
 package ai.rever.bossterm.compose.settings.components
 
+import ai.rever.bossterm.compose.settings.LocalSettingsSearchDestination
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,9 +24,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentTextColor
-import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
+import ai.rever.bossterm.compose.settings.DialogTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
-import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
@@ -38,15 +41,25 @@ fun SettingsSection(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val destination = LocalSettingsSearchDestination.current
+    val highlighted = destination?.group == title
+    val reveal = remember { BringIntoViewRequester() }
+    LaunchedEffect(destination) {
+        if (highlighted) {
+            withFrameNanos { }
+            reveal.bringIntoView()
+        }
+    }
     Column(
         modifier = modifier.fillMaxWidth()
+            .background(if (highlighted) AccentColor.copy(alpha = 0.08f) else Color.Transparent, RoundedCornerShape(6.dp))
     ) {
         Text(
             text = title,
             color = TextPrimary,
             fontSize = 16.sp,
             fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(bottom = 12.dp)
+            modifier = Modifier.bringIntoViewRequester(reveal).padding(bottom = 12.dp)
         )
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp),

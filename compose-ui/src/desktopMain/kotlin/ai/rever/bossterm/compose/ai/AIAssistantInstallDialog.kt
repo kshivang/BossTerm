@@ -19,7 +19,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
+import ai.rever.bossterm.compose.window.GlassDialog as Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -87,7 +87,7 @@ fun AIAssistantInstallDialog(
                 .width(700.dp)
                 .height(450.dp)
                 .clip(RoundedCornerShape(12.dp)),
-            color = SettingsTheme.BackgroundColor,
+            color = ai.rever.bossterm.compose.settings.DialogTheme.BackgroundColor,
             elevation = 8.dp
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
@@ -95,7 +95,7 @@ fun AIAssistantInstallDialog(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(SettingsTheme.SurfaceColor)
+                        .background(ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor)
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically

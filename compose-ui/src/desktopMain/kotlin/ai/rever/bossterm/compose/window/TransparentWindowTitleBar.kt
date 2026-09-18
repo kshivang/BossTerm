@@ -74,7 +74,7 @@ fun WindowScope.CustomTitleBar(
     WindowDraggableArea(
         modifier = modifier
             .fillMaxWidth()
-            .height(40.dp)
+            .height(32.dp)
             .background(backgroundColor)
             .then(if (glassEnabled) Modifier.background(glassBrush) else Modifier)
             .drawBehind {

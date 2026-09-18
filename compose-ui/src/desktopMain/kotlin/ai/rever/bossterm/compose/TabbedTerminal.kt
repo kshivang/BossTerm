@@ -258,7 +258,9 @@ fun TabbedTerminal(
     voiceToolSource: VoiceToolSource? = null,
     parentScope: kotlinx.coroutines.CoroutineScope? = null,
     /** Optional window header receiving the live status controls; embedded hosts keep the overlay. */
-    headerContent: (@Composable (statusControls: @Composable () -> Unit) -> Unit)? = null
+    headerContent: (@Composable (statusControls: @Composable () -> Unit) -> Unit)? = null,
+    /** False keeps the status pill floating over the terminal even when a header is supplied. */
+    statusControlsInHeader: Boolean = headerContent != null
 ) {
     // Settings integration
     val settingsManager = remember { SettingsManager.instance }
@@ -2484,7 +2486,7 @@ fun TabbedTerminal(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                if (headerContent == null) statusStripContent()
+                if (!statusControlsInHeader) statusStripContent()
                 HostCallBar()
                 if (voiceKeyPrompt) {
                     VoiceKeyDialog(

@@ -933,6 +933,7 @@ fun main(args: Array<String>) {
                                     LocalWindowGlassMode provides if (nativeGlassInstalled) glassMode else WindowGlassMode.OFF
                                 ) {
                                     TabbedTerminal(
+                                        statusControlsInHeader = !useNativeTitleBar,
                                         headerContent = { statusControls ->
                                             // Custom title bar (only when not using native title bar)
                                             if (!useNativeTitleBar) {
@@ -958,14 +959,6 @@ fun main(args: Array<String>) {
                                                     globalHotkeyHint = globalHotkeyHint,
                                                     actions = statusControls
                                                 )
-                                            }
-
-                                            if (useNativeTitleBar) {
-                                                Row(
-                                                    Modifier.fillMaxWidth().height(32.dp).padding(end = 12.dp),
-                                                    horizontalArrangement = Arrangement.End,
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) { statusControls() }
                                             }
 
                                             // Update banner (shows when update is available)

@@ -1,6 +1,8 @@
 package ai.rever.bossterm.app
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -33,6 +35,9 @@ import ai.rever.bossterm.compose.settings.SettingsWindow
 import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import ai.rever.bossterm.compose.update.UpdateBanner
 import ai.rever.bossterm.compose.update.UpdateManager
+import ai.rever.bossterm.compose.window.NativeWindowGlass
+import ai.rever.bossterm.compose.window.surfaceOpacity
+import ai.rever.bossterm.compose.window.NativeFullscreenPhase
 import ai.rever.bossterm.compose.window.CustomTitleBar
 import ai.rever.bossterm.compose.window.applyFullWindowContent
 import ai.rever.bossterm.compose.window.nativeTitleBarAppearance
@@ -41,13 +46,24 @@ import ai.rever.bossterm.compose.window.GlobalHotKeyManager
 import ai.rever.bossterm.compose.window.HotKeyConfig
 import ai.rever.bossterm.compose.window.WindowManager
 import ai.rever.bossterm.compose.window.WindowVisibilityController
+import ai.rever.bossterm.compose.window.MacOSWindowGlass
+import ai.rever.bossterm.compose.window.screenWindowBounds
+import ai.rever.bossterm.compose.window.MacOSFullscreen
+import ai.rever.bossterm.compose.window.WindowPlacementController
+import ai.rever.bossterm.compose.window.effectiveWindowGlassMode
+import ai.rever.bossterm.compose.window.WindowGlassMode
+import ai.rever.bossterm.compose.window.LocalAuxiliaryGlassOpacity
+import ai.rever.bossterm.compose.window.LocalAuxiliaryGlassTint
+import ai.rever.bossterm.compose.window.LocalWindowChromeOpacity
+import ai.rever.bossterm.compose.window.LocalWindowGlassTint
+import ai.rever.bossterm.compose.window.LocalWindowGlassMode
+import ai.rever.bossterm.compose.window.LocalNativeWindowGlass
 import ai.rever.bossterm.compose.window.configureWindowTransparency
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.Surface
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.WindowPlacement
@@ -56,7 +72,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import java.awt.GraphicsEnvironment
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 import org.jetbrains.skia.Image
@@ -286,7 +301,7 @@ fun main(args: Array<String>) {
                     state = windowState,
                     title = window.title.value,
                     undecorated = !useNativeTitleBar,
-                    transparent = !useNativeTitleBar,
+                    transparent = !useNativeTitleBar && ai.rever.bossterm.compose.window.isTransparencySupported(),
                     onPreviewKeyEvent = { keyEvent ->
                         // Handle Cmd+, (macOS) or Ctrl+, (other) for Settings
                         if (keyEvent.type == KeyEventType.KeyDown &&
@@ -322,6 +337,96 @@ fun main(args: Array<String>) {
                         if (fullWindowContent) {
                             styleApplied = applyFullWindowContent(this@Window.window)
                         }
+                    }
+
+                    var nativeWindowFrameReady by remember { mutableStateOf(false) }
+                    var glassRefreshRevision by remember { mutableStateOf(0) }
+                    var appliedGlassRefreshRevision by remember { mutableStateOf(0) }
+                    var macFullscreen by remember { mutableStateOf<MacOSFullscreen?>(null) }
+                    val placementController = remember(windowState) {
+                        WindowPlacementController(windowState, if (!useNativeTitleBar && isMacOS) {
+                            { placement ->
+                                val configuration = this@Window.window.graphicsConfiguration
+                                screenWindowBounds(
+                                    configuration.bounds,
+                                    java.awt.Toolkit.getDefaultToolkit().getScreenInsets(configuration),
+                                    placement
+                                )
+                            }
+                        } else null, if (!useNativeTitleBar && isMacOS) {
+                            { macFullscreen?.toggle() ?: false }
+                        } else null)
+                    }
+                    LaunchedEffect(Unit) {
+                        if (!useNativeTitleBar && isMacOS) {
+                            while (!this@Window.window.isDisplayable || this@Window.window.windowHandle == 0L) {
+                                kotlinx.coroutines.delay(50)
+                            }
+                            MacOSWindowGlass.configureNativeFrame(this@Window.window.windowHandle) {
+                                nativeWindowFrameReady = it
+                            }
+                        }
+                    }
+                    DisposableEffect(Unit) {
+                        val controller = if (!useNativeTitleBar && isMacOS) {
+                            MacOSFullscreen.create(this@Window.window) { phase ->
+                                placementController.nativeFullscreenChanged(phase)
+                                if (phase == NativeFullscreenPhase.ENTERED || phase == NativeFullscreenPhase.EXITED) {
+                                    glassRefreshRevision++
+                                }
+                            }
+                        } else null
+                        macFullscreen = controller
+                        onDispose { controller?.close() }
+                    }
+                    val glassMode = windowSettings.effectiveWindowGlassMode
+                    var nativeGlassInstalled by remember { mutableStateOf(false) }
+                    var nativeGlass by remember { mutableStateOf<NativeWindowGlass?>(null) }
+                    val wantsNativeGlass = !useNativeTitleBar && glassMode != WindowGlassMode.OFF
+                    LaunchedEffect(glassRefreshRevision, wantsNativeGlass, placementController.placement, placementController.hasRoundedCorners, nativeWindowFrameReady, placementController.isTransitioning, windowSettings.windowGlassStyle, windowSettings.activeThemeId) {
+                        if (wantsNativeGlass && nativeGlass == null) {
+                            // Skiko creates its NSWindow handle when the window becomes displayable.
+                            while (!this@Window.window.isDisplayable || this@Window.window.windowHandle == 0L) {
+                                kotlinx.coroutines.delay(50)
+                            }
+                            nativeGlass = NativeWindowGlass.create(this@Window.window, this@Window.window.windowHandle) {
+                                nativeGlassInstalled = it
+                            }
+                        }
+                        nativeGlass?.setEnabled(
+                            wantsNativeGlass,
+                            cornerRadius = if (!nativeWindowFrameReady && placementController.hasRoundedCorners) 20.0 else 0.0,
+                            width = this@Window.window.width,
+                            height = this@Window.window.height,
+                            style = windowSettings.windowGlassStyle,
+                            dark = windowSettings.activeThemeId != "liquid-glass-light",
+                            // AppKit can change the backdrop host when moving between Spaces.
+                            // Only a completed native fullscreen transition requires recreation.
+                            // Maximize, frame setup, and theme/style changes update the existing view.
+                            refresh = glassRefreshRevision != appliedGlassRefreshRevision
+                        )
+                        appliedGlassRefreshRevision = glassRefreshRevision
+                        if (!wantsNativeGlass) nativeGlassInstalled = false
+                    }
+                    DisposableEffect(nativeGlass, wantsNativeGlass, placementController.placement, placementController.hasRoundedCorners, nativeWindowFrameReady, windowSettings.windowGlassStyle, windowSettings.activeThemeId) {
+                        val controller = nativeGlass
+                        val resizeListener = object : java.awt.event.ComponentAdapter() {
+                            override fun componentResized(event: java.awt.event.ComponentEvent) {
+                                controller?.setEnabled(
+                                    wantsNativeGlass,
+                                    cornerRadius = if (!nativeWindowFrameReady && placementController.hasRoundedCorners) 20.0 else 0.0,
+                                    width = this@Window.window.width,
+                                    height = this@Window.window.height,
+                                    style = windowSettings.windowGlassStyle,
+                                    dark = windowSettings.activeThemeId != "liquid-glass-light"
+                                )
+                            }
+                        }
+                        this@Window.window.addComponentListener(resizeListener)
+                        onDispose { this@Window.window.removeComponentListener(resizeListener) }
+                    }
+                    DisposableEffect(Unit) {
+                        onDispose { nativeGlass?.close() }
                     }
 
                     // Update manager state
@@ -377,8 +482,7 @@ fun main(args: Array<String>) {
                         if (!useNativeTitleBar) {
                             configureWindowTransparency(
                                 window = awtWindow,
-                                isTransparent = windowSettings.backgroundOpacity < 1.0f,
-                                enableBlur = windowSettings.windowBlur
+                                isTransparent = true
                             )
                         }
 
@@ -386,38 +490,6 @@ fun main(args: Array<String>) {
                             awtWindow.removeWindowFocusListener(focusListener)
                             window.awtWindow = null
                             window.composeWindowState = null
-                        }
-                    }
-
-                    // Handle fullscreen expansion for undecorated windows (only needed for custom title bar)
-                    // Store previous bounds to restore when exiting fullscreen
-                    var previousBounds by remember { mutableStateOf<java.awt.Rectangle?>(null) }
-
-                    if (!useNativeTitleBar) {
-                        LaunchedEffect(windowState.placement) {
-                            if (windowState.placement == WindowPlacement.Fullscreen) {
-                                // Save current bounds before going fullscreen
-                                previousBounds = awtWindow.bounds
-
-                                val ge = GraphicsEnvironment.getLocalGraphicsEnvironment()
-                                val screenDevice = ge.screenDevices.firstOrNull { device ->
-                                    awtWindow.bounds.intersects(device.defaultConfiguration.bounds)
-                                } ?: ge.defaultScreenDevice
-
-                                val screenBounds = screenDevice.defaultConfiguration.bounds
-
-                                // Set window to fill entire screen (true fullscreen, covers menu bar/dock)
-                                awtWindow.setBounds(
-                                    screenBounds.x,
-                                    screenBounds.y,
-                                    screenBounds.width,
-                                    screenBounds.height
-                                )
-                            } else if (windowState.placement == WindowPlacement.Floating && previousBounds != null) {
-                                // Restore previous bounds when exiting fullscreen
-                                awtWindow.bounds = previousBounds
-                                previousBounds = null
-                            }
                         }
                     }
 
@@ -527,6 +599,12 @@ fun main(args: Array<String>) {
                         }
 
                         Menu("View", mnemonic = 'V') {
+                            Item(
+                                if (placementController.placement == WindowPlacement.Fullscreen) "Exit Full Screen" else "Enter Full Screen",
+                                onClick = placementController::toggleFullscreen,
+                                shortcut = if (isMacOS) KeyShortcut(Key.F, meta = true, ctrl = true) else KeyShortcut(Key.F11)
+                            )
+                            Separator()
                             Item(
                                 "Toggle Debug Panel",
                                 onClick = { window.menuActions.onToggleDebug?.invoke() },
@@ -765,14 +843,12 @@ fun main(args: Array<String>) {
                     }
 
                     // Track fullscreen/maximized state for corner radius (only for custom title bar)
-                    val isFullscreenOrMaximized = windowState.placement == WindowPlacement.Fullscreen ||
-                                                   windowState.placement == WindowPlacement.Maximized
-                    val cornerRadius = if (useNativeTitleBar || isFullscreenOrMaximized) 0.dp else 20.dp
+                    val cornerRadius = if (!useNativeTitleBar && !nativeWindowFrameReady && placementController.hasRoundedCorners) 20.dp else 0.dp
 
                     // One value for every site that has to stay clear of the title bar. See
                     // titleBarInset for why it is Fullscreen-only, why Maximized still insets, and
                     // why placement is trusted for this.
-                    val topInset = titleBarInset(styleApplied, windowState.placement)
+                    val topInset = titleBarInset(styleApplied, placementController.placement)
 
                     // Load background image if set
                     val backgroundImage = remember(windowSettings.backgroundImagePath) {
@@ -794,7 +870,7 @@ fun main(args: Array<String>) {
                             .fillMaxSize()
                             .clip(RoundedCornerShape(cornerRadius)),
                         color = windowSettings.defaultBackgroundColor.copy(
-                            alpha = if (useNativeTitleBar) 1f else windowSettings.backgroundOpacity
+                            alpha = if (nativeGlassInstalled) 0f else if (useNativeTitleBar) 1f else windowSettings.surfaceOpacity(nativeGlassInstalled)
                         ),
                         shape = RoundedCornerShape(cornerRadius)
                     ) {
@@ -836,22 +912,6 @@ fun main(args: Array<String>) {
                                             } else Modifier
                                         )
                                 )
-                            } else if (!useNativeTitleBar && windowSettings.backgroundOpacity < 1.0f && windowSettings.windowBlur) {
-                                // Frosted glass effect - radial gradient
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .background(
-                                            brush = Brush.radialGradient(
-                                                colors = listOf(
-                                                    Color.White.copy(alpha = 0.3f),
-                                                    Color.Gray.copy(alpha = 0.4f),
-                                                    Color.DarkGray.copy(alpha = 0.35f)
-                                                )
-                                            )
-                                        )
-                                        .blur(windowSettings.blurRadius.dp)
-                                )
                             }
 
                             Column(modifier = Modifier.fillMaxSize()) {
@@ -862,96 +922,107 @@ fun main(args: Array<String>) {
                                 // titleBarInset.
                                 Spacer(modifier = Modifier.height(topInset))
 
-                                // Custom title bar (only when not using native title bar)
-                                if (!useNativeTitleBar) {
-                                    CustomTitleBar(
-                                        title = window.title.value,
-                                        windowState = windowState,
-                                        onClose = {
+                                // Expose native availability only to this window's terminal chrome.
+                                CompositionLocalProvider(
+                                    LocalNativeWindowGlass provides nativeGlassInstalled,
+                                    LocalWindowGlassTint provides windowSettings.windowGlassTint,
+                                    LocalAuxiliaryGlassOpacity provides if (nativeGlassInstalled) windowSettings.windowGlassOpacity.coerceIn(0f, 1f) else 1f,
+                                    LocalAuxiliaryGlassTint provides if (nativeGlassInstalled) windowSettings.windowGlassTint.coerceIn(0f, 1f) else 1f,
+                                    LocalWindowChromeOpacity provides if (nativeGlassInstalled) windowSettings.windowGlassTint.coerceIn(0f, 1f)
+                                        else if (useNativeTitleBar) 1f else windowSettings.surfaceOpacity(nativeGlassInstalled).coerceIn(0f, 1f),
+                                    LocalWindowGlassMode provides if (nativeGlassInstalled) glassMode else WindowGlassMode.OFF
+                                ) {
+                                    TabbedTerminal(
+                                        headerContent = { statusControls ->
+                                            // Custom title bar (only when not using native title bar)
+                                            if (!useNativeTitleBar) {
+                                                CustomTitleBar(
+                                                    title = window.title.value,
+                                                    windowState = windowState,
+                                                    onClose = {
+                                                        WindowManager.closeWindow(window.id)
+                                                        if (!WindowManager.hasWindows()) {
+                                                            exitApplication()
+                                                        }
+                                                    },
+                                                    onMinimize = { windowState.isMinimized = true },
+                                                    onFullscreen = placementController::toggleFullscreen,
+                                                    onMaximize = placementController::toggleMaximized,
+                                                    backgroundColor = windowSettings.defaultBackgroundColor.copy(
+                                                        alpha = if (nativeGlassInstalled) windowSettings.windowGlassTint.coerceIn(0f, 1f)
+                                                        else (windowSettings.surfaceOpacity(nativeGlassInstalled) * 1.1f).coerceAtMost(1f)
+                                                    ),
+                                                    glassEnabled = nativeGlassInstalled,
+                                                    isFullscreen = placementController.placement == WindowPlacement.Fullscreen,
+                                                    nativeTrafficLights = nativeWindowFrameReady,
+                                                    globalHotkeyHint = globalHotkeyHint,
+                                                    actions = statusControls
+                                                )
+                                            }
+
+                                            if (useNativeTitleBar) {
+                                                Row(
+                                                    Modifier.fillMaxWidth().height(32.dp).padding(end = 12.dp),
+                                                    horizontalArrangement = Arrangement.End,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) { statusControls() }
+                                            }
+
+                                            // Update banner (shows when update is available)
+                                            UpdateBanner(
+                                                updateState = updateState,
+                                                onCheckForUpdates = {
+                                                    scope.launch {
+                                                        updateManager.checkForUpdates()
+                                                    }
+                                                },
+                                                onDownloadUpdate = { updateInfo ->
+                                                    scope.launch {
+                                                        updateManager.downloadUpdate(updateInfo)
+                                                    }
+                                                },
+                                                onInstallUpdate = { downloadPath ->
+                                                    scope.launch {
+                                                        updateManager.installUpdate(downloadPath)
+                                                    }
+                                                },
+                                                onDismiss = {
+                                                    updateManager.resetState()
+                                                }
+                                            )
+
+                                        },
+                                        state = tabbedState,
+                                        // Stop sharing a tab when it closes (issue #276) — otherwise
+                                        // the share server stays bound and viewers freeze. Covers all
+                                        // windows (this content is built per-window); no-op for unshared tabs.
+                                        onTabClose = { tabId ->
+                                            ai.rever.bossterm.compose.share.SessionShareManager.onTabClosed(tabId)
+                                        },
+                                        onExit = {
                                             WindowManager.closeWindow(window.id)
                                             if (!WindowManager.hasWindows()) {
                                                 exitApplication()
                                             }
                                         },
-                                        onMinimize = { windowState.isMinimized = true },
-                                        onFullscreen = {
-                                            // Toggle fullscreen
-                                            windowState.placement = if (windowState.placement == WindowPlacement.Fullscreen) {
-                                                WindowPlacement.Floating
-                                            } else {
-                                                WindowPlacement.Fullscreen
-                                            }
+                                        onWindowTitleChange = { newTitle ->
+                                            window.title.value = newTitle
                                         },
-                                        onMaximize = {
-                                            // Same as fullscreen for undecorated windows
-                                            windowState.placement = if (windowState.placement == WindowPlacement.Maximized) {
-                                                WindowPlacement.Floating
-                                            } else {
-                                                WindowPlacement.Maximized
-                                            }
+                                        onNewWindow = {
+                                            WindowManager.createWindow()
                                         },
-                                        backgroundColor = windowSettings.defaultBackgroundColor.copy(
-                                            alpha = (windowSettings.backgroundOpacity * 1.1f).coerceAtMost(1f)
-                                        ),
-                                        globalHotkeyHint = globalHotkeyHint
+                                        onShowSettings = { showSettingsDialog = true; settingsFocusTick++ },
+                                        onShowMcpSettings = {
+                                            initialSettingsCategory =
+                                                ai.rever.bossterm.compose.settings.SettingsCategory.MCP
+                                            showSettingsDialog = true; settingsFocusTick++
+                                        },
+                                        onShowWelcomeWizard = { showOnboardingWizard = true },
+                                        menuActions = window.menuActions,
+                                        isWindowFocused = { window.isWindowFocused.value },
+                                        modifier = Modifier.fillMaxSize().weight(1f)
                                     )
                                 }
-
-                                // Update banner (shows when update is available)
-                                UpdateBanner(
-                                    updateState = updateState,
-                                    onCheckForUpdates = {
-                                        scope.launch {
-                                            updateManager.checkForUpdates()
-                                        }
-                                    },
-                                    onDownloadUpdate = { updateInfo ->
-                                        scope.launch {
-                                            updateManager.downloadUpdate(updateInfo)
-                                        }
-                                    },
-                                    onInstallUpdate = { downloadPath ->
-                                        scope.launch {
-                                            updateManager.installUpdate(downloadPath)
-                                        }
-                                    },
-                                    onDismiss = {
-                                        updateManager.resetState()
-                                    }
-                                )
-
-                                // Terminal content
-                                TabbedTerminal(
-                                    state = tabbedState,
-                                    // Stop sharing a tab when it closes (issue #276) — otherwise
-                                    // the share server stays bound and viewers freeze. Covers all
-                                    // windows (this content is built per-window); no-op for unshared tabs.
-                                    onTabClose = { tabId ->
-                                        ai.rever.bossterm.compose.share.SessionShareManager.onTabClosed(tabId)
-                                    },
-                                    onExit = {
-                                        WindowManager.closeWindow(window.id)
-                                        if (!WindowManager.hasWindows()) {
-                                            exitApplication()
-                                        }
-                                    },
-                                    onWindowTitleChange = { newTitle ->
-                                        window.title.value = newTitle
-                                    },
-                                    onNewWindow = {
-                                        WindowManager.createWindow()
-                                    },
-                                    onShowSettings = { showSettingsDialog = true; settingsFocusTick++ },
-                                    onShowMcpSettings = {
-                                        initialSettingsCategory =
-                                            ai.rever.bossterm.compose.settings.SettingsCategory.MCP
-                                        showSettingsDialog = true; settingsFocusTick++
-                                    },
-                                    onShowWelcomeWizard = { showOnboardingWizard = true },
-                                    menuActions = window.menuActions,
-                                    isWindowFocused = { window.isWindowFocused.value },
-                                    modifier = Modifier.fillMaxSize().weight(1f)
-                                )
                             }
 
                             // Hotkey hint overlay (top-right corner, like iTerm2)

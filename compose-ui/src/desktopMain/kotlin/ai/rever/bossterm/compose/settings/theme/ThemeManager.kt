@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.settings.theme
 
+import ai.rever.bossterm.compose.window.isLiquidGlassTheme
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,7 +34,10 @@ internal fun TerminalSettings.withThemeColors(theme: Theme): TerminalSettings =
         selectionColor = theme.selection,
         foundPatternColor = theme.searchMatch,
         hyperlinkColor = theme.hyperlink,
-    )
+    ).let { themed ->
+        if (themed.isLiquidGlassTheme && themed.windowGlassMode == "off")
+            themed.copy(windowGlassMode = "bars") else themed
+    }
 
 /**
  * Container for serializing custom themes to JSON.

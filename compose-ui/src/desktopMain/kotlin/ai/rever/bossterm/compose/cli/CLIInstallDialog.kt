@@ -15,7 +15,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.DialogWindow
+import ai.rever.bossterm.compose.window.GlassDialogWindow as DialogWindow
 import androidx.compose.ui.window.rememberDialogState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -46,7 +46,7 @@ fun CLIInstallDialog(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(SettingsTheme.BackgroundColor)
+                .background(ai.rever.bossterm.compose.settings.DialogTheme.BackgroundColor)
                 .padding(24.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
@@ -84,7 +84,7 @@ fun CLIInstallDialog(
 
                 Column(
                     modifier = Modifier
-                        .background(SettingsTheme.SurfaceColor, RoundedCornerShape(4.dp))
+                        .background(ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor, RoundedCornerShape(4.dp))
                         .padding(8.dp)
                 ) {
                     Text("bossterm", color = SettingsTheme.Success, fontSize = 12.sp)

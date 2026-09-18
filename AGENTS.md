@@ -174,8 +174,62 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 **Window**
 - `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/window/NativeTitleBarStyle.kt`
   (full window content, the title bar inset, and the transparency finding above)
+- `compose-ui/.../window/MacOSWindowGlass.kt` — native behind-window material for custom-title-bar
+  windows using the dedicated Liquid Glass Light/Dark themes, with `windowGlassMode` set to
+  `bars` or `window`. Other themes ignore glass preferences. Controls live in Themes;
+  `windowGlassOpacity` is independent of ordinary `backgroundOpacity`. Prefers NSGlassEffectView on macOS 26+,
+  otherwise NSVisualEffectView. This is a native backdrop behind Compose, not native controls;
+  never replace NSWindow.contentView (AWT sends its own mouse selectors directly to that view).
+  Uses Skiko's exact NSWindow handle and the
+  AppKit main dispatch queue; never use Swing's EDT for AppKit calls, title matching for native
+  window lookup, or a variadic/struct-return objc_msgSend mapping. The owning window closes the
+  controller on disposal. `LocalNativeWindowGlass` is true only after installation succeeds,
+  allowing translucent sidebar chrome while embedded/non-macOS hosts keep their fallback.
+  `windowGlassTint` controls the Compose theme overlay; `windowGlassStyle` chooses the public
+  regular/clear native styles. Material sizing follows logical AWT points with no Auto Layout
+  constraints on AWT's content view (constraints can fight fullscreen sizing).
+- `compose-ui/.../window/WindowPlacementController.kt` — captures normal size/position before
+  fullscreen/maximize. Custom-title-bar macOS uses MacOSFullscreen to enter a real fullscreen
+  Space through the JDK macOS API, with java.desktop/com.apple.eawt exported by the launcher.
+  Keep Java/AWT undecorated to retain the alpha backing store, then configure the underlying
+  NSWindow as titled + resizable + fullSizeContentView with a transparent title bar and native traffic lights. This gives AppKit ownership of the rounded silhouette and fullscreen animation.
+  Do not layer-clip the frame/content or defer toggling by Compose frames: those attempts did
+  not fix the system animation snapshot. Do not resize to screen bounds after entry either.
+  Restore saved bounds only after the native exit notification; never resize during animation.
+  Custom maximize uses logical usable-screen bounds. Always use the controller's effective
+  placement for glass corners and UI state; refresh the native backdrop after transitions.
+
+**Cross-platform glass**
+
+- `NativeWindowGlass.kt` selects the backend without loading foreign native libraries. The existing
+  MacOSWindowGlass owns AppKit work; Windows/X11 updates run on the EDT. Close controllers with their window.
+- Windows uses documented DWM Desktop Acrylic (`DWMWA_SYSTEMBACKDROP_TYPE`, Windows 11 build 22621+).
+  Check HRESULTs. Skia retains alpha but the top-level HWND must not stay AWT-layered: DWM owns the backdrop.
+  Restore the Swing content pane, alpha state, and frame margins when disabled. No undocumented Windows 10 accent API.
+- Linux targets AWT's X11 backend, including XWayland. Require an active compositor and KWin's advertised
+  `_KDE_NET_WM_BLUR_BEHIND_REGION` root property before setting a blur region. Do not treat atom existence
+  as support, or a Wayland pointer as an XID. Native Wayland requires a separate future backend.
+  A timer detects runtime compositor/effect changes; stop it on disposal. Auxiliary X11 windows have
+  custom drag/close chrome and a resize grip because AWT forbids decorated alpha windows.
+- `surfaceOpacity` keeps glass themes opaque until installation succeeds, without changing saved settings.
+  The UI calls these Glass Light/Dark outside macOS; persisted `liquid-glass-*` IDs stay the same.
+  Regular/Clear style is macOS-only. Settings/dialogs use the same native capability fallback as the main window.
+- `NativeGlassBackendTest` checks native-call failures, rollback, compositor capability loss, and cleanup
+  using fake native APIs. These tests do not establish visual correctness on Windows or Linux hardware.
 
 **Components**
+- `GlassAuxiliaryWindow.kt` supplies shared native glass for settings and auxiliary Window/
+  DialogWindow hosts. AWT stays undecorated on macOS while the native frame supplies the title
+  and controls. Keep dialog resizability, owner/modality, close handling, and focus callbacks.
+  `GlassDialogs.kt` preserves Material dialog behavior and installs a separate native backdrop
+  only when a modal owns its own ComposeDialog. `DialogTheme` changes surface alpha through
+  scoped locals; it must not make text/icons translucent or change embedded hosts by default.
+
+- Standalone `TabbedTerminal.headerContent` places its live `StatusStrip` in the custom title
+  bar's right action slot. Embedded callers without the slot retain the overlay. Keep status
+  state/actions owned by `TabbedTerminal`; never duplicate sharing or voice controllers in a header.
+  `LocalWindowChromeOpacity` makes status pills and update banners follow window transparency.
+
 - `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/TabbedTerminal.kt`
 - `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/EmbeddableTerminal.kt`
 - `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/TabController.kt`
@@ -219,6 +273,12 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
   the in-app path is host↔OpenAI over WebSocket with the standard key. They key "agent is speaking"
   off *different* event families (`output_audio_buffer.*` vs `response.output_audio.*`), so a change
   to one is not automatically right for the other.
+
+## Default Appearance
+
+Fresh settings use Liquid Glass Dark, custom title bar, whole-window Regular glass,
+30% tint and 30% glass opacity. Existing saved choices remain authoritative.
+`ThemeDefaultsTest` checks theme/palette ordering and fresh settings together.
 
 ## Features Summary
 

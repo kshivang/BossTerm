@@ -1,5 +1,9 @@
 package ai.rever.bossterm.compose.ui
 
+import ai.rever.bossterm.compose.window.surfaceOpacity
+import ai.rever.bossterm.compose.window.LocalNativeWindowGlass
+import ai.rever.bossterm.compose.window.LocalWindowGlassMode
+
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -1143,7 +1147,9 @@ fun ProperTerminal(
           }
         }
         .fillMaxSize()
-        .background(settings.defaultBackgroundColorWithOpacity)
+        .background(settings.defaultBackgroundColor.copy(
+            alpha = LocalWindowGlassMode.current.terminalOpacity(settings.surfaceOpacity(LocalNativeWindowGlass.current))
+        ))
         .dragAndDropTarget(
           shouldStartDragAndDrop = { true },
           target = dropTarget

@@ -424,13 +424,22 @@ object BuiltinColorPalettes {
         name = "BOSS Daylight",
     )
 
+    val LIQUID_GLASS_DARK = ColorPalette.fromTheme(BuiltinThemes.LIQUID_GLASS_DARK).copy(
+        id = "liquid-glass-dark", name = BuiltinThemes.LIQUID_GLASS_DARK.name
+    )
+    val LIQUID_GLASS_LIGHT = ColorPalette.fromTheme(BuiltinThemes.LIQUID_GLASS_LIGHT).copy(
+        id = "liquid-glass-light", name = BuiltinThemes.LIQUID_GLASS_LIGHT.name
+    )
+
     /**
      * All built-in color palettes.
      *
-     * BOSS_BLUEPRINT stays first: `ThemeDefaultsTest` asserts the default identity
+     * LIQUID_GLASS_DARK stays first: `ThemeDefaultsTest` asserts the default identity
      * leads both builtin lists. Each light palette sits next to its dark sibling.
      */
     val ALL = listOf(
+        LIQUID_GLASS_DARK,
+        LIQUID_GLASS_LIGHT,
         BOSS_BLUEPRINT,
         BOSS_BLUEPRINT_LIGHT,
         BOSS_OPERATOR,

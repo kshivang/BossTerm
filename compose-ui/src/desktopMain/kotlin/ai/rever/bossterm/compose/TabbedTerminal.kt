@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose
 
+import ai.rever.bossterm.compose.window.GlassAlertDialog as AlertDialog
 import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInHorizontally
@@ -24,7 +25,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.AlertDialog
 import androidx.compose.material.Button
 import androidx.compose.material.ButtonDefaults
 import androidx.compose.material.Surface
@@ -40,7 +40,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
+import ai.rever.bossterm.compose.window.GlassDialog as Dialog
 import ai.rever.bossterm.compose.ContextMenuElement
 import ai.rever.bossterm.compose.ContextMenuItem
 import ai.rever.bossterm.compose.ContextMenuSubmenu
@@ -256,7 +256,9 @@ fun TabbedTerminal(
     // Last on purpose: every other parameter keeps its position, so a downstream caller passing
     // arguments positionally is not broken by this one being added.
     voiceToolSource: VoiceToolSource? = null,
-    parentScope: kotlinx.coroutines.CoroutineScope? = null
+    parentScope: kotlinx.coroutines.CoroutineScope? = null,
+    /** Optional window header receiving the live status controls; embedded hosts keep the overlay. */
+    headerContent: (@Composable (statusControls: @Composable () -> Unit) -> Unit)? = null
 ) {
     // Settings integration
     val settingsManager = remember { SettingsManager.instance }
@@ -1230,7 +1232,131 @@ fun TabbedTerminal(
     // Computed once so the MCP overlay below can offset itself clear of the
     // tab bar (which occupies the same top-right corner as the "+" button).
     val tabBarVisible = tabController.tabs.size > 1 || settings.alwaysShowTabBar
-    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+    val showMcpStatus = settings.mcpShowStatusIndicator
+    val showSharingStatus = settings.sessionSharingShowIndicator
+    // In-app voice call: the pill sits beside Sharing and drives the one call this app can
+    // have; the strip below it appears while that call is up. Its wording is the embedder's
+    // (the `callLabel` parameter) — "Call BossTerm" standalone.
+    //
+    // Subscribed as a DERIVED, distinct-until-changed flow rather than the raw call state: this
+    // lambda owns the terminal rendering path, and the call state carries fields that change
+    // several times a second while a call is up. Only segment transitions belong here — the
+    // level meter collects its own flow inside HostCallBar.
+    // The settings flow is IN the combine rather than a remember() key: keyed on the toggles, the
+    // whole flow was rebuilt whenever either changed, and collectAsState's initial value flashed
+    // the segment to Hidden for a frame — a pill that blinks mid-call because someone opened
+    // Settings. With no keys the subscription outlives every toggle change.
+    val callSegment by remember {
+        combine(
+            HostVoiceCall.state,
+            VoiceAgentStorage.keyPresentFlow,
+            SettingsManager.instance.settings,
+        ) { call, keyPresent, live ->
+            call.segmentState(
+                featureEnabled = live.voiceCallEnabled,
+                indicatorEnabled = live.voiceShowStatusIndicator,
+                keyPresent = keyPresent,
+            )
+        }
+            .distinctUntilChanged()
+    }.collectAsState(CallSegmentState.Hidden)
+    // Platform-independent: the "a viewer started a call" notification does nothing off macOS,
+    // and the Call pill only ever reflects THIS host's own call.
+    val remoteVoiceCalls by RemoteVoiceCalls.active.collectAsState()
+    var voiceKeyPrompt by remember { mutableStateOf(false) }
+    // The active tab's remote session while it's still view-only — drives the read-only
+    // pill, stacked in this same column so it sits BELOW the MCP/Sharing pills.
+    val activeRemoteSession = tabController.activeTab?.let { t -> state?.remoteSessions?.sessionForTab(t) }
+    val viewOnlyRemote = activeRemoteSession?.takeIf { !it.canControlState.value }
+    // Even with control of the host, the active tab may mirror an upstream the HOST itself
+    // can't type into (A shared view-only to B, B shared to us) — input dies at the host.
+    // Informational pill only: control must be requested by the host from the origin.
+    val upstreamReadOnly = if (viewOnlyRemote == null) {
+        activeRemoteSession?.let { s ->
+            s.upstreamRev.value // subscribe: re-evaluate when upstream info changes
+            tabController.activeTab?.id?.let { id -> s.upstreamFor(id)?.takeIf { it.readOnly } }
+        }
+    } else null
+    val statusStripContent: @Composable () -> Unit = {
+        ai.rever.bossterm.compose.share.StatusStrip(
+            showMcp = showMcpStatus,
+            mcpOn = mcpRunningPort != null,
+            onMcpClick = {
+                // Same context menu the standalone MCP pill showed: Attach ▸,
+                // <server> MCP Settings…, Turn on/off.
+                mcpMenu.showMenu(0f, 0f, ai.rever.bossterm.compose.mcp.buildIndicatorMenuItems(
+                    attached = McpTerminalRegistry.attachedTargets.value,
+                    isRunning = mcpRunningPort != null,
+                    isUserEnabled = settings.mcpEnabled,
+                    serverLabel = mcpServerLabel,
+                    onAttachRequest = fireMcpAttach,
+                    onShowSettings = onShowMcpSettings,
+                    onTurnOffRequest = { SettingsManager.instance.updateSetting { copy(mcpEnabled = false) } },
+                    onTurnOnRequest = { SettingsManager.instance.updateSetting { copy(mcpEnabled = true) } },
+                ))
+            },
+            showSharing = showSharingStatus,
+            remoteCalls = remoteVoiceCalls,
+            // Count in-process shares AND daemon-hosted shares (one is always empty depending
+            // on mode), so the pill lights whenever anything is actually being shared.
+            sharingCount = sharedTabIds.size + daemonShareState.shares.size,
+            onSharingClick = {
+                // Reopen the dialog if something is shared; else offer Tab vs Window.
+                val sharedId = sharedTabIds.firstOrNull { tabController.tabs.any { t -> t.id == it } }
+                    ?: sharedTabIds.firstOrNull()
+                if (daemonMode && daemonShareState.shares.isNotEmpty()) {
+                    // Daemon-hosted share active → reopen the daemon share dialog.
+                    daemonShareOpen = true
+                    shareFocusTick++
+                } else if (!daemonMode && sharedId != null) {
+                    openShareWindow(ai.rever.bossterm.compose.share.SessionShareManager.infoFor(sharedId))
+                } else {
+                    tabController.activeTab?.let { active ->
+                        shareScopeMenu.showMenu(0f, 0f, listOf(
+                            ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
+                                id = "share_this_tab", label = "Share This Tab", enabled = true,
+                                action = { startShare(active.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
+                            ),
+                            ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
+                                id = "share_window", label = "Share Whole Window", enabled = true,
+                                action = { startShare(active.id, ai.rever.bossterm.compose.share.ShareScope.WINDOW) }
+                            ),
+                            ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
+                                id = "share_all", label = "Share All Windows", enabled = true,
+                                action = { startShare(active.id, ai.rever.bossterm.compose.share.ShareScope.ALL) }
+                            ),
+                        ) + (if (signInVisible) listOf(
+                            ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
+                                id = "sign_in", label = signInLabel, enabled = true,
+                                action = openSignIn
+                            )
+                        ) else emptyList()))
+                    }
+                }
+            },
+            call = callSegment,
+            callLabel = resolvedCallLabel,
+            onCallClick = {
+                // One click is the whole interaction: ask for a key if there isn't one,
+                // start when idle, end when live, clear a failure when it failed.
+                when (callSegment) {
+                    CallSegmentState.NeedsKey ->
+                        voiceKeyPrompt = true
+                    CallSegmentState.Failed ->
+                        HostVoiceCall.dismissError()
+                    CallSegmentState.Connecting,
+                    CallSegmentState.Live,
+                    CallSegmentState.Speaking,
+                    CallSegmentState.Working ->
+                        HostVoiceCall.end()
+                    else -> HostVoiceCall.start(voiceToolSource)
+                }
+            },
+        )
+    }
+    Column(modifier = modifier.fillMaxSize()) {
+        headerContent?.invoke(statusStripContent)
+        BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
         val tabBarOnLeft = settings.tabBarPosition == "left"
         // collapsed renders the left bar as the slim icon rail; onToggleCollapse backs the
         // chevron. `drawer` is non-null only for the overlay drawer instance.
@@ -2276,7 +2402,7 @@ fun TabbedTerminal(
                         else settingsManager.updateSetting { copy(tabBarCollapsed = false) }
                     }
                 } else null
-                AnimatedVisibility(
+                androidx.compose.animation.AnimatedVisibility(
                     visible = drawerOpen || hoverRevealed,
                     modifier = Modifier.align(Alignment.CenterStart).fillMaxHeight(),
                     enter = slideInHorizontally(initialOffsetX = { -it }),
@@ -2340,51 +2466,6 @@ fun TabbedTerminal(
         // is color-coded (green = on/active, gray = off/idle) and clickable: MCP →
         // BossTerm MCP settings; Sharing → start sharing the active tab (or reopen its
         // QR/links dialog if already shared). Shown per its own toggle.
-        val showMcpStatus = settings.mcpShowStatusIndicator
-        val showSharingStatus = settings.sessionSharingShowIndicator
-        // In-app voice call: the pill sits beside Sharing and drives the one call this app can
-        // have; the strip below it appears while that call is up. Its wording is the embedder's
-        // (the `callLabel` parameter) — "Call BossTerm" standalone.
-        //
-        // Subscribed as a DERIVED, distinct-until-changed flow rather than the raw call state: this
-        // lambda owns the terminal rendering path, and the call state carries fields that change
-        // several times a second while a call is up. Only segment transitions belong here — the
-        // level meter collects its own flow inside HostCallBar.
-        // The settings flow is IN the combine rather than a remember() key: keyed on the toggles, the
-        // whole flow was rebuilt whenever either changed, and collectAsState's initial value flashed
-        // the segment to Hidden for a frame — a pill that blinks mid-call because someone opened
-        // Settings. With no keys the subscription outlives every toggle change.
-        val callSegment by remember {
-            combine(
-                HostVoiceCall.state,
-                VoiceAgentStorage.keyPresentFlow,
-                SettingsManager.instance.settings,
-            ) { call, keyPresent, live ->
-                call.segmentState(
-                    featureEnabled = live.voiceCallEnabled,
-                    indicatorEnabled = live.voiceShowStatusIndicator,
-                    keyPresent = keyPresent,
-                )
-            }
-                .distinctUntilChanged()
-        }.collectAsState(CallSegmentState.Hidden)
-        // Platform-independent: the "a viewer started a call" notification does nothing off macOS,
-        // and the Call pill only ever reflects THIS host's own call.
-        val remoteVoiceCalls by RemoteVoiceCalls.active.collectAsState()
-        var voiceKeyPrompt by remember { mutableStateOf(false) }
-        // The active tab's remote session while it's still view-only — drives the read-only
-        // pill, stacked in this same column so it sits BELOW the MCP/Sharing pills.
-        val activeRemoteSession = tabController.activeTab?.let { t -> state?.remoteSessions?.sessionForTab(t) }
-        val viewOnlyRemote = activeRemoteSession?.takeIf { !it.canControlState.value }
-        // Even with control of the host, the active tab may mirror an upstream the HOST itself
-        // can't type into (A shared view-only to B, B shared to us) — input dies at the host.
-        // Informational pill only: control must be requested by the host from the origin.
-        val upstreamReadOnly = if (viewOnlyRemote == null) {
-            activeRemoteSession?.let { s ->
-                s.upstreamRev.value // subscribe: re-evaluate when upstream info changes
-                tabController.activeTab?.id?.let { id -> s.upstreamFor(id)?.takeIf { it.readOnly } }
-            }
-        } else null
         if (showMcpStatus || showSharingStatus || attachStatus != null || pendingShareRequests.isNotEmpty() ||
             viewOnlyRemote != null || upstreamReadOnly != null ||
             // A remote call shows the strip even with every indicator switched off — see StatusStrip.
@@ -2403,81 +2484,7 @@ fun TabbedTerminal(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                ai.rever.bossterm.compose.share.StatusStrip(
-                    showMcp = showMcpStatus,
-                    mcpOn = mcpRunningPort != null,
-                    onMcpClick = {
-                        // Same context menu the standalone MCP pill showed: Attach ▸,
-                        // <server> MCP Settings…, Turn on/off.
-                        mcpMenu.showMenu(0f, 0f, ai.rever.bossterm.compose.mcp.buildIndicatorMenuItems(
-                            attached = McpTerminalRegistry.attachedTargets.value,
-                            isRunning = mcpRunningPort != null,
-                            isUserEnabled = settings.mcpEnabled,
-                            serverLabel = mcpServerLabel,
-                            onAttachRequest = fireMcpAttach,
-                            onShowSettings = onShowMcpSettings,
-                            onTurnOffRequest = { SettingsManager.instance.updateSetting { copy(mcpEnabled = false) } },
-                            onTurnOnRequest = { SettingsManager.instance.updateSetting { copy(mcpEnabled = true) } },
-                        ))
-                    },
-                    showSharing = showSharingStatus,
-                    remoteCalls = remoteVoiceCalls,
-                    // Count in-process shares AND daemon-hosted shares (one is always empty depending
-                    // on mode), so the pill lights whenever anything is actually being shared.
-                    sharingCount = sharedTabIds.size + daemonShareState.shares.size,
-                    onSharingClick = {
-                        // Reopen the dialog if something is shared; else offer Tab vs Window.
-                        val sharedId = sharedTabIds.firstOrNull { tabController.tabs.any { t -> t.id == it } }
-                            ?: sharedTabIds.firstOrNull()
-                        if (daemonMode && daemonShareState.shares.isNotEmpty()) {
-                            // Daemon-hosted share active → reopen the daemon share dialog.
-                            daemonShareOpen = true
-                            shareFocusTick++
-                        } else if (!daemonMode && sharedId != null) {
-                            openShareWindow(ai.rever.bossterm.compose.share.SessionShareManager.infoFor(sharedId))
-                        } else {
-                            tabController.activeTab?.let { active ->
-                                shareScopeMenu.showMenu(0f, 0f, listOf(
-                                    ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
-                                        id = "share_this_tab", label = "Share This Tab", enabled = true,
-                                        action = { startShare(active.id, ai.rever.bossterm.compose.share.ShareScope.TAB) }
-                                    ),
-                                    ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
-                                        id = "share_window", label = "Share Whole Window", enabled = true,
-                                        action = { startShare(active.id, ai.rever.bossterm.compose.share.ShareScope.WINDOW) }
-                                    ),
-                                    ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
-                                        id = "share_all", label = "Share All Windows", enabled = true,
-                                        action = { startShare(active.id, ai.rever.bossterm.compose.share.ShareScope.ALL) }
-                                    ),
-                                ) + (if (signInVisible) listOf(
-                                    ai.rever.bossterm.compose.features.ContextMenuController.MenuItem(
-                                        id = "sign_in", label = signInLabel, enabled = true,
-                                        action = openSignIn
-                                    )
-                                ) else emptyList()))
-                            }
-                        }
-                    },
-                    call = callSegment,
-                    callLabel = resolvedCallLabel,
-                    onCallClick = {
-                        // One click is the whole interaction: ask for a key if there isn't one,
-                        // start when idle, end when live, clear a failure when it failed.
-                        when (callSegment) {
-                            CallSegmentState.NeedsKey ->
-                                voiceKeyPrompt = true
-                            CallSegmentState.Failed ->
-                                HostVoiceCall.dismissError()
-                            CallSegmentState.Connecting,
-                            CallSegmentState.Live,
-                            CallSegmentState.Speaking,
-                            CallSegmentState.Working ->
-                                HostVoiceCall.end()
-                            else -> HostVoiceCall.start(voiceToolSource)
-                        }
-                    },
-                )
+                if (headerContent == null) statusStripContent()
                 HostCallBar()
                 if (voiceKeyPrompt) {
                     VoiceKeyDialog(
@@ -2561,6 +2568,8 @@ fun TabbedTerminal(
             }
         }
     }
+
+    } // Window header + terminal body
 
     // Account sign-in window — a real top-level OS window like the share window.
     if (showSignInWindow) {

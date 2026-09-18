@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.settings
 
+import ai.rever.bossterm.compose.window.GlassAlertDialog as AlertDialog
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -9,6 +10,17 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.*
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -18,14 +30,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
-import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
+import ai.rever.bossterm.compose.settings.DialogTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
-import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 import ai.rever.bossterm.compose.settings.sections.*
+import ai.rever.bossterm.compose.window.isLiquidGlassTheme
 
 private val NavRailWidth = 180.dp
 
@@ -61,22 +74,92 @@ fun SettingsPanel(
         SettingsCategory.default
     }
     var selectedCategory by remember(resolvedInitial) { mutableStateOf(resolvedInitial) }
+    var query by remember { mutableStateOf("") }
+    var selectedHit by remember { mutableStateOf(0) }
+    var destination by remember { mutableStateOf<SettingsSearchDestination?>(null) }
+    var revealNonce by remember { mutableStateOf(0) }
+    val searchFocus = remember { FocusRequester() }
+    val hits = remember(query, visibleCategories, settings.isLiquidGlassTheme) {
+        SettingsSearchIndex.search(query, visibleCategories, settings)
+    }
+    val pickHit: (SettingsSearchEntry) -> Unit = { hit ->
+        selectedCategory = hit.category
+        destination = SettingsSearchDestination(hit.group, ++revealNonce)
+    }
     var showResetConfirmation by remember { mutableStateOf(false) }
 
     Row(
         modifier = modifier
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && event.key == Key.F &&
+                    (event.isMetaPressed || event.isCtrlPressed)) {
+                    searchFocus.requestFocus()
+                    true
+                } else false
+            }
             .fillMaxSize()
             .background(BackgroundColor)
     ) {
-        // Left navigation rail
-        NavigationRail(
-            categories = visibleCategories,
-            selectedCategory = selectedCategory,
-            onCategorySelected = { selectedCategory = it },
-            modifier = Modifier
-                .width(NavRailWidth)
-                .fillMaxHeight()
-        )
+        Column(Modifier.width(NavRailWidth).fillMaxHeight().background(SurfaceColor)) {
+            BasicTextField(
+                value = query,
+                onValueChange = { query = it; selectedHit = 0 },
+                singleLine = true,
+                textStyle = TextStyle(color = TextPrimary, fontSize = 12.sp),
+                cursorBrush = SolidColor(AccentColor),
+                modifier = Modifier.padding(8.dp).fillMaxWidth()
+                    .focusRequester(searchFocus)
+                    .onPreviewKeyEvent { event ->
+                        if (event.type != KeyEventType.KeyDown) false else when (event.key) {
+                            Key.DirectionDown -> { selectedHit = (selectedHit + 1).coerceAtMost((hits.size - 1).coerceAtLeast(0)); true }
+                            Key.DirectionUp -> { selectedHit = (selectedHit - 1).coerceAtLeast(0); true }
+                            Key.Enter -> { hits.getOrNull(selectedHit)?.let(pickHit); true }
+                            Key.Escape -> { query = ""; destination = null; true }
+                            else -> false
+                        }
+                    },
+                decorationBox = { field ->
+                    Row(Modifier.clip(RoundedCornerShape(6.dp)).background(BackgroundColor)
+                        .padding(horizontal = 8.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Search, null, tint = TextMuted, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Box(Modifier.weight(1f)) {
+                            if (query.isEmpty()) Text("Search settings", color = TextMuted, fontSize = 12.sp)
+                            field()
+                        }
+                        if (query.isNotEmpty()) {
+                            IconButton(onClick = { query = ""; destination = null }, modifier = Modifier.size(20.dp)) {
+                                Icon(Icons.Default.Close, "Clear search", tint = TextSecondary, modifier = Modifier.size(14.dp))
+                            }
+                        }
+                    }
+                }
+            )
+            if (query.isBlank()) {
+                NavigationRail(visibleCategories, selectedCategory, {
+                    selectedCategory = it
+                    destination = null
+                }, Modifier.weight(1f))
+            } else {
+                val resultScroll = rememberLazyListState()
+                LaunchedEffect(selectedHit, hits) {
+                    if (hits.isNotEmpty()) resultScroll.animateScrollToItem(selectedHit.coerceAtMost(hits.lastIndex))
+                }
+                if (hits.isEmpty()) Text("No settings found", color = TextMuted, fontSize = 12.sp, modifier = Modifier.padding(12.dp))
+                LazyColumn(state = resultScroll, modifier = Modifier.weight(1f)) {
+                    itemsIndexed(hits) { index, hit ->
+                        Column(Modifier.fillMaxWidth()
+                            .background(if (index == selectedHit) AccentColor.copy(alpha = 0.15f) else Color.Transparent)
+                            .clickable { selectedHit = index; pickHit(hit) }
+                            .padding(horizontal = 12.dp, vertical = 10.dp)) {
+                            Text(hit.label, color = TextPrimary, fontSize = 13.sp)
+                            Text(listOf(hit.category.displayName, hit.group).filter { it.isNotEmpty() }.distinct().joinToString(" › "),
+                                color = TextMuted, fontSize = 10.sp)
+                        }
+                    }
+                }
+            }
+        }
 
         // Divider
         Box(
@@ -98,14 +181,18 @@ fun SettingsPanel(
                     .weight(1f)
                     .fillMaxWidth()
             ) {
-                SettingsContent(
-                    category = selectedCategory,
-                    settings = settings,
-                    onSettingsChange = onSettingsChange,
-                    onSettingsSave = onSettingsSave,
-                    onRestartApp = onRestartApp,
-                    modifier = Modifier.fillMaxSize()
-                )
+                CompositionLocalProvider(LocalSettingsSearchDestination provides destination) {
+                    key(selectedCategory) {
+                        SettingsContent(
+                            category = selectedCategory,
+                            settings = settings,
+                            onSettingsChange = onSettingsChange,
+                            onSettingsSave = onSettingsSave,
+                            onRestartApp = onRestartApp,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
             }
 
             // Footer with reset button
@@ -273,6 +360,11 @@ private fun SettingsContent(
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
+    val destination = LocalSettingsSearchDestination.current
+    LaunchedEffect(destination) {
+        if (destination?.group == "") scrollState.scrollTo(0)
+    }
+
 
     Column(
         modifier = modifier
@@ -304,6 +396,8 @@ private fun SettingsContent(
             )
             SettingsCategory.THEMES -> ThemeSettingsSection(
                 settings = settings,
+                onSettingsSave = onSettingsSave,
+                onRestartApp = onRestartApp,
                 onSettingsChange = onSettingsChange
             )
             SettingsCategory.BEHAVIOR -> BehaviorSettingsSection(

@@ -89,6 +89,10 @@ compose.desktop {
             "--add-opens", "java.desktop/sun.awt.X11=ALL-UNNAMED"
         )
 
+        if (org.gradle.internal.os.OperatingSystem.current().isMacOsX) {
+            jvmArgs += "--add-exports=java.desktop/com.apple.eawt=ALL-UNNAMED"
+        }
+
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Deb, TargetFormat.Rpm)
 

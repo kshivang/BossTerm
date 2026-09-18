@@ -1,9 +1,9 @@
 package ai.rever.bossterm.compose.settings.sections
 
+import ai.rever.bossterm.compose.window.GlassAlertDialog as AlertDialog
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
-import androidx.compose.material.AlertDialog
 import androidx.compose.material.Button
 import androidx.compose.material.ButtonDefaults
 import androidx.compose.material.Text
@@ -19,7 +19,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
-import ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor
+import ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
@@ -167,52 +167,6 @@ fun VisualSettingsSection(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // Transparency Settings (only available with custom title bar)
-        SettingsSection(title = "Transparency") {
-            if (settings.useNativeTitleBar) {
-                Text(
-                    text = "Transparency requires custom title bar. Disable 'Use Native Title Bar' above to enable transparency.",
-                    color = TextMuted,
-                    fontSize = 12.sp
-                )
-            } else {
-                SettingsSlider(
-                    label = "Background Opacity",
-                    value = settings.backgroundOpacity,
-                    onValueChange = { onSettingsChange(settings.copy(backgroundOpacity = it)) },
-                    onValueChangeFinished = onSettingsSave,
-                    valueRange = 0.1f..1.0f,
-                    steps = 17,
-                    valueDisplay = { "${(it * 100).toInt()}%" },
-                    description = "Make the terminal background transparent to see through to desktop"
-                )
-
-                SettingsToggle(
-                    label = "Enable Blur Effect",
-                    checked = settings.windowBlur,
-                    onCheckedChange = { newValue ->
-                        onSettingsChange(settings.copy(windowBlur = newValue))
-                    },
-                    description = "Blurs background image or shows frosted glass effect"
-                )
-
-                if (settings.windowBlur) {
-                    SettingsSlider(
-                        label = "Blur Radius",
-                        value = settings.blurRadius,
-                        onValueChange = { onSettingsChange(settings.copy(blurRadius = it)) },
-                        onValueChangeFinished = onSettingsSave,
-                        valueRange = 5f..50f,
-                        steps = 8,
-                        valueDisplay = { "${it.toInt()} dp" },
-                        description = "Intensity of the blur effect"
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
         // Background Image Settings
         SettingsSection(title = "Background Image") {
             SettingsFilePicker(
@@ -229,11 +183,29 @@ fun VisualSettingsSection(
                     value = settings.backgroundImageOpacity,
                     onValueChange = { onSettingsChange(settings.copy(backgroundImageOpacity = it)) },
                     onValueChangeFinished = onSettingsSave,
-                    valueRange = 0.1f..1.0f,
-                    steps = 17,
+                    valueRange = 0f..1.0f,
+                    steps = 19,
                     valueDisplay = { "${(it * 100).toInt()}%" },
                     description = "How visible the background image is"
                 )
+                SettingsToggle(
+                    label = "Blur Background Image",
+                    checked = settings.windowBlur,
+                    onCheckedChange = { onSettingsChange(settings.copy(windowBlur = it)) },
+                    description = "Soften the background image independently of Liquid Glass"
+                )
+                if (settings.windowBlur) {
+                    SettingsSlider(
+                        label = "Blur Radius",
+                        value = settings.blurRadius,
+                        onValueChange = { onSettingsChange(settings.copy(blurRadius = it)) },
+                        onValueChangeFinished = onSettingsSave,
+                        valueRange = 5f..50f,
+                        steps = 8,
+                        valueDisplay = { "${it.toInt()} dp" },
+                        description = "Intensity of the blur effect"
+                    )
+                }
             }
         }
     }

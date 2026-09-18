@@ -1,6 +1,7 @@
 package ai.rever.bossterm.compose.update
 
 import ai.rever.bossterm.compose.settings.theme.BossUiTheme
+import ai.rever.bossterm.compose.window.LocalWindowChromeOpacity
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.*
 import androidx.compose.material.icons.Icons
@@ -61,7 +62,8 @@ fun UpdateBanner(
 // follow a theme switch. AccentBlue is used for text and icons as well as fills, so
 // it takes `signalText` - the accent held to the 4.5:1 text floor - rather than
 // `signal`, which is only held to the 3:1 component floor.
-private val BannerBackground: Color get() = BossUiTheme.current.panel
+private val BannerBackground: Color
+    @Composable get() = BossUiTheme.current.panel.copy(alpha = LocalWindowChromeOpacity.current)
 private val AccentBlue: Color get() = BossUiTheme.current.signalText
 private val AccentGreen: Color get() = BossUiTheme.current.ok
 private val AccentOrange: Color get() = BossUiTheme.current.warn

@@ -92,7 +92,7 @@ fun WorkflowRunDialog(
                         false
                     }
                 },
-            color = SettingsTheme.SurfaceColor,
+            color = ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor,
             shape = RoundedCornerShape(8.dp),
             shadowElevation = 8.dp,
         ) {
@@ -121,7 +121,7 @@ fun WorkflowRunDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 4.dp)
-                            .background(SettingsTheme.BackgroundColor)
+                            .background(ai.rever.bossterm.compose.settings.DialogTheme.BackgroundColor)
                             .padding(8.dp)
                             .then(if (index == 0) Modifier.focusRequester(firstFieldFocus) else Modifier)
                             .onPreviewKeyEvent { e ->

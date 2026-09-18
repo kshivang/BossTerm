@@ -572,13 +572,25 @@ object BuiltinThemes {
         isBuiltin = true
     )
 
+    val LIQUID_GLASS_LIGHT = BOSS_BLUEPRINT_LIGHT.copy(
+        id = "liquid-glass-light",
+        name = if (ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isMacOS()) "Liquid Glass Light" else "Glass Light"
+    )
+
+    val LIQUID_GLASS_DARK = BOSS_BLUEPRINT.copy(
+        id = "liquid-glass-dark",
+        name = if (ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isMacOS()) "Liquid Glass Dark" else "Glass Dark"
+    )
+
     /**
      * All built-in themes.
      *
-     * BOSS_BLUEPRINT stays first: `ThemeDefaultsTest` asserts the default leads
+     * LIQUID_GLASS_DARK stays first: `ThemeDefaultsTest` asserts the default leads
      * both builtin lists. Each light identity sits next to its dark sibling.
      */
     val ALL = listOf(
+        LIQUID_GLASS_DARK,
+        LIQUID_GLASS_LIGHT,
         BOSS_BLUEPRINT,
         BOSS_BLUEPRINT_LIGHT,
         BOSS_OPERATOR,
@@ -608,7 +620,7 @@ object BuiltinThemes {
      * `TerminalSettings`' fresh-install color defaults must equal this theme's
      * — `ThemeDefaultsTest` fails if they drift.
      */
-    const val DEFAULT_THEME_ID = "boss-blueprint"
+    const val DEFAULT_THEME_ID = "liquid-glass-dark"
 
     /**
      * The theme [DEFAULT_THEME_ID] names, for callers that need the object and
@@ -616,5 +628,5 @@ object BuiltinThemes {
      * stark black-on-white XTerm theme, which is a *named* theme and not the
      * product default. `ThemeDefaultsTest` pins the two to agree.
      */
-    val PRODUCT_DEFAULT: Theme = BOSS_BLUEPRINT
+    val PRODUCT_DEFAULT: Theme = LIQUID_GLASS_DARK
 }

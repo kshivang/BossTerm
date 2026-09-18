@@ -11,10 +11,10 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.DialogWindow
+import ai.rever.bossterm.compose.window.GlassDialogWindow as DialogWindow
 import androidx.compose.ui.window.rememberDialogState
 import ai.rever.bossterm.compose.settings.SettingsTheme.AccentColor
-import ai.rever.bossterm.compose.settings.SettingsTheme.BackgroundColor
+import ai.rever.bossterm.compose.settings.DialogTheme.BackgroundColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.BorderColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.Danger
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent

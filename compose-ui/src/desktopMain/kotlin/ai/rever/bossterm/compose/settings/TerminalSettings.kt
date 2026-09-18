@@ -138,7 +138,7 @@ data class TerminalSettings(
      * References a theme from BuiltinThemes or a custom theme.
      * When a theme is applied, the color settings above are updated to match.
      */
-    val activeThemeId: String = "boss-blueprint",
+    val activeThemeId: String = "liquid-glass-dark",
 
     /**
      * Active color palette ID.
@@ -156,15 +156,26 @@ data class TerminalSettings(
     val backgroundOpacity: Float = 1.0f,
 
     /**
-     * Enable blur effect behind transparent terminal (macOS only).
-     * Creates a frosted glass effect when backgroundOpacity < 1.0.
-     * Has no effect when backgroundOpacity is 1.0.
+     * Blur the optional background image. Native desktop glass is controlled by windowGlassMode.
      */
     val windowBlur: Boolean = false,
 
+    /** Coverage for Liquid Glass themes: "off", "bars" (opaque terminal), or "window". Custom title bar only. */
+    val windowGlassMode: String = "window",
+
+    /** Theme-colored overlay above native glass (0 = no tint, 1 = opaque). */
+    val windowGlassTint: Float = 0.3f,
+
+    /** Terminal overlay opacity for Liquid Glass themes; ordinary theme opacity is independent. */
+    val windowGlassOpacity: Float = 0.3f,
+
+    /** Public NSGlassEffectView styles: "regular" or "clear". */
+    val windowGlassStyle: String = "regular",
+
     /**
-     * Blur radius for transparent mode (1-100).
-     * Higher values create more blur. Only applies when windowBlur is enabled.
+     * Blur radius for background images (1-100).
+     * Native macOS desktop glass uses the system material's blur instead.
+     * Only applies when windowBlur is enabled.
      */
     val blurRadius: Float = 30f,
 
@@ -184,7 +195,7 @@ data class TerminalSettings(
     /**
      * Use native window decorations (title bar with traffic lights).
      * When true: Native macOS title bar, proper fullscreen, but no transparency.
-     * When false: Custom title bar, transparency works, but no true fullscreen.
+     * When false: Custom title bar with transparency and native macOS fullscreen support.
      * Changing this requires app restart to take effect.
      *
      * "No transparency" is an AWT restriction, not a macOS one - see
@@ -194,7 +205,7 @@ data class TerminalSettings(
      * underneath does not help because the surface has no alpha channel. Do not spend an
      * afternoon rediscovering it.
      */
-    val useNativeTitleBar: Boolean = true,
+    val useNativeTitleBar: Boolean = false,
 
     /**
      * Show semi-transparent overlay when window loses focus.

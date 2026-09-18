@@ -21,6 +21,18 @@ import kotlin.test.assertNotNull
  *  3. TerminalSettings' fresh-install colors equal the default theme's.
  */
 class ThemeDefaultsTest {
+    @Test
+    fun `fresh settings enable whole window liquid glass`() {
+        val settings = TerminalSettings()
+        assertEquals("liquid-glass-dark", settings.activeThemeId)
+        assertEquals(false, settings.useNativeTitleBar)
+        assertEquals("window", settings.windowGlassMode)
+        assertEquals("regular", settings.windowGlassStyle)
+        assertEquals(0.3f, settings.windowGlassTint)
+        assertEquals(0.3f, settings.windowGlassOpacity)
+        assertAnsiMatches(BuiltinThemes.LIQUID_GLASS_DARK, BuiltinColorPalettes.LIQUID_GLASS_DARK)
+    }
+
 
     @Test
     fun `default theme id resolves to a builtin theme`() {
@@ -39,10 +51,10 @@ class ThemeDefaultsTest {
     }
 
     @Test
-    fun `boss-blueprint is the default and leads both builtin lists`() {
-        assertEquals("boss-blueprint", BuiltinThemes.DEFAULT_THEME_ID)
-        assertEquals("boss-blueprint", BuiltinThemes.ALL.first().id)
-        assertEquals("boss-blueprint", BuiltinColorPalettes.ALL.first().id)
+    fun `liquid glass dark is the default and leads both builtin lists`() {
+        assertEquals("liquid-glass-dark", BuiltinThemes.DEFAULT_THEME_ID)
+        assertEquals("liquid-glass-dark", BuiltinThemes.ALL.first().id)
+        assertEquals("liquid-glass-dark", BuiltinColorPalettes.ALL.first().id)
     }
 
     @Test

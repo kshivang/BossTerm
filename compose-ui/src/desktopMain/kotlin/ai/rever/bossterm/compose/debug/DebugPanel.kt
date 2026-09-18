@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose.debug
 
+import ai.rever.bossterm.compose.settings.DialogTheme
+import ai.rever.bossterm.compose.settings.SettingsTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -90,7 +92,7 @@ fun DebugPanelContent(
 
     Surface(
         modifier = modifier.fillMaxSize(),
-        color = Color(0xFF1E1E1E),
+        color = DialogTheme.BackgroundColor,
         shape = RoundedCornerShape(8.dp)
     ) {
         Column(
@@ -107,7 +109,7 @@ fun DebugPanelContent(
             ) {
                 Text(
                     text = "Debug Tools - Terminal Inspector",
-                    color = Color.White,
+                    color = SettingsTheme.TextPrimary,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -121,7 +123,7 @@ fun DebugPanelContent(
                         Icon(
                             imageVector = Icons.Filled.Info,
                             contentDescription = if (showStats) "Hide stats" else "Show stats",
-                            tint = if (showStats) Color(0xFF4A90E2) else Color.Gray
+                            tint = if (showStats) Color(0xFF4A90E2) else SettingsTheme.TextMuted
                         )
                     }
 
@@ -133,13 +135,13 @@ fun DebugPanelContent(
                         Icon(
                             imageVector = Icons.Filled.Close,
                             contentDescription = "Close debug panel",
-                            tint = Color.White
+                            tint = SettingsTheme.TextPrimary
                         )
                     }
                 }
             }
 
-            HorizontalDivider(color = Color(0xFF3A3A3A), thickness = 1.dp)
+            HorizontalDivider(color = SettingsTheme.BorderColor, thickness = 1.dp)
 
             // Buffer type selector
             Row(
@@ -156,7 +158,7 @@ fun DebugPanelContent(
                     Text(
                         text = "Cursor: (${currentSnapshot.cursorY}, ${currentSnapshot.cursorX}) | " +
                                 "Chunk: ${currentSnapshot.chunkIndex}",
-                        color = Color.Gray,
+                        color = SettingsTheme.TextMuted,
                         fontSize = 12.sp
                     )
                 }
@@ -188,7 +190,7 @@ fun DebugPanelContent(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Buffer Content (${selectedBufferType.name})",
-                        color = Color.Gray,
+                        color = SettingsTheme.TextMuted,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier.padding(bottom = 6.dp)
@@ -204,7 +206,7 @@ fun DebugPanelContent(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Control Sequences (Last 10 chunks)",
-                        color = Color.Gray,
+                        color = SettingsTheme.TextMuted,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier.padding(bottom = 6.dp)

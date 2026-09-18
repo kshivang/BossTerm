@@ -1,6 +1,8 @@
 package ai.rever.bossterm.compose.share
 
 import ai.rever.bossterm.compose.settings.theme.BossUiTheme
+import ai.rever.bossterm.compose.window.LocalWindowChromeOpacity
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.TooltipArea
@@ -112,10 +114,10 @@ fun StatusStrip(
     callLabel: String = DEFAULT_CALL_LABEL,
 ) {
     val showCall = call != CallSegmentState.Hidden
-    if (!showMcp && !showSharing && !showCall) return
+    if (!showMcp && !showSharing && !showCall && remoteCalls == 0) return
     Surface(
         modifier = modifier,
-        color = BossUiTheme.current.panel,
+        color = BossUiTheme.current.panel.copy(alpha = LocalWindowChromeOpacity.current),
         shape = RoundedCornerShape(12.dp),
         border = BorderStroke(1.dp, BossUiTheme.current.line)
     ) {
@@ -196,7 +198,7 @@ private fun Segment(dot: Color, label: String, onClick: () -> Unit, tooltip: Str
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Box(Modifier.size(7.dp).background(dot, CircleShape))
-            Text(label, color = BossUiTheme.current.chalk, fontSize = 11.sp)
+            Text(label, color = BossUiTheme.current.chalk, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
     if (tooltip == null) {

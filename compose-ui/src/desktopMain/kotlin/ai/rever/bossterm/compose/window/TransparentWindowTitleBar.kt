@@ -10,6 +10,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.window.WindowDraggableArea
 import androidx.compose.material.Text
 import androidx.compose.runtime.*
@@ -17,11 +18,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.WindowScope
@@ -34,6 +45,7 @@ import java.awt.event.InputEvent
  *
  * Must be called within a WindowScope (inside Window composable).
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun WindowScope.CustomTitleBar(
     title: String,
@@ -44,75 +56,96 @@ fun WindowScope.CustomTitleBar(
     onMaximize: () -> Unit,
     backgroundColor: Color,
     globalHotkeyHint: String? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    glassEnabled: Boolean = false,
+    isFullscreen: Boolean = false,
+    nativeTrafficLights: Boolean = false,
+    actions: (@Composable () -> Unit)? = null
 ) {
+    val chrome = BossUiTheme.current
+    val focused = LocalWindowInfo.current.isWindowFocused
+    val density = LocalDensity.current
+    var actionsWidth by remember { mutableStateOf(0.dp) }
+    val highlight = chrome.chalk.copy(alpha = if (focused) 0.08f else 0.04f)
+    val divider = chrome.chalk.copy(alpha = 0.08f)
+    val glassBrush = remember(backgroundColor, highlight) {
+        Brush.verticalGradient(listOf(highlight, Color.Transparent))
+    }
     WindowDraggableArea(
         modifier = modifier
             .fillMaxWidth()
-            .height(38.dp)
+            .height(40.dp)
             .background(backgroundColor)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // macOS-style traffic lights (close, minimize, maximize/fullscreen)
-            // Track group hover state - all icons show when any button is hovered
-            val groupInteractionSource = remember { MutableInteractionSource() }
-            val isGroupHovered by groupInteractionSource.collectIsHoveredAsState()
-
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),  // ~3.5px margin between 12px buttons
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.hoverable(interactionSource = groupInteractionSource)
-            ) {
-                // Close button (red)
-                CloseButton(
-                    isGroupHovered = isGroupHovered,
-                    onClick = onClose
-                )
-
-                // Minimize button (yellow)
-                MinimizeButton(
-                    isGroupHovered = isGroupHovered,
-                    onClick = onMinimize
-                )
-
-                // Fullscreen/Maximize button (green)
-                // Click = Fullscreen, Option+Click = Maximize (macOS behavior)
-                FullscreenButton(
-                    isGroupHovered = isGroupHovered,
-                    onFullscreen = onFullscreen,
-                    onMaximize = onMaximize
-                )
+            .then(if (glassEnabled) Modifier.background(glassBrush) else Modifier)
+            .drawBehind {
+                drawLine(divider, Offset(0f, size.height), Offset(size.width, size.height), 1.dp.toPx())
             }
-
-            // Title in center
-            Box(
-                modifier = Modifier.weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
+    ) {
+        Box(Modifier.fillMaxSize()) {
+            // A sibling behind the content receives only title/background clicks, never clicks
+            // on the traffic lights or status actions. Observe down before the drag area starts
+            // moving the window, and consume only the second click so ordinary dragging survives.
+            Box(Modifier.matchParentSize().onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
+                val mouse = event.nativeEvent as? java.awt.event.MouseEvent
+                if (!isFullscreen && mouse?.button == java.awt.event.MouseEvent.BUTTON1 && mouse.clickCount == 2) {
+                    event.changes.forEach { it.consume() }
+                    onMaximize()
+                }
+            })
+            BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+                // Equal gutters keep the title truly centered regardless of the shortcut's length.
+                // At narrow widths the title truncates before either control area is crowded.
+                val gutter = if (actions != null) minOf(maxOf(72.dp, actionsWidth + 12.dp), maxWidth / 2)
+                    else minOf(if (globalHotkeyHint == null) 72.dp else 128.dp, maxWidth / 3)
                 Text(
                     text = title,
-                    color = BossUiTheme.current.chalk.copy(alpha = 0.9f),
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium
+                    color = chrome.chalk.copy(alpha = if (focused) 0.88f else 0.55f),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.align(Alignment.Center).padding(horizontal = gutter)
                 )
-            }
 
-            // Hotkey hint or spacer to balance the traffic lights
-            Box(
-                modifier = Modifier.width(72.dp),
-                contentAlignment = Alignment.CenterEnd
-            ) {
-                if (globalHotkeyHint != null) {
+                if (!isFullscreen && !nativeTrafficLights) {
+                    val groupInteractionSource = remember { MutableInteractionSource() }
+                    val isGroupHovered by groupInteractionSource.collectIsHoveredAsState()
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.align(Alignment.CenterStart)
+                            .hoverable(interactionSource = groupInteractionSource)
+                    ) {
+                        CloseButton(isGroupHovered = isGroupHovered, focused = focused, onClick = onClose)
+                        MinimizeButton(isGroupHovered = isGroupHovered, focused = focused, onClick = onMinimize)
+                        FullscreenButton(
+                            isGroupHovered = isGroupHovered,
+                            focused = focused,
+                            onFullscreen = onFullscreen,
+                            onMaximize = onMaximize
+                        )
+                    }
+                }
+
+                if (actions != null) {
+                    Row(
+                        modifier = Modifier.align(Alignment.CenterEnd)
+                            .widthIn(max = (maxWidth - 80.dp).coerceAtLeast(0.dp))
+                            .onSizeChanged { actionsWidth = with(density) { it.width.toDp() } },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) { actions() }
+                } else if (globalHotkeyHint != null) {
                     Text(
                         text = globalHotkeyHint,
-                        color = BossUiTheme.current.mist,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Normal
+                        color = chrome.chalk.copy(alpha = if (focused) 0.55f else 0.35f),
+                        fontSize = 10.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.align(Alignment.CenterEnd)
+                            .widthIn(max = gutter)
+                            .background(chrome.chalk.copy(alpha = 0.04f), RoundedCornerShape(5.dp))
+                            .border(0.5.dp, divider, RoundedCornerShape(5.dp))
+                            .padding(horizontal = 6.dp, vertical = 3.dp)
                     )
                 }
             }
@@ -121,7 +154,7 @@ fun WindowScope.CustomTitleBar(
 }
 
 /**
- * macOS traffic light colors, from Apple's specs.
+ * macOS-style traffic light palette.
  *
  * Deliberately NOT themed, and the one set of literals in this file that should
  * stay literal. These are the operating system's window controls: macOS paints the
@@ -131,35 +164,35 @@ fun WindowScope.CustomTitleBar(
  * red. `ChromeTokenCoverageTest` allowlists this object for that reason.
  */
 private object TrafficLightColors {
-    // Close button (red) - with transparency for glass effect
+    val inactive = Color(0xFF8E8E93)
+
+    // Close button (red)
     val closeDefault = Color(0xFFFF6159)
-    val closeHover = Color(0xFFBF4942)
     val closeIcon = Color(0xFF4D0000)
     val closeBorder = Color(0x33000000)
 
     // Minimize button (yellow)
     val minimizeDefault = Color(0xFFFFBD2E)
-    val minimizeHover = Color(0xFFBF8E22)
     val minimizeIcon = Color(0xFF995700)
     val minimizeBorder = Color(0x33000000)
 
     // Maximize button (green)
     val maximizeDefault = Color(0xFF28C941)
-    val maximizeHover = Color(0xFF1D9730)
     val maximizeIcon = Color(0xFF006500)
     val maximizeBorder = Color(0x33000000)
 }
 
 /**
  * Close button (red) with × icon on hover.
- * Icon: two 8px × 1px lines at 45° angles
+ * Icon: a compact cross centered inside the 6dp-radius circle.
  */
 @Composable
 private fun CloseButton(
     isGroupHovered: Boolean,
+    focused: Boolean,
     onClick: () -> Unit
 ) {
-    val bgColor = if (isGroupHovered) TrafficLightColors.closeHover else TrafficLightColors.closeDefault
+    val bgColor = if (focused || isGroupHovered) TrafficLightColors.closeDefault else TrafficLightColors.inactive
 
     Box(
         modifier = Modifier
@@ -167,14 +200,14 @@ private fun CloseButton(
             .clip(CircleShape)
             .background(bgColor)
             .border(0.5.dp, TrafficLightColors.closeBorder, CircleShape)
-            .pointerInput(Unit) {
+            .pointerInput(onClick) {
                 detectTapGestures(onTap = { onClick() })
             },
         contentAlignment = Alignment.Center
     ) {
         if (isGroupHovered) {
-            Canvas(modifier = Modifier.size(8.dp)) {
-                val strokeWidth = 1.dp.toPx()
+            Canvas(modifier = Modifier.size(6.dp)) {
+                val strokeWidth = 1.1.dp.toPx()
                 // Draw × icon - two diagonal lines
                 drawLine(
                     color = TrafficLightColors.closeIcon,
@@ -197,14 +230,15 @@ private fun CloseButton(
 
 /**
  * Minimize button (yellow) with − icon on hover.
- * Icon: one 8px × 1px horizontal line
+ * Icon: a centered 6dp horizontal line.
  */
 @Composable
 private fun MinimizeButton(
     isGroupHovered: Boolean,
+    focused: Boolean,
     onClick: () -> Unit
 ) {
-    val bgColor = if (isGroupHovered) TrafficLightColors.minimizeHover else TrafficLightColors.minimizeDefault
+    val bgColor = if (focused || isGroupHovered) TrafficLightColors.minimizeDefault else TrafficLightColors.inactive
 
     Box(
         modifier = Modifier
@@ -212,14 +246,14 @@ private fun MinimizeButton(
             .clip(CircleShape)
             .background(bgColor)
             .border(0.5.dp, TrafficLightColors.minimizeBorder, CircleShape)
-            .pointerInput(Unit) {
+            .pointerInput(onClick) {
                 detectTapGestures(onTap = { onClick() })
             },
         contentAlignment = Alignment.Center
     ) {
         if (isGroupHovered) {
-            Canvas(modifier = Modifier.size(8.dp)) {
-                val strokeWidth = 1.dp.toPx()
+            Canvas(modifier = Modifier.size(6.dp)) {
+                val strokeWidth = 1.1.dp.toPx()
                 // Draw − icon - horizontal line
                 drawLine(
                     color = TrafficLightColors.minimizeIcon,
@@ -242,10 +276,11 @@ private fun MinimizeButton(
 @Composable
 private fun FullscreenButton(
     isGroupHovered: Boolean,
+    focused: Boolean,
     onFullscreen: () -> Unit,
     onMaximize: () -> Unit
 ) {
-    val bgColor = if (isGroupHovered) TrafficLightColors.maximizeHover else TrafficLightColors.maximizeDefault
+    val bgColor = if (focused || isGroupHovered) TrafficLightColors.maximizeDefault else TrafficLightColors.inactive
 
     Box(
         modifier = Modifier
@@ -278,66 +313,20 @@ private fun FullscreenButton(
         contentAlignment = Alignment.Center
     ) {
         if (isGroupHovered) {
-            Canvas(modifier = Modifier.size(8.dp)) {
-                val strokeWidth = 1.dp.toPx()
-                val iconColor = TrafficLightColors.maximizeIcon
-
-                // Draw two small triangular arrows pointing to opposite corners
-                // Top-right arrow (↗)
-                val trX = size.width
-                val trY = 0f
-                // Arrow stem
-                drawLine(
-                    color = iconColor,
-                    start = Offset(size.width * 0.35f, size.height * 0.65f),
-                    end = Offset(trX, trY),
-                    strokeWidth = strokeWidth,
-                    cap = StrokeCap.Round
-                )
-                // Arrow head - horizontal part
-                drawLine(
-                    color = iconColor,
-                    start = Offset(trX, trY),
-                    end = Offset(trX - size.width * 0.35f, trY),
-                    strokeWidth = strokeWidth,
-                    cap = StrokeCap.Round
-                )
-                // Arrow head - vertical part
-                drawLine(
-                    color = iconColor,
-                    start = Offset(trX, trY),
-                    end = Offset(trX, trY + size.height * 0.35f),
-                    strokeWidth = strokeWidth,
-                    cap = StrokeCap.Round
-                )
-
-                // Bottom-left arrow (↙)
-                val blX = 0f
-                val blY = size.height
-                // Arrow stem
-                drawLine(
-                    color = iconColor,
-                    start = Offset(size.width * 0.65f, size.height * 0.35f),
-                    end = Offset(blX, blY),
-                    strokeWidth = strokeWidth,
-                    cap = StrokeCap.Round
-                )
-                // Arrow head - horizontal part
-                drawLine(
-                    color = iconColor,
-                    start = Offset(blX, blY),
-                    end = Offset(blX + size.width * 0.35f, blY),
-                    strokeWidth = strokeWidth,
-                    cap = StrokeCap.Round
-                )
-                // Arrow head - vertical part
-                drawLine(
-                    color = iconColor,
-                    start = Offset(blX, blY),
-                    end = Offset(blX, blY - size.height * 0.35f),
-                    strokeWidth = strokeWidth,
-                    cap = StrokeCap.Round
-                )
+            Canvas(modifier = Modifier.size(6.dp)) {
+                // Native-style solid corner triangles, separated by a diagonal gap.
+                // Stroked arrow shafts look oversized at this scale.
+                val arrows = Path().apply {
+                    moveTo(0f, 0f)
+                    lineTo(size.width * 0.72f, 0f)
+                    lineTo(0f, size.height * 0.72f)
+                    close()
+                    moveTo(size.width, size.height)
+                    lineTo(size.width * 0.28f, size.height)
+                    lineTo(size.width, size.height * 0.28f)
+                    close()
+                }
+                drawPath(arrows, TrafficLightColors.maximizeIcon)
             }
         }
     }

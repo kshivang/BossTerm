@@ -1,6 +1,10 @@
 package ai.rever.bossterm.compose.tabs
 
 import ai.rever.bossterm.compose.settings.theme.BossUiTheme
+import ai.rever.bossterm.compose.window.LocalWindowGlassTint
+import ai.rever.bossterm.compose.window.LocalWindowGlassMode
+import ai.rever.bossterm.compose.window.WindowGlassMode
+import ai.rever.bossterm.compose.window.LocalNativeWindowGlass
 import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.features.ContextMenuController
 import ai.rever.bossterm.compose.settings.theme.Theme
@@ -42,6 +46,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
@@ -709,6 +715,9 @@ fun TabBar(
     // Tab-bar chrome follows the active terminal theme, so the left panel
     // re-styles live when the theme/palette is switched (collectAsState recomposes).
     val tabBarTheme by ThemeManager.instance.currentTheme.collectAsState()
+    val nativeGlass = LocalNativeWindowGlass.current
+    val glassTint = LocalWindowGlassTint.current.coerceIn(0f, 1f)
+    val glassEnabled = LocalWindowGlassMode.current != WindowGlassMode.OFF
     val barBg = tabBarTheme.backgroundColorValue
     val barFg = tabBarTheme.foregroundColor
     val barMuted = barFg.copy(alpha = 0.62f)
@@ -775,6 +784,7 @@ fun TabBar(
                 subtitle = pane.subtitle,
                 branch = pane.branch,
                 multiLine = vertical,
+                glassEnabled = glassEnabled,
                 tabTheme = tabBarTheme,
                 chipRaised = barRaised,
                 isActive = group.tabIndex == activeTabIndex && pane.paneId == focusedPaneId,
@@ -809,6 +819,17 @@ fun TabBar(
     Surface(
         modifier = modifier
             .then(
+                if (glassEnabled) Modifier.background(
+                    Brush.linearGradient(
+                        listOf(
+                            lerp(barBg, barFg, 0.10f).copy(alpha = if (nativeGlass) (glassTint + 0.06f).coerceAtMost(1f) else 0.94f),
+                            barBg.copy(alpha = if (nativeGlass) (glassTint - 0.06f).coerceAtLeast(0f) else 0.86f),
+                            lerp(barBg, tabBarTheme.cursorColor, 0.06f).copy(alpha = if (nativeGlass) (glassTint + 0.02f).coerceAtMost(1f) else 0.92f)
+                        )
+                    )
+                ).border(1.dp, barFg.copy(alpha = 0.10f)) else Modifier
+            )
+            .then(
                 if (vertical) Modifier.fillMaxHeight().width(if (collapsed) TabBarRailWidth else verticalWidth)
                 else Modifier.fillMaxWidth().height(TabBarHeight)
             )
@@ -836,8 +857,9 @@ fun TabBar(
                     Modifier
                 }
             ),
-        color = barBg,
-        shadowElevation = 2.dp
+        // Both horizontal and vertical bars can expose the native glass surface.
+        color = if (glassEnabled) Color.Transparent else barBg,
+        shadowElevation = if (glassEnabled) 0.dp else 2.dp
     ) {
         if (vertical && collapsed) {
             // Slim icon rail: expand chevron on top, one accent dot per pane (click to
@@ -1457,6 +1479,7 @@ private fun TabItem(
     subtitle: String? = null,
     branch: String? = null,
     multiLine: Boolean = false,
+    glassEnabled: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val accent = parseTabColor(colorHex)
@@ -1480,6 +1503,21 @@ private fun TabItem(
             .then(if (multiLine) Modifier.heightIn(min = 36.dp) else Modifier.height(36.dp))
             .widthIn(min = 80.dp, max = 200.dp)
             .then(
+                if (glassEnabled) Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    // Tint the glass from the same pane color used by the context menu.
+                    // Keep the neutral highlight above it for a reflective finish.
+                    .background(accent?.copy(alpha = if (isActive) 0.24f else 0.12f) ?: Color.Transparent)
+                    .background(
+                        Brush.linearGradient(
+                            listOf(
+                                itemFg.copy(alpha = if (isActive) 0.16f else 0.07f),
+                                itemFg.copy(alpha = if (isActive) 0.06f else 0.02f)
+                            )
+                        )
+                    ) else Modifier
+            )
+            .then(
                 if (isEditing) Modifier
                 else Modifier
                     // Consume secondary presses before clickable can interpret them as a
@@ -1488,7 +1526,7 @@ private fun TabItem(
                     .clickable(onClick = onSelected)
             ),
         shape = RoundedCornerShape(6.dp),
-        color = if (isActive) itemRaised else itemBg,
+        color = if (glassEnabled) Color.Transparent else if (isActive) itemRaised else itemBg,
         border = androidx.compose.foundation.BorderStroke(
             1.dp,
             when {

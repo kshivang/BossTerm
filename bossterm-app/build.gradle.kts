@@ -178,8 +178,8 @@ compose.desktop {
                 perUserInstall = true
             }
 
-            // Include required JVM modules
-            modules("java.sql", "jdk.unsupported", "jdk.management.agent")
+            // Boss Calling uses the JDK HttpClient/WebSocket transport, including in packaged runtimes.
+            modules("java.sql", "java.net.http", "jdk.unsupported", "jdk.management.agent")
 
             // JVM args for better performance and desktop integration
             val packageVer = project.version.toString().removeSuffix("-SNAPSHOT")

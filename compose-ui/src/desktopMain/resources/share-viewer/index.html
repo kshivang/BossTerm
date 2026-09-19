@@ -231,6 +231,25 @@
       border-radius: 12px; background: rgba(37,37,38,.92); border: 1px solid #404040;
       color: #b0b0b0; font-size: 11px; cursor: pointer; display: none; }
     #viewpill:hover { border-color: #4a90e2; }
+    #files-actions { display: flex; gap: 4px; }
+    #files-actions[hidden] { display: none; }
+    #files-actions button, #files-dialog button { color: inherit; background: #30343a; border: 1px solid #555;
+      border-radius: 7px; padding: 7px 10px; cursor: pointer; font: inherit; }
+    #files-actions button { padding: 2px 7px; white-space: nowrap; }
+    #files-dialog { color: #eee; background: #202226; border: 1px solid #555; border-radius: 14px;
+      width: min(720px, calc(100vw - 48px)); max-height: calc(100dvh - 48px); padding: 20px; box-sizing: border-box;
+      font: 14px -apple-system, BlinkMacSystemFont, sans-serif; }
+    #files-dialog::backdrop { background: #0008; }
+    #files-dialog h2 { margin: 0 0 12px; font-size: 18px; }
+    #files-location { overflow-wrap: anywhere; margin: 10px 0; }
+    #files-role, #files-limit { color: #bfc5cf; font-size: 12px; }
+    .files-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 14px 0; }
+    #files-list { max-height: 45vh; overflow: auto; }
+    .files-row { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #3d4148; padding: 4px 0; }
+    #files-dialog .files-name { flex: 1; min-width: 0; text-align: left; overflow-wrap: anywhere; border: 0; background: transparent; }
+    .files-row span { color: #bfc5cf; font-size: 12px; white-space: nowrap; }
+    #files-status { min-height: 20px; overflow-wrap: anywhere; }
+    #files-dialog button:focus-visible { outline: 2px solid #69adff; }
   </style>
 </head>
 <body>
@@ -246,6 +265,10 @@
     <!-- Control-centric items first (you act on them): request-control, MCP, zoom/fit. -->
     <span class="badge" id="viewonly">view only</span>
     <span class="badge" id="mcppill" style="display:none" title="Host MCP - click to manage"><span class="dot"></span>MCP</span>
+    <span id="files-actions" hidden>
+      <button id="files-browse" title="Browse files on the host">Files</button>
+      <button id="files-upload" title="Upload files from this device">Upload</button>
+    </span>
     <span id="zoom">
       <button id="splittabs" title="Show a split tab one pane at a time - switch panes via the sub-tab chips (on by default on phones)">⊞ Panes</button>
       <button id="zoomout" title="Zoom out">A&minus;</button>
@@ -288,6 +311,21 @@
     </div>
   </div>
 
+  <dialog id="files-dialog" aria-labelledby="files-heading">
+    <h2 id="files-heading">Remote files</h2>
+    <div id="files-location"></div><div id="files-role"></div>
+    <div class="files-toolbar">
+      <button id="files-up">Up</button><button id="files-refresh">Refresh</button>
+      <button id="files-choose">Choose files to upload…</button>
+      <label><input id="files-hidden" type="checkbox"> Hidden files</label>
+    </div>
+    <input id="files-picker" type="file" multiple hidden>
+    <div id="files-list"></div><button id="files-more" hidden>Load more</button>
+    <p id="files-limit">Files are transferred to and from this device. Web limit: 64 MB per file.</p>
+    <p id="files-status" role="status" aria-live="polite"></p>
+    <div class="files-toolbar"><button id="files-cancel" hidden>Cancel</button><button id="files-close">Close</button></div>
+  </dialog>
+  <script src="viewer-files.js"></script>
   <script src="vendor/xterm.js"></script>
   <!-- GPU renderer (vendored @xterm/addon-webgl): smooth scrolling, esp. on phones.
        Optional - viewer.js falls back to xterm's DOM renderer if it can't load. -->

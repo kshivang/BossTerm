@@ -737,7 +737,7 @@ const scenarios = {
     const socket = connectPanes(["pane-1"]);
     assert.deepStrictEqual(
       JSON.parse(socket.sent[0]).capabilities,
-      ["paneGraphicsV1"],
+      ["paneGraphicsV1", "filesV1"],
       "the Hello must advertise host-decoded graphics"
     );
   },

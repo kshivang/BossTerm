@@ -268,7 +268,11 @@ class MirrorShare(
         }
     }
 
+    @Volatile private var stopped = false
+
+    @Synchronized
     fun stop() {
+        stopped = true
         observerJob?.cancel()
         mcpJob?.cancel()
         voiceJob?.cancel()
@@ -295,21 +299,31 @@ class MirrorShare(
             taps.values.forEach(::disposeTap)
             taps.clear()
         }
-        viewers.forEach { it.outbox.close() }
+        viewers.forEach { it.sharingEnded = true; it.fileAccess?.close(); it.outbox.close(discardPending = true) }
         viewers.clear()
         coro.cancel()
     }
 
     // ---- viewers ----
+    @Synchronized
     fun addViewer(
         canControl: Boolean,
         name: String = "Viewer",
         supportsPaneGraphics: Boolean = false,
         confidential: Boolean = false,
+        supportsFiles: Boolean = false,
     ): ViewerConnection {
         val vc = ViewerConnection(
             viewerSeq.incrementAndGet(), canControl, name, supportsPaneGraphics, confidential,
         )
+        if (stopped) {
+            vc.sharingEnded = true
+            vc.outbox.close(discardPending = true)
+            return vc
+        }
+        if (supportsFiles && confidential) vc.fileAccess = ai.rever.bossterm.compose.remote.files.HostFileAccess(name, canControl = { vc.canControl }, reply = {
+            vc.outbox.sendControl(ShareProtocol.encodeServer(it))
+        })
         viewers.add(vc)
         if (supportsPaneGraphics) {
             // A graphics mutation may have landed after this viewer's initial full frames were
@@ -327,6 +341,7 @@ class MirrorShare(
 
     fun removeViewer(vc: ViewerConnection) {
         if (viewers.remove(vc)) {
+            vc.fileAccess?.close()
             // A dropped connection can't hang up, so retire its call handle here or the token
             // stays usable for its whole TTL.
             voiceService.closeCall(vc.voiceCallToken)
@@ -418,7 +433,7 @@ class MirrorShare(
         out.add(themeMessage())
         out.add(mcpStatusMessage())
         out.add(voiceService.status(withReason = canControl, confidential = confidential))
-        out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
+        out.add(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName, filesAvailable = ai.rever.bossterm.compose.remote.files.RemoteFileStore.available))
         for ((id, tab) in paneTabMap()) {
             val sz = sig.sizes[id] ?: listOf(80, 24)
             out.add(ServerMessage.PaneSnapshot(
@@ -475,6 +490,10 @@ class MirrorShare(
     private fun tappedTab(paneId: String): TerminalTab? = synchronized(taps) { taps[paneId]?.tab }
 
     fun handleClient(vc: ViewerConnection, msg: ClientMessage) {
+        if (msg is ClientMessage.FilesRequest) {
+            vc.fileAccess?.handle(msg)
+            return
+        }
         if (msg is ClientMessage.GraphicsResync) {
             if (vc.supportsPaneGraphics) {
                 val tracker = synchronized(taps) { taps[msg.paneId]?.graphics }
@@ -514,7 +533,7 @@ class MirrorShare(
                         // Persist the upgrade into the grant so reconnects (same link + key)
                         // come back WITH control instead of silently demoting to view-only.
                         vc.grantKey?.let { SessionShareManager.upgradeGrantToControl(it) }
-                        vc.outbox.trySend(ShareProtocol.encodeServer(ServerMessage.Control(granted = true)))
+                        vc.outbox.sendControl(ShareProtocol.encodeServer(ServerMessage.Control(granted = true)))
                         // Re-send voiceStatus WITH the reason. It is sent once at admit, redacted
                         // for a view-only viewer, and the voiceJob collector only pushes on a change
                         // to the underlying status — so a promoted controller kept `reason: null`
@@ -524,6 +543,8 @@ class MirrorShare(
                         vc.outbox.trySend(
                             ShareProtocol.encodeServer(voiceService.status(withReason = true, confidential = vc.confidential))
                         )
+                    } else {
+                        vc.outbox.sendControl(ShareProtocol.encodeServer(ServerMessage.Control(granted = false)))
                     }
                 }
             }
@@ -903,7 +924,7 @@ class MirrorShare(
                 }
             }
         }
-        broadcast(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName))
+        broadcast(ServerMessage.Layout(sig.tabs, sig.activeTabId, sig.tabBarOnLeft, sig.summaryMode, sig.sessionName, filesAvailable = ai.rever.bossterm.compose.remote.files.RemoteFileStore.available))
         sig.sizes.forEach { (id, sz) -> broadcast(ServerMessage.PaneResize(id, sz[0], sz[1])) }
     }
 
@@ -1188,6 +1209,8 @@ class ViewerConnection(
      */
     val confidential: Boolean = false,
 ) {
+    @Volatile internal var sharingEnded = false
+    internal var fileAccess: ai.rever.bossterm.compose.remote.files.HostFileAccess? = null
     internal val outbox = BoundedViewerOutbox()
     internal val graphicsResyncLimiter = GraphicsResyncLimiter()
 
@@ -1374,8 +1397,14 @@ internal class BoundedViewerOutbox(
         }
     }
 
-    fun close() {
-        closed = true
+    fun close(discardPending: Boolean = false) {
+        synchronized(lock) {
+            closed = true
+            if (discardPending) {
+                frames.clear(); controlFrames.clear()
+                queuedChars = 0; controlChars = 0
+            }
+        }
         wake.close()
     }
 

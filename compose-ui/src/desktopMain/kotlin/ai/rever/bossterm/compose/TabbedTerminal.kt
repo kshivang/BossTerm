@@ -1038,6 +1038,14 @@ fun TabbedTerminal(
     }
     // "Add remote": connect to another BossTerm's shared session (native client).
     var showAddRemote by remember { mutableStateOf(false) }
+    var remoteFilesTarget by remember { mutableStateOf<Pair<ai.rever.bossterm.compose.remote.RemoteSession, Boolean>?>(null) }
+    var remoteFilesOpenRequest by remember { mutableStateOf(0) }
+    ai.rever.bossterm.compose.remote.files.FileAccessApprovalDialog()
+    remoteFilesTarget?.let { (session, upload) ->
+        key(session) {
+            ai.rever.bossterm.compose.remote.files.RemoteFilesWindow(session, upload, remoteFilesOpenRequest) { remoteFilesTarget = null }
+        }
+    }
     // Pending "request control?" confirmation: a view-only group's split/new-tab click stores
     // the actual request here; confirming the dialog runs it, dismissing drops it.
     var requestControlPrompt by remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -1701,6 +1709,9 @@ fun TabbedTerminal(
                         else requestControlPrompt = { session.requestControl() }
                     },
                     onDisconnect = { rm?.disconnect(session) },
+                    filesAvailable = session.filesAvailable.value && session.statusState.value is ai.rever.bossterm.compose.remote.RemoteStatus.Connected,
+                    onBrowseFiles = { remoteFilesTarget = session to false; remoteFilesOpenRequest++ },
+                    onUploadFiles = { remoteFilesTarget = session to true; remoteFilesOpenRequest++ },
                     onChipSplit = { tabIndex, paneId, horizontal ->
                         tabController.tabs.getOrNull(tabIndex)?.let { session.splitPane(it.id, paneId, horizontal) }
                     },

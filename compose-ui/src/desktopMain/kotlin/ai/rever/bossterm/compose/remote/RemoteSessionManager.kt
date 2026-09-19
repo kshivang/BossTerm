@@ -63,7 +63,7 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
                 return existing
             }
         }
-        val session = RemoteSession(link, deviceName, state, clientId, shareBack)
+        val session = RemoteSession(link, deviceName, state, clientId, shareBack, onHostEnded = ::disconnect)
         sessions.add(session)
         session.start()
         return session
@@ -76,6 +76,7 @@ class RemoteSessionManager(private val state: TabbedTerminalState) {
     fun disconnect(session: RemoteSession) {
         session.close()
         sessions.remove(session)
+        if (blockedInput.value?.session === session) blockedInput.value = null
     }
 
     /** The remote session that owns [tab] (a mirror tab), or null if it's a local tab. */
@@ -132,6 +133,7 @@ class RemoteSession internal constructor(
     clientId: String,
     /** Two-way: once the host grants control, offer it this window's own share link. */
     shareBack: Boolean = false,
+    private val onHostEnded: (RemoteSession) -> Unit = {},
 ) {
     private val log = LoggerFactory.getLogger(RemoteSession::class.java)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -162,6 +164,9 @@ class RemoteSession internal constructor(
         onGrant = { k, _ -> key = k },
         onServerMessage = ::onMessage,
     )
+
+    internal val files = ai.rever.bossterm.compose.remote.files.RemoteFilesClient(conn::sendFileRequest)
+    val filesAvailable = androidx.compose.runtime.mutableStateOf(false)
 
     val status: StateFlow<RemoteStatus> get() = conn.status
     val canControl: Boolean get() = conn.canControl
@@ -288,7 +293,11 @@ class RemoteSession internal constructor(
     fun start() {
         uiScope.launch {
             // Mirror the connection's status into Compose state (read in composition).
-            conn.status.collect { statusState.value = it }
+            conn.status.collect {
+                statusState.value = it
+                if (it !is RemoteStatus.Connected) { filesAvailable.value = false; files.disconnected(); fileControlDecision?.complete(false) }
+                if (it is RemoteStatus.Closed) onHostEnded(this@RemoteSession)
+            }
         }
         uiScope.launch {
             for (msg in inbox) runCatching { handleMessage(msg) }
@@ -310,6 +319,18 @@ class RemoteSession internal constructor(
     }
 
     /** Ask the host to grant write/control (when connected view-only). */
+    private var fileControlDecision: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
+
+    internal suspend fun requestControlForFiles(): Boolean {
+        if (canControl) return true
+        val decision = fileControlDecision ?: kotlinx.coroutines.CompletableDeferred<Boolean>().also {
+            fileControlDecision = it
+            requestControl()
+        }
+        return try { kotlinx.coroutines.withTimeoutOrNull(130_000) { decision.await() } ?: false }
+        finally { if (fileControlDecision === decision) fileControlDecision = null }
+    }
+
     fun requestControl() = conn.send(ClientMessage.RequestControl())
 
     // An upstream control request queued until OUR control of the host is granted — the host
@@ -462,6 +483,16 @@ class RemoteSession internal constructor(
     private fun remoteTabIdFor(localTabId: String): String? =
         localTabByRemote.entries.firstOrNull { it.value.id == localTabId }?.key
 
+    /** Starting folder hint from a direct mirror only; the host still validates every path. */
+    internal fun preferredFileDirectory(): String? {
+        val controller = state.tabController ?: return null
+        val direct = controller.tabs.filter { containsTab(it) && upstreamByTab[it.id] == null }
+        val tab = direct.firstOrNull { it === controller.tabs.getOrNull(controller.activeTabIndex) }
+            ?: direct.firstOrNull() ?: return null
+        val pane = state.splitStates[tab.id]?.focusedPaneId?.let { sessionByPane[it] }
+        return pane?.workingDirectory?.value ?: tab.workingDirectory.value
+    }
+
     /**
      * Split the remote session's current pane (the active mirror tab if it belongs to this
      * session, else this session's first tab) left/right or top/bottom — the host applies it
@@ -482,8 +513,12 @@ class RemoteSession internal constructor(
     }
 
     fun close() {
+        statusState.value = RemoteStatus.Closed
+        filesAvailable.value = false
         runCatching { scope.cancel() }   // status collector + share-back offer
         runCatching { uiScope.cancel() } // the inbox drain
+        files.disconnected()
+        fileControlDecision?.complete(false)
         conn.close()
         localTabByRemote.values.toList().forEach { removeMirrorTab(it) }
         localTabByRemote.clear()
@@ -494,12 +529,15 @@ class RemoteSession internal constructor(
 
     // ---- message handling ----
     // Called on the WS IO thread — just hand off to the ordered Main drain (see [inbox]).
-    private fun onMessage(msg: ServerMessage) { inbox.trySend(msg) }
+    private fun onMessage(msg: ServerMessage) {
+        if (msg is ServerMessage.FilesReply) files.receive(msg) else inbox.trySend(msg)
+    }
 
     // Runs on Main, in wire order.
     private fun handleMessage(msg: ServerMessage) {
         when (msg) {
             is ServerMessage.Layout -> {
+                filesAvailable.value = msg.filesAvailable && conn.hasEncryptionSecret
                 msg.sessionName?.takeIf { it.isNotBlank() }?.let { hostName.value = it }
                 runCatching { reconcile(msg) }
                     .onFailure { log.warn("remote layout reconcile failed: {}", it.message) }
@@ -520,6 +558,7 @@ class RemoteSession internal constructor(
             }
             is ServerMessage.Control -> {
                 canControlState.value = msg.granted // recompose the tab bar's remote menus
+                fileControlDecision?.complete(msg.granted)
                 if (msg.granted) {
                     // Two-way sharing offers only matter once the host trusts us with control —
                     // it ignores OfferShare from view-only clients anyway.

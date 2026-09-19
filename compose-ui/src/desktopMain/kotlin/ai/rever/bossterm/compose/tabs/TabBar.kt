@@ -1,5 +1,8 @@
 package ai.rever.bossterm.compose.tabs
 
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+
 import ai.rever.bossterm.compose.util.uiTextWithFallback
 import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import ai.rever.bossterm.compose.window.LocalWindowGlassTint
@@ -38,6 +41,8 @@ import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.HorizontalSplit
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.QrCode2
@@ -361,6 +366,9 @@ data class RemoteTabGroup(
     val mcpShown: Boolean = false,
     val mcpRunning: Boolean = false,
     val onMcpClick: () -> Unit = {},
+    val filesAvailable: Boolean = false,
+    val onBrowseFiles: () -> Unit = {},
+    val onUploadFiles: () -> Unit = {},
 )
 
 /**
@@ -663,7 +671,7 @@ fun TabBar(
     }
 
     // Right-click menu on a remote group's HEADER — local customization of the box
-    // (name + accent color) plus Disconnect. Nothing here touches the host.
+    // (name + accent color), host file access, and Disconnect.
     val showRemoteGroupMenu: (RemoteTabGroup) -> Unit = { rg ->
         val colorSubmenu = ContextMenuController.MenuSubmenu(
             id = "remote_group_color",
@@ -680,6 +688,9 @@ fun TabBar(
             ContextMenuController.MenuSeparator(id = "rg_sep_control"),
         ) else emptyList()
         contextMenuController.showMenu(0f, 0f, requestControlItem + listOf(
+            ContextMenuController.MenuItem(id = "rg_files", label = "Browse Files…", enabled = rg.filesAvailable, action = rg.onBrowseFiles),
+            ContextMenuController.MenuItem(id = "rg_upload", label = "Upload Files…", enabled = rg.filesAvailable, action = rg.onUploadFiles),
+            ContextMenuController.MenuSeparator(id = "rg_files_sep"),
             ContextMenuController.MenuItem(id = "rg_rename", label = "Rename…", enabled = true, action = { editingRemoteId = rg.id }),
             colorSubmenu,
             ContextMenuController.MenuItem(id = "rg_open_browser", label = "Open in Browser", enabled = true, action = { rg.onOpenInBrowser() }),
@@ -1181,6 +1192,9 @@ fun TabBar(
                                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
                                     )
                                 }
+                                Box(Modifier.clip(RoundedCornerShape(4.dp)).clickable { showRemoteGroupMenu(rg) }.padding(3.dp)) {
+                                    Text("⋯", color = BossUiTheme.current.mist, fontSize = 15.sp, modifier = Modifier.semantics { contentDescription = "Remote group options" })
+                                }
                                 rg.statusLabel?.let { label ->
                                     // Connection state (connecting…/disconnected) — amber while
                                     // it may heal, red when it gave up.
@@ -1267,14 +1281,31 @@ fun TabBar(
                                     }
                                 }
                             }
-                            // Group-level footer only when not sectioned per window — the
-                            // sections carry their own targeted action rows instead.
-                            if (rg.windowSections.isEmpty()) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
-                                    verticalAlignment = Alignment.CenterVertically
+                            // File actions belong to the connection, including multi-window shares.
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.CenterHorizontally),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(
+                                    onClick = rg.onBrowseFiles,
+                                    enabled = rg.filesAvailable,
+                                    modifier = Modifier.size(30.dp).consumeSecondaryPress(),
                                 ) {
+                                    Icon(Icons.Default.FolderOpen, contentDescription = "Browse remote files",
+                                        tint = if (rg.filesAvailable) barMuted else barMuted.copy(alpha = 0.3f),
+                                        modifier = Modifier.size(16.dp))
+                                }
+                                IconButton(
+                                    onClick = rg.onUploadFiles,
+                                    enabled = rg.filesAvailable,
+                                    modifier = Modifier.size(30.dp).consumeSecondaryPress(),
+                                ) {
+                                    Icon(Icons.Default.FileUpload, contentDescription = "Upload files to remote",
+                                        tint = if (rg.filesAvailable) barMuted else barMuted.copy(alpha = 0.3f),
+                                        modifier = Modifier.size(16.dp))
+                                }
+                                if (rg.windowSections.isEmpty()) {
                                     barButton(Icons.Default.VerticalSplit, "Split Left/Right", rg.onSplitVertical)
                                     barButton(Icons.Default.HorizontalSplit, "Split Top/Bottom", rg.onSplitHorizontal)
                                     barButton(Icons.Default.Add, "New tab", rg.onNewTab)

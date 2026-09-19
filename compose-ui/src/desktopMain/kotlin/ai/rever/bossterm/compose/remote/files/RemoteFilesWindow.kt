@@ -264,7 +264,7 @@ private fun RemoteFilesWindowContent(session: RemoteSession, uploadInitially: Bo
         }
         replacement?.let { prompt ->
             GlassAlertDialog3(onDismissRequest = { prompt.answer.complete(false) },
-                containerColor = SettingsTheme.SurfaceColor, minimumSurfaceOpacity = 0.94f,
+                containerColor = SettingsTheme.SurfaceColor,
                 title = { Text("Replace existing file?") }, text = { Text("${prompt.name} already exists. Replace it?") },
                 confirmButton = { TextButton(onClick = { prompt.answer.complete(true) }) { Text("Replace") } },
                 dismissButton = { TextButton(onClick = { prompt.answer.complete(false) }) { Text("Skip") } })

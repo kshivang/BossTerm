@@ -47,7 +47,6 @@ private fun FileAccessApprovalContent() {
     GlassAlertDialog3(
         onDismissRequest = { current.decision.complete(null) },
         containerColor = SettingsTheme.SurfaceColor,
-        minimumSurfaceOpacity = 0.94f,
         title = { Text("Allow remote file access?", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) },
         text = {
             Column(Modifier.widthIn(max = 420.dp).heightIn(max = 400.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -65,7 +64,7 @@ private fun FileAccessApprovalContent() {
             }
         },
         confirmButton = {
-            Button(enabled = folder.isNotBlank() && !checking, onClick = {
+            Button(colors = ButtonDefaults.buttonColors(containerColor = SettingsTheme.AccentColor, contentColor = SettingsTheme.TextOnAccent), enabled = folder.isNotBlank() && !checking, onClick = {
                 checking = true
                 val selected = folder
                 scope.launch {

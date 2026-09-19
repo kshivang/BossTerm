@@ -1,6 +1,5 @@
 package ai.rever.bossterm.compose.window
 
-import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.SettingsTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -8,13 +7,49 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.window.DialogProperties
 
+/** Modal cards must not inherit the terminal's transparency or default Material palette. */
 @Composable
-private fun dialogColor(color: Color, installed: Boolean, minimumOpacity: Float = 0f): Color {
-    val settings by SettingsManager.instance.settings.collectAsState()
-    return if (installed && settings.isLiquidGlassTheme)
-        color.copy(alpha = settings.windowGlassOpacity.coerceIn(minimumOpacity.coerceIn(0f, 1f), 1f)) else color.copy(alpha = 1f)
+private fun DialogChrome(content: @Composable () -> Unit) {
+    val palette = ai.rever.bossterm.compose.settings.theme.BossUiTheme.current
+    val colors3 = (if (palette.isDark) androidx.compose.material3.darkColorScheme()
+        else androidx.compose.material3.lightColorScheme()).copy(
+        primary = SettingsTheme.AccentTextColor, onPrimary = SettingsTheme.TextOnAccent,
+        secondary = SettingsTheme.AccentTextColor, onSecondary = SettingsTheme.TextOnAccent,
+        surface = SettingsTheme.SurfaceColor.copy(alpha = 1f), onSurface = SettingsTheme.TextPrimary,
+        onSurfaceVariant = SettingsTheme.TextSecondary,
+        background = SettingsTheme.BackgroundColor.copy(alpha = 1f), onBackground = SettingsTheme.TextPrimary,
+        outline = SettingsTheme.BorderColor, error = SettingsTheme.Danger,
+    )
+    val typography3 = androidx.compose.material3.MaterialTheme.typography.copy(
+        headlineSmall = androidx.compose.ui.text.TextStyle(fontSize = 17.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold),
+        bodyMedium = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 19.sp),
+        labelLarge = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium),
+    )
+    val colors2 = (if (palette.isDark) androidx.compose.material.darkColors()
+        else androidx.compose.material.lightColors()).copy(
+        primary = SettingsTheme.AccentTextColor, onPrimary = SettingsTheme.TextOnAccent,
+        secondary = SettingsTheme.AccentTextColor, onSecondary = SettingsTheme.TextOnAccent,
+        surface = SettingsTheme.SurfaceColor.copy(alpha = 1f), onSurface = SettingsTheme.TextPrimary,
+        background = SettingsTheme.BackgroundColor.copy(alpha = 1f), onBackground = SettingsTheme.TextPrimary,
+        error = SettingsTheme.Danger,
+    )
+    val typography2 = androidx.compose.material.MaterialTheme.typography.copy(
+        h6 = androidx.compose.ui.text.TextStyle(fontSize = 17.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold),
+        body1 = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 19.sp),
+        body2 = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, lineHeight = 19.sp),
+        button = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Medium),
+    )
+    androidx.compose.material.MaterialTheme(colors = colors2, typography = typography2,
+        shapes = androidx.compose.material.MaterialTheme.shapes.copy(small = RoundedCornerShape(8.dp))) {
+        androidx.compose.material3.MaterialTheme(colorScheme = colors3, typography = typography3,
+            shapes = androidx.compose.material3.MaterialTheme.shapes.copy(
+                small = RoundedCornerShape(8.dp),
+            ), content = content)
+    }
 }
 
 /** Preserve Material's sizing, focus, dismissal and keyboard behavior; style only its surface. */
@@ -26,19 +61,20 @@ fun GlassAlertDialog(
     dismissButton: (@Composable () -> Unit)? = null,
     title: (@Composable () -> Unit)? = null,
     text: (@Composable () -> Unit)? = null,
-    shape: Shape = RoundedCornerShape(20.dp),
+    shape: Shape = RoundedCornerShape(16.dp),
     backgroundColor: Color = SettingsTheme.BackgroundColor,
     contentColor: Color = SettingsTheme.TextPrimary,
     properties: DialogProperties = DialogProperties()
 ) {
-    var installed by remember { mutableStateOf(false) }
-    androidx.compose.material.AlertDialog(
-        onDismissRequest = onDismissRequest, confirmButton = confirmButton,
-        modifier = modifier, dismissButton = dismissButton, title = title,
-        text = { InlineDialogGlassEffect { installed = it }; text?.invoke() },
-        shape = shape, backgroundColor = dialogColor(backgroundColor, installed), contentColor = contentColor,
-        properties = properties
-    )
+    DialogChrome {
+        androidx.compose.material.AlertDialog(
+            onDismissRequest = onDismissRequest, confirmButton = confirmButton,
+            modifier = modifier, dismissButton = dismissButton, title = title,
+            text = text,
+            shape = shape, backgroundColor = backgroundColor.copy(alpha = 1f), contentColor = contentColor,
+            properties = properties
+        )
+    }
 }
 
 @Composable
@@ -51,16 +87,20 @@ fun GlassAlertDialog3(
     text: (@Composable () -> Unit)? = null,
     containerColor: Color = SettingsTheme.BackgroundColor,
     properties: DialogProperties = DialogProperties(),
-    /** A readable surface floor for dense dialogs; foreground controls remain fully opaque. */
-    minimumSurfaceOpacity: Float = 0f,
 ) {
-    var installed by remember { mutableStateOf(false) }
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismissRequest, confirmButton = confirmButton,
-        modifier = modifier, dismissButton = dismissButton, title = title,
-        text = { InlineDialogGlassEffect { installed = it }; text?.invoke() },
-        containerColor = dialogColor(containerColor, installed, minimumSurfaceOpacity), properties = properties
-    )
+    DialogChrome {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = onDismissRequest, confirmButton = confirmButton,
+            modifier = modifier, dismissButton = dismissButton, title = title,
+            text = text,
+            containerColor = containerColor.copy(alpha = 1f),
+            shape = RoundedCornerShape(16.dp),
+            titleContentColor = SettingsTheme.TextPrimary,
+            textContentColor = SettingsTheme.TextSecondary,
+            tonalElevation = 0.dp,
+            properties = properties
+        )
+    }
 }
 
 @Composable

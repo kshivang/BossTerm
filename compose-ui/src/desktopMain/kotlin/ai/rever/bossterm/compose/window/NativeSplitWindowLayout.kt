@@ -120,6 +120,7 @@ class NativeSplitWindowLayout(
         controller = splitController
         nativeView = view
         nativeViews[handle] = view
+        splitViews[handle] = NativeGlass.sendPointer(splitController, "splitView")!!
         sidebar = sideItem
         sidebarContent = sideView
         detailContent = detailView
@@ -145,12 +146,14 @@ class NativeSplitWindowLayout(
     companion object {
         // AppKit queue only; keep the window-wide backdrop below the native sidebar.
         internal val nativeViews = mutableMapOf<Long, Pointer>()
+        internal val splitViews = mutableMapOf<Long, Pointer>()
     }
 
     override fun close() {
         closed = true
         NativeGlass.dispatch {
             nativeViews.remove(handle)
+            splitViews.remove(handle)
             NativeGlass.sendVoid(nativeView, "removeFromSuperview")
             val window = Pointer(handle)
             if (NativeGlass.isLiveWindow(handle) && NativeGlass.sendPointer(window, "contentViewController") == root) {

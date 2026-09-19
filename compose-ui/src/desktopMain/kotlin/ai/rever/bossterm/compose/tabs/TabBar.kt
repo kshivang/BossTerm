@@ -54,7 +54,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
@@ -930,8 +930,10 @@ fun TabBar(
             )
             .then(
                 if (sidebarPanel) Modifier.padding(start = 4.dp, top = 4.dp, bottom = 4.dp)
-                    .onGloballyPositioned { panelTop = it.positionInWindow().y }
+                    .onGloballyPositioned { panelTop = it.positionInRoot().y }
                     .drawBehind {
+                        // Anchor to the Compose root: AppKit can move the content view inside
+                        // the window when entering fullscreen or revealing its toolbar.
                         // The pinned panel continues behind native window chrome. Content
                         // keeps its normal inset so tabs never overlap toolbar controls.
                         val extension = if (nativeFrame && !overlaySurface) (panelTop - 4.dp.toPx()).coerceAtLeast(0f) else 0f

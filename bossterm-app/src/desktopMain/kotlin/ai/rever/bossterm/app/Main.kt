@@ -348,6 +348,8 @@ fun main(args: Array<String>) {
 
                     var nativeWindowFrameReady by remember { mutableStateOf(false) }
                     var sidebarResizePreview by remember { mutableStateOf<Float?>(null) }
+                    val contentDensity = androidx.compose.ui.platform.LocalDensity.current
+                    var contentWidth by remember { mutableStateOf(windowState.size.width) }
                     var updateBannerHeightPx by remember { mutableStateOf(0) }
                     var nativeHeaderHeight by remember { mutableStateOf(38.dp) }
                     var glassRefreshRevision by remember { mutableStateOf(0) }
@@ -867,9 +869,9 @@ fun main(args: Array<String>) {
                     val expandedSidebarWidth = if (windowSettings.tabBarPosition == "left" &&
                         !windowSettings.tabBarCollapsed &&
                         (windowSettings.alwaysShowTabBar || tabbedState.tabs.size > 1) &&
-                        windowState.size.width >= ai.rever.bossterm.compose.tabs.TabBarAutoCollapseWidth)
+                        contentWidth >= ai.rever.bossterm.compose.tabs.TabBarAutoCollapseWidth)
                         ai.rever.bossterm.compose.tabs.constrainedSidebarWidth(
-                            sidebarResizePreview ?: windowSettings.tabBarVerticalWidth, windowState.size.width.value,
+                            sidebarResizePreview ?: windowSettings.tabBarVerticalWidth, contentWidth.value,
                             dragging = sidebarResizePreview != null).dp else 0.dp
                     val topInset = if (nativeWindowFrameReady && !useNativeTitleBar) 0.dp
                         else titleBarInset(styleApplied, placementController.placement)
@@ -892,6 +894,9 @@ fun main(args: Array<String>) {
                     Surface(
                         modifier = Modifier
                             .fillMaxSize()
+                            // Native fullscreen preserves the floating WindowState geometry.
+                            // Match the sidebar and toolbar to the actual content bounds.
+                            .onSizeChanged { contentWidth = with(contentDensity) { it.width.toDp() } }
                             .clip(RoundedCornerShape(cornerRadius))
                             .drawBehind {
                                 if (nativeGlassInstalled) {

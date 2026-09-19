@@ -369,6 +369,16 @@ fun main(args: Array<String>) {
                             { macFullscreen?.toggle() ?: false }
                         } else null)
                     }
+                    val normalResizerThickness = remember { this@Window.window.undecoratedResizerThickness }
+                    SideEffect {
+                        // Native fullscreen does not update Compose's placement. Remove its
+                        // extra edge hit regions without changing AppKit's resizable style,
+                        // which would rebuild the frame and detach the fullscreen toolbar.
+                        this@Window.window.undecoratedResizerThickness =
+                            if (placementController.allowsWindowResize) normalResizerThickness else 0.dp
+                        if (!placementController.allowsWindowResize)
+                            this@Window.window.cursor = java.awt.Cursor.getDefaultCursor()
+                    }
                     LaunchedEffect(Unit) {
                         if (!useNativeTitleBar && isMacOS) {
                             while (!this@Window.window.isDisplayable || this@Window.window.windowHandle == 0L) {

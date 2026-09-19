@@ -150,4 +150,36 @@ class WindowPlacementControllerTest {
         controller.nativeFullscreenChanged(NativeFullscreenPhase.EXITED)
         assertEquals(original, state.size)
     }
+    @Test
+    fun `resize stays disabled throughout native fullscreen and its transitions`() {
+        val controller = WindowPlacementController(WindowState(), nativeFullscreenToggle = { true })
+        assertEquals(true, controller.allowsWindowResize)
+        controller.toggleFullscreen()
+        assertEquals(false, controller.allowsWindowResize)
+        controller.nativeFullscreenChanged(NativeFullscreenPhase.ENTERING)
+        assertEquals(false, controller.allowsWindowResize)
+        controller.nativeFullscreenChanged(NativeFullscreenPhase.ENTERED)
+        assertEquals(false, controller.allowsWindowResize)
+        controller.nativeFullscreenChanged(NativeFullscreenPhase.EXITING)
+        assertEquals(false, controller.allowsWindowResize)
+        controller.nativeFullscreenChanged(NativeFullscreenPhase.EXITED)
+        assertEquals(true, controller.allowsWindowResize)
+    }
+
+    @Test
+    fun `failed fullscreen request restores resizing`() {
+        val controller = WindowPlacementController(WindowState(), nativeFullscreenToggle = { false })
+        controller.toggleFullscreen()
+        assertEquals(true, controller.allowsWindowResize)
+    }
+
+    @Test
+    fun `compose fullscreen also disables resizing`() {
+        val state = WindowState(placement = WindowPlacement.Fullscreen)
+        val controller = WindowPlacementController(state)
+        assertEquals(false, controller.allowsWindowResize)
+        state.placement = WindowPlacement.Floating
+        assertEquals(true, controller.allowsWindowResize)
+    }
+
 }

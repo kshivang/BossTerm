@@ -188,6 +188,7 @@ internal class NativeToolbarController(private val handle: Long) : AutoCloseable
         closed = true
         NativeGlass.dispatch {
             nativeWindows.remove(handle)
+            NativeGlass.restoreFullscreenToolbarBackdrop(Pointer(handle))
             if (NativeGlass.isLiveWindow(handle) && NativeGlass.sendPointer(Pointer(handle), "toolbar") == toolbar)
                 NativeGlass.sendVoid(Pointer(handle), "setToolbar:", null)
             NativeGlass.sendVoid(toolbar, "setDelegate:", null)

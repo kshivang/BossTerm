@@ -828,6 +828,8 @@
     }
   }
 
+  var filesUi = window.BossTermFiles ? window.BossTermFiles.mount(sendMsg, function () { return controlGranted; }) : null;
+
   // ☰ toggles the left tab drawer (phone); tapping a tab closes it (see selectPane).
   menubtnEl.onclick = function () { sidebarEl.classList.toggle("open"); };
   // Any interaction with the terminal area also closes the drawer (capture phase so it
@@ -1581,6 +1583,7 @@
   // Retry a transient drop before asking the user.
   function handleConnectionLost(socket) {
     if (socket && ws !== socket) return; // stale event from a superseded connection
+    if (filesUi) filesUi.disconnect();
     if (socket) ws = null;               // disarm its pending encrypt/decrypt callbacks
     setStatus("down");
     if (sessionEnded || reconnectTimer) return;
@@ -2304,12 +2307,17 @@
         if (!windowBox || own.length) {
           var actions = document.createElement("div");
           actions.className = "ltab-actions";
+          if (filesUi) {
+            var browseFileButton = filesUi.button(false), uploadFileButton = filesUi.button(true);
+            if (browseFileButton) actions.appendChild(browseFileButton);
+            if (uploadFileButton) actions.appendChild(uploadFileButton);
+          }
           if (windowBox) {
             var wg = { tabs: own };
             actions.appendChild(groupSplitButton("v", wg));
             actions.appendChild(groupSplitButton("h", wg));
             var wnt = document.createElement("div");
-            wnt.className = "newtab"; wnt.textContent = "+ New tab";
+            wnt.className = "newtab"; wnt.textContent = "+";
             wnt.title = "New tab in this window";
             wnt.onclick = function () {
               if (viewOnlyGate()) return;
@@ -2319,7 +2327,7 @@
           } else {
             actions.appendChild(splitButton("v"));
             actions.appendChild(splitButton("h"));
-            actions.appendChild(newTabButton("+ New tab"));
+            actions.appendChild(newTabButton("+"));
           }
           container.appendChild(actions);
         }
@@ -2388,7 +2396,7 @@
             act.appendChild(groupSplitButton("v", sg));
             act.appendChild(groupSplitButton("h", sg));
             var nt = document.createElement("div");
-            nt.className = "newtab"; nt.textContent = "+ New tab";
+            nt.className = "newtab"; nt.textContent = "+";
             nt.title = "New tab in " + (g.name || "remote");
             nt.onclick = function () {
               if (viewOnlyGate()) return;
@@ -2976,7 +2984,7 @@
         name: deviceName(),
         clientId: clientId,
         key: loadKey(),
-        capabilities: ["paneGraphicsV1"]
+        capabilities: ["paneGraphicsV1", "filesV1"]
       });
     }
 
@@ -3038,6 +3046,7 @@
       // Any real drop kills the tool bridge, so end the call — even when an automatic reconnect
       // follows: the agent would otherwise sit blind waiting for a tool result sendMsg dropped.
       voiceOnSocketDown();
+      if (filesUi) filesUi.disconnect();
       if (viewerLogic.isTerminalWebSocketClose(ev && ev.code)) {
         disarmConnectionHealth();
         ws = null;
@@ -3072,7 +3081,8 @@
         showOverlay("Request denied", m.reason || "The host declined this device.", false);
         break;
       case "theme": applyTheme(m); break;
-      case "layout": hideOverlay(); onLayout(m); break;
+      case "layout": if (filesUi) filesUi.layout({ filesAvailable: m.filesAvailable && canE2E }); hideOverlay(); onLayout(m); break;
+      case "filesReply": if (filesUi) filesUi.receive(m); break;
       case "paneSnapshot": {
         var p = getPane(m.paneId);
         if (typeof m.scrollbackLines === "number" && m.scrollbackLines >= 0) {
@@ -3175,6 +3185,7 @@
         break;
       case "control":
         controlGranted = !!m.granted;
+        if (filesUi) filesUi.control(controlGranted);
         viewOnlyEl.style.display = controlGranted ? "none" : "";
         fithostEl.style.display = controlGranted ? "" : "none"; // resizing the host needs control
         // Phone + control: a phone-sized HOST grid is the best experience — offer it

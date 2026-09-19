@@ -39,7 +39,7 @@ sealed class RemoteStatus {
     data class Denied(val reason: String?) : RemoteStatus()
     /** Could not connect / dropped after exhausting retries. */
     data class Failed(val message: String) : RemoteStatus()
-    /** Closed by the user (remote removed). */
+    /** Closed by the user or intentionally ended by the host. */
     data object Closed : RemoteStatus()
 }
 
@@ -137,68 +137,81 @@ class RemoteSessionConnection(
             val box = kotlinx.coroutines.channels.Channel<ClientMessage>(kotlinx.coroutines.channels.Channel.BUFFERED)
             outbox = box
 
-            // E2E handshake (issue: end-to-end encryption). When the link carried a `#k` secret,
-            // exchange salts (plaintext Kex), derive per-connection AES-GCM keys, and verify the
-            // host's key-confirmation tag before sending anything sensitive. Fresh salt each
-            // connection → keys rotate on every reconnect even though the secret is stable.
-            var clientCipher: SessionCrypto.FrameCipher? = null
-            var serverCipher: SessionCrypto.FrameCipher? = null
-            val secret = sessionSecret
-            if (secret != null) {
-                val saltC = SessionCrypto.randomSalt()
-                send(Frame.Text(ShareProtocol.encodeKex(
-                    Kex(v = 1, salt = SessionCrypto.encodeSecretB64Url(saltC)))))
-                val reply = (incoming.receive() as? Frame.Text)?.let { ShareProtocol.decodeKex(it.readText()) }
-                if (reply != null && reply.v != 1) {
-                    closedByUser = true // terminal — a newer host we can't speak to
-                    _status.value = RemoteStatus.Denied("This session uses a newer encryption version - update BossTerm.")
-                    return@webSocket
-                }
-                val saltS = reply?.salt?.let { runCatching { SessionCrypto.decodeSecretB64Url(it) }.getOrNull() }
-                if (reply == null || saltS == null) {
-                    _status.value = RemoteStatus.Failed("Encrypted handshake failed")
-                    return@webSocket
-                }
-                val keys = SessionCrypto.deriveKeys(secret, saltC, saltS)
-                if (!SessionCrypto.confirmMatches(keys.confirm, reply.confirm)) {
-                    // Wrong/missing key — terminal, no point retrying with the same bad secret.
-                    closedByUser = true
-                    _status.value = RemoteStatus.Denied(
-                        "This link's encryption key is wrong. Re-copy the full link from BossTerm."
-                    )
-                    return@webSocket
-                }
-                clientCipher = SessionCrypto.FrameCipher(keys.kC2s, SessionCrypto.DIR_C2S)
-                serverCipher = SessionCrypto.FrameCipher(keys.kS2c, SessionCrypto.DIR_S2C)
-            }
-            val cc = clientCipher
-            val scph = serverCipher
-
-            // Handshake first, ahead of any queued input (encrypted when E2E).
-            val helloText = ShareProtocol.encodeClient(
-                ClientMessage.Hello(name = deviceName, clientId = clientId, key = keyProvider()))
-            if (cc != null) send(Frame.Binary(true, cc.encrypt(helloText))) else send(Frame.Text(helloText))
-            val writer = launch {
-                for (m in box) runCatching {
-                    val t = ShareProtocol.encodeClient(m)
-                    if (cc != null) send(Frame.Binary(true, cc.encrypt(t))) else send(Frame.Text(t))
-                }.onFailure { log.debug("ws send failed: {}", it.message) }
-            }
             try {
-                for (frame in incoming) {
-                    val text = when {
-                        scph != null && frame is Frame.Binary -> runCatching { scph.decrypt(frame.data) }.getOrNull()
-                        scph == null && frame is Frame.Text -> frame.readText()
-                        else -> null
-                    } ?: continue
-                    val msg = runCatching { ShareProtocol.decodeServer(text) }.getOrNull() ?: continue
-                    handle(msg)
+                // E2E handshake (issue: end-to-end encryption). When the link carried a `#k` secret,
+                // exchange salts (plaintext Kex), derive per-connection AES-GCM keys, and verify the
+                // host's key-confirmation tag before sending anything sensitive. Fresh salt each
+                // connection → keys rotate on every reconnect even though the secret is stable.
+                var clientCipher: SessionCrypto.FrameCipher? = null
+                var serverCipher: SessionCrypto.FrameCipher? = null
+                val secret = sessionSecret
+                if (secret != null) {
+                    val saltC = SessionCrypto.randomSalt()
+                    send(Frame.Text(ShareProtocol.encodeKex(
+                        Kex(v = 1, salt = SessionCrypto.encodeSecretB64Url(saltC)))))
+                    val reply = (incoming.receive() as? Frame.Text)?.let { ShareProtocol.decodeKex(it.readText()) }
+                    if (reply != null && reply.v != 1) {
+                        closedByUser = true // terminal — a newer host we can't speak to
+                        _status.value = RemoteStatus.Denied("This session uses a newer encryption version - update BossTerm.")
+                        return@webSocket
+                    }
+                    val saltS = reply?.salt?.let { runCatching { SessionCrypto.decodeSecretB64Url(it) }.getOrNull() }
+                    if (reply == null || saltS == null) {
+                        _status.value = RemoteStatus.Failed("Encrypted handshake failed")
+                        return@webSocket
+                    }
+                    val keys = SessionCrypto.deriveKeys(secret, saltC, saltS)
+                    if (!SessionCrypto.confirmMatches(keys.confirm, reply.confirm)) {
+                        // Wrong/missing key — terminal, no point retrying with the same bad secret.
+                        closedByUser = true
+                        _status.value = RemoteStatus.Denied(
+                            "This link's encryption key is wrong. Re-copy the full link from BossTerm."
+                        )
+                        return@webSocket
+                    }
+                    clientCipher = SessionCrypto.FrameCipher(keys.kC2s, SessionCrypto.DIR_C2S)
+                    serverCipher = SessionCrypto.FrameCipher(keys.kS2c, SessionCrypto.DIR_S2C)
+                }
+                val cc = clientCipher
+                val scph = serverCipher
+
+                // Handshake first, ahead of any queued input (encrypted when E2E).
+                val helloText = ShareProtocol.encodeClient(
+                    ClientMessage.Hello(name = deviceName, clientId = clientId, key = keyProvider(), capabilities = listOf(ai.rever.bossterm.compose.share.FILES_CAPABILITY)))
+                if (cc != null) send(Frame.Binary(true, cc.encrypt(helloText))) else send(Frame.Text(helloText))
+                val writer = launch {
+                    for (m in box) runCatching {
+                        val t = ShareProtocol.encodeClient(m)
+                        if (cc != null) send(Frame.Binary(true, cc.encrypt(t))) else send(Frame.Text(t))
+                    }.onFailure { log.debug("ws send failed: {}", it.message) }
+                }
+                try {
+                    for (frame in incoming) {
+                        val text = when {
+                            scph != null && frame is Frame.Binary -> runCatching { scph.decrypt(frame.data) }.getOrNull()
+                            scph == null && frame is Frame.Text -> frame.readText()
+                            else -> null
+                        } ?: continue
+                        val msg = runCatching { ShareProtocol.decodeServer(text) }.getOrNull() ?: continue
+                        handle(msg)
+                    }
+                } finally {
+                    writer.cancel()
                 }
             } finally {
-                outbox = null
-                box.close()
-                writer.cancel()
-                session = null
+                try {
+                    val reason = kotlinx.coroutines.withTimeoutOrNull(1_000) { closeReason.await() }
+                    if (reason?.code == ShareProtocol.SHARE_ENDED_CLOSE_CODE ||
+                        (reason?.code == 1003.toShort() && reason.message == "Unknown or expired share token")
+                    ) {
+                        closedByUser = true
+                        _status.value = RemoteStatus.Closed
+                    }
+                } finally {
+                    outbox = null
+                    box.close()
+                    session = null
+                }
             }
         }
     }
@@ -220,6 +233,13 @@ class RemoteSessionConnection(
     /** Send a client message (Input / RequestControl / etc.). Queued in submission order; dropped if not connected. */
     fun send(msg: ClientMessage) {
         outbox?.trySend(msg)
+    }
+
+    internal val hasEncryptionSecret: Boolean get() = sessionSecret != null
+
+    internal suspend fun sendFileRequest(msg: ClientMessage.FilesRequest) {
+        val queue = outbox ?: error("Remote connection is unavailable")
+        queue.send(msg)
     }
 
     /** Whether write/control was granted by the host. */

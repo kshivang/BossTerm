@@ -11,10 +11,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 
 @Composable
-private fun dialogColor(color: Color, installed: Boolean): Color {
+private fun dialogColor(color: Color, installed: Boolean, minimumOpacity: Float = 0f): Color {
     val settings by SettingsManager.instance.settings.collectAsState()
     return if (installed && settings.isLiquidGlassTheme)
-        color.copy(alpha = settings.windowGlassOpacity.coerceIn(0f, 1f)) else color.copy(alpha = 1f)
+        color.copy(alpha = settings.windowGlassOpacity.coerceIn(minimumOpacity.coerceIn(0f, 1f), 1f)) else color.copy(alpha = 1f)
 }
 
 /** Preserve Material's sizing, focus, dismissal and keyboard behavior; style only its surface. */
@@ -50,14 +50,16 @@ fun GlassAlertDialog3(
     title: (@Composable () -> Unit)? = null,
     text: (@Composable () -> Unit)? = null,
     containerColor: Color = SettingsTheme.BackgroundColor,
-    properties: DialogProperties = DialogProperties()
+    properties: DialogProperties = DialogProperties(),
+    /** A readable surface floor for dense dialogs; foreground controls remain fully opaque. */
+    minimumSurfaceOpacity: Float = 0f,
 ) {
     var installed by remember { mutableStateOf(false) }
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismissRequest, confirmButton = confirmButton,
         modifier = modifier, dismissButton = dismissButton, title = title,
         text = { InlineDialogGlassEffect { installed = it }; text?.invoke() },
-        containerColor = dialogColor(containerColor, installed), properties = properties
+        containerColor = dialogColor(containerColor, installed, minimumSurfaceOpacity), properties = properties
     )
 }
 

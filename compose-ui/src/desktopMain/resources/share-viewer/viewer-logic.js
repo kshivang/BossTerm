@@ -14,7 +14,7 @@
   }
 
   function isTerminalWebSocketClose(code) {
-    return code === 1000 || code === 1003 || code === 1008;
+    return code === 1000 || code === 1003 || code === 1008 || code === 4001;
   }
 
   function captureRowOffset(xtermBaseY, hostHistoryLines) {

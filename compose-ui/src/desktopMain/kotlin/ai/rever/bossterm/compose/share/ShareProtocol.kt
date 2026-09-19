@@ -21,6 +21,9 @@ import kotlinx.serialization.json.Json
  * Backward-compat: add new fields with defaults so older peers tolerate them.
  */
 object ShareProtocol {
+    /** Application WebSocket close code: host intentionally stopped this share. */
+    const val SHARE_ENDED_CLOSE_CODE: Short = 4001
+
     val json: Json = Json {
         classDiscriminator = "t"
         ignoreUnknownKeys = true
@@ -87,6 +90,23 @@ data class Kex(
 /** Host → viewer messages. */
 @Serializable
 sealed class ServerMessage {
+    /** One bounded reply per file request; never broadcast to other viewers. */
+    @Serializable
+    @SerialName("filesReply")
+    data class FilesReply(
+        val requestId: String,
+        val error: String? = null,
+        val root: String? = null,
+        val writable: Boolean = false,
+        val entries: List<RemoteFileEntry> = emptyList(),
+        val next: Int? = null,
+        val transferId: String? = null,
+        val size: Long = 0,
+        val data: String = "",
+        val done: Boolean = false,
+        val sha256: String? = null,
+    ) : ServerMessage()
+
     /** The window layout: tabs + their split trees + which tab is active. Resent on change. */
     @Serializable
     @SerialName("layout")
@@ -105,6 +125,7 @@ sealed class ServerMessage {
          * Share window). Clients use it as the default group label instead of the link's host.
          */
         val sessionName: String? = null,
+        val filesAvailable: Boolean = false,
     ) : ServerMessage()
 
     /**
@@ -417,6 +438,21 @@ sealed class PaneTreeNode {
 /** Viewer → host messages. */
 @Serializable
 sealed class ClientMessage {
+    /** filesV1: root-relative paths, one 32 KiB chunk in flight, explicit host approval. */
+    @Serializable
+    @SerialName("filesRequest")
+    data class FilesRequest(
+        val requestId: String,
+        val operation: String,
+        val path: String = "",
+        val transferId: String? = null,
+        val offset: Long = 0,
+        val size: Long = 0,
+        val data: String = "",
+        val overwrite: Boolean = false,
+        val sha256: String? = null,
+    ) : ClientMessage()
+
     /**
      * Handshake. [name] is a display label for the host's approval prompt; [clientId]
      * is a stable per-browser id (localStorage) so a device is recognized across
@@ -665,3 +701,8 @@ internal fun ServerMessage.PaneGraphics.resyncSentinel(): ServerMessage.PaneGrap
     cells = emptyList(),
     resyncRequired = true,
 )
+
+@Serializable
+data class RemoteFileEntry(val name: String, val directory: Boolean, val size: Long, val modified: Long)
+
+internal const val FILES_CAPABILITY = "filesV1"

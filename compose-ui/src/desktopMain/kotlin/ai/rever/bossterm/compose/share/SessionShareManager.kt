@@ -1248,6 +1248,7 @@ object SessionShareManager {
             // A negotiated cipher means every frame is encrypted end-to-end, which is what lets the
             // host hand this connection an ephemeral OpenAI secret. See ViewerConnection.confidential.
             confidential = serverCipher != null,
+            supportsFiles = hello?.capabilities?.contains(FILES_CAPABILITY) == true,
         )
         vc.grantKey = accessKey // lets an approved mid-session upgrade persist into the grant
         try {
@@ -1258,6 +1259,7 @@ object SessionShareManager {
                 vc.outbox.drainTo { text ->
                     sc?.let { ws.send(Frame.Binary(true, it.encrypt(text))) } ?: ws.send(Frame.Text(text))
                 }
+                if (vc.sharingEnded) ws.close(CloseReason(ShareProtocol.SHARE_ENDED_CLOSE_CODE, "Sharing ended"))
             }
             try {
                 for (frame in ws.incoming) {

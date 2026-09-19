@@ -17,6 +17,20 @@ import kotlin.test.Test
 class ShareViewerScriptTest {
 
     @Test
+    fun `node harness verifies web file transfers and permissions`() {
+        NodeHarness.requireOrSkipNode()
+        val dir = Files.createTempDirectory("bossterm-web-files-")
+        try {
+            dir.resolve("viewer-files.js").writeText(NodeHarness.readResource("share-viewer/viewer-files.js"))
+            val harness = dir.resolve("files-harness.cjs")
+            harness.writeText(NodeHarness.readResource("share-viewer-harness/files-harness.cjs"))
+            NodeHarness.run(harness, dir.toString())
+        } finally {
+            dir.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun `node harness drives the shipped web viewer`() {
         NodeHarness.requireOrSkipNode()
         val dir = Files.createTempDirectory("bossterm-share-viewer-")

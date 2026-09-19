@@ -10,7 +10,11 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.drawscope.clipRect
@@ -29,9 +33,21 @@ internal fun terminalPreviewRows(lines: List<String>): IntRange {
 /** A read-only screen snapshot: no PTY, input handlers, cursor timer or resize side effects. */
 @Composable
 internal fun TerminalTabPreview(session: TerminalSession, settings: TerminalSettings) {
-    val snapshot = remember(session) { session.textBuffer.createIncrementalSnapshot() }
+    var frame by remember(session) {
+        mutableStateOf(session.textBuffer.createIncrementalSnapshot() to session.terminal.getImageDataCache().snapshotImages())
+    }
+    // This composition exists only while the tooltip is visible. Throttle to five
+    // frames per second and read off the UI thread; closing hover cancels the loop.
+    LaunchedEffect(session) {
+        while (isActive) {
+            delay(200)
+            frame = withContext(Dispatchers.Default) {
+                session.textBuffer.createIncrementalSnapshot() to session.terminal.getImageDataCache().snapshotImages()
+            }
+        }
+    }
+    val (snapshot, images) = frame
     val rowRange = remember(snapshot) { terminalPreviewRows(snapshot.screenLines.map { it.line.text }) }
-    val images = remember(session) { session.terminal.getImageDataCache().snapshotImages() }
     val font = remember(settings.fontName) { loadTerminalFont(settings.fontName) }
     val measurer = rememberTextMeasurer()
     val previewFontSize = 12f

@@ -188,18 +188,6 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
   `windowGlassTint` controls the Compose theme overlay; `windowGlassStyle` chooses the public
   regular/clear native styles. Material sizing follows logical AWT points with no Auto Layout
   constraints on AWT's content view (constraints can fight fullscreen sizing).
-- `compose-ui/.../window/NativeSplitWindowLayout.kt` — macOS 26+ native sidebar material
-  and full-height toolbar integration through `NSSplitViewController`. The root controller
-  keeps the existing AWT input view; its native split background sits beneath that view.
-  Compose draws interactive tab content over the native sidebar and leaves that column
-  transparent. Native insets are measured, not hard-coded. Keep the window-wide glass below
-  the split background, including after fullscreen recreation. Do not move the AWT view into
-  a split item or constrain it. Close the controller with its window. Older macOS versions
-  and embedded hosts keep the Compose sidebar fallback.
-  In fullscreen, the native detail scroll view draws the terminal background once;
-  `NSBackgroundExtensionView` extends that surface beneath the native toolbar. Compose
-  skips its detail fill in that state. Keep the sidebar outside this detail background,
-  and keep native detail drawing off in normal windows so their existing glass is preserved.
 - `compose-ui/.../window/WindowPlacementController.kt` — captures normal size/position before
   fullscreen/maximize. Custom-title-bar macOS uses MacOSFullscreen to enter a real fullscreen
   Space through the JDK macOS API, with java.desktop/com.apple.eawt exported by the launcher.

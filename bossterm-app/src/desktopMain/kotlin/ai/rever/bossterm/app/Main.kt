@@ -16,7 +16,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.*
@@ -351,9 +350,6 @@ fun main(args: Array<String>) {
                     var sidebarResizePreview by remember { mutableStateOf<Float?>(null) }
                     val contentDensity = androidx.compose.ui.platform.LocalDensity.current
                     var contentWidth by remember { mutableStateOf(windowState.size.width) }
-                    var contentHeight by remember { mutableStateOf(windowState.size.height) }
-                    var nativeSidebarGeometry by remember { mutableStateOf<ai.rever.bossterm.compose.window.NativeSidebarGeometry?>(null) }
-                    var nativeSplitLayout by remember { mutableStateOf<ai.rever.bossterm.compose.window.NativeSplitWindowLayout?>(null) }
                     var updateBannerHeightPx by remember { mutableStateOf(0) }
                     var nativeHeaderHeight by remember { mutableStateOf(38.dp) }
                     var glassRefreshRevision by remember { mutableStateOf(0) }
@@ -887,26 +883,6 @@ fun main(args: Array<String>) {
                         ai.rever.bossterm.compose.tabs.constrainedSidebarWidth(
                             sidebarResizePreview ?: windowSettings.tabBarVerticalWidth, contentWidth.value,
                             dragging = sidebarResizePreview != null).dp else 0.dp
-                    DisposableEffect(nativeWindowFrameReady) {
-                        val controller = if (nativeWindowFrameReady) ai.rever.bossterm.compose.window.NativeSplitWindowLayout(
-                            this@Window.window.windowHandle, onGeometry = { nativeSidebarGeometry = it }
-                        ) else null
-                        nativeSplitLayout = controller
-                        onDispose { controller?.close() }
-                    }
-                    val fullscreenDetailBackground = placementController.placement == WindowPlacement.Fullscreen
-                    val unifiedBackgroundOpacity = if (!nativeGlassInstalled) windowSettings.surfaceOpacity(false)
-                        else if (glassMode.includesTerminal)
-                            1f - (1f - windowSettings.windowGlassOpacity.coerceIn(0f, 1f)) *
-                                (1f - windowSettings.windowGlassTint.coerceIn(0f, 1f))
-                        else 1f
-                    SideEffect {
-                        nativeSplitLayout?.update(contentWidth.value.toInt(), contentHeight.value.toInt(), expandedSidebarWidth.value,
-                            windowSettings.defaultBackgroundColor.copy(alpha = if (fullscreenDetailBackground) unifiedBackgroundOpacity else 1f),
-                            if (nativeGlassInstalled && glassMode.includesSidebar)
-                                windowSettings.defaultBackgroundColor.copy(alpha = windowSettings.windowGlassTint.coerceIn(0f, 1f)) else null,
-                            fullscreen = fullscreenDetailBackground)
-                    }
                     val topInset = if (nativeWindowFrameReady && !useNativeTitleBar) 0.dp
                         else titleBarInset(styleApplied, placementController.placement)
 
@@ -930,51 +906,30 @@ fun main(args: Array<String>) {
                             .fillMaxSize()
                             // Native fullscreen preserves the floating WindowState geometry.
                             // Match the sidebar and toolbar to the actual content bounds.
-                            .onSizeChanged {
-                                with(contentDensity) {
-                                    contentWidth = it.width.toDp()
-                                    contentHeight = it.height.toDp()
-                                }
-                            }
+                            .onSizeChanged { contentWidth = with(contentDensity) { it.width.toDp() } }
                             .clip(RoundedCornerShape(cornerRadius))
                             .drawBehind {
-                                if (nativeGlassInstalled || nativeSidebarGeometry != null) {
-                                    val background = windowSettings.defaultBackgroundColor.copy(alpha = unifiedBackgroundOpacity)
-                                    // AppKit paints the fullscreen detail surface and extends it
-                                    // beneath its toolbar. Keep only the sidebar surround here.
-                                    val nativeDetail = fullscreenDetailBackground && nativeSidebarGeometry != null
-                                    val detailStart = if (nativeDetail) expandedSidebarWidth.toPx() else size.width
-                                    clipRect(right = detailStart) {
-                                        if (expandedSidebarWidth > 0.dp && nativeSidebarGeometry != null) {
-                                            // Only the rounded native panel is a separate surface. The
-                                            // inset around it belongs to the same background as the terminal
-                                            // and toolbar; clearing the whole column exposes untinted glass.
-                                            val geometry = nativeSidebarGeometry!!
-                                            val inset = geometry.leadingInset.dp.toPx()
-                                            val bottomInset = geometry.bottomInset.dp.toPx()
-                                            val sidebar = androidx.compose.ui.graphics.Path().apply {
-                                                addRoundRect(androidx.compose.ui.geometry.RoundRect(
-                                                    inset, inset, expandedSidebarWidth.toPx(),
-                                                    (size.height - bottomInset).coerceAtLeast(inset),
-                                                    androidx.compose.ui.geometry.CornerRadius(22.dp.toPx())))
-                                            }
-                                            clipPath(sidebar, androidx.compose.ui.graphics.ClipOp.Difference) { drawRect(background) }
-                                        } else if (expandedSidebarWidth > 0.dp && glassMode.includesSidebar) {
-                                            val sidebar = androidx.compose.ui.graphics.Path().apply {
-                                                addRoundRect(androidx.compose.ui.geometry.RoundRect(
-                                                    4.dp.toPx(), 4.dp.toPx(), expandedSidebarWidth.toPx(),
-                                                    (size.height - 4.dp.toPx()).coerceAtLeast(4.dp.toPx()),
-                                                    androidx.compose.ui.geometry.CornerRadius(22.dp.toPx())))
-                                            }
-                                            // The sidebar paints its own tint once; do not stack the
-                                            // terminal's tint beneath this separate glass surface.
-                                            clipPath(sidebar, androidx.compose.ui.graphics.ClipOp.Difference) { drawRect(background) }
-                                        } else drawRect(background)
-                                    }
+                                if (nativeGlassInstalled) {
+                                    val opacity = if (glassMode.includesTerminal)
+                                        1f - (1f - windowSettings.windowGlassOpacity.coerceIn(0f, 1f)) *
+                                            (1f - windowSettings.windowGlassTint.coerceIn(0f, 1f))
+                                        else 1f
+                                    val background = windowSettings.defaultBackgroundColor.copy(alpha = opacity)
+                                    if (expandedSidebarWidth > 0.dp && glassMode.includesSidebar) {
+                                        val sidebar = androidx.compose.ui.graphics.Path().apply {
+                                            addRoundRect(androidx.compose.ui.geometry.RoundRect(
+                                                4.dp.toPx(), 4.dp.toPx(), expandedSidebarWidth.toPx(),
+                                                (size.height - 4.dp.toPx()).coerceAtLeast(4.dp.toPx()),
+                                                androidx.compose.ui.geometry.CornerRadius(22.dp.toPx())))
+                                        }
+                                        // The sidebar paints its own tint once; do not stack the
+                                        // terminal's tint beneath this separate glass surface.
+                                        clipPath(sidebar, androidx.compose.ui.graphics.ClipOp.Difference) { drawRect(background) }
+                                    } else drawRect(background)
                                 }
                             },
                         color = windowSettings.defaultBackgroundColor.copy(
-                            alpha = if (nativeGlassInstalled || nativeSidebarGeometry != null) 0f else if (useNativeTitleBar) 1f else windowSettings.surfaceOpacity(false)
+                            alpha = if (nativeGlassInstalled) 0f else if (useNativeTitleBar) 1f else windowSettings.surfaceOpacity(false)
                         ),
                         shape = RoundedCornerShape(cornerRadius)
                     ) {
@@ -1029,7 +984,6 @@ fun main(args: Array<String>) {
                                 // Expose native availability only to this window's terminal chrome.
                                 CompositionLocalProvider(
                                     ai.rever.bossterm.compose.window.LocalNativeWindowFrame provides nativeWindowFrameReady,
-                                    ai.rever.bossterm.compose.window.LocalNativeSidebarGeometry provides nativeSidebarGeometry,
                                     LocalNativeWindowGlass provides nativeGlassInstalled,
                                     LocalWindowGlassTint provides windowSettings.windowGlassTint,
                                     LocalAuxiliaryGlassOpacity provides if (nativeGlassInstalled) windowSettings.windowGlassOpacity.coerceIn(0f, 1f) else 1f,

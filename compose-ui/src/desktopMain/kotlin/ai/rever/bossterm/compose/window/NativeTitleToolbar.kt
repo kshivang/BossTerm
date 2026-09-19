@@ -67,9 +67,6 @@ internal class NativeToolbarController(private val handle: Long) : AutoCloseable
         if (!closed && NativeGlass.isLiveWindow(handle)) {
             // Toolbar hosting can change again when the fullscreen controls reveal.
             NativeGlass.preserveUnifiedToolbarSurface(Pointer(handle))
-            // The split controller can install after the toolbar's first composition.
-            if (toolbar != null && NativeSplitWindowLayout.splitViews.containsKey(handle) &&
-                "sidebar_boundary" in displayed) update()
             NativeGlass.headerHeight(Pointer(handle))?.let { height ->
                 SwingUtilities.invokeLater { if (!closed) onMeasured(height) }
             }
@@ -112,8 +109,7 @@ internal class NativeToolbarController(private val handle: Long) : AutoCloseable
         }
         val ids = buildList {
             if (actions.containsKey("sidebar")) add("sidebar")
-            if (actions.containsKey("sidebar")) add(
-                if (NativeSplitWindowLayout.splitViews.containsKey(handle)) "native_sidebar_boundary" else "sidebar_boundary")
+            if (sidebarWidth > 0 && actions.containsKey("sidebar")) add("sidebar_boundary")
             add("NSToolbarFlexibleSpaceItem")
             val groups = listOf(listOf("new"), listOf("split_vertical", "split_horizontal"),
                 listOf("sharing"), listOf("call"), listOf("mcp"), listOf("more"))
@@ -151,7 +147,7 @@ internal class NativeToolbarController(private val handle: Long) : AutoCloseable
         NativeGlass.sendVoid(item, "setImage:", image)
         NativeGlass.sendVoid(item, "setEnabled:", 1.toByte())
         NativeGlass.sendVoid(item, "setBordered:", 1.toByte())
-        NativeGlass.sendVoid(item, "setNavigational:", if (action.id == "sidebar" && !NativeSplitWindowLayout.splitViews.containsKey(handle)) 1.toByte() else 0.toByte())
+        NativeGlass.sendVoid(item, "setNavigational:", if (action.id == "sidebar") 1.toByte() else 0.toByte())
         NativeGlass.sendVoid(item, "setVisibilityPriority:", if (action.id in setOf("sidebar", "new", "more")) 1000L else 0L)
         NativeGlass.sendVoid(item, "setTarget:", delegate)
         NativeGlass.sendVoid(item, "setAction:", selector("activate:"))
@@ -169,17 +165,6 @@ internal class NativeToolbarController(private val handle: Long) : AutoCloseable
     }
     private fun makeItem(identifier: Pointer?): Pointer? {
         val id = NativeGlass.sendPointer(identifier, "UTF8String")?.getString(0) ?: return null
-        if (id == "native_sidebar_boundary") {
-            return items.getOrPut(id) {
-                // A real tracking separator assigns the preceding sidebar button to
-                // the sidebar column. A blank spacer leaves it in the detail toolbar.
-                NativeGlass.sendPointer(NativeGlass.getClass("NSTrackingSeparatorToolbarItem"),
-                    "trackingSeparatorToolbarItemWithIdentifier:splitView:dividerIndex:", identifier,
-                    NativeSplitWindowLayout.splitViews[handle], 0L)!!.also {
-                    NativeGlass.sendVoid(it, "retain")
-                }
-            }
-        }
         if (id == "sidebar_boundary") {
             return items.getOrPut(id) {
                 val item = NativeGlass.sendPointer(NativeGlass.sendPointer(NativeGlass.getClass("NSToolbarItem"), "alloc"), "initWithItemIdentifier:", identifier)!!
@@ -203,6 +188,7 @@ internal class NativeToolbarController(private val handle: Long) : AutoCloseable
         closed = true
         NativeGlass.dispatch {
             nativeWindows.remove(handle)
+            NativeGlass.restoreFullscreenToolbarBackdrop(Pointer(handle))
             if (NativeGlass.isLiveWindow(handle) && NativeGlass.sendPointer(Pointer(handle), "toolbar") == toolbar)
                 NativeGlass.sendVoid(Pointer(handle), "setToolbar:", null)
             NativeGlass.sendVoid(toolbar, "setDelegate:", null)
@@ -239,7 +225,6 @@ internal class NativeToolbarController(private val handle: Long) : AutoCloseable
                 NativeGlass.sendVoid(array, "addObject:", ns("NSToolbarFlexibleSpaceItem"))
                 NativeGlass.sendVoid(array, "addObject:", ns("NSToolbarSpaceItem"))
                 NativeGlass.sendVoid(array, "addObject:", ns("sidebar_boundary"))
-                NativeGlass.sendVoid(array, "addObject:", ns("native_sidebar_boundary"))
                 return array
             }
         }

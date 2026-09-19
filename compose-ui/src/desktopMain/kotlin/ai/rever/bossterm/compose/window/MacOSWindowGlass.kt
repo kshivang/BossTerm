@@ -217,9 +217,6 @@ internal object NativeGlass {
     fun sendPointer(receiver: Pointer?, selector: String, vararg arguments: Any?): Pointer? =
         message.invokePointer(args(receiver, selector, arguments))
 
-    fun isKindOf(receiver: Pointer, type: Pointer?): Boolean = type != null &&
-        message.invokeInt(args(receiver, "isKindOfClass:", arrayOf(type))) != 0
-
     fun sendVoid(receiver: Pointer?, selector: String, vararg arguments: Any?) {
         message.invokeVoid(args(receiver, selector, arguments))
     }
@@ -236,21 +233,53 @@ internal object NativeGlass {
         }
     }
 
-    /** Let the native split items own the titlebar/toolbar background regions. */
+    // AppKit queue only. Retain modified views until exit/disposal so restoration cannot
+    // dereference a view released when AppKit replaces its fullscreen host.
+    private val fullscreenToolbarBackdrops = mutableMapOf<Pointer, MutableList<Pointer>>()
+
+    fun restoreFullscreenToolbarBackdrop(window: Pointer) {
+        fullscreenToolbarBackdrops.remove(window)?.forEach { view ->
+            sendVoid(view, "setHidden:", 0.toByte())
+            sendVoid(view, "release")
+        }
+    }
+
+    /** AppKit may host the fullscreen toolbar in a separate window above our content. */
     fun preserveUnifiedToolbarSurface(window: Pointer) {
         sendVoid(window, "setTitlebarAppearsTransparent:", 1.toByte())
         sendPointer(window, "toolbar")?.let { sendVoid(it, "setShowsBaselineSeparator:", 0.toByte()) }
-        // Fullscreen reparents the native controls into a separate AppKit window.
-        // That host does not inherit titlebar transparency from the application window.
-        // Resolve it through the public button/window relationship, not a private
-        // class name or AppKit's backdrop-layer hierarchy. Repeat after reveal/rehosting.
-        val toolbarHost = sendPointer(sendPointer(window, "standardWindowButton:", 0L), "window")
-        if (toolbarHost != null && toolbarHost != window) {
-            sendVoid(toolbarHost, "setTitlebarAppearsTransparent:", 1.toByte())
-            val appearance = sendPointer(window, "appearance")
-            if (sendPointer(toolbarHost, "appearance") != appearance) {
-                sendVoid(toolbarHost, "setAppearance:", appearance)
+        // Use the public NSView.window relationship rather than private fullscreen classes.
+        val button = sendPointer(window, "standardWindowButton:", 0L) ?: return
+        val toolbarWindow = sendPointer(button, "window") ?: return
+        if (toolbarWindow != window) {
+            sendVoid(toolbarWindow, "setTitlebarAppearsTransparent:", 1.toByte())
+            sendVoid(toolbarWindow, "setOpaque:", 0.toByte())
+            sendVoid(toolbarWindow, "setBackgroundColor:", sendPointer(getClass("NSColor"), "clearColor"))
+            // On macOS 26, titlebarAppearsTransparent hides the ordinary background,
+            // but leaves a full-width backdrop layer on a plain NSView beside the
+            // toolbar. It obscures both our terminal surface and the sidebar's top.
+            // This is an AppKit implementation detail: match only that exact shape,
+            // and leave native toolbar/button glass descendants completely untouched.
+            val backdropClass = getClass("CABackdropLayer") ?: return
+            val plainViewClass = getClass("NSView") ?: return
+            val titlebar = sendPointer(button, "superview") ?: return
+            val siblings = sendPointer(sendPointer(titlebar, "subviews"), "objectEnumerator") ?: return
+            while (true) {
+                val view = sendPointer(siblings, "nextObject") ?: break
+                if (message.invokeInt(args(view, "isMemberOfClass:", arrayOf(plainViewClass))) == 0) continue
+                val layer = sendPointer(view, "layer") ?: continue
+                if (message.invokeInt(args(layer, "isKindOfClass:", arrayOf(backdropClass))) == 0) continue
+                val retained = fullscreenToolbarBackdrops.getOrPut(window) { mutableListOf() }
+                if (view !in retained) {
+                    // Already-hidden views belong to AppKit; do not later reveal them.
+                    if (message.invokeInt(args(view, "isHidden", emptyArray())) != 0) continue
+                    sendVoid(view, "retain")
+                    retained.add(view)
+                }
+                sendVoid(view, "setHidden:", 1.toByte())
             }
+        } else {
+            restoreFullscreenToolbarBackdrop(window)
         }
     }
 
@@ -292,20 +321,19 @@ internal object NativeGlass {
         }
     }
 
-    // KVC boxes NSRect as NSValue; copying its bytes avoids architecture-dependent
-    // objc_msgSend struct-return calling conventions, including on Intel Macs.
-    fun rect(receiver: Pointer, key: String): DoubleArray? {
-        val name = sendPointer(getClass("NSString"), "stringWithUTF8String:", key)
-        val value = sendPointer(receiver, "valueForKey:", name) ?: return null
-        return Memory(32).use { bytes ->
-            sendVoid(value, "getValue:size:", bytes, 32L)
-            DoubleArray(4) { bytes.getDouble(it * 8L) }
-        }
-    }
-
     fun headerHeight(window: Pointer): Double? {
-        val frame = rect(window, "frame") ?: return null
-        val layout = rect(window, "contentLayoutRect") ?: return null
+        // KVC boxes NSRect as NSValue. Copying its bytes avoids objc_msgSend's
+        // architecture-dependent struct-return ABI (notably on Intel Macs).
+        fun rect(key: String): DoubleArray? {
+            val name = sendPointer(getClass("NSString"), "stringWithUTF8String:", key)
+            val value = sendPointer(window, "valueForKey:", name) ?: return null
+            return Memory(32).use { bytes ->
+                sendVoid(value, "getValue:size:", bytes, 32L)
+                DoubleArray(4) { bytes.getDouble(it * 8L) }
+            }
+        }
+        val frame = rect("frame") ?: return null
+        val layout = rect("contentLayoutRect") ?: return null
         return (frame[3] - layout[1] - layout[3]).takeIf { it.isFinite() && it > 0.0 }
     }
 
@@ -324,8 +352,7 @@ internal object NativeGlass {
         // AppKit may replace the theme frame during fullscreen transitions.
         if (sendPointer(view, "superview") != parent) {
             sendVoid(view, "removeFromSuperview")
-            sendVoid(parent, "addSubview:positioned:relativeTo:", view, -1L,
-                NativeSplitWindowLayout.nativeViews[Pointer.nativeValue(window)] ?: content)
+            sendVoid(parent, "addSubview:positioned:relativeTo:", view, -1L, content)
         }
         // Borderless AWT content starts at the parent's origin. AWT dimensions are points,
         // not backing pixels: multiplying by Retina scale makes the material overshoot.
@@ -376,8 +403,7 @@ internal object NativeGlass {
                 sendVoid(effect, "setState:", 0L) // follows window activation and system accessibility
             }
             sendVoid(effect, "setAutoresizingMask:", 18L) // width + height; never constrain AWT
-            sendVoid(parent, "addSubview:positioned:relativeTo:", effect, -1L,
-                NativeSplitWindowLayout.nativeViews[Pointer.nativeValue(window)] ?: content)
+            sendVoid(parent, "addSubview:positioned:relativeTo:", effect, -1L, content)
             org.slf4j.LoggerFactory.getLogger(MacOSWindowGlass::class.java).debug(
                 "Native macOS glass installed: window={}, material={}",
                 Pointer.nativeValue(window),

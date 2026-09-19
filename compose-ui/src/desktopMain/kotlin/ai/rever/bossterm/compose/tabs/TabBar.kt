@@ -760,7 +760,6 @@ fun TabBar(
         else ai.rever.bossterm.compose.settings.theme.BuiltinThemes.LIQUID_GLASS_LIGHT
     } else terminalTheme
     val nativeFrame = ai.rever.bossterm.compose.window.LocalNativeWindowFrame.current
-    val nativeSidebar = ai.rever.bossterm.compose.window.LocalNativeSidebarGeometry.current?.takeIf { !overlaySurface }
     val nativeGlass = LocalNativeWindowGlass.current
     val glassTint = LocalWindowGlassTint.current.coerceIn(0f, 1f)
     val sidebarGlassAllowed = LocalWindowGlassMode.current != WindowGlassMode.TERMINAL
@@ -930,9 +929,7 @@ fun TabBar(
                 else Modifier.fillMaxWidth().height(TabBarHeight)
             )
             .then(
-                if (sidebarPanel && nativeSidebar != null) Modifier.padding(
-                    start = nativeSidebar.leadingInset.dp, top = 4.dp, bottom = nativeSidebar.bottomInset.dp)
-                else if (sidebarPanel) Modifier.padding(start = 4.dp, top = 4.dp, bottom = 4.dp)
+                if (sidebarPanel) Modifier.padding(start = 4.dp, top = 4.dp, bottom = 4.dp)
                     .onGloballyPositioned { panelTop = it.positionInRoot().y }
                     .drawBehind {
                         // Anchor to the Compose root: AppKit can move the content view inside

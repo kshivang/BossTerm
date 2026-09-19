@@ -25,11 +25,12 @@ class NativeSplitWindowLayout(
     private var sidebar: Pointer? = null
     private var sidebarContent: Pointer? = null
     private var detailContent: Pointer? = null
+    private var detailItem: Pointer? = null
     private var chromeInset = 0.0
     private var published: NativeSidebarGeometry? = null
     @Volatile private var closed = false
 
-    fun update(width: Int, height: Int, sidebarWidth: Float, background: Color, sidebarTint: Color?) {
+    fun update(width: Int, height: Int, sidebarWidth: Float, background: Color, sidebarTint: Color?, fullscreen: Boolean = false) {
         NativeGlass.dispatch {
             if (closed || width <= 0 || height <= 0 || !NativeGlass.isLiveWindow(handle)) return@dispatch
             if (NativeGlass.getClass("NSGlassEffectView") == null) return@dispatch
@@ -59,10 +60,13 @@ class NativeSplitWindowLayout(
                 }
             }
             NativeGlass.sendVoid(view, "layoutSubtreeIfNeeded")
-            // Give AppKit the same content background used by the Compose foreground.
-            // Its titlebar/scroll-edge treatment can now derive from the native detail pane.
+            // Fullscreen toolbar hosting samples the rendered native detail surface.
+            // NSBackgroundExtensionView extends it through the toolbar safe area.
+            // Compose omits its matching fill in this state, so opacity is applied once.
+            NativeGlass.sendVoid(detailItem, "setAutomaticallyAdjustsSafeAreaInsets:", if (fullscreen) 0.toByte() else 1.toByte())
             detailContent?.let { detail ->
                 NativeGlass.sendVoid(detail, "setBackgroundColor:", nativeColor(background))
+                NativeGlass.sendVoid(detail, "setDrawsBackground:", if (fullscreen) 1.toByte() else 0.toByte())
             }
             var ancestor = sidebarContent
             val glassClass = NativeGlass.getClass("NSGlassEffectView")
@@ -92,13 +96,15 @@ class NativeSplitWindowLayout(
         val detailController = new("NSViewController")
         val sideView = new("NSView")
         val detailView = new("NSScrollView")
+        val extensionView = new("NSBackgroundExtensionView")
+        NativeGlass.sendVoid(extensionView, "setContentView:", detailView)
         // AppKit reads the background for its scroll-edge/toolbar treatment. Compose
         // paints the terminal surface, so drawing it again here would double its opacity.
         NativeGlass.sendVoid(detailView, "setDrawsBackground:", 0.toByte())
         NativeGlass.sendVoid(detailView, "setHasVerticalScroller:", 0.toByte())
         NativeGlass.sendVoid(detailView, "setHasHorizontalScroller:", 0.toByte())
         NativeGlass.sendVoid(sideController, "setView:", sideView)
-        NativeGlass.sendVoid(detailController, "setView:", detailView)
+        NativeGlass.sendVoid(detailController, "setView:", extensionView)
         val itemClass = NativeGlass.getClass("NSSplitViewItem")
         val sideItem = NativeGlass.sendPointer(itemClass, "sidebarWithViewController:", sideController)!!
         val detailItem = NativeGlass.sendPointer(itemClass, "splitViewItemWithViewController:", detailController)!!
@@ -129,7 +135,8 @@ class NativeSplitWindowLayout(
         sidebar = sideItem
         sidebarContent = sideView
         detailContent = detailView
-        listOf(sideController, detailController, sideView, detailView).forEach { NativeGlass.sendVoid(it, "release") }
+        this.detailItem = detailItem
+        listOf(sideController, detailController, sideView, detailView, extensionView).forEach { NativeGlass.sendVoid(it, "release") }
     }
 
     private fun nativeColor(color: Color): Pointer? = NativeGlass.sendPointer(
@@ -176,6 +183,7 @@ class NativeSplitWindowLayout(
             sidebar = null
             sidebarContent = null
             detailContent = null
+            detailItem = null
         }
     }
 }

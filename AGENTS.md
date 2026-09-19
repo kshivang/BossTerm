@@ -196,6 +196,10 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
   the split background, including after fullscreen recreation. Do not move the AWT view into
   a split item or constrain it. Close the controller with its window. Older macOS versions
   and embedded hosts keep the Compose sidebar fallback.
+  In fullscreen, the native detail scroll view draws the terminal background once;
+  `NSBackgroundExtensionView` extends that surface beneath the native toolbar. Compose
+  skips its detail fill in that state. Keep the sidebar outside this detail background,
+  and keep native detail drawing off in normal windows so their existing glass is preserved.
 - `compose-ui/.../window/WindowPlacementController.kt` — captures normal size/position before
   fullscreen/maximize. Custom-title-bar macOS uses MacOSFullscreen to enter a real fullscreen
   Space through the JDK macOS API, with java.desktop/com.apple.eawt exported by the launcher.

@@ -65,6 +65,8 @@ internal class NativeToolbarController(private val handle: Long) : AutoCloseable
 
     fun measureHeader(onMeasured: (Double) -> Unit) { NativeGlass.dispatch {
         if (!closed && NativeGlass.isLiveWindow(handle)) {
+            // Toolbar hosting can change again when the fullscreen controls reveal.
+            NativeGlass.preserveUnifiedToolbarSurface(Pointer(handle))
             NativeGlass.headerHeight(Pointer(handle))?.let { height ->
                 SwingUtilities.invokeLater { if (!closed) onMeasured(height) }
             }

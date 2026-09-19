@@ -226,9 +226,24 @@ internal object NativeGlass {
         // A real AppKit toolbar owns both its controls and fullscreen layout.
         sendVoid(window, "setStyleMask:", (mask or 1L or 32768L))
         sendPointer(window, "toolbar")?.let { sendVoid(it, "setVisible:", 1.toByte()) }
+        preserveUnifiedToolbarSurface(window)
         enableWindowShadow(window)
         for (buttonType in 0L..2L) {
             sendVoid(sendPointer(window, "standardWindowButton:", buttonType), "setHidden:", 0.toByte())
+        }
+    }
+
+    /** AppKit may host the fullscreen toolbar in a separate window above our content. */
+    fun preserveUnifiedToolbarSurface(window: Pointer) {
+        sendVoid(window, "setTitlebarAppearsTransparent:", 1.toByte())
+        sendPointer(window, "toolbar")?.let { sendVoid(it, "setShowsBaselineSeparator:", 0.toByte()) }
+        // Use the public NSView.window relationship rather than private fullscreen classes.
+        val button = sendPointer(window, "standardWindowButton:", 0L) ?: return
+        val toolbarWindow = sendPointer(button, "window") ?: return
+        if (toolbarWindow != window) {
+            sendVoid(toolbarWindow, "setTitlebarAppearsTransparent:", 1.toByte())
+            sendVoid(toolbarWindow, "setOpaque:", 0.toByte())
+            sendVoid(toolbarWindow, "setBackgroundColor:", sendPointer(getClass("NSColor"), "clearColor"))
         }
     }
 

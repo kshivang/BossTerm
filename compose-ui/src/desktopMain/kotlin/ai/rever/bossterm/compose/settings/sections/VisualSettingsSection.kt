@@ -236,7 +236,8 @@ fun VisualSettingsSection(
                         onRestartApp?.invoke()
                     },
                     colors = ButtonDefaults.buttonColors(
-                        backgroundColor = AccentColor
+                        backgroundColor = AccentColor,
+                        contentColor = ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
                     )
                 ) {
                     Text("Restart", color = TextOnAccent)

@@ -17,8 +17,8 @@ private fun DialogChrome(content: @Composable () -> Unit) {
     val palette = ai.rever.bossterm.compose.settings.theme.BossUiTheme.current
     val colors3 = (if (palette.isDark) androidx.compose.material3.darkColorScheme()
         else androidx.compose.material3.lightColorScheme()).copy(
-        primary = SettingsTheme.AccentColor, onPrimary = SettingsTheme.TextOnAccent,
-        secondary = SettingsTheme.AccentColor, onSecondary = SettingsTheme.TextOnAccent,
+        primary = SettingsTheme.AccentTextColor, onPrimary = SettingsTheme.TextOnAccent,
+        secondary = SettingsTheme.AccentTextColor, onSecondary = SettingsTheme.TextOnAccent,
         surface = SettingsTheme.SurfaceColor.copy(alpha = 1f), onSurface = SettingsTheme.TextPrimary,
         onSurfaceVariant = SettingsTheme.TextSecondary,
         background = SettingsTheme.BackgroundColor.copy(alpha = 1f), onBackground = SettingsTheme.TextPrimary,
@@ -31,8 +31,8 @@ private fun DialogChrome(content: @Composable () -> Unit) {
     )
     val colors2 = (if (palette.isDark) androidx.compose.material.darkColors()
         else androidx.compose.material.lightColors()).copy(
-        primary = SettingsTheme.AccentColor, onPrimary = SettingsTheme.TextOnAccent,
-        secondary = SettingsTheme.AccentColor, onSecondary = SettingsTheme.TextOnAccent,
+        primary = SettingsTheme.AccentTextColor, onPrimary = SettingsTheme.TextOnAccent,
+        secondary = SettingsTheme.AccentTextColor, onSecondary = SettingsTheme.TextOnAccent,
         surface = SettingsTheme.SurfaceColor.copy(alpha = 1f), onSurface = SettingsTheme.TextPrimary,
         background = SettingsTheme.BackgroundColor.copy(alpha = 1f), onBackground = SettingsTheme.TextPrimary,
         error = SettingsTheme.Danger,

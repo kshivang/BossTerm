@@ -64,7 +64,7 @@ private fun FileAccessApprovalContent() {
             }
         },
         confirmButton = {
-            Button(enabled = folder.isNotBlank() && !checking, onClick = {
+            Button(colors = ButtonDefaults.buttonColors(containerColor = SettingsTheme.AccentColor, contentColor = SettingsTheme.TextOnAccent), enabled = folder.isNotBlank() && !checking, onClick = {
                 checking = true
                 val selected = folder
                 scope.launch {

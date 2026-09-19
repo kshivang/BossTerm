@@ -214,7 +214,9 @@ data class TabBarPane(
     /** For a mirrored chip, the remote session it belongs to (shown as "via <host>"). */
     val hostLabel: String? = null,
     /** Session state worth calling out while it is not simply connected ("starting…", an error). */
-    val statusLabel: String? = null
+    val statusLabel: String? = null,
+    /** True when a user rename overrides shell/CLI title updates. */
+    val hasCustomTitle: Boolean = false
 )
 
 /**
@@ -570,7 +572,9 @@ fun TabBar(
         val nextTabIndex = tabReorderNeighbor(tabIndex, localTabOrder, 1)
         val movePreviousLabel = if (vertical) "Move Tab Up" else "Move Tab Left"
         val moveNextLabel = if (vertical) "Move Tab Down" else "Move Tab Right"
-        val items = listOf(
+        val hasCustomTitle = groups.firstOrNull { it.tabIndex == tabIndex }
+            ?.panes?.firstOrNull { it.paneId == paneId }?.hasCustomTitle == true
+        val items = listOfNotNull(
             ContextMenuController.MenuItem(id = "new_tab", label = "New Tab", enabled = true, action = { onNewTab() }),
             ContextMenuController.MenuItem(
                 id = "new_tab_current_path", label = "New Tab at Current Path",
@@ -599,6 +603,10 @@ fun TabBar(
             ),
             ContextMenuController.MenuSeparator(id = "separator_worktree"),
             ContextMenuController.MenuItem(id = "rename_tab", label = "Rename…", enabled = true, action = { editingPaneId = paneId }),
+            if (hasCustomTitle) ContextMenuController.MenuItem(
+                id = "reset_tab_title", label = "Use Automatic Title", enabled = true,
+                action = { onRename(tabIndex, paneId, "") }
+            ) else null,
             colorSubmenu,
             ContextMenuController.MenuSeparator(id = "separator_tab_ops"),
             ContextMenuController.MenuItem(id = "duplicate_tab", label = "Duplicate Tab", enabled = true, action = { onDuplicate(tabIndex) }),

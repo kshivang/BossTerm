@@ -103,7 +103,12 @@ class NativeSplitWindowLayout(
         val sideItem = NativeGlass.sendPointer(itemClass, "sidebarWithViewController:", sideController)!!
         val detailItem = NativeGlass.sendPointer(itemClass, "splitViewItemWithViewController:", detailController)!!
         NativeGlass.sendVoid(sideItem, "setAllowsFullHeightLayout:", 1.toByte())
-        NativeGlass.sendVoid(sideItem, "setCanCollapse:", 1.toByte())
+        // Compose owns collapse, resizing and edge-hover reveal. The native item
+        // supplies material/layout only; its default spring-loaded sidebar otherwise
+        // starts a second fullscreen reveal, including a separate titlebar overlay.
+        NativeGlass.sendVoid(sideItem, "setCanCollapse:", 0.toByte())
+        NativeGlass.sendVoid(sideItem, "setCanCollapseFromWindowResize:", 0.toByte())
+        NativeGlass.sendVoid(sideItem, "setSpringLoaded:", 0.toByte())
         NativeGlass.sendVoid(sideItem, "setPreferredThicknessFraction:", -1.0)
         NativeGlass.sendVoid(detailItem, "setAutomaticallyAdjustsSafeAreaInsets:", 1.toByte())
         NativeGlass.sendVoid(splitController, "setMinimumThicknessForInlineSidebars:", 0.0)

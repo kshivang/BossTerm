@@ -894,13 +894,11 @@ fun main(args: Array<String>) {
                         nativeSplitLayout = controller
                         onDispose { controller?.close() }
                     }
-                    val sidebarTint = ai.rever.bossterm.compose.tabs.rememberSidebarPanelColor(
-                        windowSettings.defaultBackgroundColor,
-                        tintedGlass = nativeGlassInstalled && glassMode.includesSidebar,
-                        tint = windowSettings.windowGlassTint)
                     SideEffect {
                         nativeSplitLayout?.update(contentWidth.value.toInt(), contentHeight.value.toInt(), expandedSidebarWidth.value,
-                            windowSettings.defaultBackgroundColor, sidebarTint)
+                            windowSettings.defaultBackgroundColor,
+                            if (nativeGlassInstalled && glassMode.includesSidebar)
+                                windowSettings.defaultBackgroundColor.copy(alpha = windowSettings.windowGlassTint.coerceIn(0f, 1f)) else null)
                     }
                     val topInset = if (nativeWindowFrameReady && !useNativeTitleBar) 0.dp
                         else titleBarInset(styleApplied, placementController.placement)

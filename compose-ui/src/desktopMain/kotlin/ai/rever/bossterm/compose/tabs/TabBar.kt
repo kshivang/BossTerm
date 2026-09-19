@@ -914,12 +914,14 @@ fun TabBar(
     val opaqueTerminal = LocalWindowGlassMode.current == WindowGlassMode.OFF
     // An opaque terminal cannot show a desktop backdrop. Give its pinned sidebar
     // the same contrasting wash as pane groups, slightly stronger for the full panel.
-    val panelColor = sidebarPanelColor(
-        terminalTheme.backgroundColorValue,
-        tintedGlass = (!(opaqueTerminal || !sidebarGlassAllowed) || overlaySurface),
-        tint = if (sidebarGlassAllowed) glassTint else 1f,
-        reduceTransparency = overlayPreferences.reduceTransparency,
-        increaseContrast = overlayPreferences.increaseContrast
+    val panelColor = if ((opaqueTerminal || !sidebarGlassAllowed) && !overlaySurface) {
+        lerp(terminalTheme.backgroundColorValue, barFg,
+            if (overlayPreferences.increaseContrast) {
+                if (terminalTheme.backgroundColorValue.luminance() < 0.5f) 0.16f else 0.12f
+            } else if (terminalTheme.backgroundColorValue.luminance() < 0.5f) 0.10f
+            else 0.06f).copy(alpha = 1f)
+    } else tabBarTheme.backgroundColorValue.copy(
+        alpha = if (sidebarGlassAllowed && !overlayPreferences.reduceTransparency && !overlayPreferences.increaseContrast) glassTint else 1f
     )
     Surface(
         modifier = modifier

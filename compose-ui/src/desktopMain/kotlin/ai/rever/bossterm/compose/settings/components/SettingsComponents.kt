@@ -32,6 +32,27 @@ import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextSecondary
 
+/** Popups have their own surface; tinting the outside modifier does not theme that surface. */
+@Composable
+private fun SettingsDropdownPopup(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val popupSurface = ai.rever.bossterm.compose.settings.SettingsTheme.SurfaceColor.copy(alpha = 1f)
+    MaterialTheme(colors = MaterialTheme.colors.copy(surface = popupSurface, onSurface = TextPrimary)) {
+        CompositionLocalProvider(LocalElevationOverlay provides null) {
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = onDismissRequest,
+                modifier = modifier,
+                content = content
+            )
+        }
+    }
+}
+
 /**
  * A section container with a title header.
  */
@@ -462,10 +483,10 @@ fun SettingsDropdown(
                         modifier = Modifier.size(18.dp)
                     )
                 }
-                DropdownMenu(
+                SettingsDropdownPopup(
                     expanded = expanded,
                     onDismissRequest = { expanded = false },
-                    modifier = Modifier.background(SurfaceColor)
+                    modifier = Modifier
                 ) {
                     options.forEach { option ->
                         DropdownMenuItem(
@@ -476,7 +497,7 @@ fun SettingsDropdown(
                         ) {
                             Text(
                                 text = option,
-                                color = if (option == selectedOption) AccentColor else TextPrimary,
+                                color = if (option == selectedOption) AccentTextColor else TextPrimary,
                                 fontSize = 13.sp
                             )
                         }
@@ -553,12 +574,10 @@ fun SettingsSectionedDropdown(
                         modifier = Modifier.size(18.dp)
                     )
                 }
-                DropdownMenu(
+                SettingsDropdownPopup(
                     expanded = expanded,
                     onDismissRequest = { expanded = false },
-                    modifier = Modifier
-                        .background(SurfaceColor)
-                        .heightIn(max = 400.dp)
+                    modifier = Modifier.heightIn(max = 400.dp)
                 ) {
                     sections.forEach { (sectionName, options) ->
                         // Section header (non-selectable)
@@ -584,7 +603,7 @@ fun SettingsSectionedDropdown(
                             ) {
                                 Text(
                                     text = option,
-                                    color = if (option == selectedOption) AccentColor else TextPrimary,
+                                    color = if (option == selectedOption) AccentTextColor else TextPrimary,
                                     fontSize = 13.sp
                                 )
                             }

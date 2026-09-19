@@ -13,6 +13,10 @@ import androidx.compose.material.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.*
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.window.MenuBar
@@ -129,7 +133,9 @@ fun main(args: Array<String>) {
     // tools they want to expose. See BossTermMcpConfig kdoc for the contract.
     val mcpConfig = BossTermMcpConfig(
         serverName = "bossterm",
-        serverVersion = "1.0"
+        serverVersion = "1.0",
+        defaultEnabled = true,
+        autoDiscoverInstalledClis = true
     )
     // MCP server. Normally in-process; when the daemon is enabled the daemon owns it instead. But if
     // the daemon is enabled yet fails to come up, we fall back to hosting MCP in-process so the feature
@@ -207,6 +213,7 @@ fun main(args: Array<String>) {
     })
 
     application {
+        ai.rever.bossterm.compose.window.FollowSystemTheme()
         // Expose the embedder's MCP config to the in-app settings UI so it
         // can adapt its labels and visibility. bossterm-app provides the
         // default; other host applications would provide their own.
@@ -340,6 +347,11 @@ fun main(args: Array<String>) {
                     }
 
                     var nativeWindowFrameReady by remember { mutableStateOf(false) }
+                    var sidebarResizePreview by remember { mutableStateOf<Float?>(null) }
+                    val contentDensity = androidx.compose.ui.platform.LocalDensity.current
+                    var contentWidth by remember { mutableStateOf(windowState.size.width) }
+                    var updateBannerHeightPx by remember { mutableStateOf(0) }
+                    var nativeHeaderHeight by remember { mutableStateOf(38.dp) }
                     var glassRefreshRevision by remember { mutableStateOf(0) }
                     var appliedGlassRefreshRevision by remember { mutableStateOf(0) }
                     var macFullscreen by remember { mutableStateOf<MacOSFullscreen?>(null) }
@@ -357,12 +369,23 @@ fun main(args: Array<String>) {
                             { macFullscreen?.toggle() ?: false }
                         } else null)
                     }
+                    val normalResizerThickness = remember { this@Window.window.undecoratedResizerThickness }
+                    SideEffect {
+                        // Native fullscreen does not update Compose's placement. Remove its
+                        // extra edge hit regions without changing AppKit's resizable style,
+                        // which would rebuild the frame and detach the fullscreen toolbar.
+                        this@Window.window.undecoratedResizerThickness =
+                            if (placementController.allowsWindowResize) normalResizerThickness else 0.dp
+                        if (!placementController.allowsWindowResize)
+                            this@Window.window.cursor = java.awt.Cursor.getDefaultCursor()
+                    }
                     LaunchedEffect(Unit) {
                         if (!useNativeTitleBar && isMacOS) {
                             while (!this@Window.window.isDisplayable || this@Window.window.windowHandle == 0L) {
                                 kotlinx.coroutines.delay(50)
                             }
-                            MacOSWindowGlass.configureNativeFrame(this@Window.window.windowHandle) {
+                            MacOSWindowGlass.configureNativeFrame(this@Window.window.windowHandle,
+                                onHeaderHeight = { nativeHeaderHeight = it.toFloat().dp }) {
                                 nativeWindowFrameReady = it
                             }
                         }
@@ -371,6 +394,10 @@ fun main(args: Array<String>) {
                         val controller = if (!useNativeTitleBar && isMacOS) {
                             MacOSFullscreen.create(this@Window.window) { phase ->
                                 placementController.nativeFullscreenChanged(phase)
+                                if (phase != NativeFullscreenPhase.EXITING) {
+                                    MacOSWindowGlass.setNativeFrameFullscreen(this@Window.window.windowHandle,
+                                        fullscreen = phase != NativeFullscreenPhase.EXITED)
+                                }
                                 if (phase == NativeFullscreenPhase.ENTERED || phase == NativeFullscreenPhase.EXITED) {
                                     glassRefreshRevision++
                                 }
@@ -399,7 +426,7 @@ fun main(args: Array<String>) {
                             width = this@Window.window.width,
                             height = this@Window.window.height,
                             style = windowSettings.windowGlassStyle,
-                            dark = windowSettings.activeThemeId != "liquid-glass-light",
+                            dark = windowSettings.defaultBackgroundColor.luminance() < 0.5f,
                             // AppKit can change the backdrop host when moving between Spaces.
                             // Only a completed native fullscreen transition requires recreation.
                             // Maximize, frame setup, and theme/style changes update the existing view.
@@ -418,7 +445,7 @@ fun main(args: Array<String>) {
                                     width = this@Window.window.width,
                                     height = this@Window.window.height,
                                     style = windowSettings.windowGlassStyle,
-                                    dark = windowSettings.activeThemeId != "liquid-glass-light"
+                                    dark = windowSettings.defaultBackgroundColor.luminance() < 0.5f
                                 )
                             }
                         }
@@ -848,7 +875,16 @@ fun main(args: Array<String>) {
                     // One value for every site that has to stay clear of the title bar. See
                     // titleBarInset for why it is Fullscreen-only, why Maximized still insets, and
                     // why placement is trusted for this.
-                    val topInset = titleBarInset(styleApplied, placementController.placement)
+                    // The native toolbar already lays content out below its title bar.
+                    val expandedSidebarWidth = if (windowSettings.tabBarPosition == "left" &&
+                        !windowSettings.tabBarCollapsed &&
+                        (windowSettings.alwaysShowTabBar || tabbedState.tabs.size > 1) &&
+                        contentWidth >= ai.rever.bossterm.compose.tabs.TabBarAutoCollapseWidth)
+                        ai.rever.bossterm.compose.tabs.constrainedSidebarWidth(
+                            sidebarResizePreview ?: windowSettings.tabBarVerticalWidth, contentWidth.value,
+                            dragging = sidebarResizePreview != null).dp else 0.dp
+                    val topInset = if (nativeWindowFrameReady && !useNativeTitleBar) 0.dp
+                        else titleBarInset(styleApplied, placementController.placement)
 
                     // Load background image if set
                     val backgroundImage = remember(windowSettings.backgroundImagePath) {
@@ -868,9 +904,32 @@ fun main(args: Array<String>) {
                     Surface(
                         modifier = Modifier
                             .fillMaxSize()
-                            .clip(RoundedCornerShape(cornerRadius)),
+                            // Native fullscreen preserves the floating WindowState geometry.
+                            // Match the sidebar and toolbar to the actual content bounds.
+                            .onSizeChanged { contentWidth = with(contentDensity) { it.width.toDp() } }
+                            .clip(RoundedCornerShape(cornerRadius))
+                            .drawBehind {
+                                if (nativeGlassInstalled) {
+                                    val opacity = if (glassMode.includesTerminal)
+                                        1f - (1f - windowSettings.windowGlassOpacity.coerceIn(0f, 1f)) *
+                                            (1f - windowSettings.windowGlassTint.coerceIn(0f, 1f))
+                                        else 1f
+                                    val background = windowSettings.defaultBackgroundColor.copy(alpha = opacity)
+                                    if (expandedSidebarWidth > 0.dp && glassMode.includesSidebar) {
+                                        val sidebar = androidx.compose.ui.graphics.Path().apply {
+                                            addRoundRect(androidx.compose.ui.geometry.RoundRect(
+                                                4.dp.toPx(), 4.dp.toPx(), expandedSidebarWidth.toPx(),
+                                                (size.height - 4.dp.toPx()).coerceAtLeast(4.dp.toPx()),
+                                                androidx.compose.ui.geometry.CornerRadius(22.dp.toPx())))
+                                        }
+                                        // The sidebar paints its own tint once; do not stack the
+                                        // terminal's tint beneath this separate glass surface.
+                                        clipPath(sidebar, androidx.compose.ui.graphics.ClipOp.Difference) { drawRect(background) }
+                                    } else drawRect(background)
+                                }
+                            },
                         color = windowSettings.defaultBackgroundColor.copy(
-                            alpha = if (nativeGlassInstalled) 0f else if (useNativeTitleBar) 1f else windowSettings.surfaceOpacity(nativeGlassInstalled)
+                            alpha = if (nativeGlassInstalled) 0f else if (useNativeTitleBar) 1f else windowSettings.surfaceOpacity(false)
                         ),
                         shape = RoundedCornerShape(cornerRadius)
                     ) {
@@ -924,17 +983,21 @@ fun main(args: Array<String>) {
 
                                 // Expose native availability only to this window's terminal chrome.
                                 CompositionLocalProvider(
+                                    ai.rever.bossterm.compose.window.LocalNativeWindowFrame provides nativeWindowFrameReady,
                                     LocalNativeWindowGlass provides nativeGlassInstalled,
                                     LocalWindowGlassTint provides windowSettings.windowGlassTint,
                                     LocalAuxiliaryGlassOpacity provides if (nativeGlassInstalled) windowSettings.windowGlassOpacity.coerceIn(0f, 1f) else 1f,
                                     LocalAuxiliaryGlassTint provides if (nativeGlassInstalled) windowSettings.windowGlassTint.coerceIn(0f, 1f) else 1f,
-                                    LocalWindowChromeOpacity provides if (nativeGlassInstalled) windowSettings.windowGlassTint.coerceIn(0f, 1f)
+                                    LocalWindowChromeOpacity provides if (nativeGlassInstalled) 0f
                                         else if (useNativeTitleBar) 1f else windowSettings.surfaceOpacity(nativeGlassInstalled).coerceIn(0f, 1f),
                                     LocalWindowGlassMode provides if (nativeGlassInstalled) glassMode else WindowGlassMode.OFF
                                 ) {
                                     TabbedTerminal(
+                                        sidebarToggleInHeader = !useNativeTitleBar,
                                         statusControlsInHeader = !useNativeTitleBar,
-                                        headerContent = { statusControls ->
+                                        sidebarHeaderOverlapPx = updateBannerHeightPx,
+                                        onSidebarResizePreview = { sidebarResizePreview = it },
+                                        headerContent = { statusControls, toolbarControls ->
                                             // Custom title bar (only when not using native title bar)
                                             if (!useNativeTitleBar) {
                                                 CustomTitleBar(
@@ -956,12 +1019,20 @@ fun main(args: Array<String>) {
                                                     glassEnabled = nativeGlassInstalled,
                                                     isFullscreen = placementController.placement == WindowPlacement.Fullscreen,
                                                     nativeTrafficLights = nativeWindowFrameReady,
+                                                    nativeWindowHandle = if (nativeWindowFrameReady) this@Window.window.windowHandle else 0L,
+                                                    sidebarPanelWidth = expandedSidebarWidth.value.toDouble(),
+                                                    onToggleSidebar = if (windowSettings.tabBarPosition == "left" &&
+                                                        (windowSettings.alwaysShowTabBar || tabbedState.tabs.size > 1)) tabbedState::toggleSidebar else null,
+                                                    headerHeight = if (nativeWindowFrameReady && placementController.placement != WindowPlacement.Fullscreen) nativeHeaderHeight else 32.dp,
                                                     globalHotkeyHint = globalHotkeyHint,
-                                                    actions = statusControls
+                                                    actions = statusControls,
+                                                    leadingActions = toolbarControls
                                                 )
                                             }
 
                                             // Update banner (shows when update is available)
+                                            Box(Modifier.padding(start = expandedSidebarWidth)
+                                                .onSizeChanged { updateBannerHeightPx = it.height }) {
                                             UpdateBanner(
                                                 updateState = updateState,
                                                 onCheckForUpdates = {
@@ -983,6 +1054,7 @@ fun main(args: Array<String>) {
                                                     updateManager.resetState()
                                                 }
                                             )
+                                            }
 
                                         },
                                         state = tabbedState,

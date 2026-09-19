@@ -857,6 +857,7 @@ fun createTerminalContextMenuItems(
     onFind: () -> Unit,
     onOpenFolder: (() -> Unit)? = null,
     onNewTab: (() -> Unit)? = null,
+    onNewTabAtCurrentPath: (() -> Unit)? = null,
     onSwitchShell: ((String) -> Unit)? = null,  // Windows: switch current tab's shell
     onSplitVertical: (() -> Unit)? = null,
     onSplitHorizontal: (() -> Unit)? = null,
@@ -1011,6 +1012,15 @@ fun createTerminalContextMenuItems(
         )
     }
 
+    if (onNewTabAtCurrentPath != null) {
+        tabItems.add(ContextMenuController.MenuItem(
+            id = "new_tab_current_path",
+            label = "New Tab at Current Path",
+            enabled = true,
+            action = onNewTabAtCurrentPath
+        ))
+    }
+
     // Add extra options section
     val extraItems = mutableListOf<ContextMenuController.MenuItem>()
 
@@ -1116,6 +1126,7 @@ fun showTerminalContextMenu(
     onFind: () -> Unit,
     onOpenFolder: (() -> Unit)? = null,
     onNewTab: (() -> Unit)? = null,
+    onNewTabAtCurrentPath: (() -> Unit)? = null,
     onSwitchShell: ((String) -> Unit)? = null,
     onSplitVertical: (() -> Unit)? = null,
     onSplitHorizontal: (() -> Unit)? = null,
@@ -1137,6 +1148,7 @@ fun showTerminalContextMenu(
         onFind = onFind,
         onOpenFolder = onOpenFolder,
         onNewTab = onNewTab,
+        onNewTabAtCurrentPath = onNewTabAtCurrentPath,
         onSwitchShell = onSwitchShell,
         onSplitVertical = onSplitVertical,
         onSplitHorizontal = onSplitHorizontal,
@@ -1199,6 +1211,7 @@ fun showHyperlinkContextMenu(
     onFind: () -> Unit,
     onOpenFolder: (() -> Unit)? = null,
     onNewTab: (() -> Unit)? = null,
+    onNewTabAtCurrentPath: (() -> Unit)? = null,
     onSwitchShell: ((String) -> Unit)? = null,
     onSplitVertical: (() -> Unit)? = null,
     onSplitHorizontal: (() -> Unit)? = null,
@@ -1225,6 +1238,7 @@ fun showHyperlinkContextMenu(
         onFind = onFind,
         onOpenFolder = onOpenFolder,
         onNewTab = onNewTab,
+        onNewTabAtCurrentPath = onNewTabAtCurrentPath,
         onSwitchShell = onSwitchShell,
         onSplitVertical = onSplitVertical,
         onSplitHorizontal = onSplitHorizontal,

@@ -100,6 +100,7 @@ fun runDaemon(args: Array<String>) {
     // ref + guarded by [mcpLock]) so the GUI's MCP settings toggle works LIVE in daemon mode: the GUI
     // sends SetMcpEnabled over the attach socket, which calls [setDaemonMcpEnabled] below.
     val mcpServerRef = AtomicReference<DaemonMcpServer?>(null)
+    val mcpAttachments = ai.rever.bossterm.compose.mcp.McpAttachmentLifecycle(daemonScope)
     val mcpLock = Any()
     fun currentMcpPort(): Int? = mcpServerRef.get()?.boundPort
     fun setDaemonMcpEnabled(on: Boolean): Int? = synchronized(mcpLock) {
@@ -125,10 +126,12 @@ fun runDaemon(args: Array<String>) {
                     mcpServerRef.set(srv)
                     SettingsManager.instance.updateSetting { copy(mcpEnabled = true) }
                     log.info("Daemon MCP server enabled on 127.0.0.1:{}", p)
+                    mcpAttachments.replace(p) { mcpServerRef.get() === srv }
                     p
                 }
             }
         } else {
+            mcpAttachments.stop()
             running?.let { runCatching { it.stop() }; mcpServerRef.set(null); log.info("Daemon MCP server disabled") }
             SettingsManager.instance.updateSetting { copy(mcpEnabled = false) }
             null
@@ -205,6 +208,7 @@ fun runDaemon(args: Array<String>) {
     fun shutdown() {
         if (!stopped.compareAndSet(false, true)) return
         log.info("BossTerm daemon stopping")
+        mcpAttachments.stop()
         runCatching { daemonScope.cancel() }
         runCatching { DaemonTray.remove() }
         runCatching { control.stop() }

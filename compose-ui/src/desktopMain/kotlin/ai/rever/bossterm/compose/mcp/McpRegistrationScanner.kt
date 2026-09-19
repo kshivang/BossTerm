@@ -68,28 +68,53 @@ internal object McpRegistrationScanner {
         home: File = File(System.getProperty("user.home"))
     ): Int? = registeredLoopbackUrl(target, serverName, home)?.let(::defaultPortOf)
 
+    internal data class AutomaticRegistration(val canAttach: Boolean, val port: Int? = null)
+    private data class Registration(val url: String?)
+
+    /** Missing entries may be created; foreign/stdio/unrecognized entries belong to the user. */
+    fun automaticRegistration(
+        target: McpAttachTarget,
+        serverName: String,
+        home: File = File(System.getProperty("user.home"))
+    ): AutomaticRegistration {
+        val entry = registeredEntry(target, serverName, home) ?: return AutomaticRegistration(true)
+        val url = entry.url ?: return AutomaticRegistration(false)
+        // Parse the authority rather than accepting a localhost prefix in user-info.
+        val expanded = Regex("""\$\{[A-Za-z_][A-Za-z0-9_]*:-(\d+)}""")
+            .replace(url) { it.groupValues[1] }
+        val uri = runCatching { java.net.URI(expanded) }.getOrNull() ?: return AutomaticRegistration(false)
+        if (uri.scheme !in setOf("http", "https") || uri.rawUserInfo != null ||
+            !(uri.host == "127.0.0.1" || uri.host.equals("localhost", ignoreCase = true)))
+            return AutomaticRegistration(false)
+        val port = uri.port.takeIf { it in 1..65535 } ?: return AutomaticRegistration(false)
+        return AutomaticRegistration(true, port)
+    }
+
     /** [target]'s registered loopback URL for [serverName], or null. Throws on unreadable config. */
     internal fun registeredLoopbackUrl(target: McpAttachTarget, serverName: String, home: File): String? =
+        registeredEntry(target, serverName, home)?.url?.takeIf(::isLoopbackUrl)
+
+    private fun registeredEntry(target: McpAttachTarget, serverName: String, home: File): Registration? =
         when (target) {
             McpAttachTarget.CLAUDE_CODE ->
-                jsonLoopbackUrl(File(home, ".claude.json"), "mcpServers", serverName = serverName)
+                jsonEntry(File(home, ".claude.json"), "mcpServers", serverName = serverName)
             McpAttachTarget.GEMINI ->
-                jsonLoopbackUrl(File(home, ".gemini/settings.json"), "mcpServers", serverName = serverName)
+                jsonEntry(File(home, ".gemini/settings.json"), "mcpServers", serverName = serverName)
             McpAttachTarget.OPENCODE ->
-                jsonLoopbackUrl(CliConfigPaths.opencodeConfigJson(home), "mcp", serverName = serverName)
+                jsonEntry(CliConfigPaths.opencodeConfigJson(home), "mcp", serverName = serverName)
             McpAttachTarget.KIMI_CODE ->
-                jsonLoopbackUrl(CliConfigPaths.kimiMcpJson(home), "mcpServers", serverName = serverName)
+                jsonEntry(CliConfigPaths.kimiMcpJson(home), "mcpServers", serverName = serverName)
             // OpenClaw nests servers one level deeper: mcp → servers → <name>.
             McpAttachTarget.OPENCLAW ->
-                jsonLoopbackUrl(CliConfigPaths.openclawConfigJson(home), "mcp", "servers", serverName = serverName)
+                jsonEntry(CliConfigPaths.openclawConfigJson(home), "mcp", "servers", serverName = serverName)
             McpAttachTarget.CODEX ->
-                tomlMcpServersLoopbackUrl(File(home, ".codex/config.toml"), serverName)
+                tomlEntry(File(home, ".codex/config.toml"), serverName)
             // Grok Build's config.toml uses the same [mcp_servers.<name>] + url shape as Codex,
             // so the same minimal scan serves both.
             McpAttachTarget.GROK ->
-                tomlMcpServersLoopbackUrl(CliConfigPaths.grokConfigToml(home), serverName)
+                tomlEntry(CliConfigPaths.grokConfigToml(home), serverName)
             McpAttachTarget.HERMES ->
-                hermesYamlLoopbackUrl(CliConfigPaths.hermesConfigYaml(home), serverName)
+                hermesEntry(CliConfigPaths.hermesConfigYaml(home), serverName)
         }
 
     /**
@@ -100,7 +125,10 @@ internal object McpRegistrationScanner {
      * [containerPath] is walked in order, so a nested container works too — most CLIs keep servers
      * one level down (`mcpServers`, `mcp`), while OpenClaw nests them under `mcp` → `servers`.
      */
-    internal fun jsonLoopbackUrl(file: File, vararg containerPath: String, serverName: String): String? {
+    internal fun jsonLoopbackUrl(file: File, vararg containerPath: String, serverName: String): String? =
+        jsonEntry(file, *containerPath, serverName = serverName)?.url?.takeIf(::isLoopbackUrl)
+
+    private fun jsonEntry(file: File, vararg containerPath: String, serverName: String): Registration? {
         if (!file.isFile) return null
         val text = file.readText()
         if (text.isBlank()) return null
@@ -109,8 +137,8 @@ internal object McpRegistrationScanner {
             container = container[key]?.jsonObject ?: return null
         }
         val entry = container[serverName]?.jsonObject ?: return null
-        val url = (entry["url"] ?: entry["httpUrl"])?.jsonPrimitive?.content ?: return null
-        return url.takeIf(::isLoopbackUrl)
+        val url = (entry["url"] ?: entry["httpUrl"])?.jsonPrimitive?.content
+        return Registration(url)
     }
 
     /**
@@ -119,14 +147,27 @@ internal object McpRegistrationScanner {
      * Build's configs are both machine-written with this exact shape; a full
      * TOML parser isn't worth the dependency.
      */
-    internal fun tomlMcpServersLoopbackUrl(file: File, serverName: String): String? {
+    internal fun tomlMcpServersLoopbackUrl(file: File, serverName: String): String? =
+        tomlEntry(file, serverName)?.url?.takeIf(::isLoopbackUrl)
+
+    private fun tomlEntry(file: File, serverName: String): Registration? {
         if (!file.isFile) return null
         var inSection = false
+        var foundEntry = false
         for (rawLine in file.readLines()) {
             val line = rawLine.trim()
+            if (line.isEmpty() || line.startsWith("#")) continue
+            // Inline tables and nonstandard section layouts are not safe to rewrite.
+            if (line.substringBefore('=').trim().trim('"', '\'') == "mcp_servers" && '=' in line)
+                return Registration(null)
             if (line.startsWith("[")) {
-                inSection = line == "[mcp_servers.$serverName]" ||
-                    line == "[mcp_servers.\"$serverName\"]"
+                val header = line.substringBefore('#').trim()
+                inSection = header == "[mcp_servers.$serverName]" ||
+                    header == "[mcp_servers.\"$serverName\"]" || header == "[mcp_servers.'$serverName']"
+                if (header == "[mcp_servers]" ||
+                    (!inSection && header.contains("mcp_servers") && header.contains(serverName)))
+                    return Registration(null)
+                foundEntry = foundEntry || inSection
                 continue
             }
             if (inSection && line.substringBefore('=').trim() == "url") {
@@ -138,10 +179,10 @@ internal object McpRegistrationScanner {
                 } else {
                     raw.substringBefore('#').trim()
                 }
-                return url.takeIf(::isLoopbackUrl)
+                return Registration(url.trim('\''))
             }
         }
-        return null
+        return if (foundEntry) Registration(null) else null
     }
 
     /**
@@ -162,15 +203,20 @@ internal object McpRegistrationScanner {
      * absent rather than being half-parsed — the conservative direction, since ABSENT only means
      * "we won't adopt it", while a wrong PRESENT would suppress a real re-attach.
      */
-    internal fun hermesYamlLoopbackUrl(file: File, serverName: String): String? {
+    internal fun hermesYamlLoopbackUrl(file: File, serverName: String): String? =
+        hermesEntry(file, serverName)?.url?.takeIf(::isLoopbackUrl)
+
+    private fun hermesEntry(file: File, serverName: String): Registration? {
         if (!file.isFile) return null
         val lines = file.readLines()
 
+        var foundEntry = false
         var serversIndent = -1   // indent of the `mcp_servers:` key, -1 until seen
         var childIndent = -1     // indent shared by mcp_servers' DIRECT children, -1 until seen
         var entryIndent = -1     // indent of the `<serverName>:` key inside it, -1 until seen
         for (rawLine in lines) {
             if (rawLine.isBlank() || rawLine.trimStart().startsWith("#")) continue
+            if ('\t' in rawLine.takeWhile { it.isWhitespace() }) return Registration(null)
             val indent = rawLine.takeWhile { it == ' ' }.length
             val key = rawLine.trim().substringBefore(':').trim().trim('"', '\'')
 
@@ -186,7 +232,7 @@ internal object McpRegistrationScanner {
                         raw.startsWith("'") -> raw.drop(1).substringBefore('\'')
                         else -> raw.substringBefore('#').trim()
                     }
-                    return url.takeIf(::isLoopbackUrl)
+                    return Registration(url)
                 } else {
                     continue
                 }
@@ -204,14 +250,20 @@ internal object McpRegistrationScanner {
                     // a false PRESENT, which is the harmful direction: it suppresses a real
                     // re-attach, where a false ABSENT only declines to adopt.
                     if (childIndent < 0) childIndent = indent
-                    if (indent == childIndent && key == serverName) entryIndent = indent
+                    if (indent == childIndent && key == serverName) {
+                        entryIndent = indent
+                        foundEntry = true
+                    }
                     continue
                 }
             }
 
-            if (indent == 0 && key == "mcp_servers") serversIndent = indent
+            if (indent == 0 && key == "mcp_servers") {
+                if (rawLine.substringAfter(':').substringBefore('#').isNotBlank()) return Registration(null)
+                serversIndent = indent
+            }
         }
-        return null
+        return if (foundEntry) Registration(null) else null
     }
 
     /**

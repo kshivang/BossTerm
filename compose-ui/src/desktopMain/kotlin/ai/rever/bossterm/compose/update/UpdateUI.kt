@@ -13,6 +13,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -79,52 +80,47 @@ private fun UpdateAvailableBanner(
         modifier = Modifier.fillMaxWidth(),
         color = BannerBackground
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(
-                    Icons.Default.KeyboardArrowDown,
-                    contentDescription = "Update Available",
-                    tint = AccentBlue,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    "Update v${updateInfo.latestVersion} available",
-                    color = BossUiTheme.current.chalk,
-                    fontSize = 12.sp
-                )
-                Text(
-                    " (current: v${updateInfo.currentVersion})",
-                    color = BossUiTheme.current.mist,
-                    fontSize = 12.sp
-                )
-            }
-
-            Row {
-                TextButton(
-                    onClick = onDownload,
-                    colors = ButtonDefaults.textButtonColors(contentColor = AccentBlue),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                    modifier = Modifier.height(28.dp)
-                ) {
-                    Text("Download", fontSize = 11.sp)
+        BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+            val compact = maxWidth < 480.dp
+            val summary: @Composable () -> Unit = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Update Available",
+                        tint = AccentBlue, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        if (compact) "Update v${updateInfo.latestVersion} available"
+                        else "Update v${updateInfo.latestVersion} available (current: v${updateInfo.currentVersion})",
+                        color = BossUiTheme.current.chalk, fontSize = 12.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
-                TextButton(
-                    onClick = onDismiss,
-                    colors = ButtonDefaults.textButtonColors(contentColor = BossUiTheme.current.mist),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                    modifier = Modifier.height(28.dp)
-                ) {
-                    Text("Dismiss", fontSize = 11.sp)
+            }
+            val actions: @Composable () -> Unit = {
+                Row {
+                    TextButton(onClick = onDownload,
+                        colors = ButtonDefaults.textButtonColors(contentColor = AccentBlue),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        modifier = Modifier.height(28.dp)) {
+                        Text("Download", fontSize = 11.sp, maxLines = 1)
+                    }
+                    TextButton(onClick = onDismiss,
+                        colors = ButtonDefaults.textButtonColors(contentColor = BossUiTheme.current.mist),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        modifier = Modifier.height(28.dp)) {
+                        Text("Dismiss", fontSize = 11.sp, maxLines = 1)
+                    }
+                }
+            }
+            if (compact) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    summary()
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { actions() }
+                }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(Modifier.weight(1f)) { summary() }
+                    actions()
                 }
             }
         }

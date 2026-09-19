@@ -41,6 +41,9 @@ class WindowPlacementController(
     private var customPlacement by mutableStateOf(WindowPlacement.Floating)
     private var nativeFullscreen by mutableStateOf(false)
     private var isExitingFullscreen by mutableStateOf(false)
+    val allowsWindowResize: Boolean
+        get() = !isTransitioning && placement != WindowPlacement.Fullscreen
+
     val hasRoundedCorners: Boolean
         get() = placement == WindowPlacement.Floating ||
             (isExitingFullscreen && beforeFullscreen == WindowPlacement.Floating)

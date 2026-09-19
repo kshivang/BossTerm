@@ -277,7 +277,7 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
 ## Default Appearance
 
 Fresh settings use Liquid Glass Dark, custom title bar, whole-window Regular glass,
-30% tint and 30% glass opacity. Existing saved choices remain authoritative.
+50% tint and 50% glass opacity. Existing saved choices remain authoritative.
 `ThemeDefaultsTest` checks theme/palette ordering and fresh settings together.
 
 ## Features Summary

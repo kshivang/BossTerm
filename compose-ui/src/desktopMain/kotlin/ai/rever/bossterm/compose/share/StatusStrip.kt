@@ -2,6 +2,12 @@ package ai.rever.bossterm.compose.share
 
 import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import ai.rever.bossterm.compose.window.LocalWindowChromeOpacity
+import ai.rever.bossterm.compose.window.LocalInTitleBar
+import ai.rever.bossterm.compose.window.LocalTitleBarTheme
+import ai.rever.bossterm.compose.window.ActionCapsule
+import ai.rever.bossterm.compose.window.MacToolbarIcon
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -17,6 +23,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.Icon
+import androidx.compose.material.IconButton
+import androidx.compose.material.icons.Icons
+import ai.rever.bossterm.compose.window.McpIcon
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.CircularProgressIndicator
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -115,22 +133,17 @@ fun StatusStrip(
 ) {
     val showCall = call != CallSegmentState.Hidden
     if (!showMcp && !showSharing && !showCall && remoteCalls == 0) return
-    Surface(
-        modifier = modifier,
-        color = BossUiTheme.current.panel.copy(alpha = LocalWindowChromeOpacity.current),
-        shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, BossUiTheme.current.line)
-    ) {
+    StatusContainer(modifier) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            modifier = if (LocalInTitleBar.current) Modifier else Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(if (LocalInTitleBar.current) 10.dp else 8.dp)
         ) {
-            if (showMcp) {
-                Segment(dot = if (mcpOn) ON else OFF, label = "MCP", onClick = onMcpClick)
+            if (showMcp && !LocalInTitleBar.current) {
+                Segment(dot = if (mcpOn) ON else OFF, label = "MCP", onClick = onMcpClick, icon = McpIcon, active = mcpOn, tooltip = if (mcpOn) "MCP on" else "MCP off")
             }
-            if (showMcp && (showSharing || remoteCalls > 0)) {
-                Text("|", color = BossUiTheme.current.line2, fontSize = 12.sp)
+            if (!LocalInTitleBar.current && showMcp && (showSharing || remoteCalls > 0)) {
+                StatusDivider()
             }
             // A live remote call forces the segment on. Rendering it only inside `showSharing`
             // restored exactly the no-signal state RemoteVoiceCalls exists to close: a cosmetic
@@ -154,6 +167,8 @@ fun StatusStrip(
                     dot = dot,
                     label = label,
                     onClick = onSharingClick,
+                    icon = Icons.Default.Share,
+                    active = sharingCount > 0 || remoteCalls > 0,
                     // Say what the host can and cannot do. The indicator is deliberately not an
                     // action: the call's audio is browser-to-OpenAI and the host is not a party to
                     // it, so nothing here can hang it up. Stopping the share cuts the agent's TOOLS
@@ -164,12 +179,12 @@ fun StatusStrip(
                             "cuts the agent's access to this machine immediately - their audio " +
                             "session runs browser-to-OpenAI and cannot be ended from here."
                     } else {
-                        null
+                        if (sharingCount > 0) "Sharing active ($sharingCount)" else "Sharing inactive"
                     },
                 )
             }
             if ((showMcp || showSharing || remoteCalls > 0) && showCall) {
-                Text("|", color = BossUiTheme.current.line2, fontSize = 12.sp)
+                StatusDivider()
             }
             if (showCall) {
                 Segment(
@@ -182,7 +197,15 @@ fun StatusStrip(
                     },
                     label = callSegmentLabel(call, callLabel),
                     onClick = onCallClick,
+                    icon = Icons.Default.Call,
+                    active = call in setOf(CallSegmentState.Live, CallSegmentState.Speaking, CallSegmentState.Working),
+                    busy = call == CallSegmentState.Connecting,
+                    failed = call == CallSegmentState.Failed,
                 )
+            }
+            if (showMcp && LocalInTitleBar.current) {
+                Segment(dot = if (mcpOn) ON else OFF, label = "MCP", onClick = onMcpClick,
+                    icon = McpIcon, active = mcpOn, tooltip = if (mcpOn) "MCP on" else "MCP off")
             }
         }
     }
@@ -190,25 +213,66 @@ fun StatusStrip(
 
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
-private fun Segment(dot: Color, label: String, onClick: () -> Unit, tooltip: String? = null) {
+private fun Segment(dot: Color, label: String, onClick: () -> Unit, icon: ImageVector, tooltip: String? = null, active: Boolean = false, busy: Boolean = false, failed: Boolean = false) {
+    if (ai.rever.bossterm.compose.window.LocalNativeToolbar.current != null) {
+        val id = when {
+            icon === McpIcon -> "mcp"
+            icon == Icons.Default.Share -> "sharing"
+            else -> "call"
+        }
+        val symbol = if (failed) "exclamationmark.triangle" else when (id) {
+            "mcp" -> "mcp"
+            "sharing" -> "square.and.arrow.up"
+            else -> if (busy) "phone.connection" else "phone"
+        }
+        ai.rever.bossterm.compose.window.RegisterNativeToolbarAction(
+            ai.rever.bossterm.compose.window.NativeToolbarAction(id, tooltip ?: label, symbol, active, onClick))
+        return
+    }
+    val inTitleBar = LocalInTitleBar.current
+    val chrome = if (inTitleBar) LocalTitleBarTheme.current else BossUiTheme.current
     val row = @Composable {
-        Row(
-            modifier = Modifier.clickable(onClick = onClick),
+        if (inTitleBar) {
+            ActionCapsule(active = active) {
+                IconButton(onClick = onClick, modifier = Modifier.size(32.dp).semantics {
+                    contentDescription = tooltip ?: label
+                    stateDescription = when {
+                        failed -> "$label: failed"
+                        busy -> "$label: connecting"
+                        active -> "$label: active"
+                        else -> "$label: inactive"
+                    }
+                }) {
+                    if (busy) {
+                        CircularProgressIndicator(Modifier.size(16.dp), color = chrome.signalText, strokeWidth = 1.5.dp)
+                    } else {
+                        MacToolbarIcon(
+                            if (failed) Icons.Default.Warning else icon,
+                            contentDescription = tooltip ?: label,
+                            tint = if (active || failed) chrome.signalText else chrome.chalk,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+        } else Row(
+            modifier = Modifier.clickable(onClick = onClick)
+                .then(if (inTitleBar) Modifier.height(32.dp).padding(horizontal = 9.dp) else Modifier),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Box(Modifier.size(7.dp).background(dot, CircleShape))
-            Text(label, color = BossUiTheme.current.chalk, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(label, color = chrome.chalk, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
-    if (tooltip == null) {
+    if (tooltip == null && !inTitleBar) {
         row()
         return
     }
     TooltipArea(
         tooltip = {
             Text(
-                text = tooltip,
+                text = tooltip ?: label,
                 color = BossUiTheme.current.chalk,
                 fontSize = 11.sp,
                 modifier = Modifier
@@ -221,5 +285,26 @@ private fun Segment(dot: Color, label: String, onClick: () -> Unit, tooltip: Str
         delayMillis = 350,
     ) {
         row()
+    }
+}
+
+@Composable
+private fun StatusContainer(modifier: Modifier, content: @Composable () -> Unit) {
+    if (LocalInTitleBar.current) {
+        Box(modifier) { content() }
+    } else {
+        Surface(
+            modifier = modifier,
+            color = BossUiTheme.current.panel.copy(alpha = LocalWindowChromeOpacity.current),
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, BossUiTheme.current.line)
+        ) { content() }
+    }
+}
+
+@Composable
+private fun StatusDivider() {
+    if (!LocalInTitleBar.current) {
+        Text("|", color = BossUiTheme.current.line2, fontSize = 12.sp)
     }
 }

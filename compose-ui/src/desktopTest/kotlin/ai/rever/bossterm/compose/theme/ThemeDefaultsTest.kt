@@ -28,8 +28,8 @@ class ThemeDefaultsTest {
         assertEquals(false, settings.useNativeTitleBar)
         assertEquals("window", settings.windowGlassMode)
         assertEquals("regular", settings.windowGlassStyle)
-        assertEquals(0.3f, settings.windowGlassTint)
-        assertEquals(0.3f, settings.windowGlassOpacity)
+        assertEquals(0.5f, settings.windowGlassTint)
+        assertEquals(0.5f, settings.windowGlassOpacity)
         assertAnsiMatches(BuiltinThemes.LIQUID_GLASS_DARK, BuiltinColorPalettes.LIQUID_GLASS_DARK)
     }
 

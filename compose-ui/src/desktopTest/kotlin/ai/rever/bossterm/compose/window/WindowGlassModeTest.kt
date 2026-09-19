@@ -10,6 +10,17 @@ import kotlin.test.assertEquals
 
 class WindowGlassModeTest {
     @Test
+    fun `coverage separates sidebar from the shared terminal and top bar`() {
+        assertEquals(true, WindowGlassMode.BARS.includesSidebar)
+        assertEquals(false, WindowGlassMode.BARS.includesTerminal)
+        assertEquals(false, WindowGlassMode.TERMINAL.includesSidebar)
+        assertEquals(true, WindowGlassMode.TERMINAL.includesTerminal)
+        assertEquals(true, WindowGlassMode.WINDOW.includesSidebar)
+        assertEquals(true, WindowGlassMode.WINDOW.includesTerminal)
+        assertEquals(0.4f, WindowGlassMode.TERMINAL.terminalOpacity(0.4f))
+    }
+
+    @Test
     fun `only dedicated glass themes enable the material and keep opacity independent`() {
         val initial = TerminalSettings(backgroundOpacity = 0.9f, windowGlassMode = "window", windowGlassOpacity = 0f)
         for (theme in listOf(BuiltinThemes.LIQUID_GLASS_LIGHT, BuiltinThemes.LIQUID_GLASS_DARK)) {

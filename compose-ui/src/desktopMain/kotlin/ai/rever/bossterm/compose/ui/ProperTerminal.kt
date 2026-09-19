@@ -240,6 +240,7 @@ fun ProperTerminal(
   sharedFont: FontFamily,
   onTabTitleChange: (String) -> Unit,
   onNewTab: (() -> Unit)? = null,
+  onNewTabAtCurrentPath: ((String) -> Unit)? = null,
   onSwitchShell: ((String) -> Unit)? = null,  // Windows: switch current tab's shell
   onNewPreConnectTab: () -> Unit = {},  // Ctrl+Shift+T: Test pre-connection input
   onCloseTab: () -> Unit = {},
@@ -1148,7 +1149,10 @@ fun ProperTerminal(
         }
         .fillMaxSize()
         .background(settings.defaultBackgroundColor.copy(
-            alpha = LocalWindowGlassMode.current.terminalOpacity(settings.surfaceOpacity(LocalNativeWindowGlass.current))
+            // Whole-window glass is tinted once by the window surface, including
+            // the toolbar. A second terminal-only tint creates a visible seam.
+            alpha = if (LocalNativeWindowGlass.current && LocalWindowGlassMode.current.includesTerminal) 0f
+                else LocalWindowGlassMode.current.terminalOpacity(settings.surfaceOpacity(LocalNativeWindowGlass.current))
         ))
         .dragAndDropTarget(
           shouldStartDragAndDrop = { true },
@@ -1326,6 +1330,9 @@ fun ProperTerminal(
                     onFind = { searchVisible = true },
                     onOpenFolder = { openFolderPicker() },
                     onNewTab = onNewTab,
+                    onNewTabAtCurrentPath = tab.workingDirectory.value?.let { cwd ->
+                        onNewTabAtCurrentPath?.let { createAtPath -> { createAtPath(cwd) } }
+                    },
                     onSwitchShell = onSwitchShell,
                     onSplitVertical = onSplitVertical,
                     onSplitHorizontal = onSplitHorizontal,
@@ -1378,6 +1385,9 @@ fun ProperTerminal(
                     onFind = { searchVisible = true },
                     onOpenFolder = { openFolderPicker() },
                     onNewTab = onNewTab,
+                    onNewTabAtCurrentPath = tab.workingDirectory.value?.let { cwd ->
+                        onNewTabAtCurrentPath?.let { createAtPath -> { createAtPath(cwd) } }
+                    },
                     onSwitchShell = onSwitchShell,
                     onSplitVertical = onSplitVertical,
                     onSplitHorizontal = onSplitHorizontal,

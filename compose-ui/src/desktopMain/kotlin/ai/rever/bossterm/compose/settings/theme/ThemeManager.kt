@@ -112,7 +112,19 @@ class ThemeManager private constructor(
     fun applyTheme(theme: Theme) {
         setCurrentTheme(theme)
 
-        settingsManager.updateSetting { withThemeColors(theme) }
+        settingsManager.updateSetting { withThemeColors(theme).copy(followSystemTheme = false) }
+    }
+
+    fun followSystemAppearance(dark: Boolean) {
+        val theme = if (dark) BuiltinThemes.LIQUID_GLASS_DARK else BuiltinThemes.LIQUID_GLASS_LIGHT
+        setCurrentTheme(theme)
+        settingsManager.updateSetting { withThemeColors(theme).copy(followSystemTheme = true) }
+    }
+
+    fun refreshSystemAppearance(dark: Boolean) {
+        if (!settingsManager.settings.value.followSystemTheme) return
+        val id = if (dark) "liquid-glass-dark" else "liquid-glass-light"
+        if (settingsManager.settings.value.activeThemeId != id) followSystemAppearance(dark)
     }
 
     /**

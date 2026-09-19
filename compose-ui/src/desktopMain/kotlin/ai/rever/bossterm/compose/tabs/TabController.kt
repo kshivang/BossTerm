@@ -105,6 +105,19 @@ class TabController(
      */
     val tabs: SnapshotStateList<TerminalTab> = mutableStateListOf()
 
+    private var lastAssignedTabColor: String? = null
+    internal var randomNewTabColor: Boolean = settings.randomNewTabColor
+
+    private fun assignNewTabColor(tab: TerminalTab) {
+        if (!randomNewTabColor || tab.tabColor.value != null) return
+        val previousColor = tabs.lastOrNull()?.tabColor?.value
+        val color = TAB_COLOR_PRESETS.map { it.second }
+            .filter { it != previousColor && it != lastAssignedTabColor }
+            .random()
+        tab.tabColor.value = color
+        lastAssignedTabColor = color
+    }
+
     /**
      * Index of the currently active tab (0-based).
      */
@@ -684,7 +697,8 @@ class TabController(
         // Initialize the terminal session (spawn PTY, start coroutines)
         initializeTerminalSession(tab, workingDir, effectiveCommand, effectiveArguments, initialCommand, onInitialCommandComplete)
 
-        // Add to tabs list
+        // Assign an accent before publishing the tab to the UI.
+        assignNewTabColor(tab)
         tabs.add(tab)
 
         // Notify listeners about new session
@@ -1265,7 +1279,8 @@ class TabController(
             }
         }
 
-        // Add to tabs list
+        // Assign an accent before publishing the tab to the UI.
+        assignNewTabColor(tab)
         tabs.add(tab)
 
         // Notify listeners about new session
@@ -2001,7 +2016,8 @@ class TabController(
         // Cast to TerminalTab (our TerminalSession implementation)
         val tab = session as TerminalTab
 
-        // Add to tabs list
+        // Assign an accent before publishing the tab to the UI.
+        assignNewTabColor(tab)
         tabs.add(tab)
 
         // Notify listeners about session being added as a tab

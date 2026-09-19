@@ -44,6 +44,7 @@ fun SplitContainer(
     isActiveTab: Boolean,
     onTabTitleChange: (String) -> Unit,
     onNewTab: () -> Unit,
+    onNewTabAtCurrentPath: ((String) -> Unit)? = null,
     onSwitchShell: ((String) -> Unit)? = null,
     onCloseTab: () -> Unit,
     onNextTab: () -> Unit,
@@ -82,6 +83,7 @@ fun SplitContainer(
             isActiveTab = isActiveTab,
             onTabTitleChange = onTabTitleChange,
             onNewTab = onNewTab,
+            onNewTabAtCurrentPath = onNewTabAtCurrentPath,
             onSwitchShell = onSwitchShell,
             onCloseTab = onCloseTab,
             onNextTab = onNextTab,
@@ -123,6 +125,7 @@ private fun RenderSplitNode(
     isActiveTab: Boolean,
     onTabTitleChange: (String) -> Unit,
     onNewTab: () -> Unit,
+    onNewTabAtCurrentPath: ((String) -> Unit)? = null,
     onSwitchShell: ((String) -> Unit)? = null,
     onCloseTab: () -> Unit,
     onNextTab: () -> Unit,
@@ -160,6 +163,7 @@ private fun RenderSplitNode(
                 isFocusedPane = node.id == splitState.focusedPaneId,
                 onTabTitleChange = onTabTitleChange,
                 onNewTab = onNewTab,
+                onNewTabAtCurrentPath = onNewTabAtCurrentPath,
                 onSwitchShell = onSwitchShell,
                 onCloseTab = onCloseTab,
                 onNextTab = onNextTab,
@@ -196,6 +200,7 @@ private fun RenderSplitNode(
                 isActiveTab = isActiveTab,
                 onTabTitleChange = onTabTitleChange,
                 onNewTab = onNewTab,
+                onNewTabAtCurrentPath = onNewTabAtCurrentPath,
                 onSwitchShell = onSwitchShell,
                 onCloseTab = onCloseTab,
                 onNextTab = onNextTab,
@@ -233,6 +238,7 @@ private fun RenderSplitNode(
                 isActiveTab = isActiveTab,
                 onTabTitleChange = onTabTitleChange,
                 onNewTab = onNewTab,
+                onNewTabAtCurrentPath = onNewTabAtCurrentPath,
                 onSwitchShell = onSwitchShell,
                 onCloseTab = onCloseTab,
                 onNextTab = onNextTab,
@@ -276,6 +282,7 @@ private fun RenderPane(
     isFocusedPane: Boolean,
     onTabTitleChange: (String) -> Unit,
     onNewTab: () -> Unit,
+    onNewTabAtCurrentPath: ((String) -> Unit)? = null,
     onSwitchShell: ((String) -> Unit)? = null,
     onCloseTab: () -> Unit,
     onNextTab: () -> Unit,
@@ -302,8 +309,10 @@ private fun RenderPane(
     hyperlinkRegistry: HyperlinkRegistry = HyperlinkDetector.registry,
     modifier: Modifier = Modifier
 ) {
-    // Focus border for active pane; single-pane tabs always get the plain unfocused border
-    val borderModifier = if (splitFocusBorderEnabled) {
+    // A single terminal shares the window surface; borders only distinguish split panes.
+    val borderModifier = if (splitState.isSinglePane) {
+        Modifier
+    } else if (splitFocusBorderEnabled) {
         if (isFocusedPane && !splitState.isSinglePane) {
             Modifier.border(2.dp, splitFocusBorderColor)
         } else {
@@ -331,6 +340,7 @@ private fun RenderPane(
                 }
             },
             onNewTab = onNewTab,
+            onNewTabAtCurrentPath = onNewTabAtCurrentPath,
             onSwitchShell = onSwitchShell,
             onCloseTab = {
                 // If there are splits, close the pane; otherwise close the tab
@@ -377,6 +387,7 @@ private fun RenderVerticalSplit(
     isActiveTab: Boolean,
     onTabTitleChange: (String) -> Unit,
     onNewTab: () -> Unit,
+    onNewTabAtCurrentPath: ((String) -> Unit)? = null,
     onSwitchShell: ((String) -> Unit)? = null,
     onCloseTab: () -> Unit,
     onNextTab: () -> Unit,
@@ -423,6 +434,7 @@ private fun RenderVerticalSplit(
                     isActiveTab = isActiveTab,
                     onTabTitleChange = onTabTitleChange,
                     onNewTab = onNewTab,
+                    onNewTabAtCurrentPath = onNewTabAtCurrentPath,
                     onSwitchShell = onSwitchShell,
                     onCloseTab = onCloseTab,
                     onNextTab = onNextTab,
@@ -464,6 +476,7 @@ private fun RenderVerticalSplit(
                     isActiveTab = isActiveTab,
                     onTabTitleChange = onTabTitleChange,
                     onNewTab = onNewTab,
+                    onNewTabAtCurrentPath = onNewTabAtCurrentPath,
                     onSwitchShell = onSwitchShell,
                     onCloseTab = onCloseTab,
                     onNextTab = onNextTab,
@@ -527,6 +540,7 @@ private fun RenderHorizontalSplit(
     isActiveTab: Boolean,
     onTabTitleChange: (String) -> Unit,
     onNewTab: () -> Unit,
+    onNewTabAtCurrentPath: ((String) -> Unit)? = null,
     onSwitchShell: ((String) -> Unit)? = null,
     onCloseTab: () -> Unit,
     onNextTab: () -> Unit,
@@ -573,6 +587,7 @@ private fun RenderHorizontalSplit(
                     isActiveTab = isActiveTab,
                     onTabTitleChange = onTabTitleChange,
                     onNewTab = onNewTab,
+                    onNewTabAtCurrentPath = onNewTabAtCurrentPath,
                     onSwitchShell = onSwitchShell,
                     onCloseTab = onCloseTab,
                     onNextTab = onNextTab,
@@ -614,6 +629,7 @@ private fun RenderHorizontalSplit(
                     isActiveTab = isActiveTab,
                     onTabTitleChange = onTabTitleChange,
                     onNewTab = onNewTab,
+                    onNewTabAtCurrentPath = onNewTabAtCurrentPath,
                     onSwitchShell = onSwitchShell,
                     onCloseTab = onCloseTab,
                     onNextTab = onNextTab,

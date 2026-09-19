@@ -86,6 +86,13 @@ fun McpSettingsSection(
                         "search output, and drive your tabs. Toggling takes effect immediately."
             )
 
+            SettingsToggle(
+                label = "Automatically Attach Installed Tools",
+                checked = settings.mcpAutoAttachInstalled,
+                onCheckedChange = { onSettingsChange(settings.copy(mcpAutoAttachInstalled = it)) },
+                description = "Register BossTerm with supported installed AI tools when the MCP server starts",
+                enabled = settings.mcpEnabled
+            )
             SettingsNumberInput(
                 label = "Port",
                 value = settings.mcpPort,

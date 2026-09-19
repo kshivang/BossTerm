@@ -58,10 +58,12 @@
       var result = await rpc.request("access"); check(runEpoch); rootLabel = result.root;
       el("files-role").textContent = result.writable ? "Read and write access" : "Read-only access · Upload requests control";
     }
-    async function refresh(append) {
+    async function refresh(append, target) {
+      var requestedPath = target == null ? path : target;
       var runEpoch = epoch;
-      var result = await rpc.request("list", { path: path, offset: append ? next : 0 });
+      var result = await rpc.request("list", { path: requestedPath, offset: append ? next : 0 });
       check(runEpoch);
+      path = requestedPath;
       if (!append) list.replaceChildren();
       next = result.next == null ? null : result.next;
       location.textContent = rootLabel + (path ? "/" + path : "");
@@ -71,7 +73,7 @@
         var row = document.createElement("div"); row.className = "files-row";
         var name = button((entry.directory ? "▸ " : "") + entry.name, function () {
           if (busy) return;
-          if (entry.directory) run(async function () { path = join(entry.name); await refresh(false); });
+          if (entry.directory) run(function () { return refresh(false, join(entry.name)); });
           else run(function () { return download(entry); });
         });
         name.className = "files-name";
@@ -188,7 +190,7 @@
       });
     };
     el("files-browse").onclick = function () { open(false); };
-    el("files-up").onclick = function () { if (!busy) run(async function () { path = path.split("/").slice(0, -1).join("/"); await refresh(false); }); };
+    el("files-up").onclick = function () { if (!busy) run(function () { return refresh(false, path.split("/").slice(0, -1).join("/")); }); };
     el("files-refresh").onclick = function () { run(function () { return refresh(false); }); };
     el("files-more").onclick = function () { run(function () { return refresh(true); }); };
     el("files-hidden").onchange = function () { run(function () { return refresh(false); }); };

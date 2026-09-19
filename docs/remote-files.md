@@ -42,7 +42,9 @@ Files are limited to 10 GiB each. Folder uploads, editing, rename, delete, daemo
   control traffic rather than the lossy terminal-output queue.
 - Paths are relative to an open approved directory. Components cannot traverse
   parents or symbolic links. macOS uses public descriptor-relative Darwin APIs;
-  Linux uses the JDK secure directory stream. Other host filesystems/platforms,
+  Linux pins a native directory descriptor, opens its JDK secure directory stream
+  through /proc/self/fd, and publishes no-overwrite uploads with linkat. Filesystems
+  without hard-link support reject these uploads safely. Other host filesystems/platforms,
   including the current Windows JDK backend, leave file actions unavailable.
 - Partial uploads are cleaned up on cancellation, disconnect, and inactivity.
   A process crash can leave hidden `.bossterm-upload-*` staging files for manual

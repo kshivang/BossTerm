@@ -62,6 +62,39 @@ class RemoteFileStoreTest {
         assertFails { store.execute(request("finish", id = id, hash = hash(byteArrayOf()))) }
         assertEquals("keep", Files.readString(root.resolve("a")))
     }
+    @Test fun `concurrent no replace publication preserves the winning file`() {
+        val root = Files.createTempDirectory("publish-race")
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            repeat(30) {
+                Files.writeString(root.resolve("first"), "first")
+                Files.writeString(root.resolve("second"), "second")
+                val start = java.util.concurrent.CountDownLatch(1)
+                val results = listOf("first", "second").map { name ->
+                    pool.submit<Boolean> {
+                        FileDirectory.open(root).use { dir ->
+                            start.await()
+                            try { dir.move(Path.of(name), Path.of("destination"), false); true }
+                            catch (_: java.nio.file.FileAlreadyExistsException) { false }
+                        }
+                    }
+                }
+                start.countDown()
+                val winners = results.map { it.get(5, java.util.concurrent.TimeUnit.SECONDS) }
+                assertEquals(1, winners.count { it })
+                val winner = if (winners[0]) "first" else "second"
+                val loser = if (winners[0]) "second" else "first"
+                assertEquals(winner, Files.readString(root.resolve("destination")))
+                assertEquals(loser, Files.readString(root.resolve(loser)))
+                Files.delete(root.resolve("destination"))
+            }
+            Files.writeString(root.resolve("destination"), "keep")
+            FileDirectory.open(root).use { dir ->
+                assertFails { dir.move(Path.of("missing"), Path.of("destination"), false) }
+            }
+            assertEquals("keep", Files.readString(root.resolve("destination")))
+        } finally { pool.shutdownNow(); root.toFile().deleteRecursively() }
+    }
     @Test fun `invalid offsets oversized chunks and incorrect hashes fail`() = withStore { root, store ->
         val id = store.execute(request("upload", "a", size = 1)).transferId
         assertFails { store.execute(request("write", id = id, offset = 1, bytes = byteArrayOf(1))) }

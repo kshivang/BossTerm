@@ -18,7 +18,7 @@ class Element {
 }
 const elements = new Map();
 const get = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
-let ui, control = true, wire = [], written = [], downloadOffset = 0, blobs = [], corruptHash = false, cancelWrite = false;
+let ui, control = true, wire = [], written = [], downloadOffset = 0, blobs = [], corruptHash = false, cancelWrite = false, navigationTest = false, rejectedPath = null;
 const payload = Buffer.from("Unicode file contents 😀\n".repeat(4000));
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const context = {
@@ -44,7 +44,13 @@ function send(message) {
     let reply = { requestId: message.requestId };
     switch (message.operation) {
       case "access": Object.assign(reply, { root: "/approved", writable: control }); break;
-      case "list": reply.entries = [{ name: "<script>.txt", directory: false, size: payload.length }]; break;
+      case "list":
+        if (navigationTest) {
+          if (message.path === rejectedPath) reply.error = "Permission denied";
+          else reply.entries = [{name:"child", directory:true, size:0}];
+          break;
+        }
+        reply.entries = [{ name: "<script>.txt", directory: false, size: payload.length }]; break;
       case "download": Object.assign(reply, { transferId: "download", size: payload.length }); downloadOffset = 0; break;
       case "read": {
         assert.equal(message.offset, downloadOffset);
@@ -118,6 +124,31 @@ const waitFor = async predicate => {
   get("files-picker").onchange();
   await waitFor(() => get("files-cancel").hidden);
   assert.match(get("files-status").textContent, /64 MB/);
+
+  // Failed navigation must not change the destination used by uploads.
+  navigationTest = true; rejectedPath = "child";
+  get("files-refresh").click();
+  await waitFor(() => get("files-cancel").hidden);
+  get("files-list").children[0].children[0].click();
+  await waitFor(() => get("files-cancel").hidden);
+  assert.equal(get("files-location").textContent, "/approved");
+  get("files-picker").files = [{name:"test.txt", size:payload.length, arrayBuffer:async()=>payload}];
+  get("files-picker").onchange();
+  await waitFor(() => get("files-cancel").hidden);
+  assert.equal(wire.filter(m=>m.operation==="upload").at(-1).path, "test.txt");
+
+  rejectedPath = null;
+  get("files-list").children[0].children[0].click();
+  await waitFor(() => get("files-cancel").hidden);
+  assert.equal(get("files-location").textContent, "/approved/child");
+  rejectedPath = "";
+  get("files-up").click();
+  await waitFor(() => get("files-cancel").hidden);
+  assert.equal(get("files-location").textContent, "/approved/child");
+  get("files-picker").onchange();
+  await waitFor(() => get("files-cancel").hidden);
+  assert.equal(wire.filter(m=>m.operation==="upload").at(-1).path, "child/test.txt");
+  navigationTest = false;
 
   control = false;
   get("files-upload").click();

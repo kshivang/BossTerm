@@ -11,6 +11,7 @@ class RemoteFilesClientTest {
         assertTrue((ShareProtocol.decodeClient("""{"t":"hello"}""") as ClientMessage.Hello).capabilities.isEmpty())
     }
     @Test fun `multi chunk upload and download over encrypted serialized RPC`() = runBlocking<Unit> {
+        requireFileHostPlatform()
         val root = Files.createTempDirectory("files-host")
         val local = Files.createTempDirectory("files-client")
         lateinit var client: RemoteFilesClient
@@ -53,6 +54,7 @@ class RemoteFilesClientTest {
         assertTrue(withTimeout(1000) { request.await() }.isFailure)
     }
     @Test fun `cancelled upload cleans temporary file and preserves destination`() = runBlocking<Unit> {
+        requireFileHostPlatform()
         val root = Files.createTempDirectory("files-host")
         val source = Files.createTempFile("files-source", ".bin")
         lateinit var client: RemoteFilesClient
@@ -82,6 +84,7 @@ class RemoteFilesClientTest {
     }
 
     @Test fun `failed integrity check preserves local file and removes staging file`() = runBlocking<Unit> {
+        requireFileHostPlatform()
         val root = Files.createTempDirectory("files-host")
         val local = Files.createTempDirectory("files-client")
         lateinit var client: RemoteFilesClient

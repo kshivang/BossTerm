@@ -8,6 +8,9 @@ import java.util.Base64
 import kotlin.test.*
 
 class RemoteFileStoreTest {
+    @BeforeTest
+    fun requireSupportedHost() = requireFileHostPlatform()
+
     private fun withStore(writable: Boolean = true, block: (Path, RemoteFileStore) -> Unit): Unit {
         val root = Files.createTempDirectory("remote-files-test")
         return try { RemoteFileStore(root, writable).use { block(root, it) } }

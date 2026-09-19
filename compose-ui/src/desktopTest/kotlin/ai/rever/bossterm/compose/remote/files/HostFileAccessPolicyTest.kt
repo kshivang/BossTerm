@@ -10,6 +10,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.*
 
 class HostFileAccessPolicyTest {
+    @BeforeTest
+    fun requireSupportedHost() = requireFileHostPlatform()
+
     @Test fun `control grants read write without a second prompt and revocation removes automatic access`() = runBlocking<Unit> {
         val root = Files.createTempDirectory("control-files")
         val control = AtomicBoolean(true)

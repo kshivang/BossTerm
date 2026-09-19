@@ -14,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.*
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.drawscope.clipPath
@@ -350,6 +351,9 @@ fun main(args: Array<String>) {
                     var sidebarResizePreview by remember { mutableStateOf<Float?>(null) }
                     val contentDensity = androidx.compose.ui.platform.LocalDensity.current
                     var contentWidth by remember { mutableStateOf(windowState.size.width) }
+                    var contentHeight by remember { mutableStateOf(windowState.size.height) }
+                    var nativeSidebarGeometry by remember { mutableStateOf<ai.rever.bossterm.compose.window.NativeSidebarGeometry?>(null) }
+                    var nativeSplitLayout by remember { mutableStateOf<ai.rever.bossterm.compose.window.NativeSplitWindowLayout?>(null) }
                     var updateBannerHeightPx by remember { mutableStateOf(0) }
                     var nativeHeaderHeight by remember { mutableStateOf(38.dp) }
                     var glassRefreshRevision by remember { mutableStateOf(0) }
@@ -883,6 +887,19 @@ fun main(args: Array<String>) {
                         ai.rever.bossterm.compose.tabs.constrainedSidebarWidth(
                             sidebarResizePreview ?: windowSettings.tabBarVerticalWidth, contentWidth.value,
                             dragging = sidebarResizePreview != null).dp else 0.dp
+                    DisposableEffect(nativeWindowFrameReady) {
+                        val controller = if (nativeWindowFrameReady) ai.rever.bossterm.compose.window.NativeSplitWindowLayout(
+                            this@Window.window.windowHandle, onGeometry = { nativeSidebarGeometry = it }
+                        ) else null
+                        nativeSplitLayout = controller
+                        onDispose { controller?.close() }
+                    }
+                    SideEffect {
+                        nativeSplitLayout?.update(contentWidth.value.toInt(), contentHeight.value.toInt(), expandedSidebarWidth.value,
+                            windowSettings.defaultBackgroundColor,
+                            if (nativeGlassInstalled && glassMode.includesSidebar)
+                                windowSettings.defaultBackgroundColor.copy(alpha = windowSettings.windowGlassTint.coerceIn(0f, 1f)) else null)
+                    }
                     val topInset = if (nativeWindowFrameReady && !useNativeTitleBar) 0.dp
                         else titleBarInset(styleApplied, placementController.placement)
 
@@ -906,16 +923,25 @@ fun main(args: Array<String>) {
                             .fillMaxSize()
                             // Native fullscreen preserves the floating WindowState geometry.
                             // Match the sidebar and toolbar to the actual content bounds.
-                            .onSizeChanged { contentWidth = with(contentDensity) { it.width.toDp() } }
+                            .onSizeChanged {
+                                with(contentDensity) {
+                                    contentWidth = it.width.toDp()
+                                    contentHeight = it.height.toDp()
+                                }
+                            }
                             .clip(RoundedCornerShape(cornerRadius))
                             .drawBehind {
-                                if (nativeGlassInstalled) {
-                                    val opacity = if (glassMode.includesTerminal)
+                                if (nativeGlassInstalled || nativeSidebarGeometry != null) {
+                                    val opacity = if (!nativeGlassInstalled) windowSettings.surfaceOpacity(false)
+                                    else if (glassMode.includesTerminal)
                                         1f - (1f - windowSettings.windowGlassOpacity.coerceIn(0f, 1f)) *
                                             (1f - windowSettings.windowGlassTint.coerceIn(0f, 1f))
                                         else 1f
                                     val background = windowSettings.defaultBackgroundColor.copy(alpha = opacity)
-                                    if (expandedSidebarWidth > 0.dp && glassMode.includesSidebar) {
+                                    if (expandedSidebarWidth > 0.dp && nativeSidebarGeometry != null) {
+                                        // Native split-item material owns the entire sidebar column.
+                                        clipRect(left = expandedSidebarWidth.toPx()) { drawRect(background) }
+                                    } else if (expandedSidebarWidth > 0.dp && glassMode.includesSidebar) {
                                         val sidebar = androidx.compose.ui.graphics.Path().apply {
                                             addRoundRect(androidx.compose.ui.geometry.RoundRect(
                                                 4.dp.toPx(), 4.dp.toPx(), expandedSidebarWidth.toPx(),
@@ -929,7 +955,7 @@ fun main(args: Array<String>) {
                                 }
                             },
                         color = windowSettings.defaultBackgroundColor.copy(
-                            alpha = if (nativeGlassInstalled) 0f else if (useNativeTitleBar) 1f else windowSettings.surfaceOpacity(false)
+                            alpha = if (nativeGlassInstalled || nativeSidebarGeometry != null) 0f else if (useNativeTitleBar) 1f else windowSettings.surfaceOpacity(false)
                         ),
                         shape = RoundedCornerShape(cornerRadius)
                     ) {
@@ -984,6 +1010,7 @@ fun main(args: Array<String>) {
                                 // Expose native availability only to this window's terminal chrome.
                                 CompositionLocalProvider(
                                     ai.rever.bossterm.compose.window.LocalNativeWindowFrame provides nativeWindowFrameReady,
+                                    ai.rever.bossterm.compose.window.LocalNativeSidebarGeometry provides nativeSidebarGeometry,
                                     LocalNativeWindowGlass provides nativeGlassInstalled,
                                     LocalWindowGlassTint provides windowSettings.windowGlassTint,
                                     LocalAuxiliaryGlassOpacity provides if (nativeGlassInstalled) windowSettings.windowGlassOpacity.coerceIn(0f, 1f) else 1f,

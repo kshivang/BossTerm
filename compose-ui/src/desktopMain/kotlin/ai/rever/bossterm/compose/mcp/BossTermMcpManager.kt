@@ -27,10 +27,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
 import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -903,53 +900,9 @@ class BossTermMcpManager(
             reattachBodyOverrideForTest?.let { it(port); return@launch }
             val targets = targets + if (config.autoDiscoverInstalledClis && settingsManager.settings.value.mcpAutoAttachInstalled)
                 McpAutoAttachment.installedTargets() else emptySet()
-            // One identity probe per distinct registered port (several CLIs
-            // usually point at the same default), before the fan-out.
-            val registeredPorts = targets.associateWith { target ->
-                runCatching {
-                    McpRegistrationScanner.registeredDefaultPort(target, config.serverName)
-                }.getOrNull()
-            }
-            val liveOwnerByPort = registeredPorts.values.filterNotNull().distinct()
-                .filter { it != port }
-                .associateWith { McpInstanceProbe.liveServerName(it) }
-
-            // Fan out: each CLI's mcp add/remove operates on its own config
-            // file, so they're independent. Running sequentially used to add
-            // up to ~5-10s for four targets; parallel keeps total time bound
-            // by the slowest one (~1-2s).
-            val outcomes = coroutineScope {
-                targets.mapNotNull { target ->
-                    val registered = registeredPorts[target]
-                    val rewrite = McpInstanceProbe.shouldRewrite(
-                        registeredDefaultPort = registered,
-                        ourPort = port,
-                        ourServerName = config.serverName,
-                        liveOwnerName = registered?.let { liveOwnerByPort[it] }
-                    )
-                    if (!rewrite) {
-                        log.info(
-                            "Skipping reattach for {} - a live '{}' instance already owns registered port {}",
-                            target.displayName, config.serverName, registered
-                        )
-                        return@mapNotNull null
-                    }
-                    async {
-                        target to McpCliAttacher.attach(
-                            target, config.serverName, port, quiet = true
-                        )
-                    }
-                }.awaitAll()
-            }
-            outcomes.forEach { (target, result) ->
-                if (result is McpAttachResult.Success) registry.markAttached(target)
-                if (result is McpAttachResult.CopiedToClipboard) {
-                    log.warn(
-                        "Auto-reattach failed for {}: {} - keeping it persisted; will retry on next bind",
-                        target.displayName, result.reason
-                    )
-                }
-            }
+            McpAutoAttachment.attachTargets(targets, config.serverName, port, onSuccess = { target ->
+                registry.markAttached(target)
+            })
         }
     }
 

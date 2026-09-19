@@ -240,6 +240,18 @@ internal object NativeGlass {
     fun preserveUnifiedToolbarSurface(window: Pointer) {
         sendVoid(window, "setTitlebarAppearsTransparent:", 1.toByte())
         sendPointer(window, "toolbar")?.let { sendVoid(it, "setShowsBaselineSeparator:", 0.toByte()) }
+        // Fullscreen reparents the native controls into a separate AppKit window.
+        // That host does not inherit titlebar transparency from the application window.
+        // Resolve it through the public button/window relationship, not a private
+        // class name or AppKit's backdrop-layer hierarchy. Repeat after reveal/rehosting.
+        val toolbarHost = sendPointer(sendPointer(window, "standardWindowButton:", 0L), "window")
+        if (toolbarHost != null && toolbarHost != window) {
+            sendVoid(toolbarHost, "setTitlebarAppearsTransparent:", 1.toByte())
+            val appearance = sendPointer(window, "appearance")
+            if (sendPointer(toolbarHost, "appearance") != appearance) {
+                sendVoid(toolbarHost, "setAppearance:", appearance)
+            }
+        }
     }
 
     fun enableWindowShadow(window: Pointer) {

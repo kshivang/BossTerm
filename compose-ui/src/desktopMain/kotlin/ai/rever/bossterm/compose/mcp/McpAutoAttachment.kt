@@ -2,6 +2,8 @@ package ai.rever.bossterm.compose.mcp
 
 import ai.rever.bossterm.compose.ai.AIAssistants
 import ai.rever.bossterm.compose.settings.SettingsManager
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -31,7 +33,8 @@ object McpAutoAttachment {
             if (!McpInstanceProbe.shouldRewrite(registered, port, "bossterm", owner)) return@async
             if (!stillRunning()) return@async
             val result = McpCliAttacher.attach(target, "bossterm", port, quiet = true)
-            if (result is McpAttachResult.Success) {
+            currentCoroutineContext().ensureActive()
+            if (result is McpAttachResult.Success && stillRunning()) {
                 SettingsManager.instance.updateSetting { copy(mcpAttachedTo = mcpAttachedTo + target.persistenceKey) }
             }
         } }.awaitAll()

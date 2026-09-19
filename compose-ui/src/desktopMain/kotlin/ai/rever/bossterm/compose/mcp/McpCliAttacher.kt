@@ -3,6 +3,7 @@ package ai.rever.bossterm.compose.mcp
 import ai.rever.bossterm.compose.ai.AIAssistantIds
 import ai.rever.bossterm.compose.ai.AIAssistants
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
@@ -478,7 +479,7 @@ object McpCliAttacher {
         port: Int,
         quiet: Boolean = false
     ): McpAttachResult =
-        withContext(Dispatchers.IO) {
+        runInterruptible(Dispatchers.IO) {
             // Per-target form: Claude Code gets the ${VAR:-port} env-expanded
             // variant, Codex gets /mcp, and SSE clients keep the root URL.
             val url = target.registrationUrl(serverName, port)
@@ -492,6 +493,8 @@ object McpCliAttacher {
                 target.resolvedRemoveCommand(serverName)?.let { removeCmd ->
                     try {
                         runProcess(removeCmd, target.timeoutSeconds)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
                     } catch (_: Throwable) {
                         // ignore: idempotency convenience only
                     }
@@ -506,7 +509,7 @@ object McpCliAttacher {
                 target.attachInProcess(serverName, url, home)?.let { wrote ->
                     if (wrote) {
                         log.info("Attach succeeded for {} (config written in-process)", target.displayName)
-                        return@withContext McpAttachResult.Success(target, "config written")
+                        return@runInterruptible McpAttachResult.Success(target, "config written")
                     }
                     log.warn(
                         "In-process config write for {} failed; {}",
@@ -515,7 +518,7 @@ object McpCliAttacher {
                     )
                     if (!quiet) copyToClipboard(target.resolvedClipboard(serverName, url))
                     val suffix = if (quiet) "" else " - config copied to clipboard"
-                    return@withContext McpAttachResult.CopiedToClipboard(
+                    return@runInterruptible McpAttachResult.CopiedToClipboard(
                         target,
                         "could not write config$suffix"
                     )
@@ -532,7 +535,7 @@ object McpCliAttacher {
                     )
                     if (!quiet) copyToClipboard(target.resolvedClipboard(serverName, url))
                     val suffix = if (quiet) "" else " - config copied to clipboard"
-                    return@withContext McpAttachResult.CopiedToClipboard(
+                    return@runInterruptible McpAttachResult.CopiedToClipboard(
                         target,
                         "manual setup required (no scriptable `mcp add`)$suffix"
                     )

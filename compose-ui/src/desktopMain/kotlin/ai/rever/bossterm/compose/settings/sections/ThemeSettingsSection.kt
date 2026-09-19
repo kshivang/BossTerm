@@ -57,6 +57,7 @@ fun ThemeSettingsSection(
     onSettingsSave: (() -> Unit)? = null,
     onRestartApp: (() -> Unit)? = null
 ) {
+    val supportsSystemTheme = ai.rever.bossterm.compose.window.supportsSystemTheme()
     val systemAppearance = ai.rever.bossterm.compose.window.rememberMacChromePreferences()
     val themeManager = remember { ThemeManager.instance }
     val paletteManager = remember { ColorPaletteManager.instance }
@@ -80,9 +81,9 @@ fun ThemeSettingsSection(
         // Theme selector
         SettingsSection(title = "Select Theme") {
             ThemeGrid(
-                themes = listOf((if (systemAppearance.dark) BuiltinThemes.LIQUID_GLASS_DARK else BuiltinThemes.LIQUID_GLASS_LIGHT)
-                    .copy(id = "system", name = "System")) + themeManager.getAllThemes(),
-                selectedThemeId = if (settings.followSystemTheme) "system" else currentTheme.id,
+                themes = (if (supportsSystemTheme) listOf((if (systemAppearance.dark) BuiltinThemes.LIQUID_GLASS_DARK else BuiltinThemes.LIQUID_GLASS_LIGHT)
+                    .copy(id = "system", name = "System")) else emptyList()) + themeManager.getAllThemes(),
+                selectedThemeId = if (supportsSystemTheme && settings.followSystemTheme) "system" else currentTheme.id,
                 onThemeSelected = { theme ->
                     if (theme.id == "system") themeManager.followSystemAppearance(systemAppearance.dark)
                     else themeManager.applyTheme(theme)

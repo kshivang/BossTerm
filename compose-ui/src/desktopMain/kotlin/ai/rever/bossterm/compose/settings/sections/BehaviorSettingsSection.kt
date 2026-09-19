@@ -96,7 +96,7 @@ fun BehaviorSettingsSection(
                 value = settings.tabBarVerticalWidth,
                 onValueChange = { onSettingsChange(settings.copy(tabBarVerticalWidth = it)) },
                 onValueChangeFinished = onSettingsSave,
-                valueRange = 120f..320f,
+                valueRange = 200f..320f,
                 steps = 19,
                 valueDisplay = { "${it.toInt()} dp" },
                 description = "Width of the left tab bar (only applies when position is 'left')",

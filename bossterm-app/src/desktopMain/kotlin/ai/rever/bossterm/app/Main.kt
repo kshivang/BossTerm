@@ -868,7 +868,9 @@ fun main(args: Array<String>) {
                         !windowSettings.tabBarCollapsed &&
                         (windowSettings.alwaysShowTabBar || tabbedState.tabs.size > 1) &&
                         windowState.size.width >= ai.rever.bossterm.compose.tabs.TabBarAutoCollapseWidth)
-                        (sidebarResizePreview ?: windowSettings.tabBarVerticalWidth).dp else 0.dp
+                        ai.rever.bossterm.compose.tabs.constrainedSidebarWidth(
+                            sidebarResizePreview ?: windowSettings.tabBarVerticalWidth, windowState.size.width.value,
+                            dragging = sidebarResizePreview != null).dp else 0.dp
                     val topInset = if (nativeWindowFrameReady && !useNativeTitleBar) 0.dp
                         else titleBarInset(styleApplied, placementController.placement)
 

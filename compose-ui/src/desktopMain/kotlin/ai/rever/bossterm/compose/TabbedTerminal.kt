@@ -1868,7 +1868,9 @@ fun TabbedTerminal(
                 onAddRemote = { showAddRemote = true },
                 orientation = if (tabBarOnLeft) ai.rever.bossterm.compose.tabs.TabBarOrientation.LEFT
                               else ai.rever.bossterm.compose.tabs.TabBarOrientation.TOP,
-                verticalWidth = (resizingSidebarWidth ?: settings.tabBarVerticalWidth).dp,
+                verticalWidth = ai.rever.bossterm.compose.tabs.constrainedSidebarWidth(
+                    resizingSidebarWidth ?: settings.tabBarVerticalWidth, maxWidth.value,
+                    dragging = resizingSidebarWidth != null).dp,
                 collapsed = collapsed,
                 onToggleCollapse = if (tabBarOnLeft && !sidebarToggleInHeader) onToggleCollapse else null,
                 onPin = if (tabBarOnLeft && !sidebarToggleInHeader) drawer?.onPin else null,
@@ -2453,7 +2455,7 @@ fun TabbedTerminal(
                     revealSuppressed = false
                 }
             }
-            val maximumSidebarWidth = (maxWidth.value - 320f).coerceAtLeast(200f)
+            val maximumSidebarWidth = ai.rever.bossterm.compose.tabs.constrainedSidebarWidth(Float.MAX_VALUE, maxWidth.value)
             Row(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.hoverable(railHover, enabled = hoverExpand && railShown)) {
                     if (!railShown || settings.showCollapsedTabStrip) tabBarComposable(
@@ -2471,7 +2473,7 @@ fun TabbedTerminal(
                             .pointerInput(headerDensity, maximumWidth) {
                                 var requestedWidth = 0f
                                 detectHorizontalDragGestures(
-                                    onDragStart = { requestedWidth = settingsManager.settings.value.tabBarVerticalWidth },
+                                    onDragStart = { requestedWidth = settingsManager.settings.value.tabBarVerticalWidth.coerceIn(200f, maximumWidth) },
                                     onDragCancel = { resizingSidebarWidth = null },
                                     onDragEnd = {
                                         if (requestedWidth < 200f) {

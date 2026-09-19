@@ -14,7 +14,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.*
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.drawscope.clipPath
@@ -939,8 +938,19 @@ fun main(args: Array<String>) {
                                         else 1f
                                     val background = windowSettings.defaultBackgroundColor.copy(alpha = opacity)
                                     if (expandedSidebarWidth > 0.dp && nativeSidebarGeometry != null) {
-                                        // Native split-item material owns the entire sidebar column.
-                                        clipRect(left = expandedSidebarWidth.toPx()) { drawRect(background) }
+                                        // Only the rounded native panel is a separate surface. The
+                                        // inset around it belongs to the same background as the terminal
+                                        // and toolbar; clearing the whole column exposes untinted glass.
+                                        val geometry = nativeSidebarGeometry!!
+                                        val inset = geometry.leadingInset.dp.toPx()
+                                        val bottomInset = geometry.bottomInset.dp.toPx()
+                                        val sidebar = androidx.compose.ui.graphics.Path().apply {
+                                            addRoundRect(androidx.compose.ui.geometry.RoundRect(
+                                                inset, inset, expandedSidebarWidth.toPx(),
+                                                (size.height - bottomInset).coerceAtLeast(inset),
+                                                androidx.compose.ui.geometry.CornerRadius(22.dp.toPx())))
+                                        }
+                                        clipPath(sidebar, androidx.compose.ui.graphics.ClipOp.Difference) { drawRect(background) }
                                     } else if (expandedSidebarWidth > 0.dp && glassMode.includesSidebar) {
                                         val sidebar = androidx.compose.ui.graphics.Path().apply {
                                             addRoundRect(androidx.compose.ui.geometry.RoundRect(

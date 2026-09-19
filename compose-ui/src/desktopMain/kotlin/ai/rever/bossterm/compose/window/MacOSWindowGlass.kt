@@ -4,6 +4,7 @@ import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import androidx.compose.runtime.staticCompositionLocalOf
 import com.sun.jna.Callback
 import com.sun.jna.Library
+import com.sun.jna.Memory
 import com.sun.jna.Native
 import com.sun.jna.NativeLibrary
 import com.sun.jna.Pointer
@@ -44,6 +45,7 @@ class MacOSWindowGlass private constructor(
                     view?.let {
                         NativeGlass.updateFrame(Pointer(windowHandle), it, width, height)
                         NativeGlass.setAppearance(it, cornerRadius, style, dark)
+                        NativeGlass.enableWindowShadow(Pointer(windowHandle))
                     }
                     installed = view != null
                 } else {
@@ -72,19 +74,50 @@ class MacOSWindowGlass private constructor(
     }
 
     companion object {
+        /** Keep Compose's header in the content area, outside AppKit's auto-hiding fullscreen toolbar. */
+        fun setNativeFrameFullscreen(windowHandle: Long, fullscreen: Boolean) {
+            if (!ShellCustomizationUtils.isMacOS() || windowHandle == 0L) return
+            NativeGlass.dispatch {
+                if (NativeGlass.isLiveWindow(windowHandle)) {
+                    NativeGlass.setFrameFullscreen(Pointer(windowHandle), fullscreen)
+                }
+            }
+        }
+        internal fun loadSystemSymbol(name: String, onRead: (ByteArray?) -> Unit) {
+            NativeGlass.dispatch {
+                val png = runCatching { NativeGlass.systemSymbolPng(name) }.getOrNull()
+                if (png == null) org.slf4j.LoggerFactory.getLogger(MacOSWindowGlass::class.java)
+                    .warn("SF Symbol '{}' unavailable; using the toolbar fallback icon", name)
+                SwingUtilities.invokeLater { onRead(png) }
+            }
+        }
+        internal fun readChromePreferences(onRead: (MacChromePreferences) -> Unit) {
+            NativeGlass.dispatch {
+                val preferences = runCatching { NativeGlass.chromePreferences() }
+                    .getOrDefault(MacChromePreferences(dark = true))
+                SwingUtilities.invokeLater { onRead(preferences) }
+            }
+        }
         /** Keep AWT undecorated/alpha-capable, but let AppKit own the native window silhouette. */
-        fun configureNativeFrame(windowHandle: Long, resizable: Boolean = true, auxiliary: Boolean = false, onConfigured: (Boolean) -> Unit) {
+        fun configureNativeFrame(windowHandle: Long, resizable: Boolean = true, auxiliary: Boolean = false,
+                                 onHeaderHeight: (Double) -> Unit = {}, onConfigured: (Boolean) -> Unit) {
             if (!ShellCustomizationUtils.isMacOS() || windowHandle == 0L) return
             NativeGlass.dispatch {
                 var configured = false
+                var headerHeight: Double? = null
                 try {
                     if (NativeGlass.isLiveWindow(windowHandle)) {
                         NativeGlass.configureFrame(Pointer(windowHandle), resizable, auxiliary)
+                        if (!auxiliary) headerHeight = NativeGlass.headerHeight(Pointer(windowHandle))
                         configured = true
                     }
                 } finally {
                     val result = configured
-                    SwingUtilities.invokeLater { onConfigured(result) }
+                    val height = headerHeight
+                    SwingUtilities.invokeLater {
+                        height?.let(onHeaderHeight)
+                        onConfigured(result)
+                    }
                 }
             }
         }
@@ -113,7 +146,31 @@ private interface DispatchApi : Library {
     fun dispatch_async_f(queue: Pointer, context: Pointer?, callback: MainQueueCallback)
 }
 
-private object NativeGlass {
+internal object NativeGlass {
+    fun systemSymbolPng(name: String): ByteArray? {
+        val symbolName = sendPointer(getClass("NSString"), "stringWithUTF8String:", name)
+        val original = sendPointer(getClass("NSImage"), "imageWithSystemSymbolName:accessibilityDescription:", symbolName, null)
+            ?: return null
+        val configuration = sendPointer(getClass("NSImageSymbolConfiguration"), "configurationWithPointSize:weight:", 32.0, 0.0)
+        val image = sendPointer(original, "imageWithSymbolConfiguration:", configuration) ?: original
+        val tiff = sendPointer(image, "TIFFRepresentation") ?: return null
+        val bitmap = sendPointer(getClass("NSBitmapImageRep"), "imageRepWithData:", tiff) ?: return null
+        val png = sendPointer(bitmap, "representationUsingType:properties:", 4L,
+            sendPointer(getClass("NSDictionary"), "dictionary")) ?: return null
+        val length = message.invokeLong(args(png, "length", emptyArray()))
+        if (length !in 1L..1_048_576L) return null
+        return sendPointer(png, "bytes")?.getByteArray(0, length.toInt())
+    }
+    fun chromePreferences(): MacChromePreferences {
+        val workspace = sendPointer(getClass("NSWorkspace"), "sharedWorkspace")
+        val defaults = sendPointer(getClass("NSUserDefaults"), "standardUserDefaults")
+        val key = sendPointer(getClass("NSString"), "stringWithUTF8String:", "AppleInterfaceStyle")
+        val style = sendPointer(defaults, "stringForKey:", key)
+        val dark = sendPointer(style, "UTF8String")?.getString(0) == "Dark"
+        fun flag(selector: String) = message.invokeInt(args(workspace, selector, emptyArray())) != 0
+        return MacChromePreferences(dark, flag("accessibilityDisplayShouldReduceTransparency"),
+            flag("accessibilityDisplayShouldIncreaseContrast"))
+    }
     private val objc = NativeLibrary.getInstance("objc")
     private val message = objc.getFunction("objc_msgSend")
     private val dispatchLibrary = NativeLibrary.getInstance("/usr/lib/libSystem.B.dylib")
@@ -147,7 +204,7 @@ private object NativeGlass {
         }
     }
 
-    private fun getClass(name: String): Pointer? =
+    fun getClass(name: String): Pointer? =
         objc.getFunction("objc_getClass").invokePointer(arrayOf(name))
 
     private fun args(receiver: Pointer?, selector: String, arguments: Array<out Any?>): Array<Any?> =
@@ -157,11 +214,27 @@ private object NativeGlass {
 
     // Function calls use fixed arguments, not a variadic JNA objc_msgSend declaration;
     // variadic arguments use a different calling convention on Apple Silicon.
-    private fun sendPointer(receiver: Pointer?, selector: String, vararg arguments: Any?): Pointer? =
+    fun sendPointer(receiver: Pointer?, selector: String, vararg arguments: Any?): Pointer? =
         message.invokePointer(args(receiver, selector, arguments))
 
     fun sendVoid(receiver: Pointer?, selector: String, vararg arguments: Any?) {
         message.invokeVoid(args(receiver, selector, arguments))
+    }
+
+    fun setFrameFullscreen(window: Pointer, fullscreen: Boolean) {
+        val mask = message.invokeLong(args(window, "styleMask", emptyArray()))
+        // A real AppKit toolbar owns both its controls and fullscreen layout.
+        sendVoid(window, "setStyleMask:", (mask or 1L or 32768L))
+        sendPointer(window, "toolbar")?.let { sendVoid(it, "setVisible:", 1.toByte()) }
+        enableWindowShadow(window)
+        for (buttonType in 0L..2L) {
+            sendVoid(sendPointer(window, "standardWindowButton:", buttonType), "setHidden:", 0.toByte())
+        }
+    }
+
+    fun enableWindowShadow(window: Pointer) {
+        sendVoid(window, "setHasShadow:", 1.toByte())
+        sendVoid(window, "invalidateShadow")
     }
 
     fun configureFrame(window: Pointer, resizable: Boolean, auxiliary: Boolean) {
@@ -170,11 +243,47 @@ private object NativeGlass {
         // preserving its alpha backing store. AppKit now supplies the real rounded frame
         // and fullscreen snapshot/animation instead of a borderless rectangular surface.
         sendVoid(window, "setStyleMask:", (mask or 1L or 2L or 4L or 32768L).let { if (resizable) it or 8L else it and 8L.inv() })
+        enableWindowShadow(window)
         sendVoid(window, "setTitlebarAppearsTransparent:", 1.toByte())
         sendVoid(window, "setTitleVisibility:", if (auxiliary) 0L else 1L)
+        if (!auxiliary && getClass("NSGlassEffectView") != null) {
+            // A real unified toolbar lets AppKit choose the larger Liquid Glass window
+            // silhouette, shadow and fullscreen shape. Full-size content keeps Compose
+            // beneath the transparent toolbar; its controls occupy the reserved header.
+            sendVoid(window, "setToolbarStyle:", 4L) // NSWindowToolbarStyleUnifiedCompact
+            if (sendPointer(window, "toolbar") == null) {
+                val identifier = sendPointer(getClass("NSString"), "stringWithUTF8String:", "ai.rever.bossterm.window-toolbar")
+                val toolbar = sendPointer(sendPointer(getClass("NSToolbar"), "alloc"), "initWithIdentifier:", identifier)
+                if (toolbar != null) {
+                    try {
+                        sendVoid(toolbar, "setAllowsUserCustomization:", 0.toByte())
+                        sendVoid(toolbar, "setShowsBaselineSeparator:", 0.toByte())
+                        sendVoid(window, "setToolbar:", toolbar)
+                    } finally {
+                        sendVoid(toolbar, "release") // NSWindow retains its toolbar.
+                    }
+                }
+            }
+        }
         for (buttonType in 0L..2L) {
             sendVoid(sendPointer(window, "standardWindowButton:", buttonType), "setHidden:", 0.toByte())
         }
+    }
+
+    fun headerHeight(window: Pointer): Double? {
+        // KVC boxes NSRect as NSValue. Copying its bytes avoids objc_msgSend's
+        // architecture-dependent struct-return ABI (notably on Intel Macs).
+        fun rect(key: String): DoubleArray? {
+            val name = sendPointer(getClass("NSString"), "stringWithUTF8String:", key)
+            val value = sendPointer(window, "valueForKey:", name) ?: return null
+            return Memory(32).use { bytes ->
+                sendVoid(value, "getValue:size:", bytes, 32L)
+                DoubleArray(4) { bytes.getDouble(it * 8L) }
+            }
+        }
+        val frame = rect("frame") ?: return null
+        val layout = rect("contentLayoutRect") ?: return null
+        return (frame[3] - layout[1] - layout[3]).takeIf { it.isFinite() && it > 0.0 }
     }
 
     fun isLiveWindow(handle: Long): Boolean {

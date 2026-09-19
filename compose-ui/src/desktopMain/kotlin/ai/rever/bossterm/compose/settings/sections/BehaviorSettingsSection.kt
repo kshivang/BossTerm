@@ -103,11 +103,17 @@ fun BehaviorSettingsSection(
                 enabled = settings.tabBarPosition == "left"
             )
             SettingsToggle(
+                label = "Show Collapsed Sidebar Strip",
+                checked = settings.showCollapsedTabStrip,
+                onCheckedChange = { onSettingsChange(settings.copy(showCollapsedTabStrip = it)) },
+                description = "Keep a narrow tab strip visible when the vertical sidebar is closed",
+                enabled = settings.tabBarPosition == "left"
+            )
+            SettingsToggle(
                 label = "Expand Sidebar on Hover",
                 checked = settings.tabBarHoverExpand,
                 onCheckedChange = { onSettingsChange(settings.copy(tabBarHoverExpand = it)) },
-                description = "Reveal the full sidebar while the pointer rests on the collapsed strip " +
-                    "(narrow window or manually collapsed). Off = use the chevron",
+                description = "Reveal the sidebar when hovering over the collapsed strip, or near the left edge when the strip is hidden",
                 enabled = settings.tabBarPosition == "left"
             )
             SettingsToggle(
@@ -115,6 +121,12 @@ fun BehaviorSettingsSection(
                 checked = settings.tabBarSummaryMode,
                 onCheckedChange = { onSettingsChange(settings.copy(tabBarSummaryMode = it)) },
                 description = "Show one chip per tab instead of one per split pane"
+            )
+            SettingsToggle(
+                label = "Random Colors for New Tabs",
+                checked = settings.randomNewTabColor,
+                onCheckedChange = { onSettingsChange(settings.copy(randomNewTabColor = it)) },
+                description = "Assign random colors without consecutive repeats. Applies to new tabs only; assigned colors take precedence over directory colors"
             )
             SettingsToggle(
                 label = "Color Tabs by Directory",

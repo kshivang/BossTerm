@@ -33,8 +33,17 @@ import androidx.compose.material.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.input.pointer.PointerIcon
+import ai.rever.bossterm.compose.window.LocalWindowGlassMode
+import ai.rever.bossterm.compose.window.WindowGlassMode
+import ai.rever.bossterm.compose.window.sidebarBackdropBlur
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -203,8 +212,6 @@ private val tabBarLog = org.slf4j.LoggerFactory.getLogger("ai.rever.bossterm.com
  * and the top bar pass null. See SidebarHoverReveal.kt for the reveal itself.
  */
 private data class SidebarDrawerHooks(
-    /** Retract the drawer: picking a pane, or the chevron once the drawer is pinned. */
-    val onDismiss: () -> Unit,
     /** Pin it open. Null once pinned, which is what puts the collapse chevron back. */
     val onPin: (() -> Unit)?,
     /** Menu / rename / drag in flight inside the drawer — blocks hover-driven retraction. */
@@ -258,9 +265,14 @@ fun TabbedTerminal(
     voiceToolSource: VoiceToolSource? = null,
     parentScope: kotlinx.coroutines.CoroutineScope? = null,
     /** Optional window header receiving the live status controls; embedded hosts keep the overlay. */
-    headerContent: (@Composable (statusControls: @Composable () -> Unit) -> Unit)? = null,
+    headerContent: (@Composable (statusControls: @Composable () -> Unit, toolbarControls: @Composable () -> Unit) -> Unit)? = null,
     /** False keeps the status pill floating over the terminal even when a header is supplied. */
-    statusControlsInHeader: Boolean = headerContent != null
+    statusControlsInHeader: Boolean = headerContent != null,
+    sidebarToggleInHeader: Boolean = false,
+    /** Header space above the terminal that an expanded sidebar may occupy. */
+    sidebarHeaderOverlapPx: Int = 0,
+    /** Transient resize width in dp; null restores the saved width. */
+    onSidebarResizePreview: ((Float?) -> Unit)? = null
 ) {
     // Settings integration
     val settingsManager = remember { SettingsManager.instance }
@@ -342,6 +354,8 @@ fun TabbedTerminal(
             parentScope = parentScope
         )
     }
+
+    SideEffect { tabController.randomNewTabColor = settings.randomNewTabColor }
 
     // Shared link-open handler: SSH URLs open a new tab with an SSH connection,
     // everything else is delegated to the caller's onLinkClick (false = let the
@@ -1356,9 +1370,34 @@ fun TabbedTerminal(
             },
         )
     }
-    Column(modifier = modifier.fillMaxSize()) {
-        headerContent?.invoke(statusStripContent)
-        BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
+    var resizingSidebarWidth by remember { mutableStateOf<Float?>(null) }
+    val sidebarResizePreviewCallback by rememberUpdatedState(onSidebarResizePreview)
+    LaunchedEffect(resizingSidebarWidth) {
+        sidebarResizePreviewCallback?.invoke(resizingSidebarWidth)
+    }
+    DisposableEffect(Unit) {
+        onDispose { sidebarResizePreviewCallback?.invoke(null) }
+    }
+    var windowHeaderHeightPx by remember { mutableStateOf(0) }
+    val headerDensity = androidx.compose.ui.platform.LocalDensity.current
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxWidth().zIndex(1f).onSizeChanged { windowHeaderHeightPx = it.height }) {
+        headerContent?.invoke(statusStripContent) {
+            ai.rever.bossterm.compose.window.TitleBarActions(
+                onNewTab = { requestNewTab() },
+                onSplitVertical = { splitActiveTab(SplitOrientation.VERTICAL) },
+                onSplitHorizontal = { splitActiveTab(SplitOrientation.HORIZONTAL) },
+                onAddRemote = { showAddRemote = true },
+                onSettings = onShowSettings
+            )
+        }
+        }
+        val headerOverlap = if (settings.tabBarPosition == "left" && !settings.tabBarCollapsed &&
+            (settings.alwaysShowTabBar || tabController.tabs.size > 1) &&
+            maxWidth >= ai.rever.bossterm.compose.tabs.TabBarAutoCollapseWidth) sidebarHeaderOverlapPx else 0
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(top = with(headerDensity) {
+            (windowHeaderHeightPx - headerOverlap).coerceAtLeast(0).toDp()
+        })) {
         val tabBarOnLeft = settings.tabBarPosition == "left"
         // collapsed renders the left bar as the slim icon rail; onToggleCollapse backs the
         // chevron. `drawer` is non-null only for the overlay drawer instance.
@@ -1701,7 +1740,6 @@ fun TabbedTerminal(
                 activeTabIndex = tabController.activeTabIndex,
                 focusedPaneId = focusedPaneId,
                 onPaneSelected = { tabIndex, paneId ->
-                    drawer?.onDismiss?.invoke()
                     tabController.switchToTab(tabIndex)
                     tabController.tabs.getOrNull(tabIndex)?.let { t -> splitStates[t.id]?.setFocusedPane(paneId) }
                 },
@@ -1731,6 +1769,19 @@ fun TabbedTerminal(
                     }
                 },
                 onNewTab = { requestNewTab() },
+                onNewTabAtCurrentPath = { tabIndex, paneId ->
+                    sessionFor(tabIndex, paneId)?.workingDirectory?.value?.let { cwd ->
+                        val openedInDaemon = daemonMode &&
+                            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached &&
+                            ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession(cwd)
+                        if (!openedInDaemon) {
+                            tabController.createTab(
+                                workingDir = cwd,
+                                initialCommand = settings.initialCommand.ifEmpty { null }
+                            )
+                        }
+                    }
+                },
                 onTabMoveToNewWindow = { index ->
                     val tab = tabController.tabs.getOrNull(index) ?: return@TabBar
                     val splitState = splitStates.remove(tab.id)
@@ -1817,13 +1868,22 @@ fun TabbedTerminal(
                 onAddRemote = { showAddRemote = true },
                 orientation = if (tabBarOnLeft) ai.rever.bossterm.compose.tabs.TabBarOrientation.LEFT
                               else ai.rever.bossterm.compose.tabs.TabBarOrientation.TOP,
-                verticalWidth = settings.tabBarVerticalWidth.dp,
+                verticalWidth = (resizingSidebarWidth ?: settings.tabBarVerticalWidth).dp,
                 collapsed = collapsed,
-                onToggleCollapse = if (tabBarOnLeft) onToggleCollapse else null,
-                onPin = if (tabBarOnLeft) drawer?.onPin else null,
+                onToggleCollapse = if (tabBarOnLeft && !sidebarToggleInHeader) onToggleCollapse else null,
+                onPin = if (tabBarOnLeft && !sidebarToggleInHeader) drawer?.onPin else null,
                 onTransientInteraction = drawer?.onBusyChange,
+                overlaySurface = drawer != null,
+                showSessionActions = !sidebarToggleInHeader,
                 // Null, not an empty-string provider: the tooltip drops the whole preview
                 // section (and its rule) when the setting is off.
+                terminalPreview = if (settings.tabHoverPreview) {
+                    { tabIndex, paneId ->
+                        sessionFor(tabIndex, paneId)?.let { session ->
+                            ai.rever.bossterm.compose.tabs.TerminalTabPreview(session, settings)
+                        }
+                    }
+                } else null,
                 scrollbackPreview = if (settings.tabHoverPreview) {
                     { tabIndex, paneId -> screenTextFor(tabIndex, paneId) }
                 } else {
@@ -2020,6 +2080,17 @@ fun TabbedTerminal(
                     }
                 },
                 onNewTab = { requestNewTab() },
+                onNewTabAtCurrentPath = { cwd ->
+                    val openedInDaemon = daemonMode &&
+                        ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.isAttached &&
+                        ai.rever.bossterm.compose.daemon.DaemonBridgeCoordinator.openSession(cwd)
+                    if (!openedInDaemon) {
+                        tabController.createTab(
+                            workingDir = cwd,
+                            initialCommand = settings.initialCommand.ifEmpty { null }
+                        )
+                    }
+                },
                 onSwitchShell = { shell ->
                     // Windows: switch to different shell (close current, open new with selected shell)
                     val currentIndex = tabController.activeTabIndex
@@ -2331,12 +2402,13 @@ fun TabbedTerminal(
             val narrow = maxWidth < ai.rever.bossterm.compose.tabs.TabBarAutoCollapseWidth
             val railShown = narrow || settings.tabBarCollapsed
             val hoverExpand = settings.tabBarHoverExpand
+            val visibleRailWidth = if (settings.showCollapsedTabStrip) ai.rever.bossterm.compose.tabs.TabBarRailWidth else 0.dp
             // Two independent reasons the drawer can be open, kept apart on purpose:
             // only the chevron-opened one installs the click-catcher below, so a
             // hover-revealed drawer never swallows the click that focuses the terminal.
             var drawerOpen by remember { mutableStateOf(false) }
             var hoverRevealed by remember { mutableStateOf(false) }
-            // Dismissing a reveal (picking a pane, or the chevron once pinned) sticks until
+            // Dismissing a reveal with its collapse control sticks until
             // the pointer leaves — otherwise it slides straight back in under the cursor.
             var revealSuppressed by remember { mutableStateOf(false) }
             // The revealed bar has a menu, rename, or drag in flight; retracting would
@@ -2362,6 +2434,17 @@ fun TabbedTerminal(
             // Re-arm on the pointer-left edge, so a dismissal can't be undone by the very
             // hover that is still sitting on the strip.
             val pointerInSidebar = pointerOnRail || pointerOnDrawer
+            LaunchedEffect(state, narrow) {
+                state?.sidebarToggleRequests?.collect {
+                    if (narrow) {
+                        drawerOpen = !drawerOpen
+                        hoverRevealed = false
+                        revealSuppressed = true
+                    } else {
+                        settingsManager.updateSetting { copy(tabBarCollapsed = !tabBarCollapsed) }
+                    }
+                }
+            }
             LaunchedEffect(pointerInSidebar) { if (!pointerInSidebar) revealSuppressed = false }
             LaunchedEffect(narrow) { if (!narrow) drawerOpen = false }
             LaunchedEffect(railShown, hoverExpand) {
@@ -2370,9 +2453,10 @@ fun TabbedTerminal(
                     revealSuppressed = false
                 }
             }
+            val maximumSidebarWidth = (maxWidth.value - 320f).coerceAtLeast(200f)
             Row(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.hoverable(railHover, enabled = hoverExpand && railShown)) {
-                    tabBarComposable(
+                    if (!railShown || settings.showCollapsedTabStrip) tabBarComposable(
                         railShown,
                         {
                             if (narrow) drawerOpen = true
@@ -2380,12 +2464,52 @@ fun TabbedTerminal(
                         },
                         null
                     )
+                    if (!railShown) {
+                        val maximumWidth = maximumSidebarWidth
+                        Box(Modifier.align(Alignment.CenterEnd).width(6.dp).fillMaxHeight()
+                            .pointerHoverIcon(PointerIcon(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.E_RESIZE_CURSOR)))
+                            .pointerInput(headerDensity, maximumWidth) {
+                                var requestedWidth = 0f
+                                detectHorizontalDragGestures(
+                                    onDragStart = { requestedWidth = settingsManager.settings.value.tabBarVerticalWidth },
+                                    onDragCancel = { resizingSidebarWidth = null },
+                                    onDragEnd = {
+                                        if (requestedWidth < 200f) {
+                                            settingsManager.updateSetting { copy(tabBarCollapsed = true) }
+                                        } else {
+                                            settingsManager.updateSetting {
+                                                copy(tabBarVerticalWidth = requestedWidth.coerceIn(200f, maximumWidth))
+                                            }
+                                        }
+                                        resizingSidebarWidth = null
+                                    },
+                                    onHorizontalDrag = { change, amount ->
+                                        change.consume()
+                                        requestedWidth += amount / headerDensity.density
+                                        resizingSidebarWidth = requestedWidth.coerceIn(44f, maximumWidth)
+                                    }
+                                )
+                            })
+                    }
                 }
-                Box(modifier = Modifier.weight(1f).fillMaxHeight()) { mainContent() }
+                Box(modifier = Modifier.weight(1f).fillMaxHeight()
+                    .padding(top = with(headerDensity) { headerOverlap.toDp() })
+                    .sidebarBackdropBlur(
+                        enabled = railShown && (drawerOpen || hoverRevealed) &&
+                            LocalWindowGlassMode.current != WindowGlassMode.TERMINAL,
+                        width = settings.tabBarVerticalWidth.dp
+                    )) { mainContent() }
+            }
+            if (railShown && !settings.showCollapsedTabStrip && hoverExpand) {
+                // An invisible edge target reveals the drawer without reserving
+                // any terminal width. The drawer overlays it once revealed.
+                Box(Modifier.align(Alignment.CenterStart)
+                    .width(ai.rever.bossterm.compose.tabs.TabBarRailWidth).fillMaxHeight()
+                    .hoverable(railHover))
             }
             if (narrow && drawerOpen) {
                 // Click-catcher over the terminal: any press outside the drawer closes it.
-                Box(Modifier.fillMaxSize().pointerInput(Unit) {
+                Box(Modifier.fillMaxSize().padding(start = visibleRailWidth).pointerInput(Unit) {
                     detectTapGestures(onPress = { drawerOpen = false })
                 })
             }
@@ -2404,22 +2528,27 @@ fun TabbedTerminal(
                         else settingsManager.updateSetting { copy(tabBarCollapsed = false) }
                     }
                 } else null
-                androidx.compose.animation.AnimatedVisibility(
-                    visible = drawerOpen || hoverRevealed,
-                    modifier = Modifier.align(Alignment.CenterStart).fillMaxHeight(),
-                    enter = slideInHorizontally(initialOffsetX = { -it }),
-                    exit = slideOutHorizontally(targetOffsetX = { -it })
-                ) {
-                    Box(modifier = Modifier.hoverable(drawerHover, enabled = hoverExpand && railShown)) {
-                        tabBarComposable(
-                            false,
-                            dismissDrawer,
-                            SidebarDrawerHooks(
-                                onDismiss = dismissDrawer,
-                                onPin = pinDrawer,
-                                onBusyChange = { drawerBusy = it }
+                // Reveal beside the rail; clip the slide animation at its right edge so
+                // neither the expanded panel nor its transition covers the rail's icons.
+                Box(Modifier.fillMaxSize()
+                    .padding(start = visibleRailWidth)
+                    .clipToBounds()) {
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = drawerOpen || hoverRevealed,
+                        modifier = Modifier.align(Alignment.CenterStart).fillMaxHeight(),
+                        enter = slideInHorizontally(initialOffsetX = { -it }),
+                        exit = slideOutHorizontally(targetOffsetX = { -it })
+                    ) {
+                        Box(modifier = Modifier.hoverable(drawerHover, enabled = hoverExpand && railShown)) {
+                            tabBarComposable(
+                                false,
+                                dismissDrawer,
+                                SidebarDrawerHooks(
+                                    onPin = pinDrawer,
+                                    onBusyChange = { drawerBusy = it }
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }

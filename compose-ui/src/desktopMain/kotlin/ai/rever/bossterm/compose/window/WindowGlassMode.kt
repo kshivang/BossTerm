@@ -6,8 +6,12 @@ import androidx.compose.runtime.staticCompositionLocalOf
 /** Persisted independently of terminal opacity and background-image blur. */
 enum class WindowGlassMode(val setting: String, val label: String) {
     OFF("off", "Off"),
-    BARS("bars", "Tab bar and top bar"),
-    WINDOW("window", "Entire window");
+    BARS("bars", "Sidebar"),
+    TERMINAL("terminal", "Terminal"),
+    WINDOW("window", "Both");
+
+    val includesSidebar: Boolean get() = this == BARS || this == WINDOW
+    val includesTerminal: Boolean get() = this == TERMINAL || this == WINDOW
 
     fun terminalOpacity(configuredOpacity: Float): Float =
         if (this == BARS) 1f else configuredOpacity.coerceIn(0f, 1f)

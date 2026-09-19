@@ -89,6 +89,11 @@ import kotlinx.coroutines.flow.StateFlow
 class TabbedTerminalState(
     val parentScope: CoroutineScope? = null
 ) {
+    internal val sidebarToggleRequests = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /** Toggle the visible sidebar, or its overlay drawer in a narrow window. */
+    fun toggleSidebar() { sidebarToggleRequests.tryEmit(Unit) }
+
     internal var tabController: TabController? by mutableStateOf(null)
     private var initialized = false
 

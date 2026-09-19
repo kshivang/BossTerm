@@ -139,6 +139,8 @@ data class TerminalSettings(
      * When a theme is applied, the color settings above are updated to match.
      */
     val activeThemeId: String = "liquid-glass-dark",
+    /** Resolve Liquid Glass Light/Dark from the system appearance. */
+    val followSystemTheme: Boolean = false,
 
     /**
      * Active color palette ID.
@@ -164,10 +166,10 @@ data class TerminalSettings(
     val windowGlassMode: String = "window",
 
     /** Theme-colored overlay above native glass (0 = no tint, 1 = opaque). */
-    val windowGlassTint: Float = 0.3f,
+    val windowGlassTint: Float = 0.5f,
 
     /** Terminal overlay opacity for Liquid Glass themes; ordinary theme opacity is independent. */
-    val windowGlassOpacity: Float = 0.3f,
+    val windowGlassOpacity: Float = 0.5f,
 
     /** Public NSGlassEffectView styles: "regular" or "clear". */
     val windowGlassStyle: String = "regular",
@@ -513,7 +515,7 @@ data class TerminalSettings(
     val tabBarPosition: String = "left",
 
     /** Width (dp) of the vertical (left) tab bar. Ignored when position is "top". */
-    val tabBarVerticalWidth: Float = 180f,
+    val tabBarVerticalWidth: Float = 200f,
 
     /**
      * Vertical (left) tab bar collapsed to a slim icon rail. Toggled by the bar's
@@ -521,6 +523,8 @@ data class TerminalSettings(
      * to force the rail (auto-collapse).
      */
     val tabBarCollapsed: Boolean = false,
+    /** Keep a narrow tab strip visible when the vertical sidebar is collapsed. */
+    val showCollapsedTabStrip: Boolean = false,
 
     /**
      * Reveal the full vertical bar as an overlay drawer while the pointer rests on the
@@ -543,6 +547,9 @@ data class TerminalSettings(
      * manual color (Color ▸ menu) always wins. Off = no color (default).
      */
     val tabColorByDirectory: Boolean = false,
+
+    /** Assign a random preset accent to new tabs, avoiding consecutive repeats. */
+    val randomNewTabColor: Boolean = false,
 
     /**
      * Include a few rows of a pane's screen in its tab hover tooltip. On by default.
@@ -1027,10 +1034,11 @@ data class TerminalSettings(
      * Enable the in-process Model Context Protocol (MCP) server.
      * When true, BossTerm exposes a streamable-HTTP MCP endpoint on localhost
      * so external tools (e.g. AI assistants) can introspect and control the
-     * terminal. Defaults to false for opt-in safety - the server only starts
-     * when this flag is explicitly enabled.
+     * terminal. Enabled by default; a saved disabled setting remains authoritative.
      */
-    val mcpEnabled: Boolean = false,
+    val mcpEnabled: Boolean = true,
+    /** Register MCP with supported installed CLIs on server startup. */
+    val mcpAutoAttachInstalled: Boolean = true,
 
     /**
      * Localhost TCP port for the in-process MCP server's streamable-HTTP endpoint.

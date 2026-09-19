@@ -57,6 +57,7 @@ fun ThemeSettingsSection(
     onSettingsSave: (() -> Unit)? = null,
     onRestartApp: (() -> Unit)? = null
 ) {
+    val systemAppearance = ai.rever.bossterm.compose.window.rememberMacChromePreferences()
     val themeManager = remember { ThemeManager.instance }
     val paletteManager = remember { ColorPaletteManager.instance }
     val currentTheme by themeManager.currentTheme.collectAsState()
@@ -79,10 +80,12 @@ fun ThemeSettingsSection(
         // Theme selector
         SettingsSection(title = "Select Theme") {
             ThemeGrid(
-                themes = themeManager.getAllThemes(),
-                selectedThemeId = currentTheme.id,
+                themes = listOf((if (systemAppearance.dark) BuiltinThemes.LIQUID_GLASS_DARK else BuiltinThemes.LIQUID_GLASS_LIGHT)
+                    .copy(id = "system", name = "System")) + themeManager.getAllThemes(),
+                selectedThemeId = if (settings.followSystemTheme) "system" else currentTheme.id,
                 onThemeSelected = { theme ->
-                    themeManager.applyTheme(theme)
+                    if (theme.id == "system") themeManager.followSystemAppearance(systemAppearance.dark)
+                    else themeManager.applyTheme(theme)
                 }
             )
         }
@@ -113,13 +116,13 @@ fun ThemeSettingsSection(
                         val mode = WindowGlassMode.entries.first { it.label == label }
                         onSettingsChange(settings.copy(
                             windowGlassMode = mode.setting,
-                            windowGlassOpacity = if (mode == WindowGlassMode.WINDOW && settings.windowGlassOpacity >= 1f)
+                            windowGlassOpacity = if (mode.includesTerminal && settings.windowGlassOpacity >= 1f)
                                 0.85f else settings.windowGlassOpacity
                         ))
                     },
                     description = "Native Liquid Glass on macOS 26+, Desktop Acrylic on Windows 11 22H2+, " +
                         "and KDE/KWin blur on Linux (X11/XWayland). Opaque when unavailable. " +
-                        "Tab bar and top bar keeps the terminal opaque. Changes apply immediately."
+                        "The terminal and top bar always share one surface. Changes apply immediately."
                 )
 
                 if (glassMode != WindowGlassMode.OFF) {
@@ -152,8 +155,8 @@ fun ThemeSettingsSection(
                         valueRange = 0f..1.0f,
                         steps = 19,
                         valueDisplay = { "${(it * 100).toInt()}%" },
-                        description = if (glassMode == WindowGlassMode.WINDOW)
-                            "Lower opacity reveals more glass behind the terminal; 100% keeps terminal text on a solid background"
+                        description = if (glassMode.includesTerminal)
+                            "Opacity of the shared terminal and top-bar surface; Glass Tint adds theme color above it"
                             else "Make the terminal background transparent to see through to desktop"
                     )
                 }

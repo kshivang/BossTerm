@@ -125,6 +125,11 @@ fun runDaemon(args: Array<String>) {
                     mcpServerRef.set(srv)
                     SettingsManager.instance.updateSetting { copy(mcpEnabled = true) }
                     log.info("Daemon MCP server enabled on 127.0.0.1:{}", p)
+                    daemonScope.launch {
+                        ai.rever.bossterm.compose.mcp.McpAutoAttachment.attachInstalledToDaemon(p) {
+                            mcpServerRef.get() === srv
+                        }
+                    }
                     p
                 }
             }

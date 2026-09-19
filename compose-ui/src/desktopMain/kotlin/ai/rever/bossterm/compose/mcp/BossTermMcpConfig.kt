@@ -95,9 +95,11 @@ data class BossTermMcpConfig(
     /**
      * First-launch enabled state written to settings when the embedder has
      * never been initialized on this machine. After that the user's setting
-     * wins. Default `false` for opt-in safety in plain bossterm-app.
+     * wins. Embedded hosts default to false; the standalone app opts in.
      */
     val defaultEnabled: Boolean = false,
+    /** Standalone app opt-in; embedded hosts retain their attachment policy. */
+    val autoDiscoverInstalledClis: Boolean = false,
     /**
      * When `false`, the MCP entry is hidden from the Settings side rail and
      * any host that respects this flag (e.g. the bossterm-app Tools menu).

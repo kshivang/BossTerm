@@ -894,13 +894,15 @@ class BossTermMcpManager(
      */
     internal fun launchAutoReattach(port: Int) {
         val targets = registry.attachedTargets.value
-        if (targets.isEmpty()) return
+        if (targets.isEmpty() && !(config.autoDiscoverInstalledClis && settingsManager.settings.value.mcpAutoAttachInstalled)) return
         log.info("Auto-reattaching {} CLI(s) to new endpoint…", targets.size)
         // A rebind supersedes any still-running fan-out from the previous bind —
         // let the newer port win instead of racing two writers over CLI configs.
         reattachJob?.cancel()
         reattachJob = scope.launch(Dispatchers.IO) {
             reattachBodyOverrideForTest?.let { it(port); return@launch }
+            val targets = targets + if (config.autoDiscoverInstalledClis && settingsManager.settings.value.mcpAutoAttachInstalled)
+                McpAutoAttachment.installedTargets() else emptySet()
             // One identity probe per distinct registered port (several CLIs
             // usually point at the same default), before the fan-out.
             val registeredPorts = targets.associateWith { target ->
@@ -940,6 +942,7 @@ class BossTermMcpManager(
                 }.awaitAll()
             }
             outcomes.forEach { (target, result) ->
+                if (result is McpAttachResult.Success) registry.markAttached(target)
                 if (result is McpAttachResult.CopiedToClipboard) {
                     log.warn(
                         "Auto-reattach failed for {}: {} - keeping it persisted; will retry on next bind",

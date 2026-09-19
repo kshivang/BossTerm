@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.tabs
 
+import ai.rever.bossterm.compose.util.uiTextWithFallback
 import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import ai.rever.bossterm.compose.window.LocalWindowGlassTint
 import ai.rever.bossterm.compose.window.LocalWindowGlassMode
@@ -14,6 +15,14 @@ import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.TooltipPlacement
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.material.icons.filled.Terminal
+import ai.rever.bossterm.compose.window.MacToolbarIcon
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
@@ -43,9 +52,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.SolidColor
@@ -471,11 +485,17 @@ fun TabBar(
      * locks the buffer. Null omits the tooltip's preview section entirely.
      */
     scrollbackPreview: ((tabIndex: Int, paneId: String) -> String?)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Render the revealed sidebar with its own translucent backing above terminal content. */
+    overlaySurface: Boolean = false,
+    showSessionActions: Boolean = true,
+    onNewTabAtCurrentPath: ((tabIndex: Int, paneId: String) -> Unit)? = null,
+    terminalPreview: (@Composable (tabIndex: Int, paneId: String) -> Unit)? = null
 ) {
     // Context menu controller for chip right-click menu
     val contextMenuController = remember { ContextMenuController() }
     val vertical = orientation == TabBarOrientation.LEFT
+    val groupGap = if (vertical) 8.dp else TabGroupGap
 
     // Pane currently being renamed inline (null = none). Set by the "Rename…"
     // context-menu item and cleared on commit/cancel.
@@ -544,6 +564,25 @@ fun TabBar(
         val moveNextLabel = if (vertical) "Move Tab Down" else "Move Tab Right"
         val items = listOf(
             ContextMenuController.MenuItem(id = "new_tab", label = "New Tab", enabled = true, action = { onNewTab() }),
+            ContextMenuController.MenuItem(
+                id = "new_tab_current_path", label = "New Tab at Current Path",
+                enabled = onNewTabAtCurrentPath != null,
+                action = { onNewTabAtCurrentPath?.invoke(tabIndex, paneId) }
+            ),
+            ContextMenuController.MenuItem(
+                id = "split_tab_vertical", label = "Split Pane Vertically", enabled = true,
+                action = {
+                    onPaneSelected(tabIndex, paneId)
+                    onSplitVertical()
+                }
+            ),
+            ContextMenuController.MenuItem(
+                id = "split_tab_horizontal", label = "Split Pane Horizontally", enabled = true,
+                action = {
+                    onPaneSelected(tabIndex, paneId)
+                    onSplitHorizontal()
+                }
+            ),
             ContextMenuController.MenuItem(
                 id = "create_worktree",
                 label = "Create Worktree for This…",
@@ -714,17 +753,35 @@ fun TabBar(
 
     // Tab-bar chrome follows the active terminal theme, so the left panel
     // re-styles live when the theme/palette is switched (collectAsState recomposes).
-    val tabBarTheme by ThemeManager.instance.currentTheme.collectAsState()
+    val terminalTheme by ThemeManager.instance.currentTheme.collectAsState()
+    val tabBarTheme = if (vertical) {
+        if (terminalTheme.backgroundColorValue.luminance() < 0.5f)
+            ai.rever.bossterm.compose.settings.theme.BuiltinThemes.LIQUID_GLASS_DARK
+        else ai.rever.bossterm.compose.settings.theme.BuiltinThemes.LIQUID_GLASS_LIGHT
+    } else terminalTheme
+    val nativeFrame = ai.rever.bossterm.compose.window.LocalNativeWindowFrame.current
     val nativeGlass = LocalNativeWindowGlass.current
     val glassTint = LocalWindowGlassTint.current.coerceIn(0f, 1f)
-    val glassEnabled = LocalWindowGlassMode.current != WindowGlassMode.OFF
-    val barBg = tabBarTheme.backgroundColorValue
+    val sidebarGlassAllowed = LocalWindowGlassMode.current != WindowGlassMode.TERMINAL
+    // Give the revealed drawer a consistent tint instead of the in-flow gradient.
+    val glassEnabled = !overlaySurface && (vertical || LocalWindowGlassMode.current != WindowGlassMode.OFF)
+    val overlayPreferences = ai.rever.bossterm.compose.window.rememberMacChromePreferences()
+    val overlayOpacity = if (overlayPreferences.reduceTransparency || overlayPreferences.increaseContrast) 1f else 0.80f
+    val barBg = tabBarTheme.backgroundColorValue.let { if (overlaySurface) it.copy(alpha = overlayOpacity) else it }
     val barFg = tabBarTheme.foregroundColor
     val barMuted = barFg.copy(alpha = 0.62f)
     val barDivider = barFg.copy(alpha = 0.14f)
     // Read here and passed down, not read inside TabItem: one subscriber for the whole
     // bar rather than one per chip, which is what the note in TabItem promises.
-    val barRaised = BossUiTheme.current.raised
+    val selectionTheme = remember(tabBarTheme) { ai.rever.bossterm.compose.settings.theme.UiTheme.fromTheme(tabBarTheme) }
+    val barRaised = selectionTheme.raised
+    // Light glass needs a stronger tint, composited over a stable base so the
+    // desktop behind the window cannot wash the selection back into the sidebar.
+    val selectionFill = if (selectionTheme.isDark) {
+        if (vertical) lerp(selectionTheme.signalWash, barFg,
+            if (terminalTheme.id == "liquid-glass-dark") 0.22f else 0.12f) else selectionTheme.signalWash
+    } else
+        selectionTheme.signalText.copy(alpha = 0.16f).compositeOver(selectionTheme.signalWash)
 
     val newTabButton: @Composable () -> Unit = {
         IconButton(onClick = onNewTab, modifier = Modifier.size(36.dp)) {
@@ -759,7 +816,7 @@ fun TabBar(
     }
 
     // One chip per pane. Panes of the same tab are clustered together (TabChipGap);
-    // separate tabs are spaced further apart (TabGroupGap). The focused pane of the
+    // separate tabs are spaced further apart (groupGap). The focused pane of the
     // active tab is highlighted.
     val chip: @Composable (TabBarGroup, TabBarPane, Modifier) -> Unit = { group, pane, chipModifier ->
         // Hover reveals what the chip had to clip: the full title, the untruncated path,
@@ -777,31 +834,65 @@ fun TabBar(
             muted = barMuted,
             divider = barDivider,
             preview = scrollbackPreview?.let { read -> { read(group.tabIndex, pane.paneId) } },
+            renderPreview = terminalPreview?.let { render -> { render(group.tabIndex, pane.paneId) } },
             modifier = chipModifier
         ) {
-            TabItem(
-                title = pane.title,
-                subtitle = pane.subtitle,
-                branch = pane.branch,
-                multiLine = vertical,
-                glassEnabled = glassEnabled,
-                tabTheme = tabBarTheme,
-                chipRaised = barRaised,
-                isActive = group.tabIndex == activeTabIndex && pane.paneId == focusedPaneId,
-                colorHex = pane.colorHex,
-                isEditing = pane.paneId == editingPaneId,
-                onSelected = { onPaneSelected(group.tabIndex, pane.paneId) },
-                onCommitRename = { newTitle ->
-                    editingPaneId = null
-                    onRename(group.tabIndex, pane.paneId, newTitle)
-                },
-                onCancelRename = { editingPaneId = null },
-                onClose = { onPaneClosed(group.tabIndex, pane.paneId) },
-                onContextMenu = { showMenuFor(group.tabIndex, pane.paneId) },
-                // fillMaxWidth again inside the tooltip's wrapper Box: `chipModifier` sized
-                // that Box, and the chip would otherwise shrink to its text inside it.
-                modifier = if (vertical) Modifier.fillMaxWidth() else Modifier
-            )
+            Column {
+                TabItem(
+                    title = pane.title,
+                    subtitle = pane.subtitle,
+                    branch = pane.branch,
+                    multiLine = vertical,
+                    glassEnabled = glassEnabled,
+                    tabTheme = tabBarTheme,
+                    chipRaised = barRaised,
+                    selectionFill = selectionFill,
+                    lightSelection = !selectionTheme.isDark,
+                    increaseContrast = overlayPreferences.increaseContrast,
+                    isActive = group.tabIndex == activeTabIndex && pane.paneId == focusedPaneId,
+                    colorHex = pane.colorHex,
+                    isEditing = pane.paneId == editingPaneId,
+                    onSelected = { onPaneSelected(group.tabIndex, pane.paneId) },
+                    onCommitRename = { newTitle ->
+                        editingPaneId = null
+                        onRename(group.tabIndex, pane.paneId, newTitle)
+                    },
+                    onCancelRename = { editingPaneId = null },
+                    onClose = { onPaneClosed(group.tabIndex, pane.paneId) },
+                    onContextMenu = { showMenuFor(group.tabIndex, pane.paneId) },
+                    // fillMaxWidth again inside the tooltip's wrapper Box: `chipModifier` sized
+                    // that Box, and the chip would otherwise shrink to its text inside it.
+                    modifier = if (vertical) Modifier.fillMaxWidth() else Modifier
+                )
+                if (vertical && (group.panes.size == 1 || pane != group.panes.last())) {
+                    Box(Modifier.fillMaxWidth().padding(start = 34.dp, end = 10.dp, top = 2.dp)
+                        .height(0.5.dp).background(barDivider))
+                }
+            }
+        }
+    }
+
+    // A single enclosure makes the tab boundary distinct from its individual panes.
+    val paneGroup: @Composable (TabBarGroup) -> Unit = { group ->
+        val split = group.panes.size > 1
+        Column(
+            modifier = Modifier.fillMaxWidth().then(if (split) Modifier
+                .clip(RoundedCornerShape(9.dp))
+                .background(barFg.copy(alpha = 0.035f))
+                .border(0.5.dp, barDivider, RoundedCornerShape(9.dp))
+                .padding(3.dp) else Modifier),
+            verticalArrangement = Arrangement.spacedBy(0.dp)
+        ) {
+            if (split) {
+                Row(Modifier.fillMaxWidth().padding(start = 9.dp, end = 9.dp, top = 4.dp, bottom = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    MacToolbarIcon(Icons.Default.VerticalSplit, "Split tab", barMuted,
+                        Modifier.size(12.dp), symbol = "rectangle.split.2x1")
+                    Text("${group.panes.size} panes", color = barMuted, fontSize = 10.sp)
+                }
+            }
+            group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
         }
     }
 
@@ -816,22 +907,52 @@ fun TabBar(
         }
     }
 
+    val sidebarPanel = vertical && !collapsed
+    var panelTop by remember { mutableStateOf(0f) }
+    val panelShape = RoundedCornerShape(22.dp)
+    val opaqueTerminal = LocalWindowGlassMode.current == WindowGlassMode.OFF
+    // An opaque terminal cannot show a desktop backdrop. Give its pinned sidebar
+    // the same contrasting wash as pane groups, slightly stronger for the full panel.
+    val panelColor = if ((opaqueTerminal || !sidebarGlassAllowed) && !overlaySurface) {
+        lerp(terminalTheme.backgroundColorValue, barFg,
+            if (overlayPreferences.increaseContrast) {
+                if (terminalTheme.backgroundColorValue.luminance() < 0.5f) 0.16f else 0.12f
+            } else if (terminalTheme.backgroundColorValue.luminance() < 0.5f) 0.10f
+            else 0.06f).copy(alpha = 1f)
+    } else tabBarTheme.backgroundColorValue.copy(
+        alpha = if (sidebarGlassAllowed && !overlayPreferences.reduceTransparency && !overlayPreferences.increaseContrast) glassTint else 1f
+    )
     Surface(
         modifier = modifier
             .then(
-                if (glassEnabled) Modifier.background(
-                    Brush.linearGradient(
-                        listOf(
-                            lerp(barBg, barFg, 0.10f).copy(alpha = if (nativeGlass) (glassTint + 0.06f).coerceAtMost(1f) else 0.94f),
-                            barBg.copy(alpha = if (nativeGlass) (glassTint - 0.06f).coerceAtLeast(0f) else 0.86f),
-                            lerp(barBg, tabBarTheme.cursorColor, 0.06f).copy(alpha = if (nativeGlass) (glassTint + 0.02f).coerceAtMost(1f) else 0.92f)
-                        )
-                    )
-                ).border(1.dp, barFg.copy(alpha = 0.10f)) else Modifier
-            )
-            .then(
                 if (vertical) Modifier.fillMaxHeight().width(if (collapsed) TabBarRailWidth else verticalWidth)
                 else Modifier.fillMaxWidth().height(TabBarHeight)
+            )
+            .then(
+                if (sidebarPanel) Modifier.padding(start = 4.dp, top = 4.dp, bottom = 4.dp)
+                    .onGloballyPositioned { panelTop = it.positionInWindow().y }
+                    .drawBehind {
+                        // The pinned panel continues behind native window chrome. Content
+                        // keeps its normal inset so tabs never overlap toolbar controls.
+                        val extension = if (nativeFrame && !overlaySurface) (panelTop - 4.dp.toPx()).coerceAtLeast(0f) else 0f
+                        val origin = androidx.compose.ui.geometry.Offset(0f, -extension)
+                        val bounds = androidx.compose.ui.geometry.Size(size.width, size.height + extension)
+                        val radius = androidx.compose.ui.geometry.CornerRadius(22.dp.toPx())
+                        drawRoundRect(panelColor, origin, bounds, radius)
+                        drawRoundRect(
+                            barFg.copy(alpha = if (overlayPreferences.increaseContrast) 0.55f else 0.18f),
+                            origin, bounds, radius,
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                (if (overlayPreferences.increaseContrast) 1.5.dp else 0.75.dp).toPx())
+                        )
+                    }
+                    .clip(panelShape)
+                else if (glassEnabled) Modifier.background(
+                    Brush.linearGradient(listOf(
+                        lerp(barBg, barFg, 0.10f).copy(alpha = if (nativeGlass) (glassTint + 0.06f).coerceAtMost(1f) else 0.94f),
+                        barBg.copy(alpha = if (nativeGlass) (glassTint - 0.06f).coerceAtLeast(0f) else 0.86f)
+                    ))
+                ).border(1.dp, barFg.copy(alpha = 0.10f)) else Modifier
             )
             .then(
                 if (vertical) {
@@ -858,8 +979,9 @@ fun TabBar(
                 }
             ),
         // Both horizontal and vertical bars can expose the native glass surface.
-        color = if (glassEnabled) Color.Transparent else barBg,
-        shadowElevation = if (glassEnabled) 0.dp else 2.dp
+        shape = if (sidebarPanel) panelShape else androidx.compose.ui.graphics.RectangleShape,
+        color = if (sidebarPanel || glassEnabled) Color.Transparent else barBg,
+        shadowElevation = if (sidebarPanel) 0.dp else if (overlaySurface) 8.dp else if (glassEnabled) 0.dp else 2.dp
     ) {
         if (vertical && collapsed) {
             // Slim icon rail: expand chevron on top, one accent dot per pane (click to
@@ -876,7 +998,7 @@ fun TabBar(
                 }
                 Column(
                     modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(TabGroupGap / 2),
+                    verticalArrangement = Arrangement.spacedBy(groupGap / 2),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     // Same flattened ordering as the top bar: local tabs, then remote mirrors.
@@ -900,6 +1022,9 @@ fun TabBar(
                                     divider = barDivider,
                                     preview = scrollbackPreview?.let { read ->
                                         { read(group.tabIndex, pane.paneId) }
+                                    },
+                                    renderPreview = terminalPreview?.let { render ->
+                                        { render(group.tabIndex, pane.paneId) }
                                     }
                                 ) {
                                     Box(
@@ -921,22 +1046,26 @@ fun TabBar(
                         }
                     }
                 }
-                Spacer(Modifier.height(6.dp))
-                Box(Modifier.fillMaxWidth(0.7f).height(1.dp).background(barDivider))
-                Spacer(Modifier.height(4.dp))
-                barButton(Icons.Default.Cloud, "Add remote session", onAddRemote)
+                if (showSessionActions) {
+                    Spacer(Modifier.height(6.dp))
+                    Box(Modifier.fillMaxWidth(0.7f).height(1.dp).background(barDivider))
+                    Spacer(Modifier.height(4.dp))
+                    barButton(Icons.Default.Cloud, "Add remote session", onAddRemote)
+                }
             }
         } else if (vertical) {
             Column(modifier = Modifier.fillMaxSize().padding(6.dp)) {
                 // Action toolbar pinned at the top, then a divider…
-                actionBar()
-                Spacer(Modifier.height(6.dp))
-                Box(Modifier.fillMaxWidth().height(1.dp).background(barDivider))
-                Spacer(Modifier.height(8.dp))
+                if (showSessionActions) {
+                    actionBar()
+                    Spacer(Modifier.height(6.dp))
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(barDivider))
+                    Spacer(Modifier.height(8.dp))
+                }
                 // …with scrollable tab/pane chips filling the rest.
                 Column(
                     modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(TabGroupGap)
+                    verticalArrangement = Arrangement.spacedBy(groupGap)
                 ) {
                     groups.forEach { group ->
                         Column(
@@ -1011,7 +1140,7 @@ fun TabBar(
                                 },
                             verticalArrangement = Arrangement.spacedBy(TabChipGap)
                         ) {
-                            group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                            paneGroup(group)
                         }
                     }
                     // Each connected remote session: a bordered box with the link header, its
@@ -1089,14 +1218,14 @@ fun TabBar(
                                 ) { Icon(Icons.Default.Close, contentDescription = "Disconnect remote", tint = BossUiTheme.current.mist, modifier = Modifier.size(13.dp)) }
                             }
                             // Match the local bar: split panes of one tab hug together
-                            // (TabChipGap), separate tabs are spaced further apart (TabGroupGap).
+                            // (TabChipGap), separate tabs are spaced further apart (groupGap).
                             // A host sharing ALL its windows sections its own tabs per window
                             // (dim sub-title + that window's clusters), like the web viewer.
-                            Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
+                            Column(verticalArrangement = Arrangement.spacedBy(groupGap)) {
                                 if (rg.windowSections.isEmpty()) {
                                     rg.groups.forEach { group ->
                                         Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
-                                            group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                            paneGroup(group)
                                         }
                                     }
                                 } else {
@@ -1114,10 +1243,10 @@ fun TabBar(
                                                 // Hairline ties the sub-title to its section.
                                                 Box(Modifier.weight(1f).height(1.dp).background(BossUiTheme.current.line))
                                             }
-                                            Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
+                                            Column(verticalArrangement = Arrangement.spacedBy(groupGap)) {
                                                 sec.groups.forEach { group ->
                                                     Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
-                                                        group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                                        paneGroup(group)
                                                     }
                                                 }
                                             }
@@ -1194,11 +1323,11 @@ fun TabBar(
                                 }
                                 // The origin may share ALL its windows — section its tabs per
                                 // origin window (sub-title + targeted actions), like the host box.
-                                Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
+                                Column(verticalArrangement = Arrangement.spacedBy(groupGap)) {
                                     if (nest.windowSections.isEmpty()) {
                                         nest.groups.forEach { group ->
                                             Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
-                                                group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                                paneGroup(group)
                                             }
                                         }
                                     } else {
@@ -1215,10 +1344,10 @@ fun TabBar(
                                                     )
                                                     Box(Modifier.weight(1f).height(1.dp).background(BossUiTheme.current.line))
                                                 }
-                                                Column(verticalArrangement = Arrangement.spacedBy(TabGroupGap)) {
+                                                Column(verticalArrangement = Arrangement.spacedBy(groupGap)) {
                                                     sec.groups.forEach { group ->
                                                         Column(verticalArrangement = Arrangement.spacedBy(TabChipGap)) {
-                                                            group.panes.forEach { pane -> chip(group, pane, Modifier.fillMaxWidth()) }
+                                                            paneGroup(group)
                                                         }
                                                     }
                                                 }
@@ -1256,6 +1385,7 @@ fun TabBar(
                 }
                 // Bottom bar — connect to another BossTerm's shared session, plus the
                 // collapse chevron that shrinks the panel to the icon rail.
+                if (showSessionActions) {
                 Spacer(Modifier.height(8.dp))
                 Box(Modifier.fillMaxWidth().height(1.dp).background(barDivider))
                 Spacer(Modifier.height(6.dp))
@@ -1300,6 +1430,7 @@ fun TabBar(
                     }
                 }
             }
+            }
         } else {
             Row(
                 modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
@@ -1308,7 +1439,7 @@ fun TabBar(
             ) {
                 Row(
                     modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(TabGroupGap),
+                    horizontalArrangement = Arrangement.spacedBy(groupGap),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Local tab clusters, then remote-session clusters (flattened in the top
@@ -1344,18 +1475,22 @@ private fun TabTooltipCard(
     fg: Color,
     muted: Color,
     divider: Color,
-    preview: (() -> String?)? = null
+    preview: (() -> String?)? = null,
+    renderPreview: (@Composable () -> Unit)? = null
 ) {
     // Read once, when the card appears — NOT on every recomposition. The provider locks the
     // terminal buffer, and a preview that re-read itself under a live `tail -f` would both
     // churn the lock and reflow the card under the pointer. The popup subtree is disposed on
     // hide, so this re-reads on the next hover; keyed on the pane alone, since `preview` is a
     // fresh closure every composition and would otherwise invalidate on each one.
-    val previewLines = remember(pane.paneId) { tabTooltipPreview(preview?.invoke()) }
+    val previewLines = remember(pane.paneId) { if (renderPreview == null) tabTooltipPreview(preview?.invoke()) else emptyList() }
+    val preferences = ai.rever.bossterm.compose.window.rememberMacChromePreferences()
+    val glassPreview = LocalWindowGlassMode.current != WindowGlassMode.OFF &&
+        !preferences.reduceTransparency && !preferences.increaseContrast
     Surface(
-        color = bg,
-        shadowElevation = 4.dp,
-        shape = RoundedCornerShape(4.dp),
+        color = bg.copy(alpha = if (glassPreview) LocalWindowGlassTint.current.coerceIn(0f, 1f) else 1f),
+        shadowElevation = 8.dp,
+        shape = RoundedCornerShape(10.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, fg.copy(alpha = 0.14f))
     ) {
         Column(
@@ -1368,7 +1503,7 @@ private fun TabTooltipCard(
             // maxLines on both, not just the clip: 200 characters of a narrow path still wrap
             // to four rows, and the card must stay a tooltip.
             Text(
-                text = tabTooltipTitle(pane.title),
+                text = uiTextWithFallback(tabTooltipTitle(pane.title)),
                 color = fg,
                 fontSize = 12.sp,
                 fontFamily = FontFamily.Monospace,
@@ -1377,7 +1512,7 @@ private fun TabTooltipCard(
             )
             tabTooltipDetails(pane).forEach { line ->
                 Text(
-                    text = line,
+                    text = uiTextWithFallback(line),
                     color = muted,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
@@ -1385,13 +1520,16 @@ private fun TabTooltipCard(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            if (previewLines.isNotEmpty()) {
+            if (renderPreview != null) {
+                Spacer(Modifier.height(6.dp))
+                Box(Modifier.clip(RoundedCornerShape(6.dp))) { renderPreview() }
+            } else if (previewLines.isNotEmpty()) {
                 // A rule, not a gap: without it the terminal's own text reads as more tooltip
                 // metadata — and the pane's last line can be anything, including a path.
                 Box(Modifier.fillMaxWidth().padding(vertical = 3.dp).height(1.dp).background(divider))
                 previewLines.forEach { line ->
                     Text(
-                        text = line,
+                        text = uiTextWithFallback(line),
                         // Dimmer than the detail lines: this is quoted terminal output, and it
                         // must not out-shout the title it is attached to.
                         color = muted.copy(alpha = 0.72f),
@@ -1430,6 +1568,7 @@ private fun TabHoverTooltip(
     muted: Color,
     divider: Color,
     preview: (() -> String?)? = null,
+    renderPreview: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
@@ -1440,7 +1579,7 @@ private fun TabHoverTooltip(
     TooltipArea(
         tooltip = {
             TabTooltipCard(
-                pane = pane, bg = bg, fg = fg, muted = muted, divider = divider, preview = preview
+                pane = pane, bg = bg, fg = fg, muted = muted, divider = divider, preview = preview, renderPreview = renderPreview
             )
         },
         modifier = modifier,
@@ -1469,6 +1608,9 @@ private fun TabItem(
      * composable subscribes every chip independently.
      */
     chipRaised: Color,
+    selectionFill: Color,
+    lightSelection: Boolean,
+    increaseContrast: Boolean = false,
     colorHex: String?,
     isEditing: Boolean,
     onSelected: () -> Unit,
@@ -1483,6 +1625,9 @@ private fun TabItem(
     modifier: Modifier = Modifier
 ) {
     val accent = parseTabColor(colorHex)
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val rowShape = RoundedCornerShape(if (multiLine) 8.dp else 6.dp)
     // Chip colors derive from the active theme, collected once in TabBar and
     // passed in (one subscriber for the whole bar, not one per tab).
     val itemBg = tabTheme.backgroundColorValue
@@ -1501,9 +1646,10 @@ private fun TabItem(
     Surface(
         modifier = modifier
             .then(if (multiLine) Modifier.heightIn(min = 36.dp) else Modifier.height(36.dp))
-            .widthIn(min = 80.dp, max = 200.dp)
+            .then(if (multiLine) Modifier.fillMaxWidth() else Modifier.widthIn(min = 80.dp, max = 200.dp))
+            .hoverable(interaction)
             .then(
-                if (glassEnabled) Modifier
+                if (glassEnabled && !multiLine) Modifier
                     .clip(RoundedCornerShape(6.dp))
                     // Tint the glass from the same pane color used by the context menu.
                     // Keep the neutral highlight above it for a reflective finish.
@@ -1523,11 +1669,17 @@ private fun TabItem(
                     // Consume secondary presses before clickable can interpret them as a
                     // normal selection gesture.
                     .consumeSecondaryPress(onContextMenu)
-                    .clickable(onClick = onSelected)
+                    .selectable(selected = isActive, interactionSource = interaction, indication = null, role = Role.Tab, onClick = onSelected)
             ),
-        shape = RoundedCornerShape(6.dp),
-        color = if (glassEnabled) Color.Transparent else if (isActive) itemRaised else itemBg,
-        border = androidx.compose.foundation.BorderStroke(
+        shape = rowShape,
+        color = if (multiLine) {
+            when {
+                isActive -> selectionFill.copy(alpha = if (increaseContrast || lightSelection || !glassEnabled) 1f else 0.95f)
+                hovered -> itemFg.copy(alpha = 0.08f)
+                else -> Color.Transparent
+            }
+        } else if (glassEnabled) Color.Transparent else if (isActive) itemRaised else itemBg,
+        border = if (multiLine && !increaseContrast) null else androidx.compose.foundation.BorderStroke(
             1.dp,
             when {
                 isActive && accent != null -> accent
@@ -1540,6 +1692,12 @@ private fun TabItem(
         // multi-line chip and the whole content of the single-line chip). Declared as a
         // RowScope receiver so the title's Modifier.weight(1f) resolves.
         val titleRow: @Composable RowScope.() -> Unit = {
+            if (multiLine) {
+                MacToolbarIcon(Icons.Default.Terminal, "Terminal session",
+                    tint = accent ?: if (isActive) itemFg else itemMuted,
+                    modifier = Modifier.size(16.dp), symbol = "terminal")
+                Spacer(Modifier.width(8.dp))
+            }
             if (isEditing) {
                 TabRenameField(
                     initial = title,
@@ -1548,21 +1706,22 @@ private fun TabItem(
                     modifier = Modifier.weight(1f)
                 )
             } else {
-                // Tab title - use Monospace font (Menlo on macOS) for monochrome symbols
+                // Sidebar labels use the UI font; terminal content retains its configured font.
                 Text(
-                    text = title,
-                    color = if (isActive) itemFg else itemMuted,
+                    text = uiTextWithFallback(title),
+                    color = if (multiLine || isActive) itemFg else itemMuted,
                     fontSize = 13.sp,
-                    fontFamily = FontFamily.Monospace,  // Menlo has monochrome Dingbats (✳, ❯, etc.)
+                    fontFamily = if (multiLine) FontFamily.Default else FontFamily.Monospace,
+                    fontWeight = if (multiLine && isActive) FontWeight.SemiBold else FontWeight.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
 
-                // Close button
-                IconButton(
+                // Keep the trailing slot stable as the close control appears on hover.
+                if (!multiLine || isActive || hovered) IconButton(
                     onClick = onClose,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size(if (multiLine) 24.dp else 20.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
@@ -1570,21 +1729,18 @@ private fun TabItem(
                         tint = if (isActive) itemMuted else itemIcon,
                         modifier = Modifier.size(14.dp)
                     )
-                }
+                } else Spacer(Modifier.size(24.dp))
             }
         }
 
         Row(
-            // Multi-line (left bar) chips are wrap-height inside a scroll column, where the
-            // accent stripe's fillMaxHeight() would resolve against an unbounded constraint and
-            // collapse to zero (invisible on unselected tabs). Bound the row to its intrinsic
-            // height so the stripe spans the chip — like the viewer's always-on left border.
+            // Sidebar rows grow with their available metadata; horizontal tabs stay compact.
             modifier = if (multiLine) Modifier.fillMaxWidth().heightIn(min = 36.dp).height(IntrinsicSize.Min)
                        else Modifier.fillMaxSize(),
             verticalAlignment = if (multiLine) Alignment.Top else Alignment.CenterVertically
         ) {
             // Leading accent stripe (manual color or auto-by-directory)
-            if (accent != null) {
+            if (accent != null && !multiLine) {
                 Box(Modifier.width(3.dp).fillMaxHeight().background(accent))
             }
             if (multiLine) {
@@ -1593,7 +1749,7 @@ private fun TabItem(
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .padding(start = if (accent != null) 8.dp else 12.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Row(
@@ -1604,27 +1760,27 @@ private fun TabItem(
 
                     if (!subtitle.isNullOrBlank() && subtitle != title) {
                         Text(
-                            text = subtitle,
+                            text = uiTextWithFallback(subtitle),
                             color = itemMuted,
                             fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = if (multiLine) FontFamily.Default else FontFamily.Monospace,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp)
                         )
                     }
                     if (!branch.isNullOrBlank()) {
                         Text(
-                            text = "⎇ $branch",
+                            text = uiTextWithFallback("⎇ $branch"),
                             // `itemMuted`, not `ok`: `ok` is a FILL token held to the
                             // 3:1 component floor and is 3.2:1 on the light identities.
                             // The ⎇ glyph already says "branch"; the green did not.
                             color = itemMuted,
                             fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = if (multiLine) FontFamily.Default else FontFamily.Monospace,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp)
                         )
                     }
                 }

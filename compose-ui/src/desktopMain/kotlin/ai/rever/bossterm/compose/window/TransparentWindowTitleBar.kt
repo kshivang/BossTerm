@@ -1,7 +1,11 @@
 package ai.rever.bossterm.compose.window
 
+import ai.rever.bossterm.compose.util.uiTextWithFallback
+
 import ai.rever.bossterm.compose.settings.theme.BossUiTheme
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -13,11 +17,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.window.WindowDraggableArea
 import androidx.compose.material.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ViewSidebar
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -35,6 +43,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.window.WindowScope
 import androidx.compose.ui.window.WindowState
 import java.awt.event.InputEvent
@@ -45,7 +55,7 @@ import java.awt.event.InputEvent
  *
  * Must be called within a WindowScope (inside Window composable).
  */
-@OptIn(ExperimentalComposeUiApi::class)
+@OptIn(ExperimentalComposeUiApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun WindowScope.CustomTitleBar(
     title: String,
@@ -60,93 +70,126 @@ fun WindowScope.CustomTitleBar(
     glassEnabled: Boolean = false,
     isFullscreen: Boolean = false,
     nativeTrafficLights: Boolean = false,
-    actions: (@Composable () -> Unit)? = null
+    actions: (@Composable () -> Unit)? = null,
+    headerHeight: androidx.compose.ui.unit.Dp = 32.dp,
+    onToggleSidebar: (() -> Unit)? = null,
+    leadingActions: (@Composable () -> Unit)? = null,
+    nativeWindowHandle: Long = 0L,
+    sidebarPanelWidth: Double = 0.0
 ) {
-    val chrome = BossUiTheme.current
-    val focused = LocalWindowInfo.current.isWindowFocused
-    val density = LocalDensity.current
-    var actionsWidth by remember { mutableStateOf(0.dp) }
-    val highlight = chrome.chalk.copy(alpha = if (focused) 0.08f else 0.04f)
-    val divider = chrome.chalk.copy(alpha = 0.08f)
-    val glassBrush = remember(backgroundColor, highlight) {
-        Brush.verticalGradient(listOf(highlight, Color.Transparent))
+    if (nativeWindowHandle != 0L) {
+        NativeTitleToolbar(nativeWindowHandle, title, onToggleSidebar, actions, leadingActions, sidebarPanelWidth,
+            dark = backgroundColor.luminance() < 0.5f)
+        return
     }
-    WindowDraggableArea(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(32.dp)
-            .background(backgroundColor)
-            .then(if (glassEnabled) Modifier.background(glassBrush) else Modifier)
-            .drawBehind {
-                drawLine(divider, Offset(0f, size.height), Offset(size.width, size.height), 1.dp.toPx())
+    val preferences = rememberMacChromePreferences()
+    val macOS = ai.rever.bossterm.compose.shell.ShellCustomizationUtils.isMacOS()
+    val systemChrome = remember(preferences.dark) { titleBarTheme(preferences.dark) }
+    val chrome = if (macOS) systemChrome else BossUiTheme.current
+    val chromeBackground = if (macOS) chrome.panel.copy(alpha = if (preferences.reduceTransparency || preferences.increaseContrast) 1f else LocalWindowGlassTint.current.coerceIn(0f, 1f)) else backgroundColor
+    val focused = LocalWindowInfo.current.isWindowFocused
+    var fullscreenLightsRevealed by remember(isFullscreen) { mutableStateOf(false) }
+    val lightsWidth by androidx.compose.animation.core.animateDpAsState(
+        targetValue = if (!isFullscreen || fullscreenLightsRevealed) 70.dp else 0.dp,
+        animationSpec = androidx.compose.animation.core.tween(160)
+    )
+    val titleMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val density = LocalDensity.current
+    val minimumTitleWidth = with(density) {
+        titleMeasurer.measure("MMMMM", style = androidx.compose.ui.text.TextStyle(
+            fontSize = 12.sp, fontWeight = FontWeight.Medium)).size.width.toDp()
+    }
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        // Keep both split actions visible whenever the controls and five-character
+        // title fit; the default terminal window is narrower than 850 dp.
+        val compact = maxWidth < minimumTitleWidth + 460.dp
+        val stacked = maxWidth < minimumTitleWidth + 380.dp
+        val rowHeight = headerHeight.coerceAtLeast(44.dp)
+        CompositionLocalProvider(
+            LocalTitleBarTheme provides chrome,
+            LocalTitleBarPreferences provides preferences,
+            LocalInTitleBar provides true,
+            LocalCompactTitleBar provides compact
+        ) {
+            val toolbar: @Composable () -> Unit = {
+                leadingActions?.invoke()
+                if (actions != null) actions()
+                CompositionLocalProvider(LocalTitleBarTrailing provides true) { leadingActions?.invoke() }
             }
-    ) {
-        Box(Modifier.fillMaxSize()) {
-            // A sibling behind the content receives only title/background clicks, never clicks
-            // on the traffic lights or status actions. Observe down before the drag area starts
-            // moving the window, and consume only the second click so ordinary dragging survives.
-            Box(Modifier.matchParentSize().onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
-                val mouse = event.nativeEvent as? java.awt.event.MouseEvent
-                if (!isFullscreen && mouse?.button == java.awt.event.MouseEvent.BUTTON1 && mouse.clickCount == 2) {
-                    event.changes.forEach { it.consume() }
-                    onMaximize()
+            WindowDraggableArea(Modifier.fillMaxWidth()
+                .height(rowHeight + if (stacked) 42.dp else 0.dp)
+                .onPointerEvent(PointerEventType.Enter) {
+                    if (isFullscreen) fullscreenLightsRevealed = true
                 }
-            })
-            BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-                // Equal gutters keep the title truly centered regardless of the shortcut's length.
-                // At narrow widths the title truncates before either control area is crowded.
-                val gutter = if (actions != null) minOf(maxOf(72.dp, actionsWidth + 12.dp), maxWidth / 2)
-                    else minOf(if (globalHotkeyHint == null) 72.dp else 128.dp, maxWidth / 3)
-                Text(
-                    text = title,
-                    color = chrome.chalk.copy(alpha = if (focused) 0.88f else 0.55f),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.align(Alignment.Center).padding(horizontal = gutter)
-                )
-
-                if (!isFullscreen && !nativeTrafficLights) {
-                    val groupInteractionSource = remember { MutableInteractionSource() }
-                    val isGroupHovered by groupInteractionSource.collectIsHoveredAsState()
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.align(Alignment.CenterStart)
-                            .hoverable(interactionSource = groupInteractionSource)
-                    ) {
-                        CloseButton(isGroupHovered = isGroupHovered, focused = focused, onClick = onClose)
-                        MinimizeButton(isGroupHovered = isGroupHovered, focused = focused, onClick = onMinimize)
-                        FullscreenButton(
-                            isGroupHovered = isGroupHovered,
-                            focused = focused,
-                            onFullscreen = onFullscreen,
-                            onMaximize = onMaximize
-                        )
+                .onPointerEvent(PointerEventType.Move) {
+                    if (isFullscreen) fullscreenLightsRevealed = true
+                }
+                .onPointerEvent(PointerEventType.Exit) { fullscreenLightsRevealed = false }
+                .background(chromeBackground)
+                .drawBehind {
+                    drawLine(chrome.line, Offset(0f, size.height), Offset(size.width, size.height), 1.dp.toPx())
+                }) {
+                Box(Modifier.fillMaxSize()) {
+                    Box(Modifier.matchParentSize().onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
+                        val mouse = event.nativeEvent as? java.awt.event.MouseEvent
+                        if (!isFullscreen && mouse?.button == java.awt.event.MouseEvent.BUTTON1 && mouse.clickCount == 2) {
+                            event.changes.forEach { it.consume() }
+                            onMaximize()
+                        }
+                    })
+                    Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+                        Row(Modifier.fillMaxWidth().height(rowHeight),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            // Fullscreen controls expand into the same row, like Notes.
+                            val lightInteraction = remember { MutableInteractionSource() }
+                            val lightsHovered by lightInteraction.collectIsHoveredAsState()
+                            if (lightsWidth > 0.dp) Box(Modifier.width(lightsWidth).fillMaxHeight().clipToBounds().hoverable(lightInteraction),
+                                contentAlignment = Alignment.CenterStart) {
+                                if (!nativeTrafficLights || isFullscreen) {
+                                    androidx.compose.animation.AnimatedVisibility(
+                                        visible = !isFullscreen || fullscreenLightsRevealed,
+                                        enter = androidx.compose.animation.fadeIn() +
+                                            androidx.compose.animation.slideInHorizontally { -it / 2 },
+                                        exit = androidx.compose.animation.fadeOut()
+                                    ) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            CloseButton(lightsHovered, focused, onClose)
+                                            MinimizeButton(lightsHovered, focused, onMinimize, enabled = !isFullscreen)
+                                            FullscreenButton(lightsHovered, focused, onFullscreen, onMaximize)
+                                        }
+                                    }
+                                }
+                            }
+                            if (onToggleSidebar != null) ActionCapsule {
+                                androidx.compose.material.IconButton(onToggleSidebar, Modifier.size(32.dp)) {
+                                    MacToolbarIcon(Icons.Outlined.ViewSidebar, "Toggle sidebar", chrome.chalk,
+                                        Modifier.size(18.dp), symbol = "sidebar.left")
+                                }
+                            }
+                            // Always reserve the remaining title area. Long titles truncate,
+                            // but are never removed at a width breakpoint; hover reveals all text.
+                            androidx.compose.foundation.TooltipArea(
+                                modifier = Modifier.weight(1f).widthIn(min = minimumTitleWidth),
+                                tooltip = {
+                                    androidx.compose.material.Surface(color = chrome.panel, shape = RoundedCornerShape(6.dp)) {
+                                        Text(uiTextWithFallback(title), Modifier.padding(8.dp), color = chrome.chalk)
+                                    }
+                                }
+                            ) {
+                                Text(uiTextWithFallback(title), color = chrome.chalk.copy(alpha = if (focused) 1f else 0.65f),
+                                    fontSize = 12.sp, fontWeight = FontWeight.Medium,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.fillMaxWidth())
+                            }
+                            if (!stacked) toolbar()
+                        }
+                        if (stacked) {
+                            Row(Modifier.fillMaxWidth().height(42.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                                verticalAlignment = Alignment.CenterVertically) { toolbar() }
+                        }
                     }
-                }
-
-                if (actions != null) {
-                    Row(
-                        modifier = Modifier.align(Alignment.CenterEnd)
-                            .widthIn(max = (maxWidth - 80.dp).coerceAtLeast(0.dp))
-                            .onSizeChanged { actionsWidth = with(density) { it.width.toDp() } },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) { actions() }
-                } else if (globalHotkeyHint != null) {
-                    Text(
-                        text = globalHotkeyHint,
-                        color = chrome.chalk.copy(alpha = if (focused) 0.55f else 0.35f),
-                        fontSize = 10.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.align(Alignment.CenterEnd)
-                            .widthIn(max = gutter)
-                            .background(chrome.chalk.copy(alpha = 0.04f), RoundedCornerShape(5.dp))
-                            .border(0.5.dp, divider, RoundedCornerShape(5.dp))
-                            .padding(horizontal = 6.dp, vertical = 3.dp)
-                    )
                 }
             }
         }
@@ -236,9 +279,10 @@ private fun CloseButton(
 private fun MinimizeButton(
     isGroupHovered: Boolean,
     focused: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    enabled: Boolean = true
 ) {
-    val bgColor = if (focused || isGroupHovered) TrafficLightColors.minimizeDefault else TrafficLightColors.inactive
+    val bgColor = if (enabled && (focused || isGroupHovered)) TrafficLightColors.minimizeDefault else TrafficLightColors.inactive
 
     Box(
         modifier = Modifier
@@ -247,11 +291,11 @@ private fun MinimizeButton(
             .background(bgColor)
             .border(0.5.dp, TrafficLightColors.minimizeBorder, CircleShape)
             .pointerInput(onClick) {
-                detectTapGestures(onTap = { onClick() })
+                detectTapGestures(onTap = { if (enabled) onClick() })
             },
         contentAlignment = Alignment.Center
     ) {
-        if (isGroupHovered) {
+        if (enabled && isGroupHovered) {
             Canvas(modifier = Modifier.size(6.dp)) {
                 val strokeWidth = 1.1.dp.toPx()
                 // Draw − icon - horizontal line

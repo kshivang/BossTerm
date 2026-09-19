@@ -574,6 +574,28 @@ afterEvaluate {
         mustRunAfter("createDistributable")
     }
 
+    // jpackage copies a prebuilt launcher whose SDK can predate Liquid Glass even
+    // on a modern Xcode runner. Normalize its SDK opt-in before final native signing
+    // and DMG packaging; keep its existing minimum macOS deployment target.
+    if (isMacOS) {
+        val appearanceScript = rootProject.file("scripts/prepare-macos-appearance.py")
+        val appearanceEntitlements = rootProject.file("compose-ui/src/desktopMain/resources/entitlements.plist")
+        val appearanceExec = project.objects.newInstance<InjectedExecOps>()
+        val packagedApp = layout.buildDirectory.dir("compose/binaries/main/app/BossTerm.app")
+        tasks.named("createDistributable").configure {
+            inputs.file(appearanceScript)
+            inputs.file(appearanceEntitlements)
+            doLast {
+                appearanceExec.execOps.exec {
+                    commandLine("python3", appearanceScript.absolutePath,
+                        packagedApp.get().asFile.absolutePath,
+                        "--identity", if (signingDisabled) "-" else macosSigningIdentity,
+                        "--entitlements", appearanceEntitlements.absolutePath)
+                }
+            }
+        }
+    }
+
     // CRITICAL: Make createDistributable finalize with signPty4jBinaries
     // This ensures PTY4J natives are signed before Compose Desktop signs the whole app
     tasks.findByName("createDistributable")?.apply {

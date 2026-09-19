@@ -165,7 +165,9 @@ private fun AuxiliaryGlassSurface(
     CompositionLocalProvider(
         LocalAuxiliaryGlassWindow provides window,
         LocalNativeWindowGlass provides installed,
-        LocalAuxiliaryGlassOpacity provides if (installed && enabled) settings.windowGlassOpacity.coerceIn(0f, 1f) else 1f,
+        // Auxiliary windows contain dense text and form controls. A changing native
+        // backdrop must not turn a dark palette into a light, low-contrast surface.
+        LocalAuxiliaryGlassOpacity provides if (installed && enabled) settings.windowGlassOpacity.coerceIn(0.94f, 1f) else 1f,
         LocalAuxiliaryGlassTint provides if (installed && enabled) settings.windowGlassTint.coerceIn(0f, 1f) else 1f
     ) { content() }
 }

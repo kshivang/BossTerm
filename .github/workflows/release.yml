@@ -158,6 +158,13 @@ jobs:
           RELEASE_BUILD: true
           APP_VERSION: ${{ needs.prepare-version.outputs.version }}
 
+      - name: Verify packaged macOS appearance and signature
+        run: |
+          python3 scripts/prepare-macos-appearance.py \
+            .gradleBuild/bossterm-app/compose/binaries/main/app/BossTerm.app \
+            --entitlements compose-ui/src/desktopMain/resources/entitlements.plist \
+            --verify-only
+
       - name: Notarize macOS DMG
         if: env.DISABLE_MACOS_SIGNING != 'true'
         run: |

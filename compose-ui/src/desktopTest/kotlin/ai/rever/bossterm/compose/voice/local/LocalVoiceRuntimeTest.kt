@@ -211,13 +211,10 @@ class LocalVoiceRuntimeTest {
     /**
      * Counts spawns and hands back a process that lives until it is destroyed.
      *
-     * [spawn] parks on a rendezvous before returning, which is what makes the race test actually
-     * reproduce the race. Without it the interleaving is left to luck: on a fast machine the first
-     * caller finishes spawning and publishes the process field before the second caller even looks,
-     * so the second caller takes the reuse path and the test passes even against the BROKEN code
-     * (verified — it did). Holding the winner inside `spawn` until the loser has arrived forces both
-     * callers past the "is a process already alive?" decision while it is still false, which is the
-     * only state in which the bug can occur.
+     * [spawn] can park before returning so the concurrency test keeps one caller inside the current
+     * start critical section while another caller arrives. This does not reproduce a historical
+     * double-spawn bug: the pre-change monitor covered both the liveness check and the spawn, so the
+     * second caller blocked at monitor entry and the old code also spawned once.
      *
      * [park] is null for tests that do not need the interference.
      */
@@ -240,17 +237,14 @@ class LocalVoiceRuntimeTest {
     }
 
     /**
-     * Widens the window the start race lives in, so the test cannot pass by luck.
+     * Keeps the first caller inside [ProcessRunner.spawn] long enough for a concurrent caller to
+     * contend for the current start sequence.
      *
-     * The race is real but narrow, and it is not "both callers execute the same line at once". In
-     * the pre-fix sequence the second caller could reach its spawn decision while the first was
-     * still inside `spawn()` — i.e. while the loser's `process?.isAlive` read still saw null. Left
-     * to chance the second caller usually turns up after the first has finished and published, takes
-     * the reuse path, and the test passes against BROKEN code: measured, an earlier ungated version
-     * of this test reported `spawns=1` against the pre-fix sequence, which is worse than no test.
-     *
-     * So the first caller parks inside `spawn()` until a second caller reaches the decision, or
-     * until [timeoutMs] expires — meaning there was no second arrival to wait for.
+     * Under the pre-change synchronized implementation, the first caller held the process monitor
+     * here, so the second caller could not reach its spawn decision and this gate timed out. Under
+     * the current implementation, the first caller holds [LocalVoiceRuntime]'s start Mutex instead.
+     * The test therefore guards the current structure's mutual exclusion; it is not a reproduction
+     * of a bug in the old monitor-based implementation.
      */
     private class SpawnGate(private val timeoutMs: Long = 600) {
         private val secondCallerArrived = CountDownLatch(1)
@@ -313,25 +307,22 @@ class LocalVoiceRuntimeTest {
     }
 
     /**
-     * THE regression test for the start race.
+     * Guards the current start structure's single-spawn invariant.
      *
-     * A call placed while someone presses Start in Settings — or two calls close together — used to
-     * spawn TWO servers. The loser's handle was then overwritten by the winner's and nothing could
-     * reap it: `stop()` and the shutdown hook only ever look at that one field, and the losing
-     * monitor's `process !== started` check returns without destroying anything. The result was an
-     * unauthenticated speech server left holding the port and an audio pipeline, while the winner
-     * failed with "address already in use" instead of starting.
+     * This is not a regression test for a historical leak. Before the spawn moved out of the process
+     * monitor, that monitor already covered both the decision and `ProcessBuilder.start()`, so two
+     * concurrent callers could not both spawn. The Mutex keeps that same mutual exclusion now that
+     * the blocking spawn no longer pins an IO thread while holding a JVM monitor.
      *
-     * Asserts the observable *cause* rather than only the count: `spawnCount` alone would also be
-     * satisfied by two serialized spawns, whereas the bug is specifically that one process is left
-     * with no owner — so teardown is required to have reaped every process that was spawned.
+     * The teardown assertion remains useful for the current structure: every process this test does
+     * spawn must still be owned and destroyed when the runtime is disposed.
      */
     @Test
     fun `two concurrent start requests spawn one server, not two`() = runBlocking {
         val gate = SpawnGate()
         val runner = SpawnCountingRunner(park = gate::pass)
-        // Every caller must be past `installed()` and inside the start sequence before either can be
-        // allowed to proceed, otherwise the test just races the test harness.
+        // Release both callers together so one contends for the start sequence while the other is
+        // parked inside spawn().
         val callersReady = CountDownLatch(2)
         val runtime = LocalVoiceRuntime(
             home = installedHome(),
@@ -342,8 +333,8 @@ class LocalVoiceRuntimeTest {
         )
         val pool = Executors.newFixedThreadPool(2)
         try {
-            // Released together rather than sequenced: the race is decided within milliseconds, so
-            // launching them from one coroutine and hoping was never a reliable reproduction.
+            // Use separate threads so the blocking fake spawn cannot prevent the other caller from
+            // reaching the Mutex.
             val start = CountDownLatch(1)
             val futures = (1..2).map {
                 pool.submit {
@@ -353,15 +344,14 @@ class LocalVoiceRuntimeTest {
                 }
             }
             start.countDown()
-            // Wait for the first caller to actually be inside spawn(), then give the second one the
-            // gate's full window to reach the decision. A fixed start sequence means it never does.
+            // Wait for the first caller to enter spawn(), then leave enough time for the second to
+            // contend. Mutual exclusion means the gate sees no second spawn attempt and times out.
             assertTrue(gate.awaitFirstParked(), "the first caller never reached spawn()")
             Thread.sleep(1_500)
             futures.forEach { it.cancel(true) }
         } finally {
             pool.shutdownNow()
-            // dispose() must reap everything spawned. That is exactly the property the orphan
-            // violated: it survived with no handle on it, so nothing could ever destroy it.
+            // The current structure must retain ownership of everything it spawns.
             runtime.dispose()
         }
         assertEquals(

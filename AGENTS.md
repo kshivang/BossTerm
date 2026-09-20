@@ -289,10 +289,12 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
   warning in Settings (`isLoopbackUrl`), because it is the one configuration that contradicts the
   feature's "no audio leaves the device" claim - a warning, not a refusal, since a bigger machine on
   the LAN is the documented reason the setting exists.
-  `LocalVoiceRuntime` serializes its whole start sequence on a `Mutex`, not just the process field:
-  the spawn decision and the spawn itself used to sit on opposite sides of a lock, so two concurrent
-  callers (a call placed while someone presses Start) both spawned, and the loser's handle was
-  overwritten and un-reapable - leaving an unauthenticated speech server holding the port.
+  `LocalVoiceRuntime` serializes its whole start sequence on a `Mutex`. The earlier implementation
+  already prevented double-spawn by running both the liveness check and `ProcessBuilder.start()`
+  inside the process monitor; it did not leak a losing process. The spawn moved out of that monitor
+  so starting a process does not pin a `Dispatchers.IO` thread while holding a JVM monitor, and the
+  Mutex preserves the mutual exclusion the monitor used to provide. Its concurrency test guards the
+  current structure's single-spawn invariant; it is not a reproduction of a historical race.
   `VoiceEndpointResult.Unavailable.needsLocalSetup` reaches the UI as `HostCallState.needsLocalSetup`,
   which draws the call bar's **Open Settings** button: the failure it marks is the only one with a
   remedy behind a button. Every other error gets Dismiss alone.

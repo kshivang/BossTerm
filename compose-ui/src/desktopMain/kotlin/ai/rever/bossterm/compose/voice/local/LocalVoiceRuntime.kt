@@ -57,23 +57,14 @@ internal class LocalVoiceRuntime(
     private val lock = Any()
 
     /**
-     * Serializes the whole start sequence, and this is load-bearing rather than tidy.
+     * Preserves the mutual exclusion that the old process monitor provided while allowing the start
+     * sequence to suspend.
      *
-     * [lock] only guards the process FIELD. The check that decides whether to spawn ("is a process
-     * already alive?") and the spawn itself used to sit on opposite sides of it, so concurrent
-     * callers — a call placed while someone presses Start in Settings, or two calls close together —
-     * could both clear the check and both spawn. The loser's handle was then overwritten; that
-     * orphan is unreachable, because [stop] and the shutdown hook only ever see the field and the
-     * losing monitor's `process !== started` check returns without destroying anything. What is left
-     * is an unauthenticated speech server holding the port and an audio pipeline with no handle to
-     * reap it — exactly the leak the class-level note exists to prevent.
-     *
-     * A state check (`_state.value !is Starting`) alone does NOT close this, which is worth knowing
-     * before simplifying it away: with the guard present but this Mutex removed, the race test still
-     * reports two spawns. The check and the spawn have to be one atomic step, which is what this is.
-     *
-     * A Mutex rather than a wider `synchronized`: the sequence suspends, and holding a monitor across
-     * a suspension point is how you deadlock an IO dispatcher.
+     * Before this Mutex, the liveness check and [ProcessRunner.spawn] both ran inside synchronized
+     * ([lock]), so concurrent callers already could not double-spawn or orphan a process. The drawback
+     * was that a potentially slow `ProcessBuilder.start()` pinned a [Dispatchers.IO] thread while it
+     * held a JVM monitor. Moving the spawn out of that monitor makes the sequence suspend-friendly;
+     * this Mutex keeps the original single-start guarantee around the new structure.
      */
     private val startMutex = Mutex()
 
@@ -152,11 +143,10 @@ internal class LocalVoiceRuntime(
      * Returns the URL to call, or null. Callers treat null as "do not place the call" — there is no
      * fallback to a cloud backend from here, by design.
      *
-     * The spawn decision and the spawn itself share [startMutex], so concurrent callers that arrive
-     * before the server is ready agree on ONE server instead of racing to bind the same port (see
-     * that field's note). Everything after it — the readiness poll — runs unlocked and concurrently,
-     * which is the point: the second caller waits on the first caller's server rather than being
-     * turned away.
+     * The spawn decision and the spawn itself share [startMutex], preserving the old monitor's
+     * single-start guarantee after the blocking spawn was moved out of that monitor. Everything after
+     * it — the readiness poll — runs unlocked and concurrently, so a second caller waits on the first
+     * caller's server rather than being turned away.
      */
     suspend fun ensureRunning(port: Int): String? {
         (_state.value as? LocalVoiceRuntimeState.Running)?.let { return it.url }
@@ -165,8 +155,8 @@ internal class LocalVoiceRuntime(
             return null
         }
         startMutex.withLock {
-            // Re-checked under the lock: another caller may have started the server, or lost the
-            // race and be waiting on it, while we were queued here.
+            // Re-checked under the Mutex: another caller may have started the server while this
+            // caller was suspended waiting to enter the start sequence.
             if (synchronized(lock) { process }?.isAlive != true &&
                 _state.value !is LocalVoiceRuntimeState.Starting
             ) {

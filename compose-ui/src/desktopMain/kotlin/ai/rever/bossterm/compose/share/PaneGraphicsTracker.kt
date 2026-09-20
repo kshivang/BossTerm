@@ -18,6 +18,14 @@ internal const val MAX_WEB_VIEWER_SCROLLBACK_LINES = 20_000
 internal const val MAX_WEB_IMAGE_RASTER_BYTES = 8 * 1024 * 1024
 internal const val MAX_WEB_PANE_RASTER_BYTES = 16L * 1024 * 1024
 
+/**
+ * Consecutive [ComposeTerminalDisplay.captureStableRenderFrame] failures before the
+ * debounced retry loop stops re-arming itself. A pane may hold DEC 2026 open for a
+ * long-running animation, so the retry must not poll at the sync debounce rate forever;
+ * the next model change (and the viewer-driven graphicsResync flow) re-polls instead.
+ */
+internal const val MAX_STABLE_FRAME_RETRIES = 3
+
 internal fun webViewerScrollbackLines(textBuffer: TerminalTextBuffer): Int {
     // LinesStorage treats a negative maxHistoryLinesCount as UNLIMITED. Clamping it as a number
     // would hand the viewer zero scrollback (and drop every history-row image placement), so an
@@ -49,10 +57,21 @@ internal class PaneGraphicsTracker(
     @Volatile
     var needsStableFrameRetry = false
         private set
+    private var stableFrameRetryAttempts = 0
 
     private fun <T> stableFrame(capture: () -> T): T? {
         val frame = if (display == null) capture() else display.captureStableRenderFrame(capture)
-        needsStableFrameRetry = frame == null
+        if (frame != null) {
+            stableFrameRetryAttempts = 0
+            needsStableFrameRetry = false
+        } else if (++stableFrameRetryAttempts > MAX_STABLE_FRAME_RETRIES) {
+            // Stop the debounce loop while a pane holds sync mode open indefinitely. The next
+            // model change still gets one poll attempt; the budget resets on the next successful
+            // capture (sync ended), and a viewer-driven graphicsResync covers a quiet pane.
+            needsStableFrameRetry = false
+        } else {
+            needsStableFrameRetry = true
+        }
         return frame
     }
 

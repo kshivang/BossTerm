@@ -446,7 +446,9 @@ class MirrorShare(
                 val full = entry.graphics.fullMessage(
                     commit = viewers.none { it.supportsPaneGraphics }
                 )
-                if (full.requiredImageIds.isNotEmpty()) entry.monitoringGraphics.set(true)
+                if (full.requiredImageIds.isNotEmpty() || full.resyncRequired) {
+                    entry.monitoringGraphics.set(true)
+                }
                 out.add(full)
             }
         }
@@ -496,11 +498,14 @@ class MirrorShare(
         }
         if (msg is ClientMessage.GraphicsResync) {
             if (vc.supportsPaneGraphics) {
-                val tracker = synchronized(taps) { taps[msg.paneId]?.graphics }
-                if (tracker != null) {
+                val entry = synchronized(taps) { taps[msg.paneId] }
+                if (entry != null) {
+                    val tracker = entry.graphics
                     val estimatedBytes = tracker.estimatedWireBytes()
                     if (vc.graphicsResyncLimiter.tryAcquire(msg.paneId, estimatedBytes)) {
-                        enqueueGraphics(vc, tracker.fullMessage(commit = false))
+                        val full = tracker.fullMessage(commit = false)
+                        if (full.resyncRequired) entry.monitoringGraphics.set(true)
+                        enqueueGraphics(vc, full)
                     } else {
                         vc.outbox.trySend(ShareProtocol.encodeServer(ServerMessage.GraphicsResyncDenied(
                             msg.paneId,
@@ -918,7 +923,12 @@ class MirrorShare(
                     ))
                     if (hasGraphicsViewer) {
                         val initialGraphics = graphics.fullMessage()
-                        if (initialGraphics.requiredImageIds.isNotEmpty()) entry.monitoringGraphics.set(true)
+                        // A resyncRequired marker means the capture overlapped DEC 2026; keep the
+                        // host-side poll loop alive so the stable frame is retried without waiting
+                        // for the viewer's own graphicsResync round-trip.
+                        if (initialGraphics.requiredImageIds.isNotEmpty() || initialGraphics.resyncRequired) {
+                            entry.monitoringGraphics.set(true)
+                        }
                         broadcastGraphics(initialGraphics)
                     }
                 }

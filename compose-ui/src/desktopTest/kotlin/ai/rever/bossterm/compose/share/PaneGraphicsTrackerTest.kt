@@ -9,6 +9,7 @@ import ai.rever.bossterm.terminal.model.image.TerminalImage
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -39,6 +40,46 @@ class PaneGraphicsTrackerTest {
             assertNull(tracker.pollUpdate(), "identical restored pet needs no raster or repaint")
             assertFalse(tracker.needsStableFrameRetry)
             assertEquals(initial.revision, tracker.fullMessage().revision)
+            buffer.clearImageCells(image.id)
+            assertEquals(listOf("42"), tracker.pollUpdate()!!.message.removedImageIds,
+                "a real deletion after sync still takes effect")
+        } finally {
+            display.setSynchronizedUpdate(false)
+            display.dispose()
+        }
+    }
+
+    @Test
+    fun `stable-frame retry loop is bounded while sync mode stays open`() {
+        val buffer = TerminalTextBuffer(8, 4, StyleState())
+        buffer.getLine(3)
+        val cache = ImageDataCache()
+        val image = TerminalImage(id = 42, data = byteArrayOf(1), format = ImageFormat.PNG,
+            intrinsicWidth = 1, intrinsicHeight = 1)
+        cache.storeImage(image)
+        buffer.writeImageCellRow(0, 1, image.id, 0, 2, 1)
+        val display = ComposeTerminalDisplay()
+        try {
+            val tracker = PaneGraphicsTracker("pane", buffer, cache, display = display)
+            assertNotNull(tracker.fullMessage())
+            display.setSynchronizedUpdate(true)
+            buffer.clearImageCells(image.id)
+            repeat(MAX_STABLE_FRAME_RETRIES) {
+                assertNull(tracker.pollUpdate(), "the erase half must not reach the viewer")
+                assertTrue(tracker.needsStableFrameRetry)
+            }
+            assertNull(tracker.pollUpdate())
+            assertFalse(tracker.needsStableFrameRetry, "give up re-arming after the retry budget")
+            assertTrue(tracker.hasVisibleGraphics(), "the committed placement stays")
+            // While sync stays open, further model changes still poll once each — bounded.
+            buffer.writeImageCellRow(0, 1, image.id, 0, 2, 1)
+            assertNull(tracker.pollUpdate())
+            assertFalse(tracker.needsStableFrameRetry)
+            // Sync ends: the next poll captures and resets the budget; identical restored
+            // content needs no raster or repaint.
+            display.setSynchronizedUpdate(false)
+            assertNull(tracker.pollUpdate())
+            assertFalse(tracker.needsStableFrameRetry)
             buffer.clearImageCells(image.id)
             assertEquals(listOf("42"), tracker.pollUpdate()!!.message.removedImageIds,
                 "a real deletion after sync still takes effect")

@@ -95,6 +95,17 @@ class LocalVoiceRuntimeTest {
         assertTrue(withoutUv.first().containsAll(listOf("python3", "-m", "venv")), "got: ${withoutUv.first()}")
     }
 
+    @Test
+    fun `managed process data stays under the managed home`() {
+        val home = File("/managed/voice-local")
+        val environment = LocalVoiceInstall.processEnvironment(home)
+        assertEquals(
+            setOf("UV_CACHE_DIR", "HF_HOME", "NLTK_DATA", "XDG_CACHE_HOME"),
+            environment.keys,
+        )
+        assertTrue(environment.values.all { File(it).toPath().startsWith(home.toPath()) }, "got: $environment")
+    }
+
     /**
      * The probe must not be the realtime socket: polling `/v1/realtime` would open and abandon a
      * real session every 500 ms while waiting for startup.
@@ -194,11 +205,15 @@ class LocalVoiceRuntimeTest {
         val spawned: MutableList<List<String>> = mutableListOf(),
         val process: Process? = null,
     ) : ProcessRunner {
-        override suspend fun run(command: List<String>, workingDir: File, timeoutMinutes: Long) =
-            ProcessResult(exitCode, "")
+        val runEnvironments = mutableListOf<Map<String, String>>()
+        val spawnEnvironments = mutableListOf<Map<String, String>>()
 
-        override fun spawn(command: List<String>, workingDir: File): Process {
+        override suspend fun run(command: List<String>, workingDir: File, timeoutMinutes: Long, environment: Map<String, String>) =
+            ProcessResult(exitCode, "").also { runEnvironments += environment }
+
+        override fun spawn(command: List<String>, workingDir: File, environment: Map<String, String>): Process {
             spawned += command
+            spawnEnvironments += environment
             return process ?: error("no process configured")
         }
     }
@@ -240,12 +255,12 @@ class LocalVoiceRuntimeTest {
         val spawnCount = AtomicInteger(0)
         val spawned = CopyOnWriteArrayList<FakeServerProcess>()
 
-        override suspend fun run(command: List<String>, workingDir: File, timeoutMinutes: Long) =
+        override suspend fun run(command: List<String>, workingDir: File, timeoutMinutes: Long, environment: Map<String, String>) =
             ProcessResult(0, "")
 
         // Not `suspend` in the interface, so the rendezvous blocks the calling thread. That is
         // deliberate: it reproduces a real spawn's latency without needing a scheduler.
-        override fun spawn(command: List<String>, workingDir: File): Process {
+        override fun spawn(command: List<String>, workingDir: File, environment: Map<String, String>): Process {
             park?.invoke()
             return FakeServerProcess(command.joinToString(" ")).also {
                 spawned += it
@@ -381,6 +396,19 @@ class LocalVoiceRuntimeTest {
         assertTrue(survivors.isEmpty(), "teardown left ${survivors.size} server process(es) alive: $survivors")
     }
 
+    @Test
+    fun `serve receives managed environment without replacing inherited variables`() = runBlocking {
+        val home = installedHome()
+        val runner = FakeRunner(process = FakeServerProcess("serve"))
+        val runtime = LocalVoiceRuntime(home = home, windows = false, exec = runner, probe = { true })
+        try {
+            assertEquals(LocalVoiceInstall.realtimeUrl(8765), runtime.ensureRunning(8765))
+            assertEquals(LocalVoiceInstall.processEnvironment(home), runner.spawnEnvironments.single())
+        } finally {
+            runtime.dispose()
+        }
+    }
+
     /** A second start request while the server is up reuses it rather than starting another. */
     @Test
     fun `a start request while running reuses the live server`() = runBlocking {
@@ -402,9 +430,9 @@ class LocalVoiceRuntimeTest {
     @Test
     fun `a failed spawn reports why and does not leave Starting behind`() = runBlocking {
         val failing = object : ProcessRunner {
-            override suspend fun run(command: List<String>, workingDir: File, timeoutMinutes: Long) =
+            override suspend fun run(command: List<String>, workingDir: File, timeoutMinutes: Long, environment: Map<String, String>) =
                 ProcessResult(0, "")
-            override fun spawn(command: List<String>, workingDir: File): Process =
+            override fun spawn(command: List<String>, workingDir: File, environment: Map<String, String>): Process =
                 throw java.io.IOException("no such executable")
         }
         val runtime = LocalVoiceRuntime(

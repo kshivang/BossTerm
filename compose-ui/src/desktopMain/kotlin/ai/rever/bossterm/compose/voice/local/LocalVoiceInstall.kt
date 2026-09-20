@@ -52,6 +52,22 @@ internal object LocalVoiceInstall {
     fun venv(home: File): File = File(home, "venv")
 
     /**
+     * Cache and downloaded-data locations inherited by every managed install and server process.
+     *
+     * Values are overlaid onto the inherited environment rather than replacing it, so Python, uv,
+     * native libraries, and platform tooling retain PATH and the rest of the user's environment.
+     * These are the independent locations observed from the pinned distribution: uv's package
+     * cache, Hugging Face's model cache, NLTK's downloaded tokenizers, and the XDG cache used by
+     * supporting Python packages.
+     */
+    fun processEnvironment(home: File): Map<String, String> = mapOf(
+        "UV_CACHE_DIR" to File(home, "uv-cache").absolutePath,
+        "HF_HOME" to File(home, "huggingface").absolutePath,
+        "NLTK_DATA" to File(home, "nltk-data").absolutePath,
+        "XDG_CACHE_HOME" to File(home, "cache").absolutePath,
+    )
+
+    /**
      * Executables inside a venv. Windows puts them in `Scripts` with an `.exe` suffix; every other
      * platform uses `bin`. Getting this wrong yields "installed successfully, cannot start".
      */

@@ -117,7 +117,9 @@ internal class LocalVoiceRuntime(
                 if (uv != null) "Installing with uv…" else "Installing with pip…"
             )
             for (command in commands) {
-                val result = runCatching { exec.run(command, home, INSTALL_TIMEOUT_MINUTES) }.getOrElse { e ->
+                val result = runCatching {
+                    exec.run(command, home, INSTALL_TIMEOUT_MINUTES, LocalVoiceInstall.processEnvironment(home))
+                }.getOrElse { e ->
                     _state.value = LocalVoiceRuntimeState.Failed("Install failed: ${e.javaClass.simpleName}")
                     return@launch
                 }
@@ -175,7 +177,9 @@ internal class LocalVoiceRuntime(
      */
     private fun spawnProcess(port: Int): Boolean {
         val command = LocalVoiceInstall.serveCommand(home, port, windows)
-        val started = runCatching { exec.spawn(command, home) }.getOrElse { e ->
+        val started = runCatching {
+            exec.spawn(command, home, LocalVoiceInstall.processEnvironment(home))
+        }.getOrElse { e ->
             _state.value = LocalVoiceRuntimeState.Failed(
                 "Couldn't start the local voice server: ${e.javaClass.simpleName}"
             )
@@ -272,7 +276,9 @@ internal class LocalVoiceRuntime(
     private suspend fun findPython(): String? {
         for (candidate in PYTHON_CANDIDATES) {
             val path = which(candidate) ?: continue
-            val version = runCatching { exec.run(listOf(path, "--version"), home, 1) }.getOrNull() ?: continue
+            val version = runCatching {
+                exec.run(listOf(path, "--version"), home, 1, LocalVoiceInstall.processEnvironment(home))
+            }.getOrNull() ?: continue
             // --version has historically printed to stderr as well as stdout; [tail] merges both.
             if (LocalVoiceInstall.pythonVersionOk(version.tail)) return path
         }
@@ -282,7 +288,8 @@ internal class LocalVoiceRuntime(
     private suspend fun which(name: String): String? =
         runCatching {
             val probe = if (windows) listOf("where", name) else listOf("which", name)
-            exec.run(probe, home, 1).takeIf { it.exitCode == 0 }?.tail?.lineSequence()
+            exec.run(probe, home, 1, LocalVoiceInstall.processEnvironment(home))
+                .takeIf { it.exitCode == 0 }?.tail?.lineSequence()
                 ?.firstOrNull { it.isNotBlank() }?.trim()
         }.getOrNull()
 
@@ -321,10 +328,19 @@ internal data class ProcessResult(val exitCode: Int, val tail: String)
 /** Process execution, injected so [LocalVoiceRuntime] is testable without spawning anything. */
 internal interface ProcessRunner {
     /** Run to completion, merging stderr into stdout, and return the tail of its output. */
-    suspend fun run(command: List<String>, workingDir: File, timeoutMinutes: Long): ProcessResult
+    suspend fun run(
+        command: List<String>,
+        workingDir: File,
+        timeoutMinutes: Long,
+        environment: Map<String, String> = emptyMap(),
+    ): ProcessResult
 
     /** Start a long-running process. The caller owns its lifetime. */
-    fun spawn(command: List<String>, workingDir: File): Process
+    fun spawn(
+        command: List<String>,
+        workingDir: File,
+        environment: Map<String, String> = emptyMap(),
+    ): Process
 }
 
 internal object SystemProcessRunner : ProcessRunner {
@@ -336,44 +352,55 @@ internal object SystemProcessRunner : ProcessRunner {
      */
     private const val TAIL_CHARS = 2_000
 
-    override suspend fun run(command: List<String>, workingDir: File, timeoutMinutes: Long): ProcessResult =
-        withContext(Dispatchers.IO) {
-            val process = ProcessBuilder(command)
-                .directory(workingDir.takeIf { it.isDirectory })
-                .redirectErrorStream(true)
-                .start()
-            // Read concurrently with waiting: a process that fills the pipe buffer blocks forever
-            // if nobody drains it, which turns a timeout into a hang that outlives the timeout.
-            val output = StringBuilder()
-            val reader = Thread({
-                runCatching {
-                    process.inputStream.bufferedReader().forEachLine { line ->
-                        synchronized(output) {
-                            output.append(line).append('\n')
-                            if (output.length > TAIL_CHARS * 4) output.delete(0, output.length - TAIL_CHARS * 2)
-                        }
+    override suspend fun run(
+        command: List<String>,
+        workingDir: File,
+        timeoutMinutes: Long,
+        environment: Map<String, String>,
+    ): ProcessResult = withContext(Dispatchers.IO) {
+        val builder = ProcessBuilder(command)
+            .directory(workingDir.takeIf { it.isDirectory })
+            .redirectErrorStream(true)
+        builder.environment().putAll(environment)
+        val process = builder.start()
+        // Read concurrently with waiting: a process that fills the pipe buffer blocks forever
+        // if nobody drains it, which turns a timeout into a hang that outlives the timeout.
+        val output = StringBuilder()
+        val reader = Thread({
+            runCatching {
+                process.inputStream.bufferedReader().forEachLine { line ->
+                    synchronized(output) {
+                        output.append(line).append('\n')
+                        if (output.length > TAIL_CHARS * 4) output.delete(0, output.length - TAIL_CHARS * 2)
                     }
                 }
-            }, "boss-voice-local-reader").apply { isDaemon = true; start() }
-            val finished = process.waitFor(timeoutMinutes, TimeUnit.MINUTES)
-            if (!finished) {
-                process.destroyForcibly()
-                reader.interrupt()
-                return@withContext ProcessResult(-1, "timed out after ${timeoutMinutes}m")
             }
-            runCatching { reader.join(1_000) }
-            val text = synchronized(output) { output.toString() }
-            ProcessResult(process.exitValue(), text.takeLast(TAIL_CHARS).trim())
+        }, "boss-voice-local-reader").apply { isDaemon = true; start() }
+        val finished = process.waitFor(timeoutMinutes, TimeUnit.MINUTES)
+        if (!finished) {
+            process.destroyForcibly()
+            reader.interrupt()
+            return@withContext ProcessResult(-1, "timed out after ${timeoutMinutes}m")
         }
+        runCatching { reader.join(1_000) }
+        val text = synchronized(output) { output.toString() }
+        ProcessResult(process.exitValue(), text.takeLast(TAIL_CHARS).trim())
+    }
 
-    override fun spawn(command: List<String>, workingDir: File): Process =
-        ProcessBuilder(command)
+    override fun spawn(
+        command: List<String>,
+        workingDir: File,
+        environment: Map<String, String>,
+    ): Process {
+        val builder = ProcessBuilder(command)
             .directory(workingDir.takeIf { it.isDirectory })
             .redirectErrorStream(true)
             // Discard rather than pipe: nothing drains a long-running server's output, and a full
             // pipe buffer would wedge the server itself once it had logged enough.
             .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-            .start()
+        builder.environment().putAll(environment)
+        return builder.start()
+    }
 }
 
 /** Default readiness probe: a plain GET that does not allocate a realtime session. */

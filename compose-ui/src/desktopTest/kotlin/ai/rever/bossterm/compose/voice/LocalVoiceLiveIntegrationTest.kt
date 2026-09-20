@@ -10,6 +10,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import org.junit.Assume.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -27,7 +28,7 @@ class LocalVoiceLiveIntegrationTest {
     @Test
     fun `real JDK transport establishes a keyless session and completes a tool round trip`() = runBlocking {
         val url = System.getenv(LIVE_URL_ENV)?.trim().orEmpty()
-        if (url.isEmpty()) return@runBlocking
+        assumeTrue("$LIVE_URL_ENV is required for the live local voice test", url.isNotEmpty())
 
         val transport = JdkRealtimeTransport()
         val sessionUpdated = CompletableDeferred<Unit>()

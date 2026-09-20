@@ -32,11 +32,38 @@ class AIAssistantLaunchCommandTest {
         return assistant
     }
 
+    /**
+     * Codex gates tool calls on TWO independent axes, and auto mode has to clear both. `--sandbox`
+     * only widens what a command may touch; the approval policy is separate and stays at its
+     * default, so the sandbox flag alone still parks the agent on a confirmation prompt for the
+     * very commands it was handed the whole filesystem for. Measured against codex 0.155.1 in a
+     * real pane: `--sandbox danger-full-access` on its own prints a banner with NO `permissions:`
+     * row, while adding `--ask-for-approval never` prints `permissions: YOLO mode`.
+     *
+     * That asymmetry is why this is pinned. A half-enabled auto mode is the failure the whole file
+     * exists to catch: the menu advertises "(Full Auto)" and the user still gets asked.
+     */
     @Test
-    fun `codex launches with danger full access sandbox`() {
+    fun `codex auto mode clears both the sandbox and the approval policy`() {
         assertEquals(
-            "codex --sandbox danger-full-access\r",
+            "codex --sandbox danger-full-access --ask-for-approval never\r",
             provider.getLaunchCommand(builtin(AIAssistantIds.CODEX))
+        )
+    }
+
+    /**
+     * The generic auto-mode test only proves a NON-BLANK mechanism reaches the command line, which
+     * `--sandbox danger-full-access` alone satisfied while still prompting. Codex is the one built-in
+     * whose auto mode needs two flags, so assert the approval axis by name rather than by string
+     * equality above - a future flag reshuffle must not quietly drop it.
+     */
+    @Test
+    fun `codex auto mode never drops the approval policy flag`() {
+        val codex = builtin(AIAssistantIds.CODEX)
+        assertTrue(
+            codex.yoloFlag.contains("--ask-for-approval never") ||
+                codex.yoloFlag.contains("--dangerously-bypass-approvals-and-sandbox"),
+            "codex auto mode must disable approvals, not just the sandbox; got: ${codex.yoloFlag}"
         )
     }
 

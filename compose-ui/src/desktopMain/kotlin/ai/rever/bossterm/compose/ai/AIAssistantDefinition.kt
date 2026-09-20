@@ -453,8 +453,14 @@ object AIAssistants {
             id = AIAssistantIds.CODEX,
             displayName = "Codex (OpenAI)",
             command = "codex",
-            // Auto mode should let Codex operate across the full filesystem without sandbox restrictions.
-            yoloFlag = "--sandbox danger-full-access",
+            // Auto mode should let Codex operate across the full filesystem without sandbox
+            // restrictions AND without stopping to ask. The sandbox flag alone only opens the
+            // filesystem: the approval policy is a SEPARATE axis that stays at its default, so
+            // Codex still interrupts for permission on the commands it was just handed the
+            // filesystem for. Measured in a real pane against codex 0.155.1 - with only
+            // `--sandbox danger-full-access` the banner prints no `permissions:` row at all;
+            // with both flags it reads `permissions: YOLO mode`.
+            yoloFlag = "--sandbox danger-full-access --ask-for-approval never",
             yoloLabel = "Full Auto",
             installCommand = "npm install -g @openai/codex",
             installKind = InstallKind.NPM,

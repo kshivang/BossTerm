@@ -26,8 +26,15 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 internal interface RealtimeTransport {
 
-    /** Open the connection. Throws on failure; the caller surfaces it to the UI. */
-    suspend fun connect(model: String, apiKey: String, events: (String) -> Unit, onClosed: (String?) -> Unit)
+    /**
+     * Open the connection. Throws on failure; the caller surfaces it to the UI.
+     *
+     * Takes a resolved [VoiceEndpoint] rather than a model/key pair because the URL and whether a
+     * credential exists at all are now backend-dependent: a local Realtime-compatible server
+     * performs no authentication, and passing a placeholder token to satisfy a non-null parameter
+     * would be a lie that rots the day such a server starts checking one.
+     */
+    suspend fun connect(endpoint: VoiceEndpoint, events: (String) -> Unit, onClosed: (String?) -> Unit)
 
     /**
      * Send one client event (already-encoded JSON). Silently dropped once closed.
@@ -71,11 +78,14 @@ internal class JdkRealtimeTransport(
      * A dependency, not a test hook: it takes the same arguments the real builder does and has no
      * "make the transport misbehave" affordance.
      */
-    private val openSocket: suspend (url: String, apiKey: String, listener: WebSocket.Listener) -> WebSocket =
+    private val openSocket: suspend (url: String, apiKey: String?, listener: WebSocket.Listener) -> WebSocket =
         { url, apiKey, listener ->
             try {
                 sharedClient.newWebSocketBuilder()
-                    .header("Authorization", "Bearer $apiKey")
+                    // Only when there is one. An `Authorization: Bearer null` header is worse than
+                    // no header: a server that ignores auth accepts it and one that checks rejects
+                    // it with a message about a malformed credential rather than a missing one.
+                    .apply { if (!apiKey.isNullOrBlank()) header("Authorization", "Bearer $apiKey") }
                     .connectTimeout(Duration.ofSeconds(15))
                     .buildAsync(URI.create(url), listener)
                     .join()
@@ -134,8 +144,7 @@ internal class JdkRealtimeTransport(
     private val generation = AtomicInteger(0)
 
     override suspend fun connect(
-        model: String,
-        apiKey: String,
+        endpoint: VoiceEndpoint,
         events: (String) -> Unit,
         onClosed: (String?) -> Unit,
     ) {
@@ -176,12 +185,12 @@ internal class JdkRealtimeTransport(
         // dispatcher. The model is URL-encoded: it comes from a dropdown today, but settings.json
         // is user-editable and a stray character would throw URISyntaxException out of connect()
         // instead of surfacing as a failed call.
-        val url = "$REALTIME_WS_URL?model=" + URLEncoder.encode(model, StandardCharsets.UTF_8)
+        val url = endpoint.url + "?model=" + URLEncoder.encode(endpoint.model, StandardCharsets.UTF_8)
         // NonCancellable so the handshake either produces a socket we own or throws. Cancelling
         // mid-join used to let join() finish and hand back a LIVE socket while withContext threw
         // before the assignment — leaving `socket` null, close() a no-op, and a billed realtime
         // session open to OpenAI until the process exited.
-        val ws = withContext(Dispatchers.IO + NonCancellable) { openSocket(url, apiKey, listener) }
+        val ws = withContext(Dispatchers.IO + NonCancellable) { openSocket(url, endpoint.apiKey, listener) }
         // Hung up while we were connecting (either by cancellation or by close() racing the
         // assignment below): own it just long enough to shut it down.
         if (!currentCoroutineContext().isActive || closeRequested) {

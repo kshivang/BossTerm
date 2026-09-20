@@ -1,5 +1,7 @@
 package ai.rever.bossterm.compose.voice
 
+import ai.rever.bossterm.compose.voice.local.LocalVoiceRuntime
+
 import ai.rever.bossterm.compose.settings.SettingsManager
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import kotlinx.coroutines.CancellationException
@@ -77,6 +79,20 @@ internal class HostVoiceCallController(
     private val newAudio: () -> VoiceAudioIo = { JavaSoundVoiceAudioIo() },
     private val settings: () -> TerminalSettings = { SettingsManager.instance.settings.value },
     private val loadKey: () -> String? = { VoiceKeySource.resolve() },
+    /**
+     * Brings the managed local server up and returns its URL, or null when it cannot serve.
+     *
+     * Injected as a lambda rather than taking the runtime itself so this controller keeps needing
+     * nothing but a settings snapshot and a socket in tests: the real implementation may install
+     * nothing, spawn a process, and block for minutes waiting on model load.
+     *
+     * The Boolean is `voiceLocalAutoStart`. When false the runtime is only *asked* for a URL it
+     * already has, so a user who wants to manage the server themselves is never surprised by
+     * BossTerm starting one.
+     */
+    private val startLocal: suspend (port: Int, autoStart: Boolean) -> String? = { port, autoStart ->
+        if (autoStart) LocalVoiceRuntime.shared.ensureRunning(port) else LocalVoiceRuntime.shared.endpointUrl()
+    },
     /** Injected in tests so the ceilings can be exercised without waiting them out. */
     private val nowMs: () -> Long = { System.currentTimeMillis() },
     /**
@@ -202,6 +218,24 @@ internal class HostVoiceCallController(
         if (terminalReported.compareAndSet(false, true)) runCatching { onTerminal() }
     }
 
+    /**
+     * Which socket this call should use, or why it cannot be placed.
+     *
+     * Suspending because the LOCAL branch may have to start a server and wait for it to load
+     * models. The OPENAI branch stays a pure settings+key decision, which is why the shared part
+     * lives in [VoiceEndpointResolver] and only liveness is resolved here.
+     */
+    private suspend fun resolveEndpoint(s: TerminalSettings): VoiceEndpointResult {
+        if (VoiceBackend.parse(s.voiceBackend) != VoiceBackend.LOCAL) {
+            return VoiceEndpointResolver.resolve(s, loadKey)
+        }
+        // An explicitly configured server wins over the managed one and is never started or
+        // stopped by us: the user is pointing at something they run, possibly on another machine.
+        val external = s.voiceLocalExternalUrl.trim().takeIf { it.isNotBlank() }
+        val url = external ?: startLocal(s.voiceLocalPort, s.voiceLocalAutoStart)
+        return VoiceEndpointResolver.resolve(s, loadKey, url)
+    }
+
     /** Start a call. No-op when one is already up. */
     fun start() {
         if (_state.value.active) return
@@ -225,16 +259,24 @@ internal class HostVoiceCallController(
         startJob = scope.launch {
             // Read the key HERE, not on the click: this is a file read + JSON parse, and
             // VoiceAgentStorage's probe thread exists precisely to keep that off the Compose thread.
-            val key = loadKey()
-            if (key == null) {
-                fail("Add an OpenAI API key in Settings → Session Sharing → Boss Calling.")
-                return@launch
-            }
             val s = settings()
+            // Backend selection happens HERE, on the call's own coroutine, for the same reason the
+            // key read moved off the click: resolving a LOCAL endpoint may have to start a server
+            // process and wait for it to load models, which is emphatically not Compose-thread work.
+            //
+            // There is no fallback between backends. If the user chose LOCAL and it is not ready,
+            // the call fails with a message: quietly re-routing through OpenAI would bill them and
+            // put their microphone audio on the network, neither of which they asked for.
+            val endpoint = when (val resolved = resolveEndpoint(s)) {
+                is VoiceEndpointResult.Unavailable -> {
+                    fail(resolved.message)
+                    return@launch
+                }
+                is VoiceEndpointResult.Ready -> resolved.endpoint
+            }
             try {
                 transport.connect(
-                    model = s.voiceCallModel,
-                    apiKey = key,
+                    endpoint = endpoint,
                     events = ::onEvent,
                     onClosed = { reason ->
                         if (_state.value.active) fail(reason?.let { "Connection closed ($it)" } ?: "Connection closed")

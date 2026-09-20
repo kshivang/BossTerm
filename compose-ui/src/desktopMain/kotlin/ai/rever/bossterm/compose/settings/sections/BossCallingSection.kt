@@ -9,6 +9,8 @@ import ai.rever.bossterm.compose.settings.DialogTheme.SurfaceColor
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextMuted
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
 import ai.rever.bossterm.compose.settings.SettingsTheme.TextPrimary
+import ai.rever.bossterm.compose.voice.VoiceBackend
+import ai.rever.bossterm.compose.voice.local.LocalVoiceControls
 import ai.rever.bossterm.compose.settings.TerminalSettings
 import ai.rever.bossterm.compose.settings.components.SettingsDropdown
 import ai.rever.bossterm.compose.settings.components.SettingsSection
@@ -124,6 +126,10 @@ internal fun bossCallingIndicatorDescription(callLabel: String): String =
  *   here from `TabbedTerminal`'s `callLabel` by way of the Share window; the standalone Settings
  *   window leaves it at [DEFAULT_CALL_LABEL], which is what standalone renders anyway.
  */
+/** Backend picker labels. Named by what the user gets, not by the enum constant. */
+private const val BACKEND_OPENAI_LABEL = "OpenAI Realtime (metered, works for share viewers)"
+private const val BACKEND_LOCAL_LABEL = "Local server (free, this app only)"
+
 @Composable
 internal fun BossCallingSection(
     settings: TerminalSettings,
@@ -159,21 +165,43 @@ internal fun BossCallingSection(
         )
         if (statusLine) VoiceAvailabilityLine(settings, keyPresentOverride)
         if (showAgentOptions) {
+            val backend = VoiceBackend.parse(settings.voiceBackend)
+            SettingsDropdown(
+                label = "Voice backend",
+                options = listOf(BACKEND_OPENAI_LABEL, BACKEND_LOCAL_LABEL),
+                selectedOption = if (backend == VoiceBackend.LOCAL) BACKEND_LOCAL_LABEL else BACKEND_OPENAI_LABEL,
+                onOptionSelected = { chosen ->
+                    val value = if (chosen == BACKEND_LOCAL_LABEL) VoiceBackend.LOCAL else VoiceBackend.OPENAI
+                    onSettingsChange(settings.copy(voiceBackend = value.name))
+                },
+                description = "Which service carries a call. Both speak the same protocol, so the " +
+                    "agent and its tools are identical either way - what changes is where your " +
+                    "audio goes and who pays for it. Switching to local does not fall back to " +
+                    "OpenAI if the local server is unavailable; the call fails instead.",
+                enabled = settings.voiceCallEnabled,
+            )
+            if (backend == VoiceBackend.LOCAL) {
+                LocalVoiceControls(port = settings.voiceLocalPort)
+            }
             SettingsToggle(
                 label = bossCallingIndicatorLabel(callLabel),
                 checked = settings.voiceShowStatusIndicator,
                 onCheckedChange = { onSettingsChange(settings.copy(voiceShowStatusIndicator = it)) },
                 description = bossCallingIndicatorDescription(callLabel)
             )
-            SettingsDropdown(
-                label = "Model",
-                options = listOf(
-                    "gpt-realtime-2.1", "gpt-realtime-2.1-mini", "gpt-realtime-2", "gpt-realtime",
-                ),
-                selectedOption = settings.voiceCallModel,
-                onOptionSelected = { onSettingsChange(settings.copy(voiceCallModel = it)) },
-                description = "OpenAI Realtime model for the voice agent."
-            )
+            // Only for the OpenAI backend. The local server's model is whatever it was started
+            // with, so offering `gpt-realtime-2.1` here would be a control that changes nothing.
+            if (backend == VoiceBackend.OPENAI) {
+                SettingsDropdown(
+                    label = "Model",
+                    options = listOf(
+                        "gpt-realtime-2.1", "gpt-realtime-2.1-mini", "gpt-realtime-2", "gpt-realtime",
+                    ),
+                    selectedOption = settings.voiceCallModel,
+                    onOptionSelected = { onSettingsChange(settings.copy(voiceCallModel = it)) },
+                    description = "OpenAI Realtime model for the voice agent."
+                )
+            }
             SettingsToggle(
                 label = "Run commands in the focused terminal",
                 checked = settings.voiceRunInFocusedPane,

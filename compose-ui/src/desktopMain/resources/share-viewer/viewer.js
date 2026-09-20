@@ -302,6 +302,9 @@
           reason === "no_key" ? "Voice not set up"
           : reason === "insecure_transport" ? "Reopen the full link"
           : reason === "not_controller" ? "Needs control"
+          // "Voice off" would blame the host for switching the feature off; it is on, and simply
+          // not reachable from here.
+          : reason === "local_backend" ? "App only"
           : "Voice off";
       } else {
         voiceBarEl.classList.remove("on");
@@ -554,6 +557,11 @@
       case "insecure_transport":
         return "This session isn't end-to-end encrypted, so the host won't put a call secret on " +
           "it - reopen the full share link, including the #k part after the '#'.";
+      case "local_backend":
+        // Not a misconfiguration, so it must not read like one: the host chose a voice backend
+        // that runs on their own machine, and a remote viewer has no route to it.
+        return "The host is using a local voice backend, which only works in the BossTerm app - " +
+          "remote calling isn't available on this session.";
       default:
         return "Couldn't start the call" + (m.message ? ": " + m.message : ".");
     }

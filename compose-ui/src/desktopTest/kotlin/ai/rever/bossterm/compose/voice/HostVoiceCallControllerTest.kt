@@ -28,15 +28,16 @@ class HostVoiceCallControllerTest {
         var closed = false
         var connectedModel: String? = null
         var apiKey: String? = null
+        var connectedUrl: String? = null
 
         override suspend fun connect(
-            model: String,
-            apiKey: String,
+            endpoint: VoiceEndpoint,
             events: (String) -> Unit,
             onClosed: (String?) -> Unit,
         ) {
-            connectedModel = model
-            this.apiKey = apiKey
+            connectedModel = endpoint.model
+            this.apiKey = endpoint.apiKey
+            this.connectedUrl = endpoint.url
             this.events = events
         }
 
@@ -398,8 +399,7 @@ class HostVoiceCallControllerTest {
             val gate = CompletableDeferred<Unit>()
             var closed = false
             override suspend fun connect(
-                model: String,
-                apiKey: String,
+                endpoint: VoiceEndpoint,
                 events: (String) -> Unit,
                 onClosed: (String?) -> Unit,
             ) {
@@ -720,8 +720,7 @@ class HostVoiceCallControllerTest {
     fun `a rejected key is reported as a rejected key, not a network error`() {
         val refusing = object : RealtimeTransport {
             override suspend fun connect(
-                model: String,
-                apiKey: String,
+                endpoint: VoiceEndpoint,
                 events: (String) -> Unit,
                 onClosed: (String?) -> Unit,
             ): Unit = throw java.io.IOException("handshake failed")

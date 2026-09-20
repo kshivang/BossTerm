@@ -61,11 +61,12 @@ class VoiceCallServiceTest {
         enabled: Boolean = true,
         key: String? = "sk-test",
         broker: VoiceSessionBroker = VoiceSessionBroker(),
+        backend: String = "OPENAI",
     ) = VoiceCallService(
         executor = FakeExecutor(),
         scope = CoroutineScope(Dispatchers.Default),
         broker = broker,
-        settings = { TerminalSettings.DEFAULT.copy(voiceCallEnabled = enabled) },
+        settings = { TerminalSettings.DEFAULT.copy(voiceCallEnabled = enabled, voiceBackend = backend) },
         loadKey = { key },
         sessionName = { "test-session" },
         // Own budget AND own live-call map: both are shared process-wide in production (one key,
@@ -88,6 +89,33 @@ class VoiceCallServiceTest {
         assertEquals(ServerMessage.VoiceStatus(available = true), service().status(withReason = true, confidential = true))
         assertEquals("disabled", service(enabled = false).status(withReason = true, confidential = true).reason)
         assertEquals("no_key", service(key = null).status(withReason = true, confidential = true).reason)
+    }
+
+    /**
+     * The share surface must refuse under a LOCAL backend rather than quietly mint an OpenAI
+     * session.
+     *
+     * This is the expensive case, and note the key is PRESENT: a host who switched to a local
+     * backend may well still have an OpenAI key on disk from before. Without the backend check
+     * ordered ahead of the key check, the share path would find that key and place a metered call
+     * on behalf of someone who explicitly opted out of one. A remote viewer cannot reach a
+     * host-loopback server in any case, so "unavailable" is also the honest answer.
+     */
+    @Test
+    fun `a local backend refuses share calls instead of billing the openai key`() {
+        val svc = service(backend = "LOCAL", key = "sk-test")
+        assertEquals("local_backend", svc.status(withReason = true, confidential = true).reason)
+        assertEquals(false, svc.status(withReason = true, confidential = true).available)
+    }
+
+    @Test
+    fun `the local backend reason outranks a missing key`() {
+        // Both are true; the actionable one is the backend, since adding a key would not make a
+        // loopback server reachable from a browser on another machine.
+        assertEquals(
+            "local_backend",
+            service(backend = "LOCAL", key = null).status(withReason = true, confidential = true).reason,
+        )
     }
 
     /**

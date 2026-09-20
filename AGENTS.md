@@ -263,6 +263,23 @@ Located in: `compose-ui/src/desktopMain/kotlin/ai/rever/bossterm/compose/shell/S
   `keyStamp()` still only sees file edits, so an embedder key is noticed on the next read rather
   than pushed - which is why `MirrorShare`'s presence check calls it per read alongside its two
   file-backed caches.
+- `VoiceBackend.kt` - **which service carries a call**. Both backends speak the SAME wire protocol
+  (the OpenAI Realtime event set), which is the only reason this is a provider choice and not a
+  second voice stack: `HostVoiceCallController` is unchanged between them. `VoiceEndpointResolver`
+  is the pure decision and the place to look first - it deliberately has **no fallback between
+  backends**, because silently re-routing a LOCAL call through OpenAI would bill the user and put
+  their microphone audio on the network, neither of which someone choosing local is asking for.
+- `voice/local/` - the managed local runtime (huggingface/speech-to-speech, Apache-2.0, pinned).
+  `LocalVoiceInstall` holds the layout/command construction as pure functions; `LocalVoiceRuntime`
+  owns the child process. Verified compatible before adoption: it serves `/v1/realtime`, implements
+  every event the controller uses (including `response.output_audio.*`, NOT the legacy
+  `response.audio.*` - a server on the old spelling connects and is silent), carries tool calls via
+  `session.update` + `function_call_output`, and speaks PCM16 mono 24 kHz, identical to
+  `VoiceAudioIo.FORMAT`. `--host 127.0.0.1` is passed explicitly because the server performs **no
+  authentication**: the bind address is a security boundary, not a preference.
+  **Remote share viewers cannot use the local backend** - the viewer negotiates WebRTC with OpenAI
+  directly and has no route to host loopback - so `VoiceCallService` reports `local_backend` and
+  refuses, rather than falling back to the paid path.
 - `VoiceAgentCustomization.kt` - the embedder seam for the agent's instructions (the button's label
   is a `TabbedTerminal` parameter instead, alongside `contextMenuItems`)
 - `VoiceToolSource.kt` - the EMBEDDER's tool surface (`TabbedTerminal(voiceToolSource = …)`), merged

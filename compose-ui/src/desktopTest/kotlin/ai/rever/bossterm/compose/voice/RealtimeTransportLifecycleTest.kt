@@ -90,7 +90,7 @@ class RealtimeTransportLifecycleTest {
     @Test
     fun `a closed transport can be used for a second call`() = runBlocking {
         val h = Harness()
-        h.transport.connect("gpt-realtime-2.1", "sk-a", events = {}, onClosed = {})
+        h.transport.connect(VoiceEndpoint("wss://api.openai.com/v1/realtime", "gpt-realtime-2.1", "sk-a", VoiceBackend.OPENAI), events = {}, onClosed = {})
         assertTrue(h.transport.send("""{"type":"one"}"""))
         assertTrue(await { h.sockets[0].sent.contains("""{"type":"one"}""") })
 
@@ -100,7 +100,7 @@ class RealtimeTransportLifecycleTest {
         // The reset that makes this possible: a stale closeRequested made the instance single-use —
         // the next connect completed the handshake, aborted the LIVE socket, and threw the
         // cancellation the controller reads as clean teardown, leaving it stuck at "Connecting…".
-        h.transport.connect("gpt-realtime-2.1", "sk-b", events = {}, onClosed = {})
+        h.transport.connect(VoiceEndpoint("wss://api.openai.com/v1/realtime", "gpt-realtime-2.1", "sk-b", VoiceBackend.OPENAI), events = {}, onClosed = {})
         assertEquals(2, h.sockets.size, "a second socket was opened")
         assertFalse(h.sockets[1].aborted, "and NOT aborted by the previous close")
         assertTrue(h.transport.send("""{"type":"two"}"""))
@@ -125,7 +125,7 @@ class RealtimeTransportLifecycleTest {
     @Test
     fun `a writer left over from the previous connect never adopts the new socket`() = runBlocking {
         val h = Harness()
-        h.transport.connect("gpt-realtime-2.1", "sk-a", events = {}, onClosed = {})
+        h.transport.connect(VoiceEndpoint("wss://api.openai.com/v1/realtime", "gpt-realtime-2.1", "sk-a", VoiceBackend.OPENAI), events = {}, onClosed = {})
         val first = h.sockets[0]
         // Park writer #1 inside a send that will not complete until we say so.
         first.gate = CompletableFuture()
@@ -133,7 +133,7 @@ class RealtimeTransportLifecycleTest {
         assertTrue(await { first.sent.isNotEmpty() }, "writer #1 is inside sendText().join()")
 
         h.transport.close() // times out joining the parked writer, by design
-        h.transport.connect("gpt-realtime-2.1", "sk-b", events = {}, onClosed = {})
+        h.transport.connect(VoiceEndpoint("wss://api.openai.com/v1/realtime", "gpt-realtime-2.1", "sk-b", VoiceBackend.OPENAI), events = {}, onClosed = {})
         val second = h.sockets[1]
 
         // Release writer #1 only now: it wakes with the new socket installed on the shared field.
@@ -167,7 +167,7 @@ class RealtimeTransportLifecycleTest {
     fun `a send that fails ends the call instead of going quiet`() = runBlocking {
         val h = Harness()
         val closes = ConcurrentLinkedQueue<String?>()
-        h.transport.connect("gpt-realtime-2.1", "sk-a", events = {}, onClosed = { closes.add(it) })
+        h.transport.connect(VoiceEndpoint("wss://api.openai.com/v1/realtime", "gpt-realtime-2.1", "sk-a", VoiceBackend.OPENAI), events = {}, onClosed = { closes.add(it) })
         val socket = h.sockets[0]
 
         // The JDK's behaviour once a send has not completed: everything after it throws.
@@ -205,7 +205,7 @@ class RealtimeTransportLifecycleTest {
         var failed: Throwable? = null
         val job = CoroutineScope(Dispatchers.Default).launch {
             runCatching {
-                transport.connect("gpt-realtime-2.1", "sk-a", events = {}, onClosed = {})
+                transport.connect(VoiceEndpoint("wss://api.openai.com/v1/realtime", "gpt-realtime-2.1", "sk-a", VoiceBackend.OPENAI), events = {}, onClosed = {})
             }.onFailure { failed = it }
         }
         val socket = opened.await()

@@ -1199,6 +1199,57 @@ data class TerminalSettings(
     val voiceCallVoice: String = "marin",
 
     /**
+     * Which service carries a call - see [ai.rever.bossterm.compose.voice.VoiceBackend].
+     *
+     * A String rather than the enum because this file is the persisted schema: an unknown value
+     * from a hand-edited settings.json must degrade to the default instead of failing the whole
+     * settings parse, and `VoiceBackend.parse` is where that tolerance lives. Defaults to OPENAI
+     * so an existing install behaves exactly as it did before this setting existed.
+     */
+    val voiceBackend: String = "OPENAI",
+
+    /**
+     * Model name sent to the LOCAL backend. Blank uses
+     * [ai.rever.bossterm.compose.voice.VoiceEndpointResolver.LOCAL_DEFAULT_MODEL].
+     *
+     * Separate from [voiceCallModel] on purpose: that one is an OpenAI Realtime model id, and
+     * reusing it would send `gpt-realtime-2.1` to a local server, making a local call
+     * indistinguishable from a metered one in any log or status a person later reads.
+     */
+    val voiceLocalModel: String = "",
+
+    /**
+     * Loopback port for the managed local voice runtime.
+     *
+     * The runtime binds 127.0.0.1 only. A port rather than a full URL because the host half is not
+     * the user's to choose: binding a speech server that performs no authentication to a routable
+     * interface would put an unauthenticated microphone-and-tools endpoint on the network. A URL
+     * field would invite exactly that; [voiceLocalExternalUrl] is the deliberate, documented way
+     * to point somewhere else.
+     */
+    val voiceLocalPort: Int = 8765,
+
+    /**
+     * Point at a Realtime-compatible server the user runs themselves, instead of the managed one.
+     *
+     * Blank means "use the managed runtime". This exists because the managed runtime has real
+     * hardware requirements (16 GB+ unified memory, or 24 GB VRAM) and someone running the server
+     * on a bigger machine on their LAN should not be forced through an install that cannot work
+     * locally. It is an escape hatch, so it is not offered in the main UI flow.
+     */
+    val voiceLocalExternalUrl: String = "",
+
+    /**
+     * Start the managed local runtime when a call is placed, rather than requiring a manual start.
+     *
+     * On by default only matters once the user has selected the LOCAL backend, which is itself an
+     * explicit choice; with OPENAI selected this is never read. First start after an install is
+     * slow (models load into memory), which is why readiness is surfaced rather than hidden behind
+     * a spinner on the call bar.
+     */
+    val voiceLocalAutoStart: Boolean = true,
+
+    /**
      * How readily the agent treats sound as you speaking — see [ai.rever.bossterm.compose.voice.VoiceTurnDetection].
      *
      * Boss Calling originally used OpenAI's semantic VAD, which has no activation threshold at all:

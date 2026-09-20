@@ -155,6 +155,14 @@ internal class VoiceCallService(
             // This service only ever serves REMOTE viewers, so both gates apply: the feature switch
             // and the share-surface switch.
             !s.voiceCallEnabled || !s.voiceCallShareEnabled -> "disabled"
+            // Checked BEFORE the key, and this ordering is the whole point. A host that selected
+            // the LOCAL backend may still have an OpenAI key on disk from before; without this the
+            // share path would find that key, mint an ephemeral secret, and place a METERED call
+            // for a host who explicitly opted out of one. Remote viewers cannot reach a
+            // host-loopback server (the viewer negotiates WebRTC with OpenAI directly), so the
+            // honest answer is that this surface is unavailable, not that it should quietly
+            // upgrade itself to the paid backend.
+            VoiceBackend.parse(s.voiceBackend) == VoiceBackend.LOCAL -> "local_backend"
             !keyPresent() -> "no_key"
             !confidential -> "insecure_transport"
             !callable -> "not_controller"
@@ -251,6 +259,12 @@ internal class VoiceCallService(
         val s = settings()
         if (!s.voiceCallEnabled || !s.voiceCallShareEnabled) {
             reply(ServerMessage.VoiceError(code = "disabled"))
+            return
+        }
+        // Same precedence as status(): refuse rather than silently mint a paid session for a host
+        // who chose a local backend.
+        if (VoiceBackend.parse(s.voiceBackend) == VoiceBackend.LOCAL) {
+            reply(ServerMessage.VoiceError(code = "local_backend"))
             return
         }
         if (!keyPresent()) {

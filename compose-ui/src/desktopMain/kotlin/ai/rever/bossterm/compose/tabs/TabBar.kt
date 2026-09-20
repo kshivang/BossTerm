@@ -1519,12 +1519,18 @@ private fun TabTooltipCard(
     preview: (() -> String?)? = null,
     renderPreview: (@Composable () -> Unit)? = null
 ) {
-    // Read once, when the card appears — NOT on every recomposition. The provider locks the
-    // terminal buffer, and a preview that re-read itself under a live `tail -f` would both
-    // churn the lock and reflow the card under the pointer. The popup subtree is disposed on
-    // hide, so this re-reads on the next hover; keyed on the pane alone, since `preview` is a
-    // fresh closure every composition and would otherwise invalidate on each one.
-    val previewLines = remember(pane.paneId) { if (renderPreview == null) tabTooltipPreview(preview?.invoke()) else emptyList() }
+    val latestPreview by rememberUpdatedState(preview)
+    var previewLines by remember(pane.paneId) {
+        mutableStateOf(if (renderPreview == null) tabTooltipPreview(preview?.invoke()) else emptyList())
+    }
+    LaunchedEffect(pane.paneId, renderPreview == null) {
+        if (renderPreview == null) {
+            while (true) {
+                kotlinx.coroutines.delay(200)
+                previewLines = tabTooltipPreview(latestPreview?.invoke())
+            }
+        }
+    }
     val preferences = ai.rever.bossterm.compose.window.rememberMacChromePreferences()
     val glassPreview = LocalWindowGlassMode.current != WindowGlassMode.OFF &&
         !preferences.reduceTransparency && !preferences.increaseContrast

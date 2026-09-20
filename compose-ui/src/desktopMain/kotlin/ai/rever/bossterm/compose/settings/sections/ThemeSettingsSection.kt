@@ -201,7 +201,8 @@ fun ThemeSettingsSection(
                 Button(
                     onClick = { showCreateDialog = true },
                     colors = ButtonDefaults.buttonColors(
-                        backgroundColor = AccentColor
+                        backgroundColor = AccentColor,
+                        contentColor = ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
                     ),
                     modifier = Modifier.height(36.dp)
                 ) {
@@ -309,7 +310,8 @@ fun ThemeSettingsSection(
                 Button(
                     onClick = { showCreatePaletteDialog = true },
                     colors = ButtonDefaults.buttonColors(
-                        backgroundColor = AccentColor
+                        backgroundColor = AccentColor,
+                        contentColor = ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
                     ),
                     modifier = Modifier.height(36.dp)
                 ) {
@@ -742,7 +744,8 @@ private fun CreateThemeDialog(
                 onClick = { onCreate(themeName) },
                 enabled = themeName.isNotBlank(),
                 colors = ButtonDefaults.buttonColors(
-                    backgroundColor = AccentColor
+                    backgroundColor = AccentColor,
+                    contentColor = ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
                 )
             ) {
                 Text("Create", color = TextPrimary)
@@ -1068,7 +1071,8 @@ private fun CreatePaletteDialog(
                 onClick = { onCreate(paletteName) },
                 enabled = paletteName.isNotBlank(),
                 colors = ButtonDefaults.buttonColors(
-                    backgroundColor = AccentColor
+                    backgroundColor = AccentColor,
+                    contentColor = ai.rever.bossterm.compose.settings.SettingsTheme.TextOnAccent
                 )
             ) {
                 Text("Create", color = TextPrimary)

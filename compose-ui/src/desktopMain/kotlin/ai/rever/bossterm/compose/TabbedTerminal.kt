@@ -1542,7 +1542,8 @@ fun TabbedTerminal(
                             isGitRepo = if (terminalPane == null) false else terminalPane.isGitRepo.value,
                             fullPath = fullCwd(p.session.workingDirectory.value, paneRemote),
                             hostLabel = hostLabelFor(paneRemote),
-                            statusLabel = statusLabelFor(p.session)
+                            statusLabel = statusLabelFor(p.session),
+                            hasCustomTitle = p.session.customTitle.value != null
                         )
                     }
                 } else {
@@ -1554,7 +1555,8 @@ fun TabbedTerminal(
                         isGitRepo = tab.isGitRepo.value,
                         fullPath = fullCwd(tab.workingDirectory.value, tabRemote),
                         hostLabel = hostLabelFor(tabRemote),
-                        statusLabel = statusLabelFor(tab)
+                        statusLabel = statusLabelFor(tab),
+                        hasCustomTitle = tab.customTitle.value != null
                     ))
                 }
                 tab to ai.rever.bossterm.compose.tabs.TabBarGroup(index, panes)

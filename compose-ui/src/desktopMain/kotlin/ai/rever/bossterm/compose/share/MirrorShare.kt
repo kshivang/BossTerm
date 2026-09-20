@@ -867,7 +867,7 @@ class MirrorShare(
             }
             for ((id, tab) in paneMap) {
                 if (id !in taps) {
-                    val graphics = PaneGraphicsTracker(id, tab.textBuffer, tab.terminal.getImageDataCache())
+                    val graphics = PaneGraphicsTracker(id, tab.textBuffer, tab.terminal.getImageDataCache(), display = tab.display)
                     val graphicsOutputFilter = GraphicsOutputFilter()
                     lateinit var entry: TapEntry
                     val listener: (String) -> Unit = { d ->
@@ -958,7 +958,10 @@ class MirrorShare(
                     }
                     broadcastGraphics(update.message)
                 }
-                entry.monitoringGraphics.set(entry.graphics.hasVisibleGraphics())
+                // Do not publish the erase half of a DEC synchronized repaint.
+                // Retry even if the final sync-end emits no further buffer mutation.
+                if (entry.graphics.needsStableFrameRetry) entry.graphicsSyncAgain.set(true)
+                entry.monitoringGraphics.set(entry.graphics.hasVisibleGraphics() || entry.graphics.needsStableFrameRetry)
             } finally {
                 // Keep the pending flag set through capture + sends. A concurrent model change is
                 // represented by graphicsSyncAgain and cannot launch an overlapping poll.

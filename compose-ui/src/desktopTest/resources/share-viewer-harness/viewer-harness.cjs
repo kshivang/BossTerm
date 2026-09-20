@@ -826,7 +826,7 @@ const scenarios = {
     );
   },
 
-  "graphics frames paint an overlay canvas below xterm's own"() {
+  "graphics frames paint above xterm backgrounds without changing its theme"() {
     loadViewer();
     const socket = connectPanes(["pane-1"]);
     socket.deliver(IMAGE_FRAME("pane-1", 1, true));
@@ -836,12 +836,49 @@ const scenarios = {
     const terminal = lastTerminal();
     const canvases = terminal.screen.querySelectorAll("canvas");
     assert.strictEqual(canvases.length, 2, "one overlay canvas plus xterm's glyph canvas");
-    assert.strictEqual(canvases[0].className, "bossterm-graphics", "images must paint UNDER the glyphs");
-    assert.ok(canvases[0].drawCalls && canvases[0].drawCalls.length > 0, "the decoded raster must be drawn");
+    assert.strictEqual(canvases[1].className, "bossterm-graphics", "images must paint ABOVE prompt backgrounds");
+    assert.strictEqual(canvases[1].style.zIndex, "4", "overlay must also cover DOM rows and cursor");
+    assert.ok(canvases[1].drawCalls && canvases[1].drawCalls.length > 0, "the decoded raster must be drawn");
     // A render after the images are placed SHOULD schedule a frame — the text-only gate must not
     // suppress real graphics work.
     terminal.emitRender();
     assert.strictEqual(frames.size, 1, "a pane with placements must still repaint on render");
+  },
+
+  "typing and new-ID replacement retain the pet until the replacement decodes"() {
+    loadViewer();
+    const socket = connectPanes(["pane-1"]);
+    const first = IMAGE_FRAME("pane-1", 1, true);
+    first.images.push({ ...first.images[0], id: "8" });
+    first.requiredImageIds.push("8");
+    first.cells.push({ ...first.cells[0], imageId: "8", row: 2 });
+    socket.deliver(first);
+    FakeImage.pending.forEach(img => img.decodeAs(64, 32));
+    flushFrames();
+    const terminal = lastTerminal();
+    const canvas = terminal.screen.querySelectorAll("canvas")[1];
+    const decodedCount = FakeImage.pending.length;
+    for (let n = 0; n < 5; n++) {
+      socket.deliver({ t: "paneOutput", paneId: "pane-1", data: "x" });
+      terminal.emitRender();
+      flushFrames();
+      assert.strictEqual(terminal.screen.querySelectorAll("canvas")[1], canvas);
+      assert.strictEqual(terminal.options.allowTransparency, false);
+    }
+    assert.strictEqual(FakeImage.pending.length, decodedCount, "typing must not decode the pet again");
+    const before = canvas.drawCalls.length;
+    const replacement = IMAGE_FRAME("pane-1", 2, false);
+    replacement.images[0].id = "9";
+    replacement.requiredImageIds = ["8", "9"];
+    replacement.removedImageIds = ["7"];
+    replacement.cells = [{ ...first.cells[0], imageId: "9" }, first.cells[1]];
+    socket.deliver(replacement);
+    flushFrames();
+    assert.strictEqual(canvas.drawCalls.length, before,
+      "an unrelated ready image must not cause the pending pet to be cleared");
+    FakeImage.pending[2].decodeAs(64, 32);
+    flushFrames();
+    assert.ok(canvas.drawCalls.length > before, "paint the complete replacement after decode");
   },
 
   "one pane recovering keeps the out-of-sync warning while another is still degraded"() {
@@ -879,7 +916,7 @@ const scenarios = {
     assert.strictEqual(el("status").title, "", "the warning clears once every pane is in sync");
   },
 
-  "transparency is enabled only while a pane actually has drawable graphics"() {
+  "graphics never toggle xterm transparency or rebuild its theme"() {
     loadViewer();
     const socket = connectPanes(["pane-1"]);
     const terminal = lastTerminal();
@@ -887,9 +924,8 @@ const scenarios = {
     socket.deliver(IMAGE_FRAME("pane-1", 1, true));
     FakeImage.pending[0].decodeAs(64, 32);
     flushFrames();
-    assert.strictEqual(terminal.options.allowTransparency, true, "images need a transparent terminal");
-    // Host clears the image: the overlay canvas and the transparency must both go away, or the
-    // pane keeps paying for a compositing path it no longer needs.
+    assert.strictEqual(terminal.options.allowTransparency, false, "overlay does not require a transparent terminal");
+    // Host clears the image: remove the overlay while leaving the terminal theme alone.
     socket.deliver({
       t: "paneGraphics", paneId: "pane-1", revision: 2, full: true,
       images: [], removedImageIds: ["7"], requiredImageIds: [], cells: [], historyLines: 0,

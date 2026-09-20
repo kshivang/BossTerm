@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.share
 
+import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import ai.rever.bossterm.terminal.model.image.ImageDataCache
 import ai.rever.bossterm.terminal.model.image.ImageFormat
@@ -43,7 +44,18 @@ internal class PaneGraphicsTracker(
     private val textBuffer: TerminalTextBuffer,
     private val imageDataCache: ImageDataCache,
     private val scrollbackLines: Int = webViewerScrollbackLines(textBuffer),
+    private val display: ComposeTerminalDisplay? = null,
 ) {
+    @Volatile
+    var needsStableFrameRetry = false
+        private set
+
+    private fun <T> stableFrame(capture: () -> T): T? {
+        val frame = if (display == null) capture() else display.captureStableRenderFrame(capture)
+        needsStableFrameRetry = frame == null
+        return frame
+    }
+
     private var revision = 0L
     private var previousCells: List<SharedImageCellRun> = emptyList()
     private var previousImages: Map<Long, ImageFingerprint> = emptyMap()
@@ -59,17 +71,17 @@ internal class PaneGraphicsTracker(
         val cellRevision = textBuffer.imageCellRevision
         val cacheRevision = imageDataCache.contentRevision
         val viewerTrimCount = viewerTrimCount()
-        if (cellRevision == previousImageCellRevision && cacheRevision == previousImageCacheRevision) {
+        if (!needsStableFrameRetry && cellRevision == previousImageCellRevision && cacheRevision == previousImageCacheRevision) {
             val trimmedRows = (viewerTrimCount - previousViewerTrimCount).coerceAtLeast(0L)
             if (trimmedRows == 0L) return null
+            val historyLines = stableFrame {
+                textBuffer.createIncrementalSnapshot().historyLinesCount.coerceAtMost(scrollbackLines)
+            } ?: return null
             previousViewerTrimCount = viewerTrimCount
-            val historyLines = textBuffer.createIncrementalSnapshot()
-                .historyLinesCount
-                .coerceAtMost(scrollbackLines)
             return shiftForHistoryTrim(trimmedRows, historyLines)
         }
 
-        val captured = capture()
+        val captured = stableFrame { capture() } ?: return null
         noteSkippedRasters(captured.skippedRasterIds)
         if (captured.cells == previousCells && captured.fingerprints == previousImages) {
             previousImageCellRevision = cellRevision
@@ -112,7 +124,9 @@ internal class PaneGraphicsTracker(
         val cellRevision = textBuffer.imageCellRevision
         val cacheRevision = imageDataCache.contentRevision
         val trimCount = viewerTrimCount()
-        val captured = capture()
+        val captured = stableFrame { capture() } ?: return ServerMessage.PaneGraphics(
+            paneId = paneId, revision = revision, full = true, resyncRequired = true,
+        )
         if (commit) {
             noteSkippedRasters(captured.skippedRasterIds)
             if (captured.cells != previousCells || captured.fingerprints != previousImages) {

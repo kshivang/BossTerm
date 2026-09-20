@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.share
 
+import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.terminal.model.StyleState
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import ai.rever.bossterm.terminal.model.image.ImageDataCache
@@ -13,6 +14,40 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class PaneGraphicsTrackerTest {
+    @Test
+    fun `synchronized pet redraw never publishes intermediate removal`() {
+        val buffer = TerminalTextBuffer(8, 4, StyleState())
+        buffer.getLine(3)
+        val cache = ImageDataCache()
+        val image = TerminalImage(id = 42, data = byteArrayOf(1), format = ImageFormat.PNG,
+            intrinsicWidth = 1, intrinsicHeight = 1)
+        cache.storeImage(image)
+        buffer.writeImageCellRow(0, 1, image.id, 0, 2, 1)
+        val display = ComposeTerminalDisplay()
+        try {
+            val tracker = PaneGraphicsTracker("pane", buffer, cache, display = display)
+            val initial = tracker.fullMessage()
+            display.setSynchronizedUpdate(true)
+            buffer.clearImageCells(image.id)
+            assertNull(tracker.pollUpdate(), "the erase half must not reach the viewer")
+            assertTrue(tracker.needsStableFrameRetry)
+            assertTrue(tracker.hasVisibleGraphics(), "keep the last committed placement")
+            assertTrue(tracker.fullMessage(commit = false).resyncRequired,
+                "a joining viewer must not capture the partial frame either")
+            buffer.writeImageCellRow(0, 1, image.id, 0, 2, 1)
+            display.setSynchronizedUpdate(false)
+            assertNull(tracker.pollUpdate(), "identical restored pet needs no raster or repaint")
+            assertFalse(tracker.needsStableFrameRetry)
+            assertEquals(initial.revision, tracker.fullMessage().revision)
+            buffer.clearImageCells(image.id)
+            assertEquals(listOf("42"), tracker.pollUpdate()!!.message.removedImageIds,
+                "a real deletion after sync still takes effect")
+        } finally {
+            display.setSynchronizedUpdate(false)
+            display.dispose()
+        }
+    }
+
     @Test
     fun `cell runs group adjacent slices and omit images missing from cache`() {
         val buffer = TerminalTextBuffer(8, 4, StyleState())

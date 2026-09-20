@@ -453,9 +453,21 @@ object AIAssistants {
             id = AIAssistantIds.CODEX,
             displayName = "Codex (OpenAI)",
             command = "codex",
-            // Auto mode should let Codex operate across the full filesystem without sandbox restrictions.
-            yoloFlag = "--sandbox danger-full-access",
-            yoloLabel = "Full Auto",
+            // Codex gates tool calls on TWO axes - what a command may touch (`--sandbox`) and
+            // whether it stops to ask (`--ask-for-approval`). `--sandbox danger-full-access`
+            // alone clears only the first, leaving the approval policy at its default (or at
+            // whatever the user's config.toml says), so the agent was handed the whole
+            // filesystem and then still interrupted for permission to use it. This flag is
+            // Codex's own single-flag equivalent of Claude Code's
+            // `--dangerously-skip-permissions` and clears both at once.
+            //
+            // Measured in a real pane against codex 0.155.1: `--sandbox danger-full-access`
+            // alone prints a banner with NO `permissions:` row, while this flag prints
+            // `permissions: YOLO mode` - identical to the explicit
+            // `--sandbox danger-full-access --ask-for-approval never` pair.
+            yoloFlag = "--dangerously-bypass-approvals-and-sandbox",
+            // Labels the mode by what it grants, not by how eager it is.
+            yoloLabel = "Full Access",
             installCommand = "npm install -g @openai/codex",
             installKind = InstallKind.NPM,
             npmInstallCommand = "npm install -g @openai/codex",

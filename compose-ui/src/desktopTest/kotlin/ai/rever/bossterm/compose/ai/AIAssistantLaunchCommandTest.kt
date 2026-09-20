@@ -32,12 +32,49 @@ class AIAssistantLaunchCommandTest {
         return assistant
     }
 
+    /**
+     * Codex gates tool calls on TWO independent axes, and full access has to clear both.
+     * `--sandbox` only widens what a command may touch; the approval policy is separate and stays
+     * at its default (or at the user's config.toml), so the sandbox flag alone still parks the
+     * agent on a confirmation prompt for the very commands it was handed the whole filesystem for.
+     * Measured against codex 0.155.1 in a real pane: `--sandbox danger-full-access` on its own
+     * prints a banner with NO `permissions:` row, while this flag prints `permissions: YOLO mode`.
+     *
+     * That asymmetry is why this is pinned. A half-enabled full-access mode is the failure the
+     * whole file exists to catch: the menu advertises "(Full Access)" and the user still gets asked.
+     */
     @Test
-    fun `codex launches with danger full access sandbox`() {
+    fun `codex full access clears both the sandbox and the approval policy`() {
         assertEquals(
-            "codex --sandbox danger-full-access\r",
+            "codex --dangerously-bypass-approvals-and-sandbox\r",
             provider.getLaunchCommand(builtin(AIAssistantIds.CODEX))
         )
+    }
+
+    /**
+     * The generic auto-mode test only proves a NON-BLANK mechanism reaches the command line, which
+     * `--sandbox danger-full-access` alone satisfied while still prompting. Assert the approval
+     * axis by name as well as by the string equality above, so a future flag reshuffle that keeps
+     * a plausible-looking sandbox flag cannot quietly drop the half that stops the prompting.
+     */
+    @Test
+    fun `codex full access never drops the approval half`() {
+        val codex = builtin(AIAssistantIds.CODEX)
+        assertTrue(
+            codex.yoloFlag.contains("--dangerously-bypass-approvals-and-sandbox") ||
+                codex.yoloFlag.contains("--ask-for-approval never"),
+            "codex full access must disable approvals, not just the sandbox; got: ${codex.yoloFlag}"
+        )
+    }
+
+    /**
+     * The label is what the context menu and the settings toggle render, and the issue behind this
+     * change asked for it to say what the mode GRANTS. "Auto" reads as eagerness; this mode hands
+     * over the filesystem with no confirmations, so it says so.
+     */
+    @Test
+    fun `codex advertises full access by name`() {
+        assertEquals("Full Access", builtin(AIAssistantIds.CODEX).yoloLabel)
     }
 
     @Test

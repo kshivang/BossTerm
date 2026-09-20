@@ -45,6 +45,24 @@ class LocalVoiceRuntimeTest {
     }
 
     @Test
+    fun `serve command selects an explicit local language model on macOS`() {
+        val command = LocalVoiceInstall.serveCommand(File("/tmp/home"), 8765, windows = false, macOS = true)
+        assertEquals(LocalVoiceInstall.MAC_LLM_BACKEND, command[command.indexOf("--llm_backend") + 1])
+        assertEquals(LocalVoiceInstall.LOCAL_LLM_MODEL, command[command.indexOf("--model_name") + 1])
+        assertEquals("parakeet-tdt", command[command.indexOf("--stt") + 1])
+        assertEquals("qwen3", command[command.indexOf("--tts") + 1])
+        assertEquals("mps", command[command.indexOf("--device") + 1])
+        assertFalse(command.contains("responses-api"), "a local call must not inherit the hosted backend: $command")
+    }
+
+    @Test
+    fun `serve command selects transformers and names the local model off macOS`() {
+        val command = LocalVoiceInstall.serveCommand(File("/tmp/home"), 8765, windows = false, macOS = false)
+        assertEquals(LocalVoiceInstall.PORTABLE_LLM_BACKEND, command[command.indexOf("--llm_backend") + 1])
+        assertEquals(LocalVoiceInstall.LOCAL_LLM_MODEL, command[command.indexOf("--model_name") + 1])
+    }
+
+    @Test
     fun `venv layout follows the platform`() {
         val venv = File("/tmp/home/venv")
         assertTrue(LocalVoiceInstall.venvBin(venv, "python", windows = false).path.endsWith("venv/bin/python"))

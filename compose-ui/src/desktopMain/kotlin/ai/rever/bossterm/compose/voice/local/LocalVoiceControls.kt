@@ -89,9 +89,11 @@ internal fun LocalVoiceControls(
             )
         }
         Text(
-            text = "Runs a speech server on this machine so calls need no OpenAI key and no audio " +
-                "leaves the device. Setup downloads several gigabytes of models, and the server " +
-                "wants 16 GB or more of memory while it runs. Share viewers cannot use it: remote " +
+            text = "Runs speech recognition, Qwen3-4B, and speech synthesis on this machine, so the " +
+                "managed runtime needs no provider key and keeps call content on-device. Plan for " +
+                "about 16 GB of model downloads and at least 24 GB of available memory. These are " +
+                "conservative totals from the shipped Parakeet, Qwen3-4B, and Qwen3-TTS model sizes; " +
+                "actual cache and peak memory vary by platform. Share viewers cannot use it: remote " +
                 "calling stays on the OpenAI backend.",
             color = TextMuted,
             fontSize = 11.sp,

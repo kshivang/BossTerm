@@ -305,8 +305,8 @@ internal class LocalVoiceRuntime(
         /**
          * How long a start may take before it is treated as failed.
          *
-         * Generous because first start loads speech models plus an LLM into memory; the documented
-         * hardware budget is 16 GB+ of unified memory, and a cold page cache on a laptop is slow.
+         * Generous because first start loads speech models plus Qwen3-4B into memory; the shipped
+         * fully local pipeline needs at least 24 GB of available memory, and a cold model cache is slow.
          */
         const val START_TIMEOUT_SECONDS = 180L
 

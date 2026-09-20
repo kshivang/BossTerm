@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.voice.local
 
+import ai.rever.bossterm.compose.shell.ShellCustomizationUtils
 import java.io.File
 import java.net.URI
 
@@ -68,13 +69,28 @@ internal object LocalVoiceInstall {
      * server performs no authentication, so the bind address is a security boundary, not a
      * preference: stating it here means a future upstream default change cannot quietly expose an
      * unauthenticated microphone-and-tools endpoint to the network.
+     *
+     * The LLM backend and model are equally explicit. Upstream 1.0.0 defaults to `responses-api`,
+     * which is a hosted OpenAI client requiring a key and sending transcripts off-device. Apple
+     * Silicon uses upstream's MLX backend and the documented MPS global device; other platforms
+     * use Transformers. Both run the named Qwen model locally instead of inheriting a
+     * network-backed default.
      */
-    fun serveCommand(home: File, port: Int, windows: Boolean): List<String> = listOf(
-        venvBin(venv(home), CONSOLE_SCRIPT, windows).absolutePath,
-        "serve",
-        "--host", LOOPBACK,
-        "--port", port.toString(),
-    )
+    fun serveCommand(
+        home: File,
+        port: Int,
+        windows: Boolean,
+        macOS: Boolean = ShellCustomizationUtils.isMacOS(),
+    ): List<String> = buildList {
+        add(venvBin(venv(home), CONSOLE_SCRIPT, windows).absolutePath)
+        add("serve")
+        addAll(listOf("--host", LOOPBACK, "--port", port.toString()))
+        addAll(listOf("--stt", "parakeet-tdt"))
+        addAll(listOf("--llm_backend", if (macOS) MAC_LLM_BACKEND else PORTABLE_LLM_BACKEND))
+        addAll(listOf("--model_name", LOCAL_LLM_MODEL))
+        addAll(listOf("--tts", "qwen3"))
+        if (macOS) addAll(listOf("--device", "mps"))
+    }
 
     /**
      * Commands that build the environment, in order.
@@ -176,4 +192,9 @@ internal object LocalVoiceInstall {
     val LOOPBACK_HOSTS = setOf("127.0.0.1", "localhost", "::1", "0.0.0.0")
 
     const val LOOPBACK = "127.0.0.1"
+
+    /** Fully local instruction model selected explicitly so upstream cloud defaults cannot leak in. */
+    const val LOCAL_LLM_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
+    const val MAC_LLM_BACKEND = "mlx-lm"
+    const val PORTABLE_LLM_BACKEND = "transformers"
 }

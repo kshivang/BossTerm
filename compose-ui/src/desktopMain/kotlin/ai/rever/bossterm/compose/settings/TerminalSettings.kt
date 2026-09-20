@@ -1233,7 +1233,8 @@ data class TerminalSettings(
      * Point at a Realtime-compatible server the user runs themselves, instead of the managed one.
      *
      * Blank means "use the managed runtime". This exists because the managed runtime has real
-     * hardware requirements (16 GB+ unified memory, or 24 GB VRAM) and someone running the server
+     * hardware requirements (at least 24 GB available memory for the shipped fully local speech +
+     * Qwen3-4B pipeline) and someone running the server
      * on a bigger machine on their LAN should not be forced through an install that cannot work
      * locally. It is an escape hatch, so it is not offered in the main UI flow.
      */

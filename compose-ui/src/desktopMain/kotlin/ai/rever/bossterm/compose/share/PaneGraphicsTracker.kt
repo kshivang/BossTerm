@@ -1,5 +1,6 @@
 package ai.rever.bossterm.compose.share
 
+import ai.rever.bossterm.compose.ComposeTerminalDisplay
 import ai.rever.bossterm.terminal.model.TerminalTextBuffer
 import ai.rever.bossterm.terminal.model.image.ImageDataCache
 import ai.rever.bossterm.terminal.model.image.ImageFormat
@@ -16,6 +17,14 @@ internal const val PANE_GRAPHICS_CAPABILITY = "paneGraphicsV1"
 internal const val MAX_WEB_VIEWER_SCROLLBACK_LINES = 20_000
 internal const val MAX_WEB_IMAGE_RASTER_BYTES = 8 * 1024 * 1024
 internal const val MAX_WEB_PANE_RASTER_BYTES = 16L * 1024 * 1024
+
+/**
+ * Consecutive [ComposeTerminalDisplay.captureStableRenderFrame] failures before the
+ * debounced retry loop stops re-arming itself. A pane may hold DEC 2026 open for a
+ * long-running animation, so the retry must not poll at the sync debounce rate forever;
+ * the next model change (and the viewer-driven graphicsResync flow) re-polls instead.
+ */
+internal const val MAX_STABLE_FRAME_RETRIES = 3
 
 internal fun webViewerScrollbackLines(textBuffer: TerminalTextBuffer): Int {
     // LinesStorage treats a negative maxHistoryLinesCount as UNLIMITED. Clamping it as a number
@@ -43,7 +52,38 @@ internal class PaneGraphicsTracker(
     private val textBuffer: TerminalTextBuffer,
     private val imageDataCache: ImageDataCache,
     private val scrollbackLines: Int = webViewerScrollbackLines(textBuffer),
+    private val display: ComposeTerminalDisplay? = null,
 ) {
+    @Volatile
+    var needsStableFrameRetry = false
+        private set
+    private var stableFrameRetryAttempts = 0
+
+    /**
+     * [consumesRetryBudget] is false for a viewer-driven resync capture. Both callers race on the
+     * same open sync window, but the budget bounds the DEBOUNCE LOOP's re-arming, so a resync must
+     * not spend it — otherwise one viewer's resync silently stops the host from retrying. Such a
+     * capture may still ASK for a retry (the poll loop is what satisfies it), but only while the
+     * loop's own budget is unspent, or it would revive the unbounded loop this budget exists to cap.
+     */
+    private fun <T> stableFrame(consumesRetryBudget: Boolean = true, capture: () -> T): T? {
+        val frame = if (display == null) capture() else display.captureStableRenderFrame(capture)
+        if (frame != null) {
+            stableFrameRetryAttempts = 0
+            needsStableFrameRetry = false
+        } else if (!consumesRetryBudget) {
+            if (stableFrameRetryAttempts <= MAX_STABLE_FRAME_RETRIES) needsStableFrameRetry = true
+        } else if (++stableFrameRetryAttempts > MAX_STABLE_FRAME_RETRIES) {
+            // Stop the debounce loop while a pane holds sync mode open indefinitely. The next
+            // model change still gets one poll attempt; the budget resets on the next successful
+            // capture (sync ended), and a viewer-driven graphicsResync covers a quiet pane.
+            needsStableFrameRetry = false
+        } else {
+            needsStableFrameRetry = true
+        }
+        return frame
+    }
+
     private var revision = 0L
     private var previousCells: List<SharedImageCellRun> = emptyList()
     private var previousImages: Map<Long, ImageFingerprint> = emptyMap()
@@ -59,17 +99,17 @@ internal class PaneGraphicsTracker(
         val cellRevision = textBuffer.imageCellRevision
         val cacheRevision = imageDataCache.contentRevision
         val viewerTrimCount = viewerTrimCount()
-        if (cellRevision == previousImageCellRevision && cacheRevision == previousImageCacheRevision) {
+        if (!needsStableFrameRetry && cellRevision == previousImageCellRevision && cacheRevision == previousImageCacheRevision) {
             val trimmedRows = (viewerTrimCount - previousViewerTrimCount).coerceAtLeast(0L)
             if (trimmedRows == 0L) return null
+            val historyLines = stableFrame {
+                textBuffer.createIncrementalSnapshot().historyLinesCount.coerceAtMost(scrollbackLines)
+            } ?: return null
             previousViewerTrimCount = viewerTrimCount
-            val historyLines = textBuffer.createIncrementalSnapshot()
-                .historyLinesCount
-                .coerceAtMost(scrollbackLines)
             return shiftForHistoryTrim(trimmedRows, historyLines)
         }
 
-        val captured = capture()
+        val captured = stableFrame { capture() } ?: return null
         noteSkippedRasters(captured.skippedRasterIds)
         if (captured.cells == previousCells && captured.fingerprints == previousImages) {
             previousImageCellRevision = cellRevision
@@ -112,7 +152,9 @@ internal class PaneGraphicsTracker(
         val cellRevision = textBuffer.imageCellRevision
         val cacheRevision = imageDataCache.contentRevision
         val trimCount = viewerTrimCount()
-        val captured = capture()
+        val captured = stableFrame(consumesRetryBudget = commit) { capture() } ?: return ServerMessage.PaneGraphics(
+            paneId = paneId, revision = revision, full = true, resyncRequired = true,
+        )
         if (commit) {
             noteSkippedRasters(captured.skippedRasterIds)
             if (captured.cells != previousCells || captured.fingerprints != previousImages) {

@@ -821,7 +821,14 @@ class DaemonShareServer(
                         }
                         enqueueGraphics(vc.outbox, update.message)
                     }
-                    attachment.monitoringGraphics.set(attachment.graphics.hasVisibleGraphics())
+                    // Do not publish the erase half of a DEC synchronized repaint. Re-arm even if
+                    // the sync-end emits no further buffer mutation, exactly as MirrorShare does;
+                    // without this a daemon-served pane keeps the dropped frame until something
+                    // else happens to touch the model.
+                    if (attachment.graphics.needsStableFrameRetry) attachment.graphicsSyncAgain.set(true)
+                    attachment.monitoringGraphics.set(
+                        attachment.graphics.hasVisibleGraphics() || attachment.graphics.needsStableFrameRetry
+                    )
                 } finally {
                     attachment.graphicsSyncPending.set(false)
                     if (attachment.graphicsSyncAgain.getAndSet(false) &&
@@ -922,7 +929,12 @@ class DaemonShareServer(
             if (vc.supportsPaneGraphics) {
                 val initialGraphics = graphics.fullMessage()
                 enqueueGraphics(vc.outbox, initialGraphics)
-                if (initialGraphics.requiredImageIds.isNotEmpty()) attachment.monitoringGraphics.set(true)
+                // A resyncRequired marker means the capture overlapped DEC 2026; keep the host-side
+                // poll loop alive so the stable frame is retried without waiting for the viewer's
+                // own graphicsResync round-trip.
+                if (initialGraphics.requiredImageIds.isNotEmpty() || initialGraphics.resyncRequired) {
+                    attachment.monitoringGraphics.set(true)
+                }
             }
             synchronized(preludeLock) {
                 prelude?.forEach { vc.outbox.sendOutput(core.id, it) }
@@ -1060,8 +1072,17 @@ class DaemonShareServer(
                         if (tracker != null) {
                             val estimatedBytes = tracker.estimatedWireBytes()
                             if (vc.graphicsResyncLimiter.tryAcquire(msg.paneId, estimatedBytes)) {
+                                // Unlike MirrorShare, [attachments] is per-connection: this
+                                // tracker has exactly one viewer, so a resync commits (and may
+                                // spend its own retry budget) rather than leaving a stale baseline.
                                 val full = tracker.fullMessage()
                                 enqueueGraphics(vc.outbox, full)
+                                if (full.resyncRequired) {
+                                    synchronized(attachLock) { attachments[msg.paneId] }?.let {
+                                        it.monitoringGraphics.set(true)
+                                        scheduleGraphicsSync(it)
+                                    }
+                                }
                             } else {
                                 vc.outbox.sendControl(FrameOutbox.Frame.Text(ShareProtocol.encodeServer(
                                     ServerMessage.GraphicsResyncDenied(

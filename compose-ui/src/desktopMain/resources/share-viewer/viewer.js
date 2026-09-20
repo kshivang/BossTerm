@@ -1652,7 +1652,6 @@
     g.images = {}; g.pending = {}; g.cells = []; g.cellsByRow = {};
     g.bytes = 0; g.canvas = null; g.raf = 0;
     g.resyncTimer = null;
-    setPaneGraphicsMode(p, false);
   }
 
   function removeGraphicsImage(g, id) {
@@ -1701,24 +1700,6 @@
     return byRow;
   }
 
-  function setPaneGraphicsMode(p, enabled) {
-    if (!p || p.graphicsTransparent === enabled) return;
-    var current = p.term.options.theme || {};
-    var next = {}, key;
-    for (key in current) if (Object.prototype.hasOwnProperty.call(current, key)) next[key] = current[key];
-    next.background = enabled ? "rgba(0,0,0,0)" : ((theme && theme.background) || "#1e1e1e");
-    try {
-      if (enabled) {
-        p.term.options.allowTransparency = true;
-        p.term.options.theme = next;
-      } else {
-        p.term.options.theme = next;
-        p.term.options.allowTransparency = false;
-      }
-      p.graphicsTransparent = enabled;
-    } catch (e) {}
-  }
-
   function ensureGraphicsCanvas(p) {
     var screen = p.host.querySelector(".xterm-screen");
     if (!screen) return null;
@@ -1730,13 +1711,14 @@
       canvas.style.position = "absolute";
       canvas.style.inset = "0";
       canvas.style.pointerEvents = "none";
+      canvas.style.zIndex = "4";
       g.canvas = canvas;
     }
     if (g.canvas.parentNode !== screen) {
-      // Keep images below xterm's glyph/selection/cursor renderer. The terminal's default
-      // background becomes transparent only while this pane has drawable graphics; the term
-      // host supplies the opaque theme background behind both layers.
-      screen.insertBefore(g.canvas, screen.querySelector("canvas"));
+      // Native BossTerm paints image cells after cell backgrounds. xterm combines
+      // glyphs and backgrounds on one surface, so images must overlay that surface
+      // (including the DOM-renderer fallback) or prompt backgrounds hide Kitty pets.
+      screen.appendChild(g.canvas);
     }
     return g.canvas;
   }
@@ -1762,14 +1744,18 @@
     });
     if (!g.cells.length || !hasDrawableImage) {
       // Keep the last decoded frame visible while a replacement raster is in flight. Clearing
-      // here would flash the terminal background and rebuild xterm's texture atlas twice.
+      // here would flash the terminal background between animation frames.
       if (g.canvas && Object.keys(g.pending).length) return;
       if (g.canvas && g.canvas.parentNode) g.canvas.parentNode.removeChild(g.canvas);
       g.canvas = null;
-      setPaneGraphicsMode(p, false);
       return;
     }
-    setPaneGraphicsMode(p, true);
+    // A replacement can use a new image ID. Keep the previous complete canvas
+    // until all newly referenced rasters decode, even when other images are ready.
+    if (g.cells.some(function (run) {
+      var id = String(run.imageId);
+      return !g.images[id] && g.pending[id];
+    })) return;
     var canvas = ensureGraphicsCanvas(p);
     if (!canvas) return;
     var screen = p.host.querySelector(".xterm-screen");
@@ -2105,7 +2091,7 @@
       followRaf = requestAnimationFrame(function () { followRaf = 0; followCursor(); });
     });
     attachTouchScroll(host, term);
-    p = { term: term, host: host, graphics: newGraphicsState(), graphicsTransparent: false };
+    p = { term: term, host: host, graphics: newGraphicsState() };
     term.onRender(function () { scheduleGraphicsDraw(p); });
     term.onScroll(function () { scheduleGraphicsDraw(p); });
     term.onResize(function () { scheduleGraphicsDraw(p); });
@@ -2237,10 +2223,11 @@
 
   function applyTheme(m) {
     theme = validatedTheme(m);
+    document.documentElement.style.setProperty("--tab-bg", theme.background);
+    document.documentElement.style.setProperty("--tab-fg", theme.foreground);
     Object.keys(panes).forEach(function (id) {
       var o = {}; applyThemeToOpts(o);
       var t = panes[id].term;
-      if (panes[id].graphicsTransparent) o.theme.background = "rgba(0,0,0,0)";
       t.options.theme = o.theme;
       panes[id].host.style.background = theme.background;
       if (o.fontFamily) t.options.fontFamily = o.fontFamily;
@@ -2270,6 +2257,14 @@
       function tabCluster(tab) {
         var group = document.createElement("div"); group.className = "ltab-group";
         var ps = []; panesInOrder(tab.tree, ps);
+        if (ps.length > 1) {
+          group.classList.add("split-group");
+          var heading = document.createElement("div");
+          heading.className = "pane-group-label";
+          heading.innerHTML = SVG_VSPLIT;
+          heading.appendChild(document.createTextNode(ps.length + " panes"));
+          group.appendChild(heading);
+        }
         if ((!summaryMode || splitsAsTabs) && tab.tree && tab.tree.t === "split") {
           ps.forEach(function (pane) { group.appendChild(leftChip(tab, pane)); });
         } else {
@@ -2475,7 +2470,7 @@
       });
       // Bottom: ask the host to mirror another BossTerm share here (native "Add remote").
       var add = document.createElement("div");
-      add.className = "newtab";
+      add.className = "newtab add-remote";
       add.textContent = "☁ Add remote";
       add.title = "Ask the host to mirror another BossTerm share link";
       add.onclick = function () {
@@ -2492,6 +2487,7 @@
       if (layout) layout.tabs.forEach(function (tab) {
         var grp = document.createElement("div"); grp.className = "tab-group";
         var ps = []; panesInOrder(tab.tree, ps);
+        if (ps.length > 1) grp.classList.add("split-group");
         if ((!summaryMode || splitsAsTabs) && tab.tree && tab.tree.t === "split") {
           ps.forEach(function (pane) { grp.appendChild(topChip(tab, pane)); });
         } else {
@@ -2668,6 +2664,15 @@
     return el;
   }
 
+  function tabIcon(color) {
+    var icon = document.createElement("span");
+    icon.className = "tab-icon";
+    icon.setAttribute("aria-hidden", "true");
+    if (color) icon.style.color = safeCssColor(color, "inherit");
+    icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="m6 8 3 3-3 3m6 0h5"/></svg>';
+    return icon;
+  }
+
   // A top-bar chip. [pane] null = whole-tab chip; otherwise a per-split sub-tab chip.
   function topChip(tab, pane) {
     var isPane = !!pane;
@@ -2676,12 +2681,19 @@
                         : (tab.id === activeTabId);
     var el = document.createElement("div");
     el.className = "tab" + (active ? " active" : "");
-    if (color) el.style.borderLeft = "3px solid " + color;
+    el.appendChild(tabIcon(color));
     var label = document.createElement("span");
     label.className = "tablabel"; label.textContent = (isPane ? pane.title : tab.title) || "shell";
     el.appendChild(label);
     if (controlGranted) el.appendChild(closeBtn(tab.id, isPane ? pane.paneId : null));
     el.onclick = function () { selectPane(tab.id, isPane ? pane.paneId : null); };
+    el.setAttribute("role", "button");
+    el.setAttribute("tabindex", "0");
+    el.setAttribute("aria-pressed", String(active));
+    el.onkeydown = function (event) {
+      if (event.target !== el) return;
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); el.onclick(); }
+    };
     attachChipMenu(el, tab, isPane ? pane : null);
     return el;
   }
@@ -2697,8 +2709,8 @@
                         : (tab.id === activeTabId);
     var el = document.createElement("div");
     el.className = "ltab" + (active ? " active" : "") + (isPane ? " ltab-pane" : "");
-    if (color) el.style.borderLeft = "3px solid " + color;
     var row = document.createElement("div"); row.className = "ltab-row";
+    row.appendChild(tabIcon(color));
     var title = document.createElement("span"); title.className = "ltab-title";
     title.textContent = (isPane ? pane.title : tab.title) || "shell";
     row.appendChild(title);
@@ -2707,6 +2719,13 @@
     if (cwd) { var s = document.createElement("div"); s.className = "ltab-sub"; s.textContent = abbreviateCwd(cwd); el.appendChild(s); }
     if (branch) { var b = document.createElement("div"); b.className = "ltab-branch"; b.textContent = "⎇ " + branch; el.appendChild(b); }
     el.onclick = function () { selectPane(tab.id, isPane ? pane.paneId : null); };
+    el.setAttribute("role", "button");
+    el.setAttribute("tabindex", "0");
+    el.setAttribute("aria-pressed", String(active));
+    el.onkeydown = function (event) {
+      if (event.target !== el) return;
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); el.onclick(); }
+    };
     attachChipMenu(el, tab, isPane ? pane : null);
     return el;
   }
